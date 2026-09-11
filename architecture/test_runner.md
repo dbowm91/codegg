@@ -191,7 +191,7 @@ pub trait TestEventSink: Send + Sync {
 
 Snapshot types carry `session_id`, `job_id`, and event-specific fields.
 
-### DelegatedTestRun (`runner.rs:260-272`)
+### DelegatedTestRun (`runner.rs:356-368`)
 
 Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some`
 when the canonical TestRunner successfully began a `RunKind::Test` record; `None`

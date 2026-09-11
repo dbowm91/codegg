@@ -86,7 +86,7 @@ pub struct Memory {
 }
 ```
 
-### MemoryStore (`:70`)
+### MemoryStore (`:72`)
 
 ```rust
 pub struct MemoryStore {
@@ -100,19 +100,19 @@ Key methods:
 
 | Method | Line | Description |
 |--------|------|-------------|
-| `new()` | :99 | Create with auto_save=true |
-| `with_auto_save(bool)` | :103 | Create with configurable auto_save |
-| `add(Memory)` | :180 | Insert, auto-saves if enabled |
-| `get(id)` | :196 | Retrieve by ID, increments access_count |
-| `list(namespace)` | :206 | List all memories in a namespace |
-| `search(query)` | :259 | Case-insensitive content search |
-| `delete(id)` | :269 | Remove by ID, auto-saves if enabled |
-| `save()` | :386 | Persist to disk with flock |
-| `migrate_project_namespace(identity)` | :220 | Migrate legacy MD5 namespace |
-| `consolidate_session(messages, identity)` | :279 | Extract patterns from session |
-| `get_memory_summary(ns, max)` | :355 | Markdown summary for prompt injection |
+| `new()` | :101 | Create with auto_save=true |
+| `with_auto_save(bool)` | :105 | Create with configurable auto_save |
+| `add(Memory)` | :182 | Insert, auto-saves if enabled |
+| `get(id)` | :198 | Retrieve by ID, increments access_count |
+| `list(namespace)` | :208 | List all memories in a namespace |
+| `search(query)` | :261 | Case-insensitive content search |
+| `delete(id)` | :271 | Remove by ID, auto-saves if enabled |
+| `save()` | :388 | Persist to disk with flock |
+| `migrate_project_namespace(identity)` | :222 | Migrate legacy MD5 namespace |
+| `consolidate_session(messages, identity)` | :281 | Extract patterns from session |
+| `get_memory_summary(ns, max)` | :357 | Markdown summary for prompt injection |
 
-### PatternDetector (`patterns.rs:40`)
+### PatternDetector (`patterns.rs:76`)
 
 ```rust
 pub struct PatternDetector {
@@ -124,7 +124,7 @@ pub struct PatternDetector {
 `PatternType` variants: `UserPreference`, `CodingConvention`,
 `Deprecation`, `NamingPattern`, `Architecture`, `ToolPreference`.
 
-`ScoredMemory` (:269) wraps a scored match with `to_memory(namespace)`
+`ScoredMemory` (:306) wraps a scored match with `to_memory(namespace)`
 to convert to a `Memory`.
 
 ## Scoring System

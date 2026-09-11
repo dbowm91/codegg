@@ -1,5 +1,7 @@
 # Phase F Handoff: Git Agent Integration Closure
 
+> **Historical snapshot**: This document records the state at Phase F closure (commit `08709d3`). For current architecture, see `architecture/git.md`.
+
 ## Status
 
 Phase F complete. Commit `08709d3` — `feat: Phase F — conflicts, recovery, ergonomics, and closure`. Branch: `main`.
@@ -108,7 +110,7 @@ cargo test --test git_recovery_integration                    # 19 tests
 cargo test --test git_closure_matrix                          # 32 tests
 
 # Full suite (capped)
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=8
+CARGO_BUILD_JOBS=1 cargo test --workspace --features server,plugins,lsp-test-support -- --test-threads=8
 ```
 
 **Summary**: 402 egggit tests, 331 codegg-git tests, 19+32 integration/closure tests, 10 projector tests, 6 schema tests. 9 golden fixture files for projection regression.

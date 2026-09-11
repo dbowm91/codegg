@@ -16,7 +16,7 @@ formatted reports, and optionally verifies citations with an LLM.
 
 | Artifact | Path |
 |----------|------|
-| Core pipeline | `src/research/` (15 files) |
+| Core pipeline | `src/research/` (14 files + sources/ subdirectory with 8 adapters) |
 | Tool surface | `src/tool/research.rs` |
 | Service facade | `src/research/service.rs` |
 | Specialized runtime | `src/research/runtime.rs` |

@@ -66,7 +66,7 @@ Different strategies per field type:
   `human_shell`, `shell`, `deterministic_tools`, `preflight`,
   `command_intent`, `orchestration`
 
-### ProviderConfig Merge (`schema.rs:774`)
+### ProviderConfig Merge (`schema.rs:827`)
 
 Field-by-field: non-None fields from override replace base. Unlike
 HashMap fields (key replacement), `ProviderConfig::merge()` merges
@@ -75,7 +75,7 @@ has `base_url`, merged result has both.
 
 ## Key Types & APIs
 
-### Config (`schema.rs:203`)
+### Config (`schema.rs:217`)
 
 ```rust
 pub struct Config {
@@ -142,7 +142,7 @@ pub struct Config {
 }
 ```
 
-### ProviderConfig (`schema.rs:734`)
+### ProviderConfig (`schema.rs:789`)
 
 ```rust
 pub struct ProviderConfig {
@@ -166,7 +166,7 @@ pub struct ProviderConfig {
 `api_key(&self, prefix)` checks `{PREFIX}_API_KEY` env var first, then
 inline `api_key` field.
 
-### AuthConfig (`schema.rs:13`)
+### AuthConfig (`schema.rs:15`)
 
 ```rust
 pub enum AuthConfig {
@@ -178,13 +178,13 @@ pub enum AuthConfig {
 }
 ```
 
-### ProviderConnectionsConfig (`schema.rs:284`)
+### ProviderConnectionsConfig (`schema.rs:339`)
 
 Daemon-owned provider-connection refresh policy. Defaults:
 `background_refresh=false`, `max_concurrent_refreshes=1`,
 `global_refresh_cap=4`, `health_stale_after_ms=300000`.
 
-### ServerConfig (`schema.rs:686`)
+### ServerConfig (`schema.rs:741`)
 
 ```rust
 pub struct ServerConfig {

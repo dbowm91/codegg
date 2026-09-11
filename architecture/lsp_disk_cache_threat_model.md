@@ -1,6 +1,10 @@
 # LSP Semantic Disk Cache — Privacy & Threat Model
 
 > Phase 16 · Workstream 2
+>
+> **Note:** This is a prospective design document. The current
+> `LspCacheMode` enum supports `Disabled` and `Memory` only; disk
+> persistence (`"disk"` mode) has not been implemented.
 
 ## Risk Summary
 

@@ -50,24 +50,24 @@ execution authority.
 
 ## Key Types & APIs
 
-### Typed Identifiers (`mod.rs:340–461`)
+### Typed Identifiers (`mod.rs:346–465`)
 
 All identifiers are opaque UUID v4 strings wrapped in newtypes. They
 are never parsed as integers.
 
 ```rust
-pub struct JobId(String);        // line 342
-pub struct AttemptId(String);    // line 369
-pub struct ScheduleId(String);   // line 390
-pub struct DependencyId(String); // line 411
-pub struct DaemonGeneration(String); // line 435
+pub struct JobId(String);        // line 346
+pub struct AttemptId(String);    // line 373
+pub struct ScheduleId(String);   // line 394
+pub struct DependencyId(String); // line 415
+pub struct DaemonGeneration(String); // line 439
 ```
 
-`DaemonGeneration::new()` (line 438) produces a fresh UUID at each
+`DaemonGeneration::new()` (line 442) produces a fresh UUID at each
 daemon startup. An attempt is valid only while its stored generation
 matches the active daemon generation.
 
-### Job Kinds (`mod.rs:468`)
+### Job Kinds (`mod.rs:472`)
 
 ```rust
 pub enum JobKind {
@@ -82,14 +82,14 @@ Unknown future kinds deserialize into `Unsupported` for forward
 compatibility. The daemon refuses to execute `Unsupported` jobs but
 persists them so newer daemons can pick them up.
 
-### Job Source and Priority (`mod.rs:548, 580`)
+### Job Source and Priority (`mod.rs:554, 586`)
 
 `JobSource` distinguishes `Interactive`, `Scheduled`, `AgentDelegated`,
 `Retry`, `Maintenance`, and `Api` origins. `JobPriority` has five
 buckets (`Urgent` through `Maintenance`) — persisted and validated but
 not yet used for admission ordering.
 
-### Job Payload (`mod.rs:941`)
+### Job Payload (`mod.rs:947`)
 
 Typed payload variants (`JobPayload`) carry enough data to rerun safely
 without consulting stale client state. Secret material must never be
@@ -121,15 +121,20 @@ Running          → Completed | Failed | Cancelled | TimedOut | Interrupted
 Terminal states never transition. `AttemptState::Interrupted` is used
 during daemon generation recovery.
 
-### JobStore Trait (`mod.rs:1244`)
+### JobStore Trait (`mod.rs:1274`)
 
-16 methods on `JobStore`:
+21 methods on `JobStore`:
 
 | Method | Purpose |
 |--------|---------|
 | `create_job(NewJob)` | Persist a new job, generate `JobId` |
+| `set_job_labels(JobId, HashMap)` | Persist host-owned labels for a newly created job |
+| `create_job_with_labels(NewJob, HashMap)` | Create a job and attach host-owned labels atomically |
 | `get_job(JobId)` | Fetch by id |
+| `get_jobs(&[JobId])` | Fetch multiple jobs in one store operation |
 | `list_jobs(JobStoreQuery)` | Filter by workspace/state/kind/session |
+| `count_jobs_by_kind_state(&[JobState])` | Count jobs grouped by kind for requested states |
+| `list_job_records(JobStoreQuery)` | List full job records matching a query |
 | `list_attempts(JobId)` | All attempts for a job, ordered by sequence |
 | `enqueue(JobId)` | `Scheduled`/`Blocked` → `Queued` |
 | `begin_attempt(JobId, DaemonGeneration)` | Create attempt, transition job to `Running` |
@@ -157,7 +162,7 @@ during daemon generation recovery.
 | `list(ScheduleQuery)` | Filter by workspace/state |
 | `claim_due(DateTime, &dyn OccurrenceMaterializer)` | Atomically claim due occurrences, create jobs |
 
-### `claim_due` Semantics (`schedule_store.rs:519`)
+### `claim_due` Semantics (`schedule_store.rs:521`)
 
 `claim_due` scans schedules where `next_run_at <= now` and state is
 `Active`. For each due schedule, it:
@@ -176,7 +181,7 @@ double-firing after restart.
 ## Configuration Surface
 
 Job records carry their configuration at creation time. Key defaults
-are centralized in `ResourceRequest::for_kind` (`mod.rs:644`):
+are centralized in `ResourceRequest::for_kind` (`mod.rs:648`):
 
 | Kind | CPU | Memory hint | Processes | IO | Network | Default conflict |
 |---|---:|---:|---:|---:|---:|---|
@@ -194,13 +199,13 @@ are centralized in `ResourceRequest::for_kind` (`mod.rs:644`):
 | Maintenance | 1 | 128 MB | 1 | 1 | 0 | — |
 | ToolProgram | 1 | 512 MB | 1 | 1 | 0 | — |
 
-`RecoveryPolicy` defaults (`mod.rs:1210`): requeue `ReadOnly` and
+`RecoveryPolicy` defaults (`mod.rs:1240`): requeue `ReadOnly` and
 `SafeRepeat`; never auto-retry `Conditional`, `NonIdempotent`, or
 `Destructive`.
 
 ## Invariants & Gotchas
 
-### Recovery Contract (`mod.rs:1410`, `store.rs:694`)
+### Recovery Contract (`mod.rs:1409`, `store.rs:694`)
 
 At daemon startup (`recover_generation`):
 
@@ -217,7 +222,7 @@ At daemon startup (`recover_generation`):
 The idempotency class is persisted at creation time — it is never
 re-inferred from code at restart.
 
-### `recover_at_startup` integration (`scheduler.rs:1281`)
+### `recover_at_startup` integration (`scheduler.rs:1529`)
 
 `JobScheduler::recover_at_startup` calls `JobStore::recover_generation`
 once at daemon startup and wakes the scheduler with
@@ -251,14 +256,14 @@ completed. If cancel is persisted first but the process exits
 successfully, the terminal state is `Completed` (not `Cancelled`).
 Stale workers may not overwrite a terminal state.
 
-### Descendant Cancellation (`scheduler.rs:929, 1258`)
+### Descendant Cancellation (`scheduler.rs:1160, 1512`)
 
 When a parent attempt terminates (timeout, failure, cancel, interrupt),
 the scheduler calls `cancel_descendants` to ensure children do not
 outlive the parent. This runs both in the executor-completion task and
 in `request_cancel`.
 
-### RunStore Linkage (`mod.rs:1144`)
+### RunStore Linkage (`mod.rs:1175`)
 
 `JobAttempt.run_id: Option<RunId>` links an attempt to a RunStore
 record. The two stores serve different purposes:

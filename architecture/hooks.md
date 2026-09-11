@@ -43,7 +43,7 @@ WASM-invoked and can block execution.
 ### Shell Command Hooks (`src/hooks/mod.rs`)
 
 ```rust
-// :15
+// :16
 pub enum HookEvent {
     PreToolExecute,
     PostToolExecute,
@@ -68,21 +68,21 @@ pub trait Hook: Send + Sync {
     async fn execute(&self, ctx: &HookContext) -> Result<(), AppError>;
 }
 
-// :94
+// :93
 pub struct ShellCommandHook {
     pub command: String,
     pub timeout: Duration,  // default 30s
     pub event: HookEvent,
 }
 
-// :151
+// :170
 pub struct HookRegistry {
     hooks: HashMap<HookEvent, Vec<Box<dyn Hook>>>,
 }
 ```
 
-`HookRegistry::from_config()` (:167) builds from `HookConfigEntry` list.
-`HookRegistry::run_hooks()` (:193) executes all hooks for an event,
+`HookRegistry::from_config()` (:185) builds from `HookConfigEntry` list.
+`HookRegistry::run_hooks()` (:211) executes all hooks for an event,
 collecting errors.
 
 ### Plugin Hooks (`src/plugin/hooks.rs`)

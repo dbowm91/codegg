@@ -1,5 +1,7 @@
 # Git Polish / Maintainability / Verification Handoff
 
+> **Historical snapshot**: This document records the post-closure verified state. For current architecture, see `architecture/git.md`.
+
 > Companion to
 > Git Polish Maintainability Verification (plan pruned post-completion).
 >
@@ -51,10 +53,9 @@ crates/
 │   └── src/worktree.rs                 (create/remove worktree; consumes
 │                                        codegg_git::process_policy lists)
 │
-└── egggit/                             (read-only git facts — `git`
-                                         subprocesses here are trusted
-                                         read-side and do not need the
-                                         hardened env policy)
+└── egggit/                             (read-only git facts — spawns
+                                          `git` subprocesses for reads
+                                          but never performs mutations)
     └── src/{status,status_v2,log,blame,diff,refs,operation_state,
              conflict,worktree}.rs
 
@@ -244,23 +245,6 @@ Result: `26 passed` (19 original + 7 new D4 tests).
 
 ```bash
 cargo test -p codegg-git   # 354 + 7 ignored + new B4 tests (covers process_policy + sensitive)
-cargo test -p codegg-core  # 119 (covers worktree policy drift tests)
-```
-
-Result: all green.
-
-### Execution-origin matrix (19 tests)
-
-```bash
-cargo test --test git_execution_origin_matrix
-```
-
-Result: `19 passed`.
-
-### Drift guards
-
-```bash
-cargo test -p codegg-git   # 354 + 7 ignored (covers process_policy + sensitive)
 cargo test -p codegg-core  # 119 (covers worktree policy drift tests)
 ```
 

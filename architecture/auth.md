@@ -157,7 +157,7 @@ config-aware path registers zero providers.
 
 ## Key Types & APIs
 
-### AuthConfig (`auth_types.rs:121`)
+### AuthConfig (`auth_types.rs:174`)
 
 ```rust
 pub enum AuthConfig {
@@ -169,7 +169,7 @@ pub enum AuthConfig {
 }
 ```
 
-### Credential (`auth_types.rs:61`)
+### Credential (`auth_types.rs:115`)
 
 ```rust
 pub struct Credential {
@@ -182,13 +182,13 @@ pub struct Credential {
 `Debug` impl masks the secret via `mask_secret()`.
 `authorization_header_value()` returns `Bearer {secret}` for both kinds.
 
-### CredentialKind (`auth_types.rs:52`)
+### CredentialKind (`auth_types.rs:54`)
 
 ```rust
 pub enum CredentialKind { ApiKey, BearerToken }
 ```
 
-### AuthError (`auth_types.rs:14`)
+### AuthError (`auth_types.rs:15`)
 
 ```rust
 pub enum AuthError {
@@ -204,7 +204,7 @@ pub enum AuthError {
 }
 ```
 
-### AuthResolver (`auth_types.rs:238`)
+### AuthResolver (`auth_types.rs:298`)
 
 ```rust
 pub struct AuthResolver { external: ExternalCommandProvider }
@@ -218,7 +218,7 @@ impl AuthResolver {
 }
 ```
 
-### ResolverContext (`auth_types.rs:195`)
+### ResolverContext (`auth_types.rs:249`)
 
 ```rust
 pub struct ResolverContext {
@@ -236,7 +236,7 @@ pub struct ResolverContext {
 sets it from `credential_capability_for`; direct resolver callers must
 set it explicitly when they intend bearer support.
 
-### ResolvedAuth (`auth_types.rs:205`)
+### ResolvedAuth (`auth_types.rs:265`)
 
 ```rust
 pub struct ResolvedAuth {
@@ -245,7 +245,7 @@ pub struct ResolvedAuth {
 }
 ```
 
-### ResolvedAuthSource (`auth_types.rs:211`)
+### ResolvedAuthSource (`auth_types.rs:271`)
 
 ```rust
 pub enum ResolvedAuthSource {
@@ -270,7 +270,7 @@ pub enum CredentialCapability { ApiKeyOnly, ApiKeyOrBearer }
 `incompatible_credential_message()` builds the typed
 `Unsupported` diagnostic without secret material.
 
-### CredentialStore (`auth_types.rs:437`)
+### CredentialStore (`auth_types.rs:537`)
 
 ```rust
 pub struct CredentialStore {
@@ -296,7 +296,7 @@ Key methods:
 - `remove(provider_id, account_id)` — `Some("*")` removes all accounts
 - `list()` — returns all records (metadata only)
 
-### StoredCredentialRecord (`auth_types.rs:417`)
+### StoredCredentialRecord (`auth_types.rs:517`)
 
 ```rust
 pub struct StoredCredentialRecord {
@@ -311,7 +311,7 @@ pub struct StoredCredentialRecord {
 }
 ```
 
-### ExternalCommandProvider (`auth_types.rs:176`)
+### ExternalCommandProvider (`auth_types.rs:229`)
 
 ```rust
 pub struct ExternalCommandProvider;

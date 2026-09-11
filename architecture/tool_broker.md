@@ -55,7 +55,7 @@ AgentLoop / Tool Program
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ToolContract` | `src/tool/contract.rs:183` | Metadata: caller policy, effect class, schemas, retry/cache/projection policy |
+| `ToolContract` | `src/tool/contract.rs:184` | Metadata: caller policy, effect class, schemas, retry/cache/projection policy |
 | `ToolCallerPolicy` | `src/tool/contract.rs:28` | `DirectOnly` / `DirectOrProgrammatic` / `ProgrammaticOnly` |
 | `ToolEffectClass` | `src/tool/contract.rs:48` | `ReadOnly` / `ReadValidate` / `SafeRepeat` / `IdempotentMutating` / `NonIdempotent` / `ProcessExec` |
 | `ToolTerminalStatus` | `src/tool/contract.rs:302` | `Success` / `Error` / `Denied` / `Cancelled` / `TimedOut` / `InfrastructureError` |
@@ -66,7 +66,7 @@ AgentLoop / Tool Program
 | `BrokerInvocationContext` | `src/tool/broker.rs:72` | Rich caller context (caller, cwd, session/workspace/agent/turn/job/attempt IDs, authority, cancellation, deadline, principal, path policy, allowed tools, policy revision) |
 | `BrokerAuthority` | `src/tool/broker.rs:115` | `Unverified` / `Verified { grant: ToolAuthorityGrant }` |
 | `BrokerResult` | `src/tool/broker.rs:386` | Typed result with contract, invocation_id, elapsed_ms |
-| `BrokerError` | `src/tool/broker.rs:946` | `NotFound` / `NoContract` / `CallerDenied` / `InputTooLarge` / `Execution` / `AuthorityError` |
+| `BrokerError` | `src/tool/broker.rs:951` | `NotFound` / `NoContract` / `CallerDenied` / `InputTooLarge` / `Execution` / `AuthorityError` |
 | `ToolCaller` | `src/tool/contract.rs:283` | `Agent` / `Program { program_id }` / `Subagent { parent_agent_id }` / `Api { client_id }` / `Internal` |
 
 ## Pipeline Steps (broker.rs:5-16)
@@ -114,8 +114,9 @@ This ensures existing tools work without modification.
    Programmatic callers always carry a `BrokerAuthority::Verified`.
 3. **Grant scope verification**: `verify_grant_scope()` checks
    validity, integrity, workspace, caller class, effect class,
-   session binding, permission mode, principal, path policy,
-   manifest, contract snapshot, and policy revision.
+   session binding, permission mode, principal, and path policy
+   (9 dimensions). Manifest, contract snapshot, and policy revision
+   are verified conditionally for programmatic callers.
 4. **Programmatic failure mapping**: `into_programmatic_outcome()`
    maps terminal statuses — only `Success` becomes a `CompletedCall`.
 5. **Program-capable caller policies**: `resolve_manifest` admits

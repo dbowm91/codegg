@@ -62,13 +62,18 @@ caller's responsibility.
   back to Open and seeds `last_failure_time` so the normal
   Open→HalfOpen timeout applies before the next probe.
 
-### is_available (circuit.rs:80)
+### is_available (circuit.rs:81)
+
+> **Deprecated**: `is_available()` is kept for backward compatibility
+> only. Prefer `call()` which atomically owns admission and the
+> half-open probe in a single write-lock critical section, preventing
+> the TOCTOU race that `is_available()` exposes.
 
 Uses a **write lock** from the start to avoid TOCTOU races. When the
 state is Open and the timeout has elapsed, atomically transitions
 to HalfOpen and returns `true`.
 
-### call (circuit.rs:103)
+### call (circuit.rs:105)
 
 ```rust
 pub async fn call<F, R, E>(&self, op: F) -> Result<R, E>
@@ -81,7 +86,7 @@ Checks availability, then in HalfOpen enforces single-probe via
 `half_open_probe` CAS. Executes the operation, records
 success/failure.
 
-### record_success (circuit.rs:156)
+### record_success (circuit.rs:194)
 
 - **Closed**: Resets `failure_count` to 0.
 - **HalfOpen**: Increments `success_count`; transitions to Closed
@@ -89,7 +94,7 @@ success/failure.
   `last_failure_time`. Releases `half_open_probe`.
 - **Open**: No action.
 
-### record_failure (circuit.rs:181)
+### record_failure (circuit.rs:219)
 
 - **Closed**: Increments `failure_count`; transitions to Open when
   threshold exceeded.
@@ -144,7 +149,7 @@ struct CircuitBreakerInner {
 pub enum CircuitState { Closed, Open, HalfOpen }
 ```
 
-### CircuitError (circuit.rs:14)
+### CircuitError (circuit.rs:15)
 
 ```rust
 pub enum CircuitError { Open(String) }
@@ -162,7 +167,9 @@ CircuitBreaker::new(p.name(), 3, 60, 2)
 ```
 
 - `failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`
-- Checks `is_available()` before calling each provider
+- Checks availability before calling each provider (currently via
+  `is_available()`; a future refactor should migrate to `call()` for
+  atomic admission)
 - Records success/failure after each call
 - Exponential backoff between providers: `2^i` seconds (i=0→1s,
   i=1→2s, i=2→4s…), capped at 30s

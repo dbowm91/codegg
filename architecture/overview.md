@@ -281,7 +281,7 @@ Counts below were re-verified against the current tree (see source column).
 | Tools (registration statements in `with_options`) | 51 | `src/tool/mod.rs::with_options()` |
 | Tools (always registered core) | ~31 | remainder gated by todo policy / evidence backend / eggsact / context-read config |
 | Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
-| LSP servers | 40 | `crates/egglsp/src/server.rs::server_definitions()` |
+| LSP servers | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
 | AppEvent variants | 53 | `crates/codegg-core/src/bus/events.rs::AppEvent` |
 | Built-in slash commands | 139 (asserted by `built_in_command_count_matches_release_docs`) | `src/tui/command.rs` |

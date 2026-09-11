@@ -50,7 +50,7 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **52+ CREATE TABLE statements** across
+Migrations create and evolve **71 CREATE TABLE statements** across
 these table groups:
 
 **Core session tables (v1):**
@@ -106,7 +106,7 @@ v12 adds `time_deleted`, v22 adds `workspace_id`, v27 adds
 
 ### Session Columns constant
 
-The `SESSION_COLUMNS` constant (`session/mod.rs:39`) includes all 22
+The `SESSION_COLUMNS` constant (`session/mod.rs:39`) includes all 27
 session columns including the v27 provider connection selection fields.
 Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:46`).
 
@@ -147,7 +147,7 @@ identity and content fields to match.
 
 ### TUI Session State
 
-`TuiSessionState` (`session/state.rs:111`) is a fully derived
+`TuiSessionState` (`session/state.rs:112`) is a fully derived
 in-memory representation reconstructed from events via
 `from_events()`. It tracks: goal, plan, active/recent tool calls
 (capped at 50), changed files, test state, context state, model state,

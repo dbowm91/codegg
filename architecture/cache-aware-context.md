@@ -282,7 +282,7 @@ A new top-level `[context_policy]` config section (distinct from `context_packer
 #### ContextPolicyConfig and ContextPolicyMode
 
 ```rust
-// In src/context/policy.rs (new)
+// In codegg_config::schema (crate codegg-config)
 pub struct ContextPolicyConfig {
     pub enabled: bool,                    // default false (safe)
     pub mode: ContextPolicyMode,          // default Observe

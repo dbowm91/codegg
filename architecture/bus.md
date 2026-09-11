@@ -15,7 +15,7 @@ pair a pending event with a oneshot response channel.
 | Path | Role |
 |------|------|
 | `crates/codegg-core/src/bus/global.rs` | `GlobalEventBus` singleton |
-| `crates/codegg-core/src/bus/events.rs` | `AppEvent` enum (45 variants) |
+| `crates/codegg-core/src/bus/events.rs` | `AppEvent` enum (53 variants) |
 | `crates/codegg-core/src/bus/mod.rs` | `PermissionRegistry`, `QuestionRegistry`, `PermissionDecision`, pending-info types |
 
 ## How It Works
@@ -40,7 +40,7 @@ pub struct GlobalEventBus {
 
 ### AppEvent Enum
 
-45 variants across these categories:
+53 variants across these categories:
 
 | Category | Count | Variants |
 |----------|-------|----------|
@@ -52,10 +52,14 @@ pub struct GlobalEventBus {
 | Question | 2 | `QuestionPending`, `QuestionAnswered` |
 | Streaming | 3 | `TextDelta`, `ReasoningDelta`, `AgentFinished` |
 | Subagent | 4 | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
+| AgentRun | 4 | `AgentRunUpdated`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated` |
+| Worktree/Group | 2 | `WorktreeUpdated`, `AgentRunGroupUpdated` |
+| Convergence | 1 | `ConvergenceUpdated` |
 | TestRun | 3 | `TestRunStarted`, `TestRunProgress`, `TestRunCompleted` |
 | Diff | 2 | `DiffPending`, `DiffResponded` |
 | Goal | 4 | `GoalUpdated`, `GoalUsageUpdated`, `GoalBudgetLimited`, `GoalCompleted` |
-| Other | 9 | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `ContextUpdated`, `PluginUiEffect` |
+| Run | 1 | `RunRerunLinked` |
+| Other | 8 | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `ContextUpdated`, `PluginUiEffect` |
 
 Each variant has an `event_type()` method returning a `&'static str`
 discriminator for SSE filtering (e.g. `"session:created"`,
@@ -161,10 +165,10 @@ methods exist on both registries and properly filter by session.
 | Type | File:line | Purpose |
 |------|-----------|---------|
 | `GlobalEventBus` | `bus/global.rs:7` | Broadcast singleton |
-| `AppEvent` | `bus/events.rs:60` | 45-variant event enum |
+| `AppEvent` | `bus/events.rs:61` | 53-variant event enum |
 | `PermissionRegistry` | `bus/mod.rs:88` | Permission request/response |
 | `QuestionRegistry` | `bus/mod.rs:252` | Question request/response |
-| `PermissionDecision` | `bus/mod.rs:11` | Bus-owned permission DTO |
+| `PermissionDecision` | `bus/mod.rs:12` | Bus-owned permission DTO |
 | `PendingPermission` | `bus/mod.rs:46` | Stored permission with session/turn |
 | `PendingPermissionInfo` | `bus/mod.rs:57` | Read-only view of pending permission |
 | `PendingQuestion` | `bus/mod.rs:68` | Stored question with session/turn |

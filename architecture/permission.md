@@ -33,7 +33,7 @@ stuck-agent loops, and provide mode-based permission envelopes
 
 Every `Tool` reports a `ToolCategory` (`ReadOnly | SafeMutating |
 Mutating | ShellExec`). The function `tool_category_for_name()` in
-`src/permission/mod.rs:99` maps tool names to categories without a
+`src/permission/mod.rs:107` maps tool names to categories without a
 `Tool` instance.
 
 Categories with `is_permission_free() == true` (`ReadOnly`,
@@ -111,12 +111,12 @@ commands like `ls`, `cat`, `cargo build`, `git status` even in a
 strict `default = "ask"` config.
 
 Safe bash patterns are defined in `default_bash_allow_patterns()`
-(`src/permission/mod.rs:1315`). Users can extend or override these via
+(`src/permission/mod.rs:1359`). Users can extend or override these via
 `bash_allow_patterns` and `bash_deny_patterns` config fields.
 
 ## Key Types & APIs
 
-### PermissionLevel (`src/permission/mod.rs:115`)
+### PermissionLevel (`src/permission/mod.rs:125`)
 
 ```rust
 pub enum PermissionLevel {
@@ -126,7 +126,7 @@ pub enum PermissionLevel {
 }
 ```
 
-### PermissionResult (`src/permission/mod.rs:133`)
+### PermissionResult (`src/permission/mod.rs:142`)
 
 ```rust
 pub enum PermissionResult {
@@ -136,14 +136,14 @@ pub enum PermissionResult {
 }
 ```
 
-### PermissionDecisionReceipt (`src/permission/mod.rs:145`)
+### PermissionDecisionReceipt (`src/permission/mod.rs:154`)
 
 Ephemeral receipt produced when the permission boundary accepts a call.
 Contains `decision_id`, `outcome`, `source`, `issued_at`, and optional
 `policy_revision`. Callers must not manufacture policy revisions from
 unrelated session identifiers after evaluation.
 
-### PermissionChoice (`src/permission/mod.rs:180`)
+### PermissionChoice (`src/permission/mod.rs:189`)
 
 ```rust
 pub enum PermissionChoice {
@@ -157,7 +157,7 @@ pub enum PermissionChoice {
 Bidirectional `From` impls convert between `PermissionChoice` (domain)
 and `PermissionDecision` (bus DTO).
 
-### PermissionRuleset (`src/permission/mod.rs:279`)
+### PermissionRuleset (`src/permission/mod.rs:288`)
 
 ```rust
 pub struct PermissionRuleset {
@@ -167,7 +167,7 @@ pub struct PermissionRuleset {
 }
 ```
 
-### ToolRule (`src/permission/mod.rs:226`)
+### ToolRule (`src/permission/mod.rs:235`)
 
 ```rust
 pub struct ToolRule {
@@ -181,7 +181,7 @@ pub struct ToolRule {
 `matches()` supports `*` wildcard and glob compilation.
 `matches_bash_command()` checks bash command patterns similarly.
 
-### PermissionChecker (`src/permission/mod.rs:489`)
+### PermissionChecker (`src/permission/mod.rs:533`)
 
 Main enforcement point:
 
@@ -212,7 +212,7 @@ Key methods:
 - `always_allow(tool, path, session_id)` / `always_deny(...)` — persist
 - `clear_decisions()` — wipe cached decisions
 
-### PermissionStore (`src/permission/mod.rs:306`)
+### PermissionStore (`src/permission/mod.rs:314`)
 
 HMAC-signed persistent decision cache:
 
@@ -236,7 +236,7 @@ pub struct PersistentDecision {
 - HMAC signature prevents tampering (`CODEGG_PERM_KEY` env var)
 - Persists to `~/.config/codegg/permissions.json`
 
-### DoomLoopDetector (`src/permission/mod.rs:1574`)
+### DoomLoopDetector (`src/permission/mod.rs:1618`)
 
 Detects repetitive tool call patterns using window-based counting:
 
@@ -390,8 +390,6 @@ allow_all_bash = false
    layers.
 6. **Exec mode** (`with_exec_mode()`) sets `default = Allow` and allows
    bash, edit, task, todowrite — for CI/CD where no TUI is available.
-7. **`check_external_directory()`** is `#[allow(dead_code)]` — exists
-   for potential future use.
 
 ## Testing
 

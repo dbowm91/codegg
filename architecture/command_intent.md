@@ -222,8 +222,9 @@ as `GitMutating` but dispatches as `RawShell` (see
 ## Integration
 
 `classify_command()` is called by:
-- `BashTool::execute()` in `src/tool/bash.rs:1671` — attaches routing
-  metadata when `CommandIntentConfig` is set
+- `BashTool::execute()` in `src/tool/bash.rs:339` (via `prepare_command()`
+  in `src/command_intent/pipeline.rs`) — attaches routing metadata when
+  `CommandIntentConfig` is set
 
 ### CommandIntentMode
 

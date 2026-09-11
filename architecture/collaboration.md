@@ -45,8 +45,8 @@ crates/codegg-core/src/authorization/policy.rs
                                           # chat_* operation descriptors (project.chat),
                                           # re-exported by the authorization facade
 crates/codegg-core/src/projection_replay/safe_publication.rs  # chat events classify Safe
-crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 12 CoreRequests, 8 CoreResponses,
-                                          # 4 CoreEvents (CHAT_CAPABILITY, CHAT_PROTOCOL_VERSION)
+crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 18 CoreRequests, 13 CoreResponses,
+                                          # 6 CoreEvents (CHAT_CAPABILITY, CHAT_PROTOCOL_VERSION)
 src/core/daemon.rs                        # daemon-owned CollaborationService, channel->project
                                           # resolver, privacy denials, dedicated chat handler
 tests/collaboration_m001_chat.rs          # 12 daemon boundary tests

@@ -348,8 +348,8 @@ Inherited env vars: `PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`,
 
 ### Diff generation
 
-Per-file content capped at 4000 chars (`executor.rs:669`).
-File content capture limit: 2 MiB per file (`executor.rs:598`).
+Per-file content capped at 4000 chars (`executor.rs:688`).
+File content capture limit: 2 MiB per file (`executor.rs:617`).
 
 ## Invariants & Gotchas
 

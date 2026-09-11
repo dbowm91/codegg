@@ -265,11 +265,11 @@ responses.
 
 ### eggsentry (`crates/eggsentry/src/`)
 
-- `classify_bash_command(cmd) -> CommandClassification` (command.rs:193)
+- `classify_bash_command(cmd) -> CommandClassification` (command.rs:201)
 - `classify_git_subcommand(sub) -> CommandClassification` (command.rs:503)
 - `classify_tool_call(name, args) -> CommandClassification` (command.rs:507)
-- `inspect_text(path, text) -> Vec<SecurityFinding>` (scanner.rs:308)
-- `inspect_file(path, max_bytes) -> Result<Vec<SecurityFinding>>` (scanner.rs:391)
+- `inspect_text(path, text) -> Vec<SecurityFinding>` (scanner.rs:319)
+- `inspect_file(path, max_bytes) -> Result<Vec<SecurityFinding>>` (scanner.rs:402)
 - `ProfileRunner::inspect_paths(profile, paths) -> SecurityReport` (profile.rs:48)
 
 ## Configuration Surface

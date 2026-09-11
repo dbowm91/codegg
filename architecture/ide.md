@@ -22,22 +22,22 @@ transport.
 
 Three public functions check environment variables:
 
-**`is_vscode()`** (`src/ide/mod.rs:83`):
+**`is_vscode()`** (`src/ide/mod.rs:81`):
 - `VSCODE_IPC_HOOK` set
 - `VSCODE_INJECTED_ENVIRONMENT` set
 - `TERM_PROGRAM` equals `"vscode"`
 
-**`is_jetbrains()`** (`src/ide/mod.rs:89`):
+**`is_jetbrains()`** (`src/ide/mod.rs:87`):
 - `JETBRAINS_REMOTE` set
 - `JB_PRODUCT_READINESS` set
 - `IDEA_INITIAL_DIRECTORY` set
 - `WEBCLBROWSER_HOST` set
 
-**`is_ide()`** (`src/ide/mod.rs:96`): Returns `is_vscode() || is_jetbrains()`.
+**`is_ide()`** (`src/ide/mod.rs:94`): Returns `is_vscode() || is_jetbrains()`.
 
 ### Diff Viewing
 
-**`open_diff()`** (`src/ide/mod.rs:100`):
+**`open_diff()`** (`src/ide/mod.rs:98`):
 1. Reads both files from disk.
 2. Applies line-range slicing if `original_lines` or `modified_lines` are
    provided (1-indexed, inclusive end).
@@ -65,20 +65,20 @@ Three public functions check environment variables:
 
 ### Temp File Safety
 
-**`TempFilesGuard`** (`src/ide/mod.rs:46`): Implements `Drop` to remove
+**`TempFilesGuard`** (`src/ide/mod.rs:42`): Implements `Drop` to remove
 temp files on scope exit, including panics.
 
-**`register_panic_cleanup()`** (`src/ide/mod.rs:68`): Registers a
+**`register_panic_cleanup()`** (`src/ide/mod.rs:66`): Registers a
 one-time panic hook that removes all `codegg_*` temp files from the
 system temp directory.
 
 ### Diff Generators
 
-**`generate_unified_diff()`** (`src/ide/mod.rs:392`):
+**`generate_unified_diff()`** (`src/ide/mod.rs:390`):
 Produces `--- a/path` / `+++ b/path` unified diff format. Returns
 `"(no changes)"` when no differences exist.
 
-**`generate_side_by_side()`** (`src/ide/mod.rs:420`):
+**`generate_side_by_side()`** (`src/ide/mod.rs:418`):
 Produces ANSI-colored side-by-side diff with grouped operations (context
 of 3 lines).
 
@@ -158,27 +158,27 @@ Parses the `@file#L1-L99` syntax:
 
 ### Shutdown
 
-`shutdown()` (line 300) sets the shutdown flag and notifies the shutdown
+`shutdown()` (line 316) sets the shutdown flag and notifies the shutdown
 signal. In stdio mode, the loop breaks on EOF.
 
 ## Key Types & APIs
 
 | Type / Function | Location | Purpose |
 |----------------|----------|---------|
-| `is_vscode()` | `src/ide/mod.rs:83` | Detect VS Code via env vars |
-| `is_jetbrains()` | `src/ide/mod.rs:89` | Detect JetBrains via env vars |
-| `is_ide()` | `src/ide/mod.rs:96` | Detect any supported IDE |
-| `open_diff()` | `src/ide/mod.rs:100` | Open IDE diff viewer with optional line ranges |
-| `generate_unified_diff()` | `src/ide/mod.rs:392` | Generate unified diff string |
-| `generate_side_by_side()` | `src/ide/mod.rs:420` | Generate ANSI side-by-side diff |
+| `is_vscode()` | `src/ide/mod.rs:81` | Detect VS Code via env vars |
+| `is_jetbrains()` | `src/ide/mod.rs:87` | Detect JetBrains via env vars |
+| `is_ide()` | `src/ide/mod.rs:94` | Detect any supported IDE |
+| `open_diff()` | `src/ide/mod.rs:98` | Open IDE diff viewer with optional line ranges |
+| `generate_unified_diff()` | `src/ide/mod.rs:390` | Generate unified diff string |
+| `generate_side_by_side()` | `src/ide/mod.rs:418` | Generate ANSI side-by-side diff |
 | `run_command_with_timeout()` | `src/ide/mod.rs:10` | Spawn process with 30s timeout |
-| `TempFilesGuard` | `src/ide/mod.rs:46` | RAII guard for temp file cleanup |
+| `TempFilesGuard` | `src/ide/mod.rs:42` | RAII guard for temp file cleanup |
 | `IdeServer` | `src/mcp/ide_server.rs:50` | MCP server for IDE integration |
 | `IdeServer::run_stdio()` | `src/mcp/ide_server.rs:79` | Run MCP over stdio |
 | `IdeServer::handle_connection()` | `src/mcp/ide_server.rs:133` | Handle a Unix socket connection |
-| `IdeServer::shutdown()` | `src/mcp/ide_server.rs:300` | Signal shutdown |
-| `open_diff_handler()` | `src/mcp/ide_server.rs:345` | MCP tool handler for openDiff |
-| `parse_file_reference()` | `src/mcp/ide_server.rs:372` | Parse `@file#L1-L99` syntax |
+| `IdeServer::shutdown()` | `src/mcp/ide_server.rs:316` | Signal shutdown |
+| `open_diff_handler()` | `src/mcp/ide_server.rs:361` | MCP tool handler for openDiff |
+| `parse_file_reference()` | `src/mcp/ide_server.rs:388` | Parse `@file#L1-L99` syntax |
 
 ## Configuration Surface
 

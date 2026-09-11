@@ -178,7 +178,7 @@ remains login-free.
 `codegg_core::authorization` enforces project/resource semantic
 capabilities at the daemon operation boundary using transport-bound
 principals, and propagates immutable originating-principal attribution
-into durable work. Full contract and the 135-row operation matrix live in
+into durable work. Full contract and the 138-row operation matrix live in
 `architecture/authorization.md`.
 
 - Inventory: `operation_descriptor` maps every native `CoreRequest` to a

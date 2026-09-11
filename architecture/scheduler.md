@@ -54,7 +54,7 @@ lease-generation, health, reconciliation, and cleanup state while the
 scheduler remains the machine-capacity/admission authority. No worktree
 operation bypasses the hardened Git environment policy.
 
-### Main loop (`scheduler.rs:625`)
+### Main loop (`scheduler.rs:809`)
 
 The scheduler loop runs until shutdown. Each iteration:
 1. Wait for reconcile interval, a wake signal, or cancellation
@@ -62,7 +62,7 @@ The scheduler loop runs until shutdown. Each iteration:
    remove stale entries, update aging
 3. `admit_and_dispatch_batch()` — try up to 4 candidates per tick
 
-### Reconciliation (`scheduler.rs:435`)
+### Reconciliation (`scheduler.rs:583`)
 
 Reconcile pulls durable queued jobs in bounded batches
 (`config.queue.claim_batch`), deduplicates by `JobId`, and applies
@@ -70,7 +70,7 @@ aging. It also removes queue entries whose durable state is no longer
 `Queued` (confirmed via direct store read so valid queued jobs beyond
 the batch are never evicted).
 
-### Admission (`scheduler.rs:680`)
+### Admission (`scheduler.rs:833`)
 
 For each candidate, the scheduler:
 1. Pops from the fair queue
@@ -84,7 +84,7 @@ For each candidate, the scheduler:
 
 ### Key Types & APIs
 
-#### JobScheduler (`scheduler.rs:99`)
+#### JobScheduler (`scheduler.rs:135`)
 
 ```rust
 pub struct JobScheduler { ... }
@@ -109,7 +109,7 @@ Key methods:
   running, and registry
 - `shutdown(mode)` — drain, stop-accepting, or immediate-interrupt
 
-#### JobSubmissionService (`submission.rs:83`)
+#### JobSubmissionService (`submission.rs:86`)
 
 ```rust
 pub struct JobSubmissionService { ... }
@@ -126,7 +126,7 @@ Same key with same fingerprint → returns the original job. The
 in-memory idempotency index is scoped to one daemon generation; the
 durable job ID remains authoritative after restart.
 
-#### AdmissionController (`admission.rs:27`)
+#### AdmissionController (`admission.rs:99`)
 
 Atomic admission decision. All requested dimensions and exclusivity
 keys are reserved together, or none:
@@ -244,7 +244,7 @@ process creation. `observe` and `active` remain accepted configuration
 labels for staged deployments and diagnostics, but they do not restore
 bypass execution.
 
-### Resource profiles (`mod.rs:644`)
+### Resource profiles (`mod.rs:648`)
 
 Admission reserves soft CPU/memory/IO hints, process slots, network
 slots, and typed exclusivity keys. Hints are accounting inputs, not
@@ -345,7 +345,7 @@ attempts. Managed-process cancellation kills the process session and
 descendants before the permit is released. A completion that races
 cancellation follows the durable store's terminal-state precedence.
 
-At startup, `recover_at_startup` (`scheduler.rs:1281`) calls
+At startup, `recover_at_startup` (`scheduler.rs:1529`) calls
 `JobStore::recover_generation` once and wakes the scheduler with
 `WokeReason::Reconciled` so the fair queue is rebuilt from durable
 state. Queue reconciliation rebuilds the in-memory fair queue from
@@ -354,7 +354,7 @@ durable queued jobs. Schedule occurrence uniqueness is enforced by
 to `ScheduleStore`, while standalone compatibility task loops remain
 explicitly outside daemon guarantees.
 
-### Shutdown (`scheduler.rs:1102`)
+### Shutdown (`scheduler.rs:1317`)
 
 Three shutdown modes:
 - `DrainQueuedUntil(Duration)` — let admitted attempts finish, cancel

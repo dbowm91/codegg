@@ -50,6 +50,7 @@ Lower rank wins. Project-local always beats global.
 | 10 | `AgentsProject` | `<project>/.agents/skills/<name>/SKILL.md` |
 | 20 | `OpenCodeProject` | `<project>/.opencode/skills/<name>/SKILL.md` |
 | 30 | `ClaudeProject` | `<project>/.claude/skills/<name>/SKILL.md` |
+| 35 | `Plugin` | Plugin contribution (project-native sources outrank) |
 | 40 | `CodeGGGlobal` | `<config>/codegg/skills/<name>/SKILL.md` |
 | 50 | `AgentsGlobal` | `~/.agents/skills/<name>/SKILL.md` |
 | 60 | `OpenCodeGlobal` | `~/.config/opencode/skills/<name>/SKILL.md` |
@@ -119,7 +120,7 @@ pub struct AssetRegistry {
 Methods: `build`, `get`, `list`, `find_matching`, `build_system_prompt`,
 `activate`, `resource_handle`.
 
-### EffectiveSkill (candidate.rs:32)
+### EffectiveSkill (candidate.rs:33)
 
 ```rust
 pub struct EffectiveSkill {
@@ -140,10 +141,10 @@ pub struct EffectiveSkill {
 
 ### SourceKind (source.rs:6)
 
-Enum with 9 variants. Methods: `precedence_rank`, `is_project_local`,
+Enum with 10 variants. Methods: `precedence_rank`, `is_project_local`,
 `is_global`, `directory_name`, `is_foreign`.
 
-### AssetDiscoveryConfig (source.rs:84)
+### AssetDiscoveryConfig (source.rs:91)
 
 ```rust
 pub struct AssetDiscoveryConfig {

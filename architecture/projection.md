@@ -33,7 +33,7 @@ journal event as a provider turn or tool invocation.
 | `crates/codegg-protocol/src/projection/caps.rs` | Version/capability negotiation |
 | `crates/codegg-protocol/src/projection/limits.rs` | Payload and collection bounds |
 | `crates/codegg-protocol/src/projection/dto.rs` | Bounded projection DTOs |
-| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (45 variants) |
+| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (46 variants) |
 | `crates/codegg-protocol/src/projection/snapshot.rs` | `SessionProjectionSnapshot` |
 | `crates/codegg-protocol/src/projection/reducer.rs` | Deterministic canonical reducer |
 | `crates/codegg-protocol/src/projection/adapters.rs` | Bridges `CoreResponse`/`CoreEvent` into projection |
@@ -135,7 +135,7 @@ Lifecycle invariants:
 snapshot helpers (`upsert_secondary`, `push_recent_turn`). External
 implementations MUST go through these helpers.
 
-### ProjectionEvent (39 variants)
+### ProjectionEvent (46 variants)
 
 | Family | Variants |
 |--------|----------|
@@ -298,23 +298,23 @@ second projection protocol.
 
 | Type | File:line | Purpose |
 |------|-----------|---------|
-| `ProjectionCapabilities` | `caps.rs:39` | Version negotiation |
-| `SessionProjectionSnapshot` | `snapshot.rs:26` | Bounded session snapshot |
+| `ProjectionCapabilities` | `caps.rs:40` | Version negotiation |
+| `SessionProjectionSnapshot` | `snapshot.rs:29` | Bounded session snapshot |
 | `ProjectionReducer` | `reducer.rs:236` | Canonical pure reducer |
 | `ReducerEventInput` | `reducer.rs:143` | Lightweight reducer input |
 | `ApplyOutcome` | `reducer.rs:112` | Reducer application result |
-| `ProjectionEvent` | `event.rs:127` | 39-variant event enum |
-| `ProjectionEnvelope` | `event.rs:53` | Event envelope with metadata |
+| `ProjectionEvent` | `event.rs:128` | 46-variant event enum |
+| `ProjectionEnvelope` | `event.rs:54` | Event envelope with metadata |
 | `ProjectionStreamScope` | `event.rs:38` | Session/Project/Workspace/Daemon |
-| `ProjectionClientController` | `controller.rs` | Frontend state machine |
+| `ProjectionClientController` | `controller.rs:219` | Frontend state machine |
 | `HeadlessProjectionConsumer` | `consumer.rs` | Non-TUI snapshot/replay/resume/artifact consumer |
-| `ProjectionMode` | `controller.rs:82` | ProjectionPrimary/RawCompat/Unsupported |
+| `ProjectionMode` | `controller.rs:83` | ProjectionPrimary/RawCompat/Unsupported |
 | `ProjectionStreamId` | `replay.rs:41` | Opaque stream identifier |
 | `ProjectionCursor` | `replay.rs:106` | Client cursor for resume |
 | `ProjectionReplayBatch` | `replay.rs:161` | Replay event batch |
-| `ToolProgramSummary` | `dto.rs:583` | Background tool program state |
-| `ToolProgramDetail` | `dto.rs:708` | Full tool program inspection |
-| `ToolProgramCallPage` | `dto.rs:679` | Paginated call history |
+| `ToolProgramSummary` | `dto.rs:822` | Background tool program state |
+| `ToolProgramDetail` | `dto.rs:947` | Full tool program inspection |
+| `ToolProgramCallPage` | `dto.rs:918` | Paginated call history |
 | `VisibilityClass` | `dto.rs:26` | Public/ClientLocal/Internal/Sensitive |
 
 ## Configuration Surface

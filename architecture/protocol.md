@@ -70,7 +70,7 @@ Version history:
 
 ## Key Types & APIs
 
-### RequestEnvelope (`core.rs:30`)
+### RequestEnvelope (`core.rs:31`)
 
 ```rust
 pub struct RequestEnvelope<T> {
@@ -80,7 +80,7 @@ pub struct RequestEnvelope<T> {
 }
 ```
 
-### EventEnvelope (`core.rs:125`)
+### EventEnvelope (`core.rs:531`)
 
 ```rust
 pub struct EventEnvelope<T> {
@@ -93,14 +93,14 @@ pub struct EventEnvelope<T> {
 }
 ```
 
-### CoreRequest (`core.rs:524`)
+### CoreRequest (`core.rs:1132`)
 
-Tagged enum with ~100 variants. Major groups:
+Tagged enum with ~166 variants. Major groups:
 
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
 
-**Connection Lifecycle (~20)**: `EggpoolConnectionCreate`,
+**Connection Lifecycle (~18)**: `EggpoolConnectionCreate`,
 `EggpoolConnectionCancel`, `EggpoolConnectionStatus`,
 `ProviderConnectionList`, `ProviderConnectionModels`,
 `ConnectionRotateBegin`, `ConnectionRotateSecretStage`,
@@ -137,7 +137,7 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 
 **Worktree (1)**: `WorktreeList`
 
-**Workspace (5)**: `WorkspaceRegister`, `WorkspaceList`,
+**Workspace (6)**: `WorkspaceRegister`, `WorkspaceList`,
 `WorkspaceArchive`, `WorkspaceSnapshotRequest`,
 `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`
 
@@ -158,7 +158,7 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 
 **Notification (2)**: `NotificationSpeak`, `NotificationStop`
 
-**Durable Jobs (10)**: `JobSubmit`, `JobWait`, `JobGet`, `JobList`,
+**Durable Jobs (9)**: `JobSubmit`, `JobWait`, `JobGet`, `JobList`,
 `JobCancel`, `JobRetry`, `JobAttempts`, `SchedulerSnapshot`,
 `JobRecoveryReport`
 
@@ -173,9 +173,9 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 `ToolProgramCallPage`, `ToolProgramNotificationReinject`,
 `ToolProgramRecoveryDebugInspect`
 
-### CoreResponse (`core.rs:137`)
+### CoreResponse (`core.rs:542`)
 
-Tagged enum with ~60 variants. Major groups:
+Tagged enum with ~110 variants. Major groups:
 
 **Connection Responses**: `EggpoolConnectionCreated`,
 `EggpoolConnectionStatus`, `EggpoolConnectionCancelled`,
@@ -230,11 +230,11 @@ interruption, and never treats raw compatibility events as projection state.
 `SessionSelectionUpdated`, `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`, `JobRecoveryReport`
 
-### CoreEvent (`core.rs:1058`)
+### CoreEvent (`core.rs:1953`)
 
-Tagged enum with ~40 variants. Major groups:
+Tagged enum with ~76 variants. Major groups:
 
-**Snapshot (5)**: `SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`,
+**Snapshot (6)**: `SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`,
 `AssetRefreshCompleted`, `ConnectionRotated`, `ConnectionStateChanged`
 
 **Project (4)**: `ProjectRegistered`, `ProjectArchived`,
@@ -267,7 +267,7 @@ Tagged enum with ~40 variants. Major groups:
 
 ### TuiMessage (`tui.rs:19`)
 
-Tagged enum with ~39 variants. Major groups:
+Tagged enum with ~41 variants. Major groups:
 
 **Client-to-Server (3)**: `Input`, `KeyDown`, `MouseClick`
 
@@ -280,7 +280,7 @@ Tagged enum with ~39 variants. Major groups:
 `SessionEnded`, `ToolCallStarted`, `ToolResult`, `PluginUiEffect`,
 `Error`, `StateSnapshot`
 
-**Projection (17)**: `ProjectionCapabilities`,
+**Projection (19)**: `ProjectionCapabilities`,
 `ProjectionCapabilitiesAck`, `ProjectionSubscribe`,
 `ProjectionSnapshot`, `ProjectionReplay`, `ProjectionResync`,
 `ProjectionAck`, `ProjectionAckResult`, `ProjectionEvent`,

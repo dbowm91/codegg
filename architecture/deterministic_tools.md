@@ -95,7 +95,7 @@ Generic wrapper mapping a Codegg tool name to an eggsact tool name.
 Implements `Tool` trait. Both `execute()` and `execute_structured()`
 delegate to `EggsactRuntime::call_json()`.
 
-### build_eggsact_tools (`src/tool/deterministic.rs:106-288`)
+### build_eggsact_tools (`src/tool/deterministic.rs:106-289`)
 
 ```rust
 pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>)

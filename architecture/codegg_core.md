@@ -17,8 +17,15 @@ discovery). It is designed to be a low-coupling foundation that root
 
 | Module | Purpose |
 |--------|---------|
+| `agent_convergence` | Agent convergence orchestration and cycle management |
+| `agent_run` | Agent run lifecycle and state |
+| `agent_run_control` | Agent run control signals and cancellation |
+| `agent_run_group` | Agent run group coordination |
+| `audit` | Audit logging and event recording |
+| `audit_instrumentation` | Audit instrumentation hooks |
+| `authorization` | Authorization policy and operation descriptors |
 | `bus` | Event bus (GlobalEventBus), PermissionRegistry, QuestionRegistry |
-| `presence` | Ephemeral project-scoped presence leases (M001, task-free, bounded) |
+| `collaboration` | Multi-user collaboration presence and chat |
 | `context` | Context packing, projection, and compaction utilities |
 | `error` | Central error taxonomy (AppError, ToolError, etc.) |
 | `goal` | Long-horizon goal runtime, budget enforcement |
@@ -27,6 +34,7 @@ discovery). It is designed to be a low-coupling foundation that root
 | `memory` | Persistent memory patterns |
 | `migration` | Legacy project database migration (idempotent) |
 | `model_profile` | Declarative adapter resolution, model profiles, task state policy |
+| `presence` | Ephemeral project-scoped presence leases (M001, task-free, bounded) |
 | `project_catalog` | Project catalog management and invariants |
 | `project_discovery` | Bounded project discovery logic |
 | `project_discovery_service` | Project discovery service layer |
@@ -36,15 +44,19 @@ discovery). It is designed to be a low-coupling foundation that root
 | `provider_connections` | Provider connection lifecycle and tombstone compat |
 | `repository_lineage` | Repository lineage tracking |
 | `resilience` | Circuit breaker re-export |
+| `run_result` | Agent run result types and persistence |
 | `run_store` | Run store for persisting agent run artifacts |
 | `session` | Session storage, schema, checkpoint |
 | `snapshot` | File state capture and diff |
 | `storage` | SQLite initialization, preferences, daemon catalog |
 | `task_state` | Todo state management and projections |
+| `team` | Team membership and role management |
 | `tool_program` | Restricted-Python frontend for Tool Programs (IR, parser) |
+| `transport_auth` | Transport-level authentication types |
 | `workspace` | Workspace identity, registry, path policy, execution context |
 | `workspace_services` | Per-workspace service bundle (RunStore, PathPolicy, etc.) |
 | `worktree` | Git worktree operations |
+| `worktree_service` | Worktree service layer |
 
 ## Dependencies
 

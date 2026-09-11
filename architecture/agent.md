@@ -211,7 +211,7 @@ internal retry of one accepted call remains idempotent.
 
 ## Key Types & APIs
 
-### Agent (`src/agent/mod.rs:100`)
+### Agent (`src/agent/definition.rs:78`)
 
 ```rust
 pub struct Agent {
@@ -236,7 +236,7 @@ pub struct Agent {
 }
 ```
 
-### AgentRuntimeKind (`src/agent/mod.rs:51`)
+### AgentRuntimeKind (`src/agent/definition.rs:30`)
 
 ```rust
 pub enum AgentRuntimeKind {
@@ -249,7 +249,7 @@ pub enum AgentRuntimeKind {
 }
 ```
 
-### AgentLoop (`src/agent/loop.rs:403`)
+### AgentLoop (`src/agent/loop.rs:86`)
 
 The loop has 32 direct fields. Service and policy handles are grouped in
 `AgentLoopServices` so the coordinator cannot accidentally initialize one
@@ -288,14 +288,14 @@ pub struct ExecutionLimits {
 }
 ```
 
-### ResolvedAgentExecutionProfile (`src/agent/mod.rs:436`)
+### ResolvedAgentExecutionProfile (`src/agent/definition.rs` — re-exported via `mod.rs`)
 
 Fully resolved execution profile for subagent tasks. Bundles agent,
 runtime kind, resolved model, and effective permissions.
 `resolve()` applies model inheritance: agent.model → fallback_model →
 parent model → config model → emergency default.
 
-### EMERGENCY_DEFAULT_MODEL (`src/agent/mod.rs:402`)
+### EMERGENCY_DEFAULT_MODEL (`src/agent/definition.rs:379`)
 
 ```rust
 pub const EMERGENCY_DEFAULT_MODEL: &str = "openai/gpt-4o";
@@ -383,7 +383,7 @@ read/control compatibility surfaces for older clients and standalone mode.
 New daemon clients should prefer typed run IDs, `wait`/group joins, and push
 notifications.
 
-### Model Aliases (`src/agent/mod.rs:397`)
+### Model Aliases (`src/agent/definition.rs:374`)
 
 ```rust
 pub const MODEL_ALIAS_FRONTIER: &str = "tier.frontier";
@@ -408,7 +408,7 @@ pub struct SubAgentRequest {
 }
 ```
 
-### SubAgentReport (`src/agent/worker.rs:30`)
+### SubAgentReport (`src/agent/worker.rs:31`)
 
 ```rust
 pub struct SubAgentReport {

@@ -11,13 +11,13 @@ but is not wired to the CLI.
 ## Where It Lives
 
 - `src/upgrade/mod.rs` — version check and upgrade logic
-- `src/main.rs:1016-1035` — `cmd_upgrade()` CLI handler
+- `src/main.rs:1015` — `cmd_upgrade()` CLI handler
 
 ## How It Works
 
 ### CLI Command (`codegg upgrade`)
 
-`cmd_upgrade()` in `src/main.rs:1016` calls `upgrade::check_for_updates()`,
+`cmd_upgrade()` in `src/main.rs:1015` calls `upgrade::check_for_updates()`,
 compares with `CARGO_PKG_VERSION`, and prints manual install instructions:
 
 ```
@@ -47,7 +47,7 @@ with `INSTALL_VERSION=v{latest}` in a sanitized environment
 
 ## Key Types & APIs
 
-### VersionInfo (`src/upgrade/mod.rs:7`)
+### VersionInfo (`src/upgrade/mod.rs:8`)
 
 ```rust
 pub struct VersionInfo {
@@ -77,8 +77,8 @@ pub enum AutoupdateConfig {
 ```
 
 Default: `Bool(true)`. Defined in `codegg-config` schema
-(`crates/codegg-config/src/schema.rs:192`), loaded into
-`Config.autoupdate` (`schema.rs:217`). **Not wired to the
+(`crates/codegg-config/src/schema.rs:204`), loaded into
+`Config.autoupdate` (`schema.rs:229`). **Not wired to the
 upgrade module** — the config is loaded and stored but never
 read by `check_for_updates()` or `upgrade()`.
 

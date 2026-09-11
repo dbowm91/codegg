@@ -18,7 +18,7 @@ fallback.
 | `src/context/compaction.rs` | `ContextTracker`, capacity policy, all compaction strategies, hybrid engine, invariant validation, typed outcomes |
 | `src/agent/compaction.rs` | Compatibility re-export only; no production implementation |
 | `src/agent/context_frame.rs` | `ContextFrame`, `ContextLedgerState` — post-compaction context snapshot |
-| `src/agent/loop.rs:1838` | `compact_if_needed()` — integration point called each turn |
+| `src/agent/context_runtime.rs` | `compact_if_needed()` — integration point called each turn |
 | `src/config/schema.rs` | `CompactionConfig`, `CompactionModeConfig`, `CompactionPolicyConfig` |
 | `tests/compaction.rs` | Module-level integration tests |
 
@@ -248,7 +248,7 @@ multipliers handled by the tokenizer crate).
 
 ## Integration
 
-Called from `AgentLoop::compact_if_needed()` (`src/agent/loop.rs:1838`).
+Called from `AgentLoop::compact_if_needed()` (`src/agent/context_runtime.rs:620`).
 The flow is:
 
 1. `detect_overflow()` → if over limit, `prune_tool_outputs()` runs first

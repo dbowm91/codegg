@@ -201,13 +201,13 @@ then re-run recover: continue").
 | `GitRiskClass` (11 variants) | `risk.rs` | Risk classification per operation |
 | `RiskSet` | `risk.rs` | `is_destructive()`, `requires_network()` |
 | `parse_git_argv` | `parser.rs` | Pre-tokenized argv → `GitOperation` |
-| `render_argv` | `render_argv.rs` | `GitOperation` → `Vec<String>` (canonical) |
+| `render_argv` | `render.rs` | `GitOperation` → `Vec<String>` (canonical) |
 | `RepoRoot`, `RepoPath`, `Pathspec` | `path.rs` | Path safety types |
 | `BranchName`, `RefName`, `RemoteName`, `ObjectId`, `RevisionExpr` | `ref_name.rs` | Ref safety types |
 | `RedactedUrl` | `sensitive.rs` | Credential-hiding URL wrapper; `expose_secret()` only at `render_argv` boundary |
 | `AuditSafeArgv` | `sensitive.rs` | `RerunDescriptor.argv` type — always sanitized |
-| `ALLOWED_ENV_VARS` (21 entries) | `process_policy.rs` | Canonical allowlist for local git subprocesses |
-| `ALWAYS_STRIPPED_ENV_VARS` (28 entries) | `process_policy.rs` | Hard-deny set — always removed before launch |
+| `ALLOWED_ENV_VARS` (21 entries) | `process_policy.rs` (re-export from `egggit::process`) | Canonical allowlist for local git subprocesses |
+| `ALWAYS_STRIPPED_ENV_VARS` (28 entries) | `process_policy.rs` (re-export from `egggit::process`) | Hard-deny set — always removed before launch |
 
 ### egggit (`crates/egggit/`)
 
@@ -226,15 +226,15 @@ then re-run recover: continue").
 
 | Type | File | Purpose |
 |------|------|---------|
-| `GitExecutionService` | `git_service.rs:229` | Unified read+raw executor |
-| `GitPayload` (12 variants) | `git_service.rs:39` | Structured read payloads |
-| `GitMutationExecutor` | `git_mutations.rs:703` | Mutation executor with snapshot/delta |
+| `GitExecutionService` | `git_service.rs:232` | Unified read+raw executor |
+| `GitPayload` (13 variants) | `git_service.rs:42` | Structured read payloads |
+| `GitMutationExecutor` | `git_mutations.rs:471` | Mutation executor with snapshot/delta |
 | `GitEnvPolicy` | `git_mutations.rs:51` | `apply()` (async) / `apply_sync()` (sync) |
-| `RepoSnapshot` | `git_mutations.rs:246` | Pre/post state capture |
-| `StateDelta` | `git_mutations.rs:278` | Diff between snapshots |
-| `MutationOutcome` (5 variants) | `git_mutations.rs:324` | Completed/NoOp/FastForward/Conflict/Rejected |
-| `MutationResult` | `git_mutations.rs:352` | Full mutation record |
-| `GitMutationError` (7 variants) | `git_mutations.rs:452` | Detailed error with `ExecutionContext` |
+| `RepoSnapshot` | `codegg-git/src/workflow.rs:15` | Pre/post state capture |
+| `StateDelta` | `codegg-git/src/workflow.rs:30` | Diff between snapshots |
+| `MutationOutcome` (5 variants) | `codegg-git/src/workflow.rs:64` | Completed/NoOp/FastForward/Conflict/Rejected |
+| `MutationResult` | `codegg-git/src/workflow.rs:86` | Full mutation record |
+| `GitMutationError` (7 variants) | `git_mutations.rs:219` | Detailed error with `ExecutionContext` |
 | `NetworkEnvPolicy` | `git_network_ops.rs:44` | Extends base env with network vars |
 | `PushForce` (3 variants) | `git_network_ops.rs:207` | Normal/ForceWithLease/Force |
 | `PushRequest` | `git_network_ops.rs:248` | Push parameters |
@@ -269,8 +269,10 @@ action regardless of routing mode.
    `GIT_COMMITTER_*`, `HTTP(S)_PROXY`, `http(s)_proxy`, `NO_PROXY`,
    `no_proxy`, `GIT_TRACE`, `GIT_TRACE_PACKET`, `GIT_CURL_VERBOSE`).
    Re-strips `ALWAYS_STRIPPED_ENV_VARS` as defense-in-depth.
-3. Canonical source of truth: `crates/codegg-git/src/process_policy.rs`.
-   Both root crate and `codegg-core::worktree` consume the same lists.
+3. Canonical source of truth: `crates/egggit/src/process.rs`.
+   `codegg-git/src/process_policy.rs` is a re-export shim for
+   compatibility. Both root crate and `codegg-core::worktree` consume
+   the same lists.
 
 ## Invariants & Gotchas
 
@@ -338,16 +340,16 @@ action regardless of routing mode.
     display cap, and disabled program-call cache. See
     `architecture/tool_programs.md` (Expansion M003).
 
-12. **RunStore audit-safe rerun argv.** `RerunDescriptor.argv` is
+13. **RunStore audit-safe rerun argv.** `RerunDescriptor.argv` is
     `Option<AuditSafeArgv>` — always sanitized via URL sanitizer. Raw URL
     reaches Git only ephemerally during execution.
 
-13. **No editor/spawn injection.** `GIT_EDITOR=true`,
+14. **No editor/spawn injection.** `GIT_EDITOR=true`,
     `GIT_SEQUENCE_EDITOR=true`, `EDITOR`/`VISUAL` stripped,
     `GIT_ASKPASS`, `GIT_SSH_COMMAND`, `GIT_PROXY_COMMAND`, all
     `GIT_CONFIG_*` injection vectors stripped.
 
-14. **Recovery not auto-resolved.** Conflicts are presented as typed
+15. **Recovery not auto-resolved.** Conflicts are presented as typed
     data. The agent must edit files, `git add`, then `recover: continue`.
 
 ## Testing

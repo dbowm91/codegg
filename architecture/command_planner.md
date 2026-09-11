@@ -9,7 +9,7 @@ Transform a `CommandIntent` into a `CommandPlan` that specifies the execution ba
 ## Where It Lives
 
 - `src/command_intent/plan.rs` — real logic (all types and functions)
-- `src/command_planner.rs` — re-export shim (5 lines)
+- `src/command_planner.rs` — re-export shim (6 lines)
 
 ## How It Works
 
@@ -158,7 +158,7 @@ splitting. `RawShell` is selected only by the classifier's explicit shell route.
 ### `validate_for_active_routing()`
 
 Validates a `CommandPlan` before active routing dispatch. All 7 checks must
-pass (defined in `plan.rs:431`):
+pass (defined in `plan.rs:535`):
 
 1. **SimpleArgv shape** — `intent.parsed_argv` must be `Some`
 2. **High confidence** — `intent.confidence` must be `High`

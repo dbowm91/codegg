@@ -139,7 +139,7 @@ authorized worktree inspection APIs.
 
 ## Key Types & APIs
 
-### Worktree (codegg-core:16)
+### Worktree (codegg-core:15)
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Worktree {
@@ -152,7 +152,7 @@ pub struct Worktree {
 
 Note: `is_locked` and `is_main` are **not implemented**.
 
-### WorktreeInfo (egggit:5)
+### WorktreeInfo (egggit:6)
 Internal type in egggit. Converted to legacy `Worktree` via
 `into_legacy()` at codegg-core:24.
 
@@ -160,14 +160,14 @@ Internal type in egggit. Converted to legacy `Worktree` via
 
 | Function | Line | Signature |
 |----------|------|-----------|
-| `list_worktrees` | :33 | `async fn(git_root: &Path) -> Result<Vec<Worktree>, AppError>` |
-| `create_worktree` | :40 | `fn(git_root, path, branch, create_branch) -> Result<(), AppError>` |
+| `list_worktrees` | :31 | `async fn(git_root: &Path) -> Result<Vec<Worktree>, AppError>` |
+| `create_worktree` | :38 | `fn(git_root, path, branch, create_branch) -> Result<(), AppError>` |
 | `create_worktree_at` | — | `fn(git_root, path, branch, create_branch, base) -> Result<(), AppError>` |
-| `remove_worktree` | :68 | `fn(git_root, path, force) -> Result<(), AppError>` |
+| `remove_worktree` | :83 | `fn(git_root, path, force) -> Result<(), AppError>` |
 | `find_git_root` | :120 | `fn(start: &Path) -> Option<PathBuf>` |
 | `is_git_file` | :124 | `fn(git_path: &Path) -> bool` |
 | `is_git_worktree` | :128 | `fn(dir: &Path) -> bool` |
-| `hardened_git_command` | :98 | `fn(args, git_root) -> Command` (private) |
+| `hardened_git_command` | :113 | `fn(args, git_root) -> Command` (private) |
 
 ### Policy re-exports (codegg-core:11-14)
 ```rust

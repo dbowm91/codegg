@@ -19,7 +19,7 @@ calculate the context budget.
 
 | Path | Owner | Caller | Provider interaction | Persistence | Mode |
 |---|---|---|---|---|---|
-| Context capacity and compaction trigger | `context::compaction::needs_context_compaction` and `compact_context` | `AgentLoop::compact_if_needed` | None for the decision; provider is passed only to the canonical engine | None; caller retains history | synchronous decision, asynchronous execution |
+| Context capacity and compaction trigger | `context::compaction::needs_context_compaction` and `compact_context` | `AgentLoop::compact_if_needed` (in `agent::context_runtime`) | None for the decision; provider is passed only to the canonical engine | None; caller retains history | synchronous decision, asynchronous execution |
 | Legacy truncate/summarize/drop behavior | `context::compaction` | `compact_context` | Optional summarizer call with the owning session context | None | asynchronous when a provider is used |
 | Hybrid/programmatic evidence and invariant fallback | `context::compaction::compact_with_policy` | `compact_context` | Optional semantic checkpoint with the owning session context | No transcript rewrite or compaction metadata store | asynchronous |
 | Context plan and provider message projection | `context::plan::ContextPlan` | AgentLoop before provider calls | No direct provider call | None | synchronous |

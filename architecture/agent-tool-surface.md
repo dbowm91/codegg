@@ -15,7 +15,7 @@ prompt and schema construction.
 |------|------|
 | `src/agent/tool_surface.rs` | `ResolvedToolSurface`, `Capability`, `AgentCapabilitySet`, resolver logic |
 | `src/agent/policy.rs` | `ToolExposureMode`, `ExecutionPolicy` — drives which tools enter the surface |
-| `src/agent/loop.rs` | `apply_tool_exposure_filter()` — applies mode + disabled_tools (palettes owned by disclosure) |
+| `src/agent/request_preparation.rs` | `apply_tool_exposure_filter()` — applies mode + disabled_tools (palettes owned by disclosure) |
 | `src/tool/disclosure.rs` | **Canonical disclosure source (M002)**: `ToolDisclosure`, `CORE/CURATED/MINIMAL/PLAN` palettes, role overrides |
 | `src/tool/mod.rs` | `ToolRegistry` — canonical tool definitions |
 | `src/permission/mod.rs` | `tool_category_for_name()` — maps tool names to categories |
@@ -161,7 +161,7 @@ pub struct ResolvedTool {
 }
 ```
 
-### Capability (`src/agent/tool_surface.rs:14`)
+### Capability (`src/agent/tool_surface.rs:15`)
 
 ```rust
 pub enum Capability {

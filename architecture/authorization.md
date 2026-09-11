@@ -170,9 +170,9 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (153 native operations; M004 adds `audit_capabilities`,
+rendering (138 native operations; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
-audit store contract; collaboration M001 adds the twelve `chat_*`
+audit store contract; collaboration M001 adds fourteen `chat_*`
 operations below, all `project.chat`; M003 adds three `chat_action_*`
 rows on the same gate):
 

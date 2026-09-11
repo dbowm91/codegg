@@ -46,10 +46,10 @@ in `src/lib.rs`.
 
 Two entry points exist:
 
-**`register_builtin(registry)`** (`provider_core.rs:432`) — registers 15
+**`register_builtin(registry)`** (`provider_core.rs:443`) — registers 15
 providers, each gated on its environment variable. No config dependency.
 
-**`register_builtin_with_config(registry, config)`** (`provider_core.rs:770`)
+**`register_builtin_with_config(registry, config)`** (`provider_core.rs:844`)
 — the primary production path. Registers 17 providers by checking config
 first, then falling back to env vars per-provider. Uses three helper
 functions with a single credential resolution path, each wired to an
@@ -81,7 +81,7 @@ matching providers are skipped.
 ### Credential Resolution
 
 `resolve_provider_credential(provider_id, cfg, env_var, store)`
-(`provider_core.rs:506`) is the single resolution path. It builds a
+(`provider_core.rs:579`) is the single resolution path. It builds a
 `ResolverContext` with `capability = credential_capability_for(provider_id)`
 and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 `ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
@@ -117,7 +117,7 @@ Operator flow: connect -> select -> rotate -> refresh -> disable -> delete
 
 ## Key Types & APIs
 
-### Provider Trait (`provider_core.rs:50`)
+### Provider Trait (`provider_core.rs:51`)
 
 ```rust
 #[async_trait]
@@ -133,14 +133,14 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-### ProviderCapabilities (`provider_core.rs:94`)
+### ProviderCapabilities (`provider_core.rs:96`)
 
 Per-provider capability flags for tool deferral, request limits, and hosted
 programmatic tool calling. `for_provider(id)` returns capabilities for
 anthropic (defer loading, tool references) and openai (full Responses API,
 hosted programs, nested calls). Others default to no special capabilities.
 
-### ChatRequest (`provider_core.rs:172`)
+### ChatRequest (`provider_core.rs:183`)
 
 ```rust
 pub struct ChatRequest {
@@ -179,22 +179,22 @@ run-scoped value, and standalone operations create one invocation-scoped
 value at their boundary. Providers consume this context but never generate
 or persist it.
 
-### Message (`provider_core.rs:186`)
+### Message (`provider_core.rs:199`)
 
 Tagged enum (`#[serde(tag = "role")]`): `System`, `User` (Vec<ContentPart>),
 `Assistant` (Vec<ContentPart> + tool_calls), `Tool` (tool_call_id + content).
 
-### ContentPart (`provider_core.rs:251`)
+### ContentPart (`provider_core.rs:262`)
 
 Untagged enum: `Text { text }`, `Image { image_url }`, `Reasoning { text, visibility }`.
 `Reasoning` is `#[serde(skip)]` — never serialized on the wire. Max 256KB.
 
-### ChatEvent (`provider_core.rs:299`)
+### ChatEvent (`provider_core.rs:311`)
 
 Streaming response events: `TextDelta`, `ReasoningDelta`, `ToolCall`,
 `ToolResult`, `Finish { stop_reason, usage }`, `Error`.
 
-### ToolDefinition (`provider_core.rs:341`)
+### ToolDefinition (`provider_core.rs:353`)
 
 ```rust
 pub struct ToolDefinition {
@@ -208,7 +208,7 @@ pub struct ToolDefinition {
 Methods: `to_openai()`, `to_anthropic()` — convert to provider-specific
 wire format. Both handle `defer_loading`.
 
-### ModelInfo (`provider_core.rs:389`)
+### ModelInfo (`provider_core.rs:401`)
 
 ```rust
 pub struct ModelInfo {
@@ -223,7 +223,7 @@ pub struct ModelInfo {
 }
 ```
 
-### ProviderRegistry (`provider_core.rs:401`)
+### ProviderRegistry (`provider_core.rs:412`)
 
 ```rust
 pub struct ProviderRegistry {
@@ -232,13 +232,13 @@ pub struct ProviderRegistry {
 // new(), register(), get(), list()
 ```
 
-### ProviderCapabilities::for_provider (`provider_core.rs:130`)
+### ProviderCapabilities::for_provider (`provider_core.rs:131`)
 
 Returns provider-specific capabilities. Anthropic: defer loading +
 tool references. OpenAI: full Responses API + hosted programs +
 nested calls + 128 tools/request + python hosted language.
 
-### EventStream (`provider_core.rs:34`)
+### EventStream (`provider_core.rs:35`)
 
 ```rust
 pub type EventStream = Pin<Box<dyn Stream<Item =
@@ -406,7 +406,7 @@ adapter explicitly sets `text_tool_repair` to `hermes_xml`, `invoke_json`,
 or `raw_json_envelope`. Validates against the current tool surface and
 argument schema. Unconfigured adapters never scan assistant prose.
 
-## HTTP Client (`provider_core.rs:22`)
+## HTTP Client (`provider_core.rs:23`)
 
 ```rust
 pub fn create_http_client() -> reqwest::Client {

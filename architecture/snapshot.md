@@ -143,7 +143,7 @@ pub struct SnapshotView {
 }
 ```
 
-### SnapshotManager (`:52`)
+### SnapshotManager (`:55`)
 
 | Method | Line | Description |
 |--------|------|-------------|

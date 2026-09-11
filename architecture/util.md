@@ -77,7 +77,7 @@ Formula: `input_cost = non_cached × rate + cached × rate × discount`,
 
 `StringInterner` wraps a `DashMap<Arc<str>, Arc<str>>` for concurrent
 deduplication. `tool_interner()` returns a global `LazyLock<StringInterner>`
-used for interning tool names and identifiers in `src/tool/mod.rs:711`.
+used for interning tool names and identifiers in `src/util/interner.rs:41`.
 
 ## Key Types & APIs
 

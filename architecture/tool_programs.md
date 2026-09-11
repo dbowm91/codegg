@@ -77,21 +77,17 @@ ExecutorCompletion returned to scheduler
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `ToolProgramId` | `crates/codegg-core/src/tool_program/mod.rs` | Opaque typed program ID |
-| `ProgramCallId` | `crates/codegg-core/src/tool_program/mod.rs` | Opaque typed call ID |
-| `ToolProgramState` | `crates/codegg-core/src/tool_program/mod.rs` | Lifecycle state machine |
-| `ProgramLanguage` | `crates/codegg-core/src/tool_program/mod.rs` | `RestrictedPython` + forward-compatible unknown |
-| `ProgramSourceRef` | `crates/codegg-core/src/tool_program/store.rs` | Content-addressed immutable source reference |
-| `ProgramCapabilityManifest` | `crates/codegg-core/src/tool_program/mod.rs` | Frozen callable-tool contracts and authority digest |
-| `ProgramCheckpoint` | `crates/codegg-core/src/tool_program/mod.rs` | Deterministic interpreter position for restart |
-| `ProgramCallRecord` | `crates/codegg-core/src/tool_program/mod.rs` | Nested-call ledger entry |
-| `ProgramResult` | `crates/codegg-core/src/tool_program/interpreter.rs:228` | Terminal type, value/artifacts, failure class, budget usage |
+| `ProgramResult` | `crates/codegg-core/src/tool_program/interpreter.rs:229` | Terminal type, value/artifacts, failure class, budget usage |
 | `ProgramStatus` | `crates/codegg-core/src/tool_program/interpreter.rs:242` | `Completed` / `Failed` / `Cancelled` / `TimedOut` / `Stalled` / `Incomplete` / `Recoverable` |
+| `ProgramValue` | `crates/codegg-core/src/tool_program/mod.rs` | Serializable value type for program results |
 | `FailureClass` | `crates/codegg-core/src/tool_program/interpreter.rs:169` | 13 classes: Validation, ManifestDrift, AuthorityNarrowed, SchemaMismatch, TransientBackend, Timeout, Stall, Cancelled, Storage, ReplayDivergence, BudgetExhausted, Execution, InternalPanic |
-| `BrokerCallback` | `crates/codegg-core/src/tool_program/interpreter.rs:638` | Trait: `execute_call`, `submit_child_job`, `submit_child_job_with_checkpoint`, `heartbeat`, `call_reserved`, `call_completed`, `checkpoint` |
+| `BrokerCallback` | `crates/codegg-core/src/tool_program/interpreter.rs:675` | Trait: `execute_call`, `submit_child_job`, `submit_child_job_with_checkpoint`, `heartbeat`, `call_reserved`, `call_completed`, `checkpoint` |
+| `CallRequest` | `crates/codegg-core/src/tool_program/interpreter.rs` | Request type for broker tool calls |
+| `CallResult` | `crates/codegg-core/src/tool_program/interpreter.rs` | Result type from broker tool calls |
+| `CompletedCall` | `crates/codegg-core/src/tool_program/interpreter.rs` | Completed nested-call ledger entry |
 | `MeteredInterpreter` | `crates/codegg-core/src/tool_program/interpreter.rs` | Stack-machine evaluating verified IR with bounded budgets |
 | `RuntimeLimits` | `crates/codegg-core/src/tool_program/interpreter.rs:359` | Derived from `IrBounds` + executor timeouts |
-| `InterpreterCheckpoint` | `crates/codegg-core/src/tool_program/interpreter.rs:449` | Serializable state: PC, steps, iterations, locals, stack, pending child wait, semantic digest |
+| `InterpreterCheckpoint` | `crates/codegg-core/src/tool_program/interpreter.rs:450` | Serializable state: PC, steps, iterations, locals, stack, pending child wait, semantic digest |
 | `ProgramStore` | `crates/codegg-core/src/tool_program/store.rs:29` | Content-addressed IR store with cache key matching |
 | `ToolProgramTool` | `src/tool/tool_program.rs:79` | Model-facing tool (DirectOnly, foreground/background) |
 | `ToolProgramExecutor` | `src/scheduler/tool_program_executor.rs:119` | `JobExecutor` for `JobKind::ToolProgram` |
@@ -134,7 +130,7 @@ non-terminal state indicating transient retry-eligible failure.
 
 ## Call Ledger
 
-Each nested call gets a `ProgramCallRecord` with:
+Each nested call gets a `CompletedCall` record with:
 - Monotonic `sequence` within the program
 - Tool contract hash and normalized input hash for replay
 - State machine: Reserved -> Running -> Completed/Failed/Cancelled/TimedOut
@@ -565,7 +561,8 @@ confirmation.
 Every nested broker call verifies the `ToolAuthorityGrant` against:
 validity, integrity, workspace, caller class, effect class, session,
 permission mode, principal, path policy, manifest, contract snapshot,
-and policy revision (12 dimensions). Missing, stale, mismatched, or
+and policy revision (9 dimensions checked in `verify_grant_scope`).
+Missing, stale, mismatched, or
 tampered grants fail closed.
 
 ### Programmatic Failure Mapping

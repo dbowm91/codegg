@@ -549,7 +549,7 @@ compatibility boundary.
 
 ### Test Coverage
 
-- `turn_submit_uses_injected_runtime` (`src/core/daemon.rs:6226`) —
+- `turn_submit_uses_injected_runtime` (`src/core/daemon.rs:4489`) —
   Verifies that `TurnSubmit` delegates to the injected `TurnRuntime` rather
   than constructing one inline.
 - `request_family_routes_each_coherent_family`

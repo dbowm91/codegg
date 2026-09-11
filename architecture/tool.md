@@ -168,7 +168,7 @@ ownership.
 
 ## Tool Trait
 
-Defined in `src/tool/mod.rs:132-201`:
+Defined in `src/tool/mod.rs:136-205`:
 
 ```rust
 #[async_trait]
@@ -197,7 +197,7 @@ pub trait Tool: Send + Sync {
 
 ### ToolCategory
 
-Defined in `src/tool/mod.rs:113-130`, the category drives permission
+Defined in `src/tool/mod.rs:115-132`, the category drives permission
 gating and plan-mode filtering:
 
 ```rust
@@ -365,7 +365,7 @@ structured_data_compare, text_fingerprint.
 
 ## ToolRegistry
 
-Manages registration and lookup at `src/tool/mod.rs:212-217`:
+Manages registration and lookup at `src/tool/mod.rs:215-221`:
 
 ```rust
 pub struct ToolRegistry {
@@ -480,7 +480,7 @@ construction (`worker.rs`).
 ### execute_capture (Central Execution Path)
 
 `ToolRegistry::execute_capture(name, input, ctx)` at
-`src/tool/mod.rs:833-865` is the central execution path for native
+`src/tool/mod.rs:1036-1068` is the central execution path for native
 tools. It calls `Tool::execute_structured()` internally, populates
 a fallback `ToolProvenance::legacy(...)` for tools that do not override
 it, and records provenance via `tracing::debug!`. The returned
@@ -500,7 +500,7 @@ and callable by name for diagnostics.
 
 ## ToolCatalog
 
-Metadata management and search at `src/tool/catalog.rs:134-143`:
+Metadata management and search at `src/tool/catalog.rs:170-178`:
 
 ```rust
 pub struct ToolCatalog {

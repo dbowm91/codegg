@@ -261,15 +261,15 @@ resolved from `SearchConfig` so custom names are honored.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `SearchConfig` | `config/src/schema.rs:463` | Backend, output caps, eggsearch config |
-| `SearchBackendConfig` | `config/src/schema.rs:557` | Eggsearch / Builtin / Disabled |
-| `EggsearchConfig` | `config/src/schema.rs:568` | Server name, command, args, timeouts |
-| `ToolTimeoutKind` | `config/src/schema.rs:584` | Default / Security / Research / Batch |
-| `McpService` | `src/mcp/mod.rs:109` | MCP server registry (consumed by eggsearch adapter) |
-| `StructuredSearchResult` | `src/search_backend/mod.rs:47` | output + value + truncated |
-| `EggsearchCallResult` | `eggsearch.rs:389` | output, value, truncated (per-call) |
-| `BootstrapReport` | `src/search_backend/bootstrap.rs:275` | Startup diagnostic report |
-| `CrossProcessLockGuard` | `src/search_backend/test_support.rs:23` | Test isolation via flock |
+| `SearchConfig` | `config/src/schema.rs:516` | Backend, output caps, eggsearch config |
+| `SearchBackendConfig` | `config/src/schema.rs:610` | Eggsearch / Builtin / Disabled |
+| `EggsearchConfig` | `config/src/schema.rs:621` | Server name, command, args, timeouts |
+| `ToolTimeoutKind` | `config/src/schema.rs:637` | Default / Security / Research / Batch |
+| `McpService` | `src/mcp/mod.rs:130` | MCP server registry (consumed by eggsearch adapter) |
+| `StructuredSearchResult` | `src/search_backend/mod.rs:56` | output + value + truncated |
+| `EggsearchCallResult` | `eggsearch.rs:399` | output, value, truncated (per-call) |
+| `BootstrapReport` | `src/search_backend/bootstrap.rs:306` | Startup diagnostic report |
+| `CrossProcessLockGuard` | `src/search_backend/test_support.rs:25` | Test isolation via flock |
 
 ## Configuration Surface
 

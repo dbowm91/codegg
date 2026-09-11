@@ -11,7 +11,7 @@ backends via `CoreClient`.
 
 ## Where It Lives
 
-`src/tui/` — ~15,340 lines in `app/mod.rs` alone.
+`src/tui/` — ~13,675 lines in `app/mod.rs` alone.
 
 ## How It Works
 
@@ -363,7 +363,7 @@ async work use spawn-and-complete or fire-and-forget patterns.
 
 ## Key Types & APIs
 
-### App (`src/tui/app/mod.rs:865`)
+### App (`src/tui/app/mod.rs:222`)
 
 ```rust
 pub struct App {
@@ -402,7 +402,7 @@ pub struct App {
 
 ### State Domains (`src/tui/app/state/`)
 
-18 state modules:
+22 state modules:
 
 | Module | Purpose |
 |--------|---------|
@@ -424,6 +424,10 @@ pub struct App {
 | `restore.rs` | State restore |
 | `manifest.rs` | Manifest handling |
 | `projection_client.rs` | Projection client state |
+| `chat.rs` | Project-scoped chat projection |
+| `execution_context.rs` | Explicit project execution context |
+| `observe.rs` | Read-only session observation |
+| `presence.rs` | Collaborator presence projection |
 
 ### Durable agent-run inspection (M006)
 
@@ -608,7 +612,7 @@ pub enum DialogType {
 canonical lifecycle identity is the live component's `DialogType`; the
 `ui_state.dialog` value is only a derived compatibility mirror.
 
-### Component Trait (`src/tui/components/component.rs:110`)
+### Component Trait (`src/tui/components/component.rs:165`)
 
 ```rust
 pub trait Component: Send + Any + AsAny {
@@ -643,7 +647,7 @@ push/pop preserves the underlying modal's selection. `Tab` and `Shift-Tab`
 wrap against the current component count, including zero and one-control
 dialogs.
 
-### TuiMsg (`src/tui/app/types.rs:86`)
+### TuiMsg (`src/tui/app/types.rs:97`)
 
 Internal messages from TUI to App. Key variants: `SubmitPrompt`,
 `NavigateUp`/`Down`/`Left`/`Right`, `CycleAgent`, `OpenModelDialog`,
@@ -919,7 +923,7 @@ action.
 - **Git sidebar is cached, not live**: Render reads from
   `session_state.git_sidebar`; never shells out to git.
 - **Remote TUI is event/state-driven**: `RenderFrame` is unsupported.
-- **State domains are 18 modules**: Not the 6 listed in the doc header;
+- **State domains are 22 modules**: Not the 6 listed in the doc header;
   the domain model expanded across multiple milestones.
 - **Async command stale-completion tests**: Each guarded handler has a
   stale-completion test in `src/tui/mod.rs::async_cmd_tests`.
@@ -927,7 +931,7 @@ action.
 ## Testing
 
 ```bash
-cargo test --test tui_render      # 97 render regression tests
+cargo test --test tui_render      # 99 render regression tests
 cargo test --test tui              # integration tests
 ```
 

@@ -10,7 +10,7 @@ JSON or plain text to stdout.
 
 ## Where It Lives
 
-`src/exec.rs` (single file, ~298 lines)
+`src/exec.rs` (single file, ~311 lines)
 
 ## How It Works
 

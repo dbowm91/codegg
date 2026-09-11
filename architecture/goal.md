@@ -83,7 +83,7 @@ surviving session restarts.
 
 ## Key Types & APIs
 
-### Goal (`crates/codegg-core/src/goal/model.rs:51`)
+### Goal (`crates/codegg-core/src/goal/model.rs:52`)
 
 ```rust
 pub struct Goal {
@@ -110,15 +110,15 @@ pub struct Goal {
 }
 ```
 
-### GoalStatus (`:6`)
+### GoalStatus (`:8`)
 
 `Active`, `Paused`, `AwaitingUser`, `BudgetLimited`, `Complete`,
 `Failed`, `Cancelled`.
 
-`is_terminal()` (:112) returns true for `Complete | Failed | Cancelled |
-BudgetLimited`. `is_active()` (:123) returns true only for `Active`.
+`is_terminal()` (:115) returns true for `Complete | Failed | Cancelled |
+BudgetLimited`. `is_active()` (:126) returns true only for `Active`.
 
-### GoalBudget (`:18`)
+### GoalBudget (`:19`)
 
 ```rust
 pub struct GoalBudget {
@@ -132,7 +132,7 @@ pub struct GoalBudget {
 All axes are optional. Budget is checked in priority order: tokens →
 tool calls → turns → wall-clock.
 
-### GoalUsage (`:34`)
+### GoalUsage (`:35`)
 
 ```rust
 pub struct GoalUsage {
@@ -144,7 +144,7 @@ pub struct GoalUsage {
 }
 ```
 
-### GoalProgressUpdate (`:78`)
+### GoalProgressUpdate (`:82`)
 
 ```rust
 pub struct GoalProgressUpdate {
@@ -157,7 +157,7 @@ pub struct GoalProgressUpdate {
 }
 ```
 
-### CompletionRequest (`:88`)
+### CompletionRequest (`:92`)
 
 ```rust
 pub struct CompletionRequest {
@@ -202,17 +202,17 @@ SQLite-backed. Key methods:
 
 | Method | Line | Description |
 |--------|------|-------------|
-| `create_active(...)` | :157 | Pause existing, insert new Active goal |
-| `active_for_session(session_id)` | :209 | Fetch active/awaiting/budget-limited goal |
-| `get(id)` | :222 | Fetch by ID |
-| `update_status(id, status)` | :231 | Transition non-certification status |
+| `create_active(...)` | :160 | Pause existing, insert new Active goal |
+| `active_for_session(session_id)` | :212 | Fetch active/awaiting/budget-limited goal |
+| `get(id)` | :225 | Fetch by ID |
+| `update_status(id, status)` | :234 | Transition non-certification status |
 | `complete_if_active(id, revision)` | — | Atomic host-accepted terminal transition |
 | `clear_active_for_session(sid)` | :261 | Cancel all active goals for session |
-| `update_progress(id, update)` | :278 | Advance phase/next-action/open_questions |
-| `increment_usage(...)` | :363 | Atomic usage advance + budget check |
-| `enforce_budget(id)` | :424 | Check budget without advancing |
-| `set_budget(id, budget)` | :440 | Replace budget, revive if BudgetLimited |
-| `latest_paused_for_session(sid)` | :469 | Fetch latest paused goal |
+| `update_progress(id, update)` | :333 | Advance phase/next-action/open_questions |
+| `increment_usage(...)` | :451 | Atomic usage advance + budget check |
+| `enforce_budget(id)` | :514 | Check budget without advancing |
+| `set_budget(id, budget)` | :530 | Replace budget, revive if BudgetLimited |
+| `latest_paused_for_session(sid)` | :560 | Fetch latest paused goal |
 
 ### GoalUsageUpdate (`store.rs:11`)
 
@@ -232,8 +232,8 @@ pub struct GoalUsageUpdate {
 | Tool | Struct | Description |
 |------|--------|-------------|
 | `goal_get` | `GoalGetTool` (:9) | Get current active goal |
-| `goal_update_progress` | `GoalUpdateProgressTool` (:71) | Update progress |
-| `goal_request_completion` | `GoalRequestCompletionTool` (:187) | Request completion with evidence |
+| `goal_update_progress` | `GoalUpdateProgressTool` (:72) | Update progress |
+| `goal_request_completion` | `GoalRequestCompletionTool` (:188) | Request completion with evidence |
 
 **Note**: There is no `goal_set` tool. Goals are created via TUI
 `/goal set` commands which call `GoalStore::create_active()` directly.

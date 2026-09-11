@@ -141,7 +141,7 @@ pub trait ContextArtifactStore: Send + Sync {
 }
 ```
 
-### ProjectionConfig (`projection.rs:22`)
+### ProjectionConfig (`projection.rs:23`)
 
 ```rust
 pub struct ProjectionConfig {

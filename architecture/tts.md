@@ -11,8 +11,8 @@ through the daemon's `NotificationRouter` / `AudioArbiter`.
 ## Where It Lives
 
 - `src/tts/mod.rs` — engine implementation
-- `src/tui/app/state/ui.rs:82-93` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
-- `src/tui/app/mod.rs:9820-9921` — TUI integration (`toggle_tts`, `stop_tts`, daemon routing)
+- `src/tui/app/state/ui.rs:82, 84, 93` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
+- `src/tui/app/mod.rs:7583-7640` — TUI integration (`toggle_tts`, `stop_tts`, daemon routing)
 - `src/tui/runtime/app_events.rs:313-325` — auto-stop on agent finished
 - `src/tui/command.rs:176-178` — `/tts` slash command registration
 
@@ -20,14 +20,14 @@ through the daemon's `NotificationRouter` / `AudioArbiter`.
 
 ### Embedded Mode (default)
 
-The `Tts` struct owns a `Mutex<AtomicBool>` speaking flag. `speak()` spawns
+The `Tts` struct owns an `AtomicBool` speaking flag. `speak()` spawns
 `tokio::process::Command::new("say")` with the text as an argument and waits
 for completion. `stop()` uses `pkill say` to terminate the child process.
 
 ### Remote-Core Mode
 
 When `AppMode::RemoteCore` is active, `tts_via_daemon` is set to `true`
-(`src/tui/app/mod.rs:1378`). Toggle and stop operations route through
+(`src/tui/app/mod.rs:801`). Toggle and stop operations route through
 `CoreClient` using `CoreRequest::NotificationSpeak` instead of local
 `say` invocation. The daemon's `AudioArbiter` handles playback.
 
@@ -43,7 +43,7 @@ mode only) calls `tts.stop()` to prevent leftover speech
 
 ```rust
 pub struct Tts {
-    speaking: Mutex<std::sync::atomic::AtomicBool>,
+    speaking: AtomicBool,
 }
 ```
 
@@ -52,7 +52,7 @@ Methods:
 | Method | Signature | Notes |
 |--------|-----------|-------|
 | `new()` | `-> Self` | Speaking flag starts `false` |
-| `init()` | `fn(&mut self, TtsProvider)` | Only handles `TtsProvider::None` (no-op) |
+| `init()` | `fn(&mut self, TtsProvider) -> Result<(), AppError>` | Only handles `TtsProvider::None` (no-op) |
 | `speak()` | `async fn(&self, &str)` | Validates non-empty; spawns `say`; sets flag |
 | `stop()` | `async fn(&self) -> Result<(), AppError>` | Early return if not speaking; `pkill say` |
 | `is_speaking()` | `fn(&self) -> bool` | Reads atomic flag |

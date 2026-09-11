@@ -83,8 +83,8 @@ pinned runs exempt. Uses `FsRunStore::plan_cleanup` for dry-run.
 | `ArtifactKind` | :262 | `Stdout`, `Stderr`, `CombinedLog`, `CommandSource`, `TestReport`, `TestLog`, `UnifiedDiff`, `ChangedFiles`, `Projection`, `RtkProjection`, `StructuredJson`, `PolicyEvidence` (12) |
 | `ContextPromotionState` | :694 | `LocalOnly`, `ProjectionIncluded`, `ArtifactRangeIncluded`, `Pinned`, `Excluded` (5) |
 | `RunOwnership` | :94 | `Caller`, `DelegatedBackend`, `ChildOf(RunId)` (3) |
-| `PlannedBackend` | :111 | `Unrouted`, `RawShell`, `TestRunner`, `PythonScript`, `NativeTool`, `ManagedArgv`, `Git`, `GitMutating` (8, last deprecated) |
-| `ActualBackend` | :154 | Same as PlannedBackend + `Rejected { reason }` (9) |
+| `PlannedBackend` | :113 | `Unrouted`, `RawShell`, `TestRunner`, `PythonScript`, `NativeTool`, `ManagedArgv`, `Git`, `GitMutating` (8, last deprecated) |
+| `ActualBackend` | :156 | Same as PlannedBackend + `Rejected { reason }` (8) |
 
 ### Record Types
 

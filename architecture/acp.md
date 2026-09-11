@@ -14,8 +14,8 @@ state and execution live in the daemon.
 
 | Artifact | Path |
 |----------|------|
-| Adapter | `src/acp.rs` (single file, ~720 lines) |
-| Entry point | `pub async fn run()` at line 79 |
+| Adapter | `src/acp.rs` (single file, ~736 lines) |
+| Entry point | `pub async fn run()` at line 78 |
 | CLI | `codegg acp` subcommand |
 
 ## How It Works
@@ -25,7 +25,7 @@ state and execution live in the daemon.
 1. Reads JSON-RPC frames from stdin line-by-line (BufReader).
 2. Responds to `initialize` with protocol version 1, agent info, and
    capabilities (text prompts only; no image/audio/embeddedContext).
-3. Daemon attachment is **lazy**: `ensure_client()` (line 288) calls
+3. Daemon attachment is **lazy**: `ensure_client()` (line 301) calls
    `connect_or_start_daemon()` on first session operation. Initialization
    and diagnostics remain usable when the daemon is unavailable.
 
@@ -59,13 +59,13 @@ terminal events must carry that same turn identity. A pre-floor,
 neighboring-session, stale-turn, or replayed event is ignored.
 
 `session/cancel`, `$/cancel_request`, and `session/close` share one
-idempotent pending-cancellation path (`cancel_if_ready()`, line 268). If
+idempotent pending-cancellation path (`cancel_if_ready()`, line 281). If
 cancellation arrives before `TurnStarted`, the intent is deferred until the
 matching turn is identified.
 
 ### Event Mapping
 
-`handle_event()` (line 454) maps native projection events to ACP
+`handle_event()` (line 467) maps native projection events to ACP
 notifications:
 
 | Native Event | ACP Notification |
@@ -80,14 +80,14 @@ Reasoning, private, and unknown projection events are omitted.
 
 ### Terminal Detection
 
-`event_is_terminal()` (line 489) checks for `TurnCompleted` or `TurnFailed`
+`event_is_terminal()` (line 502) checks for `TurnCompleted` or `TurnFailed`
 on both `CoreEvent` and `ProjectionEvent` variants, matching the bound turn
 identity. The `terminal_reason()` function (line 515) returns `"end_turn"`
 for completions and `"cancelled"` for failures.
 
 ### Snapshot Replay
 
-`replay_snapshot()` (line 412) replays a `session/load` snapshot. It
+`replay_snapshot()` (line 425) replays a `session/load` snapshot. It
 iterates `recent_turns` and `active_turn`, sorted by `started_at`, and
 emits `session/update` notifications for `Public`-visibility `User` and
 `Assistant` messages. `Tool`, `System`, and `Reasoning` messages are
@@ -106,16 +106,16 @@ The `run()` function (line 79) ensures on exit that:
 | `RpcRequest` | `src/acp.rs:27` | Deserialized JSON-RPC frame |
 | `ActivePrompt` | `src/acp.rs:38` | Tracks the in-flight prompt: request ID, session, event floor, turn binding, cancel state |
 | `SessionBinding` | `src/acp.rs:74` | Maps session ID to subscription ID and optional root path |
-| `run()` | `src/acp.rs:79` | Main async entry point; runs the select loop |
-| `ensure_client()` | `src/acp.rs:288` | Lazy daemon connection via `connect_or_start_daemon()` |
-| `absolute_cwd()` | `src/acp.rs:304` | Validates and canonicalizes the `cwd` parameter |
-| `prompt_text()` | `src/acp.rs:330` | Extracts and concatenates text prompt blocks (1 MiB limit) |
-| `native_agents()` | `src/acp.rs:355` | Resolves agents via `Config::load()` and `resolve_agents_with_context()` |
-| `subscribe()` | `src/acp.rs:371` | Subscribes to projection events for a session |
-| `replay_snapshot()` | `src/acp.rs:412` | Replays snapshot as ACP notifications |
-| `handle_event()` | `src/acp.rs:454` | Maps projection events to ACP session/update notifications |
-| `event_is_terminal()` | `src/acp.rs:489` | Checks if an event terminates the active prompt |
-| `cancel_if_ready()` | `src/acp.rs:268` | Sends `TurnCancel` once turn is bound and cancel is requested |
+| `run()` | `src/acp.rs:78` | Main async entry point; runs the select loop |
+| `ensure_client()` | `src/acp.rs:301` | Lazy daemon connection via `connect_or_start_daemon()` |
+| `absolute_cwd()` | `src/acp.rs:317` | Validates and canonicalizes the `cwd` parameter |
+| `prompt_text()` | `src/acp.rs:343` | Extracts and concatenates text prompt blocks (1 MiB limit) |
+| `native_agents()` | `src/acp.rs:368` | Resolves agents via `Config::load()` and `resolve_agents_with_context()` |
+| `subscribe()` | `src/acp.rs:384` | Subscribes to projection events for a session |
+| `replay_snapshot()` | `src/acp.rs:425` | Replays snapshot as ACP notifications |
+| `handle_event()` | `src/acp.rs:467` | Maps projection events to ACP session/update notifications |
+| `event_is_terminal()` | `src/acp.rs:502` | Checks if an event terminates the active prompt |
+| `cancel_if_ready()` | `src/acp.rs:281` | Sends `TurnCancel` once turn is bound and cancel is requested |
 
 ## Configuration Surface
 
@@ -155,7 +155,7 @@ cargo test -p codegg --lib acp        # unit tests for ActivePrompt, helpers
 cargo test -p codegg --lib acp::tests  # lifecycle, cancellation, terminal detection
 ```
 
-Test coverage (inline, `src/acp.rs:586-723`):
+Test coverage (inline, `src/acp.rs:598-736`):
 - `lifecycle_rejects_pre_submission_and_neighbor_events` — event floor and
   session filtering
 - `lifecycle_binds_one_turn_and_rejects_stale_terminal_events` — turn

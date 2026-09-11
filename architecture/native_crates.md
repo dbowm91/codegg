@@ -19,7 +19,7 @@ registry side of the contract.
 ```
 crates/
   codegg-core/       Core runtime, session, storage, domain state, jobs,
-                     workspace, tool programs (27 modules)
+                     workspace, tool programs (40 modules)
   codegg-config/     Configuration schema, paths, loading, validation,
                      file watching
   codegg-protocol/   Core protocol types: CoreRequest, CoreResponse,
@@ -151,12 +151,15 @@ back to `ToolBackendConfig::all_native()`.
 
 ### `codegg-core`
 
-27 modules covering core runtime, session, storage, bus, error, goal,
+40 modules covering core runtime, session, storage, bus, error, goal,
 identity, jobs, memory, migration, model_profile, project_catalog,
 project_discovery, project_discovery_service, project_storage,
 projection_replay, protocol_conversions, provider_connections,
 repository_lineage, resilience, run_store, session, snapshot, storage,
-task_state, tool_program, workspace, workspace_services, worktree.
+task_state, tool_program, workspace, workspace_services, worktree,
+agent_convergence, agent_run, agent_run_control, agent_run_group,
+audit, audit_instrumentation, authorization, collaboration, context,
+run_result, team, transport_auth, worktree_service.
 
 Key types: `AppError`, `GlobalEventBus`, `PermissionRegistry`,
 `QuestionRegistry`, `TodoState`, `ResolvedModelProfile`,

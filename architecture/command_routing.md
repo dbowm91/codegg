@@ -126,7 +126,7 @@ Active routing is controlled by `CommandIntentMode::Active`. When active:
   `RouteLevel::Off` disables routing for that family
 - Default mode is `Observe` — no active routing unless explicitly enabled
 
-The kill switch check is at `src/tool/bash.rs:494-511`:
+The kill switch check is at `src/tool/bash/policy.rs:318-335`:
 ```rust
 fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
     let env_disabled = self.routing_disabled_override
@@ -180,7 +180,7 @@ the scheduler invokes the canonical subsystem and returns a `run_id` proving
 the delegated record was begun. Python and Git retain their domain-specific
 canonical adapters.
 
-### DispatchOutcome (`src/tool/bash.rs:36-41`)
+### DispatchOutcome (`src/tool/bash/process.rs:61`)
 
 ```rust
 pub struct DispatchOutcome {
@@ -207,7 +207,7 @@ classify → plan → submit_test_job (bash.rs:620)
   → TestScope::BashDispatch(argv) (types.rs:18)
   → resolve_and_run_test (resolve.rs:60-71)
       [bypasses allowlist re-validation — argv already validated by planner]
-  → DelegatedTestRun { report, run_id } (runner.rs:260-263)
+  → DelegatedTestRun { report, run_id } (runner.rs:356-359)
   → DispatchOutcome { ..., delegated_run_id }
   → caller suppresses persistence when run_id is Some
 ```
@@ -216,7 +216,7 @@ Key points:
 - `TestScope::BashDispatch` (`src/test_runner/types.rs:18`) is a dedicated
   bypass variant: argv is consumed directly without the strict allowlist
   re-validation that `TestScope::CustomCommand` performs.
-- `DelegatedTestRun` (`src/test_runner/runner.rs:260`) carries
+- `DelegatedTestRun` (`src/test_runner/runner.rs:356`) carries
   `report: TestReport` and `run_id: Option<RunId>`. Callers use
   `.into_report()` for display output.
 - BashTool synthesizes a `std::process::Output`-shaped value from the report
@@ -239,7 +239,7 @@ Key points:
   (`JobSubmissionService`). Without it, an error is returned.
 - `DelegatedPythonRun` (`src/python_script/tool.rs:16`) carries
   `result: PythonRunResult` and `run_id: Option<RunId>`.
-- The legacy `persist_python_run` helper (`src/python_script/tool.rs:220`) is
+- The legacy `persist_python_run` helper (`src/python_script/tool.rs:232`) is
   best-effort; errors are logged, and `run_id` is `None` only when `run_store`
   is `None` or `begin_run` failed.
 

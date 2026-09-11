@@ -80,7 +80,7 @@ Spawns a child process, communicates via JSON-RPC over stdin/stdout.
   `child.kill()` + `child.wait()`. `Drop` calls `start_kill()` as a
   safety net.
 - **Server version**: Extracted from `initialize` response at
-  `/serverInfo/version` (`local.rs:163`).
+  `/serverInfo/version` (`local.rs:164`).
 
 ### Remote Client (`remote.rs`)
 
@@ -213,27 +213,27 @@ and reports the count.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `McpService` | `mod.rs:109` | Server registry + OAuth manager |
+| `McpService` | `mod.rs:130` | Server registry + OAuth manager |
 | `McpServer` | `mod.rs:82` | Per-server state (name, status, tools, version, client) |
-| `McpClientType` | `mod.rs:91` | Local / Remote / Mock dispatch |
-| `McpExposurePolicy` | `mod.rs:122` | Controls raw MCP tool visibility |
+| `McpClientType` | `mod.rs:112` | Local / Remote / Mock dispatch |
+| `McpExposurePolicy` | `mod.rs:144` | Controls raw MCP tool visibility |
 | `McpTool` | `mod.rs:56` | Tool definition from server |
 | `McpToolCallResult` | `mod.rs:68` | Text + optional structured JSON |
-| `McpServerStatus` | `mod.rs:73` | Disconnected / Connecting / Connected / Error |
+| `McpServerStatus` | `mod.rs:74` | Disconnected / Connecting / Connected / Error |
 | `McpPrompt` | `mod.rs:26` | Prompt definition |
-| `McpResource` | `mod.rs:39` | Resource definition |
-| `McpResourceContent` | `mod.rs:47` | Resource content (text or blob) |
+| `McpResource` | `mod.rs:40` | Resource definition |
+| `McpResourceContent` | `mod.rs:48` | Resource content (text or blob) |
 | `LocalClient` | `local.rs:47` | JSON-RPC over stdio child process |
 | `RemoteClient` | `remote.rs:345` | JSON-RPC over HTTP with SSE parsing |
 | `McpConnectionManager` | `remote.rs:29` | Auto-reconnect + heartbeat wrapper |
-| `ConnectionState` | `remote.rs:19` | Connected / Disconnected / Reconnecting |
-| `OAuthManager` | `auth.rs:109` | Token lifecycle, encryption, PKCE |
-| `TokenSet` | `auth.rs:76` | Access + refresh tokens with expiry |
+| `ConnectionState` | `remote.rs:20` | Connected / Disconnected / Reconnecting |
+| `OAuthManager` | `auth.rs:142` | Token lifecycle, encryption, PKCE |
+| `TokenSet` | `auth.rs:68` | Access + refresh tokens with expiry |
 | `McpCli` | `cli.rs:17` | CLI command handler |
-| `McpCommand` | `cli.rs:184` | Clap subcommand enum |
+| `McpCommand` | `cli.rs:185` | Clap subcommand enum |
 | `IdeServer` | `ide_server.rs:50` | IDE MCP server (openDiff) |
 | `McpError` | `error.rs:177` | Connection, Server, ToolCall, OAuth, Encryption, Timeout |
-| `parse_mcp_tool_server` | `mod.rs:164` | Extract server from `mcp__<server>__<tool>` |
+| `parse_mcp_tool_server` | `mod.rs:185` | Extract server from `mcp__<server>__<tool>` |
 
 ## Configuration Surface
 
@@ -284,10 +284,10 @@ Config types (`codegg-config/src/schema.rs`):
 
 | Struct | Key | JSON field |
 |--------|-----|------------|
-| `McpEntry` | `:881` | `enabled`, flattened `McpServerConfig` |
-| `McpServerConfig` | `:889` | type, command, args, env, url, headers, etc. |
-| `McpReconnectConfig` | `:906` | `enabled`, `max_retries`, delay, heartbeat intervals |
-| `McpOAuthConfig` | `:914` | `client_id`, `client_secret`, `scope` |
+| `McpEntry` | `:934` | `enabled`, flattened `McpServerConfig` |
+| `McpServerConfig` | `:942` | type, command, args, env, url, headers, etc. |
+| `McpReconnectConfig` | `:959` | `enabled`, `max_retries`, delay, heartbeat intervals |
+| `McpOAuthConfig` | `:969` | `client_id`, `client_secret`, `scope` |
 
 Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 `McpServerConfig.server_type`). The `environment` field is merged with

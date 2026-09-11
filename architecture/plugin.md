@@ -130,7 +130,7 @@ all defaulting to conservative:
 
 ### Management UX
 
-`PluginManager` (`management.rs:201`) wraps `PluginService` and provides:
+`PluginManager` (`management.rs:256`) wraps `PluginService` and provides:
 
 | Method | Description |
 |--------|-------------|
@@ -152,14 +152,14 @@ unique prefix on id → unique prefix on name → error on ambiguous/none.
 ### Core Types
 
 ```rust
-// src/plugin/manifest.rs:46
+// src/plugin/manifest.rs:49
 pub enum PluginRuntimeSpec {
     Builtin { handler: String },
     Process { command, args, timeout_ms },
     Wasm { module, timeout_ms, memory_max_mb, fuel_per_call },
 }
 
-// src/plugin/manifest.rs:75
+// src/plugin/manifest.rs:78
 pub enum PluginCapability {
     Command(PluginCommandSpec),
     Hook(PluginHookSpec),
@@ -201,13 +201,13 @@ pub struct HookResult { pub output, pub blocked, pub error, pub effects }
 ### Service & Error
 
 ```rust
-// src/plugin/service.rs:20
+// src/plugin/service.rs:24
 pub struct PluginService {
     registry, hook_timeout, builtin_runtime, policy,
     activation_store, pinned_activation,
 }
 
-// src/plugin/service.rs:530
+// src/plugin/service.rs:625
 pub enum PluginError { CommandNotFound, PluginNotFound, PluginDisabled, Registry, Runtime }
 ```
 
