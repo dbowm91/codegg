@@ -155,8 +155,8 @@ hard-dependent on M005 because prompt continuation must resolve/bind the
 correct project/workspace context. M008 is now closed after M005-M007: its
 physical movement does not fossilize transitional ownership. M009 is now
 closed after M007 and consumes already-closed projection/agent-run interfaces.
-M010 depends on M005's final scoped command-catalog contract; M009 remains
-only a soft sequencing preference.
+M010 depended on M005's final scoped command-catalog contract; M009 was only a
+soft sequencing preference and is now also closed.
 
 ## 7. Milestones
 

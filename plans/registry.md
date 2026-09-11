@@ -70,7 +70,7 @@ No dependency-ready implementation plan remains in this subsystem; M010 is close
 4. M006 is closed: session creation/prompt continuation moved off the event loop with route-generation and exactly-once protection.
 5. M009 is closed: keyboard sidebar plus canonical agent-tree inspection. M007 is closed and M005's soft dependency is also closed.
 6. M010 is closed after M005 and the soft M009 sequencing preference closed; its command/action census includes the sidebar and agent-tree actions.
-7. TUI M008 is closed: `App`/dispatch are physically decomposed around the stable M005-M007 contracts without introducing a new state framework. M009 is closed and M010 remains ready.
+7. TUI M008 is closed: `App`/dispatch are physically decomposed around the stable M005-M007 contracts without introducing a new state framework. M009 and M010 are closed.
 8. None of this work authorizes a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, or generic secret-store/DI system.
 
 ## Blocked work
