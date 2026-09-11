@@ -94,6 +94,8 @@ pub(crate) fn switch_active_tab(
 
     // Set the tab active
     app.project_tabs.set_active(target_tab_id);
+    let project_scope = app.active_project_id().map(str::to_string);
+    app.sidebar.set_project_scope(project_scope.as_deref());
     // Project-local command discovery follows the newly active tab. This
     // refresh is synchronous and uses the captured tab root; no process
     // directory mutation is involved.

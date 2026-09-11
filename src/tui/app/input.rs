@@ -8,6 +8,52 @@
 use super::*;
 
 impl App {
+    /// Route keys consumed by the presentation-only sidebar selection. Modal
+    /// components remain owned by `FocusManager`; this branch is reached only
+    /// when no modal is active, so prompt input cannot see a consumed key.
+    pub(crate) fn handle_sidebar_action(
+        &mut self,
+        action: Option<crate::tui::input::InputAction>,
+        key: crossterm::event::KeyEvent,
+    ) {
+        use crate::tui::components::sidebar::SidebarActivation;
+        use crate::tui::input::InputAction;
+
+        let area = self.sidebar_area.unwrap_or_default();
+        match action {
+            Some(InputAction::NavigateUp) => self.sidebar.focus_prev(),
+            Some(InputAction::NavigateDown) => self.sidebar.focus_next(),
+            Some(InputAction::PageUp) => self.sidebar.focus_page_prev(area),
+            Some(InputAction::PageDown) => self.sidebar.focus_page_next(area),
+            Some(InputAction::Left) => self.sidebar.collapse_or_parent(),
+            Some(InputAction::Right) => self.sidebar.expand_focused(),
+            Some(InputAction::ToggleSection) | Some(InputAction::FocusSidebar)
+                if key.code == crossterm::event::KeyCode::Char(' ') =>
+            {
+                self.sidebar.toggle_focused();
+            }
+            Some(InputAction::ToggleSection) => self.sidebar.toggle_focused(),
+            Some(InputAction::Send) => match self.sidebar.activate_focused() {
+                SidebarActivation::ToggleSection | SidebarActivation::ToggleAgentNode(_) => {
+                    self.sidebar.toggle_focused();
+                }
+                SidebarActivation::InspectRun(run_id) => {
+                    self.process_msg(TuiMsg::OpenRunDetail { run_id });
+                }
+                SidebarActivation::None => {}
+            },
+            Some(InputAction::Cancel) | Some(InputAction::FocusPrompt) => {
+                self.sidebar.blur_sidebar();
+            }
+            Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            _ => {
+                // Sidebar focus is modal-like presentation focus. Unknown or
+                // text actions are consumed rather than leaking to prompt.
+            }
+        }
+        self.sidebar.ensure_focused_visible(area);
+    }
+
     pub fn process_msg(&mut self, msg: TuiMsg) {
         tracing::debug!(target: "codegg::tui::app", "process_msg: {:?}", msg);
         match msg {

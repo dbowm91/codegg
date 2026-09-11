@@ -2064,12 +2064,21 @@ impl App {
             return;
         }
 
+        let sidebar_focused = self.ui_state.sidebar_visible && self.sidebar.is_focused();
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
             Some(&self.ui_state.bindings),
-            self.ui_state.input_mode,
+            if sidebar_focused {
+                InputMode::Normal
+            } else {
+                self.ui_state.input_mode
+            },
         );
         debug_log!("action from bindings: {:?}", action);
+        if sidebar_focused {
+            self.handle_sidebar_action(action, key);
+            return;
+        }
         match action {
             Some(InputAction::Send) => self.process_msg(TuiMsg::SubmitPrompt),
             Some(InputAction::Newline) => self.prompt_state.prompt.insert_newline(),
@@ -2093,6 +2102,11 @@ impl App {
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            Some(InputAction::FocusSidebar) => {
+                if self.ui_state.sidebar_visible {
+                    self.sidebar.focus_sidebar();
+                }
+            }
             Some(InputAction::ToggleSection) => {
                 if self.ui_state.sidebar_visible {
                     self.sidebar.toggle_focused();
@@ -6348,7 +6362,20 @@ impl App {
                 }
             }
             ClickTarget::Sidebar => {
-                self.sidebar.toggle_hovered_section();
+                self.sidebar.focus_hovered();
+                if let Some(area) = self.sidebar_area {
+                    self.sidebar.ensure_focused_visible(area);
+                }
+                match self.sidebar.activate_focused() {
+                    crate::tui::components::sidebar::SidebarActivation::ToggleSection
+                    | crate::tui::components::sidebar::SidebarActivation::ToggleAgentNode(_) => {
+                        self.sidebar.toggle_focused();
+                    }
+                    crate::tui::components::sidebar::SidebarActivation::InspectRun(run_id) => {
+                        self.process_msg(TuiMsg::OpenRunDetail { run_id });
+                    }
+                    crate::tui::components::sidebar::SidebarActivation::None => {}
+                }
             }
             ClickTarget::Scrollbar {
                 track_y,
@@ -7434,6 +7461,11 @@ impl App {
 
     fn toggle_sidebar(&mut self) {
         self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
+        if self.ui_state.sidebar_visible {
+            self.sidebar.focus_sidebar();
+        } else {
+            self.sidebar.blur_sidebar();
+        }
     }
 
     /// Handle `/theme [list|use <name>|reload|diagnostics]`. With no arguments,

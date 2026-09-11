@@ -1,6 +1,7 @@
 use crate::session::events::AgentPlan;
 use crate::session::Session;
 use crate::tui::app::state::session::{DiffStatsState, GitSidebarInfo};
+use codegg_protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -8,12 +9,13 @@ use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
     Widget,
 };
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::super::app::TodoEntry;
 use super::super::theme::Theme;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SidebarSection {
     Goal,
     Plan,
@@ -24,12 +26,38 @@ pub enum SidebarSection {
     Convergences,
 }
 
+/// Stable identity for one logical sidebar row. It is independent of the
+/// rendered line number, scroll offset, and collapse state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SidebarFocusTarget {
+    Section(SidebarSection),
+    Todo(usize),
+    McpServer(usize),
+    FileChange(usize),
+    ToolProgram(String),
+    AgentRun(String),
+    AgentTreeNode(u64),
+    Convergence(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidebarActivation {
+    None,
+    ToggleSection,
+    ToggleAgentNode(u64),
+    InspectRun(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HoveredElement {
     Section(SidebarSection),
     Todo(usize),
     McpServer(usize),
     FileChange(usize),
+    ToolProgram(String),
+    AgentRun(String),
+    AgentTreeNode(u64),
+    Convergence(String),
     None,
 }
 
@@ -55,12 +83,14 @@ pub struct SidebarToolProgram {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SidebarAgentRun {
     pub run_id: String,
+    pub task_id: Option<String>,
     pub agent: String,
     pub status: String,
     pub worktree: Option<String>,
     pub branch: Option<String>,
     pub result_commit: Option<String>,
     pub attention_required: bool,
+    pub progress: Option<String>,
 }
 
 /// Compact bounded convergence state for the sidebar.
@@ -104,6 +134,8 @@ pub struct SidebarWidget {
     /// Active and recently completed background tool programs.
     pub tool_programs: Vec<SidebarToolProgram>,
     pub agent_runs: Vec<SidebarAgentRun>,
+    /// Canonical bounded agent hierarchy from the active session projection.
+    pub agent_tree: Vec<AgentTreeNodeProjection>,
     pub convergences: Vec<SidebarConvergence>,
     scroll_offset: usize,
     goal_collapsed: bool,
@@ -115,6 +147,20 @@ pub struct SidebarWidget {
     convergences_collapsed: bool,
     hovered_element: HoveredElement,
     tooltip_text: String,
+    focused_target: Option<SidebarFocusTarget>,
+    focused_position: Option<usize>,
+    scope_project_id: Option<String>,
+    collapsed_agent_nodes: HashSet<u64>,
+}
+
+const MAX_SIDEBAR_AGENT_TREE_NODES: usize = 64;
+
+#[derive(Debug, Clone)]
+struct SidebarAgentTreeRow {
+    node: AgentTreeNodeProjection,
+    depth: usize,
+    has_children: bool,
+    collapsed: bool,
 }
 
 impl SidebarWidget {
@@ -141,6 +187,7 @@ impl SidebarWidget {
             plan: None,
             tool_programs: Vec::new(),
             agent_runs: Vec::new(),
+            agent_tree: Vec::new(),
             convergences: Vec::new(),
             scroll_offset: 0,
             goal_collapsed: false,
@@ -152,6 +199,10 @@ impl SidebarWidget {
             convergences_collapsed: false,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
+            focused_target: None,
+            focused_position: None,
+            scope_project_id: None,
+            collapsed_agent_nodes: HashSet::new(),
         }
     }
 
@@ -213,20 +264,455 @@ impl SidebarWidget {
 
     pub fn set_agent_runs(&mut self, runs: Vec<SidebarAgentRun>) {
         self.agent_runs = runs;
+        self.reconcile_focus();
+    }
+
+    pub fn set_agent_tree(&mut self, nodes: Vec<AgentTreeNodeProjection>) {
+        self.agent_tree = nodes
+            .into_iter()
+            .take(MAX_SIDEBAR_AGENT_TREE_NODES)
+            .collect();
+        let present: HashSet<u64> = self.agent_tree.iter().map(|node| node.task_id).collect();
+        self.collapsed_agent_nodes.retain(|id| present.contains(id));
+        self.reconcile_focus();
+    }
+
+    /// Keep presentation-only selection scoped to the active project.
+    pub fn set_project_scope(&mut self, project_id: Option<&str>) {
+        let project_id = project_id.map(str::to_string);
+        if self.scope_project_id != project_id {
+            self.scope_project_id = project_id;
+            self.focused_target = None;
+            self.focused_position = None;
+            self.scroll_offset = 0;
+        }
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused_target.is_some()
+    }
+
+    pub fn focus_sidebar(&mut self) -> bool {
+        self.reconcile_focus();
+        if self.focused_target.is_none() {
+            self.set_focused_target(self.focus_targets().into_iter().next());
+        }
+        self.focused_target.is_some()
+    }
+
+    pub fn blur_sidebar(&mut self) {
+        self.focused_target = None;
+        self.focused_position = None;
+    }
+
+    pub fn focused_target(&self) -> Option<&SidebarFocusTarget> {
+        self.focused_target.as_ref()
+    }
+
+    /// Keep the selected logical row inside the rendered viewport.
+    pub fn ensure_focused_visible(&mut self, area: Rect) {
+        let Some(target) = self.focused_target.as_ref() else {
+            return;
+        };
+        let target = match target {
+            SidebarFocusTarget::Section(section) => HoveredElement::Section(*section),
+            SidebarFocusTarget::Todo(index) => HoveredElement::Todo(*index),
+            SidebarFocusTarget::McpServer(index) => HoveredElement::McpServer(*index),
+            SidebarFocusTarget::FileChange(index) => HoveredElement::FileChange(*index),
+            SidebarFocusTarget::ToolProgram(id) => HoveredElement::ToolProgram(id.clone()),
+            SidebarFocusTarget::AgentRun(id) => HoveredElement::AgentRun(id.clone()),
+            SidebarFocusTarget::AgentTreeNode(id) => HoveredElement::AgentTreeNode(*id),
+            SidebarFocusTarget::Convergence(id) => HoveredElement::Convergence(id.clone()),
+        };
+        let Some(line) = self
+            .line_targets()
+            .iter()
+            .position(|candidate| candidate == &target)
+        else {
+            return;
+        };
+        let viewport = sidebar_content_height(area) as usize;
+        if line < self.scroll_offset {
+            self.scroll_offset = line;
+        } else if viewport > 0 && line >= self.scroll_offset + viewport {
+            self.scroll_offset = line + 1 - viewport;
+        }
+        self.scroll_offset = self.scroll_offset.min(self.max_scroll(area));
     }
 
     pub fn set_convergences(&mut self, convergences: Vec<SidebarConvergence>) {
         self.convergences = convergences;
     }
 
-    pub fn toggle_focused(&mut self) {}
+    pub fn toggle_focused(&mut self) {
+        match self.activate_focused() {
+            SidebarActivation::ToggleSection => {
+                if let Some(SidebarFocusTarget::Section(section)) = self.focused_target.clone() {
+                    self.toggle_section(section);
+                }
+            }
+            SidebarActivation::ToggleAgentNode(task_id) => {
+                if !self.collapsed_agent_nodes.insert(task_id) {
+                    self.collapsed_agent_nodes.remove(&task_id);
+                }
+            }
+            SidebarActivation::None | SidebarActivation::InspectRun(_) => {}
+        }
+        self.reconcile_focus();
+    }
 
-    pub fn focus_next(&mut self) {}
+    pub fn focus_next(&mut self) {
+        self.move_focus(1);
+    }
 
-    pub fn focus_prev(&mut self) {}
+    pub fn focus_prev(&mut self) {
+        self.move_focus(-1);
+    }
+
+    pub fn focus_page_next(&mut self, area: Rect) {
+        self.move_focus(scroll_step(area) as isize);
+    }
+
+    pub fn focus_page_prev(&mut self, area: Rect) {
+        self.move_focus(-(scroll_step(area) as isize));
+    }
+
+    pub fn collapse_or_parent(&mut self) {
+        let Some(target) = self.focused_target.clone() else {
+            return;
+        };
+        match target {
+            SidebarFocusTarget::Section(section) => self.set_section_collapsed(section, true),
+            SidebarFocusTarget::AgentTreeNode(task_id) => {
+                let parent = self
+                    .agent_tree
+                    .iter()
+                    .find(|node| node.task_id == task_id)
+                    .and_then(|node| node.parent_task_id);
+                if let Some(parent) = parent {
+                    let target = SidebarFocusTarget::AgentTreeNode(parent);
+                    if self.focus_targets().contains(&target) {
+                        self.focused_target = Some(target.clone());
+                        self.focused_position =
+                            self.focus_targets().iter().position(|item| item == &target);
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.reconcile_focus();
+    }
+
+    pub fn expand_focused(&mut self) {
+        let Some(target) = self.focused_target.clone() else {
+            return;
+        };
+        match target {
+            SidebarFocusTarget::Section(section) => self.set_section_collapsed(section, false),
+            SidebarFocusTarget::AgentTreeNode(task_id) => {
+                self.collapsed_agent_nodes.remove(&task_id);
+            }
+            _ => {}
+        }
+        self.reconcile_focus();
+    }
+
+    pub fn focus_hovered(&mut self) {
+        self.focused_target = Self::hovered_to_focus(&self.hovered_element);
+        self.focused_position = self
+            .focused_target
+            .as_ref()
+            .and_then(|target| self.focus_targets().iter().position(|item| item == target));
+        self.reconcile_focus();
+    }
+
+    pub fn activate_focused(&mut self) -> SidebarActivation {
+        match self.focused_target.clone() {
+            Some(SidebarFocusTarget::Section(_)) => SidebarActivation::ToggleSection,
+            Some(SidebarFocusTarget::AgentTreeNode(task_id)) => {
+                let has_children = self
+                    .agent_tree
+                    .iter()
+                    .any(|node| node.parent_task_id == Some(task_id));
+                if has_children {
+                    SidebarActivation::ToggleAgentNode(task_id)
+                } else {
+                    self.run_id_for_task(task_id)
+                        .map(SidebarActivation::InspectRun)
+                        .unwrap_or(SidebarActivation::None)
+                }
+            }
+            Some(SidebarFocusTarget::AgentRun(run_id)) => SidebarActivation::InspectRun(run_id),
+            _ => SidebarActivation::None,
+        }
+    }
 
     pub fn focused_name(&self) -> Option<&str> {
-        None
+        match self.focused_target.as_ref() {
+            Some(SidebarFocusTarget::AgentRun(run_id)) => Some(run_id),
+            Some(SidebarFocusTarget::ToolProgram(program_id)) => Some(program_id),
+            Some(SidebarFocusTarget::Convergence(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn focus_targets(&self) -> Vec<SidebarFocusTarget> {
+        let mut targets = Vec::new();
+        if self.goal.is_some() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::Goal));
+        }
+        if self
+            .plan
+            .as_ref()
+            .is_some_and(|plan| !plan.items.is_empty())
+        {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::Plan));
+        }
+        if !self.todos.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::Todos));
+            if !self.todos_collapsed {
+                targets.extend((0..self.todos.len()).map(SidebarFocusTarget::Todo));
+            }
+        }
+        if !self.mcp_servers.is_empty() {
+            targets.extend((0..self.mcp_servers.len()).map(SidebarFocusTarget::McpServer));
+        }
+        if !self.file_changes.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::FileChanges));
+            if !self.file_changes_collapsed {
+                targets.extend((0..self.file_changes.len()).map(SidebarFocusTarget::FileChange));
+            }
+        }
+        if !self.tool_programs.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::ToolPrograms));
+            if !self.tool_programs_collapsed {
+                targets.extend(
+                    self.tool_programs
+                        .iter()
+                        .map(|program| SidebarFocusTarget::ToolProgram(program.program_id.clone())),
+                );
+            }
+        }
+        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::AgentRuns));
+            if !self.agent_runs_collapsed {
+                if !self.agent_tree.is_empty() {
+                    targets.extend(
+                        self.visible_agent_tree_rows()
+                            .into_iter()
+                            .map(|row| SidebarFocusTarget::AgentTreeNode(row.node.task_id)),
+                    );
+                }
+                targets.extend(
+                    self.detached_runs()
+                        .map(|run| SidebarFocusTarget::AgentRun(run.run_id.clone())),
+                );
+            }
+        }
+        if !self.convergences.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::Convergences));
+            if !self.convergences_collapsed {
+                targets.extend(
+                    self.convergences
+                        .iter()
+                        .map(|item| SidebarFocusTarget::Convergence(item.convergence_id.clone())),
+                );
+            }
+        }
+        targets
+    }
+
+    fn move_focus(&mut self, delta: isize) {
+        let targets = self.focus_targets();
+        if targets.is_empty() {
+            self.focused_target = None;
+            return;
+        }
+        let current = self
+            .focused_target
+            .as_ref()
+            .and_then(|target| targets.iter().position(|candidate| candidate == target));
+        let next = match current {
+            Some(index) => (index as isize + delta).clamp(0, targets.len() as isize - 1) as usize,
+            None if delta < 0 => 0,
+            None => 0,
+        };
+        self.focused_target = targets.get(next).cloned();
+        self.focused_position = Some(next);
+    }
+
+    fn reconcile_focus(&mut self) {
+        let targets = self.focus_targets();
+        let Some(current) = self.focused_target.clone() else {
+            return;
+        };
+        if targets.contains(&current) {
+            self.focused_position = targets.iter().position(|target| target == &current);
+            return;
+        }
+        self.focused_target = self
+            .focused_position
+            .and_then(|index| targets.get(index.min(targets.len().saturating_sub(1))))
+            .cloned();
+        self.focused_position = self
+            .focused_target
+            .as_ref()
+            .and_then(|target| targets.iter().position(|candidate| candidate == target));
+    }
+
+    fn set_focused_target(&mut self, target: Option<SidebarFocusTarget>) {
+        self.focused_target = target;
+        self.focused_position = self.focused_target.as_ref().and_then(|current| {
+            self.focus_targets()
+                .iter()
+                .position(|candidate| candidate == current)
+        });
+    }
+
+    fn hovered_to_focus(hovered: &HoveredElement) -> Option<SidebarFocusTarget> {
+        match hovered {
+            HoveredElement::Section(section) => Some(SidebarFocusTarget::Section(*section)),
+            HoveredElement::Todo(index) => Some(SidebarFocusTarget::Todo(*index)),
+            HoveredElement::McpServer(index) => Some(SidebarFocusTarget::McpServer(*index)),
+            HoveredElement::FileChange(index) => Some(SidebarFocusTarget::FileChange(*index)),
+            HoveredElement::ToolProgram(id) => Some(SidebarFocusTarget::ToolProgram(id.clone())),
+            HoveredElement::AgentRun(id) => Some(SidebarFocusTarget::AgentRun(id.clone())),
+            HoveredElement::AgentTreeNode(id) => Some(SidebarFocusTarget::AgentTreeNode(*id)),
+            HoveredElement::Convergence(id) => Some(SidebarFocusTarget::Convergence(id.clone())),
+            HoveredElement::None => None,
+        }
+    }
+
+    fn toggle_section(&mut self, section: SidebarSection) {
+        match section {
+            SidebarSection::Goal => self.goal_collapsed = !self.goal_collapsed,
+            SidebarSection::Plan => self.plan_collapsed = !self.plan_collapsed,
+            SidebarSection::Todos => self.todos_collapsed = !self.todos_collapsed,
+            SidebarSection::FileChanges => {
+                self.file_changes_collapsed = !self.file_changes_collapsed
+            }
+            SidebarSection::ToolPrograms => {
+                self.tool_programs_collapsed = !self.tool_programs_collapsed
+            }
+            SidebarSection::AgentRuns => self.agent_runs_collapsed = !self.agent_runs_collapsed,
+            SidebarSection::Convergences => {
+                self.convergences_collapsed = !self.convergences_collapsed
+            }
+        }
+    }
+
+    fn set_section_collapsed(&mut self, section: SidebarSection, collapsed: bool) {
+        match section {
+            SidebarSection::Goal => self.goal_collapsed = collapsed,
+            SidebarSection::Plan => self.plan_collapsed = collapsed,
+            SidebarSection::Todos => self.todos_collapsed = collapsed,
+            SidebarSection::FileChanges => self.file_changes_collapsed = collapsed,
+            SidebarSection::ToolPrograms => self.tool_programs_collapsed = collapsed,
+            SidebarSection::AgentRuns => self.agent_runs_collapsed = collapsed,
+            SidebarSection::Convergences => self.convergences_collapsed = collapsed,
+        }
+    }
+
+    fn run_id_for_task(&self, task_id: u64) -> Option<String> {
+        self.agent_runs
+            .iter()
+            .find(|run| run.task_id.as_deref() == Some(task_id.to_string().as_str()))
+            .map(|run| run.run_id.clone())
+    }
+
+    fn detached_runs(&self) -> impl Iterator<Item = &SidebarAgentRun> {
+        self.agent_runs.iter().filter(|run| {
+            !self
+                .agent_tree
+                .iter()
+                .any(|node| run.task_id.as_deref() == Some(node.task_id.to_string().as_str()))
+        })
+    }
+
+    fn visible_agent_tree_rows(&self) -> Vec<SidebarAgentTreeRow> {
+        let mut by_id = HashMap::new();
+        for node in self.agent_tree.iter().cloned() {
+            by_id.insert(node.task_id, node);
+        }
+        let mut children: HashMap<Option<u64>, Vec<u64>> = HashMap::new();
+        for node in &self.agent_tree {
+            let parent = node.parent_task_id.filter(|id| by_id.contains_key(id));
+            children.entry(parent).or_default().push(node.task_id);
+        }
+        let mut output = Vec::new();
+        let mut visited = HashSet::new();
+        for id in children.get(&None).into_iter().flatten().copied() {
+            self.append_agent_tree_row(id, 0, &by_id, &children, &mut visited, &mut output);
+        }
+        // A malformed cycle must not hide all remaining bounded nodes.
+        for node in &self.agent_tree {
+            if !visited.contains(&node.task_id)
+                && !self.hidden_by_collapsed_ancestor(node.task_id, &by_id)
+            {
+                self.append_agent_tree_row(
+                    node.task_id,
+                    0,
+                    &by_id,
+                    &children,
+                    &mut visited,
+                    &mut output,
+                );
+            }
+        }
+        output
+    }
+
+    fn append_agent_tree_row(
+        &self,
+        id: u64,
+        depth: usize,
+        by_id: &HashMap<u64, AgentTreeNodeProjection>,
+        children: &HashMap<Option<u64>, Vec<u64>>,
+        visited: &mut HashSet<u64>,
+        output: &mut Vec<SidebarAgentTreeRow>,
+    ) {
+        if !visited.insert(id) {
+            return;
+        }
+        let Some(node) = by_id.get(&id).cloned() else {
+            return;
+        };
+        let has_children = children
+            .get(&Some(id))
+            .is_some_and(|items| !items.is_empty());
+        output.push(SidebarAgentTreeRow {
+            node,
+            depth,
+            has_children,
+            collapsed: self.collapsed_agent_nodes.contains(&id),
+        });
+        if !self.collapsed_agent_nodes.contains(&id) {
+            for child in children.get(&Some(id)).into_iter().flatten().copied() {
+                self.append_agent_tree_row(child, depth + 1, by_id, children, visited, output);
+            }
+        }
+    }
+
+    fn hidden_by_collapsed_ancestor(
+        &self,
+        id: u64,
+        by_id: &HashMap<u64, AgentTreeNodeProjection>,
+    ) -> bool {
+        let mut current = id;
+        let mut seen = HashSet::new();
+        while let Some(parent) = by_id.get(&current).and_then(|node| node.parent_task_id) {
+            if !seen.insert(parent) {
+                return false;
+            }
+            if self.collapsed_agent_nodes.contains(&parent) {
+                return true;
+            }
+            if !by_id.contains_key(&parent) {
+                return false;
+            }
+            current = parent;
+        }
+        false
     }
 
     pub fn scroll_up(&mut self, area: Rect) {
@@ -242,23 +728,9 @@ impl SidebarWidget {
             return false;
         };
 
-        match section {
-            SidebarSection::Goal => self.goal_collapsed = !self.goal_collapsed,
-            SidebarSection::Plan => self.plan_collapsed = !self.plan_collapsed,
-            SidebarSection::Todos => self.todos_collapsed = !self.todos_collapsed,
-            SidebarSection::FileChanges => {
-                self.file_changes_collapsed = !self.file_changes_collapsed;
-            }
-            SidebarSection::ToolPrograms => {
-                self.tool_programs_collapsed = !self.tool_programs_collapsed;
-            }
-            SidebarSection::AgentRuns => {
-                self.agent_runs_collapsed = !self.agent_runs_collapsed;
-            }
-            SidebarSection::Convergences => {
-                self.convergences_collapsed = !self.convergences_collapsed;
-            }
-        }
+        self.focused_target = Some(SidebarFocusTarget::Section(section));
+        self.toggle_section(section);
+        self.reconcile_focus();
         true
     }
 
@@ -402,19 +874,29 @@ impl SidebarWidget {
             targets.push(HoveredElement::None);
             targets.push(HoveredElement::Section(SidebarSection::ToolPrograms));
             if !self.tool_programs_collapsed {
-                for _ in 0..self.tool_programs.len() {
-                    targets.push(HoveredElement::None);
-                }
+                targets.extend(
+                    self.tool_programs
+                        .iter()
+                        .map(|program| HoveredElement::ToolProgram(program.program_id.clone())),
+                );
             }
         }
 
-        if !self.agent_runs.is_empty() {
+        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() {
             targets.push(HoveredElement::None);
             targets.push(HoveredElement::Section(SidebarSection::AgentRuns));
             if !self.agent_runs_collapsed {
-                for _ in &self.agent_runs {
-                    targets.push(HoveredElement::None);
+                if !self.agent_tree.is_empty() {
+                    targets.extend(
+                        self.visible_agent_tree_rows()
+                            .into_iter()
+                            .map(|row| HoveredElement::AgentTreeNode(row.node.task_id)),
+                    );
                 }
+                targets.extend(
+                    self.detached_runs()
+                        .map(|run| HoveredElement::AgentRun(run.run_id.clone())),
+                );
             }
         }
 
@@ -422,8 +904,10 @@ impl SidebarWidget {
             targets.push(HoveredElement::None);
             targets.push(HoveredElement::Section(SidebarSection::Convergences));
             if !self.convergences_collapsed {
-                for _ in &self.convergences {
-                    targets.push(HoveredElement::None);
+                for convergence in &self.convergences {
+                    targets.push(HoveredElement::Convergence(
+                        convergence.convergence_id.clone(),
+                    ));
                 }
             }
         }
@@ -534,7 +1018,11 @@ impl SidebarWidget {
 
         if self.goal.is_some() {
             lines.push(Line::from(""));
-            lines.push(self.collapsible_header(" Goal ", self.goal_collapsed));
+            lines.push(self.collapsible_header_for(
+                " Goal ",
+                self.goal_collapsed,
+                SidebarSection::Goal,
+            ));
             if let Some(ref goal) = self.goal {
                 if !self.goal_collapsed {
                     lines.push(Line::from(Span::styled(
@@ -548,9 +1036,10 @@ impl SidebarWidget {
         if let Some(ref plan) = self.plan {
             if !plan.items.is_empty() {
                 lines.push(Line::from(""));
-                lines.push(self.collapsible_header(
+                lines.push(self.collapsible_header_for(
                     &format!(" Plan ({}) ", plan.items.len()),
                     self.plan_collapsed,
+                    SidebarSection::Plan,
                 ));
                 if !self.plan_collapsed {
                     for item in &plan.items {
@@ -585,9 +1074,10 @@ impl SidebarWidget {
 
         if !self.todos.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.collapsible_header(
+            lines.push(self.collapsible_header_for(
                 &format!(" Todos ({}) ", self.todos.len()),
                 self.todos_collapsed,
+                SidebarSection::Todos,
             ));
             if !self.todos_collapsed {
                 for todo in &self.todos {
@@ -632,9 +1122,10 @@ impl SidebarWidget {
 
         if !self.file_changes.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.collapsible_header(
+            lines.push(self.collapsible_header_for(
                 &format!(" Modified Files ({}) ", self.file_changes.len()),
                 self.file_changes_collapsed,
+                SidebarSection::FileChanges,
             ));
             if !self.file_changes_collapsed {
                 for change in &self.file_changes {
@@ -693,9 +1184,10 @@ impl SidebarWidget {
 
         if !self.tool_programs.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.collapsible_header(
+            lines.push(self.collapsible_header_for(
                 &format!(" Tool Programs ({}) ", self.tool_programs.len()),
                 self.tool_programs_collapsed,
+                SidebarSection::ToolPrograms,
             ));
             if !self.tool_programs_collapsed {
                 for prog in &self.tool_programs {
@@ -712,27 +1204,95 @@ impl SidebarWidget {
                         .as_deref()
                         .map(|s| format!(" {}", clean_inline_text(s, width.saturating_sub(20))))
                         .unwrap_or_default();
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {} ", state_icon.0), state_icon.1),
-                        Span::styled(
-                            clean_inline_text(&short_id, 8),
-                            Style::default().fg(self.theme.muted),
-                        ),
-                        Span::raw(format!(" ({})", prog.state)),
-                        Span::raw(summary_part),
-                    ]));
+                    let target = SidebarFocusTarget::ToolProgram(prog.program_id.clone());
+                    lines.push(self.with_row_style(
+                        Line::from(vec![
+                            Span::styled(format!("  {} ", state_icon.0), state_icon.1),
+                            Span::styled(
+                                clean_inline_text(&short_id, 8),
+                                Style::default().fg(self.theme.muted),
+                            ),
+                            Span::raw(format!(" ({})", prog.state)),
+                            Span::raw(summary_part),
+                        ]),
+                        &target,
+                    ));
                 }
             }
         }
 
-        if !self.agent_runs.is_empty() {
+        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.collapsible_header(
-                &format!(" Agent Runs ({}) ", self.agent_runs.len()),
+            lines.push(self.collapsible_header_for(
+                &format!(
+                    " Agent Runs ({}) ",
+                    self.agent_tree.len().max(self.agent_runs.len())
+                ),
                 self.agent_runs_collapsed,
+                SidebarSection::AgentRuns,
             ));
             if !self.agent_runs_collapsed {
-                for run in &self.agent_runs {
+                if !self.agent_tree.is_empty() {
+                    for row in self.visible_agent_tree_rows() {
+                        let node = &row.node;
+                        let run = self.agent_runs.iter().find(|run| {
+                            run.task_id.as_deref() == Some(node.task_id.to_string().as_str())
+                        });
+                        let (icon, style) = match node.status {
+                            AgentTreeStatus::Completed => {
+                                ("✓", Style::default().fg(self.theme.success))
+                            }
+                            AgentTreeStatus::Failed => ("✗", Style::default().fg(self.theme.error)),
+                            AgentTreeStatus::Running => {
+                                ("●", Style::default().fg(self.theme.warning))
+                            }
+                        };
+                        let marker = if row.has_children {
+                            if row.collapsed {
+                                "[+]"
+                            } else {
+                                "[-]"
+                            }
+                        } else {
+                            "  "
+                        };
+                        let indent = "  ".repeat(row.depth.min(8));
+                        let identity = run
+                            .map(|run| run.run_id.chars().take(8).collect::<String>())
+                            .unwrap_or_else(|| format!("task-{}", node.task_id));
+                        let location = run
+                            .and_then(|run| run.branch.as_deref().or(run.worktree.as_deref()))
+                            .map(|value| format!(" {value}"))
+                            .unwrap_or_default();
+                        let commit = run
+                            .and_then(|run| run.result_commit.as_deref())
+                            .map(|value| {
+                                format!(" -> {}", value.chars().take(8).collect::<String>())
+                            })
+                            .unwrap_or_default();
+                        let progress = run
+                            .and_then(|run| run.progress.as_deref())
+                            .or(node.result_summary.as_deref())
+                            .map(|value| {
+                                format!(" {}", clean_inline_text(value, width.saturating_sub(25)))
+                            })
+                            .unwrap_or_default();
+                        let target = SidebarFocusTarget::AgentTreeNode(node.task_id);
+                        lines.push(self.with_row_style(
+                            Line::from(vec![
+                                Span::raw(indent),
+                                Span::styled(format!("{marker} {icon} "), style),
+                                Span::styled(identity, Style::default().fg(self.theme.muted)),
+                                Span::raw(format!(
+                                    " {}{}{}{}",
+                                    node.agent, location, commit, progress
+                                )),
+                            ]),
+                            &target,
+                        ));
+                    }
+                }
+                for run in self.detached_runs() {
                     let (icon, style) = if run.attention_required {
                         ("!", Style::default().fg(self.theme.error))
                     } else {
@@ -757,20 +1317,25 @@ impl SidebarWidget {
                         .as_deref()
                         .map(|value| format!(" -> {}", value.chars().take(8).collect::<String>()))
                         .unwrap_or_default();
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {icon} "), style),
-                        Span::styled(id, Style::default().fg(self.theme.muted)),
-                        Span::raw(format!(" {}{}{}", run.agent, location, commit)),
-                    ]));
+                    let target = SidebarFocusTarget::AgentRun(run.run_id.clone());
+                    lines.push(self.with_row_style(
+                        Line::from(vec![
+                            Span::styled(format!("  {icon} "), style),
+                            Span::styled(id, Style::default().fg(self.theme.muted)),
+                            Span::raw(format!(" {}{}{}", run.agent, location, commit)),
+                        ]),
+                        &target,
+                    ));
                 }
             }
         }
 
         if !self.convergences.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.collapsible_header(
+            lines.push(self.collapsible_header_for(
                 &format!(" Convergences ({}) ", self.convergences.len()),
                 self.convergences_collapsed,
+                SidebarSection::Convergences,
             ));
             if !self.convergences_collapsed {
                 for convergence in &self.convergences {
@@ -797,21 +1362,26 @@ impl SidebarWidget {
                         .as_deref()
                         .or(convergence.verifier_run_id.as_deref())
                         .unwrap_or("pending");
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {icon} "), style),
-                        Span::styled(id, Style::default().fg(self.theme.muted)),
-                        Span::raw(format!(
-                            " {} (cycle {}/{}, {} left) P:{}/{} V:{} F:{}",
-                            convergence.status,
-                            convergence.cycle_ordinal + 1,
-                            convergence.max_cycles,
-                            convergence.remaining_cycles,
-                            convergence.producer_completed,
-                            convergence.producer_completed + convergence.producer_active,
-                            clean_inline_text(verdict, width.saturating_sub(35)),
-                            convergence.last_finding_count,
-                        )),
-                    ]));
+                    let target =
+                        SidebarFocusTarget::Convergence(convergence.convergence_id.clone());
+                    lines.push(self.with_row_style(
+                        Line::from(vec![
+                            Span::styled(format!("  {icon} "), style),
+                            Span::styled(id, Style::default().fg(self.theme.muted)),
+                            Span::raw(format!(
+                                " {} (cycle {}/{}, {} left) P:{}/{} V:{} F:{}",
+                                convergence.status,
+                                convergence.cycle_ordinal + 1,
+                                convergence.max_cycles,
+                                convergence.remaining_cycles,
+                                convergence.producer_completed,
+                                convergence.producer_completed + convergence.producer_active,
+                                clean_inline_text(verdict, width.saturating_sub(35)),
+                                convergence.last_finding_count,
+                            )),
+                        ]),
+                        &target,
+                    ));
                 }
             }
         }
@@ -868,6 +1438,35 @@ impl SidebarWidget {
                     )
                 })
                 .unwrap_or_default(),
+            HoveredElement::ToolProgram(id) => self
+                .tool_programs
+                .iter()
+                .find(|program| &program.program_id == id)
+                .map(|program| format!("Tool program: {} ({})", id, program.state))
+                .unwrap_or_default(),
+            HoveredElement::AgentRun(id) => self
+                .agent_runs
+                .iter()
+                .find(|run| &run.run_id == id)
+                .map(|run| format!("Agent run: {} ({}) — Enter to inspect", id, run.status))
+                .unwrap_or_default(),
+            HoveredElement::AgentTreeNode(task_id) => self
+                .agent_tree
+                .iter()
+                .find(|node| node.task_id == *task_id)
+                .map(|node| {
+                    format!(
+                        "Agent {} ({:?}) — Enter to inspect",
+                        node.agent, node.status
+                    )
+                })
+                .unwrap_or_default(),
+            HoveredElement::Convergence(id) => self
+                .convergences
+                .iter()
+                .find(|item| &item.convergence_id == id)
+                .map(|item| format!("Convergence: {} ({})", id, item.status))
+                .unwrap_or_default(),
             HoveredElement::None => String::new(),
         }
     }
@@ -892,6 +1491,26 @@ impl SidebarWidget {
             Span::styled(format!("{marker} "), Style::default().fg(self.theme.muted)),
             Span::styled(label.to_string(), style),
         ])
+    }
+
+    fn collapsible_header_for(
+        &self,
+        label: &str,
+        collapsed: bool,
+        section: SidebarSection,
+    ) -> Line<'static> {
+        self.with_row_style(
+            self.collapsible_header(label, collapsed),
+            &SidebarFocusTarget::Section(section),
+        )
+    }
+
+    fn with_row_style(&self, line: Line<'static>, target: &SidebarFocusTarget) -> Line<'static> {
+        if self.focused_target.as_ref() == Some(target) {
+            line.style(self.theme.selection_style())
+        } else {
+            line
+        }
     }
 }
 
@@ -994,4 +1613,119 @@ pub fn clean_inline_text(value: &str, max_chars: usize) -> String {
 
     let keep = max_chars.saturating_sub(1);
     format!("{}…", out.chars().take(keep).collect::<String>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(
+        task_id: u64,
+        parent_task_id: Option<u64>,
+        status: AgentTreeStatus,
+    ) -> AgentTreeNodeProjection {
+        AgentTreeNodeProjection {
+            task_id,
+            agent: format!("agent-{task_id}"),
+            description: format!("description-{task_id}"),
+            status,
+            parent_task_id,
+            created_at: task_id as i64,
+            completed_at: None,
+            result_summary: None,
+        }
+    }
+
+    fn run(run_id: &str, task_id: &str) -> SidebarAgentRun {
+        SidebarAgentRun {
+            run_id: run_id.to_string(),
+            task_id: Some(task_id.to_string()),
+            agent: "agent".to_string(),
+            status: "completed".to_string(),
+            worktree: None,
+            branch: None,
+            result_commit: None,
+            attention_required: false,
+            progress: None,
+        }
+    }
+
+    #[test]
+    fn logical_focus_targets_follow_nested_collapse() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_agent_tree(vec![
+            node(1, None, AgentTreeStatus::Running),
+            node(2, Some(1), AgentTreeStatus::Completed),
+            node(3, Some(2), AgentTreeStatus::Failed),
+        ]);
+
+        assert_eq!(sidebar.focus_targets().len(), 4);
+        sidebar.focus_sidebar();
+        sidebar.focus_next();
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::AgentTreeNode(1))
+        );
+        sidebar.toggle_focused();
+        assert_eq!(sidebar.focus_targets().len(), 2);
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::AgentTreeNode(1))
+        );
+    }
+
+    #[test]
+    fn nested_agent_rows_are_parent_first_and_bounded() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_agent_tree(vec![
+            node(3, Some(2), AgentTreeStatus::Failed),
+            node(1, None, AgentTreeStatus::Running),
+            node(2, Some(1), AgentTreeStatus::Completed),
+        ]);
+        let rows = sidebar.visible_agent_tree_rows();
+        assert_eq!(
+            rows.iter().map(|row| row.node.task_id).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(
+            rows.iter().map(|row| row.depth).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(rows[2].node.status, AgentTreeStatus::Failed);
+    }
+
+    #[test]
+    fn selected_node_disappearance_clamps_without_rebinding_by_index() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_agent_tree(vec![
+            node(1, None, AgentTreeStatus::Running),
+            node(2, Some(1), AgentTreeStatus::Running),
+        ]);
+        sidebar.focus_sidebar();
+        sidebar.focus_next();
+        sidebar.focus_next();
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::AgentTreeNode(2))
+        );
+
+        sidebar.set_agent_tree(vec![node(1, None, AgentTreeStatus::Completed)]);
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::AgentTreeNode(1))
+        );
+    }
+
+    #[test]
+    fn leaf_tree_node_joins_exact_durable_task_id_for_inspection() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_agent_runs(vec![run("run-7", "7")]);
+        sidebar.set_agent_tree(vec![node(7, None, AgentTreeStatus::Completed)]);
+        sidebar.focus_sidebar();
+        sidebar.focus_next();
+        assert_eq!(
+            sidebar.activate_focused(),
+            SidebarActivation::InspectRun("run-7".to_string())
+        );
+    }
 }

@@ -426,6 +426,32 @@ loading transcripts or logs. Reconnect and resync replace the same projection
 state, so the TUI does not maintain a second run tree. Detailed worktree
 inspection and cleanup continue through the existing authorized commands.
 
+### Keyboard sidebar and agent-tree inspection (M009)
+
+`SidebarWidget` is a bounded projection/index, not an owner of run, job, or
+worktree state. Its `SidebarFocusTarget` identities are logical rows (section,
+task, run, tool-program, or convergence IDs), so keyboard navigation and mouse
+hit testing resolve the same target even when scrolling or collapse changes
+rendered line positions. Selection is presentation-only and is cleared when
+the active project scope changes.
+
+Normal-mode `Space` (and `a` in Vim normal mode) enters sidebar focus; `j/k` or
+the arrow keys move, PageUp/PageDown move by a bounded viewport step, `h/l`
+collapse/expand or move to an agent parent, Space toggles a collapsible row,
+Enter inspects, and Esc returns focus to the prompt. Ctrl+T toggles the sidebar
+and focuses it when opened. Modal dialogs remain above this surface under the
+canonical `FocusManager`.
+
+The Agent Runs section renders the active projection turn's bounded
+`agent_tree` in deterministic parent-first order with indentation, status,
+attention, progress, and joined branch/worktree/result-commit hints. A tree
+node joins a durable run only when its projection `task_id` exactly matches
+the durable summary's `task_id`; otherwise it remains a partial task row.
+Detached durable runs remain inspectable. Enter delegates to the existing lazy
+`OpenRunDetail`/RunStore surface and never copies transcripts, logs, or diffs
+into sidebar state. The tree is capped independently at 64 source nodes and
+inherits the projection's reconnect/replay bounds.
+
 ### UiState (`src/tui/app/state/ui.rs:40`)
 
 ```rust

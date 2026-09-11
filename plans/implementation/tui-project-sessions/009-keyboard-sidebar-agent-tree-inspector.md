@@ -1,6 +1,6 @@
 # Multi-Project TUI Frontend Convergence M009 — Keyboard Sidebar and Agent-Tree Inspector
 
-Status: blocked — hard dependency on M007
+Status: closing
 
 Repository baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 
@@ -37,11 +37,15 @@ Closure record to create: `plans/closure/tui-project-sessions/009-status.md`
 
 Make the existing sidebar/activity surface fully keyboard-operable and expose the canonical nested agent hierarchy through that surface. The implementation should evolve the current `AgentRuns` sidebar section into a bounded tree/inspector backed by existing session projection and durable run metadata, with detail delegated to existing on-demand run/source/artifact surfaces rather than copying large output into sidebar state.
 
-## 2. Why this milestone is blocked/readiness condition
+## 2. Why this milestone is ready
 
 The backend capability is already present: session projections carry bounded `agent_tree` state, durable agent runs own lineage/worktree/result metadata, and observer projection semantics are closed. The sidebar also already renders several activity families. What is missing is a stable keyboard/focus contract and tree presentation.
 
-M007 must close first because M009 should reuse one canonical focus/navigation model rather than building a second sidebar-only focus mechanism that conflicts with modal/prompt focus.
+M007 is closed in `plans/closure/tui-project-sessions/007-status.md` and provides the
+canonical modal/focus ownership contract. M005, M006, M008, the session projection
+interfaces, and the durable agent-run interfaces are also closed or stable. M009 can
+therefore add presentation-only sidebar selection while routing modal/detail focus
+through the existing `FocusManager` boundary.
 
 ## 3. Current implementation evidence
 

@@ -109,6 +109,7 @@ pub enum InputAction {
     ClearSession,
     NewSession,
     ToggleSidebar,
+    FocusSidebar,
     ToggleSection,
     CloseSession,
     Help,
@@ -161,6 +162,7 @@ pub enum ActionKey {
     ClearSession,
     NewSession,
     ToggleSidebar,
+    FocusSidebar,
     ToggleSection,
     CloseSession,
     Help,
@@ -265,6 +267,12 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
         InputAction::ToggleSidebar,
+    );
+    // In normal mode this focuses the sidebar; insert mode deliberately
+    // treats bare printable keys as prompt text.
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char(' ')),
+        InputAction::FocusSidebar,
     );
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('w')),
@@ -417,6 +425,11 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('i')),
         InputAction::FocusPrompt,
+    );
+    // Vim normal mode equivalent of the documented "Space a" concept.
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('a')),
+        InputAction::FocusSidebar,
     );
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char(':')),
@@ -716,6 +729,30 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             key: "j/k",
             action: "Navigate up/down",
             condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Space / a",
+            action: "Focus sidebar (agent tree)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Enter",
+            action: "Inspect sidebar selection",
+            condition: Some("sidebar focus"),
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "h/l or ←/→",
+            action: "Collapse/expand sidebar row",
+            condition: Some("sidebar focus"),
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Esc",
+            action: "Leave sidebar focus",
+            condition: Some("sidebar focus"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1178,6 +1215,7 @@ pub fn build_bindings(
                     ClearSession,
                     NewSession,
                     ToggleSidebar,
+                    FocusSidebar,
                     ToggleSection,
                     CloseSession,
                     Help,
@@ -1467,6 +1505,19 @@ mod tests {
         let key = make_key(KeyCode::Char('k'), KeyModifiers::NONE);
         let result = handle_key_with_bindings(key, None, InputMode::Insert);
         assert_eq!(result, Some(InputAction::Char('k')));
+    }
+
+    #[test]
+    fn sidebar_focus_binding_is_normal_only_and_insert_space_remains_text() {
+        let key = make_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Normal),
+            Some(InputAction::FocusSidebar)
+        );
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Insert),
+            Some(InputAction::Char(' '))
+        );
     }
 
     #[test]

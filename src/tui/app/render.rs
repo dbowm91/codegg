@@ -858,6 +858,8 @@ impl App {
 
     fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
         self.sidebar.set_theme(&self.ui_state.theme);
+        let project_scope = self.active_project_id().map(str::to_string);
+        self.sidebar.set_project_scope(project_scope.as_deref());
         if let Some(ref sess) = self.session_state.session {
             self.sidebar.set_session(sess);
         }
@@ -939,14 +941,29 @@ impl App {
                     .iter()
                     .map(|run| SidebarAgentRun {
                         run_id: run.run_id.clone(),
+                        task_id: Some(run.task_id.clone()),
                         agent: run.agent.clone(),
                         status: run.status.clone(),
                         worktree: run.worktree_id.clone(),
                         branch: run.branch.clone(),
                         result_commit: run.result_commit.clone(),
                         attention_required: run.attention_required,
+                        progress: run.progress.clone(),
                     })
                     .collect(),
+            );
+            self.sidebar.set_agent_tree(
+                snapshot
+                    .active_turn
+                    .as_ref()
+                    .map(|turn| turn.agent_tree.iter().cloned().collect())
+                    .or_else(|| {
+                        snapshot
+                            .recent_turns
+                            .front()
+                            .map(|turn| turn.agent_tree.iter().cloned().collect())
+                    })
+                    .unwrap_or_default(),
             );
             self.sidebar.set_convergences(
                 snapshot
@@ -972,6 +989,7 @@ impl App {
         } else {
             self.sidebar.set_tool_programs(Vec::new());
             self.sidebar.set_agent_runs(Vec::new());
+            self.sidebar.set_agent_tree(Vec::new());
             self.sidebar.set_convergences(Vec::new());
         }
 

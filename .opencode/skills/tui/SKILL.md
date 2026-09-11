@@ -90,6 +90,11 @@ root and lifecycle modules.
 
 ## Other Invariants
 
+- **Sidebar focus is projection-only**: `SidebarFocusTarget` identities are
+  shared by keyboard navigation and mouse hit testing. Selection is cleared on
+  project-scope changes, and the bounded `agent_tree` is joined to durable
+  runs only by exact canonical task IDs. Enter opens the existing lazy run
+  detail surface; it never copies transcripts or logs into sidebar state.
 - **Git sidebar is cached**: `GitSidebarState` caches git info; stale
   generations are dropped silently. Do not render git state live per frame.
 - **Remote protocol is event/state-driven**: the `/tui` WebSocket speaks the

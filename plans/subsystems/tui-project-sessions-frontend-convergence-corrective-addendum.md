@@ -324,5 +324,5 @@ The original M001-M004 closure records remain historical evidence and must not b
 | M006 | closed | `plans/implementation/tui-project-sessions/006-nonblocking-session-submit-lifecycle.md` | `plans/closure/tui-project-sessions/006-status.md` | — |
 | M007 | closed | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | `plans/closure/tui-project-sessions/007-status.md` | — |
 | M008 | closed | `plans/implementation/tui-project-sessions/008-app-domain-decomposition-intent-effect-boundaries.md` | `plans/closure/tui-project-sessions/008-status.md` | — |
-| M009 | ready | `plans/implementation/tui-project-sessions/009-keyboard-sidebar-agent-tree-inspector.md` | `plans/closure/tui-project-sessions/009-status.md` | soft: M005; M009 hard dependency M007 is closed |
+| M009 | closing | `plans/implementation/tui-project-sessions/009-keyboard-sidebar-agent-tree-inspector.md` | `plans/closure/tui-project-sessions/009-status.md` | closure evidence in progress |
 | M010 | ready | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` | soft: M009 |

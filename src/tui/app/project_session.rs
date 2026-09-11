@@ -112,6 +112,8 @@ impl App {
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
         let switched = self.project_tabs.set_active(tab_id);
         if switched {
+            let project_scope = self.active_project_id().map(str::to_string);
+            self.sidebar.set_project_scope(project_scope.as_deref());
             self.invalidate_pending_session_submit(false);
             self.projection_client
                 .set_active_tab(Some(tab_id.as_str().to_string()));
