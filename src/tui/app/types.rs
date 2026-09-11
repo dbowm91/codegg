@@ -89,6 +89,10 @@ impl Dialog {
     }
 }
 
+/// Synchronous component/user intent consumed by `App::process_msg`.
+///
+/// This enum is not a completion channel. Intent handlers may update cached
+/// UI state or enqueue a typed `TuiCommand` effect for the runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TuiMsg {
     SubmitPrompt,

@@ -1,4 +1,11 @@
 //! Command dispatch: routes TuiCommand variants to handler functions.
+//!
+//! This is intentionally the single runtime entry point. The match is grouped
+//! by existing domain handlers (sessions, project/projection, prompt/turn,
+//! plugin UI, shell/terminal, and diagnostics) rather than introducing a
+//! second router. Request variants start bounded work; completion variants
+//! synchronously apply typed results and retain their existing stale/context
+//! guards.
 
 use super::super::app::state::session::GitSidebarInfo;
 use super::super::app::{send_tui, App, TuiCommand};

@@ -666,8 +666,15 @@ Key events mapped to: `Send`, `Newline`, `Cancel`, `NavigateUp`/`Down`,
 ```
 tui/
 ├── app/
-│   ├── mod.rs              # App struct, event loop, key handling (~15,340 lines)
-│   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
+│   ├── mod.rs              # App composition root, construction, facade, shutdown
+│   ├── types.rs            # Dialog, TuiMsg, and stable app-facing values
+│   ├── commands.rs         # TuiCommand effect requests/completions
+│   ├── render.rs           # Cached render composition and view preparation
+│   ├── input.rs            # Synchronous TuiMsg intent routing
+│   ├── project_session.rs  # Active project/session and projection lifecycle
+│   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
+│   ├── modal.rs            # FocusManager-backed modal lifecycle
+│   ├── plugin_ui.rs        # Validated plugin UI effect application
 │   └── state/              # 18 state domain modules
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
@@ -780,6 +787,30 @@ tui/
 │   └── shell.rs            # shell_detail_node for /shell-show
 └── mod.rs                  # TUI entry point, module declarations, re-exports
 ```
+
+### App ownership and message direction
+
+`App` remains the sole TUI composition root. The `app/` modules are
+responsibility-oriented implementation families, not alternate coordinators or
+state stores:
+
+| Responsibility | Owner | Boundary |
+|---|---|---|
+| Composition, construction, facade, shutdown | `app/mod.rs` | owns the `App` aggregate |
+| Render composition/view preparation | `app/render.rs` | cached state only; no I/O or async work |
+| Component/user intent | `app/types.rs`, `app/input.rs` | `TuiMsg` is synchronous UI intent |
+| Effect requests/completions | `app/commands.rs` | `TuiCommand` crosses the runtime channel |
+| Project/session/projection lifecycle | `app/project_session.rs` | active-tab and reconnect guards |
+| Prompt/turn start | `app/prompt_turn.rs` | immutable route capture before continuation |
+| Modal lifecycle | `app/modal.rs` | M007 `FocusManager` is the live owner |
+| Plugin UI effects | `app/plugin_ui.rs` | bounds/ownership validation and lowering |
+| Runtime routing | `runtime/command_dispatch.rs` | one top-level dispatcher |
+
+`TuiMsg` describes an intent already on the synchronous UI side; it may mutate
+cached UI state or enqueue an explicit `TuiCommand`. `TuiCommand` carries an
+effect request to the runtime or a typed asynchronous completion back to the
+`App` state owner. Completions do not enter through `process_msg`, and render
+code never starts asynchronous work.
 
 ### UiNode Builders (`ui_builders/`)
 

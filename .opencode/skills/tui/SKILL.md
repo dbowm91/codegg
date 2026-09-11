@@ -13,14 +13,22 @@ tags:
 
 Operational guide for making changes to `src/tui/`. The full module contract
 lives in `architecture/tui.md`; this skill covers the patterns you must follow
-to avoid breaking invariants that are easy to violate in a 15K-line `mod.rs`.
+to avoid breaking invariants that are easy to violate across the TUI composition
+root and lifecycle modules.
 
 ## Layout
 
 | Path | Purpose |
 |------|---------|
-| `src/tui/app/mod.rs` | The `App` struct (~15K lines). State, rendering, event handling. |
-| `src/tui/app/types.rs` | `Dialog` enum and app-level types |
+| `src/tui/app/mod.rs` | `App` composition root, construction, facade, shutdown |
+| `src/tui/app/types.rs` | `Dialog`, `TuiMsg`, and stable app-facing types |
+| `src/tui/app/commands.rs` | `TuiCommand` effect requests/completions |
+| `src/tui/app/render.rs` | Cached render composition; no I/O or async work |
+| `src/tui/app/input.rs` | Synchronous `TuiMsg` processing |
+| `src/tui/app/project_session.rs` | Active project/session and projection lifecycle |
+| `src/tui/app/prompt_turn.rs` | Prompt submission and route-safe turn start |
+| `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
+| `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
 | `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope and `async_request.rs` holds the finish/fail guard |
 | `src/tui/command.rs` | Slash-command registry (`CommandRegistry::built_in_commands()`) |
 | `src/tui/commands/` | 19 command-handler submodules (sessions, git_sidebar, research, ...) |
@@ -29,6 +37,19 @@ to avoid breaking invariants that are easy to violate in a 15K-line `mod.rs`.
 | `src/tui/async_cmd.rs` | `spawn_tui_task` / `spawn_registered_tui_task` |
 | `src/tui/task_lifecycle.rs` | `TuiTaskRegistry` - tracks spawned background tasks on `App` |
 | `src/tui/components/` | Widgets; `component.rs` has `DialogType`, `focus.rs` has `FocusManager` |
+
+### Intent/effect direction
+
+- `TuiMsg` is synchronous component/user intent. `App::process_msg` applies
+  immediate UI state changes or enqueues an explicit runtime effect.
+- `TuiCommand` is the runtime-channel boundary. Request variants start work
+  through existing domain handlers; completion variants carry typed results
+  back for synchronous `App` mutation.
+- Do not add daemon completions to `TuiMsg`, or use `process_msg` as a
+  completion router. Keep one top-level `runtime/command_dispatch.rs` entry
+  point.
+- Render modules may only read cached state and prepare widgets. They must not
+  perform filesystem, network, daemon, process, or blocking work.
 
 ## Adding a New Command
 
