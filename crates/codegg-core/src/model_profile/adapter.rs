@@ -275,12 +275,26 @@ fn match_score(m: &AdapterMatch, provider: &str, model: &str) -> Option<u32> {
         }
     }
     if let Some(x) = &m.model_regex {
-        if !Regex::new(x).ok()?.is_match(model) {
+        let re = match Regex::new(x) {
+            Ok(re) => re,
+            Err(error) => {
+                tracing::warn!(pattern = %x, %error, "invalid adapter model_regex; treating as non-match");
+                return None;
+            }
+        };
+        if !re.is_match(model) {
             return None;
         }
     }
     if let Some(x) = &m.exclude_regex {
-        if Regex::new(x).ok()?.is_match(model) {
+        let re = match Regex::new(x) {
+            Ok(re) => re,
+            Err(error) => {
+                tracing::warn!(pattern = %x, %error, "invalid adapter exclude_regex; treating as non-match");
+                return None;
+            }
+        };
+        if re.is_match(model) {
             return None;
         }
     }

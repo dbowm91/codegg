@@ -29,10 +29,10 @@ impl EventProcessor {
         }
     }
 
-    pub fn process(&mut self, event: ChatEvent) {
+    pub fn process(&mut self, event: &ChatEvent) {
         match event {
             ChatEvent::TextDelta(text) => {
-                self.accumulated_text.push_str(&text);
+                self.accumulated_text.push_str(text);
             }
             ChatEvent::ReasoningDelta(reasoning) => {
                 if self.accumulated_reasoning.len() < MAX_REASONING_BYTES {
@@ -50,7 +50,7 @@ impl EventProcessor {
                 }
             }
             ChatEvent::ToolCall(tc) => {
-                self.tool_calls.push(tc);
+                self.tool_calls.push(tc.clone());
             }
             ChatEvent::ToolResult {
                 tool_call_id,

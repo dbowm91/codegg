@@ -115,19 +115,41 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
 
 fn register_builtin_handler(id: &str, handler: fn(HookContext) -> HookResult) {
     let plugin_name = id.strip_prefix("builtin:").unwrap_or(id);
-    if let Ok(mut handlers) = BUILTIN_HANDLERS.write() {
-        handlers.insert(plugin_name.to_string(), handler);
+    match BUILTIN_HANDLERS.write() {
+        Ok(mut handlers) => {
+            handlers.insert(plugin_name.to_string(), handler);
+            tracing::info!(id = id, "registered builtin plugin handler");
+        }
+        Err(error) => {
+            tracing::error!(
+                id = id,
+                ?error,
+                "builtin handler lock poisoned; handler not registered"
+            );
+        }
     }
-    tracing::info!(id = id, "registered builtin plugin handler");
 }
 
 pub fn builtin_hook_handler(plugin_name: &str, ctx: HookContext) -> HookResult {
-    if let Ok(handlers) = BUILTIN_HANDLERS.read() {
-        if let Some(handler) = handlers.get(plugin_name) {
-            return handler(ctx);
+    match BUILTIN_HANDLERS.read() {
+        Ok(handlers) => {
+            if let Some(handler) = handlers.get(plugin_name) {
+                return handler(ctx);
+            }
+            HookResult::error(format!("unknown builtin plugin: {}", plugin_name))
+        }
+        Err(error) => {
+            tracing::error!(
+                plugin_name = plugin_name,
+                ?error,
+                "builtin handler lock poisoned"
+            );
+            HookResult::error(format!(
+                "builtin plugin registry unavailable (lock poisoned): {}",
+                plugin_name
+            ))
         }
     }
-    HookResult::error(format!("unknown builtin plugin: {}", plugin_name))
 }
 
 pub fn make_builtin_info(

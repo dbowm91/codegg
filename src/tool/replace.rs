@@ -208,18 +208,10 @@ impl Tool for ReplaceTool {
                 )));
             }
 
-            let group_count = {
-                let test_re = Regex::new(&pattern_clone)
-                    .map_err(|e| ToolError::Execution(format!("invalid regex pattern: {}", e)))?;
-                test_re.capture_names().flatten().count()
-            };
-            if group_count > MAX_PATTERN_GROUPS {
-                return Err(ToolError::Execution(format!(
-                    "too many capture groups (max {})",
-                    MAX_PATTERN_GROUPS
-                )));
-            }
-
+            // Compile once with the `whole` wrapper and validate group count
+            // against what actually executes (previously the bare pattern was
+            // compiled separately, paying 2x compile cost and validating a
+            // different pattern than the one executed).
             let regex_pattern = if case_sensitive {
                 format!("(?P<whole>{})", pattern_clone)
             } else {
@@ -228,6 +220,14 @@ impl Tool for ReplaceTool {
 
             let re = Regex::new(&regex_pattern)
                 .map_err(|e| ToolError::Execution(format!("invalid regex pattern: {}", e)))?;
+            // Subtract the synthetic `whole` wrapper group.
+            let group_count = re.capture_names().flatten().count().saturating_sub(1);
+            if group_count > MAX_PATTERN_GROUPS {
+                return Err(ToolError::Execution(format!(
+                    "too many capture groups (max {})",
+                    MAX_PATTERN_GROUPS
+                )));
+            }
 
             let metadata = std::fs::metadata(&canonical)
                 .map_err(|e| ToolError::Execution(format!("failed to read file metadata: {}", e)))?;

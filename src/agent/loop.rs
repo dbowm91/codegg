@@ -1205,7 +1205,7 @@ impl AgentLoop {
                 };
 
             for event in &events {
-                processor.process(event.clone());
+                processor.process(event);
             }
             all_events.extend(events);
 
@@ -1335,29 +1335,42 @@ impl AgentLoop {
             // never copied into recovery diagnostics.
             let recovery_batch = 0;
             let mut recovery_stalled = false;
-            for tc in &tool_calls {
-                let outcome = tool_results
+            // O(1) lookup per tool call (was an O(N) scan per call, O(N²)
+            // overall). Outcomes are borrowed; no per-call clone of the
+            // (potentially large) model text.
+            let outcome_by_id: std::collections::HashMap<&str, &ToolExecutionOutcome> =
+                tool_results
                     .iter()
-                    .find(|(id, _)| id == tc.id.as_ref())
-                    .map(|(_, outcome)| outcome.clone())
-                    .unwrap_or_else(|| ToolExecutionOutcome {
-                        status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                        model_text: String::new(),
-                    });
+                    .map(|(id, outcome)| (id.as_str(), outcome))
+                    .collect();
+            for tc in &tool_calls {
+                let missing_outcome;
+                let outcome: &ToolExecutionOutcome = match outcome_by_id.get(tc.id.as_str()) {
+                    Some(outcome) => outcome,
+                    None => {
+                        missing_outcome = ToolExecutionOutcome {
+                            status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                            model_text: String::new(),
+                        };
+                        &missing_outcome
+                    }
+                };
                 let output = &outcome.model_text;
                 let effect_class = self
                     .services
                     .tool_registry
                     .get(&tc.name)
                     .map(|tool| tool.contract(&tc.name, tool.parameters()).effect_class);
+                // Bind once; the two fields each need an owned `String`.
+                let tool_name = tc.name.to_string();
                 let observation = ProgressObservation {
                     action: if tc.name.trim().is_empty() {
                         ActionClass::MalformedCall
                     } else {
                         ActionClass::StructuredCall
                     },
-                    canonical_tool: Some(tc.name.to_string()),
-                    wire_tool: Some(tc.name.to_string()),
+                    canonical_tool: Some(tool_name.clone()),
+                    wire_tool: Some(tool_name),
                     argument_fingerprint: Some(
                         crate::agent::progress_recovery::fingerprint(
                             &crate::agent::progress_recovery::normalize_json(&tc.arguments),
@@ -1374,7 +1387,7 @@ impl AgentLoop {
                     new_evidence: false,
                     state_changed: observed_file_change
                         && is_file_modifying_tool(&tc.name)
-                        && tool_outcome_is_success(&outcome),
+                        && tool_outcome_is_success(outcome),
                     // A successful task submission is not itself a child
                     // transition. Child progress is populated only by a
                     // concrete child-state observation, when one is exposed.
@@ -1382,7 +1395,7 @@ impl AgentLoop {
                     selected_surface_fingerprint: None,
                     batch_id: recovery_batch,
                 };
-                match autonomy.observe_tool_result(&outcome, observation) {
+                match autonomy.observe_tool_result(outcome, observation) {
                     RecoveryDecision::Progress => self.services.recovery_parallel_limit = None,
                     RecoveryDecision::Recover { action, incident } => {
                         let instruction = match action {

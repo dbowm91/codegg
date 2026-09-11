@@ -133,6 +133,13 @@ pub struct ToolExecutionContext {
 impl ToolExecutionContext {
     /// Build a context with the given backend and the current
     /// working directory. Other fields default to `None`.
+    ///
+    /// Test / fallback constructor only: the CWD fallback inherits wherever
+    /// the process happened to start and bypasses
+    /// [`codegg_core::workspace::ExecutionContext`] (`workspace_root`,
+    /// `workspace_id`). Production daemon paths must overwrite `cwd` from
+    /// the resolved workspace root / `WorkspacePathPolicy` (as `TurnRunInput`
+    /// already carries) instead of relying on this default.
     pub fn with_backend(backend: ToolBackendKind) -> Self {
         Self {
             backend,

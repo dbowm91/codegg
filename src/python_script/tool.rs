@@ -104,7 +104,7 @@ pub(crate) async fn write_python_run_artifacts(
     use codegg_core::run_store::*;
 
     if !result.stdout.is_empty() {
-        let _ = store
+        if let Err(e) = store
             .write_artifact(
                 handle,
                 ArtifactInput {
@@ -114,11 +114,14 @@ pub(crate) async fn write_python_run_artifacts(
                     safe_for_model: false,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!("python script: failed to write stdout artifact: {e}");
+        }
     }
 
     if !result.stderr.is_empty() {
-        let _ = store
+        if let Err(e) = store
             .write_artifact(
                 handle,
                 ArtifactInput {
@@ -128,11 +131,14 @@ pub(crate) async fn write_python_run_artifacts(
                     safe_for_model: false,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!("python script: failed to write stderr artifact: {e}");
+        }
     }
 
     if let Some(ref diff) = result.diff {
-        let _ = store
+        if let Err(e) = store
             .write_artifact(
                 handle,
                 ArtifactInput {
@@ -142,7 +148,10 @@ pub(crate) async fn write_python_run_artifacts(
                     safe_for_model: false,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!("python script: failed to write diff artifact: {e}");
+        }
     }
 }
 
@@ -162,7 +171,7 @@ pub(crate) async fn complete_python_run(
         super::types::PythonRunStatus::SpawnError => RunStatus::Failed,
     };
 
-    let _ = store
+    if let Err(e) = store
         .complete_run(
             handle.clone(),
             RunCompletion {
@@ -189,7 +198,10 @@ pub(crate) async fn complete_python_run(
                 fallback: None,
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!("python script: failed to complete RunStore run: {e}");
+    }
 
     Some(handle.run_id)
 }

@@ -117,7 +117,7 @@ impl AgentLoop {
                     };
 
                 for event in &events {
-                    processor.process(event.clone());
+                    processor.process(event);
                 }
                 all_events.extend(events);
 

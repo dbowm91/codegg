@@ -3238,7 +3238,7 @@ pub fn apply_redaction_hook(result: &mut ProjectionResult, _target: ProjectionTa
         return;
     }
 
-    let redactor = crate::shell::redactor::Redactor::new();
+    let redactor = crate::shell::redactor::shared_redactor();
     let output = redactor.redact(&result.text);
 
     if output.replacements > 0 {

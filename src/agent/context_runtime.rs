@@ -1112,7 +1112,7 @@ Current session context: [old frame here that would have been clobbered]";
         events: Vec<crate::provider::ChatEvent>,
     ) -> Option<crate::context::NormalizedProviderUsage> {
         let mut processor = EventProcessor::new();
-        for evt in events {
+        for evt in &events {
             processor.process(evt);
         }
         if !processor.is_complete() {

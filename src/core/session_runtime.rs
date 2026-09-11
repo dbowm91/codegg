@@ -52,6 +52,56 @@ pub enum AttachMode {
     ExclusiveControl,
 }
 
+/// Best-effort point-in-time view of a [`SessionRuntime`].
+///
+/// This snapshot is **eventually consistent, not atomic**: fields are read
+/// across several separate locks, so runtime state may change between reads
+/// (e.g. `has_active_turn` may disagree with `active_subagent_count` under
+/// concurrent mutation). Consumers must tolerate torn reads; the snapshot is
+/// suitable for diagnostic surfaces such as `SnapshotDaemon`, not for
+/// admission or authorization decisions.
+#[derive(Debug, Clone)]
+pub struct SessionRuntimeSnapshot {
+    pub status: RuntimeSessionStatus,
+    pub selected_model: Option<String>,
+    pub selected_agent: Option<String>,
+    pub has_active_turn: bool,
+    pub pending_permissions: Vec<String>,
+    pub pending_questions: Vec<String>,
+    pub input_tokens: Option<usize>,
+    pub output_tokens: Option<usize>,
+    pub active_subagents: usize,
+}
+
+impl SessionRuntime {
+    /// Capture a best-effort snapshot of the lock-protected runtime fields.
+    ///
+    /// See [`SessionRuntimeSnapshot`] for the consistency contract.
+    pub async fn snapshot(&self) -> SessionRuntimeSnapshot {
+        SessionRuntimeSnapshot {
+            status: self.status.read().await.clone(),
+            selected_model: self.selected_model.read().await.clone(),
+            selected_agent: self.selected_agent.read().await.clone(),
+            has_active_turn: self.active_turn.read().await.is_some(),
+            pending_permissions: self
+                .pending_permissions
+                .iter()
+                .map(|r| r.key().clone())
+                .collect(),
+            pending_questions: self
+                .pending_questions
+                .iter()
+                .map(|r| r.key().clone())
+                .collect(),
+            input_tokens: *self.last_input_tokens.read().await,
+            output_tokens: *self.last_output_tokens.read().await,
+            active_subagents: self
+                .active_subagent_count
+                .load(std::sync::atomic::Ordering::Acquire),
+        }
+    }
+}
+
 pub struct TurnHandle {
     pub turn_id: String,
     pub cancel_tx: watch::Sender<bool>,

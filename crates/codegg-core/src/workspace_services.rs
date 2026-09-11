@@ -280,18 +280,18 @@ impl WorkspaceServices {
     /// every successful `acquire`.
     pub fn touch(&self) {
         self.last_used_at
-            .store(Utc::now().timestamp(), Ordering::Relaxed);
+            .store(Utc::now().timestamp(), Ordering::Release);
     }
 
     /// Increment the active-lease counter.
     fn increment_leases(&self) {
-        self.active_leases.fetch_add(1, Ordering::Relaxed);
+        self.active_leases.fetch_add(1, Ordering::AcqRel);
         self.touch();
     }
 
     /// Decrement the active-lease counter.
     fn decrement_leases(&self) {
-        let _ = self.active_leases.fetch_sub(1, Ordering::Release);
+        let _ = self.active_leases.fetch_sub(1, Ordering::AcqRel);
         self.touch();
     }
 
@@ -302,7 +302,9 @@ impl WorkspaceServices {
             canonical_root: self.workspace.canonical_root.clone(),
             display_name: self.workspace.display_name.clone(),
             activated_at: self.activated_at,
-            last_used_at: Utc::now(),
+            // Report the stored last-use time, not the snapshot time.
+            last_used_at: DateTime::from_timestamp(self.last_used_at.load(Ordering::Acquire), 0)
+                .unwrap_or_else(Utc::now),
             active_leases: self.active_leases.load(Ordering::Acquire),
             config_revision: self.config_snapshot.revision,
         }

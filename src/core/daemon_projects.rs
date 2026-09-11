@@ -355,25 +355,19 @@ impl CoreDaemon {
                 let mut snapshots = Vec::new();
                 for sid in &session_ids {
                     if let Some(runtime) = self.sessions.get(sid) {
-                        let status = format!("{:?}", *runtime.status.read().await);
-                        let model = runtime.selected_model.read().await.clone();
-                        let agent = runtime.selected_agent.read().await.clone();
-                        let has_active_turn = runtime.active_turn.read().await.is_some();
-                        let pending_permissions: Vec<String> = runtime
-                            .pending_permissions
-                            .iter()
-                            .map(|r| r.key().clone())
-                            .collect();
-                        let pending_questions: Vec<String> = runtime
-                            .pending_questions
-                            .iter()
-                            .map(|r| r.key().clone())
-                            .collect();
-                        let input_tokens = *runtime.last_input_tokens.read().await;
-                        let output_tokens = *runtime.last_output_tokens.read().await;
-                        let active_subagents = runtime
-                            .active_subagent_count
-                            .load(std::sync::atomic::Ordering::Relaxed);
+                        // Best-effort, eventually-consistent snapshot (see
+                        // `SessionRuntime::snapshot`); state may race with
+                        // live turns between fields.
+                        let snap = runtime.snapshot().await;
+                        let status = format!("{:?}", snap.status);
+                        let model = snap.selected_model;
+                        let agent = snap.selected_agent;
+                        let has_active_turn = snap.has_active_turn;
+                        let pending_permissions = snap.pending_permissions;
+                        let pending_questions = snap.pending_questions;
+                        let input_tokens = snap.input_tokens;
+                        let output_tokens = snap.output_tokens;
+                        let active_subagents = snap.active_subagents;
                         snapshots.push(crate::protocol::core::SessionSnapshot {
                             session_id: sid.clone(),
                             project_id: runtime.project_id.clone(),

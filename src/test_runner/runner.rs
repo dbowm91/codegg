@@ -595,7 +595,12 @@ async fn kill_child(child: &mut Child) {
             let Ok(pgid) = libc::pid_t::try_from(pid) else {
                 tracing::error!(pid, "child PID cannot be represented as a process-group ID");
                 let _ = child.kill().await;
-                let _ = tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait()).await;
+                if tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait())
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("test child did not exit within graceful-kill timeout; continuing best-effort reaping");
+                }
                 return;
             };
             // Safety: -pgid targets the process group led by this child.
@@ -608,7 +613,14 @@ async fn kill_child(child: &mut Child) {
     {
         let _ = child.kill().await;
     }
-    let _ = tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait()).await;
+    if tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "test child did not exit within graceful-kill timeout; continuing best-effort reaping"
+        );
+    }
 }
 
 fn build_report(

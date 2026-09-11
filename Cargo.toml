@@ -214,7 +214,7 @@ path = "tests/identity_m002_transport_auth.rs"
 required-features = ["server"]
 
 [profile.release]
-lto = true
+lto = "thin"
 strip = true
 codegen-units = 1
 

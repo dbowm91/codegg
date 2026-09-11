@@ -169,7 +169,7 @@ impl ExecMode {
                 let mut total_tokens = 0;
 
                 for event in &events {
-                    processor.process(event.clone());
+                    processor.process(event);
                     if let ChatEvent::ToolCall(tc) = event {
                         let tool_name = tc.name.to_string();
                         if !tools_used.contains(&tool_name) {

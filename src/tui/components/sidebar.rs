@@ -616,16 +616,19 @@ impl SidebarWidget {
     fn run_id_for_task(&self, task_id: u64) -> Option<String> {
         self.agent_runs
             .iter()
-            .find(|run| run.task_id.as_deref() == Some(task_id.to_string().as_str()))
+            .find(|run| run.task_id.as_deref().and_then(|s| s.parse::<u64>().ok()) == Some(task_id))
             .map(|run| run.run_id.clone())
     }
 
     fn detached_runs(&self) -> impl Iterator<Item = &SidebarAgentRun> {
         self.agent_runs.iter().filter(|run| {
-            !self
-                .agent_tree
-                .iter()
-                .any(|node| run.task_id.as_deref() == Some(node.task_id.to_string().as_str()))
+            match run.task_id.as_deref().and_then(|s| s.parse::<u64>().ok()) {
+                // Integer comparison: no per-comparison `to_string()` alloc.
+                Some(id) => !self.agent_tree.iter().any(|node| node.task_id == id),
+                // No task id never matches a tree node, so it is detached
+                // (preserves the previous `None == Some(..)` behavior).
+                None => true,
+            }
         })
     }
 

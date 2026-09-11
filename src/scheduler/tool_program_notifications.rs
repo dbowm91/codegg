@@ -273,13 +273,21 @@ impl ToolProgramNotificationService {
         }
         self.persist_record(&notification).await?;
         let mut notifications = self.notifications.write().await;
+        // Re-check under the write lock: a concurrent caller may have
+        // inserted the same notification_id during `persist_record`.
+        if let Some(existing) = notifications.get(&notification.notification_id) {
+            return Ok(existing.clone());
+        }
         let session_id = notification.session_id.clone();
         let nid = notification.notification_id.clone();
         notifications.insert(nid.clone(), notification.clone());
         drop(notifications);
 
         let mut index = self.session_index.write().await;
-        index.entry(session_id).or_default().push(nid);
+        let entry = index.entry(session_id).or_default();
+        if !entry.contains(&nid) {
+            entry.push(nid);
+        }
         Ok(notification)
     }
 

@@ -1483,7 +1483,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         if let provider::ChatEvent::Finish { usage, .. } = &event {
             final_usage = Some((usage.input_tokens, usage.output_tokens));
         }
-        processor.process(event);
+        processor.process(&event);
     }
     print!("{}", processor.text());
     println!();
@@ -1679,7 +1679,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             subagent_registry,
             session_store
                 .as_ref()
-                .expect("session_store must exist in non-socket mode")
+                .ok_or_else(|| {
+                    AppError::Other(anyhow::anyhow!(
+                        "session_store missing in non-socket mode (is_socket_mode=false must initialize it)"
+                    ))
+                })?
                 .clone(),
             pool.clone(),
         )
@@ -2321,7 +2325,9 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
             }
         }
         #[cfg(not(unix))]
-        let _ = tokio::signal::ctrl_c().await;
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "shutdown signal registration failed; graceful shutdown unavailable on this path");
+        }
         tracing::info!("Received SIGINT/SIGTERM; shutting down daemon");
         shutdown_signal.cancel();
     });

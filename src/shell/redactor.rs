@@ -443,6 +443,16 @@ impl Default for Redactor {
     }
 }
 
+/// Shared singleton for hot paths (e.g. per-tool-output redaction).
+/// `Redactor` is immutable after construction, so sharing avoids
+/// rebuilding the 7 boxed rules per call.
+static SHARED_REDACTOR: LazyLock<Redactor> = LazyLock::new(Redactor::new);
+
+/// Borrow the shared [`Redactor`] singleton.
+pub fn shared_redactor() -> &'static Redactor {
+    &SHARED_REDACTOR
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

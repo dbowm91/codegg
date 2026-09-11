@@ -43,9 +43,9 @@ mod tests {
     fn test_event_processor_text_accumulation() {
         let mut processor = EventProcessor::new();
 
-        processor.process(text_delta("Hello"));
-        processor.process(text_delta(", "));
-        processor.process(text_delta("world!"));
+        processor.process(&text_delta("Hello"));
+        processor.process(&text_delta(", "));
+        processor.process(&text_delta("world!"));
 
         assert_eq!(processor.text(), "Hello, world!");
         assert!(!processor.is_complete());
@@ -55,8 +55,8 @@ mod tests {
     fn test_event_processor_reasoning_accumulation() {
         let mut processor = EventProcessor::new();
 
-        processor.process(reasoning_delta("thinking..."));
-        processor.process(reasoning_delta(" more thoughts"));
+        processor.process(&reasoning_delta("thinking..."));
+        processor.process(&reasoning_delta(" more thoughts"));
 
         assert_eq!(processor.reasoning(), "thinking... more thoughts");
     }
@@ -66,7 +66,7 @@ mod tests {
         let mut processor = EventProcessor::new();
         let delta = "a".repeat(codegg::provider::MAX_REASONING_BYTES - 1) + "💡tail";
 
-        processor.process(reasoning_delta(&delta));
+        processor.process(&reasoning_delta(&delta));
 
         assert_eq!(
             processor.reasoning().len(),
@@ -80,7 +80,7 @@ mod tests {
     fn fragmented_multibyte_reasoning_deltas_remain_bounded() {
         let mut processor = EventProcessor::new();
         for delta in ["é", "界", "🦀", " combining\u{301}"] {
-            processor.process(reasoning_delta(delta));
+            processor.process(&reasoning_delta(delta));
         }
 
         assert!(processor.reasoning().len() <= codegg::provider::MAX_REASONING_BYTES);
@@ -91,7 +91,7 @@ mod tests {
     fn test_event_processor_tool_calls() {
         let mut processor = EventProcessor::new();
 
-        processor.process(tool_call(
+        processor.process(&tool_call(
             "tc1",
             "read",
             serde_json::json!({"path": "/test"}),
@@ -106,9 +106,13 @@ mod tests {
     fn test_event_processor_multiple_tool_calls() {
         let mut processor = EventProcessor::new();
 
-        processor.process(tool_call("tc1", "read", serde_json::json!({"path": "/a"})));
-        processor.process(tool_call("tc2", "write", serde_json::json!({"path": "/b"})));
-        processor.process(tool_call(
+        processor.process(&tool_call("tc1", "read", serde_json::json!({"path": "/a"})));
+        processor.process(&tool_call(
+            "tc2",
+            "write",
+            serde_json::json!({"path": "/b"}),
+        ));
+        processor.process(&tool_call(
             "tc3",
             "bash",
             serde_json::json!({"command": "ls"}),
@@ -124,7 +128,7 @@ mod tests {
     fn test_event_processor_tool_results() {
         let mut processor = EventProcessor::new();
 
-        processor.process(tool_result("tc1", "file contents here"));
+        processor.process(&tool_result("tc1", "file contents here"));
 
         assert_eq!(processor.tool_results().len(), 1);
         assert_eq!(processor.tool_results()[0].0.as_str(), "tc1");
@@ -135,8 +139,8 @@ mod tests {
     fn test_event_processor_finish() {
         let mut processor = EventProcessor::new();
 
-        processor.process(text_delta("final response"));
-        processor.process(finish("stop", 100, 50));
+        processor.process(&text_delta("final response"));
+        processor.process(&finish("stop", 100, 50));
 
         assert!(processor.is_complete());
         assert_eq!(processor.stop_reason(), Some("stop"));
@@ -148,11 +152,11 @@ mod tests {
     fn test_event_processor_reset() {
         let mut processor = EventProcessor::new();
 
-        processor.process(text_delta("hello"));
-        processor.process(reasoning_delta("thinking"));
-        processor.process(tool_call("tc1", "read", serde_json::json!({})));
-        processor.process(tool_result("tc1", "result"));
-        processor.process(finish("stop", 10, 20));
+        processor.process(&text_delta("hello"));
+        processor.process(&reasoning_delta("thinking"));
+        processor.process(&tool_call("tc1", "read", serde_json::json!({})));
+        processor.process(&tool_result("tc1", "result"));
+        processor.process(&finish("stop", 10, 20));
 
         processor.reset();
 
@@ -168,7 +172,7 @@ mod tests {
     fn test_event_processor_to_assistant_message() {
         let mut processor = EventProcessor::new();
 
-        processor.process(text_delta("Hello"));
+        processor.process(&text_delta("Hello"));
 
         let msg = processor.to_assistant_message();
         assert!(msg.is_some());
@@ -198,8 +202,8 @@ mod tests {
     fn test_event_processor_to_assistant_message_with_tool_calls() {
         let mut processor = EventProcessor::new();
 
-        processor.process(text_delta("I'll read that file."));
-        processor.process(tool_call(
+        processor.process(&text_delta("I'll read that file."));
+        processor.process(&tool_call(
             "tc1",
             "read",
             serde_json::json!({"path": "/test"}),
@@ -229,9 +233,9 @@ mod tests {
     #[test]
     fn reasoning_is_private_and_attached_to_the_same_assistant_round() {
         let mut processor = EventProcessor::new();
-        processor.process(reasoning_delta("plan round one"));
-        processor.process(text_delta("I will inspect the project."));
-        processor.process(tool_call("tc1", "list", serde_json::json!({"path": "."})));
+        processor.process(&reasoning_delta("plan round one"));
+        processor.process(&text_delta("I will inspect the project."));
+        processor.process(&tool_call("tc1", "list", serde_json::json!({"path": "."})));
 
         let Message::Assistant {
             content,
@@ -259,8 +263,8 @@ mod tests {
     fn test_event_processor_to_tool_messages() {
         let mut processor = EventProcessor::new();
 
-        processor.process(tool_result("tc1", "file content"));
-        processor.process(tool_result("tc2", "success"));
+        processor.process(&tool_result("tc1", "file content"));
+        processor.process(&tool_result("tc2", "success"));
 
         let msgs = processor.to_tool_messages();
 
@@ -284,7 +288,7 @@ mod tests {
         assert_eq!(processor.input_tokens(), 0);
         assert_eq!(processor.output_tokens(), 0);
 
-        processor.process(finish("stop", 1500, 750));
+        processor.process(&finish("stop", 1500, 750));
 
         assert_eq!(processor.input_tokens(), 1500);
         assert_eq!(processor.output_tokens(), 750);
@@ -296,7 +300,7 @@ mod tests {
 
         assert!(!processor.is_complete());
 
-        processor.process(finish("stop", 10, 20));
+        processor.process(&finish("stop", 10, 20));
 
         assert!(processor.is_complete());
     }
@@ -305,17 +309,17 @@ mod tests {
     fn test_event_processor_mixed_events() {
         let mut processor = EventProcessor::new();
 
-        processor.process(reasoning_delta("analyzing..."));
-        processor.process(text_delta("I'll help you with "));
-        processor.process(text_delta("that."));
-        processor.process(tool_call(
+        processor.process(&reasoning_delta("analyzing..."));
+        processor.process(&text_delta("I'll help you with "));
+        processor.process(&text_delta("that."));
+        processor.process(&tool_call(
             "tc1",
             "read",
             serde_json::json!({"path": "/file"}),
         ));
-        processor.process(tool_result("tc1", "content here"));
-        processor.process(text_delta(" Here is what I found."));
-        processor.process(finish("stop", 100, 50));
+        processor.process(&tool_result("tc1", "content here"));
+        processor.process(&text_delta(" Here is what I found."));
+        processor.process(&finish("stop", 100, 50));
 
         assert_eq!(processor.reasoning(), "analyzing...");
         assert_eq!(
