@@ -12,8 +12,10 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::mcp::{McpPrompt, McpResource, McpResourceContent, McpToolCallResult, PromptArgument};
-use crate::provider::ToolDefinition;
+use crate::mcp::{
+    protocol, McpPrompt, McpResource, McpResourceContent, McpTool, McpToolCallResult,
+    PromptArgument,
+};
 use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -255,13 +257,21 @@ impl McpConnectionManager {
         self.client.set_oauth_token(token).await;
     }
 
-    pub async fn discover_tools(&mut self) -> Result<Vec<ToolDefinition>, McpError> {
+    pub async fn discover_tools(&mut self) -> Result<Vec<McpTool>, McpError> {
         self.ensure_connected().await?;
         self.client.discover_tools().await
     }
 
     pub fn server_version(&self) -> Option<&str> {
         self.client.server_version()
+    }
+
+    pub fn protocol_version(&self) -> Option<&str> {
+        self.client.protocol_version()
+    }
+
+    pub fn discovery_metadata(&self) -> Option<serde_json::Value> {
+        self.client.discovery_metadata()
     }
 
     pub async fn call_tool(
@@ -355,6 +365,8 @@ pub struct RemoteClient {
     sse_shutdown: Arc<Notify>,
     validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
     server_version: Option<String>,
+    protocol: Option<protocol::NegotiatedProtocol>,
+    discovery_metadata: Option<serde_json::Value>,
 }
 
 impl Clone for RemoteClient {
@@ -372,6 +384,8 @@ impl Clone for RemoteClient {
             sse_shutdown: Arc::clone(&self.sse_shutdown),
             validated_ips: Arc::clone(&self.validated_ips),
             server_version: self.server_version.clone(),
+            protocol: self.protocol.clone(),
+            discovery_metadata: self.discovery_metadata.clone(),
         }
     }
 }
@@ -396,11 +410,16 @@ struct JsonRpcResponse {
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcError {
-    #[allow(dead_code)]
     code: i64,
     message: String,
-    #[allow(dead_code)]
     data: Option<serde_json::Value>,
+}
+
+fn format_rpc_error(error: &JsonRpcError) -> String {
+    match &error.data {
+        Some(data) => format!("{} (code {}; data: {})", error.message, error.code, data),
+        None => format!("{} (code {})", error.message, error.code),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -444,6 +463,8 @@ impl RemoteClient {
             sse_shutdown: Arc::new(Notify::default()),
             validated_ips: Arc::new(Mutex::new(Some(validated_ips))),
             server_version: None,
+            protocol: None,
+            discovery_metadata: None,
         })
     }
 
@@ -469,16 +490,45 @@ impl RemoteClient {
 
         *self.validated_ips.lock().await = Some(validated_ips);
 
-        let init_params = json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "codegg",
-                "version": "0.1.0"
+        let probe = self
+            .send_request_with_protocol(
+                protocol::SERVER_DISCOVER_METHOD,
+                protocol::modern_discovery_params(),
+                &protocol::NegotiatedProtocol::modern(),
+            )
+            .await;
+        match probe {
+            Ok(result) => {
+                let discovery = protocol::parse_discovery(&result);
+                if let Some(negotiated) = discovery.protocol {
+                    self.protocol = Some(negotiated.clone());
+                    self.server_version = discovery.server_version;
+                    self.discovery_metadata = discovery.metadata;
+                    if negotiated.is_modern() {
+                        return Ok(());
+                    }
+                } else {
+                    return Err(McpError::Server(
+                        "server/discover returned no compatible protocol version".into(),
+                    ));
+                }
             }
-        });
+            Err(error) if protocol::is_legacy_probe_error(&error) => {}
+            Err(error) => return Err(error),
+        }
 
-        let result = self.send_request("initialize", init_params).await?;
+        self.initialize_legacy().await
+    }
+
+    async fn initialize_legacy(&mut self) -> Result<(), McpError> {
+        let result = self
+            .send_request_with_protocol(
+                "initialize",
+                protocol::legacy_initialize_params(),
+                &protocol::NegotiatedProtocol::legacy(),
+            )
+            .await?;
+        self.protocol = Some(protocol::legacy_protocol_from_initialize(&result));
         self.server_version = result
             .pointer("/serverInfo/version")
             .and_then(|version| version.as_str())
@@ -504,34 +554,19 @@ impl RemoteClient {
         self.server_version.as_deref()
     }
 
-    pub async fn discover_tools(&mut self) -> Result<Vec<ToolDefinition>, McpError> {
-        let result = self.send_request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| McpError::Server("invalid tools response".into()))?;
+    pub fn protocol_version(&self) -> Option<&str> {
+        self.protocol
+            .as_ref()
+            .map(protocol::NegotiatedProtocol::version)
+    }
 
-        Ok(tools
-            .iter()
-            .filter_map(|t| {
-                let name = t.get("name")?.as_str()?.to_string();
-                let description = t
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let parameters = t
-                    .get("inputSchema")
-                    .cloned()
-                    .unwrap_or(json!({ "type": "object", "properties": {} }));
-                Some(ToolDefinition {
-                    name,
-                    description,
-                    parameters,
-                    defer_loading: None,
-                })
-            })
-            .collect())
+    pub fn discovery_metadata(&self) -> Option<serde_json::Value> {
+        self.discovery_metadata.clone()
+    }
+
+    pub async fn discover_tools(&mut self) -> Result<Vec<McpTool>, McpError> {
+        let result = self.send_request("tools/list", json!({})).await?;
+        protocol::parse_tools(&result, "")
     }
 
     pub async fn call_tool(
@@ -556,7 +591,8 @@ impl RemoteClient {
         let content = result
             .get("content")
             .and_then(|c| c.as_array())
-            .ok_or_else(|| McpError::ToolCall("invalid tool result".into()))?;
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
 
         let text_parts: Vec<String> = content
             .iter()
@@ -576,6 +612,9 @@ impl RemoteClient {
                     .flatten()
             })
         });
+        if content.is_empty() && structured.is_none() {
+            return Err(McpError::ToolCall("invalid tool result".into()));
+        }
         let text = text_parts.join("\n");
         let text = if text.is_empty() {
             structured
@@ -586,7 +625,22 @@ impl RemoteClient {
             text
         };
 
-        Ok(McpToolCallResult { text, structured })
+        Ok(McpToolCallResult {
+            text,
+            structured,
+            is_error: result
+                .get("isError")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            result_type: result
+                .get("resultType")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
+            metadata: protocol::bounded_optional_value(
+                result.get("_meta"),
+                protocol::MAX_MCP_METADATA_BYTES,
+            ),
+        })
     }
 
     pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
@@ -824,18 +878,42 @@ impl RemoteClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, McpError> {
+        let protocol = self
+            .protocol
+            .clone()
+            .unwrap_or_else(protocol::NegotiatedProtocol::legacy);
+        self.send_request_with_protocol(method, params, &protocol)
+            .await
+    }
+
+    async fn send_request_with_protocol(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        protocol: &protocol::NegotiatedProtocol,
+    ) -> Result<serde_json::Value, McpError> {
         let id = self.next_id();
+        let tool_name = params
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id,
             method: method.to_string(),
-            params,
+            params: if protocol.is_modern() {
+                protocol::modern_params(params)
+            } else {
+                params
+            },
         };
 
-        let response = self.post_json(&request).await?;
+        let response = self
+            .post_json(&request, protocol, method, tool_name.as_deref())
+            .await?;
 
         if let Some(err) = response.error {
-            return Err(McpError::Server(err.message));
+            return Err(McpError::Server(format_rpc_error(&err)));
         }
 
         response
@@ -848,16 +926,31 @@ impl RemoteClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<(), McpError> {
+        let protocol = self
+            .protocol
+            .clone()
+            .unwrap_or_else(protocol::NegotiatedProtocol::legacy);
         let notification = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
-            params,
+            params: if protocol.is_modern() {
+                protocol::modern_params(params)
+            } else {
+                params
+            },
         };
-        self.post_json(&notification).await?;
+        self.post_json(&notification, &protocol, method, None)
+            .await?;
         Ok(())
     }
 
-    async fn post_json<T: Serialize>(&self, msg: &T) -> Result<JsonRpcResponse, McpError> {
+    async fn post_json<T: Serialize>(
+        &self,
+        msg: &T,
+        protocol: &protocol::NegotiatedProtocol,
+        method: &str,
+        tool_name: Option<&str>,
+    ) -> Result<JsonRpcResponse, McpError> {
         let (oauth_token, session_id) = {
             let parsed = reqwest::Url::parse(&self.url)
                 .map_err(|e| McpError::Connection(format!("invalid URL: {}", e)))?;
@@ -909,8 +1002,17 @@ impl RemoteClient {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
 
-        if let Some(ref sid) = session_id {
-            request = request.header("Mcp-Session-Id", sid);
+        if !protocol.is_modern() {
+            if let Some(ref sid) = session_id {
+                request = request.header("Mcp-Session-Id", sid);
+            }
+        } else {
+            request = request
+                .header("MCP-Protocol-Version", protocol.version())
+                .header("Mcp-Method", method);
+            if let Some(name) = tool_name {
+                request = request.header("Mcp-Name", name);
+            }
         }
 
         let body = serde_json::to_string(msg).map_err(|e| McpError::Server(e.to_string()))?;
@@ -935,11 +1037,10 @@ impl RemoteClient {
             .await
             .map_err(|e| McpError::Connection(e.to_string()))?;
 
-        if !status.is_success() {
-            return Err(McpError::Server(format!("HTTP {status}: {text}")));
-        }
-
         if text.is_empty() {
+            if !status.is_success() {
+                return Err(McpError::Server(format!("HTTP {status}: empty response")));
+            }
             return Ok(JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: None,
@@ -948,12 +1049,20 @@ impl RemoteClient {
             });
         }
 
-        if text.starts_with("event:") {
-            return self.parse_sse_response(&text);
+        let parsed = if text.starts_with("event:") {
+            self.parse_sse_response(&text)
+        } else {
+            serde_json::from_str::<JsonRpcResponse>(&text)
+                .map_err(|e| McpError::Server(format!("invalid json response: {e}")))
+        };
+        match parsed {
+            Ok(response) if status.is_success() || response.error.is_some() => Ok(response),
+            Ok(_) => Err(McpError::Server(format!("HTTP {status}: {text}"))),
+            Err(error) if !status.is_success() => {
+                Err(McpError::Server(format!("HTTP {status}: {error}")))
+            }
+            Err(error) => Err(error),
         }
-
-        serde_json::from_str::<JsonRpcResponse>(&text)
-            .map_err(|e| McpError::Server(format!("invalid json response: {e}")))
     }
 
     fn parse_sse_response(&self, text: &str) -> Result<JsonRpcResponse, McpError> {

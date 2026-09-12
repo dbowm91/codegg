@@ -9,6 +9,7 @@ pub mod auth;
 pub mod cli;
 pub mod ide_server;
 pub mod local;
+pub(crate) mod protocol;
 pub mod remote;
 
 use serde::{Deserialize, Serialize};
@@ -52,12 +53,20 @@ pub struct McpResourceContent {
     pub blob: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
     pub server: String,
+    /// Optional MCP output schema, retained for compatibility diagnostics and
+    /// catalog identity. It is not an execution or trust grant.
+    pub output_schema: Option<serde_json::Value>,
+    /// Standard MCP tool annotations, retained as untrusted JSON so additive
+    /// annotation fields remain forward compatible.
+    pub annotations: Option<serde_json::Value>,
+    /// Server-provided tool metadata (`_meta`), bounded at the protocol edge.
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// The lossless portion of an MCP `tools/call` response needed by
@@ -68,6 +77,9 @@ pub struct McpTool {
 pub struct McpToolCallResult {
     pub text: String,
     pub structured: Option<serde_json::Value>,
+    pub is_error: bool,
+    pub result_type: Option<String>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -85,6 +97,8 @@ pub struct McpServer {
     pub status: McpServerStatus,
     pub tools: Vec<McpTool>,
     pub server_version: Option<String>,
+    pub protocol_version: Option<String>,
+    pub discovery_metadata: Option<serde_json::Value>,
     pub client: McpClientType,
 }
 
@@ -217,6 +231,8 @@ impl McpService {
                         status: server.status.clone(),
                         tools: server.tools.clone(),
                         server_version: server.server_version.clone(),
+                        protocol_version: server.protocol_version.clone(),
+                        discovery_metadata: server.discovery_metadata.clone(),
                         client: server.client.clone(),
                     },
                 )
@@ -244,16 +260,12 @@ impl McpService {
         let mut client = LocalClient::new(command, args.to_vec(), env, timeout);
         client.initialize().await?;
         let server_version = client.server_version().map(str::to_owned);
-        let tools = client.discover_tools().await?;
-        let mcp_tools = tools
-            .into_iter()
-            .map(|t| McpTool {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                input_schema: t.parameters.clone(),
-                server: name.to_string(),
-            })
-            .collect();
+        let protocol_version = client.protocol_version().map(str::to_owned);
+        let discovery_metadata = client.discovery_metadata();
+        let mut mcp_tools = client.discover_tools().await?;
+        for tool in &mut mcp_tools {
+            tool.server = name.to_string();
+        }
 
         let server = McpServer {
             name: name.to_string(),
@@ -261,6 +273,8 @@ impl McpService {
             status: McpServerStatus::Connected,
             tools: mcp_tools,
             server_version,
+            protocol_version,
+            discovery_metadata,
             client: McpClientType::Local(Arc::new(RwLock::new(client))),
         };
         self.servers.insert(key, server);
@@ -288,16 +302,12 @@ impl McpService {
 
         manager.connect().await?;
         let server_version = manager.server_version().map(str::to_owned);
-        let tools = manager.discover_tools().await?;
-        let mcp_tools = tools
-            .into_iter()
-            .map(|t| McpTool {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                input_schema: t.parameters.clone(),
-                server: name.to_string(),
-            })
-            .collect();
+        let protocol_version = manager.protocol_version().map(str::to_owned);
+        let discovery_metadata = manager.discovery_metadata();
+        let mut mcp_tools = manager.discover_tools().await?;
+        for tool in &mut mcp_tools {
+            tool.server = name.to_string();
+        }
 
         let server = McpServer {
             name: name.to_string(),
@@ -305,6 +315,8 @@ impl McpService {
             status: McpServerStatus::Connected,
             tools: mcp_tools,
             server_version,
+            protocol_version,
+            discovery_metadata,
             client: McpClientType::Remote(Arc::new(RwLock::new(manager))),
         };
         self.servers.insert(name.to_string(), server);
@@ -474,6 +486,7 @@ impl McpService {
                 Ok(McpToolCallResult {
                     structured: serde_json::from_str(&text).ok(),
                     text,
+                    ..Default::default()
                 })
             }
         }
@@ -490,6 +503,46 @@ impl McpService {
         self.servers
             .get(server)
             .and_then(|s| s.server_version.clone())
+    }
+
+    pub fn server_protocol_version(&self, server: &str) -> Option<String> {
+        self.servers
+            .get(server)
+            .and_then(|server| server.protocol_version.clone())
+    }
+
+    pub fn server_discovery_metadata(&self, server: &str) -> Option<serde_json::Value> {
+        self.servers
+            .get(server)
+            .and_then(|server| server.discovery_metadata.clone())
+    }
+
+    /// Deterministic identity for the current MCP inventory. Tool ordering is
+    /// intentionally ignored; schemas, annotations, metadata, and discovery
+    /// state are included so meaningful upstream changes invalidate snapshots.
+    pub fn catalog_fingerprint(&self) -> String {
+        let mut servers: Vec<&McpServer> = self.servers.values().collect();
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        let value = serde_json::json!({
+            "servers": servers.iter().map(|server| {
+                let mut tools: Vec<&McpTool> = server.tools.iter().collect();
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
+                serde_json::json!({
+                    "name": server.name,
+                    "protocolVersion": server.protocol_version,
+                    "discovery": server.discovery_metadata,
+                    "tools": tools.iter().map(|tool| serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "inputSchema": tool.input_schema,
+                        "outputSchema": tool.output_schema,
+                        "annotations": tool.annotations,
+                        "_meta": tool.metadata,
+                    })).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>(),
+        });
+        crate::context::stable_hash_hex(canonicalize_json(&value))
     }
 
     pub fn server_origin(&self, server: &str) -> Option<McpServerOrigin> {
@@ -512,12 +565,9 @@ impl McpService {
             .values()
             .filter(|s| !policy.hidden_servers.iter().any(|h| h == &s.name))
             .flat_map(|s| {
-                s.tools.iter().map(|t| ToolDefinition {
-                    name: format!("mcp__{}__{}", s.name, t.name),
-                    description: t.description.clone(),
-                    parameters: t.input_schema.clone(),
-                    defer_loading: None,
-                })
+                s.tools
+                    .iter()
+                    .map(|t| protocol::to_tool_definition(t, &s.name))
             })
             .collect()
     }
@@ -557,14 +607,6 @@ impl McpService {
             };
 
             tools
-                .into_iter()
-                .map(|t| McpTool {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    input_schema: t.parameters.clone(),
-                    server: server.to_string(),
-                })
-                .collect::<Vec<_>>()
         };
 
         let srv = self
@@ -576,12 +618,7 @@ impl McpService {
         Ok(srv
             .tools
             .iter()
-            .map(|t| ToolDefinition {
-                name: format!("mcp__{}__{}", srv.name, t.name),
-                description: t.description.clone(),
-                parameters: t.input_schema.clone(),
-                defer_loading: None,
-            })
+            .map(|t| protocol::to_tool_definition(t, &srv.name))
             .collect())
     }
 
@@ -673,6 +710,8 @@ impl McpService {
             status: McpServerStatus::Connected,
             tools,
             server_version: None,
+            protocol_version: None,
+            discovery_metadata: None,
             client: McpClientType::Mock(Arc::new(std::sync::Mutex::new(handler))),
         };
         self.servers.insert(name.to_string(), server);
@@ -752,6 +791,30 @@ impl McpService {
     }
 }
 
+fn canonicalize_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by_key(|(key, _)| *key);
+            let body = entries
+                .into_iter()
+                .map(|(key, value)| format!("{}:{}", key, canonicalize_json(value)))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        }
+        serde_json::Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(canonicalize_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        other => other.to_string(),
+    }
+}
+
 impl Default for McpService {
     fn default() -> Self {
         Self::new()
@@ -777,12 +840,14 @@ mod tests {
                     description: "raw web search".to_string(),
                     input_schema: serde_json::json!({}),
                     server: "eggsearch".to_string(),
+                    ..Default::default()
                 },
                 McpTool {
                     name: "web_fetch".to_string(),
                     description: "raw web fetch".to_string(),
                     input_schema: serde_json::json!({}),
                     server: "eggsearch".to_string(),
+                    ..Default::default()
                 },
             ],
             Box::new(mock_handler),
@@ -794,6 +859,7 @@ mod tests {
                 description: "list issues".to_string(),
                 input_schema: serde_json::json!({}),
                 server: "github".to_string(),
+                ..Default::default()
             }],
             Box::new(mock_handler),
         );
@@ -841,6 +907,18 @@ mod tests {
         };
         let tools = svc.list_filtered_tools(&policy);
         assert_eq!(tools.len(), 3);
+    }
+
+    #[test]
+    fn catalog_fingerprint_ignores_tool_order_but_tracks_metadata() {
+        let mut first = build_service();
+        let initial = first.catalog_fingerprint();
+        first.servers.get_mut("eggsearch").unwrap().tools.reverse();
+        assert_eq!(initial, first.catalog_fingerprint());
+
+        first.servers.get_mut("eggsearch").unwrap().tools[0].output_schema =
+            Some(serde_json::json!({"type": "object"}));
+        assert_ne!(initial, first.catalog_fingerprint());
     }
 
     #[test]

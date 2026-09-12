@@ -53,6 +53,7 @@ async fn builtin_backend_does_not_touch_mcp_service() {
             description: "".to_string(),
             input_schema: serde_json::json!({}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         }],
         Box::new(move |tool, args| {
             if let Ok(mut g) = recorded.try_lock() {
@@ -99,6 +100,7 @@ async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
             description: "".to_string(),
             input_schema: serde_json::json!({}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         }],
         Box::new(move |tool, args| {
             if let Ok(mut g) = recorded.try_lock() {

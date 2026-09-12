@@ -93,12 +93,14 @@ fn mock_context() -> (SearchRuntimeContext, RecordedCalls) {
                 description: "".to_string(),
                 input_schema: serde_json::json!({}),
                 server: "eggsearch".to_string(),
+                ..Default::default()
             },
             McpTool {
                 name: "web_fetch".to_string(),
                 description: "".to_string(),
                 input_schema: serde_json::json!({}),
                 server: "eggsearch".to_string(),
+                ..Default::default()
             },
         ],
         Box::new(move |tool, args| {

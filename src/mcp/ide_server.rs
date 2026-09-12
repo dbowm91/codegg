@@ -182,7 +182,7 @@ impl IdeServer {
 
         if method == "initialize" {
             let result = json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": super::protocol::LEGACY_PROTOCOL_VERSION,
                 "capabilities": {
                     "tools": {}
                 },

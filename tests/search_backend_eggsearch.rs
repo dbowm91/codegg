@@ -225,18 +225,21 @@ mod real_build_tool_definitions_tests {
                 description: "Search the web".to_string(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 server: "eggsearch".to_string(),
+                ..Default::default()
             },
             McpTool {
                 name: "web_fetch".to_string(),
                 description: "Fetch a URL".to_string(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 server: "eggsearch".to_string(),
+                ..Default::default()
             },
             McpTool {
                 name: "provider_status".to_string(),
                 description: "Check provider status".to_string(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 server: "eggsearch".to_string(),
+                ..Default::default()
             },
         ];
         svc.register_mock_server(
@@ -392,6 +395,7 @@ mod real_build_tool_definitions_tests {
                 description: "Search the web".to_string(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 server: "myegg".to_string(),
+                ..Default::default()
             }],
             Box::new(|_tool, _args| -> Result<String, McpError> { Ok("{}".to_string()) }),
         );

@@ -35,8 +35,13 @@ src/mcp/
    only for cross-entry-point connection reuse, not for execution-time
    lookup.
 
-2. **Tool discovery**: After connection, `discover_tools()` sends
-   `tools/list` over JSON-RPC and collects `McpTool` definitions.
+2. **Protocol negotiation and tool discovery**: After spawning/opening a
+   server, clients share one policy: they probe modern servers with
+   `server/discover` using `2026-07-28` per-request metadata, then select the
+   advertised modern revision. An explicit legacy protocol/method error falls
+   back to the `initialize` handshake using `2024-11-05`. Once connected,
+   `tools/list` collects bounded `McpTool` definitions, including optional
+   output schemas, annotations, and server metadata.
 
 3. **Tool calls**: `McpService::call_tool_structured()` looks up the
    target server, acquires a write lock on the client, and dispatches
@@ -79,8 +84,12 @@ Spawns a child process, communicates via JSON-RPC over stdin/stdout.
   `shutdown_notify.notify_waiters()` to break the read loop, then
   `child.kill()` + `child.wait()`. `Drop` calls `start_kill()` as a
   safety net.
-- **Server version**: Extracted from `initialize` response at
-  `/serverInfo/version` (`local.rs:164`).
+- **Server version**: Extracted from modern discovery metadata when present,
+  or from the legacy `initialize` response.
+- **Legacy compatibility**: Only explicit unsupported-method/parameter
+  protocol errors from the modern probe trigger the legacy retry. Connection,
+  authentication, malformed-response, and timeout failures retain their
+  original classification.
 
 ### Remote Client (`remote.rs`)
 
@@ -90,8 +99,12 @@ responses that arrive as `text/event-stream`.
 - **DNS rebinding protection**: Validates host IP on `new()` and
   before every `post_json()` call via `revalidate_dns()`. Internal IPs
   (loopback, private, link-local, CGNAT) are blocked.
-- **Session management**: Stores `Mcp-Session-Id` from `initialize`
-  response; includes it as a header on subsequent requests.
+- **Protocol modes**: Modern requests carry `MCP-Protocol-Version`,
+  `Mcp-Method`, and (for tool calls) `Mcp-Name` headers plus `_meta` in the
+  JSON-RPC params. Legacy requests retain `Mcp-Session-Id` handling from
+  `initialize`.
+- **Session management**: Stores `Mcp-Session-Id` from legacy `initialize`
+  responses; modern requests are stateless and do not send that header.
 - **OAuth**: Bearer token injected from `OAuthManager` when available.
 - **Redirect policy**: `reqwest::redirect::Policy::none()` — redirects
   are not followed to prevent SSRF via redirect chains.
@@ -150,8 +163,9 @@ surface.
 
 ### Structured Call Path
 
-`McpToolCallResult` (`mod.rs:68`) carries both the text projection and
-an optional `structured` JSON value. The structured value is extracted
+`McpToolCallResult` carries both the text projection and an optional
+`structured` JSON value, plus bounded `resultType`/`_meta` and explicit
+tool-level `isError`. The structured value is extracted
 from either:
 1. `result.structuredContent` (protocol-level), or
 2. `content[type=json].json` (content-level)
@@ -312,13 +326,16 @@ Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 - **Heartbeat uses `send_notification`** — the heartbeat `ping` is a
   notification (no response expected). If it fails, reconnect is
   triggered.
-- **Protocol version**: `2024-11-05` is sent in `initialize` params.
+- **Protocol versions**: The shared client policy prefers modern
+  `2026-07-28` discovery/per-request metadata and explicitly falls back to
+  legacy `2024-11-05` initialization only for protocol-shape probe errors.
 - **Spawn env is cleared** — `env_clear()` then re-injects PATH and
   configured env. This prevents the child from inheriting Codegg's
   own environment variables.
-- **Tool definition cache**: Uses `mcp_tool_count` as a proxy for
-  changes. If tool identities change without count changing, cache
-  may be stale.
+- **Tool catalog identity**: `McpService::catalog_fingerprint()` sorts
+  servers/tools and fingerprints names, descriptions, input/output schemas,
+  annotations, and discovery metadata. Tool ordering alone does not invalidate
+  the identity; meaningful metadata changes do.
 - **Plugin contributions**: `McpService::reconcile_plugin_servers` translates
   active declarative plugin declarations into the normal stdio/http lifecycle.
   Plugin `type` aliases `local`/`stdio` and `remote`/`http` are canonicalized

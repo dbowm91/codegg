@@ -53,6 +53,7 @@ fn mock_service(calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>) -> McpServi
             description: "Search the web".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         }],
         Box::new(move |tool, args| {
             if let Ok(mut g) = calls.try_lock() {
@@ -247,6 +248,7 @@ fn failing_mock_does_not_fall_back_without_opt_in() {
                 description: "".to_string(),
                 input_schema: serde_json::json!({}),
                 server: "eggsearch".to_string(),
+                ..Default::default()
             }],
             Box::new(|_, _| Err(McpError::Server("boom".to_string()))),
         );

@@ -251,6 +251,7 @@ async fn mcp_reconciliation_removes_only_plugin_origin_and_rejects_config_collis
             description: "configured".into(),
             input_schema: serde_json::json!({}),
             server: "configured".into(),
+            ..Default::default()
         }],
         Box::new(|_, _| Ok("ok".into())),
     );

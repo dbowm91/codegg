@@ -125,7 +125,10 @@ implemented** in the current code. Only `run_stdio()` is available.
 
 ### MCP Protocol
 
-The server implements the MCP protocol (version `2024-11-05`):
+The IDE server currently implements the legacy MCP server binding
+(`2024-11-05`) for compatibility. CodeGG's generic MCP clients negotiate
+modern `2026-07-28` servers independently; this IDE server is not an
+authority for that client policy:
 
 | Method | Behavior |
 |--------|----------|

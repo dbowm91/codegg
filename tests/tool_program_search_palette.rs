@@ -53,6 +53,7 @@ fn mock_repo_search_service(
             description: "Search code repositories".to_string(),
             input_schema: json!({"type": "object"}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         }],
         Box::new(move |tool, args| {
             let n = match calls.try_lock() {

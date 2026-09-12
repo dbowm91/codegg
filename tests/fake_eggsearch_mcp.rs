@@ -90,18 +90,21 @@ fn build_mock_eggsearch(
             description: "Search the web".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         },
         McpTool {
             name: "web_fetch".to_string(),
             description: "Fetch a URL".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         },
         McpTool {
             name: "provider_status".to_string(),
             description: "Check provider status".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         },
     ];
     let calls = Arc::clone(&recorded_calls);
@@ -717,6 +720,7 @@ fn build_full_mock_eggsearch(
             description: format!("Mock {name}"),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         })
         .collect();
     let calls = Arc::clone(&recorded_calls);
@@ -1073,6 +1077,7 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         description: String::new(),
         input_schema: serde_json::json!({"type": "object"}),
         server: "eggsearch".to_string(),
+        ..Default::default()
     })
     .collect();
     svc.register_mock_server(
@@ -1165,6 +1170,7 @@ async fn oversized_output_is_clamped() {
             description: "".to_string(),
             input_schema: serde_json::json!({}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         }],
         Box::new(move |tool, _args| {
             if let Ok(mut g) = recorded.try_lock() {
@@ -1202,6 +1208,7 @@ async fn malformed_payload_does_not_panic() {
             description: "".to_string(),
             input_schema: serde_json::json!({}),
             server: "eggsearch".to_string(),
+            ..Default::default()
         }],
         Box::new(move |tool, _args| {
             if let Ok(mut g) = recorded.try_lock() {

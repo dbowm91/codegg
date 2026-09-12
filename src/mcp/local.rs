@@ -9,8 +9,10 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, Notify};
 
 use crate::error::McpError;
-use crate::mcp::{McpPrompt, McpResource, McpResourceContent, McpToolCallResult, PromptArgument};
-use crate::provider::ToolDefinition;
+use crate::mcp::{
+    protocol, McpPrompt, McpResource, McpResourceContent, McpTool, McpToolCallResult,
+    PromptArgument,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JsonRpcRequest {
@@ -31,7 +33,16 @@ struct JsonRpcResponse {
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcError {
+    code: i64,
     message: String,
+    data: Option<serde_json::Value>,
+}
+
+fn format_rpc_error(error: &JsonRpcError) -> String {
+    match &error.data {
+        Some(data) => format!("{} (code {}; data: {})", error.message, error.code, data),
+        None => format!("{} (code {})", error.message, error.code),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +67,8 @@ pub struct LocalClient {
     stderr_task: Option<tokio::task::JoinHandle<()>>,
     request_id: AtomicU64,
     server_version: Option<String>,
+    protocol: Option<protocol::NegotiatedProtocol>,
+    discovery_metadata: Option<serde_json::Value>,
 }
 
 impl LocalClient {
@@ -77,6 +90,8 @@ impl LocalClient {
             stderr_task: None,
             request_id: AtomicU64::new(1),
             server_version: None,
+            protocol: None,
+            discovery_metadata: None,
         }
     }
 
@@ -150,16 +165,45 @@ impl LocalClient {
             Self::read_loop(stdout, pending, shutdown).await;
         });
 
-        let init_params = json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "codegg",
-                "version": "0.1.0"
+        let probe = self
+            .send_request_with_protocol(
+                protocol::SERVER_DISCOVER_METHOD,
+                protocol::modern_discovery_params(),
+                &protocol::NegotiatedProtocol::modern(),
+            )
+            .await;
+        match probe {
+            Ok(result) => {
+                let discovery = protocol::parse_discovery(&result);
+                if let Some(negotiated) = discovery.protocol {
+                    self.protocol = Some(negotiated.clone());
+                    self.server_version = discovery.server_version;
+                    self.discovery_metadata = discovery.metadata;
+                    if negotiated.is_modern() {
+                        return Ok(());
+                    }
+                } else {
+                    return Err(McpError::Server(
+                        "server/discover returned no compatible protocol version".into(),
+                    ));
+                }
             }
-        });
+            Err(error) if protocol::is_legacy_probe_error(&error) => {}
+            Err(error) => return Err(error),
+        }
 
-        let result = self.send_request("initialize", init_params).await?;
+        self.initialize_legacy().await
+    }
+
+    async fn initialize_legacy(&mut self) -> Result<(), McpError> {
+        let result = self
+            .send_request_with_protocol(
+                "initialize",
+                protocol::legacy_initialize_params(),
+                &protocol::NegotiatedProtocol::legacy(),
+            )
+            .await?;
+        self.protocol = Some(protocol::legacy_protocol_from_initialize(&result));
         self.server_version = result
             .pointer("/serverInfo/version")
             .and_then(|version| version.as_str())
@@ -175,34 +219,19 @@ impl LocalClient {
         self.server_version.as_deref()
     }
 
-    pub async fn discover_tools(&mut self) -> Result<Vec<ToolDefinition>, McpError> {
-        let result = self.send_request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| McpError::Server("invalid tools response".into()))?;
+    pub fn protocol_version(&self) -> Option<&str> {
+        self.protocol
+            .as_ref()
+            .map(protocol::NegotiatedProtocol::version)
+    }
 
-        Ok(tools
-            .iter()
-            .filter_map(|t| {
-                let name = t.get("name")?.as_str()?.to_string();
-                let description = t
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let parameters = t
-                    .get("inputSchema")
-                    .cloned()
-                    .unwrap_or(json!({ "type": "object", "properties": {} }));
-                Some(ToolDefinition {
-                    name,
-                    description,
-                    parameters,
-                    defer_loading: None,
-                })
-            })
-            .collect())
+    pub fn discovery_metadata(&self) -> Option<serde_json::Value> {
+        self.discovery_metadata.clone()
+    }
+
+    pub async fn discover_tools(&mut self) -> Result<Vec<McpTool>, McpError> {
+        let result = self.send_request("tools/list", json!({})).await?;
+        protocol::parse_tools(&result, "")
     }
 
     pub async fn call_tool(
@@ -227,7 +256,8 @@ impl LocalClient {
         let content = result
             .get("content")
             .and_then(|c| c.as_array())
-            .ok_or_else(|| McpError::ToolCall("invalid tool result".into()))?;
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
 
         let text_parts: Vec<String> = content
             .iter()
@@ -246,6 +276,9 @@ impl LocalClient {
                     .flatten()
             })
         });
+        if content.is_empty() && structured.is_none() {
+            return Err(McpError::ToolCall("invalid tool result".into()));
+        }
         let text = text_parts.join("\n");
         let text = if text.is_empty() {
             structured
@@ -256,7 +289,22 @@ impl LocalClient {
             text
         };
 
-        Ok(McpToolCallResult { text, structured })
+        Ok(McpToolCallResult {
+            text,
+            structured,
+            is_error: result
+                .get("isError")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            result_type: result
+                .get("resultType")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
+            metadata: protocol::bounded_optional_value(
+                result.get("_meta"),
+                protocol::MAX_MCP_METADATA_BYTES,
+            ),
+        })
     }
 
     pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
@@ -437,12 +485,30 @@ impl LocalClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, McpError> {
+        let protocol = self
+            .protocol
+            .clone()
+            .unwrap_or_else(protocol::NegotiatedProtocol::legacy);
+        self.send_request_with_protocol(method, params, &protocol)
+            .await
+    }
+
+    async fn send_request_with_protocol(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        protocol: &protocol::NegotiatedProtocol,
+    ) -> Result<serde_json::Value, McpError> {
         let id = self.next_id();
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id,
             method: method.to_string(),
-            params,
+            params: if protocol.is_modern() {
+                protocol::modern_params(params)
+            } else {
+                params
+            },
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -472,10 +538,18 @@ impl LocalClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<(), McpError> {
+        let protocol = self
+            .protocol
+            .clone()
+            .unwrap_or_else(protocol::NegotiatedProtocol::legacy);
         let notification = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
-            params,
+            params: if protocol.is_modern() {
+                protocol::modern_params(params)
+            } else {
+                params
+            },
         };
         self.write_json(&notification).await
     }
@@ -555,7 +629,7 @@ impl LocalClient {
                     let mut pending_lock = pending.lock().await;
                     if let Some(tx) = pending_lock.remove(&id) {
                         let result = if let Some(err) = response.error {
-                            Err(McpError::Server(err.message))
+                            Err(McpError::Server(format_rpc_error(&err)))
                         } else if let Some(result) = response.result {
                             Ok(result)
                         } else {
@@ -600,13 +674,79 @@ impl Drop for LocalClient {
 mod tests {
     use super::*;
 
+    fn modern_fixture() -> &'static str {
+        r#"
+            while IFS= read -r line; do
+                case "$line" in
+                    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"modern-fixture","version":"9.1"}},"instructions":"fixture"}}' ;;
+                    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"search","description":"Search","inputSchema":{"type":"object"},"outputSchema":{"type":"object"},"annotations":{"readOnlyHint":true},"_meta":{"source":"fixture"}}]}}' ;;
+                    *tools/call*) printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"done"}],"structuredContent":{"answer":42},"isError":true,"_meta":{"trace":"fixture"},"unknown":true}}' ;;
+                esac
+            done
+        "#
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn modern_probe_preserves_protocol_tool_metadata_and_result_envelope() {
+        let mut client = LocalClient::new(
+            "sh",
+            vec!["-c".to_string(), modern_fixture().to_string()],
+            HashMap::new(),
+            2_000,
+        );
+        client.initialize().await.expect("modern probe succeeds");
+        assert_eq!(client.protocol_version(), Some("2026-07-28"));
+        assert_eq!(client.server_version(), Some("9.1"));
+        assert!(client.discovery_metadata().is_some());
+
+        let tools = client.discover_tools().await.expect("tool list succeeds");
+        assert_eq!(tools[0].output_schema, Some(json!({"type": "object"})));
+        assert_eq!(tools[0].annotations, Some(json!({"readOnlyHint": true})));
+        assert_eq!(tools[0].metadata, Some(json!({"source": "fixture"})));
+
+        let result = client
+            .call_tool_structured("search", json!({}))
+            .await
+            .expect("tool call succeeds");
+        assert_eq!(result.text, "done");
+        assert_eq!(result.structured, Some(json!({"answer": 42})));
+        assert!(result.is_error);
+        assert_eq!(result.result_type.as_deref(), Some("complete"));
+        assert_eq!(result.metadata, Some(json!({"trace": "fixture"})));
+        client.shutdown().await.expect("shutdown succeeds");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_legacy_probe_error_falls_back_to_initialize() {
+        let script = r#"
+            while IFS= read -r line; do
+                case "$line" in
+                    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}' ;;
+                    *initialize*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2024-11-05","serverInfo":{"version":"legacy"}}}' ;;
+                    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"tools":[]}}' ;;
+                esac
+            done
+        "#;
+        let mut client = LocalClient::new(
+            "sh",
+            vec!["-c".to_string(), script.to_string()],
+            HashMap::new(),
+            2_000,
+        );
+        client.initialize().await.expect("legacy fallback succeeds");
+        assert_eq!(client.protocol_version(), Some("2024-11-05"));
+        assert_eq!(client.server_version(), Some("legacy"));
+        client.shutdown().await.expect("shutdown succeeds");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn noisy_stderr_does_not_block_initialize() {
         let script = r#"
             head -c 131072 /dev/zero >&2
             while IFS= read -r line; do
                 case "$line" in
-                    *initialize*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}' ;;
+                    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}' ;;
+                    *initialize*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}' ;;
                 esac
             done
         "#;
