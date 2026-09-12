@@ -1,6 +1,6 @@
 # Upstream Tool-Surface Compatibility Corrective Addendum
 
-Status: active
+Status: conditionally closed
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 
@@ -141,7 +141,7 @@ Required outcome:
 
 Implementation plan: `plans/implementation/tool-surface-upstream-compatibility/007-eggsearch-0.3.9-surface-alignment.md`.
 
-### M008 — Eggsact 1.2.5 in-process/profile compatibility
+### M008 — Eggsact 1.2.5 in-process/profile compatibility — conditionally closed
 
 Class: correctness / simplification
 
@@ -158,6 +158,12 @@ Required outcome:
 - document which new eggsact utilities remain intentionally deferred.
 
 Implementation plan: `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md`.
+Closure record: `plans/closure/tool-surface-upstream-compatibility/008-status.md`.
+
+The profile-validation and exposure-safety work is complete. The direct
+eggsact 1.2.5 dependency upgrade remains deferred because that release
+declares Rust 1.89.0, above CodeGG's Rust 1.81 MSRV; an explicit MSRV decision
+is required before changing the dependency baseline.
 
 ## 7. Compatibility and migration
 
