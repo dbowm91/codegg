@@ -373,8 +373,8 @@ mod tests {
         out.extend_from_slice(&header);
         out.extend_from_slice(data);
         let padding = (512 - (data.len() % 512)) % 512;
-        out.extend(std::iter::repeat(0u8).take(padding));
-        out.extend(std::iter::repeat(0u8).take(1024));
+        out.extend(std::iter::repeat_n(0u8, padding));
+        out.extend(std::iter::repeat_n(0u8, 1024));
         out
     }
 

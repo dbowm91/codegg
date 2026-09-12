@@ -1226,8 +1226,7 @@ impl JobStore for SqliteJobStore {
         const MAX_IDS_PER_QUERY: usize = 900;
         let mut records = Vec::new();
         for batch in ids.chunks(MAX_IDS_PER_QUERY) {
-            let placeholders = std::iter::repeat("?")
-                .take(batch.len())
+            let placeholders = std::iter::repeat_n("?", batch.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(

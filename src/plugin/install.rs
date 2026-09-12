@@ -793,10 +793,10 @@ api_version = 1
         tar_bytes.extend_from_slice(data);
         // Pad data to 512-byte boundary
         let padding = (512 - (data.len() % 512)) % 512;
-        tar_bytes.extend(std::iter::repeat(0u8).take(padding));
+        tar_bytes.extend(std::iter::repeat_n(0u8, padding));
 
         // Two 512-byte zero blocks mark end
-        tar_bytes.extend(std::iter::repeat(0u8).take(1024));
+        tar_bytes.extend(std::iter::repeat_n(0u8, 1024));
 
         // Gzip it
         let encoder = GzEncoder::new(Vec::new(), Compression::default());

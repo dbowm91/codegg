@@ -109,7 +109,7 @@ impl PluginRuntime for ProcessRuntime {
                 let passthrough_allowed = self
                     .env_policy
                     .as_ref()
-                    .map_or(true, |p| !p.deny_env_passthrough_by_default);
+                    .is_none_or(|p| !p.deny_env_passthrough_by_default);
 
                 if passthrough_allowed {
                     if let Ok(val) = std::env::var(env_var) {

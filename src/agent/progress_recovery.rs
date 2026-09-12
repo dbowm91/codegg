@@ -349,7 +349,7 @@ impl RecoveryController {
     pub fn observe(&mut self, observation: ProgressObservation) -> RecoveryDecision {
         let successful = observation
             .execution_status
-            .map_or(true, |status| status == ToolExecutionStatus::Success);
+            .is_none_or(|status| status == ToolExecutionStatus::Success);
         let same_action_count = self
             .history
             .iter()

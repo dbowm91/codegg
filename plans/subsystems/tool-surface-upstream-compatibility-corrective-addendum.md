@@ -1,6 +1,6 @@
 # Upstream Tool-Surface Compatibility Corrective Addendum
 
-Status: conditionally closed
+Status: closing — M009 implementation complete
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 
@@ -160,10 +160,25 @@ Required outcome:
 Implementation plan: `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md`.
 Closure record: `plans/closure/tool-surface-upstream-compatibility/008-status.md`.
 
-The profile-validation and exposure-safety work is complete. The direct
-eggsact 1.2.5 dependency upgrade remains deferred because that release
-declares Rust 1.89.0, above CodeGG's Rust 1.81 MSRV; an explicit MSRV decision
-is required before changing the dependency baseline.
+The profile-validation and exposure-safety work is complete. Its historical
+conditional closure records that the direct eggsact 1.2.5 dependency upgrade
+was deferred under the then-approved Rust 1.81 MSRV. The approved MSRV change
+is handled by the bounded corrective follow-up:
+
+`plans/implementation/tool-surface-upstream-compatibility/009-eggsact-1.2.5-msrv-adoption.md`.
+
+M009 owns strict dependency-baseline closure and does not rewrite M008's
+historical evidence.
+
+### M009 — Eggsact 1.2.5 MSRV adoption — closing
+
+Class: infrastructure / compatibility
+
+Objective: adopt the approved Rust 1.89 MSRV and eggsact 1.2.5 baseline, refresh
+active documentation, re-run M008 compatibility evidence, and close the one
+remaining dependency finding.
+
+Implementation plan: `plans/implementation/tool-surface-upstream-compatibility/009-eggsact-1.2.5-msrv-adoption.md`.
 
 ## 7. Compatibility and migration
 

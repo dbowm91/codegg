@@ -67,7 +67,7 @@ fn replace_path_prefixes<'a>(input: &'a str, path: &str, replacement: &str) -> C
 
     for (start, _) in input.match_indices(path) {
         let end = start + path.len();
-        let has_path_boundary = input[end..].chars().next().map_or(true, |character| {
+        let has_path_boundary = input[end..].chars().next().is_none_or(|character| {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         });
         if !has_path_boundary {

@@ -199,7 +199,7 @@ fn validate_current_eggsearch_request(
             .get("focus_max_chars")
             .filter(|value| !value.is_null())
         {
-            if value.as_u64().map_or(true, |chars| chars == 0) {
+            if value.as_u64().is_none_or(|chars| chars == 0) {
                 return Err(McpError::Server(format!(
                     "{context} focus_max_chars must be greater than 0"
                 )));
@@ -317,7 +317,7 @@ fn validate_current_eggsearch_request(
                             .get("max_cache_age_seconds")
                             .filter(|value| !value.is_null())
                         {
-                            if age.as_u64().map_or(true, |age| age > 2_592_000) {
+                            if age.as_u64().is_none_or(|age| age > 2_592_000) {
                                 return Err(McpError::Server(
                                     "web batch item max_cache_age_seconds is out of range"
                                         .to_string(),

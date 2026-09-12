@@ -14,7 +14,7 @@ homepage = "https://github.com/dbowm91/codegg"
 readme = "README.md"
 keywords = ["ai", "coding", "agent", "llm", "claude"]
 categories = ["command-line-utilities", "artificial-intelligence"]
-rust-version = "1.81"
+rust-version = "1.89"
 
 [[bin]]
 name = "codegg-lsp-test-server"
@@ -175,7 +175,7 @@ egggit = { version = "=0.1.0", path = "crates/egggit" }
 egglsp = { version = "=0.1.0", path = "crates/egglsp" }
 codegg-core = { version = "=0.1.0", path = "crates/codegg-core" }
 codegg-git = { version = "=0.1.0", path = "crates/codegg-git" }
-eggsact = "1.1.4"
+eggsact = "1.2.5"
 
 [dev-dependencies]
 proptest = "1"

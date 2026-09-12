@@ -2,9 +2,8 @@
 
 Harness-side eggsact preflight integration for automatic validation
 before mutating operations. Preflight calls never appear as model-facing
-tool calls. CodeGG currently resolves eggsact `1.1.4` under the repository's
-Rust `1.81` MSRV; the audited `1.2.5` release requires Rust `1.89` and is
-deferred pending an explicit MSRV decision.
+tool calls. CodeGG resolves eggsact `1.2.5` under the repository's Rust `1.89`
+MSRV.
 
 ## Purpose
 

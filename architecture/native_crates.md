@@ -261,10 +261,8 @@ Large crate (56 modules). Key public API:
 
 ### `eggsact` (in-process, not a workspace crate)
 
-Consumed as a direct Rust dependency (`eggsact = "1.1.4"`), resolved and
-tested at `1.1.4` to preserve CodeGG's Rust `1.81` MSRV. Eggsact `1.2.5`
-was audited but declares Rust `1.89.0`, so its dependency upgrade is deferred
-pending an explicit MSRV decision. The adapter wraps
+Consumed as a direct Rust dependency (`eggsact = "1.2.5"`), resolved and
+tested at `1.2.5` under CodeGG's Rust `1.89` MSRV. The adapter wraps
 `eggsact::agent::ToolRegistry` in-process:
 
 - `src/eggsact/adapter.rs` — `EggsactRuntime` owns the registry

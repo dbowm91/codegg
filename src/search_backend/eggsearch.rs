@@ -504,7 +504,7 @@ fn build_evidence_bundle_args(input: &Value) -> Result<Value, ToolError> {
         .cloned()
         .unwrap_or_default();
     let fetches = input.get("fetches").and_then(Value::as_array);
-    if sources.is_empty() && fetches.map_or(true, Vec::is_empty) {
+    if sources.is_empty() && fetches.is_none_or(Vec::is_empty) {
         return Err(ToolError::Execution(
             "evidence_bundle requires at least one current source or fetch input".to_string(),
         ));

@@ -353,15 +353,15 @@ impl WorktreeStore for InMemoryWorktreeStore {
                 query
                     .workspace_id
                     .as_ref()
-                    .map_or(true, |id| &record.workspace_id == id)
+                    .is_none_or(|id| &record.workspace_id == id)
                     && query
                         .repository_id
                         .as_ref()
-                        .map_or(true, |id| &record.repository_id == id)
+                        .is_none_or(|id| &record.repository_id == id)
                     && query
                         .owner_run_id
                         .as_ref()
-                        .map_or(true, |id| record.owner_run_id.as_ref() == Some(id))
+                        .is_none_or(|id| record.owner_run_id.as_ref() == Some(id))
                     && (query.include_removed || record.state != ManagedWorktreeState::Removed)
             })
             .cloned()

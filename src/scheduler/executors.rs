@@ -263,7 +263,7 @@ impl JobExecutor for ManagedArgvExecutor {
                 Ok(())
             }
             JobPayload::Shell { command, argv, .. } => {
-                if command.is_empty() && argv.as_ref().map_or(true, Vec::is_empty) {
+                if command.is_empty() && argv.as_ref().is_none_or(Vec::is_empty) {
                     return Err(ExecutorValidationError::MissingField("command".into()));
                 }
                 Ok(())

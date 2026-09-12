@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | conditionally closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M008 conditionally closed | Profile compatibility is complete; eggsact 1.2.5 remains deferred pending an explicit Rust 1.81 → 1.89 MSRV decision. |
+| Upstream tool-surface compatibility corrective | closing | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closing | Implementation and verification landed; closure record is being finalized. |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -64,7 +64,7 @@ Canonical direction remains in:
 
 ## Current execution order and dependency gates
 
-1. M008 is conditionally closed with its MSRV condition recorded in its closure record.
+1. M009 is closing: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption has landed; closure evidence is being finalized and M008's historical conditional record remains unchanged.
 2. M007 is closed against the final M006 MCP representation.
 
 Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This compatibility work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, or generic secret-store/DI system.
@@ -82,7 +82,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| Upstream tool-surface compatibility corrective | conditionally closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 closure record |
+| Upstream tool-surface compatibility corrective | closing | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 closure record and M009 follow-up |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
@@ -104,6 +104,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
 | Upstream tool-surface compatibility corrective | M008 Eggsact 1.2.5 in-process compatibility | conditionally closed | `plans/closure/tool-surface-upstream-compatibility/008-status.md` | `2055696` |
+| Upstream tool-surface compatibility corrective | M009 Eggsact 1.2.5 MSRV adoption | closing | `plans/implementation/tool-surface-upstream-compatibility/009-eggsact-1.2.5-msrv-adoption.md` | Closure record in progress |
 | Upstream tool-surface compatibility corrective | M007 Eggsearch 0.3.9 surface alignment | closed | `plans/closure/tool-surface-upstream-compatibility/007-status.md` | `0cd35ab` |
 | Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | closed | `plans/closure/tool-surface-upstream-compatibility/006-status.md` | `65ed1c6` |
 | Repository surface housekeeping corrective | M001 active surface, guard, and traceability reconciliation | closed | `plans/closure/repository-surface-housekeeping/001-status.md` | `931fb709` |

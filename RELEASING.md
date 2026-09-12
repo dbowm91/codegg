@@ -69,7 +69,7 @@ coordinated bump across all packages that depend on it.
 
 ## Prerequisites
 
-- Rust 1.81+ stable toolchain
+- Rust 1.89+ stable toolchain
 - Clean git working tree on `main`
 - `cargo login` completed (token stored in `~/.cargo/credentials.toml`)
   **or** a credential provider configured. Do not print or commit the token.

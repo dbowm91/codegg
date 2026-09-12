@@ -580,7 +580,7 @@ impl InteractiveProcessProtocol {
             .await
             .iter()
             .filter(|snapshot| {
-                workspace_id.map_or(true, |filter| snapshot.workspace_id.as_str() == filter)
+                workspace_id.is_none_or(|filter| snapshot.workspace_id.as_str() == filter)
             })
             .map(snapshot_to_metadata)
             .collect();

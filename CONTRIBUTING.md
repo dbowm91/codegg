@@ -6,7 +6,7 @@ Thank you for your interest in contributing to codegg!
 
 ### Prerequisites
 
-- Rust 1.81 or later
+- Rust 1.89 or later
 - Cargo
 
 ### Development Setup

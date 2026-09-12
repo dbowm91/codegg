@@ -384,7 +384,7 @@ impl HabitStore {
         Ok(self
             .load(project_identity)?
             .into_iter()
-            .filter(|candidate| status.map_or(true, |wanted| &candidate.status == wanted))
+            .filter(|candidate| status.is_none_or(|wanted| &candidate.status == wanted))
             .take(limit.min(MAX_CANDIDATES))
             .collect())
     }

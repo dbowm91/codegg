@@ -23,7 +23,7 @@ YAML is a read-only compatibility format for markdown frontmatter in agents,
 commands, and skills. New configuration and generated assets use the
 subsystem's canonical TOML or JSON/JSON5 format. YAML parsing is centralized
 in `codegg-config`'s document codec and uses `serde_norway` 0.9.42, a
-maintained Serde-compatible fork with the repository's Rust 1.81-compatible
+maintained Serde-compatible fork with the repository's Rust 1.89-compatible
 MSRV. Existing YAML files are not rewritten automatically.
 
 ## Feature ownership checkpoints

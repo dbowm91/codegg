@@ -1,10 +1,8 @@
 # Deterministic Tools (eggsact)
 
 In-process deterministic correctness utilities backed by the `eggsact`
-crate (external dependency). The manifest and lockfile currently resolve
-eggsact `1.1.4`; eggsact `1.2.5` was audited for this compatibility pass but
-requires Rust `1.89`, above CodeGG's Rust `1.81` MSRV, so that upgrade is
-deferred pending an explicit MSRV decision. These provide compile-time-guaranteed
+crate (external dependency). The manifest and lockfile resolve eggsact
+`1.2.5` under CodeGG's Rust `1.89` MSRV. These provide compile-time-guaranteed
 validation, comparison, and inspection operations that never call
 external services.
 

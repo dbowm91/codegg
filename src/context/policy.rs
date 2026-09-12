@@ -89,7 +89,7 @@ pub fn decide_policy(
         && analysis.recommended_action == EffectiveCostAction::ReviewToolPalette;
     let meets_obs = observed_count >= config.min_cache_observations();
     let over_cap = current_tool_count > config.max_tool_definitions();
-    let phase_ok = phase.map_or(true, |p| {
+    let phase_ok = phase.is_none_or(|p| {
         let pl = p.to_lowercase();
         pl.contains("beforeprovider") || pl.contains("initial") || pl.contains("before_provider")
     });

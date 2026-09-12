@@ -527,7 +527,7 @@ impl InteractiveTerminalController {
         if self
             .active
             .as_ref()
-            .map_or(true, |h| !self.views.contains_key(h))
+            .is_none_or(|h| !self.views.contains_key(h))
         {
             self.active = self.views.keys().next().cloned();
         }

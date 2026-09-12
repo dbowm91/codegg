@@ -238,7 +238,7 @@ fn main() {
             parsed
                 .profile
                 .context_window
-                .map_or(true, |x| x <= 10_000_000),
+                .is_none_or(|x| x <= 10_000_000),
             "{}: context_window out of bounds",
             path.display()
         );
@@ -246,7 +246,7 @@ fn main() {
             parsed
                 .profile
                 .max_output_tokens
-                .map_or(true, |x| x <= 1_000_000),
+                .is_none_or(|x| x <= 1_000_000),
             "{}: max_output_tokens out of bounds",
             path.display()
         );
@@ -254,7 +254,7 @@ fn main() {
             parsed
                 .tools
                 .max_parallel
-                .map_or(true, |x| (1..=64).contains(&x)),
+                .is_none_or(|x| (1..=64).contains(&x)),
             "{}: max_parallel out of bounds",
             path.display()
         );

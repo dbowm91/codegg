@@ -6,7 +6,7 @@ description = "Core runtime, session, storage, state, and domain types for codeg
 license = "MIT"
 repository = "https://github.com/dbowm91/codegg"
 homepage = "https://github.com/dbowm91/codegg"
-rust-version = "1.81"
+rust-version = "1.89"
 build = "build.rs"
 
 [dependencies]
