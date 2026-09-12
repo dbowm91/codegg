@@ -205,6 +205,12 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             context_policy,
             orchestration
         );
+        if let Some(model_routers) = &config.model_routers {
+            merged
+                .model_routers
+                .get_or_insert_with(Default::default)
+                .extend(model_routers.clone());
+        }
         if let Some(ref discovery) = config.discovery {
             match &mut merged.discovery {
                 Some(ref mut existing) => existing.merge(discovery),

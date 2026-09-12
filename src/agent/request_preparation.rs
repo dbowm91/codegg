@@ -198,6 +198,69 @@ impl AgentLoop {
         }
     }
 
+    pub(super) async fn apply_semantic_routing(
+        &mut self,
+        request: &mut ChatRequest,
+    ) -> Result<bool, crate::error::AppError> {
+        if !self
+            .services
+            .semantic_router
+            .is_virtual_model(&request.model)
+        {
+            return Ok(false);
+        }
+
+        let decision = self
+            .services
+            .semantic_router
+            .resolve(
+                request,
+                &self.services.provider_registry,
+                self.cancel_rx.as_mut(),
+            )
+            .await?
+            .ok_or_else(|| {
+                crate::error::AppError::Agent(crate::error::AgentError::Invalid(
+                    "semantic model router returned no decision".to_string(),
+                ))
+            })?;
+        let Some(provider_name) = decision.resolved_model.split('/').next() else {
+            return Err(crate::error::AppError::Provider(
+                crate::error::ProviderError::NotFound(decision.resolved_model),
+            ));
+        };
+        let Some(provider) = self.services.provider_registry.get(provider_name) else {
+            return Err(crate::error::AppError::Provider(
+                crate::error::ProviderError::NotFound(format!(
+                    "Provider '{}' not found",
+                    provider_name
+                )),
+            ));
+        };
+        self.services.provider = provider.clone_box();
+        request.model = decision
+            .resolved_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&decision.resolved_model)
+            .to_string();
+        tracing::info!(
+            requested_model = %decision.requested_model,
+            resolved_model = %decision.resolved_model,
+            route_id = %decision.route_id,
+            route_label = %decision.route_label,
+            source = decision.source.as_str(),
+            attempts = decision.attempts,
+            fallback_reason = ?decision.fallback_reason,
+            "semantic model route resolved"
+        );
+        crate::bus::global::GlobalEventBus::publish(AppEvent::ModelChanged {
+            model: decision.resolved_model,
+            complexity: format!("semantic:{}", decision.route_label),
+        });
+        Ok(true)
+    }
+
     pub(super) fn apply_model_profile_defaults(
         &self,
         request: &mut ChatRequest,

@@ -94,6 +94,11 @@ fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/c
 - New web-search providers belong in the external `eggsearch` project, not `src/search/`
   (legacy fallback). New deterministic validators go in the `eggsact` crate first. New
   LSP servers go in `crates/egglsp/src/server.rs` + config.
+- Semantic model routing is opt-in through exact `virtual:<name>` aliases.
+  `codegg-core::model_routing` adapts and compiles the shared EggPool policy;
+  `src/agent/semantic_router.rs` executes bounded selector calls. It never
+  changes durable session/provider-connection selection, and concrete models
+  bypass it. The EggPool `/models` probe remains provider discovery.
 
 ## Pointers
 

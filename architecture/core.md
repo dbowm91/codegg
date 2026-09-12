@@ -36,6 +36,7 @@ that authority.
 | `memory` | persistent session-to-session learning |
 | `migration` | database migration and legacy store conversion |
 | `model_profile` | model profile types |
+| `model_routing` | Codegg adapter for shared semantic model-policy compilation |
 | `project_catalog` | durable logical project registry |
 | `project_discovery` | project root detection heuristics |
 | `project_discovery_service` | service facade for discovery |

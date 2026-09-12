@@ -57,6 +57,8 @@ pub(super) struct AgentLoopServices {
     pub(super) tool_def_cache: Option<ToolDefCache>,
     pub(super) deferred_tool_definitions: Vec<ToolDefinition>,
     pub(super) model_router: ModelRouter,
+    pub(super) semantic_router: super::semantic_router::SemanticRouter,
+    pub(super) provider_registry: Arc<crate::provider::ProviderRegistry>,
     pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
     pub(super) checkpoint_manager: Option<crate::snapshot::checkpoint::EditCheckpointManager>,
     pub(super) file_change_rx: broadcast::Receiver<AppEvent>,

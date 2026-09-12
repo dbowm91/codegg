@@ -20,6 +20,7 @@ asset management.
 | `src/agent/tool_inspect.rs` | Pure tool-call inspection/classification (paths, bash/test/git/MCP), timeouts, model-flag gating |
 | `src/agent/loop_output.rs` | Bounded `AgentLoopTerminalOutput` collector and local-path redaction |
 | `src/agent/request_preparation.rs` | Per-turn request preparation: policy, routing, research hints, context frames, tool definitions |
+| `src/agent/semantic_router.rs` | Bounded selector execution and exact virtual-model route resolution |
 | `src/agent/turn_completion.rs` | Terminal publication, goal accounting/continuation, limit checks, run-boundary journaling |
 | `src/agent/habit_observation.rs` | Host-owned habit observation adapter (allowlisted structural metadata only) |
 | `src/agent/snapshot_capture.rs` | Snapshot capture, file-change draining, security-review trigger dispatch |
@@ -72,6 +73,24 @@ TurnSubmit (daemon)
         → Completion when the provider has no further calls
       Completion: projection, goal accounting, follow-ups, SessionEnd hooks
 ```
+
+### Semantic model routing
+
+An optional `virtual:<name>` model is resolved by `SemanticRouter` after agent
+configuration and before concrete provider invocation. Codegg translates its
+`model_routers` config into the shared `eggpool-model-routing` compiler, then
+executes the bounded selector through the normal `Provider` abstraction.
+Selector output is accepted only when it is an exact compiled route ID;
+invalid output, selector failure, or timeout uses the configured default.
+Caller cancellation propagates without starting default work. Concrete models
+and explicit concrete agent overrides bypass semantic routing.
+
+This path never changes durable session/provider-connection selection. It
+returns a concrete model to the existing loop, and an EggPool provider
+connection remains responsible for its own internal account routing. Selector
+prompts and raw session identifiers are not persisted or logged; the existing
+bounded EggPool `/models` probe remains provider discovery, not semantic
+routing.
 
 `TurnLifecycle` is an in-memory sequencing aid only. Durable run identity,
 completion, recovery, and scheduler admission remain owned by the run-control,

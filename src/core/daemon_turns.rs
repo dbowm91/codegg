@@ -75,9 +75,25 @@ impl CoreDaemon {
                 let mut registry = crate::provider::ProviderRegistry::new();
                 let config = super::load_config_or_default();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
+                let semantic_router =
+                    match crate::agent::semantic_router::SemanticRouter::from_config(&config) {
+                        Ok(router) => router,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_model_router_config".to_string(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                let is_virtual_model = codegg_core::model_routing::is_virtual_model(&model);
+                if is_virtual_model && !semantic_router.has_virtual_model(&model) {
+                    return Ok(CoreResponse::Error {
+                        code: "semantic_router_not_found".to_string(),
+                        message: format!("Semantic model router not found: {}", model),
+                    });
+                }
                 let provider_name = model.split('/').next().unwrap_or("openai").to_string();
-                let _model_name = model.split('/').next_back().unwrap_or(&model).to_string();
-                let Some(_base_provider) = registry.get(&provider_name) else {
+                if !is_virtual_model && registry.get(&provider_name).is_none() {
                     crate::bus::global::GlobalEventBus::publish(
                         crate::bus::events::AppEvent::Error {
                             message: format!(
@@ -90,7 +106,7 @@ impl CoreDaemon {
                         code: "provider_not_found".to_string(),
                         message: format!("Provider not found: {}", provider_name),
                     });
-                };
+                }
 
                 let runtime = match self.bind_runtime_for_session(&session_id).await {
                     Ok(rt) => rt,

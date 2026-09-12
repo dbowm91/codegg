@@ -1017,6 +1017,7 @@ dependencies = [
  "dirs",
  "egggit",
  "egglsp",
+ "eggpool-model-routing",
  "eggsentry",
  "libc",
  "md5 0.8.0",
@@ -1737,6 +1738,14 @@ dependencies = [
  "which",
  "xz2",
  "zip",
+]
+
+[[package]]
+name = "eggpool-model-routing"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggpool?rev=d70b5963#d70b5963daa373bd16e193637dc2210723418d9c"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]

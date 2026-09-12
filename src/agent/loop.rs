@@ -170,6 +170,15 @@ impl AgentLoop {
             .map(|hooks| Arc::new(crate::hooks::HookRegistry::from_config(hooks)));
 
         let model_router = ModelRouter::from_config(&config);
+        let semantic_router = match super::semantic_router::SemanticRouter::from_config(&config) {
+            Ok(router) => router,
+            Err(error) => {
+                tracing::warn!(error = %error, "invalid semantic model-router config; disabling semantic routing");
+                super::semantic_router::SemanticRouter::empty()
+            }
+        };
+        let mut provider_registry = crate::provider::ProviderRegistry::new();
+        provider_registry.register(provider.clone_box());
 
         let snapshot_manager = if config.snapshot.unwrap_or(false) {
             if let Some(pool) = pool.clone() {
@@ -287,6 +296,8 @@ impl AgentLoop {
                 tool_def_cache: None,
                 deferred_tool_definitions: Vec::new(),
                 model_router,
+                semantic_router,
+                provider_registry: Arc::new(provider_registry),
                 snapshot_manager,
                 checkpoint_manager,
                 file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
@@ -587,6 +598,10 @@ impl AgentLoop {
         self.workspace_id = Some(workspace_id);
     }
 
+    pub fn set_provider_registry(&mut self, registry: Arc<crate::provider::ProviderRegistry>) {
+        self.services.provider_registry = registry;
+    }
+
     /// Install the daemon-owned workspace service lease used by checkpointed
     /// mutations. The lease must outlive the loop so all sessions contend on
     /// the same per-workspace lock table.
@@ -728,8 +743,22 @@ impl AgentLoop {
             });
         }
 
-        self.apply_auto_routing(&mut request);
+        let agent_has_explicit_model = self
+            .services
+            .agents
+            .get(&self.state.current_agent)
+            .and_then(|agent| agent.model.as_ref())
+            .is_some();
+        if !self
+            .services
+            .semantic_router
+            .is_virtual_model(&request.model)
+            && !agent_has_explicit_model
+        {
+            self.apply_auto_routing(&mut request);
+        }
         self.apply_agent_config(&mut request);
+        self.apply_semantic_routing(&mut request).await?;
         let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
             .resolve(&request.model);
 

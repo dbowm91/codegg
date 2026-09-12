@@ -11,6 +11,7 @@ use codegg_core::workspace::ExecutionContext;
 pub struct AgentLoopBuildInput {
     pub agents: Vec<crate::agent::Agent>,
     pub provider: Box<dyn crate::provider::Provider>,
+    pub provider_registry: Arc<crate::provider::ProviderRegistry>,
     pub config: Config,
     pub tool_registry: ToolRegistry,
     pub pool: Option<sqlx::SqlitePool>,
@@ -48,6 +49,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.session_id,
     );
     agent_loop.set_turn_id(input.turn_id);
+    agent_loop.set_provider_registry(input.provider_registry);
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());
     if let Some(lease) = input.workspace_service_lease {
         agent_loop.set_workspace_services_lease(lease);

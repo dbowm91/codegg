@@ -199,6 +199,15 @@ A minimal provider configuration looks like:
 
 Configuration can additionally control agents, model profiles, permissions, compaction/context policy, tools, formatters, LSP servers, MCP servers, skills, plugins, keybindings, notifications, daemon behavior, and other runtime options. See [`architecture/config.md`](architecture/config.md).
 
+Semantic model routing is optional. Configure an exact `virtual:<name>` model
+under `model_routers` to run a bounded selector and resolve one configured
+concrete route; concrete model selections bypass it. The selected Codegg
+provider connection remains authoritative, while an EggPool connection may
+perform its own internal account routing. Selector failure or invalid output
+uses the configured default route, and caller cancellation is propagated.
+Codegg currently performs this selection per turn; it does not replace the
+durable session/provider-connection selection path.
+
 ## Providers and credentials
 
 The current built-in registration path supports Anthropic, OpenAI, Google, OpenRouter, OpenCode Zen, Mistral, Groq, DeepInfra, Cerebras, Cohere, Together, Perplexity, xAI, Venice, MiniMax, OpenCode Go, and General Compute when the corresponding credentials/configuration are present.

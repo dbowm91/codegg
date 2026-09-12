@@ -14,6 +14,7 @@ codegg-config = { version = "=0.1.0", path = "../codegg-config" }
 codegg-git = { version = "=0.1.0", path = "../codegg-git" }
 codegg-protocol = { version = "=0.1.0", path = "../codegg-protocol" }
 codegg-providers = { version = "=0.1.0", path = "../codegg-providers" }
+eggpool-model-routing = { git = "https://github.com/eggstack/eggpool", rev = "d70b5963" }
 egggit = { version = "=0.1.0", path = "../egggit" }
 egglsp = { version = "=0.1.0", path = "../egglsp" }
 eggsentry = { version = "=0.1.0", path = "../eggsentry" }

@@ -52,6 +52,8 @@ Different strategies per field type:
   `discovery`
 - **Key replacement**: `agent`, `mcp`, `commands`, `mode`, `model_profile` (insert
   overwrites existing keys)
+- **Key replacement**: `model_routers` (each virtual model key from a later
+  config layer replaces the earlier policy)
 - **Concatenation**: `instructions` (appended to list)
 - **Simple override** (via `merge_option!`): all other fields including
   `schema`, `version`, `log_level`, `model`, `small_model`, `medium_model`,
@@ -86,6 +88,7 @@ pub struct Config {
     pub small_model: Option<String>,
     pub medium_model: Option<String>,
     pub auto_route_models: Option<bool>,
+    pub model_routers: Option<HashMap<String, ModelRouterConfig>>,
     pub default_agent: Option<String>,
     pub username: Option<String>,
     pub share: Option<String>,

@@ -1,4 +1,19 @@
 {
+  // Optional semantic model routing. Select "virtual:code" for a bounded
+  // selector decision; concrete model selections bypass this policy.
+  "model_routers": {
+    "virtual:code": {
+      "selector_model": "openai/gpt-4o-mini",
+      "default_model": "openai/gpt-4o-mini",
+      "sticky": false,
+      "routes": {
+        "fast": {
+          "model": "openai/gpt-4o-mini",
+          "description": "short implementation task"
+        }
+      }
+    }
+  },
   "$schema": "https://opencode.ai/schema/config.json",
   "log_level": "info",
   

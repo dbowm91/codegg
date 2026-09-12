@@ -23,6 +23,12 @@ This skill covers the `src/core/` module, which is the request/response boundary
 - Memory, task, and worktree helpers
 - Model refresh and agent/model selection helpers
 
+Semantic model routing is a separate optional agent-loop capability. It may
+resolve a configured `virtual:<name>` model to a concrete model, but it must
+never replace a durable session `ProviderConnectionId`, connection revision,
+credential, or lifecycle decision. See `architecture/agent.md` and
+`architecture/config.md`.
+
 ## Request-Family Routing (Residual M002)
 
 `CoreDaemon` is the single composition/lifecycle authority. Request

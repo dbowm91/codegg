@@ -234,8 +234,31 @@ impl TurnRuntime for DefaultTurnRuntime {
         let mut registry = crate::provider::ProviderRegistry::new();
         crate::provider::register_builtin_with_config(&mut registry, &config);
 
-        let provider_name = model.split('/').next().unwrap_or("openai").to_string();
-        let model_name = model.split('/').next_back().unwrap_or(&model).to_string();
+        let semantic_router = crate::agent::semantic_router::SemanticRouter::from_config(&config)
+            .map_err(|error| {
+            AppError::Config(crate::error::ConfigError::Invalid(error.to_string()))
+        })?;
+        let is_semantic_model = semantic_router.has_virtual_model(&model);
+        let execution_model = if let Some(router) = semantic_router.registry().get(&model) {
+            let selector_provider = router.selector_model.split('/').next().unwrap_or("openai");
+            if registry.get(selector_provider).is_some() {
+                router.selector_model.clone()
+            } else {
+                router.default_model.clone()
+            }
+        } else {
+            model.clone()
+        };
+        let provider_name = execution_model
+            .split('/')
+            .next()
+            .unwrap_or("openai")
+            .to_string();
+        let model_name = execution_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&execution_model)
+            .to_string();
 
         let base_provider = registry.get(&provider_name).ok_or_else(|| {
             AppError::Provider(crate::error::ProviderError::NotFound(format!(
@@ -608,6 +631,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             pool,
             session_id: session_id.clone(),
             turn_id: Some(turn_id.clone()),
+            provider_registry: Arc::new(registry),
             subagent_pool,
             task_state_policy,
             mcp_service,
@@ -634,7 +658,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                     tracing::error!(error = %e, "dtos_to_provider_messages conversion failed");
                     Default::default()
                 }),
-            model: model_name,
+            model: if is_semantic_model { model } else { model_name },
             tools: None,
             system: Some(system),
             temperature: None,

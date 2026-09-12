@@ -67,7 +67,8 @@ A single user prompt flows through the system along this path:
    ([authorization.md](authorization.md), [audit.md](audit.md)).
 4. **Agent loop cycle** — `AgentLoop` builds the turn context (asset snapshot,
    instructions, skills, memory, task state), streams an LLM completion through
-   a provider ([provider.md](provider.md)), parses tool calls, executes them,
+   an optional bounded semantic selector for `virtual:<name>` models, then a
+   provider ([provider.md](provider.md)), parses tool calls, executes them,
    appends results, and repeats until the model stops calling tools
    ([agent.md](agent.md)). Compaction manages context-window overflow
    ([compaction.md](compaction.md)).

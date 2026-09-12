@@ -39,6 +39,7 @@ mod request_preparation;
 pub mod router;
 pub mod run_control;
 pub mod run_integration;
+pub mod semantic_router;
 mod snapshot_capture;
 pub mod specialized_runtime;
 pub mod task_tool_runtime;

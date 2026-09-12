@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub const CONFIG_VERSION: &str = "1";
 pub const MIN_SUPPORTED_VERSION: &str = "1";
+pub const VIRTUAL_MODEL_PREFIX: &str = "virtual:";
 
 // --- AuthConfig (inline copy from root crate) ---
 
@@ -223,6 +224,7 @@ pub struct Config {
     pub small_model: Option<String>,
     pub medium_model: Option<String>,
     pub auto_route_models: Option<bool>,
+    pub model_routers: Option<HashMap<String, ModelRouterConfig>>,
     pub default_agent: Option<String>,
     pub username: Option<String>,
     pub share: Option<String>,
@@ -1832,6 +1834,10 @@ pub enum SymlinkPolicy {
     FollowWithinRoot,
 }
 
+fn is_model_reference(model: &str) -> bool {
+    model.contains('/') || model.starts_with(VIRTUAL_MODEL_PREFIX)
+}
+
 fn validate_bound<T>(errors: &mut Vec<String>, name: &str, value: T, min: T, max: T)
 where
     T: Ord + std::fmt::Display + Copy,
@@ -1946,6 +1952,41 @@ pub enum PluginSpec {
     WithOptions(String, HashMap<String, serde_json::Value>),
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ModelRouterConfig {
+    pub selector_model: String,
+    pub default_model: String,
+    pub routes: HashMap<String, ModelRouteConfig>,
+    pub sticky: bool,
+    pub affinity_ttl_s: f64,
+    pub selector_timeout_s: f64,
+    pub max_input_bytes: u64,
+    pub repair_attempts: u8,
+}
+
+impl Default for ModelRouterConfig {
+    fn default() -> Self {
+        Self {
+            selector_model: String::new(),
+            default_model: String::new(),
+            routes: HashMap::new(),
+            sticky: false,
+            affinity_ttl_s: 43_200.0,
+            selector_timeout_s: 2.0,
+            max_input_bytes: 2_048,
+            repair_attempts: 1,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ModelRouteConfig {
+    pub model: String,
+    pub description: String,
+}
+
 impl Config {
     /// Load the merged configuration, logging parse or filesystem failures
     /// before falling back to defaults so a broken config is never silent.
@@ -2038,7 +2079,7 @@ impl Config {
         }
 
         if let Some(ref model) = self.model {
-            if !model.contains('/') {
+            if !is_model_reference(model) {
                 errors.push(format!(
                     "invalid model '{}': must be in format provider/model",
                     model
@@ -2047,7 +2088,7 @@ impl Config {
         }
 
         if let Some(ref small_model) = self.small_model {
-            if !small_model.contains('/') {
+            if !is_model_reference(small_model) {
                 errors.push(format!(
                     "invalid small_model '{}': must be in format provider/model",
                     small_model
@@ -2056,7 +2097,7 @@ impl Config {
         }
 
         if let Some(ref medium_model) = self.medium_model {
-            if !medium_model.contains('/') {
+            if !is_model_reference(medium_model) {
                 errors.push(format!(
                     "invalid medium_model '{}': must be in format provider/model",
                     medium_model
