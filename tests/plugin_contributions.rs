@@ -290,12 +290,16 @@ async fn mcp_reconciliation_connects_stdio_alias_through_local_lifecycle() {
     let mut service = McpService::new();
     let fixture = r#"
 while IFS= read -r request; do
+    request_id="$(printf '%s' "$request" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')"
     case "$request" in
+        *'"method":"server/discover"'*)
+            printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$request_id,\"error\":{\"code\":-32601,\"message\":\"method not found\"}}"
+            ;;
         *'"method":"initialize"'*)
-            printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fixture","version":"1"}}}'
+            printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$request_id,\"result\":{\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}"
             ;;
         *'"method":"tools/list"'*)
-            printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"fixture_tool","description":"fixture","inputSchema":{"type":"object","properties":{}}}]}}'
+            printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$request_id,\"result\":{\"tools\":[{\"name\":\"fixture_tool\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}"
             ;;
     esac
 done
