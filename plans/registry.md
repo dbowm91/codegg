@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Upstream tool-surface compatibility corrective | ready | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 + M008 ready; M007 gated on M006 closure | M006 → M007 hard; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -53,28 +54,29 @@ Canonical direction remains in:
 | Distribution and installation | closed | `plans/subsystems/distribution-installation-roadmap.md` | M001/M002 closed | — |
 | Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | — |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | — |
-| Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | Configured built-in fallback remains compatibility-only by accepted design; no new corrective trigger. |
+| Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | Historical 0.3.6-era workstream remains closed; the 0.3.9 compatibility trigger is owned by the new corrective addendum above. |
 
 ## Dependency-ready implementation plans
 
-No implementation plan is currently dependency-ready. A plan is listed here
-only after dependency and handoff review, and moves to `active` only when
-implementation actually begins.
+| Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
+|---|---|---|---|---|
+| Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | ready | `plans/implementation/tool-surface-upstream-compatibility/006-mcp-modern-protocol-and-metadata.md` | No hard predecessor; preserve legacy MCP compatibility. |
+| Upstream tool-surface compatibility corrective | M008 eggsact 1.2.5 in-process compatibility | ready | `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md` | Independent; may run in parallel with M006. |
+| Upstream tool-surface compatibility corrective | M007 eggsearch 0.3.9 surface alignment | blocked | `plans/implementation/tool-surface-upstream-compatibility/007-eggsearch-0.3.9-surface-alignment.md` | Hard dependency: M006 must close before M007 closure; fixture/request work may begin in parallel but do not claim closure early. |
 
 ## Current execution order and dependency gates
 
-No implementation plan is currently dependency-ready, so there is no active
-execution order. Architecture convergence M009 and Runtime Safety C002
-remain conditionally closed on the operational evidence listed under
-Blocked work; repository-surface M001 did not satisfy those conditions.
-No housekeeping work authorizes a new daemon, scheduler, service bus,
-command router, state-management framework, verification framework, release
-automation, persistent search index, or generic secret-store/DI system.
+1. M006 and M008 are dependency-ready and may execute in parallel.
+2. M007 request/schema audit may proceed against deterministic eggsearch 0.3.9 fixtures while M006 is active, but M007 remains blocked for closure until M006 establishes the final generic MCP negotiation/metadata path.
+3. M007 should then close against the final M006 MCP representation rather than introducing eggsearch-specific protocol plumbing.
+
+Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This compatibility work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, or generic secret-store/DI system.
 
 ## Blocked work
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Upstream tool-surface compatibility corrective | M007 closure | M006 generic MCP modern protocol/metadata compatibility must close first. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
@@ -84,6 +86,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
+| Upstream tool-surface compatibility corrective | ready | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M006/M007/M008 implementation plans |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
@@ -119,6 +122,8 @@ Historical closure records MUST NOT be rewritten to conceal predecessor defects 
 ## Verification policy
 
 Verification remains deliberately light. Newly registered milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add new CI lanes, scanners, coverage/benchmark/binary-size gates, dependency bots, release automation, or fixed release cadence.
+
+The upstream tool-surface corrective may use deterministic modern/legacy MCP fixtures and one optional local real-binary smoke for closure evidence. It MUST NOT add a permanent compatibility matrix, scheduled upstream smoke, network-dependent CI check, duplicate search cache, or duplicate progressive-discovery framework.
 
 Repository-surface M001 may repair the existing project-catalog guard and use temporary census commands for documentation review, but it MUST NOT introduce a permanent docs-lint framework or network-dependent CI check.
 
