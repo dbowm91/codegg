@@ -110,6 +110,63 @@ mod tests {
     }
 
     #[test]
+    fn canonical_policy_and_identity_vectors_match_eggpool() {
+        let config = Config {
+            model_routers: Some(HashMap::from([(
+                "virtual-route".to_string(),
+                ModelRouterConfig {
+                    selector_model: "selector-model".to_string(),
+                    default_model: "model-default".to_string(),
+                    routes: HashMap::from([
+                        (
+                            "z-fast".to_string(),
+                            ModelRouteConfig {
+                                model: "model-fast".to_string(),
+                                description: " Fast\tpath ".to_string(),
+                            },
+                        ),
+                        (
+                            "a-default".to_string(),
+                            ModelRouteConfig {
+                                model: "model-default".to_string(),
+                                description: "Default\npath".to_string(),
+                            },
+                        ),
+                    ]),
+                    sticky: true,
+                    affinity_ttl_s: 60.0,
+                    selector_timeout_s: 2.0,
+                    max_input_bytes: 256,
+                    repair_attempts: 1,
+                },
+            )])),
+            ..Default::default()
+        };
+        let registry = compile_model_routers(&config).expect("canonical policy compiles");
+        let router = registry.get("virtual-route").expect("canonical router");
+        assert_eq!(
+            router.static_policy.as_ref(),
+            b"model-router/v1|choose id;reply id only|0=Default path|1=Fast path"
+        );
+        assert_eq!(
+            router.config_fingerprint,
+            "70c26421aa06f8d476e158e3a9f477526d5dc80eccb8634bd5a16e12329c0f8a"
+        );
+        assert_eq!(router.resolve_route_id("0").unwrap().model, "model-default");
+        assert!(router.resolve_route_id("a-default").is_err());
+
+        let identity = session_identity_from_header(Some("fixture-session")).expect("identity");
+        assert_eq!(
+            identity.digest,
+            [
+                0xd6, 0x44, 0x09, 0x83, 0xc4, 0x54, 0xc2, 0xe5, 0x99, 0x9f, 0xdb, 0x66, 0xbb, 0xe9,
+                0xcf, 0x5f, 0x89, 0xa8, 0xf5, 0x84, 0x7d, 0x6c, 0x95, 0x78, 0xef, 0x14, 0xaf, 0xd2,
+                0x6e, 0xee, 0x12, 0x2c,
+            ]
+        );
+    }
+
+    #[test]
     fn invalid_shared_policy_is_not_reimplemented_locally() {
         let mut config = config();
         config
