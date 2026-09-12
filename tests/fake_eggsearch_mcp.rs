@@ -142,10 +142,81 @@ fn validate_current_eggsearch_request(
             .filter(|value| !value.is_null())
             .ok_or_else(|| McpError::Server(format!("{tool} request missing {field}")))
     };
+    let check_integer = |field: &str, maximum: Option<u64>| -> Result<(), McpError> {
+        let Some(value) = object.get(field).filter(|value| !value.is_null()) else {
+            return Ok(());
+        };
+        let number = value
+            .as_u64()
+            .ok_or_else(|| McpError::Server(format!("{tool} field {field} must be an integer")))?;
+        if maximum.is_some_and(|maximum| number > maximum) {
+            return Err(McpError::Server(format!(
+                "{tool} field {field} is outside the current 0..{} range",
+                maximum.unwrap()
+            )));
+        }
+        Ok(())
+    };
+    let check_cache_policy = |object: &serde_json::Map<String, serde_json::Value>,
+                              context: &str| {
+        let Some(value) = object.get("cache_policy").filter(|value| !value.is_null()) else {
+            return Ok(());
+        };
+        match value.as_str() {
+            Some("default" | "bypass" | "refresh") => Ok(()),
+            _ => Err(McpError::Server(format!(
+                "{context} has invalid cache_policy; expected default, bypass, or refresh"
+            ))),
+        }
+    };
+    let check_focus_fields = |object: &serde_json::Map<String, serde_json::Value>,
+                              context: &str| {
+        if let Some(value) = object.get("focus").filter(|value| !value.is_null()) {
+            let focus = value
+                .as_str()
+                .filter(|focus| !focus.trim().is_empty())
+                .ok_or_else(|| McpError::Server(format!("{context} focus must be non-empty")))?;
+            if focus.chars().count() > 512 {
+                return Err(McpError::Server(format!(
+                    "{context} focus exceeds the 512-character limit"
+                )));
+            }
+        }
+        if let Some(value) = object
+            .get("focus_max_chunks")
+            .filter(|value| !value.is_null())
+        {
+            let chunks = value.as_u64().ok_or_else(|| {
+                McpError::Server(format!("{context} focus_max_chunks must be an integer"))
+            })?;
+            if !(1..=5).contains(&chunks) {
+                return Err(McpError::Server(format!(
+                    "{context} focus_max_chunks must be between 1 and 5"
+                )));
+            }
+        }
+        if let Some(value) = object
+            .get("focus_max_chars")
+            .filter(|value| !value.is_null())
+        {
+            if value.as_u64().map_or(true, |chars| chars == 0) {
+                return Err(McpError::Server(format!(
+                    "{context} focus_max_chars must be greater than 0"
+                )));
+            }
+        }
+        Ok(())
+    };
+    if tool != "provider_status" && require("response_detail")? != "diagnostic" {
+        return Err(McpError::Server(format!(
+            "{tool} requires CodeGG's diagnostic response_detail"
+        )));
+    }
     match tool {
         "web_search" => {
             require("query")?;
             require("max_results")?;
+            check_integer("excerpt_count", Some(3))?;
             if object.contains_key("domains") {
                 return Err(McpError::Server(
                     "web_search received stale domains".to_string(),
@@ -157,6 +228,9 @@ fn validate_current_eggsearch_request(
             require("max_chars")?;
             require("extract_mode")?;
             require("include_links")?;
+            check_focus_fields(object, tool)?;
+            check_cache_policy(object, tool)?;
+            check_integer("max_cache_age_seconds", Some(2_592_000))?;
         }
         "repo_search" => {
             require("query")?;
@@ -233,6 +307,22 @@ fn validate_current_eggsearch_request(
                             .is_none()
                         {
                             return Err(McpError::Server("web batch item missing url".to_string()));
+                        }
+                        let item_object = item.as_object().ok_or_else(|| {
+                            McpError::Server("web batch item must be an object".to_string())
+                        })?;
+                        check_focus_fields(item_object, "web batch item")?;
+                        check_cache_policy(item_object, "web batch item")?;
+                        if let Some(age) = item
+                            .get("max_cache_age_seconds")
+                            .filter(|value| !value.is_null())
+                        {
+                            if age.as_u64().map_or(true, |age| age > 2_592_000) {
+                                return Err(McpError::Server(
+                                    "web batch item max_cache_age_seconds is out of range"
+                                        .to_string(),
+                                ));
+                            }
                         }
                     }
                     Some("repo") => {
@@ -728,6 +818,7 @@ fn build_full_mock_eggsearch(
         "eggsearch",
         tools,
         Box::new(move |tool, args| {
+            validate_current_eggsearch_request(tool, &args)?;
             if let Ok(mut g) = calls.try_lock() {
                 g.push((tool.to_string(), args.clone()));
             }
@@ -1024,7 +1115,14 @@ async fn batch_fetch_normalizes_mixed_legacy_repo_and_web_items() {
 
     ctx.dispatch_batch_fetch(&serde_json::json!({
         "items": [
-            {"type": "web", "url": "https://example.com", "include_links": true},
+            {
+                "type": "web",
+                "url": "https://example.com",
+                "include_links": true,
+                "focus": "scheduler",
+                "cache_policy": "refresh",
+                "max_cache_age_seconds": 3600
+            },
             {"repo": "tokio-rs/tokio", "path": "src/lib.rs", "start_line": 1, "end_line": 8},
         ],
         "max_total_chars": 5000,
@@ -1036,12 +1134,16 @@ async fn batch_fetch_normalizes_mixed_legacy_repo_and_web_items() {
     let (_, args) = recorded.last().unwrap();
     assert_eq!(args["items"][0]["type"], "web");
     assert_eq!(args["items"][0]["include_links"], true);
+    assert_eq!(args["items"][0]["focus"], "scheduler");
+    assert_eq!(args["items"][0]["cache_policy"], "refresh");
+    assert_eq!(args["items"][0]["max_cache_age_seconds"], 3600);
     assert_eq!(args["items"][1]["type"], "repo");
     assert_eq!(args["items"][1]["owner"], "tokio-rs");
     assert_eq!(args["items"][1]["repo"], "tokio");
     assert_eq!(args["items"][1]["line_start"], 1);
     assert_eq!(args["items"][1]["line_end"], 8);
     assert_eq!(args["max_total_chars"], 5000);
+    assert_eq!(args["response_detail"], "diagnostic");
 }
 
 #[tokio::test]
@@ -1051,6 +1153,8 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         "structured_warnings": [{"code": "prompt_injection", "severity": "high", "scope": "snippet"}],
         "trust_markers": {"sanitized": true, "injection_detected": true},
         "routing_decision": {"selected": ["duckduckgo"], "skipped": ["exa"], "degraded": true},
+        "providers_failed": ["exa"],
+        "retrieval_state": {"status": "partial", "complete": false},
         "next_actions": [{"tool": "web_fetch", "reason": "inspect", "priority": "normal", "input": {"url": "https://example.com"}}],
         "repo_locator": {"owner": "owner", "repo": "repo", "path": "src/lib.rs"},
         "security": {"confidence": "high", "applicability": "unknown"},
@@ -1145,6 +1249,8 @@ async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
         assert_eq!(value["structured_warnings"][0]["severity"], "high");
         assert_eq!(value["trust_markers"]["injection_detected"], true);
         assert_eq!(value["routing_decision"]["degraded"], true);
+        assert_eq!(value["providers_failed"][0], "exa");
+        assert_eq!(value["retrieval_state"]["complete"], false);
         assert_eq!(value["next_actions"][0]["tool"], "web_fetch");
         assert_eq!(value["unknown_future_field"]["must_survive"], true);
         assert!(result.output.contains("trust=external_untrusted"));

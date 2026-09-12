@@ -16,6 +16,11 @@ use super::framing::{
     frame_security_results,
 };
 
+const EGGSEARCH_MAX_EXCERPT_COUNT: u64 = 3;
+const EGGSEARCH_MAX_FOCUS_QUERY_CHARS: usize = 512;
+const EGGSEARCH_MAX_FOCUS_CHUNKS: u64 = 5;
+const EGGSEARCH_MAX_CACHE_AGE_SECONDS: u64 = 2_592_000;
+
 /// Shared daemon-owned MCP transport handle threaded explicitly through
 /// the eggsearch adapter (M005). `None` means bootstrap never connected
 /// a service for this runtime context; callers report
@@ -28,6 +33,131 @@ fn copy_fields(args: &mut Value, input: &Value, fields: &[&str]) {
             args[*field] = value.clone();
         }
     }
+}
+
+fn optional_u64_in_range(
+    input: &Value,
+    field: &str,
+    maximum: Option<u64>,
+) -> Result<Option<u64>, ToolError> {
+    let Some(value) = input.get(field).filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let number = value
+        .as_u64()
+        .ok_or_else(|| ToolError::Execution(format!("'{field}' must be a non-negative integer")))?;
+    if let Some(maximum) = maximum {
+        if number > maximum {
+            return Err(ToolError::Execution(format!(
+                "'{field}' must be between 0 and {maximum}"
+            )));
+        }
+    }
+    Ok(Some(number))
+}
+
+fn optional_positive_u64(input: &Value, field: &str) -> Result<Option<u64>, ToolError> {
+    let value = optional_u64_in_range(input, field, None)?;
+    if value == Some(0) {
+        return Err(ToolError::Execution(format!(
+            "'{field}' must be greater than 0"
+        )));
+    }
+    Ok(value)
+}
+
+fn cache_policy(input: &Value) -> Result<Option<&'static str>, ToolError> {
+    let Some(value) = input.get("cache_policy").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        Some("default") => Ok(Some("default")),
+        Some("bypass") => Ok(Some("bypass")),
+        Some("refresh") => Ok(Some("refresh")),
+        Some(other) => Err(ToolError::Execution(format!(
+            "'cache_policy' has unsupported value '{other}'; accepted values: default, bypass, refresh"
+        ))),
+        None => Err(ToolError::Execution(
+            "'cache_policy' must be one of: default, bypass, refresh".to_string(),
+        )),
+    }
+}
+
+/// Eggsearch owns projection semantics, but CodeGG needs the diagnostic
+/// response internally so structured evidence is not discarded before the
+/// adapter can retain it. `response_detail` is intentionally not a native
+/// user-facing option; an explicit non-diagnostic value is rejected rather
+/// than silently weakening the evidence contract.
+fn apply_internal_response_detail(input: &Value, args: &mut Value) -> Result<(), ToolError> {
+    if let Some(value) = input
+        .get("response_detail")
+        .filter(|value| !value.is_null())
+    {
+        if value.as_str() != Some("diagnostic") {
+            return Err(ToolError::Execution(
+                "'response_detail' is controlled internally by CodeGG and must be 'diagnostic'"
+                    .to_string(),
+            ));
+        }
+    }
+    args["response_detail"] = json!("diagnostic");
+    Ok(())
+}
+
+fn add_fetch_controls(input: &Value, args: &mut Value) -> Result<(), ToolError> {
+    let focus = non_empty_string(input, "focus")?;
+    if let Some(focus) = focus.as_deref() {
+        if focus.chars().count() > EGGSEARCH_MAX_FOCUS_QUERY_CHARS {
+            return Err(ToolError::Execution(format!(
+                "'focus' must be at most {EGGSEARCH_MAX_FOCUS_QUERY_CHARS} characters"
+            )));
+        }
+        if input
+            .get("extract_mode")
+            .and_then(Value::as_str)
+            .is_some_and(|mode| mode == "metadata_only")
+        {
+            return Err(ToolError::Execution(
+                "'focus' requires extracted content; it is not valid with extract_mode='metadata_only'"
+                    .to_string(),
+            ));
+        }
+        args["focus"] = Value::String(focus.to_string());
+    }
+
+    if let Some(chunks) =
+        optional_u64_in_range(input, "focus_max_chunks", Some(EGGSEARCH_MAX_FOCUS_CHUNKS))?
+    {
+        if chunks == 0 {
+            return Err(ToolError::Execution(
+                "'focus_max_chunks' must be greater than 0".to_string(),
+            ));
+        }
+        args["focus_max_chunks"] = json!(chunks);
+    }
+    if let Some(chars) = optional_positive_u64(input, "focus_max_chars")? {
+        args["focus_max_chars"] = json!(chars);
+    }
+
+    let policy = cache_policy(input)?;
+    let max_age = optional_u64_in_range(
+        input,
+        "max_cache_age_seconds",
+        Some(EGGSEARCH_MAX_CACHE_AGE_SECONDS),
+    )?;
+    if policy == Some("bypass") && max_age.is_some() {
+        return Err(ToolError::Execution(
+            "'max_cache_age_seconds' cannot be combined with cache_policy='bypass' because eggsearch ignores the age bound in bypass mode"
+                .to_string(),
+        ));
+    }
+    if let Some(policy) = policy {
+        args["cache_policy"] = json!(policy);
+    }
+    if let Some(max_age) = max_age {
+        args["max_cache_age_seconds"] = json!(max_age);
+    }
+    Ok(())
 }
 
 fn non_empty_string(input: &Value, field: &str) -> Result<Option<String>, ToolError> {
@@ -161,6 +291,12 @@ fn build_web_search_args(input: &Value) -> Result<Value, ToolError> {
         }
     }
     copy_fields(&mut args, input, &["intent", "freshness", "safe_search"]);
+    if let Some(excerpt_count) =
+        optional_u64_in_range(input, "excerpt_count", Some(EGGSEARCH_MAX_EXCERPT_COUNT))?
+    {
+        args["excerpt_count"] = json!(excerpt_count);
+    }
+    apply_internal_response_detail(input, &mut args)?;
     Ok(args)
 }
 
@@ -184,6 +320,8 @@ fn build_web_fetch_args(input: &Value) -> Result<Value, ToolError> {
         .get("include_links")
         .cloned()
         .unwrap_or_else(|| json!(false));
+    add_fetch_controls(input, &mut args)?;
+    apply_internal_response_detail(input, &mut args)?;
     Ok(args)
 }
 
@@ -278,6 +416,7 @@ fn normalize_batch_item(item: &Value, index: usize) -> Result<Value, ToolError> 
             item,
             &["extract_mode", "include_links", "max_chars"],
         );
+        add_fetch_controls(item, &mut normalized)?;
         return Ok(normalized);
     }
 
@@ -345,6 +484,7 @@ fn build_batch_fetch_args(input: &Value) -> Result<Value, ToolError> {
     if input.get("max_total_chars").is_some() {
         args["max_total_chars"] = json!(bounded_u64(input, "max_total_chars", 100_000, 500_000,)?);
     }
+    apply_internal_response_detail(input, &mut args)?;
     Ok(args)
 }
 
@@ -400,6 +540,7 @@ pub struct EggsearchCallResult {
     pub output: String,
     pub value: Option<Value>,
     pub truncated: bool,
+    pub success: bool,
 }
 
 /// Explicit-service variant of the former global choke point. Canonical
@@ -441,6 +582,7 @@ where
         output: frame(&capped, "eggsearch"),
         value,
         truncated,
+        success: !result.is_error,
     })
 }
 
@@ -574,6 +716,7 @@ pub async fn call_repo_search_structured(
         .and_then(Value::as_u64)
         .unwrap_or(10)
         .min(30));
+    apply_internal_response_detail(input, &mut args)?;
 
     call_structured_tool_with_service(
         svc,
@@ -637,6 +780,7 @@ pub async fn call_repo_fetch_structured(
     if let Some(line_end) = range_alias(input, "line_end", "end_line")? {
         args["line_end"] = json!(line_end);
     }
+    apply_internal_response_detail(input, &mut args)?;
 
     call_structured_tool_with_service(
         svc,
@@ -704,6 +848,7 @@ pub async fn call_repo_map_structured(
         .unwrap_or(2)
         .min(3);
     args["max_depth"] = json!(depth);
+    apply_internal_response_detail(input, &mut args)?;
 
     call_structured_tool_with_service(
         svc,
@@ -788,6 +933,7 @@ pub async fn call_security_search_structured(
         .and_then(Value::as_u64)
         .unwrap_or(10)
         .min(20));
+    apply_internal_response_detail(input, &mut args)?;
 
     call_structured_tool_with_service(
         svc,
@@ -857,6 +1003,7 @@ pub async fn call_research_search_structured(
         .and_then(Value::as_u64)
         .unwrap_or(10)
         .min(15));
+    apply_internal_response_detail(input, &mut args)?;
 
     call_structured_tool_with_service(
         svc,
@@ -932,7 +1079,8 @@ pub async fn call_build_evidence_bundle_structured(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<EggsearchCallResult, ToolError> {
-    let args = build_evidence_bundle_args(input)?;
+    let mut args = build_evidence_bundle_args(input)?;
+    apply_internal_response_detail(input, &mut args)?;
 
     call_structured_tool_with_service(
         svc,

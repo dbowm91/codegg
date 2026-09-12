@@ -32,6 +32,9 @@ use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::framing;
 use codegg::search_backend::SearchRuntimeContext;
+use codegg::tool::webfetch::WebFetchTool;
+use codegg::tool::websearch::WebSearchTool;
+use codegg::tool::Tool;
 
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
@@ -236,4 +239,99 @@ async fn webfetch_default_extract_mode_is_text() {
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["extract_mode"], "text");
     assert_eq!(args["include_links"], false);
+}
+
+#[tokio::test]
+async fn excerpt_count_and_internal_response_detail_reach_upstream() {
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "excerpt_count": 0,
+        }))
+        .await
+        .unwrap();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "excerpt_count": 3,
+        }))
+        .await
+        .unwrap();
+    let rec = calls.lock().expect("calls not poisoned");
+    assert_eq!(rec[0].1["excerpt_count"], 0);
+    assert_eq!(rec[1].1["excerpt_count"], 3);
+    assert_eq!(rec[0].1["response_detail"], "diagnostic");
+    assert_eq!(rec[1].1["response_detail"], "diagnostic");
+}
+
+#[tokio::test]
+async fn fetch_focus_and_cache_controls_reach_upstream() {
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_fetch(&serde_json::json!({
+            "url": "https://example.com",
+            "focus": "rust scheduler",
+            "focus_max_chunks": 2,
+            "focus_max_chars": 800,
+            "cache_policy": "refresh",
+            "max_cache_age_seconds": 3600,
+        }))
+        .await
+        .unwrap();
+    let rec = calls.lock().expect("calls not poisoned");
+    let args = &rec.last().expect("at least one call").1;
+    assert_eq!(args["focus"], "rust scheduler");
+    assert_eq!(args["focus_max_chunks"], 2);
+    assert_eq!(args["focus_max_chars"], 800);
+    assert_eq!(args["cache_policy"], "refresh");
+    assert_eq!(args["max_cache_age_seconds"], 3600);
+    assert_eq!(args["response_detail"], "diagnostic");
+}
+
+#[tokio::test]
+async fn new_fetch_controls_reject_out_of_contract_values_before_mcp() {
+    let (ctx, calls) = mock_context();
+    for input in [
+        serde_json::json!({"query": "x", "excerpt_count": 4}),
+        serde_json::json!({"url": "https://example.com", "focus": "   "}),
+        serde_json::json!({"url": "https://example.com", "cache_policy": "stale"}),
+        serde_json::json!({"url": "https://example.com", "max_cache_age_seconds": 2_592_001}),
+        serde_json::json!({
+            "url": "https://example.com",
+            "cache_policy": "bypass",
+            "max_cache_age_seconds": 0,
+        }),
+    ] {
+        let result = if input.get("query").is_some() {
+            ctx.dispatch_web_search(&input).await
+        } else {
+            ctx.dispatch_web_fetch(&input).await
+        };
+        assert!(
+            result.is_err(),
+            "invalid input unexpectedly succeeded: {input}"
+        );
+    }
+    assert!(calls.lock().expect("calls not poisoned").is_empty());
+}
+
+#[test]
+fn native_schemas_expose_only_the_selected_provider_neutral_controls() {
+    let search = WebSearchTool::default().parameters();
+    assert_eq!(search["properties"]["excerpt_count"]["minimum"], 0);
+    assert_eq!(search["properties"]["excerpt_count"]["maximum"], 3);
+    assert!(search["properties"].get("response_detail").is_none());
+
+    let fetch = WebFetchTool::default().parameters();
+    for field in [
+        "focus",
+        "focus_max_chunks",
+        "focus_max_chars",
+        "cache_policy",
+        "max_cache_age_seconds",
+    ] {
+        assert!(fetch["properties"].get(field).is_some(), "missing {field}");
+    }
+    assert!(fetch["properties"].get("response_detail").is_none());
 }

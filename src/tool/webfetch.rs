@@ -109,6 +109,34 @@ impl Tool for WebFetchTool {
                 "include_links": {
                     "type": "boolean",
                     "description": "Include extracted links (default: false)"
+                },
+                "focus": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "description": "Optional query used to select relevant chunks from the fetched document; does not crawl or fetch additional URLs"
+                },
+                "focus_max_chunks": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": "Maximum focused chunks to return (default: 5)"
+                },
+                "focus_max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum characters in the focused projection"
+                },
+                "cache_policy": {
+                    "type": "string",
+                    "enum": ["default", "bypass", "refresh"],
+                    "description": "Cache behavior: use a fresh entry, skip cache reads, or force revalidation"
+                },
+                "max_cache_age_seconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2592000,
+                    "description": "Tightening-only maximum acceptable cache age in seconds; 0 forces revalidation"
                 }
             },
             "required": ["url"]

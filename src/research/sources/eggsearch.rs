@@ -501,6 +501,7 @@ mod tests {
             output: "[external_research_evidence]\n{\"groups\":[".to_string(),
             value: Some(value),
             truncated: true,
+            success: true,
         };
         let sources = EggsearchSource::convert_structured(result).unwrap();
         assert_eq!(sources.len(), 1);
@@ -513,6 +514,7 @@ mod tests {
             output: "[external_research_evidence]\n{\"results\":[".to_string(),
             value: None,
             truncated: true,
+            success: true,
         };
         let error = EggsearchSource::convert_structured(result).unwrap_err();
         assert!(error.to_string().contains("truncated display evidence"));

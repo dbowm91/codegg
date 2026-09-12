@@ -57,6 +57,7 @@ pub struct StructuredSearchResult {
     pub output: String,
     pub value: Option<Value>,
     pub truncated: bool,
+    pub success: bool,
 }
 
 fn legacy_structured(output: String) -> StructuredSearchResult {
@@ -64,6 +65,7 @@ fn legacy_structured(output: String) -> StructuredSearchResult {
         output,
         value: None,
         truncated: false,
+        success: true,
     }
 }
 
@@ -76,10 +78,14 @@ pub fn into_tool_result(
         Some(value) => crate::tool::StructuredToolResult::with_value(
             result.output,
             value,
-            true,
+            result.success,
             Some(provenance),
         ),
-        None => crate::tool::StructuredToolResult::with_provenance(result.output, true, provenance),
+        None => crate::tool::StructuredToolResult::with_provenance(
+            result.output,
+            result.success,
+            provenance,
+        ),
     }
 }
 
@@ -124,6 +130,7 @@ macro_rules! structured_eggsearch_dispatch {
                         output: result.output,
                         value: result.value,
                         truncated: result.truncated,
+                        success: result.success,
                     })
                 }
             }
@@ -530,6 +537,7 @@ impl SearchRuntimeContext {
                         output: result.output,
                         value: result.value,
                         truncated: result.truncated,
+                        success: result.success,
                     }),
                     Err(e) if cfg.fallback_to_builtin() => Ok(legacy_structured(
                         legacy::call_web_search_legacy(
@@ -592,6 +600,7 @@ impl SearchRuntimeContext {
                         output: result.output,
                         value: result.value,
                         truncated: result.truncated,
+                        success: result.success,
                     }),
                     Err(e) if cfg.fallback_to_builtin() => Ok(legacy_structured(
                         crate::tool::webfetch::execute_builtin(input, max_chars)
@@ -696,6 +705,7 @@ impl SearchRuntimeContext {
                     output: result.output,
                     value: result.value,
                     truncated: result.truncated,
+                    success: result.success,
                 })
             }
         }

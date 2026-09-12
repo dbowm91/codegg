@@ -173,6 +173,21 @@ from either:
 The eggsearch adapter uses `call_tool_structured` to retain machine-
 readable evidence before display caps are applied.
 
+### Eggsearch 0.3.9 compatibility policy
+
+The stable eggsearch facade is audited against eggsearch `0.3.9` (tag
+`v0.3.9`). CodeGG exposes the provider-neutral additive controls that fit its
+ownership boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
+its bounded extraction controls, and fetch `cache_policy` plus the
+tightening-only `max_cache_age_seconds` (including per-web-item batch
+controls). CodeGG always requests `response_detail=diagnostic` internally so
+the structured result retains warnings, provider/retrieval state, trust
+markers, stable IDs, suggested fetches, and next actions; its existing
+bounded/trust-framed text remains the model-facing projection. `response_detail`
+is not a user-facing option, and next actions are data only—CodeGG never
+auto-executes them. Provider-specific upstream knobs remain intentionally
+deferred, while legacy aliases are translated or rejected by the adapter.
+
 ### IDE Server (`ide_server.rs`)
 
 An MCP *server* (not client) exposing the `openDiff` tool for IDE

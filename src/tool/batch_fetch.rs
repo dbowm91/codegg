@@ -63,7 +63,12 @@ impl Tool for BatchFetchTool {
                             "context_after": { "type": "number" },
                             "max_chars": { "type": "number" },
                             "extract_mode": { "type": "string" },
-                            "include_links": { "type": "boolean" }
+                            "include_links": { "type": "boolean" },
+                            "focus": { "type": "string", "minLength": 1, "maxLength": 512 },
+                            "focus_max_chunks": { "type": "integer", "minimum": 1, "maximum": 5 },
+                            "focus_max_chars": { "type": "integer", "minimum": 1 },
+                            "cache_policy": { "type": "string", "enum": ["default", "bypass", "refresh"] },
+                            "max_cache_age_seconds": { "type": "integer", "minimum": 0, "maximum": 2592000 }
                         }
                     },
                     "description": "Tagged web or repository fetch items; must be non-empty"

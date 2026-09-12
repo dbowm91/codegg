@@ -70,6 +70,17 @@ impl Tool for WebSearchTool {
                 "freshness": {
                     "type": "string",
                     "description": "Optional freshness hint (any, day, week, month, or year)"
+                },
+                "safe_search": {
+                    "type": "string",
+                    "enum": ["off", "moderate", "strict"],
+                    "description": "Optional safe-search mode"
+                },
+                "excerpt_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Number of provider-neutral extractive evidence excerpts to request (0-3)"
                 }
             },
             "required": ["query"]
