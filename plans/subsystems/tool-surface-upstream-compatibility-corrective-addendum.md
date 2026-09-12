@@ -1,6 +1,6 @@
 # Upstream Tool-Surface Compatibility Corrective Addendum
 
-Status: ready
+Status: closing
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 

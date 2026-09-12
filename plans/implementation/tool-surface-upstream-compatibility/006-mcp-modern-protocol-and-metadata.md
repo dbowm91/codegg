@@ -1,6 +1,6 @@
 # Tool-Surface Upstream Compatibility M006 — MCP Modern Protocol and Metadata
 
-Status: active
+Status: implemented
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 

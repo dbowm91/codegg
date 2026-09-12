@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | active | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 active; M008 ready; M007 gated on M006 closure | M006 → M007 hard; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
+| Upstream tool-surface compatibility corrective | closing | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 implementation landed; closure evidence in progress | M006 → M007 hard; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -67,7 +67,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Current evidence |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | active | `plans/implementation/tool-surface-upstream-compatibility/006-mcp-modern-protocol-and-metadata.md` | Shared modern/legacy negotiation and metadata implementation in progress. |
+| Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | closing | `plans/implementation/tool-surface-upstream-compatibility/006-mcp-modern-protocol-and-metadata.md` | Production implementation landed; closure record being prepared. |
 
 ## Current execution order and dependency gates
 
