@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | ready | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 + M008 ready; M007 gated on M006 closure | M006 → M007 hard; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
+| Upstream tool-surface compatibility corrective | active | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 active; M008 ready; M007 gated on M006 closure | M006 → M007 hard; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -60,13 +60,18 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | ready | `plans/implementation/tool-surface-upstream-compatibility/006-mcp-modern-protocol-and-metadata.md` | No hard predecessor; preserve legacy MCP compatibility. |
 | Upstream tool-surface compatibility corrective | M008 eggsact 1.2.5 in-process compatibility | ready | `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md` | Independent; may run in parallel with M006. |
 | Upstream tool-surface compatibility corrective | M007 eggsearch 0.3.9 surface alignment | blocked | `plans/implementation/tool-surface-upstream-compatibility/007-eggsearch-0.3.9-surface-alignment.md` | Hard dependency: M006 must close before M007 closure; fixture/request work may begin in parallel but do not claim closure early. |
 
+## Active implementation and closure work
+
+| Subsystem | Milestone | Status | Implementation plan | Current evidence |
+|---|---|---|---|---|
+| Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | active | `plans/implementation/tool-surface-upstream-compatibility/006-mcp-modern-protocol-and-metadata.md` | Shared modern/legacy negotiation and metadata implementation in progress. |
+
 ## Current execution order and dependency gates
 
-1. M006 and M008 are dependency-ready and may execute in parallel.
+1. M006 is active; M008 remains dependency-ready and may execute in parallel.
 2. M007 request/schema audit may proceed against deterministic eggsearch 0.3.9 fixtures while M006 is active, but M007 remains blocked for closure until M006 establishes the final generic MCP negotiation/metadata path.
 3. M007 should then close against the final M006 MCP representation rather than introducing eggsearch-specific protocol plumbing.
 
