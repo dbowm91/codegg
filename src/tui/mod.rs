@@ -904,6 +904,7 @@ mod async_cmd_tests {
         app.dialog_state.import_dialog =
             Some(crate::tui::components::dialogs::import::ImportDialog::default());
         app.ui_state.dialog = Dialog::Import;
+        app.open_dialog(Dialog::Import);
 
         let id = app.dialog_state.import_request.begin();
         assert!(app.dialog_state.import_request.is_loading());
@@ -925,6 +926,7 @@ mod async_cmd_tests {
             ),
         );
         app.ui_state.dialog = Dialog::ResearchBrowser;
+        app.open_dialog(Dialog::ResearchBrowser);
 
         let id = app.dialog_state.research_request.begin();
         assert!(app.dialog_state.research_request.is_loading());

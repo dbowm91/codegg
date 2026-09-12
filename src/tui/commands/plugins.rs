@@ -363,7 +363,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("subdir")).unwrap();
         let cwd = resolve_scoped_cwd(Some("subdir"), root.path()).unwrap();
-        assert_eq!(std::path::PathBuf::from(cwd), root.path().join("subdir"));
+        assert_eq!(
+            std::path::PathBuf::from(cwd),
+            root.path().join("subdir").canonicalize().unwrap()
+        );
         let error = resolve_scoped_cwd(Some("/tmp"), root.path()).unwrap_err();
         assert!(error.contains("escapes workspace root"));
     }
@@ -882,21 +885,35 @@ mod tests {
     #[tokio::test]
     async fn execute_cwd_override_is_applied() {
         use crate::config::schema::CommandStdoutMode;
+        let workspace_root = tempfile::tempdir().unwrap();
+        let command_cwd = workspace_root.path().join("subdir");
+        std::fs::create_dir(&command_cwd).unwrap();
         let spec = ProcessCommandSpec {
             command: "pwd".to_string(),
             args: vec![],
             stdout: CommandStdoutMode::Text,
-            cwd: Some("/tmp".to_string()),
+            cwd: Some("subdir".to_string()),
             ..Default::default()
         };
-        let result = execute_via_runtime(&spec, &[], "test-inv", None, None).await;
+        let result = execute_via_runtime_scoped(
+            &spec,
+            &[],
+            "test-inv",
+            None,
+            None,
+            workspace_root.path().to_path_buf(),
+        )
+        .await;
         assert!(result.is_ok());
         let resp = result.unwrap();
         match &resp.effects[0] {
             UiEffect::EmitChat { block } => {
                 assert!(
-                    block.content.trim().ends_with("/tmp"),
-                    "expected /tmp in output, got: {}",
+                    block
+                        .content
+                        .trim()
+                        .ends_with(command_cwd.to_string_lossy().as_ref()),
+                    "expected command cwd in output, got: {}",
                     block.content
                 );
             }

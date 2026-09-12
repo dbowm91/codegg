@@ -378,6 +378,8 @@ mod tests {
     #[test]
     fn stale_route_completion_cannot_bind_or_submit() {
         let mut app = App::new_for_testing("/tmp".to_string());
+        app.view_switch.bump_epoch();
+        let initial_prompt = app.prompt_state.prompt.get_text();
         let request_id = app.prompt_state.session_submit_request.begin();
         let pending = pending(&app, request_id);
         let route = pending.route.clone();
@@ -396,6 +398,6 @@ mod tests {
 
         assert!(app.session_state.session.is_none());
         assert!(!app.prompt_state.pending_send);
-        assert!(app.prompt_state.prompt.get_text().is_empty());
+        assert_eq!(app.prompt_state.prompt.get_text(), initial_prompt);
     }
 }
