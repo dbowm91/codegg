@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(app.task_registry.active_count(), 1);
         assert!(rx.try_recv().is_err());
 
-        release.notify_waiters();
+        release.notify_one();
         let completion = rx.recv().await.expect("completion should arrive");
         assert!(matches!(
             completion,
