@@ -1,6 +1,6 @@
 # Upstream Tool-Surface Compatibility Corrective Addendum
 
-Status: closing — M009 implementation complete
+Status: closed
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 
@@ -170,7 +170,7 @@ is handled by the bounded corrective follow-up:
 M009 owns strict dependency-baseline closure and does not rewrite M008's
 historical evidence.
 
-### M009 — Eggsact 1.2.5 MSRV adoption — closing
+### M009 — Eggsact 1.2.5 MSRV adoption — closed
 
 Class: infrastructure / compatibility
 
@@ -179,6 +179,8 @@ active documentation, re-run M008 compatibility evidence, and close the one
 remaining dependency finding.
 
 Implementation plan: `plans/implementation/tool-surface-upstream-compatibility/009-eggsact-1.2.5-msrv-adoption.md`.
+
+Closure record: `plans/closure/tool-surface-upstream-compatibility/009-status.md`.
 
 ## 7. Compatibility and migration
 
