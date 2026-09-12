@@ -1,6 +1,6 @@
 # Upstream Tool-Surface Compatibility Corrective Addendum
 
-Status: closing
+Status: active
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 
@@ -105,7 +105,7 @@ Dependencies:
 
 ## 6. Milestones
 
-### M006 — Generic MCP modern protocol and metadata compatibility
+### M006 — Generic MCP modern protocol and metadata compatibility — closed
 
 Class: infrastructure / compatibility
 
