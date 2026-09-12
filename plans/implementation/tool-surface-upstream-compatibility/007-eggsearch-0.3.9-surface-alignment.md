@@ -1,6 +1,6 @@
 # Tool-Surface Upstream Compatibility M007 — Eggsearch 0.3.9 Surface Alignment
 
-Status: active
+Status: implemented
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 

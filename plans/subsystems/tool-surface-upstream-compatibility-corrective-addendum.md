@@ -123,7 +123,7 @@ Required outcome:
 
 Implementation plan: `plans/implementation/tool-surface-upstream-compatibility/006-mcp-modern-protocol-and-metadata.md`.
 
-### M007 — Eggsearch 0.3.9 request/control and projection alignment
+### M007 — Eggsearch 0.3.9 request/control and projection alignment — closure review
 
 Class: capability compatibility / evidence quality
 

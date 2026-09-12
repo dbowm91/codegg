@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | active | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 closed; M007 active; M008 ready | M006 → M007 satisfied; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
+| Upstream tool-surface compatibility corrective | closing | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M007 implementation landed; closure evidence in progress; M008 ready | M006 → M007 satisfied; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -64,8 +64,8 @@ Canonical direction remains in:
 
 ## Current execution order and dependency gates
 
-1. M007 and M008 are dependency-ready and may execute in parallel.
-2. M007 should consume the final M006 MCP representation rather than introducing eggsearch-specific protocol plumbing.
+1. M008 remains dependency-ready and may execute independently.
+2. M007 implementation has landed and is in closure review against the final M006 MCP representation.
 
 Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This compatibility work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, or generic secret-store/DI system.
 
@@ -82,7 +82,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| Upstream tool-surface compatibility corrective | active | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M006 closure plus M007/M008 implementation plans |
+| Upstream tool-surface compatibility corrective | closing | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M007 implementation plus closure evidence; M008 implementation plan |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
