@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | active | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 closed; M007 + M008 ready | M006 → M007 satisfied; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
+| Upstream tool-surface compatibility corrective | active | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M006 closed; M007 active; M008 ready | M006 → M007 satisfied; M008 independent. Audited against eggsearch 0.3.9 and eggsact 1.2.5. |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -61,7 +61,6 @@ Canonical direction remains in:
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
 | Upstream tool-surface compatibility corrective | M008 eggsact 1.2.5 in-process compatibility | ready | `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md` | Independent; may run in parallel with M006. |
-| Upstream tool-surface compatibility corrective | M007 eggsearch 0.3.9 surface alignment | ready | `plans/implementation/tool-surface-upstream-compatibility/007-eggsearch-0.3.9-surface-alignment.md` | M006 generic MCP modern protocol/metadata compatibility is closed; request/schema audit may proceed. |
 
 ## Current execution order and dependency gates
 
