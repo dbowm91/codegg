@@ -224,26 +224,17 @@ impl AgentLoop {
                     "semantic model router returned no decision".to_string(),
                 ))
             })?;
-        let Some(provider_name) = decision.resolved_model.split('/').next() else {
-            return Err(crate::error::AppError::Provider(
-                crate::error::ProviderError::NotFound(decision.resolved_model),
-            ));
-        };
-        let Some(provider) = self.services.provider_registry.get(provider_name) else {
-            return Err(crate::error::AppError::Provider(
-                crate::error::ProviderError::NotFound(format!(
-                    "Provider '{}' not found",
-                    provider_name
-                )),
-            ));
-        };
-        self.services.provider = provider.clone_box();
-        request.model = decision
-            .resolved_model
-            .split('/')
-            .next_back()
-            .unwrap_or(&decision.resolved_model)
-            .to_string();
+        let concrete_model =
+            super::semantic_router::validate_semantic_route_against_selected_connection(
+                self.services.provider.id(),
+                &decision.resolved_model,
+            )
+            .map_err(|error| {
+                crate::error::AppError::Config(crate::error::ConfigError::Invalid(
+                    error.to_string(),
+                ))
+            })?;
+        request.model = concrete_model.to_string();
         tracing::info!(
             requested_model = %decision.requested_model,
             resolved_model = %decision.resolved_model,

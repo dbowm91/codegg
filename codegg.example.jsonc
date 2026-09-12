@@ -1,10 +1,13 @@
 {
   // Optional semantic model routing. Select "virtual:code" for a bounded
-  // selector decision; concrete model selections bypass this policy.
+  // selector decision; concrete model selections bypass this policy. Codegg
+  // applies only a route compatible with the already-selected connection.
   "model_routers": {
     "virtual:code": {
       "selector_model": "openai/gpt-4o-mini",
       "default_model": "openai/gpt-4o-mini",
+      // Retained for shared policy/fingerprint compatibility. Codegg does not
+      // maintain an EggPool-style local affinity cache.
       "sticky": false,
       "routes": {
         "fast": {

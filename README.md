@@ -16,7 +16,7 @@ The project is currently at `0.1.0` and under active development. The README des
 
 ## Requirements
 
-- Rust `1.81` or newer.
+- Rust `1.89` or newer.
 - Git for source installation and Git-backed agent operations.
 - Credentials for at least one configured LLM provider.
 - Any external programs required by integrations you enable, such as language servers or local MCP servers.
@@ -201,12 +201,19 @@ Configuration can additionally control agents, model profiles, permissions, comp
 
 Semantic model routing is optional. Configure an exact `virtual:<name>` model
 under `model_routers` to run a bounded selector and resolve one configured
-concrete route; concrete model selections bypass it. The selected Codegg
-provider connection remains authoritative, while an EggPool connection may
-perform its own internal account routing. Selector failure or invalid output
-uses the configured default route, and caller cancellation is propagated.
-Codegg currently performs this selection per turn; it does not replace the
-durable session/provider-connection selection path.
+concrete route; concrete model selections bypass it. Codegg first keeps the
+provider connection selected for the turn/session, then applies only a
+compatible concrete model through that connection. A direct connection cannot
+be migrated to another provider by a route. If the selected connection is
+EggPool, EggPool remains responsible for account/provider routing behind its
+endpoint. Selector failure or invalid output uses the configured default route
+when compatible, and caller cancellation is propagated.
+
+Codegg currently performs semantic selection per turn and does not maintain an
+EggPool-style sticky affinity cache. The shared `sticky` and `affinity_ttl_s`
+fields are retained for policy/fingerprint compatibility; they do not pin a
+Codegg session to a route. Semantic model routing is model selection, not
+provider failover.
 
 ## Providers and credentials
 

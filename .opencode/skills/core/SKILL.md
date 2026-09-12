@@ -26,7 +26,12 @@ This skill covers the `src/core/` module, which is the request/response boundary
 Semantic model routing is a separate optional agent-loop capability. It may
 resolve a configured `virtual:<name>` model to a concrete model, but it must
 never replace a durable session `ProviderConnectionId`, connection revision,
-credential, or lifecycle decision. See `architecture/agent.md` and
+credential, lifecycle decision, or the already-selected per-turn provider
+object. The route must be compatible with that selected connection; direct
+cross-provider routes fail closed, while an EggPool connection may pass the
+concrete model to EggPool's own account/provider router. `sticky` and
+`affinity_ttl_s` are retained shared-policy fields, but Codegg does not
+implement local affinity caching. See `architecture/agent.md` and
 `architecture/config.md`.
 
 ## Request-Family Routing (Residual M002)

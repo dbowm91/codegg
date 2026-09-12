@@ -240,12 +240,11 @@ impl TurnRuntime for DefaultTurnRuntime {
         })?;
         let is_semantic_model = semantic_router.has_virtual_model(&model);
         let execution_model = if let Some(router) = semantic_router.registry().get(&model) {
-            let selector_provider = router.selector_model.split('/').next().unwrap_or("openai");
-            if registry.get(selector_provider).is_some() {
-                router.selector_model.clone()
-            } else {
-                router.default_model.clone()
-            }
+            // The default route supplies the already-selected execution
+            // provider for this turn. The selector provider is a read-only
+            // dependency used only by SemanticRouter::resolve; it must never
+            // become the concrete request provider by virtue of its prefix.
+            router.default_model.clone()
         } else {
             model.clone()
         };

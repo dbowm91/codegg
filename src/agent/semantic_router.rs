@@ -14,6 +14,50 @@ use codegg_core::model_routing::{
 };
 use codegg_providers::{ChatEvent, ChatRequest, ContentPart, Message, Provider, ProviderRegistry};
 use futures_util::StreamExt;
+use thiserror::Error;
+
+/// A semantic route is executable only through the provider connection that
+/// was selected before the selector ran. EggPool is the deliberate exception:
+/// it is an aggregation endpoint and owns the provider/account decision behind
+/// that endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SemanticRouteCompatibilityError {
+    #[error("semantic route target must use provider/model form")]
+    InvalidTarget,
+    #[error(
+        "semantic route provider '{route_provider}' is incompatible with selected provider connection '{selected_provider}'"
+    )]
+    IncompatibleProvider {
+        selected_provider: String,
+        route_provider: String,
+    },
+}
+
+/// Validate a compiled route against the provider connection already selected
+/// for the current turn and return only the concrete model portion.
+///
+/// This is intentionally a small Codegg-side capability predicate. It does
+/// not inspect the provider registry and does not select, clone, persist, or
+/// replace a provider. A selected EggPool connection accepts any concrete
+/// provider/model reference and leaves the account/provider choice to EggPool.
+pub fn validate_semantic_route_against_selected_connection<'a>(
+    selected_provider: &str,
+    resolved_model: &'a str,
+) -> Result<&'a str, SemanticRouteCompatibilityError> {
+    let Some((route_provider, concrete_model)) = resolved_model.split_once('/') else {
+        return Err(SemanticRouteCompatibilityError::InvalidTarget);
+    };
+    if route_provider.is_empty() || concrete_model.is_empty() {
+        return Err(SemanticRouteCompatibilityError::InvalidTarget);
+    }
+    if selected_provider != "eggpool" && selected_provider != route_provider {
+        return Err(SemanticRouteCompatibilityError::IncompatibleProvider {
+            selected_provider: selected_provider.to_string(),
+            route_provider: route_provider.to_string(),
+        });
+    }
+    Ok(concrete_model)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticDecisionSource {
@@ -362,20 +406,23 @@ mod tests {
     use codegg_config::schema::{Config, ModelRouteConfig, ModelRouterConfig};
     use futures_util::stream;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Clone)]
     struct FixtureProvider {
+        id: &'static str,
         output: Option<&'static str>,
+        calls: Option<Arc<AtomicUsize>>,
     }
 
     #[async_trait::async_trait]
     impl Provider for FixtureProvider {
         fn id(&self) -> &str {
-            "fixture"
+            self.id
         }
 
         fn name(&self) -> &str {
-            "fixture"
+            self.id
         }
 
         fn clone_box(&self) -> Box<dyn Provider> {
@@ -386,6 +433,9 @@ mod tests {
             &self,
             _request: &ChatRequest,
         ) -> Result<codegg_providers::EventStream, codegg_providers::ProviderError> {
+            if let Some(calls) = &self.calls {
+                calls.fetch_add(1, Ordering::SeqCst);
+            }
             let output = self.output.unwrap_or("nope").to_string();
             Ok(Box::pin(stream::iter(vec![Ok(ChatEvent::TextDelta(
                 Arc::from(output),
@@ -431,7 +481,9 @@ mod tests {
         let router = SemanticRouter::from_config(&config).unwrap();
         let mut providers = ProviderRegistry::new();
         providers.register(FixtureProvider {
+            id: "fixture",
             output: Some(output),
+            calls: None,
         });
         (router, providers)
     }
@@ -485,6 +537,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incompatible_default_route_fails_closed_for_direct_connection() {
+        let config = Config {
+            model_routers: Some(HashMap::from([(
+                "virtual:code".to_string(),
+                ModelRouterConfig {
+                    selector_model: "fixture/selector".to_string(),
+                    default_model: "anthropic/claude-sonnet".to_string(),
+                    routes: HashMap::from([(
+                        "default".to_string(),
+                        ModelRouteConfig {
+                            model: "anthropic/claude-sonnet".to_string(),
+                            description: "default".to_string(),
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        let router = SemanticRouter::from_config(&config).unwrap();
+        let mut providers = ProviderRegistry::new();
+        providers.register(FixtureProvider {
+            id: "fixture",
+            output: Some("not-a-route"),
+            calls: None,
+        });
+        let decision = router
+            .resolve(&request("virtual:code"), &providers, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.source, SemanticDecisionSource::Default);
+        assert_eq!(
+            validate_semantic_route_against_selected_connection("openai", &decision.resolved_model,),
+            Err(SemanticRouteCompatibilityError::IncompatibleProvider {
+                selected_provider: "openai".to_string(),
+                route_provider: "anthropic".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn concrete_models_bypass_semantic_routing() {
         let (router, providers) = router_config("0");
         assert!(router
@@ -504,5 +598,131 @@ mod tests {
             .await
             .expect_err("cancelled selector should propagate");
         assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn same_provider_route_returns_model_without_selecting_a_provider() {
+        let model = validate_semantic_route_against_selected_connection("openai", "openai/gpt-5.6")
+            .expect("same-provider route should be executable");
+        assert_eq!(model, "gpt-5.6");
+    }
+
+    #[test]
+    fn eggpool_route_leaves_upstream_selection_to_eggpool() {
+        let model = validate_semantic_route_against_selected_connection(
+            "eggpool",
+            "anthropic/claude-sonnet",
+        )
+        .expect("EggPool accepts a concrete routed model");
+        assert_eq!(model, "claude-sonnet");
+    }
+
+    #[test]
+    fn cross_provider_direct_route_fails_closed() {
+        let error = validate_semantic_route_against_selected_connection(
+            "openai",
+            "anthropic/claude-sonnet",
+        )
+        .expect_err("direct connections must not migrate providers");
+        assert_eq!(
+            error,
+            SemanticRouteCompatibilityError::IncompatibleProvider {
+                selected_provider: "openai".to_string(),
+                route_provider: "anthropic".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_route_is_rejected_without_provider_selection() {
+        assert_eq!(
+            validate_semantic_route_against_selected_connection("openai", "not-a-route"),
+            Err(SemanticRouteCompatibilityError::InvalidTarget)
+        );
+    }
+
+    #[tokio::test]
+    async fn selector_provider_can_differ_from_target_without_becoming_execution_provider() {
+        let config = Config {
+            model_routers: Some(HashMap::from([(
+                "virtual:code".to_string(),
+                ModelRouterConfig {
+                    selector_model: "selector/route-choice".to_string(),
+                    default_model: "target/default".to_string(),
+                    routes: HashMap::from([(
+                        "default".to_string(),
+                        ModelRouteConfig {
+                            model: "target/default".to_string(),
+                            description: "default".to_string(),
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        let router = SemanticRouter::from_config(&config).unwrap();
+        let mut providers = ProviderRegistry::new();
+        providers.register(FixtureProvider {
+            id: "selector",
+            output: Some("0"),
+            calls: None,
+        });
+        let decision = router
+            .resolve(&request("virtual:code"), &providers, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.resolved_model, "target/default");
+        assert!(validate_semantic_route_against_selected_connection(
+            "target",
+            &decision.resolved_model
+        )
+        .is_ok());
+        assert!(validate_semantic_route_against_selected_connection(
+            "selector",
+            &decision.resolved_model
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn sticky_config_does_not_create_codegg_affinity() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config = Config {
+            model_routers: Some(HashMap::from([(
+                "virtual:code".to_string(),
+                ModelRouterConfig {
+                    selector_model: "fixture/selector".to_string(),
+                    default_model: "fixture/default".to_string(),
+                    sticky: true,
+                    routes: HashMap::from([(
+                        "default".to_string(),
+                        ModelRouteConfig {
+                            model: "fixture/default".to_string(),
+                            description: "default".to_string(),
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        let router = SemanticRouter::from_config(&config).unwrap();
+        let mut providers = ProviderRegistry::new();
+        providers.register(FixtureProvider {
+            id: "fixture",
+            output: Some("0"),
+            calls: Some(Arc::clone(&calls)),
+        });
+        router
+            .resolve(&request("virtual:code"), &providers, None)
+            .await
+            .unwrap();
+        router
+            .resolve(&request("virtual:code"), &providers, None)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

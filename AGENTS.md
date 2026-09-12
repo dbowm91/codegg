@@ -2,7 +2,7 @@
 
 ## Quick start
 
-Rust 1.81+, edition 2021.
+Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core-boundary, sandbox,
@@ -97,8 +97,11 @@ fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/c
 - Semantic model routing is opt-in through exact `virtual:<name>` aliases.
   `codegg-core::model_routing` adapts and compiles the shared EggPool policy;
   `src/agent/semantic_router.rs` executes bounded selector calls. It never
-  changes durable session/provider-connection selection, and concrete models
-  bypass it. The EggPool `/models` probe remains provider discovery.
+  changes durable session/provider-connection selection or the already-selected
+  per-turn provider object. It validates the resolved route against that
+  connection, and concrete models bypass it. `sticky`/`affinity_ttl_s` remain
+  shared policy fields only; Codegg has no local affinity cache. The EggPool
+  `/models` probe remains provider discovery.
 
 ## Pointers
 

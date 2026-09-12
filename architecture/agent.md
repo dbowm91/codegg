@@ -85,12 +85,33 @@ invalid output, selector failure, or timeout uses the configured default.
 Caller cancellation propagates without starting default work. Concrete models
 and explicit concrete agent overrides bypass semantic routing.
 
-This path never changes durable session/provider-connection selection. It
-returns a concrete model to the existing loop, and an EggPool provider
-connection remains responsible for its own internal account routing. Selector
-prompts and raw session identifiers are not persisted or logged; the existing
-bounded EggPool `/models` probe remains provider discovery, not semantic
-routing.
+The execution boundary has two independent decisions:
+
+```text
+Codegg selected provider connection / per-turn provider object
+    |
+    +-- semantic policy chooses one compatible concrete model
+    |
+    +-- request runs through the already-selected connection
+            |
+            +-- EggPool connection: EggPool selects the upstream
+                account/provider behind its endpoint
+```
+
+`apply_semantic_routing` validates the resolved `provider/model` reference
+against the existing turn provider and applies only the model suffix. It never
+looks up or clones a route-provider as a replacement, and no target failure
+re-enters semantic selection after concrete dispatch begins. Direct
+cross-provider routes fail closed before dispatch; an EggPool connection is
+the intentional aggregation exception. This protects the durable
+`ProviderConnectionId`, revision, credential, and lifecycle decision. Selector
+prompts and raw session identifiers are not persisted or logged; the bounded
+EggPool `/models` probe remains provider discovery, not semantic routing.
+
+Codegg retains `sticky` and `affinity_ttl_s` in the shared policy and
+fingerprint, but does not implement EggPool's process-owned async affinity
+cache. Codegg evaluates the selector per virtual-model turn, so those fields
+do not provide Codegg-side route pinning or provider failover.
 
 `TurnLifecycle` is an in-memory sequencing aid only. Durable run identity,
 completion, recovery, and scheduler admission remain owned by the run-control,
