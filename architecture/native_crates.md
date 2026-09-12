@@ -261,8 +261,11 @@ Large crate (56 modules). Key public API:
 
 ### `eggsact` (in-process, not a workspace crate)
 
-Consumed as a direct Rust dependency (`eggsact = "1.1.4"`). The adapter
-wraps `eggsact::agent::ToolRegistry` in-process:
+Consumed as a direct Rust dependency (`eggsact = "1.1.4"`), resolved and
+tested at `1.1.4` to preserve CodeGG's Rust `1.81` MSRV. Eggsact `1.2.5`
+was audited but declares Rust `1.89.0`, so its dependency upgrade is deferred
+pending an explicit MSRV decision. The adapter wraps
+`eggsact::agent::ToolRegistry` in-process:
 
 - `src/eggsact/adapter.rs` — `EggsactRuntime` owns the registry
 - `src/tool/deterministic.rs` — `EggsactTool` generic wrapper,
@@ -272,6 +275,12 @@ wraps `eggsact::agent::ToolRegistry` in-process:
 
 Provenance: `backend = "native"`, `implementation = "eggsact/<tool_name>"`,
 `trust = LocalTrusted`.
+
+Profile parsing delegates to eggsact's `Profile::from_str_opt()` and
+`mcp::registry::available_profiles()`. Unknown names fail visibly; CodeGG
+does not substitute `Profile::Default` or maintain a separate profile list.
+CodeGG also intentionally does not import eggsact's MCP discovery facade or
+the newer 1.2.5 utility tools.
 
 ## Codegg-Side Bridge Files
 

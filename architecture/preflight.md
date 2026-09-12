@@ -2,7 +2,9 @@
 
 Harness-side eggsact preflight integration for automatic validation
 before mutating operations. Preflight calls never appear as model-facing
-tool calls.
+tool calls. CodeGG currently resolves eggsact `1.1.4` under the repository's
+Rust `1.81` MSRV; the audited `1.2.5` release requires Rust `1.89` and is
+deferred pending an explicit MSRV decision.
 
 ## Purpose
 
@@ -185,7 +187,8 @@ The `mode` field is an enum validated at deserialization time.
 `integrated_config::resolve_preflight_config()` in
 `src/tool/integrated_config.rs`. The resolved config includes a
 `profile` field (always `"codegg_core"`) for the `/tool-backends`
-report.
+report. Profile names are validated by the linked eggsact runtime, not by a
+duplicated CodeGG allowlist.
 
 ## Integration Points
 
@@ -217,6 +220,11 @@ and acts on the `PreflightDecision`:
 
 - **Fail-open**: Eggsact failures return `Allow` — preflight never
   prevents execution due to its own errors
+- **Typed dependency preflight deferred**: eggsact `1.2.5` provides
+  `DependencyPreflight`, but CodeGG has no current dependency-edit preflight
+  call site. The existing preflight service does not parse dependency results,
+  so adopting the wrapper would add an unused parallel path rather than
+  replace brittle handling.
 - **No recursion**: `PreflightService` calls `EggsactRuntime` directly,
   bypassing `ToolRegistry` entirely
 - **Separate audience**: Constructed with `audience = "harness"` vs

@@ -466,9 +466,9 @@ pub struct IntegratedToolRuntimeConfig {
 Entry point: `resolve_integrated_config(&Config) -> IntegratedToolRuntimeConfig`.
 
 - **Evidence**: `search_backend`, `expose_raw_mcp_tools`, `fallback_to_builtin`
-- **Deterministic**: `enabled`, `backend`, `profile` (validated against
-  `KNOWN_EGGSACT_PROFILES`: `codegg_core`, `codegg_core_min`,
-  `default`, `full`), `model_audience`, `harness_audience`,
+- **Deterministic**: `enabled`, `backend`, `profile` (validated by the linked
+  eggsact `Profile::from_str_opt()` / `available_profiles()` APIs),
+  `model_audience`, `harness_audience`,
   `expose_expert_tools`, `max_output_chars`
 - **Preflight**: `enabled`, `mode` (off/observe/warn/block_on_definite),
   `log_findings`, `model_visible_findings`

@@ -2793,12 +2793,10 @@ impl DeterministicToolsConfig {
             ));
         }
 
-        const KNOWN_PROFILES: &[&str] = &["codegg_core", "codegg_core_min", "default", "full"];
-        if !KNOWN_PROFILES.contains(&self.profile.as_str()) {
+        if self.profile.trim().is_empty() {
             errors.push(format!(
-                "unknown deterministic_tools.profile: '{}' (expected one of: {})",
-                self.profile,
-                KNOWN_PROFILES.join(", ")
+                "invalid deterministic_tools.profile: '{}' (profile names are validated by the linked eggsact runtime)",
+                self.profile
             ));
         }
 

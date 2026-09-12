@@ -60,7 +60,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Upstream tool-surface compatibility corrective | M008 eggsact 1.2.5 in-process compatibility | ready | `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md` | Independent; may run in parallel with M006. |
+| Upstream tool-surface compatibility corrective | M008 eggsact 1.2.5 in-process compatibility | active | `plans/implementation/tool-surface-upstream-compatibility/008-eggsact-1.2.5-inprocess-compatibility.md` | Independent; implementation and closure in progress. |
 
 ## Current execution order and dependency gates
 

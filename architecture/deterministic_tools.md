@@ -1,7 +1,10 @@
 # Deterministic Tools (eggsact)
 
 In-process deterministic correctness utilities backed by the `eggsact`
-crate (external dependency). These provide compile-time-guaranteed
+crate (external dependency). The manifest and lockfile currently resolve
+eggsact `1.1.4`; eggsact `1.2.5` was audited for this compatibility pass but
+requires Rust `1.89`, above CodeGG's Rust `1.81` MSRV, so that upgrade is
+deferred pending an explicit MSRV decision. These provide compile-time-guaranteed
 validation, comparison, and inspection operations that never call
 external services.
 
@@ -54,7 +57,9 @@ pub struct EggsactRuntime {
 }
 ```
 
-- `new(config: EggsactConfig) -> Result<Self, ToolError>` — fallible
+- `new(config: EggsactConfig) -> Result<Self, ToolError>` — fallible; invalid
+  profiles fail with the upstream accepted-profile list and never fall back
+  to `default`
 - `call_json(tool, args) -> Result<EggsactCallResult, ToolError>`
 - `has_tool(tool) -> bool`
 - `config() -> &EggsactConfig`
@@ -179,8 +184,9 @@ EggsactRuntime::new(config)
 ```
 
 Key points:
-- `EggsactRuntime::new()` is fallible — if it fails, deterministic
-  tools are silently skipped
+- `EggsactRuntime::new()` is fallible — invalid upstream profiles produce an
+  actionable error; registry construction logs the error and skips the
+  deterministic wrappers rather than changing policy
 - Registration happens in `ToolRegistry::with_options()`
 - The runtime is constructed from `DeterministicToolsRuntimeConfig`
   resolved by `integrated_config::resolve_integrated_config()`
@@ -193,7 +199,7 @@ Key points:
 [deterministic_tools]
 enabled = true                    # master switch
 backend = "native"                # "native" | "disabled"
-profile = "codegg_core"           # "codegg_core" | "codegg_core_min" | "default" | "full"
+profile = "codegg_core"           # validated by the linked eggsact runtime
 model_audience = "model"          # audience for model-facing tools
 harness_audience = "harness"      # audience for preflight checks
 expose_expert_tools = false       # expose deferred tools to model
@@ -205,25 +211,37 @@ max_output_chars = 12000          # truncation limit (1..1_000_000)
 `DeterministicToolsConfig::validate()` in `crates/codegg-config/src/schema.rs`
 checks:
 - `backend` must be `"native"` or `"disabled"`
-- `profile` must be one of the four known profiles
+- `profile` must be non-empty in the config crate; the linked eggsact
+  `Profile::from_str_opt()` and `mcp::registry::available_profiles()` are the
+  authoritative profile validation and diagnostics source
 - `model_audience` must be `"model"` or `"harness"`
 - `harness_audience` must be `"harness"` or `"model"`
 - `max_output_chars` must be > 0 and <= 1,000,000
 
-Unknown profiles emit a warning and are canonicalized to `"codegg_core"`
-at resolve time (`integrated_config::resolve_deterministic_config()`).
+Unknown profiles remain visible in resolved configuration and fail when the
+in-process runtime is initialized. No fallback profile is substituted.
 
 ### Profile Selection
 
 - `codegg_core` — curated subset for code analysis (default)
 - `codegg_core_min` — minimal subset
 - `default` — eggsact's default profile
+- `codegg_preflight`, `codegg_patch`, `codegg_config`,
+  `codegg_unicode_security`, `codegg_shell`, `codegg_repo_audit`, and
+  `human_math` — upstream purpose-specific profiles
 - `full` — all available eggsact tools
+
+The upstream profile set is larger than CodeGG's immediate palette. CodeGG
+currently exposes eight always-visible wrappers and five deferred wrappers;
+new upstream utilities and the upstream `tool_search`/`tool_invoke` facade
+remain intentionally excluded. They must not be imported as a second
+progressive-disclosure system.
 
 ## Invariants & Gotchas
 
-- `EggsactRuntime::new()` is fallible — deterministic tools are
-  **silently skipped** on failure, not registered as disabled stubs
+- `EggsactRuntime::new()` is fallible — deterministic tools are logged and
+  skipped on initialization failure, not registered under a different profile
+  or as disabled stubs
 - All deterministic tools are `ToolCategory::ReadOnly` — they never
   trigger permission prompts
 - The runtime is shared between model tools and preflight; the

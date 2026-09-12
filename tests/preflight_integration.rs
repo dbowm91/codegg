@@ -1115,7 +1115,7 @@ fn deterministic_config_valid_profile() {
 
 #[test]
 fn deterministic_config_all_known_profiles() {
-    for profile in &["codegg_core", "codegg_core_min", "default", "full"] {
+    for &profile in eggsact::mcp::registry::available_profiles() {
         let config = DeterministicToolsConfig {
             profile: profile.to_string(),
             ..Default::default()
@@ -1129,18 +1129,24 @@ fn deterministic_config_all_known_profiles() {
 }
 
 #[test]
-fn deterministic_config_unknown_profile_warns() {
+fn deterministic_config_unknown_profile_is_deferred_to_eggsact() {
     let config = DeterministicToolsConfig {
         profile: "nonexistent_profile".to_string(),
         ..Default::default()
     };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn deterministic_config_empty_profile_is_rejected() {
+    let config = DeterministicToolsConfig {
+        profile: "  ".to_string(),
+        ..Default::default()
+    };
     let errs = config.validate().unwrap_err();
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("unknown deterministic_tools.profile")),
-        "should warn about unknown profile: {:?}",
-        errs
-    );
+    assert!(errs
+        .iter()
+        .any(|e| e.contains("deterministic_tools.profile")));
 }
 
 #[test]

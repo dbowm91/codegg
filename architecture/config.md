@@ -329,8 +329,9 @@ Validated fields:
 - `compaction.threshold`: 0.1-1.0
 - `compaction.max_tokens`: >= 1000
 - `deterministic_tools.backend`: `native` or `disabled`
-- `deterministic_tools.profile`: `codegg_core`, `codegg_core_min`,
-  `default`, or `full`
+- `deterministic_tools.profile`: a non-empty upstream eggsact profile name;
+  the linked in-process runtime is authoritative and reports accepted names
+  for invalid values
 - `preflight.mode`: `off`, `observe`, `warn`, `block_on_definite`
 
 ## Invariants & Gotchas

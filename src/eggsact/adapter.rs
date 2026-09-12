@@ -93,8 +93,13 @@ pub struct EggsactRuntime {
 impl EggsactRuntime {
     /// Create a new runtime with the given configuration.
     pub fn new(config: EggsactConfig) -> Result<Self, ToolError> {
-        let profile = eggsact::agent::Profile::from_str_opt(&config.profile)
-            .unwrap_or(eggsact::agent::Profile::Default);
+        let profile = eggsact::agent::Profile::from_str_opt(&config.profile).ok_or_else(|| {
+            let accepted = eggsact::mcp::registry::available_profiles().join(", ");
+            ToolError::Execution(format!(
+                "invalid eggsact profile '{}'; no fallback was applied; accepted profiles: {}",
+                config.profile, accepted
+            ))
+        })?;
         let audience = match config.audience.to_lowercase().as_str() {
             "harness" => eggsact::agent::ToolAudience::Harness,
             _ => eggsact::agent::ToolAudience::Model,

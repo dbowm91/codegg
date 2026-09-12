@@ -1,6 +1,6 @@
 # Tool-Surface Upstream Compatibility M008 — Eggsact 1.2.5 In-Process Compatibility
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `2798501b61edcd43acb215924500635dc705bbb2`
 

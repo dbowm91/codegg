@@ -461,20 +461,32 @@ fn deferred_tools_in_default_definitions_have_defer_loading() {
 // ── Disabled deterministic backend hides wrappers ────────────────
 
 #[test]
-fn unknown_profile_falls_back_to_default() {
+fn unknown_profile_fails_without_fallback() {
     let config = EggsactConfig {
         profile: "nonexistent_profile_xyz".to_string(),
         ..EggsactConfig::default()
     };
     let runtime = EggsactRuntime::new(config);
-    assert!(
-        runtime.is_ok(),
-        "Unknown profile should fall back to default: {:?}",
-        runtime.err()
-    );
-    let runtime = runtime.unwrap();
-    assert!(
-        runtime.has_tool("text_equal"),
-        "Fallback should still have text_equal"
-    );
+    let error = match runtime {
+        Ok(_) => panic!("unknown profiles must fail visibly"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(message.contains("nonexistent_profile_xyz"));
+    assert!(message.contains("no fallback was applied"));
+    assert!(message.contains("codegg_core"));
+}
+
+#[test]
+fn every_upstream_profile_is_accepted_by_the_runtime() {
+    for &profile in eggsact::mcp::registry::available_profiles() {
+        let runtime = EggsactRuntime::new(EggsactConfig {
+            profile: profile.to_string(),
+            ..EggsactConfig::default()
+        });
+        assert!(
+            runtime.is_ok(),
+            "upstream profile {profile:?} did not parse"
+        );
+    }
 }

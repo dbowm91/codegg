@@ -131,15 +131,12 @@ pub struct IntegratedToolRuntimeConfig {
     pub preflight: Option<PreflightRuntimeConfig>,
 }
 
-/// Known eggsact profiles. Used to validate user config and warn
-/// on typos or unsupported profile names.
-const KNOWN_EGGSACT_PROFILES: &[&str] = &["codegg_core", "codegg_core_min", "default", "full"];
-
 /// Resolve all integrated tool runtime configs from a loaded `Config`.
 ///
-/// Fills defaults for missing fields, validates values, and logs
-/// warnings for suspicious configurations (e.g. unknown profiles,
-/// disabled tools with non-default settings).
+/// Fills defaults for missing fields and logs warnings for suspicious
+/// configurations (e.g. disabled tools with non-default settings). Profile
+/// validation is delegated to the linked eggsact runtime so CodeGG cannot
+/// drift from the upstream profile set.
 pub fn resolve_integrated_config(config: &Config) -> IntegratedToolRuntimeConfig {
     let evidence = resolve_evidence_config(config);
     let deterministic = resolve_deterministic_config(config);
@@ -201,16 +198,6 @@ fn resolve_deterministic_config(config: &Config) -> DeterministicToolsRuntimeCon
         None => return DeterministicToolsRuntimeConfig::default(),
     };
 
-    let mut profile = dt.profile.clone();
-    if !KNOWN_EGGSACT_PROFILES.contains(&profile.as_str()) {
-        tracing::warn!(
-            profile = %profile,
-            known = ?KNOWN_EGGSACT_PROFILES,
-            "unknown eggsact profile; falling back to codegg_core"
-        );
-        profile = "codegg_core".to_string();
-    }
-
     if !dt.enabled {
         tracing::info!("deterministic tools disabled via [deterministic_tools].enabled");
     }
@@ -218,7 +205,7 @@ fn resolve_deterministic_config(config: &Config) -> DeterministicToolsRuntimeCon
     DeterministicToolsRuntimeConfig {
         enabled: dt.enabled,
         backend: dt.backend.clone(),
-        profile,
+        profile: dt.profile.clone(),
         model_audience: dt.model_audience.clone(),
         harness_audience: dt.harness_audience.clone(),
         expose_expert_tools: dt.expose_expert_tools,
@@ -350,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_profile_emits_warning_and_canonicalizes() {
+    fn unknown_profile_is_preserved_for_runtime_validation() {
         use crate::config::schema::DeterministicToolsConfig;
 
         let config = Config {
@@ -363,6 +350,6 @@ mod tests {
 
         let resolved = resolve_integrated_config(&config);
         let deterministic = resolved.deterministic.unwrap();
-        assert_eq!(deterministic.profile, "codegg_core");
+        assert_eq!(deterministic.profile, "nonexistent_profile");
     }
 }
