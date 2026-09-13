@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| HTTP client consolidation and Eggfetch adoption | active | `plans/subsystems/http-client-consolidation-roadmap.md` | M001 blocked | crates.io publication of `eggfetch-core 0.1.4`; M002/M003 depend on accepted predecessor closure. |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
@@ -60,19 +61,22 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| — | — | — | — | No dependency-ready implementation plans. |
+| — | — | — | — | No dependency-ready implementation plans; HTTP client M001 becomes ready when crates.io publishes `eggfetch-core 0.1.4` with the reviewed surface. |
 
 ## Current execution order and dependency gates
 
-1. M009 is closed: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption landed; M008's historical conditional record remains unchanged.
-2. M007 is closed against the final M006 MCP representation.
+1. HTTP client consolidation M001 opens immediately after crates.io `eggfetch-core 0.1.4` resolves with the reviewed static-routing/JSON/streaming feature surface. Do not substitute a Git/path dependency.
+2. HTTP client consolidation M002 remains blocked until M001 has accepted closure evidence; M003 remains blocked until M002 closes.
+3. M009 is closed: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption landed; M008's historical conditional record remains unchanged.
+4. M007 is closed against the final M006 MCP representation.
 
-Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This compatibility work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, or generic secret-store/DI system.
+Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This HTTP-client work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, generic secret-store/DI system, or generic CodeGG-wide HTTP service layer.
 
 ## Blocked work
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| HTTP client consolidation and Eggfetch adoption | M001 transport boundary and pinned HTTP adoption | `eggfetch-core 0.1.4` must be published on crates.io with the reviewed `http1`/`tls-rustls`/`json`, static resolved-address routing, response streaming/content-length and timeout surface. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
@@ -85,8 +89,8 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 and M009 closure records |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
-| Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
-| Original post-audit maintainability | M001-M005 closed | `plans/closure/post-audit-maintainability-surface/001-status.md` through `005-status.md` |
+| Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintability-surface-corrective-addendum.md` |
+| Original post-audit maintainability | M001-M005 closed | `plans/closure/post-audit-maintability-surface/001-status.md` through `005-status.md` |
 | Post-implementation maintainability closure | M001 closed | `plans/closure/post-implementation-maintainability-closure/001-status.md` |
 | Frontend-neutral session projections | closed | `plans/closure/session-projections/012-status.md` |
 | Agent runs/worktree concurrency | closed | `plans/closure/agent-run-worktree-concurrency/009-status.md` |
@@ -108,7 +112,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Upstream tool-surface compatibility corrective | M007 Eggsearch 0.3.9 surface alignment | closed | `plans/closure/tool-surface-upstream-compatibility/007-status.md` | `0cd35ab` |
 | Upstream tool-surface compatibility corrective | M006 MCP modern protocol and metadata | closed | `plans/closure/tool-surface-upstream-compatibility/006-status.md` | `65ed1c6` |
 | Repository surface housekeeping corrective | M001 active surface, guard, and traceability reconciliation | closed | `plans/closure/repository-surface-housekeeping/001-status.md` | `931fb709` |
-| Post-audit maintainability corrective | M006 terminal compatibility policy convergence | closed | `plans/closure/post-audit-maintainability-surface/006-status.md` | `f80b08d5` |
+| Post-audit maintainability corrective | M006 terminal compatibility policy convergence | closed | `plans/closure/post-audit-maintability-surface/006-status.md` | `f80b08d5` |
 | Post-audit maintainability corrective | M007 MCP OAuth crypto/key lifecycle convergence | closed | `plans/closure/post-audit-maintainability-surface/007-status.md` | `aacf584` |
 | TUI/frontend convergence corrective | M005 project execution context and command scope | closed | `plans/closure/tui-project-sessions/005-status.md` | `4a963e0` |
 | TUI/frontend convergence corrective | M006 nonblocking session submit lifecycle | closed | `plans/closure/tui-project-sessions/006-status.md` | `ed5fb06` |
@@ -122,6 +126,8 @@ Historical closure records MUST NOT be rewritten to conceal predecessor defects 
 ## Verification policy
 
 Verification remains deliberately light. Newly registered milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add new CI lanes, scanners, coverage/benchmark/binary-size gates, dependency bots, release automation, or fixed release cadence.
+
+The HTTP client consolidation roadmap may use deterministic loopback HTTP/TLS/SSE fixtures plus temporary `rg`/`cargo tree` dependency censuses for closure evidence. It MUST NOT add network-dependent CI, a permanent dependency scanner, a binary-size threshold, or a generic HTTP abstraction solely for verification.
 
 The upstream tool-surface corrective may use deterministic modern/legacy MCP fixtures and one optional local real-binary smoke for closure evidence. It MUST NOT add a permanent compatibility matrix, scheduled upstream smoke, network-dependent CI check, duplicate search cache, or duplicate progressive-discovery framework.
 
@@ -147,7 +153,6 @@ These remain outside active handoff unless concrete product priority/evidence ma
 - arbitrary LSP `workspace/executeCommand` support;
 - binary topology split or separate daemon/TUI packaging without measured deployment need;
 - replacing RustPython with a custom Tool Program parser;
-- generalized HTTP/provider-client unification;
 - broad Comrak/MSRV or Ratatui dependency migrations;
 - production hosted Tool Program transport;
 - seccomp, namespace, container, or remote-execution sandbox expansion;
