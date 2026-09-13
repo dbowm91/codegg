@@ -1,6 +1,6 @@
 # HTTP Client Consolidation M002 — Provider Streaming and Eggpool Adoption
 
-Status: active
+Status: implemented
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 

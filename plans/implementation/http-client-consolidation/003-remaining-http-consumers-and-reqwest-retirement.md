@@ -1,6 +1,6 @@
 # HTTP Client Consolidation M003 — Remaining HTTP Consumers and Reqwest Retirement
 
-Status: blocked on accepted M002 closure
+Status: ready for handoff
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 

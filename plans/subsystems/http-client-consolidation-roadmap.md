@@ -1,6 +1,6 @@
 # HTTP Client Consolidation and Eggfetch Adoption Roadmap
 
-Status: active; M001 is closed with accepted closure and M002 is ready for handoff
+Status: active; M001 and M002 are closed with accepted closure, and M003 is ready
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 
@@ -138,7 +138,10 @@ M002 provider streaming + Eggpool adoption
 M003 remaining consumers + reqwest retirement + documentation/closure audit
 ```
 
-M001 is the only milestone externally blocked at roadmap creation. M002 and M003 are internally blocked on predecessor closure because they reuse the error, response-stream, timeout, and manifest decisions proven by earlier work.
+M001 is the only milestone externally blocked at roadmap creation. M003 was
+internally blocked on predecessor closure because it reuses the error,
+response-stream, timeout, and manifest decisions proven by earlier work; M002
+closure now satisfies that gate.
 
 ## 9. Milestones
 
@@ -168,7 +171,7 @@ Goals:
 - preserve streaming chunk timeout, cancellation and SSE parser behavior;
 - remove the provider crate's direct reqwest dependency.
 
-Status: **ready**; M001 closure is accepted and its Eggfetch/error/stream conventions are available for handoff.
+Status: **closed**; closure: `plans/closure/http-client-consolidation/002-status.md`.
 
 ### M003 — Remaining HTTP consumers and reqwest retirement
 
@@ -182,7 +185,7 @@ Goals:
 - remove root and EggLSP reqwest declarations and verify no direct production use remains;
 - record dependency-tree/footprint observations without turning them into a gate.
 
-Status: **blocked on M002 closure**.
+Status: **ready**; M001 and M002 closures are accepted and the transport/error/stream interfaces are stable.
 
 ## 10. Cross-cutting verification
 
