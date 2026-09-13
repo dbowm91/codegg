@@ -1,6 +1,6 @@
 # HTTP Client Consolidation M002 — Provider Streaming and Eggpool Adoption
 
-Status: blocked on accepted M001 closure
+Status: ready for handoff
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 

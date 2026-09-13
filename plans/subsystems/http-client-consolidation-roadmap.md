@@ -1,6 +1,6 @@
 # HTTP Client Consolidation and Eggfetch Adoption Roadmap
 
-Status: active; M001 is in progress now that `eggfetch-core 0.1.4` is available on crates.io
+Status: active; M001 is closed with accepted closure and M002 is ready for handoff
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 
@@ -155,7 +155,7 @@ Goals:
 - migrate remote MCP and bind its actual connection to the revalidated address snapshot;
 - preserve URL/Host/TLS identity, no-follow redirects, bounded bodies, and application-level retry semantics.
 
-Status: **active**; the published crate resolves with the required API/feature surface.
+Status: **closed**; closure: `plans/closure/http-client-consolidation/001-status.md`.
 
 ### M002 — Provider streaming and Eggpool adoption
 
@@ -168,7 +168,7 @@ Goals:
 - preserve streaming chunk timeout, cancellation and SSE parser behavior;
 - remove the provider crate's direct reqwest dependency.
 
-Status: **blocked on M001 closure**.
+Status: **ready**; M001 closure is accepted and its Eggfetch/error/stream conventions are available for handoff.
 
 ### M003 — Remaining HTTP consumers and reqwest retirement
 

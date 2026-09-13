@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| HTTP client consolidation and Eggfetch adoption | active | `plans/subsystems/http-client-consolidation-roadmap.md` | M001 active | Published `eggfetch-core 0.1.4` is available; M002/M003 depend on accepted predecessor closure. |
+| HTTP client consolidation and Eggfetch adoption | active | `plans/subsystems/http-client-consolidation-roadmap.md` | M001 closed; M002 ready | M001 closure accepted; M002 is ready, and M003 depends on M002 closure. |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
@@ -61,12 +61,12 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| HTTP client consolidation and Eggfetch adoption | M001 | active | `plans/implementation/http-client-consolidation/001-transport-boundary-and-pinned-http-adoption.md` | Published `eggfetch-core 0.1.4` resolves with the reviewed static-routing/JSON/streaming feature surface. |
+| HTTP client consolidation and Eggfetch adoption | M002 | ready | `plans/implementation/http-client-consolidation/002-provider-streaming-and-eggpool-adoption.md` | M001 closure accepted; use the proven Eggfetch 0.1.4 static-routing/JSON/streaming and transport-neutral error conventions. |
 
 ## Current execution order and dependency gates
 
-1. HTTP client consolidation M001 is active now that crates.io `eggfetch-core 0.1.4` resolves with the reviewed static-routing/JSON/streaming feature surface. Do not substitute a Git/path dependency.
-2. HTTP client consolidation M002 remains blocked until M001 has accepted closure evidence; M003 remains blocked until M002 closes.
+1. HTTP client consolidation M001 is closed with accepted closure evidence; M002 is ready for handoff using the published crates.io `eggfetch-core 0.1.4` conventions. Do not substitute a Git/path dependency.
+2. HTTP client consolidation M003 remains blocked until M002 closes.
 3. M009 is closed: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption landed; M008's historical conditional record remains unchanged.
 4. M007 is closed against the final M006 MCP representation.
 
@@ -76,7 +76,7 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| HTTP client consolidation and Eggfetch adoption | — | No current blocker; M001 is active. |
+| HTTP client consolidation and Eggfetch adoption | M003 | M002 must close before remaining consumers and final reqwest retirement can begin. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
@@ -107,6 +107,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| HTTP client consolidation and Eggfetch adoption | M001 transport boundary and pinned HTTP adoption | closed | `plans/closure/http-client-consolidation/001-status.md` | `756e036`, `2a37be3` |
 | Upstream tool-surface compatibility corrective | M008 Eggsact 1.2.5 in-process compatibility | conditionally closed | `plans/closure/tool-surface-upstream-compatibility/008-status.md` | `2055696` |
 | Upstream tool-surface compatibility corrective | M009 Eggsact 1.2.5 MSRV adoption | closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` | `dc0f915` |
 | Upstream tool-surface compatibility corrective | M007 Eggsearch 0.3.9 surface alignment | closed | `plans/closure/tool-surface-upstream-compatibility/007-status.md` | `0cd35ab` |
