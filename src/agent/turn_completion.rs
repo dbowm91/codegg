@@ -117,11 +117,14 @@ impl AgentLoop {
             return;
         }
         // Compute wall-clock delta since the last accounting tick.
+        // `goal_wall_clock` is a short critical section never held across
+        // `.await`, so `std::sync::Mutex` is safe here; poisoning is
+        // surfaced loudly rather than silently defaulted.
         let wallclock_delta = {
-            let mut wc = self
-                .goal_wall_clock
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut wc = self.goal_wall_clock.lock().unwrap_or_else(|p| {
+                tracing::warn!("goal_wall_clock mutex poisoned; recovering clock state");
+                p.into_inner()
+            });
             let delta = wc.elapsed_secs_since_last();
             // Always reset the clock so the next tick measures fresh
             // wall-clock, even when the goal store is unavailable.

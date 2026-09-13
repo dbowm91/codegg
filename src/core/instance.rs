@@ -18,6 +18,7 @@
 //!   that default to daemon-client mode.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -802,8 +803,14 @@ fn is_lock_held(_lock_path: &Path) -> Result<bool, AppError> {
     )))
 }
 
+static ATOMIC_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), AppError> {
-    let tmp = path.with_extension("json.tmp");
+    // Unique tmp suffix per process + write: a fixed `json.tmp` name lets
+    // two concurrent daemon writers (restart race, connect-or-start) clobber
+    // each other before rename. Mirrors `src/test_runner/index.rs`.
+    let nonce = ATOMIC_WRITE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
     std::fs::write(&tmp, contents).map_err(|e| {
         AppError::Other(anyhow::anyhow!(
             "failed to write temp file {}: {}",

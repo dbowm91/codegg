@@ -59,7 +59,10 @@ impl Rgb {
                 let b = hex_digit(bytes[2])?;
                 Ok(Self::new((r << 4) | r, (g << 4) | g, (b << 4) | b))
             }
-            _ => unreachable!("guarded by matches! above"),
+            _ => Err(ThemeError::InvalidColor {
+                value: input.to_string(),
+                reason: "expected #rgb, #rrggbb, #rgba, or #rrggbbaa".to_string(),
+            }),
         }
     }
 

@@ -491,9 +491,11 @@ async fn run_search_batches(
         }
     }
 
-    let metrics = Arc::try_unwrap(metrics).unwrap_or_else(|_| {
-        unreachable!("all grep worker references are joined before metrics are returned")
-    });
+    let metrics = Arc::try_unwrap(metrics).map_err(|_| {
+        ToolError::Execution(
+            "internal invariant violated: grep worker still holds metrics".to_string(),
+        )
+    })?;
     Ok((files, metrics, control))
 }
 

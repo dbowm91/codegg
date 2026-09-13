@@ -1412,16 +1412,29 @@ impl CoreDaemon {
         }
         // The linked message must exist in the same channel; otherwise
         // this is a message/project mismatch (never coerced, never
-        // executed).
+        // executed). Not-found errors map to `ProjectMismatch` without
+        // leaking existence; storage/auth failures surface as-is so the
+        // root cause stays visible.
         if let Err(error) = self
             .collaboration
             .get_message(&project, &channel, &message)
             .await
         {
-            let _ = error;
-            return Ok(chat_error(CollaborationError::ProjectMismatch(
-                "action message does not belong to the named channel/project".to_owned(),
-            )));
+            match &error {
+                CollaborationError::MessageNotFound(_) | CollaborationError::ChannelNotFound(_) => {
+                    tracing::warn!(
+                        error = %error,
+                        "chat action references missing message/channel"
+                    );
+                    return Ok(chat_error(CollaborationError::ProjectMismatch(
+                        "action message does not belong to the named channel/project".to_owned(),
+                    )));
+                }
+                _ => {
+                    tracing::warn!(error = %error, "chat action message lookup failed");
+                    return Ok(chat_error(error));
+                }
+            }
         }
         let principal = authority.principal().principal_id().clone();
         let now_ms = chrono::Utc::now().timestamp_millis();

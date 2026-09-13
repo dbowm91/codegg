@@ -656,7 +656,9 @@ impl McpService {
     pub async fn shutdown_all(&mut self) {
         let names: Vec<String> = self.servers.keys().cloned().collect();
         for name in names {
-            let _ = self.disconnect(&name).await;
+            if let Err(e) = self.disconnect(&name).await {
+                tracing::warn!(server = %name, error = %e, "mcp disconnect failed during shutdown");
+            }
         }
     }
 

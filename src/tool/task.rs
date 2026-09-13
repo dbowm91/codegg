@@ -918,7 +918,11 @@ impl TaskTool {
                 "convergence_status" => coordinator.status(&input).await,
                 "convergence_decide" => coordinator.decide(&input).await,
                 "convergence_cancel" => coordinator.cancel(&input).await,
-                _ => unreachable!(),
+                _ => {
+                    return Err(ToolError::Execution(format!(
+                        "unsupported convergence action '{action}'"
+                    )));
+                }
             };
         }
 

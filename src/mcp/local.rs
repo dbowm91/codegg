@@ -635,7 +635,9 @@ impl LocalClient {
                         } else {
                             Ok(serde_json::Value::Null)
                         };
-                        let _ = tx.send(result);
+                        if tx.send(result).is_err() {
+                            tracing::debug!(id = %id, "mcp response receiver gone");
+                        }
                     }
                 }
             }
@@ -644,9 +646,14 @@ impl LocalClient {
         // Drain all pending senders so callers get an error instead of hanging
         let mut pending_lock = pending.lock().await;
         for (_, tx) in pending_lock.drain() {
-            let _ = tx.send(Err(McpError::Connection(
-                "MCP server connection closed".into(),
-            )));
+            if tx
+                .send(Err(McpError::Connection(
+                    "MCP server connection closed".into(),
+                )))
+                .is_err()
+            {
+                tracing::debug!("mcp response receiver gone during connection drain");
+            }
         }
     }
 

@@ -28,6 +28,10 @@ pub struct PluginService {
     policy: Option<Arc<PluginPolicy>>,
     activation_store: Arc<PluginActivationStore>,
     pinned_activation: Option<Arc<ResolvedPluginActivationSet>>,
+    /// Authoritative workspace root from `ExecutionContext`, when the daemon
+    /// has threaded one through. Falls back to the process CWD only when
+    /// unset (tests, standalone use).
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl PluginService {
@@ -39,6 +43,7 @@ impl PluginService {
             policy: None,
             activation_store: Arc::new(PluginActivationStore::in_memory()),
             pinned_activation: None,
+            workspace_root: None,
         }
     }
 
@@ -119,6 +124,19 @@ impl PluginService {
 
     pub fn pinned_activation(&self) -> Option<&Arc<ResolvedPluginActivationSet>> {
         self.pinned_activation.as_ref()
+    }
+
+    /// Set the authoritative workspace root (from `ExecutionContext`) used
+    /// for the plugin invocation `project_dir`. Overrides the process-CWD
+    /// fallback in [`Self::invoke_command`].
+    pub fn with_workspace_root(mut self, root: std::path::PathBuf) -> Self {
+        self.workspace_root = Some(root);
+        self
+    }
+
+    /// Set the authoritative workspace root on an already-built service.
+    pub fn set_workspace_root(&mut self, root: std::path::PathBuf) {
+        self.workspace_root = Some(root);
     }
 
     pub fn with_hook_timeout(mut self, timeout: Duration) -> Self {
@@ -263,9 +281,15 @@ impl PluginService {
             args,
             input,
             context: PluginContext {
-                project_dir: std::env::current_dir()
-                    .ok()
-                    .map(|p| p.to_string_lossy().to_string()),
+                project_dir: self
+                    .workspace_root
+                    .clone()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .or_else(|| {
+                        std::env::current_dir()
+                            .ok()
+                            .map(|p| p.to_string_lossy().to_string())
+                    }),
                 ..PluginContext::default()
             },
         };

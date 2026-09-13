@@ -2312,15 +2312,9 @@ impl CommandOutputProjector for GitLogProjector {
         if args.is_empty() || args[0] != "log" {
             return ProjectionSupport::Unsupported;
         }
-        // Allow common log flags.
-        for arg in &args[1..] {
-            if arg.starts_with('-') || arg.starts_with("--") || !arg.starts_with('-') {
-                // All args after "log" are allowed — flags or revision
-                // specs. We accept broadly because log has many options.
-                // The key rejection is when the subcommand isn't "log".
-                let _ = arg;
-            }
-        }
+        // All args after "log" are accepted broadly — flags or revision
+        // specs (`git log` has many options). The key rejection is when
+        // the subcommand isn't "log" (checked above).
         ProjectionSupport::Preferred
     }
 

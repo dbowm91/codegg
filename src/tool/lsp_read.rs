@@ -176,7 +176,12 @@ impl LspReadTool {
                     )));
                 }
             }
-            _ => unreachable!("allowlist checked above"),
+            _ => {
+                return Err(ToolError::Execution(format!(
+                    "unsupported lsp_read operation '{}'",
+                    parsed.operation
+                )));
+            }
         }
         Ok(())
     }

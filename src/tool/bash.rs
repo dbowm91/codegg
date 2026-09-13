@@ -380,7 +380,12 @@ impl Tool for BashTool {
             // active-routing from these options.
             let (decision_ref, plan_ref) = match (decision.as_ref(), plan.as_ref()) {
                 (Some(d), Some(p)) => (d, p),
-                _ => unreachable!("should_active_route implies decision and plan are Some"),
+                _ => {
+                    return Err(ToolError::Execution(
+                        "internal invariant violated: active routing requires a decision and plan"
+                            .to_string(),
+                    ));
+                }
             };
             let planned_backend = plan_to_planned_backend(Some(&plan_ref.backend));
 

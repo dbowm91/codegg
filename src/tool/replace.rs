@@ -22,8 +22,10 @@ pub struct ReplaceTool {
 impl ReplaceTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir()
-                .unwrap_or_else(|e| panic!("replace tool: daemon CWD unreadable: {e}")),
+            allowed_root: std::env::current_dir().unwrap_or_else(|e| {
+                tracing::warn!("replace tool: daemon CWD unreadable ({e}); using '.'");
+                PathBuf::from(".")
+            }),
             unrestricted: false,
             preflight: None,
         }

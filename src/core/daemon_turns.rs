@@ -250,7 +250,13 @@ impl CoreDaemon {
                         .for_workspace(runtime.workspace_id.to_string())
                         .await
                     {
-                        Ok(contextual) => Some(Arc::new(contextual)),
+                        Ok(mut contextual) => {
+                            // Bind plugin invocation context to the
+                            // authoritative workspace root rather than the
+                            // daemon process CWD.
+                            contextual.set_workspace_root(execution.workspace_root.clone());
+                            Some(Arc::new(contextual))
+                        }
                         Err(error) => {
                             tracing::error!(%error, "failed to resolve plugin activation for workspace");
                             None

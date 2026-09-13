@@ -515,7 +515,13 @@ fn stop_subscription_best_effort(
                     subscription_id: subscription_id.clone(),
                 },
             );
-            let _ = core_client.request(req).await;
+            if let Err(e) = core_client.request(req).await {
+                tracing::warn!(
+                    error = %e,
+                    subscription_id = ?subscription_id,
+                    "ProjectionUnsubscribe failed; server-side subscription may leak"
+                );
+            }
             Some(TuiCommand::ObserveUnsubscribed {
                 subscription_id: Some(subscription_id),
             })

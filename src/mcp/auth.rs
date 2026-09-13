@@ -144,6 +144,9 @@ pub struct OAuthManager {
     used_codes_store: PathBuf,
     servers: std::collections::HashMap<String, ServerTokens>,
     used_codes: std::collections::HashMap<String, UsedCode>,
+    /// Records a token-store load failure so later OAuth flows can fail
+    /// fast with the root cause instead of "missing credentials".
+    load_error: Option<String>,
 }
 
 impl OAuthManager {
@@ -163,6 +166,7 @@ impl OAuthManager {
             used_codes_store,
             servers: std::collections::HashMap::new(),
             used_codes: std::collections::HashMap::new(),
+            load_error: None,
         };
 
         if let Err(e) = manager.load_used_codes_sync() {
@@ -170,10 +174,21 @@ impl OAuthManager {
         }
         if manager.token_store.exists() {
             if let Err(e) = manager.load_tokens_sync() {
-                tracing::warn!("failed to load tokens sync: {}", e);
+                tracing::error!(
+                    "MCP OAuth token store corrupt, refusing cached tokens: {}",
+                    e
+                );
+                manager.load_error = Some(e.to_string());
             }
         }
         manager
+    }
+
+    /// Root-cause load failure for the token store, if the store existed
+    /// but could not be parsed. `None` means no corrupt-store failure was
+    /// observed at construction.
+    pub fn token_load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
     }
 
     pub fn generate_pkce_pair() -> (String, String) {
@@ -904,7 +919,9 @@ fn replace_secure_temp_sync(
     #[cfg(unix)]
     if let Some(parent) = destination.parent() {
         if let Ok(directory) = fs::File::open(parent) {
-            let _ = directory.sync_all();
+            if let Err(e) = directory.sync_all() {
+                tracing::warn!("failed to fsync parent dir after {purpose} store replace: {e}");
+            }
         }
     }
     Ok(())
@@ -1071,6 +1088,7 @@ mod tests {
             used_codes_store,
             servers: HashMap::new(),
             used_codes: HashMap::new(),
+            load_error: None,
         }
     }
 

@@ -254,10 +254,15 @@ impl BrokerAdapter {
     /// construction. Consumes the tracking vector.
     #[allow(private_interfaces)]
     pub fn take_child_results(&self) -> Vec<ChildJobTracking> {
-        self.child_results
-            .lock()
-            .map(|mut v| std::mem::take(&mut *v))
-            .unwrap_or_default()
+        // Short critical section never held across `.await`; poisoning is
+        // logged rather than silently defaulted.
+        match self.child_results.lock() {
+            Ok(mut v) => std::mem::take(&mut *v),
+            Err(p) => {
+                tracing::warn!("child_results mutex poisoned; dropping tracked results");
+                std::mem::take(&mut *p.into_inner())
+            }
+        }
     }
 
     pub fn with_submission(
@@ -941,27 +946,34 @@ impl BrokerCallback for BrokerAdapter {
         }
         canonical_artifacts.extend(metadata_artifacts);
 
-        if let Ok(mut results) = self.child_results.lock() {
-            results.push(ChildJobTracking {
-                job_id: submitted.job_id.to_string(),
-                attempt_id: attempt
-                    .as_ref()
-                    .map(|attempt| attempt.attempt_id.to_string()),
-                run_id: attempt
-                    .as_ref()
-                    .and_then(|attempt| attempt.run_id.as_ref())
-                    .map(ToString::to_string),
-                sequence: request.sequence,
-                status: status_str.to_string(),
-                success,
-                artifact_id: canonical_artifact_id,
-                artifact_digest: canonical_artifact_digest,
-                absence_reason: if canonical_artifacts.is_empty() {
-                    Some("child executor completed without a canonical result artifact".into())
-                } else {
-                    None
-                },
-            });
+        let tracking = ChildJobTracking {
+            job_id: submitted.job_id.to_string(),
+            attempt_id: attempt
+                .as_ref()
+                .map(|attempt| attempt.attempt_id.to_string()),
+            run_id: attempt
+                .as_ref()
+                .and_then(|attempt| attempt.run_id.as_ref())
+                .map(ToString::to_string),
+            sequence: request.sequence,
+            status: status_str.to_string(),
+            success,
+            artifact_id: canonical_artifact_id,
+            artifact_digest: canonical_artifact_digest,
+            absence_reason: if canonical_artifacts.is_empty() {
+                Some("child executor completed without a canonical result artifact".into())
+            } else {
+                None
+            },
+        };
+        match self.child_results.lock() {
+            Ok(mut results) => {
+                results.push(tracking);
+            }
+            Err(p) => {
+                tracing::warn!("child_results mutex poisoned; dropping child-job tracking");
+                p.into_inner().push(tracking);
+            }
         }
 
         Ok(ChildJobResult {

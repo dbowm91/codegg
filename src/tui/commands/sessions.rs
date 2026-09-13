@@ -16,6 +16,25 @@ use std::sync::Arc;
 // Production start/apply pairs
 // ---------------------------------------------------------------------------
 
+/// Assign `app.session_state.session` from a session DTO. On conversion
+/// failure the previous session is kept (never wiped to `None`) and an
+/// error toast is shown; returns whether the assignment happened.
+fn assign_session_from_dto(app: &mut App, dto: crate::protocol::dto::Session) -> bool {
+    match crate::protocol_conversions::dto_to_session(dto) {
+        Ok(session) => {
+            app.session_state.session = Some(session);
+            true
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "dto_to_session conversion failed");
+            app.messages_state
+                .toasts
+                .error(&format!("Session update failed: {e}"));
+            false
+        }
+    }
+}
+
 pub(crate) fn start_reload_sessions(app: &mut App) {
     app.dialog_state.session_dialog.set_loading(true);
     let request_id = app.dialog_state.session_reload_request.begin();
@@ -863,9 +882,9 @@ pub(crate) fn apply_share_session_finished(
         return;
     }
     if let Some(shared) = session {
-        app.session_state.session = crate::protocol_conversions::dto_to_session(shared.clone())
-            .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-            .ok();
+        if !assign_session_from_dto(app, shared.clone()) {
+            return;
+        }
         let url = shared.share_url.unwrap_or_default();
         let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(Arc::clone(
             &app.ui_state.theme,
@@ -940,9 +959,9 @@ pub(crate) fn apply_unshare_session_finished(
         return;
     }
     if let Some(dto) = session {
-        app.session_state.session = crate::protocol_conversions::dto_to_session(dto)
-            .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-            .ok();
+        if !assign_session_from_dto(app, dto) {
+            return;
+        }
         app.messages_state.toasts.info("Session unshared");
     }
 }
@@ -1781,9 +1800,9 @@ pub(crate) fn apply_template_session_created(
     let Some(session) = session else {
         return;
     };
-    app.session_state.session = crate::protocol_conversions::dto_to_session(session.clone())
-        .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-        .ok();
+    if !assign_session_from_dto(app, session.clone()) {
+        return;
+    }
     app.ui_state
         .routes
         .navigate_to(crate::tui::Route::Session(session.id.clone()));
@@ -1853,10 +1872,9 @@ pub(crate) async fn handle_create_from_template(
     };
     match created {
         Ok(session) => {
-            app.session_state.session =
-                crate::protocol_conversions::dto_to_session(session.clone())
-                    .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-                    .ok();
+            if !assign_session_from_dto(app, session.clone()) {
+                return;
+            }
             app.ui_state
                 .routes
                 .navigate_to(crate::tui::Route::Session(session.id.clone()));
@@ -2231,12 +2249,9 @@ pub(crate) async fn handle_share_session(app: &mut App, session_id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session: shared }) => {
-                app.session_state.session =
-                    crate::protocol_conversions::dto_to_session(shared.clone())
-                        .map_err(
-                            |e| tracing::error!(error = %e, "dto_to_session conversion failed"),
-                        )
-                        .ok();
+                if !assign_session_from_dto(app, shared.clone()) {
+                    return;
+                }
                 let url = shared.share_url.unwrap_or_default();
                 let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
                     Arc::clone(&app.ui_state.theme),
@@ -2277,9 +2292,9 @@ pub(crate) async fn handle_unshare_session(app: &mut App, session_id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
-                app.session_state.session = crate::protocol_conversions::dto_to_session(session)
-                    .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-                    .ok();
+                if !assign_session_from_dto(app, session) {
+                    return;
+                }
                 app.messages_state.toasts.info("Session unshared");
             }
             Ok(CoreResponse::Error { message, .. }) => {
@@ -2365,9 +2380,9 @@ pub(crate) async fn handle_rename_session(app: &mut App, session_id: String, new
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
-                app.session_state.session = crate::protocol_conversions::dto_to_session(session)
-                    .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-                    .ok();
+                if !assign_session_from_dto(app, session) {
+                    return;
+                }
                 app.messages_state.toasts.info("Session renamed");
             }
             Ok(CoreResponse::Error { message, .. }) => {
