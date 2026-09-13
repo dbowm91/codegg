@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| HTTP client consolidation and Eggfetch adoption | active | `plans/subsystems/http-client-consolidation-roadmap.md` | M001 blocked | crates.io publication of `eggfetch-core 0.1.4`; M002/M003 depend on accepted predecessor closure. |
+| HTTP client consolidation and Eggfetch adoption | active | `plans/subsystems/http-client-consolidation-roadmap.md` | M001 active | Published `eggfetch-core 0.1.4` is available; M002/M003 depend on accepted predecessor closure. |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
@@ -61,11 +61,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| — | — | — | — | No dependency-ready implementation plans; HTTP client M001 becomes ready when crates.io publishes `eggfetch-core 0.1.4` with the reviewed surface. |
+| HTTP client consolidation and Eggfetch adoption | M001 | active | `plans/implementation/http-client-consolidation/001-transport-boundary-and-pinned-http-adoption.md` | Published `eggfetch-core 0.1.4` resolves with the reviewed static-routing/JSON/streaming feature surface. |
 
 ## Current execution order and dependency gates
 
-1. HTTP client consolidation M001 opens immediately after crates.io `eggfetch-core 0.1.4` resolves with the reviewed static-routing/JSON/streaming feature surface. Do not substitute a Git/path dependency.
+1. HTTP client consolidation M001 is active now that crates.io `eggfetch-core 0.1.4` resolves with the reviewed static-routing/JSON/streaming feature surface. Do not substitute a Git/path dependency.
 2. HTTP client consolidation M002 remains blocked until M001 has accepted closure evidence; M003 remains blocked until M002 closes.
 3. M009 is closed: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption landed; M008's historical conditional record remains unchanged.
 4. M007 is closed against the final M006 MCP representation.
@@ -76,7 +76,7 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| HTTP client consolidation and Eggfetch adoption | M001 transport boundary and pinned HTTP adoption | `eggfetch-core 0.1.4` must be published on crates.io with the reviewed `http1`/`tls-rustls`/`json`, static resolved-address routing, response streaming/content-length and timeout surface. |
+| HTTP client consolidation and Eggfetch adoption | — | No current blocker; M001 is active. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 

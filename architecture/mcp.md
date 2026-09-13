@@ -97,8 +97,11 @@ Sends JSON-RPC over HTTP POST. Supports server-initiated SSE for
 responses that arrive as `text/event-stream`.
 
 - **DNS rebinding protection**: Validates host IP on `new()` and
-  before every `post_json()` call via `revalidate_dns()`. Internal IPs
-  (loopback, private, link-local, CGNAT) are blocked.
+  before every `post_json()` call via `revalidate_dns()`. The accepted IP
+  snapshot is converted to port-qualified socket addresses and attached to
+  the actual Eggfetch request, so connection-time DNS cannot escape the
+  revalidated destination. Internal IPs (loopback, private, link-local,
+  CGNAT) are blocked.
 - **Protocol modes**: Modern requests carry `MCP-Protocol-Version`,
   `Mcp-Method`, and (for tool calls) `Mcp-Name` headers plus `_meta` in the
   JSON-RPC params. Legacy requests retain `Mcp-Session-Id` handling from
@@ -106,7 +109,7 @@ responses that arrive as `text/event-stream`.
 - **Session management**: Stores `Mcp-Session-Id` from legacy `initialize`
   responses; modern requests are stateless and do not send that header.
 - **OAuth**: Bearer token injected from `OAuthManager` when available.
-- **Redirect policy**: `reqwest::redirect::Policy::none()` — redirects
+- **Redirect policy**: Eggfetch redirects are explicitly disabled — redirects
   are not followed to prevent SSRF via redirect chains.
 - **SSE response parsing**: When `post_json` receives a body starting
   with `event:`, it parses the SSE data lines as a JSON-RPC response.

@@ -72,7 +72,7 @@ discovery). It is designed to be a low-coupling foundation that root
 - `eggsentry` — deterministic security scanning
 
 Notable third-party: `tokio`, `sqlx` (SQLite), `serde`, `serde_json`,
-`anyhow`, `reqwest`, `chrono`, `uuid`, `sha2`, `similar`, `regex`,
+`anyhow`, `url`, `chrono`, `uuid`, `sha2`, `similar`, `regex`,
 `rustpython-parser` (Tool Programs), `dashmap`, `parking_lot`.
 
 `codegg-core` does NOT depend on:
@@ -169,8 +169,8 @@ callers via `codegg-config::schema::Config`.
   Run `scripts/check-core-boundary.sh` after changes.
 - The `tool_program` module uses `rustpython-parser` for AST parsing.
   This is a heavy dependency but is compile-only (no runtime Python).
-- `reqwest` is a dependency (used by provider connections). It does not
-  bring in server frameworks.
+- HTTP transport clients are not owned by `codegg-core`; URL parsing uses the
+  transport-neutral `url` crate and provider transport remains outside core.
 - `md5` is retained only for legacy project-memory namespace
   reads/migration. New writes use SHA-256 via `sha2`.
 

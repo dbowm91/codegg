@@ -52,7 +52,7 @@ pub enum AppError {
     Lsp(LspError),              // #[from]
     Io(std::io::Error),         // #[from]
     Json(serde_json::Error),    // #[from]
-    Http(reqwest::Error),       // #[from]
+    Http(HttpError),            // sanitized, transport-neutral details
     Other(anyhow::Error),       // #[from]
     Worktree(String),
     Upgrade(String),
@@ -133,8 +133,9 @@ Variants: `NotFound`, `Invalid`.
 
 Newtype wrapper for `AppError` implementing `IntoResponse`. Also has `From`
 impls for `StorageError`, `std::io::Error`, `serde_json::Error`,
-`anyhow::Error`, and `reqwest::Error` so `?` works directly in axum
-handlers.
+`anyhow::Error`, and the root package's legacy `reqwest::Error` adapter so
+`?` works directly in axum handlers. The adapter strips the transport URL
+before constructing `HttpError`.
 
 ### AxumServerRuntimeError (`src/error.rs:171`)
 

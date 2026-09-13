@@ -7,14 +7,14 @@ pub(crate) enum BoundedBodyError {
     #[error("response body exceeds {limit} byte limit ({observed} bytes)")]
     TooLarge { limit: usize, observed: usize },
     #[error("failed to read response body: {0}")]
-    Stream(#[source] reqwest::Error),
+    Stream(#[source] eggfetch_core::Error),
 }
 
 /// Collect a response without allowing the retained body to exceed the hard
 /// limit. The content length is only an early rejection; streamed chunks are
 /// checked as well because the header may be absent or untrustworthy.
 pub(crate) async fn read_body_bounded(
-    response: reqwest::Response,
+    mut response: eggfetch_core::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, BoundedBodyError> {
     if max_bytes == 0 {
@@ -38,7 +38,7 @@ pub(crate) async fn read_body_bounded(
             .filter(|&length| length <= max_bytes)
             .unwrap_or(0),
     );
-    let mut stream = response.bytes_stream();
+    let mut stream = response.bytes_stream().map_err(BoundedBodyError::Stream)?;
     use futures_util::StreamExt;
 
     while let Some(chunk) = stream.next().await {
@@ -63,7 +63,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn fixture(body: &[u8], headers: &str) -> reqwest::Response {
+    async fn fixture(body: &[u8], headers: &str) -> eggfetch_core::Response {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let body = Arc::new(body.to_vec());
@@ -77,17 +77,18 @@ mod tests {
             socket.write_all(&body).await.unwrap();
         });
 
-        reqwest::Client::builder()
-            .no_proxy()
-            .build()
+        let client = eggfetch_core::Client::builder()
+            .follow_redirects(false)
+            .build();
+        client
+            .get(&format!("http://{addr}/fixture"))
             .unwrap()
-            .get(format!("http://{addr}/fixture"))
             .send()
             .await
             .unwrap()
     }
 
-    async fn chunked_fixture(chunks: &[&[u8]]) -> reqwest::Response {
+    async fn chunked_fixture(chunks: &[&[u8]]) -> eggfetch_core::Response {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let chunks: Vec<Vec<u8>> = chunks.iter().map(|chunk| chunk.to_vec()).collect();
@@ -112,11 +113,12 @@ mod tests {
             socket.write_all(b"0\r\n\r\n").await.unwrap();
         });
 
-        reqwest::Client::builder()
-            .no_proxy()
-            .build()
+        let client = eggfetch_core::Client::builder()
+            .follow_redirects(false)
+            .build();
+        client
+            .get(&format!("http://{addr}/fixture"))
             .unwrap()
-            .get(format!("http://{addr}/fixture"))
             .send()
             .await
             .unwrap()
@@ -192,16 +194,16 @@ mod tests {
                 .unwrap();
         });
 
-        let client = reqwest::Client::builder()
-            .no_proxy()
+        let client = eggfetch_core::Client::builder()
+            .follow_redirects(false)
+            .build();
+        let mut response = client
+            .get(&format!("http://{host}:{}/fixture", addr.port()))
+            .unwrap()
             // This is the same mechanism used with the production validated
             // address set. The .invalid name has no fallback DNS answer, so
             // a second resolver pass would fail instead of reaching the fixture.
-            .resolve_to_addrs(host, &[addr])
-            .build()
-            .unwrap();
-        let response = client
-            .get(format!("http://{host}:{}/fixture", addr.port()))
+            .resolved_addresses([addr])
             .send()
             .await
             .unwrap();

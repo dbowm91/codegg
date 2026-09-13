@@ -1,6 +1,6 @@
 # HTTP Client Consolidation M001 — Transport Boundary and Pinned HTTP Adoption
 
-Status: blocked on crates.io publication of `eggfetch-core 0.1.4`
+Status: active
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 

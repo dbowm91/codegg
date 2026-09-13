@@ -21,7 +21,6 @@ eggsentry = { version = "=0.1.0", path = "../eggsentry" }
 
 anyhow = "1"
 base64 = "0.22"
-reqwest = { version = "0.12", default-features = false }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5"
@@ -43,6 +42,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
 tokio-util = "0.7"
 tracing = "0.1"
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Restricted-Python parser for Tool Programs (M004). The parser's generic AST

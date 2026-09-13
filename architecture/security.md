@@ -37,8 +37,8 @@ validation pipeline:
 
 1. **`validate_url_target(raw_url)`** (`ssrf.rs:129`) — parses URL,
    checks scheme (http/https only), resolves DNS once, validates all
-   resolved addresses. Returns `ValidatedUrlTarget` with pinned
-   `SocketAddr` set for `reqwest::ClientBuilder::resolve_to_addrs`.
+   resolved addresses. Returns `ValidatedUrlTarget` with a pinned
+   `SocketAddr` set for Eggfetch `RequestBuilder::resolved_addresses`.
 2. **`validate_url_host(url)`** (`ssrf.rs:182`) — convenience wrapper
    returning just the normalized host string.
 3. **`validate_host_ip(host, port)`** (`ssrf.rs:88`) — DNS resolution +
@@ -222,7 +222,7 @@ canonicalization.
 
 ```rust
 pub(crate) async fn read_body_bounded(
-    response: reqwest::Response,
+    response: eggfetch_core::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, BoundedBodyError>
 ```

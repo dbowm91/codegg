@@ -927,9 +927,10 @@ dependencies = [
  "codegg-providers",
  "comrak",
  "crossterm 0.28.1",
- "dashmap",
+ "dashmap 5.5.3",
  "dirs",
  "eggcontext",
+ "eggfetch-core",
  "egggit",
  "egglsp",
  "eggsact",
@@ -1018,7 +1019,7 @@ dependencies = [
  "codegg-git",
  "codegg-protocol",
  "codegg-providers",
- "dashmap",
+ "dashmap 5.5.3",
  "dirs",
  "egggit",
  "egglsp",
@@ -1030,7 +1031,6 @@ dependencies = [
  "parking_lot",
  "rand 0.9.4",
  "regex",
- "reqwest",
  "rustix 1.1.4",
  "rustpython-parser",
  "serde",
@@ -1045,6 +1045,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -1079,7 +1080,7 @@ dependencies = [
  "bytes",
  "chrono",
  "codegg-config",
- "dashmap",
+ "dashmap 5.5.3",
  "dirs",
  "futures-util",
  "hex",
@@ -1540,6 +1541,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1558,7 +1573,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
- "pem-rfc7468",
+ "pem-rfc7468 0.7.0",
  "zeroize",
 ]
 
@@ -1703,6 +1718,39 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
  "tiktoken",
+]
+
+[[package]]
+name = "eggfetch-core"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "442000edd076a6f101931292d4a159d5f2b4cec29c6acd010d558af00430b327"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "dashmap 6.2.1",
+ "futures-core",
+ "futures-util",
+ "getrandom 0.2.17",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httpdate",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "pem-rfc7468 0.1.1",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+ "url",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -2560,11 +2608,12 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "log",
  "rustls",
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -3884,6 +3933,15 @@ dependencies = [
 
 [[package]]
 name = "pem-rfc7468"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "801ef81ab8a21fdd738a9de457509b5c0aef72efa93ffdfc80f3329a1588405b"
+dependencies = [
+ "base64ct",
+]
+
+[[package]]
+name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
@@ -4795,7 +4853,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -4891,6 +4949,7 @@ version = "0.23.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -6849,6 +6908,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]

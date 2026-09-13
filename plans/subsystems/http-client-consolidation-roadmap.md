@@ -1,6 +1,6 @@
 # HTTP Client Consolidation and Eggfetch Adoption Roadmap
 
-Status: active; M001 is blocked only on publication of `eggfetch-core 0.1.4` to crates.io
+Status: active; M001 is in progress now that `eggfetch-core 0.1.4` is available on crates.io
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 
@@ -155,7 +155,7 @@ Goals:
 - migrate remote MCP and bind its actual connection to the revalidated address snapshot;
 - preserve URL/Host/TLS identity, no-follow redirects, bounded bodies, and application-level retry semantics.
 
-Status: **blocked** until crates.io resolves `eggfetch-core 0.1.4` with the required API/feature surface.
+Status: **active**; the published crate resolves with the required API/feature surface.
 
 ### M002 — Provider streaming and Eggpool adoption
 

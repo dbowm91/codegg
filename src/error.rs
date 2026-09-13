@@ -55,7 +55,11 @@ impl From<anyhow::Error> for AxumAppError {
 #[cfg(feature = "server")]
 impl From<reqwest::Error> for AxumAppError {
     fn from(e: reqwest::Error) -> Self {
-        AxumAppError(AppError::Http(e))
+        let status = e.status().map(|status| status.as_u16());
+        AxumAppError(AppError::Http(HttpError::new(
+            e.without_url().to_string(),
+            status,
+        )))
     }
 }
 
@@ -135,7 +139,7 @@ impl IntoResponse for AxumAppError {
             AppError::Json(_) => StatusCode::BAD_REQUEST,
             AppError::Http(e) => e
                 .status()
-                .and_then(|s| StatusCode::from_u16(s.as_u16()).ok())
+                .and_then(|s| StatusCode::from_u16(s).ok())
                 .unwrap_or(StatusCode::BAD_GATEWAY),
             AppError::Io(_)
             | AppError::Other(_)

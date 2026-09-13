@@ -38,7 +38,7 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
 
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(HttpError),
 
     #[error("general error: {0}")]
     Other(#[from] anyhow::Error),
@@ -57,6 +57,27 @@ pub enum AppError {
 
     #[error("run store error: {0}")]
     RunStore(#[from] RunStoreError),
+}
+
+/// Sanitized, transport-neutral details for an outbound HTTP failure.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{message}")]
+pub struct HttpError {
+    message: String,
+    status: Option<u16>,
+}
+
+impl HttpError {
+    pub fn new(message: impl Into<String>, status: Option<u16>) -> Self {
+        Self {
+            message: message.into(),
+            status,
+        }
+    }
+
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
 }
 
 #[derive(Error, Debug)]
@@ -408,4 +429,18 @@ pub enum RunStoreError {
 
     #[error("concurrent write: {0}")]
     ConcurrentWrite(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppError, HttpError};
+
+    #[test]
+    fn http_error_keeps_status_without_transport_or_url_coupling() {
+        let error = AppError::Http(HttpError::new("connection failed", Some(503)));
+
+        assert_eq!(error.to_string(), "http error: connection failed");
+        assert!(matches!(error, AppError::Http(ref detail) if detail.status() == Some(503)));
+        assert!(!error.to_string().contains("?") && !error.to_string().contains("Authorization"));
+    }
 }

@@ -1,11 +1,12 @@
 use async_trait::async_trait;
+use eggfetch_core::{Client, Timeout};
 use html2text::from_read;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
 use crate::error::ToolError;
 use crate::search_backend;
-use crate::security::ssrf::{validate_url_target, ValidatedUrlTarget};
+use crate::security::ssrf::validate_url_target;
 use crate::security::untrusted_http::read_body_bounded;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
@@ -52,21 +53,14 @@ impl WebFetchTool {
         }
     }
 
-    fn client_for_target(&self, target: &ValidatedUrlTarget) -> Result<reqwest::Client, ToolError> {
-        reqwest::Client::builder()
-            .timeout(self.timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .resolve_to_addrs(target.host(), target.addresses())
+    fn client(&self) -> Client {
+        Client::builder()
+            .timeout(Timeout {
+                total: Some(self.timeout),
+                ..Timeout::default()
+            })
+            .follow_redirects(false)
             .build()
-            .map_err(|e| ToolError::Execution(format!("failed to create HTTP client: {e}")))
-    }
-
-    fn client_for_request(
-        &self,
-        target: &ValidatedUrlTarget,
-    ) -> Result<reqwest::Client, ToolError> {
-        self.client_for_target(target)
     }
 }
 
@@ -181,7 +175,7 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// Built-in reqwest-based fetch used by the `builtin` backend and
+/// Built-in Eggfetch-based fetch used by the `builtin` backend and
 /// by the eggsearch fallback path. Kept in this module so it can
 /// continue to be exercised by unit tests.
 pub async fn execute_builtin(
@@ -200,12 +194,14 @@ pub async fn execute_builtin(
         .unwrap_or(10_000) as usize;
     let effective_max = effective_output_limit(max_length, max_output_chars);
     let target = validate_url_target(url).map_err(ToolError::Execution)?;
-    let client = tool.client_for_request(&target)?;
+    let client = tool.client();
 
     let response = client
         .get(url)
+        .map_err(|e| ToolError::Execution(format!("invalid URL: {e}")))?
+        .resolved_addresses(target.addresses().iter().copied())
         .header(
-            reqwest::header::USER_AGENT,
+            "User-Agent",
             "Mozilla/5.0 (compatible; Codegg/1.0; +https://codegg.ai)",
         )
         .send()
@@ -215,7 +211,7 @@ pub async fn execute_builtin(
     let status = response.status();
     let content_type = response
         .headers()
-        .get(reqwest::header::CONTENT_TYPE)
+        .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
@@ -224,20 +220,20 @@ pub async fn execute_builtin(
         // A retry is a new request attempt. Resolve and validate again, then
         // pin the retry client independently of the first attempt.
         let retry_target = validate_url_target(url).map_err(ToolError::Execution)?;
-        let retry_client = tool.client_for_request(&retry_target)?;
-
-        let retry_resp = retry_client
+        let retry_resp = client
             .get(url)
-            .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.5")
+            .map_err(|e| ToolError::Execution(format!("invalid URL: {e}")))?
+            .resolved_addresses(retry_target.addresses().iter().copied())
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.5")
             .send()
             .await
             .map_err(|e| ToolError::Execution(format!("Cloudflare retry failed: {e}")))?;
 
         let retry_content_type = retry_resp
             .headers()
-            .get(reqwest::header::CONTENT_TYPE)
+            .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
@@ -254,7 +250,7 @@ pub async fn execute_builtin(
 impl WebFetchTool {
     async fn process_response(
         &self,
-        response: reqwest::Response,
+        response: eggfetch_core::Response,
         content_type: &str,
         max_length: usize,
     ) -> Result<String, ToolError> {

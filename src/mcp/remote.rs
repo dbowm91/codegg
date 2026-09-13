@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use eggfetch_core::{Client, Timeout};
 use tokio::join;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
@@ -355,7 +356,7 @@ impl McpConnectionManager {
 pub struct RemoteClient {
     url: String,
     headers: HashMap<String, String>,
-    client: reqwest::Client,
+    client: Client,
     session_id: Arc<Mutex<Option<String>>>,
     sse_url: Arc<Mutex<Option<String>>>,
     oauth_token: Arc<Mutex<Option<String>>>,
@@ -437,18 +438,20 @@ impl RemoteClient {
     ) -> Result<Self, McpError> {
         let host = validate_url_host(url).map_err(McpError::Connection)?;
 
-        let parsed = reqwest::Url::parse(url)
+        let parsed = url::Url::parse(url)
             .map_err(|e| McpError::Connection(format!("invalid URL: {}", e)))?;
         let port = parsed
             .port()
             .unwrap_or_else(|| if parsed.scheme() == "https" { 443 } else { 80 });
         let validated_ips = validate_host_ip(&host, port).map_err(McpError::Connection)?;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_millis(timeout))
-            .build()
-            .map_err(|e| McpError::Connection(format!("failed to create HTTP client: {}", e)))?;
+        let client = Client::builder()
+            .timeout(Timeout {
+                total: Some(Duration::from_millis(timeout)),
+                ..Timeout::default()
+            })
+            .follow_redirects(false)
+            .build();
 
         Ok(Self {
             url: url.to_string(),
@@ -477,7 +480,7 @@ impl RemoteClient {
     }
 
     pub async fn initialize(&mut self) -> Result<(), McpError> {
-        let parsed = reqwest::Url::parse(&self.url)
+        let parsed = url::Url::parse(&self.url)
             .map_err(|e| McpError::Connection(format!("invalid URL: {}", e)))?;
         let host = parsed
             .host_str()
@@ -809,11 +812,13 @@ impl RemoteClient {
     }
 
     #[allow(dead_code)]
-    async fn connect_sse_stream(&self, resp: reqwest::Response) -> Result<(), McpError> {
+    async fn connect_sse_stream(&self, mut resp: eggfetch_core::Response) -> Result<(), McpError> {
         let events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::clone(&self.sse_events);
         let sse_shutdown = Arc::clone(&self.sse_shutdown);
+        let mut stream = resp
+            .bytes_stream()
+            .map_err(|e| McpError::Connection(e.to_string()))?;
         tokio::spawn(async move {
-            let mut stream = resp.bytes_stream();
             let mut buf = Vec::new();
             let mut data_lines = Vec::new();
             const MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB limit
@@ -951,8 +956,8 @@ impl RemoteClient {
         method: &str,
         tool_name: Option<&str>,
     ) -> Result<JsonRpcResponse, McpError> {
-        let (oauth_token, session_id) = {
-            let parsed = reqwest::Url::parse(&self.url)
+        let (oauth_token, session_id, resolved_addresses) = {
+            let parsed = url::Url::parse(&self.url)
                 .map_err(|e| McpError::Connection(format!("invalid URL: {}", e)))?;
             let host = parsed
                 .host_str()
@@ -969,25 +974,39 @@ impl RemoteClient {
                 async { self.validated_ips.lock().await.clone() }
             );
 
-            if let Some(ref ips) = valid {
+            let resolved_addresses = if let Some(ref ips) = valid {
                 let host = host.to_string();
                 let ips = ips.clone();
-                tokio::task::spawn_blocking(move || revalidate_dns(&host, port, &ips))
-                    .await
-                    .map_err(|e| {
-                        McpError::Connection(format!("DNS revalidation task failed: {}", e))
-                    })?
-                    .map_err(McpError::Connection)?;
-            }
+                tokio::task::spawn_blocking({
+                    let host = host.clone();
+                    let ips = ips.clone();
+                    move || revalidate_dns(&host, port, &ips)
+                })
+                .await
+                .map_err(|e| McpError::Connection(format!("DNS revalidation task failed: {}", e)))?
+                .map_err(McpError::Connection)?;
+                Some(
+                    ips.into_iter()
+                        .map(|ip| SocketAddr::new(ip, port))
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
 
-            (oauth, sid)
+            (oauth, sid, resolved_addresses)
         };
 
         let mut request = self
             .client
             .post(&self.url)
+            .map_err(|e| McpError::Connection(e.to_string()))?
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream");
+
+        if let Some(addresses) = resolved_addresses {
+            request = request.resolved_addresses(addresses);
+        }
 
         for (k, v) in &self.headers {
             if v.contains('\r') || v.contains('\n') {
@@ -999,7 +1018,8 @@ impl RemoteClient {
         }
 
         if let Some(ref token) = oauth_token {
-            request = request.header("Authorization", format!("Bearer {token}"));
+            let authorization = format!("Bearer {token}");
+            request = request.header("Authorization", &authorization);
         }
 
         if !protocol.is_modern() {
@@ -1017,7 +1037,7 @@ impl RemoteClient {
 
         let body = serde_json::to_string(msg).map_err(|e| McpError::Server(e.to_string()))?;
 
-        let resp = request
+        let mut resp = request
             .body(body)
             .send()
             .await

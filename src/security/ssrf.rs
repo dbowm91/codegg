@@ -2,9 +2,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 
 /// A URL target whose hostname has been resolved and whose complete address
-/// set has passed the SSRF policy. Callers must use [`Self::addresses`] as a
-/// reqwest DNS override for the request attempt; resolving the hostname again
-/// at send time would reopen the DNS-rebinding window this type closes.
+/// set has passed the SSRF policy. Callers must use [`Self::addresses`] as an
+/// Eggfetch `RequestBuilder::resolved_addresses` override for the request
+/// attempt; resolving the hostname again at send time would reopen the
+/// DNS-rebinding window this type closes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ValidatedUrlTarget {
     host: String,
@@ -12,10 +13,6 @@ pub(crate) struct ValidatedUrlTarget {
 }
 
 impl ValidatedUrlTarget {
-    pub(crate) fn host(&self) -> &str {
-        &self.host
-    }
-
     pub(crate) fn addresses(&self) -> &[SocketAddr] {
         &self.addresses
     }
@@ -125,7 +122,7 @@ fn validate_resolved_addresses(host: &str, socket_addrs: &[SocketAddr]) -> Resul
 
 /// Parse an HTTP(S) URL, resolve its host once, and validate every returned
 /// address. The returned addresses are intended to be supplied to
-/// `reqwest::ClientBuilder::resolve_to_addrs` for the actual request.
+/// `eggfetch_core::RequestBuilder::resolved_addresses` for the actual request.
 pub(crate) fn validate_url_target(raw_url: &str) -> Result<ValidatedUrlTarget, String> {
     let parsed = url::Url::parse(raw_url).map_err(|e| format!("invalid URL: {}", e))?;
 

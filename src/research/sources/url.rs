@@ -2,6 +2,7 @@ use super::ResearchSourceAdapter;
 use crate::research::error::{ResearchError, Result};
 use crate::research::types::*;
 use chrono::Utc;
+use eggfetch_core::{Client, Timeout};
 use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
@@ -26,16 +27,18 @@ impl UrlSource {
     async fn fetch_url(&self, url: &str) -> Result<SourceRecord> {
         let target = validate_url_target(url)
             .map_err(|e| ResearchError::UrlFetch(format!("SSRF protection: {e}")))?;
-        let client = reqwest::Client::builder()
-            .timeout(self.timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .resolve_to_addrs(target.host(), target.addresses())
-            .build()
-            .map_err(|e| ResearchError::UrlFetch(format!("failed to create HTTP client: {e}")))?;
+        let client = Client::builder()
+            .timeout(Timeout {
+                total: Some(self.timeout),
+                ..Timeout::default()
+            })
+            .follow_redirects(false)
+            .build();
 
         let response = client
             .get(url)
+            .map_err(|e| ResearchError::UrlFetch(format!("invalid URL: {e}")))?
+            .resolved_addresses(target.addresses().iter().copied())
             .send()
             .await
             .map_err(|e| ResearchError::UrlFetch(format!("request failed: {e}")))?;

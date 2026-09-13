@@ -8,10 +8,10 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;
+use url::Url;
 
 use crate::error::StorageError;
 use crate::identity::{IdentityParseError, PrincipalId, ProjectId, ProviderConnectionId};
