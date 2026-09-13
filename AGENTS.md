@@ -18,9 +18,10 @@ are allowed in tests (`clippy.toml`).
 ## Layout
 
 - Root crate `codegg` (`src/`): TUI, agent loop, tools, scheduler, server, auth.
-  `src/lib.rs` re-exports `codegg_protocol as protocol` and providers as `codegg::provider`
-  — there is no `src/protocol/` or `src/provider/` implementation directory.
-- `crates/`: 9 workspace members — `codegg-core` (domain types: bus, jobs, session,
+  `src/lib.rs` re-exports `codegg_protocol as protocol`, `codegg_providers as provider`,
+  and `codegg_config as config` — there is no `src/protocol/`, `src/provider/`,
+  or `src/config/` implementation directory.
+- `crates/`: 9 crates (+ root = 10 workspace members in `Cargo.toml`) — `codegg-core` (domain types: bus, jobs, session,
   storage, workspace; must stay UI/server/plugin/auth-free, enforced by
   `scripts/check-core-boundary.sh`), `codegg-config`, `codegg-protocol`,
   `codegg-providers`, `codegg-git` (typed git ops + risk), `egglsp` (authoritative LSP;
