@@ -1,6 +1,6 @@
 # HTTP Client Consolidation M003 — Remaining HTTP Consumers and Reqwest Retirement
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 

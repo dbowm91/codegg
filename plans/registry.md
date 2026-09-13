@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| HTTP client consolidation and Eggfetch adoption | active | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M002 closed; M003 ready | M001 and M002 closure accepted; M003 is dependency-ready. |
+| HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
@@ -61,12 +61,12 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| HTTP client consolidation and Eggfetch adoption | M003 | ready | `plans/implementation/http-client-consolidation/003-remaining-http-consumers-and-reqwest-retirement.md` | M001 and M002 closures accepted; use the established Eggfetch feature, redirect/timeout, mutable-response, and sanitized-error conventions. |
+| — | — | — | — | No dependency-ready implementation plans currently registered. |
 
 ## Current execution order and dependency gates
 
-1. HTTP client consolidation M001 and M002 are closed with accepted closure evidence; M003 is ready for handoff using the published crates.io `eggfetch-core 0.1.4` conventions. Do not substitute a Git/path dependency.
-2. M003's former M002 hard dependency is satisfied; its remaining root/EggLSP migration scope is the next execution gate.
+1. HTTP client consolidation M001-M003 are closed with accepted closure evidence. CodeGG's direct HTTP ownership is on the published crates.io `eggfetch-core 0.1.4` surface; do not substitute a Git/path dependency.
+2. No registered implementation plan was unblocked by M003 closure; the remaining conditional blockers are the unrelated architecture-convergence and runtime-safety evidence listed below.
 3. M009 is closed: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption landed; M008's historical conditional record remains unchanged.
 4. M007 is closed against the final M006 MCP representation.
 
@@ -108,6 +108,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 |---|---|---|---|---|
 | HTTP client consolidation and Eggfetch adoption | M001 transport boundary and pinned HTTP adoption | closed | `plans/closure/http-client-consolidation/001-status.md` | `756e036`, `2a37be3` |
 | HTTP client consolidation and Eggfetch adoption | M002 provider streaming and Eggpool adoption | closed | `plans/closure/http-client-consolidation/002-status.md` | `42dc22a` |
+| HTTP client consolidation and Eggfetch adoption | M003 remaining HTTP consumers and reqwest retirement | closed | `plans/closure/http-client-consolidation/003-status.md` | `ff448fc` |
 | Upstream tool-surface compatibility corrective | M008 Eggsact 1.2.5 in-process compatibility | conditionally closed | `plans/closure/tool-surface-upstream-compatibility/008-status.md` | `2055696` |
 | Upstream tool-surface compatibility corrective | M009 Eggsact 1.2.5 MSRV adoption | closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` | `dc0f915` |
 | Upstream tool-surface compatibility corrective | M007 Eggsearch 0.3.9 surface alignment | closed | `plans/closure/tool-surface-upstream-compatibility/007-status.md` | `0cd35ab` |

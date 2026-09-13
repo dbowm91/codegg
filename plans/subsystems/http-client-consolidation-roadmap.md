@@ -1,6 +1,6 @@
 # HTTP Client Consolidation and Eggfetch Adoption Roadmap
 
-Status: active; M001 and M002 are closed with accepted closure, and M003 is ready
+Status: closed; M001, M002, and M003 are closed with accepted closure
 
 Repository baseline reviewed: `a848872573c0604eb52a3ae1f46b6edef0c3eb29`
 
@@ -185,7 +185,7 @@ Goals:
 - remove root and EggLSP reqwest declarations and verify no direct production use remains;
 - record dependency-tree/footprint observations without turning them into a gate.
 
-Status: **ready**; M001 and M002 closures are accepted and the transport/error/stream interfaces are stable.
+Status: **closed**; closure: `plans/closure/http-client-consolidation/003-status.md`.
 
 ## 10. Cross-cutting verification
 
