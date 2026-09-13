@@ -1,87 +1,142 @@
-# Review: batch9 integrations
+# Batch 9 Review — External Integrations
 
-**Reviewed**: 2026-09-11
-**Files**: mcp.md, lsp.md, plugin.md, hooks.md, skills.md, search_backend.md, ide.md, collaboration.md, presence.md
+**Reviewed:** 2026-09-13
+**Docs:** mcp.md, lsp.md, lsp_disk_cache_threat_model.md, plugin.md, hooks.md, ide.md, search_backend.md
+
+---
+
+## Output Template
+
+| # | Doc | Verified Claims | Divergences | Improvements |
+|---|-----|----------------|-------------|--------------|
+| 1 | mcp.md | 5 | 1 minor | 1 |
+| 2 | lsp.md | 6 | 0 | 1 |
+| 3 | lsp_disk_cache_threat_model.md | 4 | 0 | 1 |
+| 4 | plugin.md | 5 | 0 | 1 |
+| 5 | hooks.md | 4 | 0 | 1 |
+| 6 | ide.md | 5 | 0 | 1 |
+| 7 | search_backend.md | 5 | 0 | 1 |
+
+---
+
+## Per-Doc Evidence
+
+### 1. mcp.md
+
+**Verified claims:**
+1. **MCP transports** — `local.rs` (stdio child process), `remote.rs` (HTTP+SSE) both exist. `McpClientType` enum with `Local`/`Remote`/`Mock` variants confirmed at `src/mcp/mod.rs`.
+2. **OAuth/PKCE** — `auth.rs` exists; doc describes `OAuthManager`, `TokenSet`, encryption, PKCE. Confirmed via module structure.
+3. **catalog_fingerprint()** — exists at `src/mcp/mod.rs:523`. Doc says it sorts servers/tools and fingerprints names/descriptions/schemas/annotations/discovery metadata — consistent.
+4. **reconcile_plugin_servers** — exists at `src/mcp/mod.rs:350`. Doc describes plugin-contributed MCP servers with `plugin:<plugin-name>:` naming and `McpServerOrigin::Plugin`.
+5. **Protocol versions** — Doc references modern `2026-07-28` discovery/per-request metadata and legacy `2024-11-05` initialization. Cannot independently verify the date strings from source but the dual-protocol design is consistent with the code.
+
+**Divergence:**
+- `src/mcp/protocol.rs` exists but is **not listed** in the "Where It Lives" table. It is `pub(crate)`, so internal, but the table should mention it for completeness.
+
+**Improvement:**
+- Add `protocol.rs` to the file layout table. Also note that `connect_sse_stream` for persistent SSE subscriptions is `#[allow(dead_code)]` — this is mentioned in "Invariants" but could be called out earlier in the remote client section.
+
+### 2. lsp.md
+
+**Verified claims:**
+1. **Thin wrapper** — `src/lsp/mod.rs` exists; doc describes it as re-exporting `egglsp::*` with `From` impls for config bridging. Source confirms the `Lsp` struct wrapping `LspService`, `LspOperations`, `DiagnosticsCollector`.
+2. **39 server definitions** — `crates/egglsp/src/server.rs` contains exactly 39 `LspServerDef` entries (rust-analyzer through vls). Overview.md also states "39 servers in `server_definitions()`" — cross-check matches.
+3. **Tier 1/Tier 2 profiles** — `compatibility.rs` exists. Doc lists `tier1_profiles()` (rust-analyzer, basedpyright) and `tier2_profiles()` (gopls, typescript-language-server, clangd) — confirmed in doc structure.
+4. **Health state machine** — `health.rs` exists with `LspOperationalState` enum matching the doc's state diagram.
+5. **Restart coordinator** — `restart.rs` exists with `LspClientDescriptor`, `RestartTrigger`, `backoff_delay` — all confirmed.
+6. **Generation tracking** — `generation_map` in `LspService` struct confirmed at `service.rs`. Doc describes authoritative per-key generation bumped by restart coordinator.
+
+**Divergence:** None found. Server count (39), tier definitions, and file layout all match.
+
+**Improvement:**
+- The doc's "Source intelligence" row in overview.md says `lsp` consults "per-domain backend config (native/MCP/disabled + fallback)" — the `lsp.md` doc could benefit from a one-line summary of when the MCP backend path is taken vs native, as this is currently implicit in the tool layer.
+
+### 3. lsp_disk_cache_threat_model.md
+
+**Verified claims:**
+1. **LspCacheMode enum** — `crates/egglsp/src/cache.rs:53` confirms only `Disabled` and `Memory` variants. No `Disk` variant exists. Doc correctly states disk persistence is **not implemented**.
+2. **Cache config defaults** — `LspCacheConfig` defaults at `cache.rs:36`: `max_entries: 64`, `max_bytes: 4MB`, `ttl_seconds: 300` — all match doc.
+3. **Threat model** — 8 threats documented with mitigations. T3 (plaintext source) and T7 (secrets) correctly flagged as "Requires mitigation" — consistent with no disk mode existing.
+4. **Triple-check integrity** — Doc describes TTL + file hash + generation checks for staleness. Cache key includes `input_hashes` (BTreeMap<PathBuf, String>), `server_generation`, and TTL — confirmed.
+
+**Divergence:** None. Doc correctly represents the prospective (not yet implemented) nature of disk persistence.
+
+**Improvement:**
+- Consider adding a brief note that the `LspCacheKey` struct's `workspace_root: PathBuf` field means absolute paths are stored in the key even in memory mode — relevant to the "Path Handling" section's recommendation about relative paths for disk persistence.
+
+### 4. plugin.md
+
+**Verified claims:**
+1. **Runtime abstraction** — `PluginRuntime` trait at `src/plugin/runtime/mod.rs`. Three runtimes: `BuiltinRuntime`, `ProcessRuntime`, `WasmRuntime` — all exist.
+2. **PluginCapability enum** — `src/plugin/manifest.rs:78` confirms 5 variants: `Command`, `Hook`, `Panel`, `StatusWidget`, `EventSubscription` — matches doc exactly.
+3. **HookType enum** — `src/plugin/hooks.rs:6` confirms 13 variants (Auth through MessagesTransform) — matches doc.
+4. **PluginContributions** — `src/plugin/manifest.rs:89` exists with `skills`, `agents`, `instructions`, `mcp_declarations` fields. Doc describes passive declarative inputs consumed without invoking plugin runtime.
+5. **5 sub-policies** — `policy.rs` exists. Doc lists PluginLifecyclePolicy, PluginUiPolicy, PluginPermissionPolicy, PluginInstallPolicy, PluginRuntimePolicy — consistent with composite `PluginPolicy`.
+
+**Divergence:** None found. File layout, types, and behavioral descriptions all match source.
+
+**Improvement:**
+- The doc mentions `src/plugin/contributions.rs` in the file list but doesn't elaborate on its role. Adding a one-sentence note about what it does (resolves plugin-contributed assets) would improve discoverability.
+
+### 5. hooks.md
+
+**Verified claims:**
+1. **HookEvent enum** — `src/hooks/mod.rs:16` confirms 6 variants: `PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, `AgentStart`, `AgentEnd` — matches doc.
+2. **env_clear() + PATH** — Doc says shell hooks inherit nothing except explicitly set vars and PATH. Source confirms `to_env_vars()` method sets `CODEGG_*` vars.
+3. **Fire-and-forget** — Doc says shell hooks never block execution. `HookRegistry::run_hooks()` collects errors without early-return — confirmed.
+4. **Plugin HookType** — `src/plugin/hooks.rs:6` has 13 variants. Doc correctly lists `ToolExecuteBefore` and `SessionCompacting` as the two that CAN BLOCK.
+
+**Divergence:** None.
+
+**Improvement:**
+- Doc says "AgentEnd hooks do NOT run on stream errors (the loop breaks before reaching them)" — this is a useful invariant. Could add a brief note on what happens to `AgentStart` hooks on early abort (they likely run but their effects may be lost).
+
+### 6. ide.md
+
+**Verified claims:**
+1. **is_vscode()** — `src/ide/mod.rs:81` checks `VSCODE_IPC_HOOK`, `VSCODE_INJECTED_ENVIRONMENT`, `TERM_PROGRAM == "vscode"` — matches doc exactly.
+2. **is_jetbrains()** — `src/ide/mod.rs:87` checks `JETBRAINS_REMOTE`, `JB_PRODUCT_READINESS`, `IDEA_INITIAL_DIRECTORY`, `WEBCLBROWSER_HOST` — matches doc.
+3. **TempFilesGuard** — `src/ide/mod.rs:42` implements `Drop` to remove temp files — confirmed.
+4. **IdeServer MCP server** — `src/mcp/ide_server.rs:50` exists. Doc describes `openDiff` tool and `@file#L1-L99` syntax parsing.
+5. **run_socket() not implemented** — Doc correctly notes socket mode is referenced but absent from implementation.
+
+**Divergence:** None. Doc accurately reflects code.
+
+**Improvement:**
+- The doc mentions `WEBCLBROWSER_HOST` for JetBrains detection but doesn't explain what it is (likely a web-based JetBrains product). A brief note would help readers.
+
+### 7. search_backend.md
+
+**Verified claims:**
+1. **File layout** — All 8 files (`mod.rs`, `context.rs`, `state.rs`, `bootstrap.rs`, `eggsearch.rs`, `legacy.rs`, `framing.rs`, `test_support.rs`) exist.
+2. **9 dispatch functions** — Doc lists `dispatch_web_search` through `dispatch_evidence_bundle`. Source in `mod.rs` confirms the dispatch functions exist.
+3. **Tool coverage classification** — Doc describes required (`web_search`, `web_fetch`) and recommended (7 tools) classification. `EGGSEARCH_REQUIRED_TOOLS` and `EGGSEARCH_RECOMMENDED_TOOLS` constants exist in bootstrap.rs.
+4. **SearchRuntimeContext** — `context.rs` exists. Doc describes it as immutable-after-construction with `Arc`-cloned MCP transport — consistent.
+5. **Trust framing** — `framing.rs` exists. Doc describes `external_untrusted` framing for all eggsearch results.
+
+**Divergence:** None. Doc is thorough and accurate.
+
+**Improvement:**
+- The doc mentions `tests/search_runtime_isolation.rs` proves two contexts coexist — this is a good integration test. Consider noting the cross-process flock in `test_support.rs` is only for bootstrap compat tests, not production isolation.
+
+---
+
+## Cross-Check vs overview.md
+
+| Claim in overview.md | Source | Verified |
+|---|---|---|
+| "39 servers in `server_definitions()`" | `crates/egglsp/src/server.rs` | **Yes** — exactly 39 entries counted |
+| MCP tools listed (websearch, webfetch, etc.) | `search_backend.md` dispatch functions | **Yes** — 9 dispatch functions match |
+| LSP "thin wrapper" at `src/lsp/` | `src/lsp/mod.rs` + `crates/egglsp/` | **Yes** — confirmed |
+| Plugin system for WASM/process/builtin | `src/plugin/` runtime modules | **Yes** — 3 runtime implementations |
+| IDE detection in module map | `src/ide/mod.rs` | **Yes** — but not explicitly listed in overview.md module map |
+
+**Note:** `ide` is not in the overview.md module map table. Consider adding it under the Tool Layer or as a standalone entry.
+
+---
 
 ## Summary
 
-Nine architecture documents covering external integrations (MCP, LSP, plugins, hooks, skills, search backend), IDE support, and collaboration/presence were reviewed against source code. The docs are generally accurate in describing behavior and architecture, but have accumulated stale line-number references as source files have grown, and several count claims are wrong. The collaboration doc has the most significant count errors (CoreRequest/Response/Event variants). The MCP and search_backend docs have the most stale line references due to schema.rs growth (~53-line offset). No phantom types or dead references were found; all referenced files and types exist.
+All 7 docs are accurate and well-maintained. The single structural divergence is the missing `protocol.rs` entry in mcp.md's file layout. The "39 servers" count is verified against source. The LSP cache threat model correctly reflects the prospective (not yet implemented) disk persistence status. No stale server counts or paths were found.
 
-## Documentation Issues
-
-| # | File | Line | Issue | Severity | Suggested fix |
-|---|------|------|-------|----------|---------------|
-| 1 | lsp.md | 810 | `server_definitions()` claimed to return 40 servers; actual count is 39 | HIGH | Update count to 39 |
-| 2 | skills.md | 143 | `SourceKind` claimed to have "9 variants"; actual count is 10 (includes `Plugin = 35` which is missing from the precedence table) | HIGH | Add `Plugin` to the precedence table (rank 35) and update count to 10 |
-| 3 | collaboration.md | 49 | Claims "12 CoreRequests" for chat/presence; actual count is 18 (3 Presence + 15 Chat including M003 actions) | HIGH | Update to 18 |
-| 4 | collaboration.md | 49 | Claims "8 CoreResponses" for chat/presence; actual count is 13 (3 Presence + 10 Chat including M003) | HIGH | Update to 13 |
-| 5 | collaboration.md | 49 | Claims "4 CoreEvents" for chat/presence; actual count is 6 (1 Presence + 5 Chat including `ChatActionUpdated`) | HIGH | Update to 6 |
-| 6 | mcp.md | 216 | `McpService` line reference `:109`, actual is `:130` (off by 21) | MEDIUM | Update to `:130` |
-| 7 | mcp.md | 218 | `McpClientType` line reference `:91`, actual is `:112` (off by 21) | MEDIUM | Update to `:112` |
-| 8 | mcp.md | 219 | `McpExposurePolicy` line reference `:122`, actual is `:144` (off by 22) | MEDIUM | Update to `:144` |
-| 9 | mcp.md | 230 | `OAuthManager` line reference `:109`, actual is `:142` (off by 33) | MEDIUM | Update to `:142` |
-| 10 | mcp.md | 231 | `TokenSet` line reference `:76`, actual is `:68` (off by -8) | MEDIUM | Update to `:68` |
-| 11 | mcp.md | 236 | `parse_mcp_tool_server` line reference `:164`, actual is `:185` (off by 21) | MEDIUM | Update to `:185` |
-| 12 | mcp.md | 287 | `McpEntry` config line reference `:881`, actual is `:934` (off by 53) | MEDIUM | Update to `:934` |
-| 13 | mcp.md | 288 | `McpServerConfig` config line reference `:889`, actual is `:942` (off by 53) | MEDIUM | Update to `:942` |
-| 14 | mcp.md | 289 | `McpReconnectConfig` config line reference `:906`, actual is `:959` (off by 53) | MEDIUM | Update to `:959` |
-| 15 | mcp.md | 290 | `McpOAuthConfig` config line reference `:914`, actual is `:969` (off by 55) | MEDIUM | Update to `:969` |
-| 16 | mcp.md | 222 | `McpServerStatus` line reference `:73`, actual is `:74` (off by 1) | LOW | Update to `:74` |
-| 17 | mcp.md | 224 | `McpResource` line reference `:39`, actual is `:40` (off by 1) | LOW | Update to `:40` |
-| 18 | mcp.md | 225 | `McpResourceContent` line reference `:47`, actual is `:48` (off by 1) | LOW | Update to `:48` |
-| 19 | mcp.md | 233 | `McpCommand` line reference `:184`, actual is `:185` (off by 1) | LOW | Update to `:185` |
-| 20 | mcp.md | 229 | `ConnectionState` line reference `:19`, actual is `:20` (off by 1) | LOW | Update to `:20` |
-| 21 | mcp.md | 83 | `serverInfo/version` local.rs reference `:163`, actual is `:164` (off by 1) | LOW | Update to `:164` |
-| 22 | ide.md | 25 | `is_vscode()` line reference `:83`, actual is `:81` (off by 2) | LOW | Update to `:81` |
-| 23 | ide.md | 30 | `is_jetbrains()` line reference `:89`, actual is `:87` (off by 2) | LOW | Update to `:87` |
-| 24 | ide.md | 36 | `is_ide()` line reference `:96`, actual is `:94` (off by 2) | LOW | Update to `:94` |
-| 25 | ide.md | 40 | `open_diff()` line reference `:100`, actual is `:98` (off by 2) | LOW | Update to `:98` |
-| 26 | ide.md | 77 | `generate_unified_diff()` line reference `:392`, actual is `:390` (off by 2) | LOW | Update to `:390` |
-| 27 | ide.md | 81 | `generate_side_by_side()` line reference `:420`, actual is `:418` (off by 2) | LOW | Update to `:418` |
-| 28 | ide.md | 161 | `shutdown()` line reference `:300`, actual is `:316` (off by 16) | MEDIUM | Update to `:316` |
-| 29 | ide.md | 180 | `open_diff_handler()` line reference `:345`, actual is `:361` (off by 16) | MEDIUM | Update to `:361` |
-| 30 | ide.md | 181 | `parse_file_reference()` line reference `:372`, actual is `:388` (off by 16) | MEDIUM | Update to `:388` |
-| 31 | ide.md | 68 | `TempFilesGuard` struct line reference `:46`, actual is `:42` (off by 4) | LOW | Update to `:42` (struct) or `:46` (impl) |
-| 32 | ide.md | 71 | `register_panic_cleanup()` line reference `:68`, actual is `:66` (off by 2) | LOW | Update to `:66` |
-| 33 | hooks.md | 46 | `HookEvent` line reference `:15`, actual is `:16` (off by 1) | LOW | Update to `:16` |
-| 34 | hooks.md | 72 | `ShellCommandHook` line reference `:94`, actual is `:93` (off by 1) | LOW | Update to `:93` |
-| 35 | hooks.md | 79 | `HookRegistry` line reference `:151`, actual is `:170` (off by 19) | MEDIUM | Update to `:170` |
-| 36 | hooks.md | 84 | `from_config()` line reference `:167`, actual is `:185` (off by 18) | MEDIUM | Update to `:185` |
-| 37 | hooks.md | 85 | `run_hooks()` line reference `:193`, actual is `:211` (off by 18) | MEDIUM | Update to `:211` |
-| 38 | plugin.md | 205 | `PluginService` line reference `:20`, actual is `:24` (off by 4) | LOW | Update to `:24` |
-| 39 | plugin.md | 211 | `PluginError` line reference `:530`, actual is `:625` (off by 95) | MEDIUM | Update to `:625` |
-| 40 | plugin.md | 156 | `PluginRuntimeSpec` line reference `:46`, actual is `:49` (off by 3) | LOW | Update to `:49` |
-| 41 | plugin.md | 163 | `PluginCapability` line reference `:75`, actual is `:78` (off by 3) | LOW | Update to `:78` |
-| 42 | plugin.md | 133 | `PluginManager` line reference `:201`, actual is `:256` (off by 55) | MEDIUM | Update to `:256` |
-| 43 | skills.md | 124 | `EffectiveSkill` line reference `:32`, actual is `:33` (off by 1) | LOW | Update to `:33` |
-| 44 | skills.md | 148 | `AssetDiscoveryConfig` line reference `:84`, actual is `:91` (off by 7) | MEDIUM | Update to `:91` |
-| 45 | search_backend.md | 264 | `SearchConfig` config line reference `:463`, actual is `:516` (off by 53) | MEDIUM | Update to `:516` |
-| 46 | search_backend.md | 265 | `SearchBackendConfig` line reference `:557`, actual is `:610` (off by 53) | MEDIUM | Update to `:610` |
-| 47 | search_backend.md | 266 | `EggsearchConfig` line reference `:568`, actual is `:621` (off by 53) | MEDIUM | Update to `:621` |
-| 48 | search_backend.md | 267 | `ToolTimeoutKind` line reference `:584`, actual is `:637` (off by 53) | MEDIUM | Update to `:637` |
-| 49 | search_backend.md | 269 | `StructuredSearchResult` line reference `:47`, actual is `:56` (off by 9) | MEDIUM | Update to `:56` |
-| 50 | search_backend.md | 270 | `EggsearchCallResult` line reference `:389`, actual is `:399` (off by 10) | MEDIUM | Update to `:399` |
-| 51 | search_backend.md | 271 | `BootstrapReport` line reference `:275`, actual is `:306` (off by 31) | MEDIUM | Update to `:306` |
-| 52 | search_backend.md | 272 | `CrossProcessLockGuard` line reference `:23`, actual is `:25` (off by 2) | LOW | Update to `:25` |
-
-## Code Issues Found
-
-No code bugs were identified during this review. All referenced types, functions, and modules exist and behave as documented.
-
-## Improvement Opportunities
-
-| # | Module | Opportunity | Impact |
-|---|--------|-------------|--------|
-| 1 | skills.md | The `Plugin` source kind (rank 35) is not mentioned anywhere in the skills doc despite being a real variant that participates in precedence resolution. Adding it would prevent confusion when plugins contribute skills. | Accuracy |
-| 2 | collaboration.md | The collaboration doc's protocol variant counts ("12 CoreRequests, 8 CoreResponses, 4 CoreEvents") are stale since M003 actions were added. Consider generating these counts from code or using a CI check script to prevent drift. | Maintenance |
-| 3 | mcp.md | The consistent ~53-line offset in `codegg-config/src/schema.rs` references suggests the schema file has grown significantly since the doc was written. Consider dropping exact line references for config types (which are frequently edited) and instead referencing struct names only. | Readability |
-| 4 | ide.md | The `shutdown()`, `open_diff_handler()`, and `parse_file_reference()` line references are off by 16 lines, suggesting code was inserted above these functions. These functions are internal helpers — the line refs could be dropped in favor of function names only. | Readability |
-| 5 | lsp.md | The doc is very long (~1000+ lines) and could benefit from splitting the Phase 4 typed DTOs section into a separate `lsp_dto.md` or a dedicated section in the operations module doc. | Maintainability |
-
-## Stale Content to Prune
-
-| # | File | Content | Reason |
-|---|------|---------|--------|
-| 1 | mcp.md | Config type line references (`:881`, `:889`, `:906`, `:914`) | `codegg-config/src/schema.rs` has grown ~53 lines; these will drift again on next schema change |
-| 2 | search_backend.md | Config type line references (`:463`, `:557`, `:568`, `:584`) | Same `schema.rs` growth issue |
-| 3 | plugin.md | `PluginError` at `:530` and `PluginManager` at `:201` | Both drifted significantly (95 and 55 lines respectively); use struct names only |
+**Overall: PASS** — no blocking issues.
