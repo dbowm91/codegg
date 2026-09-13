@@ -1,38 +1,25 @@
 # Consolidated Architecture Review
 
 **Reviewed**: 2026-09-13
-**Sources**: 12 batch review files (batch0–batch11) plus archived batch8, covering all 77 architecture documents
+**Sources**: 12 canonical batch review files (review_batch0 through review_batch11)
 
 ## Summary
 
-All 77 architecture documents were reviewed against source code across 12 parallel batches. The documentation is in good overall shape — major structural claims (enum variant counts, protocol versions, pipeline stages, tool registrations) are largely accurate. The primary problems are **stale line-number references** (many off by 10–900 lines due to refactoring), **incomplete variant/field counts** in high-churn modules (protocol, projection, codegg-core), and a few **wrong file paths** where functions were moved between modules during refactoring. No security-critical divergences were found.
+All 77 architecture documents were reviewed against source code across 12 parallel batches. Documentation is generally high quality — major structural claims (enum variant counts, protocol versions, tool registrations, pipeline stages) are largely accurate. The primary issues are **wrong numeric counts** in high-churn modules (TUI domains, ServerCapabilities fields, tool registrations, identity newtypes), **stale line-number references** (run_store view models, test_runner, command_intent), and **incomplete struct/enum listings** (ProviderCapabilities, ServerCapabilities, identity newtypes). No security-critical code bugs were found.
 
 | Severity | Count |
 |----------|-------|
-| HIGH | 15 |
-| MEDIUM | 22 |
-| LOW | 28 |
-| **Total unique findings** | **65** |
+| HIGH | 2 |
+| MEDIUM | 23 |
+| LOW | 33 |
+| **Total unique findings** | **58** |
 
 ## HIGH Severity — Documentation Fixes
 
 | # | File | Issue | Evidence | Source Batch |
 |---|------|-------|----------|--------------|
-| H1 | `protocol.md:98` | CoreRequest variant count stated as "~100" — actual is **166** variants | `core.rs:1132` — `pub enum CoreRequest` with 166 variants | batch5_core_transport |
-| H2 | `protocol.md:178` | CoreResponse variant count stated as "~60" — actual is **110** variants | `core.rs:542` — `pub enum CoreResponse` with 110 variants | batch5_core_transport |
-| H3 | `protocol.md:235` | CoreEvent variant count stated as "~40" — actual is **76** variants | `core.rs:1953` — `pub enum CoreEvent` with 76 variants | batch5_core_transport |
-| H4 | `session.md:53` | CREATE TABLE count stated as "52+" — actual is **71** | `session/schema.rs` — 71 `CREATE TABLE` statements | batch4_git_persistence |
-| H5 | `session.md:109` | SESSION_COLUMNS stated as "22 columns" — actual is **27** | Constant value in session state module | batch4_git_persistence |
-| H6 | `jobs.md:126` | JobStore method count stated as "16 methods" — actual is **21** (missing `set_job_labels`, `create_job_with_labels`, `get_jobs`, `count_jobs_by_kind_state`, `list_job_records`) | `mod.rs:1274` — 21 trait methods | batch6_workspace_jobs |
-| H7 | `jobs.md:220` | `recover_at_startup` line reference `scheduler.rs:1281` — actual is `scheduler.rs:1529` (off by 248 lines) | `scheduler.rs:1529` | batch6_workspace_jobs |
-| H8 | `scheduler.md:57` | Main loop line reference `scheduler.rs:625` — actual is `scheduler.rs:809` (off by 184) | `scheduler.rs:809` | batch6_workspace_jobs |
-| H9 | `scheduler.md:65` | Reconciliation line reference `scheduler.rs:435` — actual is `scheduler.rs:583` (off by 148) | `scheduler.rs:583` | batch6_workspace_jobs |
-| H10 | `scheduler.md:73` | Admission line reference `scheduler.rs:680` — actual is `scheduler.rs:833` (off by 153) | `scheduler.rs:833` | batch6_workspace_jobs |
-| H11 | `scheduler.md:129` | AdmissionController line reference `admission.rs:27` — actual is `admission.rs:99` (line 27 is `AdmissionDecision` enum) | `admission.rs:99` | batch6_workspace_jobs |
-| H12 | `scheduler.md:357` | Shutdown line reference `scheduler.rs:1102` — actual is `scheduler.rs:1317` (off by 215) | `scheduler.rs:1317` | batch6_workspace_jobs |
-| H13 | `codegg_core.md:20–47` | Module table lists 27 modules — actual `lib.rs` declares **40** public modules | `crates/codegg-core/src/lib.rs` — 40 `pub mod` declarations | batch7_provider_config |
-| H14 | `native_crates.md:22,153` | Same "40 modules" claim in codegg_core.md — actual is 42 (both docs stale) | `lib.rs` has 42 `pub mod` | batch7_provider_config |
-| H15 | `config.md:774` | `ProviderConfig::merge()` referenced at `schema.rs:774` — that line is `ServerConfig::merge()`; ProviderConfig's merge is at `schema.rs:827` | `schema.rs:827` | batch7_provider_config |
+| H1 | `overview.md:196` | TUI module row says "state management across **6 domains**" — code has **22** state modules (tui.md itself lists 22 at line 405) | `src/tui/state/` has 22 domain modules | review_batch10_tui |
+| H2 | `protocol.md:305-306` | `ServerCapabilities` listed with only 5 fields (`event_replay`, `session_management`, `permission_routing`, `workspace_registration`, `workspace_snapshots`) — actual struct has **10 fields** (missing `durable_jobs`, `durable_schedules`, `identity_aware_context`, `project_catalog`, `session_projection`) | `crates/codegg-protocol/src/frames.rs:102-132` | review_batch6_core |
 
 ## HIGH Severity — Code Issues
 
@@ -40,156 +27,140 @@ All 77 architecture documents were reviewed against source code across 12 parall
 |---|--------|-------|----------|
 | — | — | No security-critical or behavioral code bugs found across all batches | — |
 
-## HIGH Severity — Stale Content
-
-| # | File | Content | Reason |
-|---|------|---------|--------|
-| HS1 | `git.md:204` | `render_argv.rs` file reference — actual file is `render.rs` | File was renamed during refactoring |
-| HS2 | `git.md:231` | `GitMutationExecutor` at `git_mutations.rs:703` — actual is `:471` | Definition moved during refactoring |
-| HS3 | `git.md:233–235` | `RepoSnapshot` at `git_mutations.rs:246`, `StateDelta` at `:278`, `MutationOutcome` at `:324` — all three are defined in `codegg-git/src/workflow.rs` | Types re-exported through git_mutations but defined in workflow.rs |
-
 ## MEDIUM Severity — Documentation Fixes
 
-| # | File | Issue | Evidence |
-|---|------|-------|----------|
-| M1 | `projection.md:138,306` | ProjectionEvent variant count "39" — actual is **46** (missing `ConvergenceUpserted`, 6 `ToolProgram*` variants) | `event.rs:128` — 46 variants |
-| M2 | `protocol.md:237` | CoreEvent Snapshot group stated as "(5)" — actual is **6** variants | `core.rs` — 6 snapshot variants |
-| M3 | `protocol.md:83` | EventEnvelope line reference `core.rs:125` — actual is `core.rs:531` (off by 406) | `core.rs:531` |
-| M4 | `protocol.md:96` | CoreRequest line reference `core.rs:524` — actual is `core.rs:1132` (off by 608) | `core.rs:1132` |
-| M5 | `protocol.md:176` | CoreResponse line reference `core.rs:137` — actual is `core.rs:542` (off by 405) | `core.rs:542` |
-| M6 | `protocol.md:233` | CoreEvent line reference `core.rs:1058` — actual is `core.rs:1953` (off by 895) | `core.rs:1953` |
-| M7 | `run_store.md` | `FsRunStore` at `:1110` — actual `:1126`; `MemRunStore` at `:1730` — actual `:1752`; all view models (`:861–:930`) off by 15–22 lines | Systematic drift in run_store.rs |
-| M8 | `acp.md` | All function line references (ensure_client, absolute_cwd, prompt_text, etc.) consistently off by **13 lines** | Code shifted down by new imports |
-| M9 | `provider.md:770` | `register_builtin_with_config()` at line 770 — actual is line 844 (off by 74) | `provider_core.rs:844` |
-| M10 | `resilience.md` | `is_available()` at `circuit.rs:80` — deprecated in source; doc does not mention deprecation | `circuit.rs:80` — `#[deprecated]` annotation |
-| M11 | `resilience.md:156,181` | `record_success` at `:156` — actual `:194`; `record_failure` at `:181` — actual `:219` (off by 38 each) | `circuit.rs:194,219` |
-| M12 | `config.md:203,284,686` | `Config` struct at `schema.rs:203` — actual `:217`; `ProviderConnectionsConfig` at `:284` — actual `:339`; `ServerConfig` at `:686` — actual `:741` (off by 14–55) | `schema.rs` |
-| M13 | `workspace.md:87` | Schema migration v22 at `schema.rs:963` — actual `migrate_v22` at `schema.rs:1064` (off by ~101) | `schema.rs:1064` |
-| M14 | `permission.md:278` | debug mode restricted_tools summary table shows only 3 tools but actual `modes.rs:183` restricts more | Summary is incomplete |
-| M15 | `overview.md:257` | Crypto module mapped to `auth/` directory — source is `crates/codegg-providers/src/crypto.rs` | Wrong source path |
-| M16 | `identity.md:17–19` | Lists 10 identity newtypes but source defines **13** (missing `AgentRunGroupId`, `AgentRunMessageId`, `ChatMessageId`) | `identity.rs:251,274,280` |
-| M17 | `git.md:31` | Mutation action count "40" — actual is **42** | `GitTool` schema has 42 mutation entries |
-| M18 | `test_runner.md:334–335` | `DelegatedTestRun` at `runner.rs:260` — actual `:356`; `setsid` at `runner.rs:290` — actual `:386`; kill at `:478` — actual `:595` | Multiple line refs stale by 96–117 lines |
-| M19 | `bus.md:18` | AppEvent "Other" category table lists 8 variants but actually contains 10 | `events.rs:61` |
-| M20 | `command_intent.md:240,269` | `CommandIntentFamily` at `schema.rs:2904` — actual `:3005`; `CommandIntentConfig` at `schema.rs:2741` — actual `~:2900` | `schema.rs` |
-| M21 | `provider.md:136–142` | ProviderCapabilities listed as ~3 fields — actual struct has **14 fields** | `provider_core.rs` — 14-field struct |
-| M22 | `tts.md:22–24` | `Tts` struct described as `speaking: Mutex<AtomicBool>` — actual field is `speaking: AtomicBool` (no Mutex) | `AtomicBool` sufficient since methods take `&self` |
+| # | File | Issue | Evidence | Source Batch |
+|---|------|-------|----------|--------------|
+| M1 | `agent.md:294` | `AgentLoop` stated to have "**32 direct fields**" — actual count is **30** fields | `loop.rs:86-129` | review_batch1_agent |
+| M2 | `agent.md:436` | `SubAgentRequest` listing shows **11 fields** but code has **13 fields** (missing `run_id`, `parent_run_id`, `workspace_locks`) | `worker.rs:82-99` | review_batch1_agent |
+| M3 | `research.md:19` | States "**14 files + sources/ subdirectory with 8 adapters**" — actual is **13 files** and **7 adapter files** (6 registered + 1 unregistered advisory) | `src/research/` file count | review_batch1_agent |
+| M4 | `tool.md` | "**~31 always-registered core tools**" — actual is **~39 unconditional `register()` calls** in `with_options()` (including hidden stubs for lsp/security when disabled, plus eggsact 13) | `src/tool/mod.rs:375-784` | review_batch3_tools |
+| M5 | `git.md:31` | Mutation action count "**40 actions**" — actual is **42** mutation action enum entries in `GitTool` schema | `GitTool` schema | review_batch4_git |
+| M6 | `identity.md:17-19` | Lists **10 identity newtypes** but source defines **13** via `typed_identity!` macro (missing `AgentRunGroupId`, `AgentRunMessageId`, `ChatMessageId`) | `identity.rs:251,274,280` | review_batch5_persistence |
+| M7 | `codegg_core.md:22` | Module table lists **~40 modules** — `lib.rs` has **42 `pub mod` declarations** | `crates/codegg-core/src/lib.rs` | review_batch7_providers |
+| M8 | `native_crates.md:22,153` | Same "**40 modules**" claim — actual is **42** | `lib.rs` has 42 `pub mod` | review_batch7_providers |
+| M9 | `provider.md:136-142` | `ProviderCapabilities` doc implies **~3 fields** — actual struct has **12-14 fields** | `provider_core.rs` struct | review_batch7_providers |
+| M10 | `exec.md:179` | `classify_error()` line range stated as `exec.rs:204-272` — actual starts at **line 217** (off by 13) | `src/exec.rs:217` | review_batch2_commands |
+| M11 | `test_runner.md:334-335` | `DelegatedTestRun` at `runner.rs:260` — actual **:356**; `setsid` at `runner.rs:290` — actual **:386**; kill at `:478` — actual **:595** (line refs stale by **96-117 lines**) | `src/test_runner/runner.rs` | review_batch2_commands |
+| M12 | `command_intent.md:240,269` | `CommandIntentFamily` at `schema.rs:2904` — actual **:3005** (off by ~100); `CommandIntentConfig` at `schema.rs:2741` — actual **~:2900+** | `schema.rs` | review_batch2_commands |
+| M13 | `run_store.md` | `FsRunStore` at `:1110` — actual **:1126**; `MemRunStore` at `:1730` — actual **:1752**; all view models (`:861-:930`) off by **15-22 lines** (systematic drift) | `run_store.rs` | review_batch4_git |
+| M14 | `git_phase_f_handoff.md:116` | "**402 egggit tests**" — actual is **75 egggit + 358 codegg-git = 433** total across both crates | `cargo test -p egggit` / `codegg-git` | review_batch4_git |
+| M15 | `git_phase_f_handoff.md:41` | `mutation enum entries ≥35` — actual is **42** | `GitTool` schema | review_batch4_git |
+| M16 | `git_polish_verification_handoff.md:34` | `operation.rs` has "**47 variants**" — actual is **54** | `crates/codegg-git/src/operation.rs` | review_batch4_git |
+| M17 | `overview.md:257` | Crypto module mapped to **`auth/`** directory — source is **`crates/codegg-providers/src/crypto.rs`** | `src/auth/mod.rs` re-exports `auth_types` not crypto | review_batch8_security |
+| M18 | `tui.md:361-362` | Claims "**All dispatch arms in `command_dispatch.rs` are `fn` (non-async). No `.await` points in the match.**" — **incorrect**: `dispatch_tui_command` is `pub(crate) async fn` with **5 `.await` calls** on `core_client.request(req).await` | `src/tui/runtime/command_dispatch.rs:1` | review_batch10_tui |
+| M19 | `session.md:56-98` | Table groupings omit `agent_run_group`, `agent_run_group_member`, `agent_run_journal`, `agent_run_mailbox`, `agent_run_result`, `managed_worktree`, `worktree_lease` tables (added in undocumented migrations v38-v50) | `session/schema.rs` | review_batch5_persistence |
+| M20 | `storage.md:238-261` | Migration list documents v22-v37, v46-v56 but **omits v38-v45 and v50**; lacks catch-all reference to `session/schema.rs` | `session/schema.rs:137-174` | review_batch5_persistence |
+| M21 | `command_routing.md` | Doc describes routing as an independent module but `src/command_routing.rs:1-5` explicitly self-identifies as "**compatibility facade for the pre-M006 routing API**" with "zero-logic adapter." Framing is buried in "Where It Lives" section. | `src/command_routing.rs:1-5` | review_batch2_commands |
+| M22 | `overview.md:178` | "**66 files**" in `src/tool/` — actual count is **68 `.rs` files** (including subdirectories `bash/`) | `src/tool/` file count | review_batch0_overview |
+| M23 | `overview.md:149` | Command Routing listed as "**pipeline stage 3**" — but `command_routing.md` correctly identifies itself as a compatibility facade. Conceptual mismatch between overview and routing doc. | `overview.md:149` vs `command_routing.md:1-5` | review_batch2_commands |
 
 ## MEDIUM Severity — Stale Content
 
-| # | File | Content | Reason |
-|---|------|---------|--------|
-| MS1 | `overview.md:196` | "state management across 6 domains" | Expanded to 22 state modules |
-| MS2 | `tui.md:361–362` | "All dispatch arms are `fn` (non-async). No `.await` points." | `dispatch_tui_command` is `async fn` with 5 `.await` calls |
-| MS3 | `agent.md:252` | `AgentLoop` at `loop.rs:403` — actual `:86` (off by 317 lines) | Refactoring moved struct definition |
-| MS4 | `agent.md:254` | "32 direct fields" — actual AgentLoop has **30** fields | Fields removed during refactoring |
-| MS5 | `cache-aware-context.md:286` | `ContextPolicyConfig` said to be in `src/context/policy.rs` — actually in `codegg_config::schema` crate | Config struct lives in config crate |
-| MS6 | `compaction.md:21` | `compact_if_needed` at `loop.rs:1838` — actual is `context_runtime.rs:620` (off by ~1200 lines, function moved) | M004 refactoring moved function |
-| MS7 | `native_crates.md:154` | codegg-core "27 modules" — actual is **40** | `lib.rs` has 40 `pub mod` |
-| MS8 | `overview.md:178` | "66 files" in `src/tool/` — actual is 68 `.rs` files | Minor file count drift |
-| MS9 | `run_store.md:272` | "19 unit tests" — actual is **18** | Test removed or merged |
-| MS10 | `worktree.md:208` | "integration tests (11 tests)" — actual is **14** | Tests added since doc was written |
-| MS11 | `git_phase_f_handoff.md:116` | "402 egggit tests" — actual is 75 egggit + 358 codegg-git = 433 total | Conflation of crate counts |
-| MS12 | `git_polish_verification_handoff.md:34` | `operation.rs` has "47 variants" — actual is **54** | Growth since Phase F closure |
-| MS13 | `git.md:272` | `process_policy.rs` described as "canonical source of truth" — it's a re-export shim; canonical is `egggit::process` | Misidentified canonical source |
+| # | File | Content | Reason | Source Batch |
+|---|------|---------|--------|--------------|
+| MS1 | `overview.md:196` | "state management across **6 domains**" | Expanded to 22 state modules; tui.md itself acknowledges this at line 927 | review_batch10_tui |
+| MS2 | `tui.md:361-362` | "All dispatch arms are `fn` (non-async). No `.await` points." | `dispatch_tui_command` is `async fn` with 5 `.await` calls | review_batch10_tui |
 
 ## LOW Severity — Documentation Fixes
 
-| # | File | Issue |
-|---|------|-------|
-| L1 | `goal.md:203–215` | 8 of 12 GoalStore line references stale by 3–90 lines |
-| L2 | `agent.md:214,239,298,386` | Multiple `mod.rs` line refs should point to `definition.rs` |
-| L3 | `agent-tool-surface.md:18` | `apply_tool_exposure_filter()` in `loop.rs` — actual implementation in `request_preparation.rs:15` |
-| L4 | `worktree.md:142–170` | Multiple line refs off by 1–15 lines (Worktree, WorktreeInfo, create_worktree, etc.) |
-| L5 | `overview.md:149` | Command Routing listed as "pipeline stage 3" but routing doc identifies it as a compatibility facade |
-| L6 | `exec.md:179` | `classify_error()` at lines 204–272 — actual starts at line 217 |
-| L7 | `test_runner.md:286` | Two `DEFAULT_MAX_REPORT_BYTES` constants exist in both `runner.rs:26` and `report.rs` — clarify canonical |
-| L8 | `human_shell.md:128` | `ShellOutputStore` defaults "1 MB/cmd (head 256KB + tail 256KB)" — math sums to 512KB, not 1 MB |
-| L9 | `bus.md:164,167` | AppEvent at `events.rs:60` — actual `:61`; PermissionDecision at `mod.rs:11` — actual `:12` |
-| L10 | `projection.md:301–308` | Multiple line refs off by 1–3 lines (caps.rs, snapshot.rs, event.rs) |
-| L11 | `memory.md:72–113` | MemoryStore method line numbers consistently off by +2 |
-| L12 | `memory.md:115,127` | `PatternDetector` at `:40` — actual `:76` (off by 36); `ScoredMemory` at `:269` — actual `:306` (off by 37) |
-| L13 | `tui.md:366,611,646` | `App` at `:865` — actual `:222`; `Component` at `:110` — actual `:165`; `TuiMsg` at `:86` — actual `:97` |
-| L14 | `tui.md:14` | `app/mod.rs` "~15,340 lines" — actual 13,675 |
-| L15 | `tts.md:16` | TUI integration at `app/mod.rs:9820–9921` — actual `:7583–7640` (off by ~2240) |
-| L16 | `upgrade.md:14,50,80,81` | Line refs off by 1–12 lines |
-| L17 | `util.md:80` | `tool_interner()` at `tool/mod.rs:711` — actual defined at `util/interner.rs:41` |
-| L18 | `scheduler.md:87` | `JobScheduler` at `scheduler.rs:99` — actual `:135` (off by 36) |
-| L19 | `scheduler.md:112` | `JobSubmissionService` at `submission.rs:83` — actual `:86` (off by 3) |
-| L20 | `tui.md:931` | "97 render regression tests" — actual is 99 |
-| L21 | `testing.md:207–215` | CI Structure lists 7 steps — actual CI has 8 (missing TUI project authority guard) |
-| L22 | `server.md:28` | `run_server` at `http.rs:170` — actual `:182` |
-| L23 | `provider.md:50–432` | Multiple line refs off by 1–11 lines throughout document |
-| L24 | `overview.md:189` | "Tools and Capabilities" table omits `context_read` tool |
-| L25 | `worktree.md:163–166` | `list_worktrees` at `:33` — actual `:31`; `create_worktree` at `:40` — actual `:38`; `remove_worktree` at `:68` — actual `:83` |
-| L26 | `run_store.md:87` | `ActualBackend` "(9)" variants — actual is 8 (no `Unrouted` variant) |
-| L27 | `tts.md:55` | `init()` return type missing — actual returns `Result<(), AppError>` |
-| L28 | `git.md:236` | `MutationResult` at `git_mutations.rs:352` — actual in `codegg-git/src/workflow.rs:86` |
+| # | File | Issue | Source Batch |
+|---|------|-------|--------------|
+| L1 | `overview.md:189` | "Tools and Capabilities at a Glance" table **omits `context_read`** tool (registered conditionally at `src/tool/mod.rs:778-783`) | review_batch0_overview |
+| L2 | `overview.md:305` | Verified Counts row says "53 tool registrations" — accurate, but line 178 says "66 files" which could confuse readers into thinking 66 ≠ 53 | review_batch0_overview |
+| L3 | `agent.md:436` | `SubAgentRequest` missing 3 undocumented scheduler/workspace fields | review_batch1_agent |
+| L4 | `research.md:82-85` | `AdvisorySource` implements `ResearchSourceAdapter` but is not registered in coordinator — could confuse readers who count impls | review_batch1_agent |
+| L5 | `model_profile_task_state.md:132-157` | `ResolvedModelProfile` field table lists ~18 fields but code has **19** (missing `orchestration_tier`) | review_batch1_agent |
+| L6 | `command_planner.md:66` | `ProjectorRoute` table lists 9 variants without `RtkEligible` — line 79 adds it but table is incomplete | review_batch2_commands |
+| L7 | `test_runner.md:286,334` | Two `DEFAULT_MAX_REPORT_BYTES` constants exist in both `runner.rs:26` and `report.rs` — clarify which is canonical | review_batch2_commands |
+| L8 | `python_scripting.md` | `SandboxFailureKind` variants (Unavailable/Policy/Setup/Helper) not listed in doc — important for debugging | review_batch2_commands |
+| L9 | `tool_broker.md` | Missing `into_programmatic_outcome` method reference (doc mentions `programmatic_outcome()` but `tool_programs.md:570` references the consuming variant) | review_batch3_tools |
+| L10 | `preflight.md` | Multiple line ranges off by 1-4 lines (`PreflightMode` at 114 not 110, `PreflightService` end line unclear) | review_batch3_tools |
+| L11 | `tool_program_language.md` | `rustpython-parser` version claimed as 0.4.0 — not verified against `Cargo.lock` in this pass | review_batch3_tools |
+| L12 | `worktree.md:208` | "**integration tests (11 tests)**" — actual is **14** | review_batch4_git |
+| L13 | `worktree.md:142-170` | Multiple line refs off by 1-2 lines (`list_worktrees` at :33 → :31; `create_worktree` at :40 → :38; `remove_worktree` at :68 → :83) | review_batch4_git |
+| L14 | `run_store.md:272` | "**19 unit tests**" — actual is **18** | review_batch4_git |
+| L15 | `project_identity_storage.md:88-89` | `BindingStatus::RebindRequired` listed but no explanation of when sessions transition to this state | review_batch5_persistence |
+| L16 | `goal.md:203-215` | 8 of 12 `GoalStore` line references stale by 3-90 lines | review_batch1_agent |
+| L17 | `agent-tool-surface.md:18` | `apply_tool_exposure_filter()` in `loop.rs` — actual implementation in `request_preparation.rs:15` | review_batch1_agent |
+| L18 | `exec.md` | Doc lists **24 error codes** but `classify_error()` completeness not fully verified | review_batch2_commands |
+| L19 | `bus.md:62` | "Other" category table lists **8 variants** but actually contains **10** (ConfigChanged, AgentChanged, ModelChanged, CompactionTriggered, Error, Info, TodoUpdated, FileChanged, ContextUpdated, PluginUiEffect) | review_batch10_tui |
+| L20 | `projection.md:150` | `ConvergenceUpserted` variant listed in code but missing from ProjectionEvent family table | review_batch10_tui |
+| L21 | `tui.md:651` | `TuiMsg` enum listing omits newer variants like `OpenImportDialog`, `SubmitConnect`, `CloseDialog`, `ToggleSidebar` | review_batch10_tui |
+| L22 | `human_shell.md:128` | `ShellOutputStore` defaults "**1 MB/cmd (head 256KB + tail 256KB)**" — math sums to 512KB, not 1 MB | review_batch10_tui |
+| L23 | `provider.md:52` | Provider trait listed at line 51 — actual `pub trait Provider` at line **52** (`#[async_trait]` at 51) | review_batch7_providers |
+| L24 | `mcp.md` | `protocol.rs` not listed in "Where It Lives" file layout table (`pub(crate)` internal file) | review_batch9_integrations |
+| L25 | `bus.md:164,167` | AppEvent at `events.rs:60` — actual **:61**; PermissionDecision at `mod.rs:11` — actual **:12** | review_batch10_tui |
+| L26 | `memory.md:115,127` | `PatternDetector` at `:40` — actual **:76** (off by 36); `ScoredMemory` at `:269` — actual **:306** (off by 37) | review_batch11_daemon |
+| L27 | `tui.md:366,611,646` | `App` at `:865` — actual **:222**; `Component` at `:110` — actual **:165**; `TuiMsg` at `:86` — actual **:97** | review_batch10_tui |
+| L28 | `tts.md:22-24` | `Tts` struct described as `speaking: Mutex<AtomicBool>` — actual field is `speaking: AtomicBool` (no Mutex) | review_batch11_daemon |
+| L29 | `provider.md:50-432` | Multiple line refs off by 1-11 lines throughout document | review_batch7_providers |
+| L30 | `scheduler.md:87` | `JobScheduler` at `scheduler.rs:99` — actual **:135** (off by 36) | review_batch11_daemon |
+| L31 | `upgrade.md:14,50,80,81` | Line refs off by 1-12 lines | review_batch11_daemon |
+| L32 | `jobs.md:114-119` | AttemptState machine omits `Created → Admitted` transition | review_batch11_daemon |
+| L33 | `overview.md:178` | "66 files" in `src/tool/` — actual is **68** `.rs` files | review_batch0_overview |
 
 ## LOW Severity — Stale Content
 
-| # | File | Content | Reason |
-|---|------|---------|--------|
-| LS1 | `session.md:56–98` | Table groupings omit `agent_run_group`, `agent_run_group_member`, `agent_run_journal`, `agent_run_mailbox`, `agent_run_result`, `managed_worktree`, `worktree_lease` tables | Added in undocumented migrations (v38–v50) |
-| LS2 | `storage.md:238–261` | Migration list omits v38–v45 and v50 | Selective coverage without catch-all |
-| LS3 | `mcp.md` | `protocol.rs` not listed in file layout table | Internal `pub(crate)` file omitted |
-| LS4 | `git_phase_f_handoff.md:111` | `--all-features` test command | Contradicts AGENTS.md guidance |
-| LS5 | `git.md:333–344` | Duplicate numbering (two items numbered "12") | Renumbering needed |
+| # | File | Content | Reason | Source Batch |
+|---|------|---------|--------|--------------|
+| LS1 | `git_phase_f_handoff.md:104-105` | egggit "71 tests", codegg-git "331 tests" | Natural test growth: egggit 75, codegg-git 358 | review_batch4_git |
+| LS2 | `git_phase_f_handoff.md:110` | `git_closure_matrix` "32 tests" | Growth to 34 tests | review_batch4_git |
+| LS3 | `git_polish_verification_handoff.md:242` | execution-origin matrix "26 tests" | Growth to 28 tests | review_batch4_git |
+| LS4 | `upgrade.md:83-84` | `autoupdate` config defined but never wired to upgrade module | Dead config field | review_batch11_daemon |
+| LS5 | `tts.md:96` | `pkill say` stops ALL `say` processes system-wide, not just CodeGG's child | Documented but process-group-aware kill would be safer | review_batch11_daemon |
+| LS6 | `util.md` | `tool_interner()` grows monotonically — no bounded LRU or periodic reset | Memory hygiene concern for long-running daemons | review_batch11_daemon |
+| LS7 | `permission.md:15` | `PermissionRegistry (ask-response broker) → crates/codegg-core/src/bus/mod.rs` note at :21 is accurate | Verified correct | review_batch8_security |
 
 ## Improvements — Cross-Cutting
 
-| # | Module | Opportunity | Impact |
-|---|--------|-------------|--------|
-| I1 | protocol.md | Regenerate CoreRequest/CoreResponse/CoreEvent variant tables from source enums; add CI assertion test for variant counts | Prevents recurring 40–90% undercount drift |
-| I2 | projection.md | Regenerate ProjectionEvent table from `event.rs:128` | Prevents variant count drift |
-| I3 | jobs.md, scheduler.md | Replace hardcoded line numbers with `fn name` anchors or "last verified" timestamps — both files are 1700+ lines and shift with every edit | Eliminates recurring stale-line maintenance |
-| I4 | acp.md | Update all 8 function line references (uniformly off by 13 lines) | Single-pass fix for systematic drift |
-| I5 | provider.md | Document full ProviderCapabilities field set (14 fields) rather than summarizing 3 | Reduces future drift; becomes authoritative for integration |
-| I6 | codegg_core.md | Add a count-of-modules assertion test in CI (like `built_in_command_count_matches_release_docs`) | Prevents 27-vs-40 module count drift |
-| I7 | run_store.md | Bulk refresh line numbers for view models (`:861–:930` → `:877–:947`) | Systematic 15–22 line drift |
-| I8 | resilience.md | Document `call()` as preferred admission path replacing deprecated `is_available()` | Guides future callers to atomic API |
-| I9 | identity.md | Update newtypes list from 10 to 13; add "Evolution" note for `typed_identity!` macro | Completeness |
-| I10 | overview.md | Add `ide` module to module map; add `context_read` to tools table; update TUI "6 domains" → "22 state modules" | Meta-document accuracy |
+| # | Module | Opportunity | Impact | Source Batch |
+|---|--------|-------------|--------|--------------|
+| I1 | protocol.md | Regenerate `CoreRequest`/`CoreResponse`/`CoreEvent` variant tables from source enums; add CI assertion test for variant counts | Prevents recurring count drift | review_batch6_core |
+| I2 | projection.md | Regenerate `ProjectionEvent` table from `event.rs:128` | Prevents variant count drift | review_batch10_tui |
+| I3 | jobs.md, scheduler.md | Replace hardcoded line numbers with `fn name` anchors or "last verified" timestamps — both files are 1700+ lines and shift with every edit | Eliminates recurring stale-line maintenance | review_batch11_daemon |
+| I4 | provider.md | Document full `ProviderCapabilities` field set (12-14 fields) rather than summarizing 3 | Reduces future drift; becomes authoritative for integration | review_batch7_providers |
+| I5 | codegg_core.md | Regenerate module table from `lib.rs` (automated or scripted) to prevent drift as new modules are added | Prevents 40-vs-42 module count discrepancies | review_batch7_providers |
+| I6 | run_store.md | Bulk refresh line numbers for view models (`:861-:930` → `:877-:947`) | Systematic 15-22 line drift | review_batch4_git |
+| I7 | resilience.md | Document `call()` as preferred admission path replacing deprecated `is_available()` | Guides future callers to atomic API | review_batch7_providers |
+| I8 | identity.md | Update newtypes list from 10 to 13; add "Evolution" note for `typed_identity!` macro | Completeness | review_batch5_persistence |
+| I9 | overview.md | Add `ide` module to module map; add `context_read` to tools table; update TUI "6 domains" → "22 state modules" | Meta-document accuracy | review_batch0_overview, review_batch9_integrations, review_batch10_tui |
+| I10 | agent.md | Add field-count cross-check comment (e.g., "N fields as of YYYY-MM-DD") so stale counts are caught during reviews | Prevents drift | review_batch1_agent |
+| I11 | command_routing.md | Reframe opening to "This is a compatibility facade, not an independent module" rather than burying it in "Where It Lives" | Clarity for readers | review_batch2_commands |
 
 ## Cross-Module Issues
 
-### 1. Variant Count Drift Pattern
-Multiple protocol-layer enums have grown significantly without documentation updates:
-- `CoreRequest`: 100 → 166 (+66%)
-- `CoreResponse`: 60 → 110 (+83%)
-- `CoreEvent`: 40 → 76 (+90%)
-- `ProjectionEvent`: 39 → 46 (+18%)
-- `AppEvent`: 45 → 53 (+18%)
+### 1. Numeric Count Drift Pattern
+Multiple high-churn modules have grown without documentation updates:
+- TUI state modules: doc says 6, code has 22 (+267%)
+- `ServerCapabilities`: doc lists 5 fields, code has 10 (+100%)
+- `AgentLoop` fields: doc says 32, code has 30 (-6%)
+- `SubAgentRequest` fields: doc says 11, code has 13 (+18%)
+- Tool registrations: doc says "~31 always-registered", code has ~39 unconditional (+26%)
+- `identity.md` newtypes: doc lists 10, code has 13 (+30%)
+- `codegg-core` modules: doc says 40, code has 42 (+5%)
 
-**Recommendation**: Add CI assertion tests that assert documented variant counts match actual enum variant counts (pattern exists for commands: `assert_eq!(CommandRegistry::built_in_commands().len(), 139)`).
+**Recommendation**: Add CI assertion tests that assert documented counts match actual code counts (pattern exists: `assert_eq!(CommandRegistry::built_in_commands().len(), 139)`).
 
 ### 2. Systematic Line-Number Drift
-Several modules have line references that are uniformly stale, indicating they were captured at a specific commit and never refreshed:
-- `acp.md`: All 8 function refs off by exactly 13 lines
-- `run_store.md`: View model refs off by 15–22 lines
-- `provider.md`: Line refs off by 10–74 lines throughout
-- `goal.md`: 8 of 12 GoalStore refs stale by 3–90 lines
-- `scheduler.md`: 6 refs off by 36–248 lines
+Several modules have line references that are uniformly stale:
+- `run_store.md`: View model refs off by 15-22 lines (systematic)
+- `test_runner.md`: Line refs off by 96-117 lines
+- `command_intent.md`: Schema.rs refs off by ~100 lines
+- `provider.md`: Line refs off by 1-11 lines throughout
 
 **Recommendation**: For high-churn files (>500 lines), prefer file-path-only references or anchor-based linking. Add a `last_verified` timestamp field to docs referencing specific line numbers.
 
-### 3. Module Count Inconsistency
-`codegg_core.md` and `native_crates.md` both claim 27 modules for `codegg-core`, but `lib.rs` declares **40** (or **42** per batch7's recount). The discrepancy suggests two rounds of module additions were not propagated to docs.
+### 3. Incomplete Struct/Enum Listings
+Several docs list only a subset of fields/variants:
+- `protocol.md` `ServerCapabilities`: 5 of 10 fields documented
+- `provider.md` `ProviderCapabilities`: ~3 of 12-14 fields documented
+- `identity.md` identity newtypes: 10 of 13 listed
+- `tui.md` `TuiMsg` enum: omits newer variants
 
-**Recommendation**: Add a CI guard similar to `check_project_catalog_invariants.py` that asserts the documented module count matches `lib.rs` `pub mod` count.
+**Recommendation**: When a struct/enum has >5 fields, either list all fields or explicitly note "see source for full listing" to prevent silent drift.
 
-### 4. File-Path Staleness from Refactoring
-Several functions were moved between modules during refactoring (M002–M004) but docs still reference old locations:
-- `compact_if_needed`: `loop.rs` → `context_runtime.rs` (off by ~1200 lines)
-- `apply_tool_exposure_filter`: `loop.rs` → `request_preparation.rs`
-- `Agent` struct: `mod.rs` → `definition.rs`
-- `GitMutationExecutor`, `RepoSnapshot`, `StateDelta`: `git_mutations.rs` → `codegg-git/src/workflow.rs`
-- `render_argv.rs` → `render.rs`
-- `check_kill_switches`: `tool/bash.rs` → `tool/bash/policy.rs`
-
-**Recommendation**: When moving public items, add a `// Moved from <old_path> in <commit>` comment at the new location, or update the architecture doc in the same PR.
-
-### 5. Historical Snapshot Docs
+### 4. Historical Snapshot Docs
 Handoff documents (`git_phase_f_handoff.md`, `git_polish_verification_handoff.md`) contain snapshot-time counts that are naturally stale:
 - egggit tests: 71 → 75
 - codegg-git tests: 331 → 358
@@ -198,26 +169,46 @@ Handoff documents (`git_phase_f_handoff.md`, `git_polish_verification_handoff.md
 
 These are acceptable as historical records but should carry "last verified" timestamps to prevent confusion.
 
+## Sources
+
+Exactly the 12 canonical batch review files:
+
+1. `plans/review_batch0_overview.md` — overview.md
+2. `plans/review_batch1_agent.md` — agent context and execution
+3. `plans/review_batch2_commands.md` — command pipeline and execution
+4. `plans/review_batch3_tools.md` — tool layer and programs
+5. `plans/review_batch4_git.md` — git, worktree, run artifacts
+6. `plans/review_batch5_persistence.md` — persistence and identity
+7. `plans/review_batch6_core.md` — core facade and transport
+8. `plans/review_batch7_providers.md` — providers, config, crates
+9. `plans/review_batch8_security.md` — security and authorization
+10. `plans/review_batch9_integrations.md` — external integrations
+11. `plans/review_batch10_tui.md` — TUI, commands, events
+12. `plans/review_batch11_daemon.md` — daemon services and support
+
 ## Verified Counts (Cross-Check vs overview.md)
 
-| Claim | Doc Value | Actual | Match |
-|-------|-----------|--------|-------|
-| Tool registration statements | 53 | 53 | ✅ |
-| LSP servers | 39 | 39 | ✅ |
-| AppEvent variants | 53 | 53 | ✅ |
-| Built-in slash commands | 139 | 139 | ✅ |
-| Built-in agents | 10 | 10 | ✅ |
-| DB tables | 71 | 71 | ✅ |
-| Storage layout version | 56 | 56 | ✅ |
-| Integration test files | 189 | 189 | ✅ |
-| Architecture docs | 77 | 77 | ✅ |
-| CI guard scripts | 21 | 21 | ✅ |
-| Env-var providers | 15 | 15 | ✅ |
-| GitOperation variants | 54 | 54 | ✅ |
-| GitRiskClass variants | 11 | 11 | ✅ |
-| Bundled themes | 50 | 50 | ✅ |
-| CoreRequest variants | ~100 | **166** | ❌ STALE |
-| CoreResponse variants | ~60 | **110** | ❌ STALE |
-| CoreEvent variants | ~40 | **76** | ❌ STALE |
-| ProjectionEvent variants | 39 | **46** | ❌ STALE |
-| codegg-core modules | 27 | **40** | ❌ STALE |
+| Claim | Doc Value | Actual | Match | Source Batch |
+|-------|-----------|--------|-------|--------------|
+| Tool registration statements | 53 | 53 | ✅ | review_batch0_overview |
+| LSP servers | 39 | 39 | ✅ | review_batch0_overview, review_batch9_integrations |
+| AppEvent variants | 53 | 53 | ✅ | review_batch0_overview, review_batch10_tui |
+| Built-in slash commands | 139 | 139 | ✅ | review_batch0_overview, review_batch10_tui |
+| Built-in agents | 10 | 10 | ✅ | review_batch0_overview |
+| DB tables | 71 | 71 | ✅ | review_batch0_overview |
+| Storage layout version | 56 | 56 | ✅ | review_batch0_overview |
+| Integration test files | 189 | 189 | ✅ | review_batch0_overview |
+| Architecture docs | 77 | 77 | ✅ | review_batch0_overview |
+| CI guard scripts | 21 | 21 | ✅ | review_batch0_overview |
+| Env-var providers | 15 | 15 | ✅ | review_batch0_overview, review_batch7_providers |
+| GitOperation variants | 54 | 54 | ✅ | review_batch0_overview, review_batch4_git |
+| GitRiskClass variants | 11 | 11 | ✅ | review_batch0_overview, review_batch4_git |
+| Bundled themes | 50 | 50 | ✅ | review_batch10_tui |
+| CoreRequest variants | ~166 | **166** | ✅ | review_batch6_core |
+| CoreResponse variants | ~110 | **110** | ✅ | review_batch6_core |
+| CoreEvent variants | ~76 | **76** | ✅ | review_batch6_core |
+| ProjectionEvent variants | 46 | **46** | ✅ | review_batch10_tui |
+| codegg-core modules | 42 | **42** | ✅ | review_batch7_providers |
+| TUI state modules | 22 | **22** | ✅ | review_batch10_tui |
+| dialog variants | 41 | 41 | ✅ | review_batch10_tui |
+| ProjectionEvent variants | 46 | 46 | ✅ | review_batch10_tui |

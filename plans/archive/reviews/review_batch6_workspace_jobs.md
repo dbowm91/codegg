@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch5_persistence.md` + `plans/review_batch11_daemon.md` (2026-09-13, current batch structure). Note: `process-tool-execution-ownership.md` has no new-batch coverage yet — see consolidated report. Retained for traceability; findings may be stale.
 # Review: batch6 workspace-jobs
 
 **Reviewed**: 2026-09-11

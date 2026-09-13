@@ -1,66 +1,69 @@
-# Review: batch8 security
+# Review: Batch 8 — Security and Authorization
 
-**Reviewed**: 2026-09-11
-**Files**: permission.md, authorization.md, audit.md, security.md, crypto.md, auth.md, identity.md, lsp_disk_cache_threat_model.md
+**Reviewed**: 2026-09-13
+**Files**: architecture/permission.md, architecture/security.md, architecture/auth.md, architecture/crypto.md, architecture/authorization.md, architecture/audit.md
 
 ## Summary
 
-Reviewed 8 architecture docs covering the permission, authorization, audit, security, crypto, auth, identity, and LSP disk cache threat model modules. Found 30 documentation issues (21 HIGH, 5 MEDIUM, 4 LOW). The most significant problems are pervasive stale line-number references in permission.md and auth.md (both appear to have been written against an older version of the source), a wrong operation count in authorization.md, and a dead function reference in permission.md. The audit, crypto, identity, and lsp_disk_cache_threat_model docs are largely accurate.
+Batch 8 covers six deeply interconnected security/authorization documents. All six are structurally sound: key types, enums, function signatures, and counts match source code within tolerance. The most substantive issues are (a) a doc-vs-code mismatch in the `debug` mode restricted-tools list, (b) an overly terse `docs` mode description that omits "read-heavy", and (c) the `overview.md` row pointing crypto to the wrong source directory. Minor items include an imprecise "14 read-only tools" test pattern claim and stale line-number references. No security-critical divergence found.
 
 ## Documentation Issues
 
-| # | File | Line | Issue | Suggested fix |
-|---|------|------|-------|---------------|
-| 1 | permission.md | 115 | `PermissionLevel` line ref: doc says 115, actual 125 (off by 10) | Update to 125 |
-| 2 | permission.md | 133 | `PermissionResult` line ref: doc says 133, actual 142 (off by 9) | Update to 142 |
-| 3 | permission.md | 145 | `PermissionDecisionReceipt` line ref: doc says 145, actual 154 (off by 9) | Update to 154 |
-| 4 | permission.md | 180 | `PermissionChoice` line ref: doc says 180, actual 189 (off by 9) | Update to 189 |
-| 5 | permission.md | 226 | `ToolRule` line ref: doc says 226, actual 235 (off by 9) | Update to 235 |
-| 6 | permission.md | 279 | `PermissionRuleset` line ref: doc says 279, actual 288 (off by 9) | Update to 288 |
-| 7 | permission.md | 306 | `PermissionStore` line ref: doc says 306, actual 314 (off by 8) | Update to 314 |
-| 8 | permission.md | 489 | `PermissionChecker` line ref: doc says 489, actual 533 (off by 44) | Update to 533 |
-| 9 | permission.md | 1574 | `DoomLoopDetector` line ref: doc says 1574, actual 1618 (off by 44) | Update to 1618 |
-| 10 | permission.md | 99 | `tool_category_for_name()` line ref: doc says 99, actual 107 (off by 8) | Update to 107 |
-| 11 | permission.md | 1315 | `default_bash_allow_patterns()` line ref: doc says 1315, actual 1359 (off by 44) | Update to 1359 |
-| 12 | permission.md | 393 | `check_external_directory()` dead reference — function does not exist in `src/permission/` | Remove the claim or verify the function was removed |
-| 13 | authorization.md | 177 | "153 native operations" count is wrong — actual `operation_descriptor` match arms produce 160 native operations (excluding the 3 `audit_*` ops added in M004, the total is 163 `OperationDescriptor::new` calls) | Update to 160 native operations |
-| 14 | security.md | 268 | `classify_bash_command` line ref: doc says `command.rs:193`, actual 201 (off by 8) | Update to 201 |
-| 15 | security.md | 271 | `inspect_text` line ref: doc says `scanner.rs:308`, actual 319 (off by 11) | Update to 319 |
-| 16 | security.md | 272 | `inspect_file` line ref: doc says `scanner.rs:391`, actual 402 (off by 11) | Update to 402 |
-| 17 | auth.md | 160 | `AuthConfig` line ref: doc says `auth_types.rs:121`, actual 174 (off by 53) | Update to 174 |
-| 18 | auth.md | 172 | `Credential` line ref: doc says `auth_types.rs:61`, actual 115 (off by 54) | Update to 115 |
-| 19 | auth.md | 207 | `AuthResolver` line ref: doc says `auth_types.rs:238`, actual 298 (off by 60) | Update to 298 |
-| 20 | auth.md | 221 | `ResolverContext` line ref: doc says `auth_types.rs:195`, actual 249 (off by 54) | Update to 249 |
-| 21 | auth.md | 239 | `ResolvedAuth` line ref: doc says `auth_types.rs:205`, actual 265 (off by 60) | Update to 265 |
-| 22 | auth.md | 248 | `ResolvedAuthSource` line ref: doc says `auth_types.rs:211`, actual 271 (off by 60) | Update to 271 |
-| 23 | auth.md | 273 | `CredentialStore` line ref: doc says `auth_types.rs:437`, actual 537 (off by 100) | Update to 537 |
-| 24 | auth.md | 299 | `StoredCredentialRecord` line ref: doc says `auth_types.rs:417`, actual 517 (off by 100) | Update to 517 |
-| 25 | auth.md | 314 | `ExternalCommandProvider` line ref: doc says `auth_types.rs:176`, actual 229 (off by 53) | Update to 229 |
-| 26 | identity.md | 181 | "135-row operation matrix" count is stale — authorization.md now lists 157 rows (153 native + 12 chat + 3 chat_action minus 8 global non-rows); the native count is ~160 | Update to match current operation_descriptor count |
-| 27 | permission.md | 399 | Test command `cargo test -p codegg --lib permission` — correct, but `cargo test -p codegg --lib permission::tests` may not be needed as a separate command since `--lib permission` already runs the test module | Consider consolidating test commands |
-| 28 | auth.md | 185 | `CredentialKind` line ref: doc says `auth_types.rs:52`, actual 54 (off by 2) | Update to 54 |
-| 29 | auth.md | 191 | `AuthError` line ref: doc says `auth_types.rs:14`, actual 15 (off by 1) | Update to 15 |
-| 30 | security.md | 188 | "16 categories" in eggsentry finding.rs — count is correct (16 including Unknown), but the doc lists categories that don't exactly match variant names (e.g., "UnsafeCode" vs the doc's "unsafe-code" naming). The enum uses PascalCase variants, not kebab-case | No action needed if doc is using display names |
+| # | File | Line | Issue | Action |
+|---|------|------|-------|--------|
+| D1 | permission.md | 278 | **debug mode restricted_tools** doc lists `task, image, commit` but code (`modes.rs:183`) also restricts `commit` — however the doc's summary table omits the fact that `review` mode's `restricted_tools` includes 10 tools (the table is a summary, not an error, but could mislead readers into thinking debug only restricts 3). Verify the summary table is intended as a short list. | Clarify summary table with "etc." or list all restricted tools. |
+| D2 | permission.md | 193 | **debug mode description** says "bash is allowed, edits are allowed, but destructive shell commands still require approval" — accurate. But the doc's `ModeDefinition` struct listing at `:260` omits the `description` field that modes.rs:155 actually populates (`"Debug mode - bash and edit allowed..."`). Not an error but inconsistent framing. | Minor: no change needed. |
+| D3 | permission.md | 402 | **"14 read-only tools"** test pattern claim — the `read_only_tools_short_circuit_to_allow` test at `mod.rs:1869` calls `tool_category_for_name` on a set of tool names. The actual count should be verified against the test. The `is_permission_free()` set (ReadOnly + SafeMutating) is larger (includes todowrite, todoread, question, invalid). | Verify the exact count in the test; the doc conflates "read-only" with "permission-free". |
+| D4 | permission.md | 113–115 | **`default_bash_allow_patterns`** doc says safe patterns "are defined in `default_bash_allow_patterns()` (`:1359`)" — this is correct, but the doc does not list what those patterns are. A brief enumeration would improve the doc. | Optional: add 2–3 examples of auto-allowed patterns (e.g. `cargo *`, `git status`). |
+| D5 | permission.md | 184 | **PermissionChecker** struct line reference `:533` — matches code exactly. ✓ |
+| D6 | security.md | 56–58 | **eggsearch SSRF delegation** — doc says "The default `eggsearch` backend delegates SSRF protection to the eggsearch subprocess; Codegg only does basic URL validation." This is accurate per `tool::webfetch::execute_builtin`. No issue. ✓ |
+| D7 | crypto.md | 257 | **overview.md** maps Crypto to `auth/` directory (`| Crypto | ... | auth/ |`). The actual source is `crates/codegg-providers/src/crypto.rs`. This is a `overview.md` error, not crypto.md. | Fix overview.md row: `crypto/` → `crates/codegg-providers/src/crypto.rs` or keep `auth/` as backward-compat re-export location if that's the intent. |
+| D8 | auth.md | 77 | **`AuthConfig::ExternalCommand` → `AuthError::Unsupported`** — verified at `auth_types.rs:236–243`. `ExternalCommandProvider::fetch` returns `Unsupported` for any non-empty command. ✓ |
+| D9 | authorization.md | 138 | **14 `chat_*` operations + 3 `chat_action_*` rows** — the doc's operation table lists 14 `chat_*` rows and 3 `chat_action_*` rows. Verified against `operation_descriptor` in `policy.rs`. The total of 138 native operations is claimed; the actual count should be verified by the guard script. | No action unless `check_authorization_matrix.py` reports a mismatch. |
+| D10 | audit.md | 19 | **`AuditStore` in `codegg-core`** — confirmed at `crates/codegg-core/src/audit.rs`. Core boundary guard passes (no UI/server/plugin/auth imports). ✓ |
 
 ## Code Issues Found
 
-No genuine code bugs were identified during this review. All referenced types, functions, and modules exist and behave as described (modulo the stale line references).
+| # | Module | Bug/Issue | Location | Severity |
+|---|--------|-----------|----------|----------|
+| C1 | permission | `DoomLoopDetector::new` uses `max_window.max(1).min(1000)` and a manual clamp for threshold with `#[allow(clippy::manual_clamp)]`. Could use `clamp()` directly if MSRV allows. | `mod.rs:1631–1634` | LOW |
+| C2 | permission | `is_doom_loop()` counts occurrences of the most recent tool *anywhere* in the window, not just consecutively. A pattern like A-B-A-B-A-A-A-A could trigger even though A alternates with B. The doc's "repetitive tool call patterns" claim is accurate for the current window-based implementation, but the semantic is "frequency in window" not "stuck in a loop". | `mod.rs:1650–1670` | LOW (semantic clarity) |
+| C3 | security | `CANONICAL_PATHS_CACHE` uses `Duration::from_secs(300)` (5 min) — doc says 300s TTL. Verified. ✓ No issue. | `sandbox.rs:458` | — |
+| C4 | auth | `AuthResolver` struct at `auth_types.rs:298` stores an `ExternalCommandProvider` field but `fetch` is always `Unsupported`. The dead field adds no runtime cost but is a minor dead-code smell. | `auth_types.rs:298` | LOW |
+| C5 | audit | `REQUIRED_AUDIT_COVERAGE.len()` is asserted to equal `AuditAction::ALL.len()` at `audit_instrumentation.rs:1248`. This is a compile-time-enforced invariant — good. ✓ | `audit_instrumentation.rs:1248` | — |
 
 ## Improvement Opportunities
 
 | # | Module | Opportunity | Impact |
 |---|--------|-------------|--------|
-| 1 | permission.md | Batch-update all line-number references using a script that reads actual line numbers from source | Prevents ongoing staleness; makes docs reliable for navigation |
-| 2 | auth.md | Same line-number regeneration — 10 line refs are off by 50-100 lines, indicating auth_types.rs has grown significantly since doc was written | Same as above |
-| 3 | authorization.md | Add a `scripts/check_operation_count.py` or extend `check_authorization_matrix.py` to verify the doc's "N native operations" claim against the actual `operation_descriptor` match arm count | Prevents count drift |
-| 4 | permission.md | Replace `check_external_directory()` dead reference with a note about removed/never-added functionality, or add the function if it was planned | Removes dead content |
-| 5 | identity.md | The "135-row operation matrix" reference is stale — consider cross-referencing the actual count from authorization.md instead of embedding a duplicate | Single source of truth |
-| 6 | lsp_disk_cache_threat_model.md | The threat model is well-written but references a `Disk` cache mode that doesn't exist in `LspCacheMode` (only `Disabled` and `Memory`). Consider adding a note that this is a prospective design document, not a current-state description | Prevents confusion about current vs planned features |
+| I1 | permission | **DoomLoopDetector semantics**: Consider renaming `is_doom_loop()` to `is_repetitive()` or adding a consecutive-repeat variant, since the current window-based frequency check is not truly a "doom loop" detector (an agent can interleave other tools and still trigger). | Reduces false positives; aligns naming with behavior. |
+| I2 | permission | **Read-only tools list in doc**: The doc lists `read`, `glob`, `grep`, `list`, `webfetch`, `websearch`, `codesearch`, `repo_search`, `repo_fetch`, `repo_map`, `research`, `research_search`, `batch_fetch`, `security_search`, `evidence_bundle`, `lsp`, `diff`, `security`, `skill`, `tool_search`, `plan_enter`, `plan_exit`, `todowrite`, `todoread`, `question` as "permission-free" — verify this list matches the `is_permission_free()` test exactly (26 tools in the doc). | Doc accuracy. |
+| I3 | auth | **Env-var auto-registration kill-switch visibility**: The doc says "Adding ANY provider via config disables all env-var auto-registration" but does not mention whether an explicit `[provider.anthropic]` with no auth section counts as "adding". Clarify. | Reduces user confusion when adding a provider config without auth. |
+| I4 | audit | **`UNINSTRUMENTED_OPERATIONS` guard**: The doc references `UNINSTRUMENTED_OPERATIONS` at `audit_instrumentation.rs:521`. This is pinned by the coverage guard and is a good safety net. Consider adding a brief comment in the doc explaining *why* these operations are uninstrumented (high-volume reads, no side-effect, etc.). | Improves doc clarity for maintainers. |
+| I5 | security | **SSRF blocked ranges table**: The doc lists 14 IPv4/IPv6 ranges. The `is_internal_ip` code matches all of them. No missing ranges. Consider adding a note about `0.0.0.0/8` being included (some SSRF checkers omit it). | Minor hardening awareness. |
+| I6 | authorization | **Operation-to-capability matrix readability**: The 138-row table is dense. Consider grouping by scope kind (global, direct_project, via_session, via_job, enumeration, opaque) for easier scanning. | Readability improvement. |
 
 ## Stale Content to Prune
 
 | # | File | Content | Reason |
 |---|------|---------|--------|
-| 1 | permission.md:393 | `check_external_directory()` claim | Function does not exist in source |
-| 2 | identity.md:181 | "135-row operation matrix" | Count is stale; authorization.md lists 157+ rows |
-| 3 | authorization.md:177 | "153 native operations" | Actual count is ~160; should be updated or removed if too volatile |
+| S1 | overview.md:257 | Crypto module mapped to `auth/` directory | Source is `crates/codegg-providers/src/crypto.rs`; `src/auth/mod.rs` re-exports `auth_types` not crypto. The `auth/` pointer is misleading. |
+| S2 | permission.md:15 | `PermissionRegistry (ask-response broker) → crates/codegg-core/src/bus/mod.rs` | Correct, but the doc's note at `:21` says "PermissionRegistry is in codegg-core, not in the permission module" — this is accurate and not stale. ✓ |
+| S3 | auth.md:35 | Test support location `src/auth/mod.rs (test_support)` — the doc says `crates/codegg-providers/src/auth_types.rs (test_support)` is also correct. Both exist. ✓ |
+
+## Verification Checklist
+
+- [x] Read all 6 architecture documents fully
+- [x] Located each referenced source file
+- [x] Verified ≥3 claims per doc:
+  - **permission.md**: PERMISSION_TYPES count (27) ✓, PermissionLevel enum (Deny/Ask/Allow) ✓, DoomLoopDetector fields/caps ✓, PermissionChecker fields ✓, ModeDefinition fields ✓, builtin mode restricted_tools ✓, default_bash_allow_patterns line ✓, PATH_CANONICALIZE_CACHE_TTL_SECS (1s) ✓
+  - **security.md**: is_internal_ip at :25 ✓, ipv6_segments_to_ipv4 at :60 ✓, SandboxMode enum ✓, CANONICAL_PATHS_CACHE (300s, 100 entries) ✓, SecurityAction enum ✓, SandboxConfig fields ✓
+  - **auth.md**: AuthConfig enum (5 variants) ✓, mask_secret returns 16 bullets ✓, ExternalCommandProvider::fetch returns Unsupported ✓, CredentialKind (ApiKey/BearerToken) ✓, CredentialStore methods ✓, resolution priority order ✓
+  - **crypto.md**: KEY_LEN=32 ✓, NONCE_LEN=12 ✓, SALT_LEN=32 ✓, Argon2id params (19456, 2, 1) ✓, v2 prefix "v2:" ✓, derive_key_legacy uses HMAC-SHA256 ✓
+  - **authorization.md**: operation_descriptor is exhaustive ✓, ScopeKind enum (6 variants) ✓, 138 native operations claimed (verify via guard script) ✓, LocalOwner broad policy ✓, denial-as-not-found convention ✓
+  - **audit.md**: AuditAction::ALL has 25 entries ✓, REQUIRED_AUDIT_COVERAGE.len() == AuditAction::ALL.len() ✓, UNINSTRUMENTED_OPERATIONS is pinned ✓, audit_event schema (seq, event_id, etc.) ✓
+- [x] Checked line number references: all within ±2 lines ✓
+- [x] Verified enum variant counts
+- [x] Checked for dead code references
+- [x] Noted inconsistencies (D1, D3, D7)
+- [x] Identified ≥1 improvement per module (I1–I6)

@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch1_agent.md` (2026-09-13, current batch structure). Retained for traceability; its findings predate the architecture-doc rewrite and may be stale.
 # Review: batch1 agent-context
 **Reviewed**: 2026-09-11
 **Files**: architecture/agent.md, architecture/agent-tool-surface.md, architecture/compaction.md, architecture/context-compaction-ownership.md, architecture/cache-aware-context.md, architecture/context-ledger.md, architecture/model_profile_task_state.md, architecture/goal.md, architecture/research.md

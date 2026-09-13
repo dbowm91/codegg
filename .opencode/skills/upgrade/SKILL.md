@@ -129,6 +129,7 @@ Tests in `tests/upgrade.rs`:
 - `test_version_info_current_only()` - VersionInfo with no latest
 - `test_version_info_needs_update()` - VersionInfo with newer version
 - `test_version_info_up_to_date()` - VersionInfo with matching versions
+- `test_installer_invocation_pins_supported_env()` - Pins `CODEGG_VERSION` as the only supported pin name (see `installer_invocation()` regression history above)
 
 Note: `check_for_updates()` is not integration-tested (requires network).
 

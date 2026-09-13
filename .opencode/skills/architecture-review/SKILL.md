@@ -24,7 +24,7 @@ DB tables, layout version, test files, guard scripts). Verify each count
 against the `Source` column listed there, fix `overview.md` first if the
 code moved on, then align every other document to it.
 
-Snapshot verified 2026-09-11 (re-verify; do not trust blindly): 51 tool
+Snapshot verified 2026-09-13 (re-verify; do not trust blindly): 53 tool
 registration statements (`src/tool/mod.rs::with_options()`), ~31 always
 registered core, 39 LSP servers (`crates/egglsp/src/server.rs`), 53
 AppEvent variants, 139 slash commands, 10 agents, 71 tables / layout 56,
@@ -46,7 +46,7 @@ Launch subagents for each batch of related architecture files. Each subagent:
 ### Batch Structure
 
 Derive batches from the `architecture/overview.md` Module Map so every
-document is covered. The table below covers all 77 docs as of 2026-09-11;
+document is covered. The table below covers all 77 docs as of 2026-09-13;
 if `overview.md` lists documents not present here, extend the batches
 rather than silently skipping them.
 
@@ -63,7 +63,7 @@ rather than silently skipping them.
 | 8 | permission.md, security.md, auth.md, crypto.md, authorization.md, audit.md | Security and authorization |
 | 9 | mcp.md, lsp.md, lsp_disk_cache_threat_model.md, plugin.md, hooks.md, ide.md, search_backend.md | External integrations |
 | 10 | tui.md, command.md, theme.md, human_shell.md, skills.md, bus.md, projection.md | TUI, commands, events |
-| 11 | jobs.md, scheduler.md, workspace.md, workspace_services.md, memory.md, tts.md, upgrade.md, util.md, testing.md | Daemon services and support |
+| 11 | jobs.md, scheduler.md, workspace.md, workspace_services.md, memory.md, tts.md, upgrade.md, util.md, testing.md, process-tool-execution-ownership.md | Daemon services and support |
 
 ### Phase 2: Consolidation
 

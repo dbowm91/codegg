@@ -114,26 +114,29 @@ fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/c
   to it. When a module contract changes, update the skill and its `architecture/` doc together.
 - `docs/`: `execution-ownership.md` (+ `.toml` manifest), `security-semantics.md`,
   `LSP.md`/`MCP.md`/`PLUGINS.md` (user integration notes; `architecture/` is authoritative),
-  `TROUBLESHOOTING.md`, `dependency-maintenance.md`, `validation/` (historical closure records).
+  `TROUBLESHOOTING.md`, `dependency-maintenance.md`, `themes.md`,
+  `validation/` (historical closure records).
 
 ## Skills Index
 
 | Skill | Covers | Primary doc |
 |---|---|---|
+| `agent` | Agent loop, request prep, provider turn, compaction seam, delegated runs, built-in generation | `architecture/agent.md` |
 | `architecture-review` | Verifying `architecture/` against code (counts, paths, batches for all 77 docs) | `architecture/overview.md` (Verified Counts) |
-| `context` | Artifact storage, projection, `context_read`, packer, tool-palette policy, volatile-tail | `architecture/context-compaction-ownership.md` |
+| `bus-projection` | `GlobalEventBus` (53 `AppEvent`), sync registries, canonical reducer (46 `ProjectionEvent`), replay, chat/presence | `architecture/bus.md`, `architecture/projection.md` |
+| `context` | Artifact storage, projection, `context_read`, packer, tool-palette policy, volatile-tail, `compaction.rs` owner | `architecture/context-compaction-ownership.md` |
 | `core` | Core facade, daemon families/lifecycle, transports, workspace registry | `architecture/core.md` |
-| `git` | Typed ops + risk, guarded mutations/network/recovery, forbidden-pattern guard | `architecture/git.md` |
+| `git` | Typed ops (54) + risk (11), guarded mutations/network/recovery, forbidden-pattern guard | `architecture/git.md` |
 | `human-shell` | `!`/`!!` promotion model, safety policy, bounded output store | `architecture/human_shell.md` |
 | `jobs` | Durable jobs/schedules/recovery/idempotency (`codegg-core`) | `architecture/jobs.md` |
+| `mcp-plugin` | MCP stdio/remote client + OAuth, eggsearch wiring, process/WASM/built-in plugin runtime | `architecture/mcp.md`, `architecture/plugin.md` |
 | `planning` | `plans/` lifecycle: roadmaps, handoff plans, closure, registry, ADRs, archive | `plans/003-planning-process.md`, `plans/README.md` |
+| `provider-auth` | 15 env-var + 17 config-aware providers, `AuthResolver`, encrypted store, circuit/fallback | `architecture/provider.md`, `architecture/auth.md` |
 | `scheduler` | Admission control, fair queue, executors, `JobSubmissionService` | `architecture/scheduler.md` |
 | `server` | Axum HTTP/WS server, routes, `/tui` protocol, auth/rate limits | `architecture/server.md` |
+| `session-storage` | Session stores, 71-table schema (layout 56), catalog, identity, run store | `architecture/session.md`, `architecture/storage.md` |
 | `skills` | Skill discovery/precedence, portable schema, proposal/publication boundary | `architecture/skills.md` |
 | `tool-program-harness` | Tool Program scenario/chaos/resource evaluation across harness modes | `architecture/tool_programs.md` |
-| `tui` | TUI commands, sync dispatch, async spawn-and-complete, dialogs, project scope | `architecture/tui.md` |
+| `tui` | TUI commands, sync dispatch, async spawn-and-complete, dialogs, project scope, `route.rs`/`ui_builders/` | `architecture/tui.md` |
 | `upgrade` | Self-upgrade check (`codegg upgrade` is check-only; pin via `CODEGG_VERSION`) | `architecture/upgrade.md` |
 | `util` | Clipboard, fuzzy, truncate, metrics, interner, pricing | `architecture/util.md` |
-
-No skill exists yet for agent-loop, provider/auth, MCP/plugin, session/storage,
-or bus/projection — use the `architecture/` doc directly for those.

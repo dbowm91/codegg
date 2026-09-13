@@ -175,7 +175,7 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 
 ### Tools and Capabilities at a Glance
 
-Discrete capability groups exposed through the registry (`src/tool/`, 66 files). See [tool.md](tool.md) and [agent-tool-surface.md](agent-tool-surface.md) for the full surface.
+Discrete capability groups exposed through the registry (`src/tool/`, 68 files: 65 top-level + 3 in `bash/`). See [tool.md](tool.md) and [agent-tool-surface.md](agent-tool-surface.md) for the full surface.
 
 | Capability | Tools | Notes |
 |------------|-------|-------|

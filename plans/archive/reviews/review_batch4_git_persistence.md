@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch4_git.md` + `plans/review_batch5_persistence.md` (2026-09-13, current batch structure). Retained for traceability; findings may be stale.
 # Review: batch4 git-persistence
 **Reviewed**: 2026-09-11
 **Files**: architecture/git.md, architecture/git_phase_f_handoff.md, architecture/git_polish_verification_handoff.md, architecture/session.md, architecture/storage.md, architecture/snapshot.md, architecture/worktree.md, architecture/run_store.md

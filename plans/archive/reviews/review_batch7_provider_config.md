@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch7_providers.md` (2026-09-13, current batch structure). Retained for traceability; findings may be stale.
 # Review: batch7 provider-config
 
 **Reviewed**: 2026-09-11

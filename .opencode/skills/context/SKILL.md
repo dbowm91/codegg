@@ -28,6 +28,7 @@ The context module manages artifact storage, tool-output projection, the `contex
 | `projection.rs` | Tool-output projection/compression |
 | `read_tool.rs` | `context_read` tool registration |
 | `plan.rs` | `ContextPlan`, `ContextPlanDiagnostics`, `ContextPlanMode`, `PlannedMessage` |
+| `compaction.rs` | Single-owner compaction budgets/triggers/strategy (see `architecture/context-compaction-ownership.md`; `agent::compaction` is a compat re-export, `eggcontext` is the tokenizer primitive) |
 
 ## Key Facts
 

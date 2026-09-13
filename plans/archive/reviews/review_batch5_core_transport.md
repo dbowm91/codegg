@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch6_core.md` + `plans/review_batch10_tui.md` (2026-09-13, current batch structure; `projection.md`/`bus.md` coverage moved to batch 10). Retained for traceability; findings may be stale.
 # Review: batch5 core-transport
 
 **Reviewed**: 2026-09-11

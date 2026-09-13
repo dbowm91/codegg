@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch10_tui.md` + `plans/review_batch11_daemon.md` (2026-09-13, current batch structure). Retained for traceability; findings may be stale.
 # Review: batch10 tui-support
 
 **Reviewed**: 2026-09-11

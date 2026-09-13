@@ -1,3 +1,4 @@
+> **Archived 2026-09-13.** Superseded by `plans/review_batch2_commands.md` (2026-09-13, current batch structure; `command.md` coverage moved to batch 10). Retained for traceability; findings may be stale.
 # Review: batch2 command-exec
 **Reviewed**: 2026-09-11
 **Files**: command.md, command_intent.md, command_planner.md, command_routing.md, exec.md, test_runner.md, python_scripting.md

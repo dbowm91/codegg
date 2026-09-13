@@ -64,3 +64,13 @@ All nine docs are well-maintained and mostly accurate. The jobs/scheduler docs a
 ## Verdict
 
 All nine docs are accurate with one minor AttemptState transition omission and one documented-but-unwired config field. No stale paths, no scheduler-bypass risks, no critical divergences. Line-number references are within tolerance (≤3 lines off in verified cases). The batch is review-complete.
+
+## Addendum (2026-09-13 reconciliation): process-tool-execution-ownership.md
+
+This doc had no new-batch coverage (the current skill batch table omits it; it was last covered by the archived Sep-11 `plans/archive/reviews/review_batch6_workspace_jobs.md`, which judged it "largely accurate with only minor line drift"). Spot-verified during reconciliation:
+
+- `ManagedProcessService` canonical-owner claim holds — `pub struct ManagedProcessService` at `src/managed_process.rs:422`.
+- Machine-readable inventory claim holds — `docs/execution-ownership.toml` exists and catalogs spawn owners.
+- PTY split claim holds — `src/interactive_process.rs` (M001 lifecycle) + `src/interactive_process_attach.rs` (M002 attach protocol) exist as described.
+
+No divergence found in the sampled claims. Recommend adding this doc to the skill's batch-11 row so the next review sweep covers it.
