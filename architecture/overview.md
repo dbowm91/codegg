@@ -157,7 +157,8 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Tool | Built-in tools (~31 core always registered; ~50 registration sites total once conditional todo/evidence/deterministic/context-read tools are included), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Tool | Built-in tools (53 registration statements in `with_options`; ~31 core always registered, remainder gated by todo policy / evidence backend / LSP-security backend / eggsact / context-read config), `Tool` trait, `ToolCatalog` + `tool_search` on-demand discovery, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `catalog.rs`, `tool_search.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Agent Tool Surface | Model-facing tool definitions, categories, and gating rules consumed by request preparation | `agent/tool_surface.rs` | [agent-tool-surface.md](agent-tool-surface.md) |
 | Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
 | Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |
 | Git Service | Canonical read executor — delegates to egggit for structured parsing, subprocess fallback for mutations | `git_service.rs` | [git.md](git.md) |
@@ -168,6 +169,25 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 | Tool Programs | Durable program domain, storage, call ledger — restricted-Python programs with broker adapter, child-job composition, lineage tracking, replay, corrective closure (M006-M017) | `tool_program.rs`, `tool_program_context.rs`, `tool_program_ledger.rs`, `tool_program_result.rs`, `tool_program_source.rs`, `program_cache.rs`, `program_manifest.rs` | [tool_programs.md](tool_programs.md) |
 | Tool Broker | Single canonical execution boundary for all production tool calls — ordered policy pipeline, typed results, direct + programmatic paths (M011/M012) | `broker.rs`, `contract.rs` | [tool_broker.md](tool_broker.md) |
 | Tool Program Language | Restricted-Python language specification — parse-only pipeline, fail-closed, bounded execution, deterministic IR | `crates/codegg-core/src/tool_program/` | [tool_program_language.md](tool_program_language.md) |
+| Interactive Process | PTY lifecycle (M001) + attach protocol (M002) — interactive terminal sessions distinct from finite `ManagedProcessService` runs | `interactive_process.rs`, `interactive_process_attach.rs` | [process-tool-execution-ownership.md](process-tool-execution-ownership.md) |
+| Eggsact Adapter | In-process eggsact runtime wiring — config, audience, output budgets; skipped-closed on init failure | `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
+| Search (legacy) | Legacy in-tree websearch/webfetch tool implementations; production path prefers the `search_backend` → eggsearch dispatch | `search/` | [search_backend.md](search_backend.md) |
+
+### Tools and Capabilities at a Glance
+
+Discrete capability groups exposed through the registry (`src/tool/`, 66 files). See [tool.md](tool.md) and [agent-tool-surface.md](agent-tool-surface.md) for the full surface.
+
+| Capability | Tools | Notes |
+|------------|-------|-------|
+| Filesystem | `read`, `write`, `edit`, `apply_patch`, `replace`, `diff`, `glob`, `grep`, `list` | Workspace-root allowlisted; patch/diff preserve model-facing schemas |
+| Shell / execution | `bash`, `terminal`, `test`, `python_script` | `bash` carries RunStore + command-intent + scheduler-submission wiring; `test`/`python_script` submit heavy work via `JobSubmissionService` |
+| Source intelligence | `lsp` (+ hidden program-only `lsp_read`), `codesearch`, `repo_map` | `lsp` consults per-domain backend config (native/MCP/disabled + fallback); 39 servers in `server_definitions()` ([lsp.md](lsp.md)) |
+| Version control | `git` (+ hidden program-only `git_read`), `commit` | Typed `GitOperation` (54 variants) + `GitRiskClass` (11 classes); `egggit` never mutates ([git.md](git.md)) |
+| Research / evidence | `research`, `repo_search`, `repo_fetch`, `research_search`, `security_search`, `batch_fetch`, `evidence_bundle`, `websearch`, `webfetch` | Evidence wrappers require the eggsearch MCP backend; otherwise omitted with a diagnostic ([search_backend.md](search_backend.md)) |
+| Planning / tasks | `task` (spawn/status/message/interrupt/wait/cancel + spawn_many), `todo_read`/`todo_write`, `plan_enter`/`plan_exit` | `task` is the compat surface for durable delegated runs ([jobs.md](jobs.md)); todos gated by `TodoMode` policy |
+| Review / quality | `review`, `security` (+ LSP-security backend variant), deterministic eggsact tools (8 visible + 5 deferred) | Eggsact validators are in-process; preflight findings are harness-side only ([deterministic_tools.md](deterministic_tools.md), [preflight.md](preflight.md)) |
+| Programmatic | `tool_program`, `tool_search`, `question`, `skill`, `skill_proposal`, `image`, `goal` | `tool_program` runs restricted-Python with ledger/lineage/replay ([tool_programs.md](tool_programs.md)); `tool_search` enables on-demand discovery; `question`/`skill_proposal` route through the registries on the bus |
+| Fallback / meta | `invalid`, `disabled` stubs | Typed errors for unknown tools and backend-disabled domains (e.g. `lsp`/`security` in MCP-no-fallback mode) |
 
 ### TUI Layer — User Interface
 
@@ -262,6 +282,9 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Hooks | Lifecycle hooks for agent events | `hooks/` | [hooks.md](hooks.md) |
 | Memory | Persistent memory across sessions | `memory/` (codegg-core) | [memory.md](memory.md) |
 | Goal | Goal tracking and management | `goal/` (codegg-core) | [goal.md](goal.md) |
+| Goal Verification | Post-turn goal verification pass over terminal output | `goal_verification.rs` | [goal.md](goal.md) |
+| Run Rerun | Run rerun linkage across the RunStore artifact index | `run_rerun.rs` | [run_store.md](run_store.md) |
+| Background Task Migration | Legacy background-task → durable-job migration shim | `background_task_migration.rs` | [jobs.md](jobs.md) |
 | Snapshot | File state capture and restore | `snapshot/` (codegg-core) | [snapshot.md](snapshot.md) |
 | Worktree | Git worktree management | `worktree.rs` (codegg-core), `worktree/` (egggit) | [worktree.md](worktree.md) |
 | Run Store | Persistent run index and artifact storage for commands, scripts, tests | `run_store.rs` (codegg-core) | [run_store.md](run_store.md) |
@@ -279,8 +302,8 @@ Counts below were re-verified against the current tree (see source column).
 
 | Item | Count | Source |
 |------|-------|--------|
-| Tools (registration statements in `with_options`) | 51 | `src/tool/mod.rs::with_options()` |
-| Tools (always registered core) | ~31 | remainder gated by todo policy / evidence backend / eggsact / context-read config |
+| Tools (registration statements in `with_options`) | 53 | `src/tool/mod.rs::with_options()` |
+| Tools (always registered core) | ~31 | remainder gated by todo policy / evidence backend / LSP-security backend / eggsact / context-read config |
 | Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
@@ -506,7 +529,7 @@ codegg/
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system
-│   ├── tool/                   # Built-in tools (51 registration statements)
+│   ├── tool/                   # Built-in tools (53 registration statements) + tool_search discovery
 │   ├── tts/                    # Text-to-speech
 │   ├── tui/                    # Terminal UI (Ratatui)
 │   ├── upgrade/                # Self-upgrade
@@ -514,7 +537,9 @@ codegg/
 │   ├── interactive_process*.rs # PTY lifecycle (M001) + attach protocol (M002)
 │   ├── goal_verification.rs    # Goal verification pass
 │   ├── run_rerun.rs            # Run rerun linkage
-│   ├── git_*.rs                # Git mutations, network, recovery, store
+│   ├── background_task_migration.rs # Legacy background-task → job migration
+│   ├── protocol_conversions.rs # Protocol conversion helpers
+│   ├── git_*.rs                # Git service/mutations, network, recovery, store
 │   ├── command_*.rs            # Command pipeline (planner, routing, outcome)
 │   ├── job_*.rs                # Job dispatch, recovery
 │   ├── managed_process.rs      # Managed process lifecycle
