@@ -50,7 +50,8 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError>
 ```
 
 The function:
-1. Builds a `reqwest::Client` with 10-second timeout
+1. Builds an `eggfetch_core::Client` with an explicit 10-second timeout and
+   bounded redirect following
 2. Sends GET request to GitHub API with `User-Agent: codegg` header
 3. Parses JSON response for `tag_name` field
 4. Compares latest version with `VERSION` constant (`CARGO_PKG_VERSION`)

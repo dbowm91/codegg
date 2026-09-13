@@ -6,10 +6,9 @@
 //! (the registry layer is responsible for global rate limits).
 
 use async_trait::async_trait;
+use eggfetch_core::{Client, Timeout};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::Client;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -29,10 +28,11 @@ impl ArxivProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(20))
+                .timeout(Timeout::from_secs(20))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent("codegg-websearch/1.0 (research use; arxiv)")
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -56,14 +56,13 @@ impl SearchProvider for ArxivProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, 20);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[
-                ("search_query", format!("all:{query}").as_str()),
-                ("start", "0"),
-                ("max_results", &limit.to_string()),
-            ])
+            .map_err(SearchError::from)?
+            .query("search_query", &format!("all:{query}"))
+            .query("start", "0")
+            .query("max_results", &limit.to_string())
             .send()
             .await?;
         let status = resp.status();

@@ -6,10 +6,9 @@
 //! conservative per-instance limit.
 
 use async_trait::async_trait;
+use eggfetch_core::{Client, Timeout};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::Client;
-use std::time::Duration;
 use url::Url;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
@@ -52,13 +51,14 @@ impl DuckDuckGoProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(20))
+                .timeout(Timeout::from_secs(20))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent(
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
                      Chrome/124.0.0.0 Safari/537.36",
                 )
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -82,11 +82,17 @@ impl SearchProvider for DuckDuckGoProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, MAX_RESULTS_CAP);
-        let resp = self
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("q", query)
+            .append_pair("kl", "us-en")
+            .finish();
+        let mut resp = self
             .client
             .post(ENDPOINT)
+            .map_err(SearchError::from)?
             .header("Accept", "text/html")
-            .form(&[("q", query), ("kl", "us-en")])
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
             .send()
             .await?;
         let status = resp.status();

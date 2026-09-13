@@ -5,9 +5,8 @@
 //! use fixed placeholder values. For 10 req/s, register a real key.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::Deserialize;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -24,10 +23,11 @@ impl PubMedProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(20))
+                .timeout(Timeout::from_secs(20))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent("codegg-websearch/1.0 (research use; pubmed)")
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -53,17 +53,16 @@ impl SearchProvider for PubMedProvider {
         let limit = num_results.clamp(1, 20);
 
         // Step 1: esearch → list of PMIDs.
-        let resp = self
+        let mut resp = self
             .client
             .get(ESEARCH)
-            .query(&[
-                ("db", "pubmed"),
-                ("term", query),
-                ("retmax", &limit.to_string()),
-                ("retmode", "json"),
-                ("tool", TOOL),
-                ("email", EMAIL),
-            ])
+            .map_err(SearchError::from)?
+            .query("db", "pubmed")
+            .query("term", query)
+            .query("retmax", &limit.to_string())
+            .query("retmode", "json")
+            .query("tool", TOOL)
+            .query("email", EMAIL)
             .send()
             .await?;
         let status = resp.status();
@@ -96,16 +95,15 @@ impl SearchProvider for PubMedProvider {
         let pmids = r.esearchresult.idlist;
 
         // Step 2: esummary (batch) → titles.
-        let resp2 = self
+        let mut resp2 = self
             .client
             .get(ESUMMARY)
-            .query(&[
-                ("db", "pubmed"),
-                ("id", &pmids.join(",")),
-                ("retmode", "json"),
-                ("tool", TOOL),
-                ("email", EMAIL),
-            ])
+            .map_err(SearchError::from)?
+            .query("db", "pubmed")
+            .query("id", &pmids.join(","))
+            .query("retmode", "json")
+            .query("tool", TOOL)
+            .query("email", EMAIL)
             .send()
             .await?;
         if !resp2.status().is_success() {

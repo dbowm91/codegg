@@ -28,16 +28,17 @@ struct CrateData {
 }
 
 pub struct CratesIoSource {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl CratesIoSource {
     pub fn try_new() -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(API_TIMEOUT)
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_core::Timeout::from_secs(API_TIMEOUT.as_secs()))
+            .follow_redirects(true)
+            .max_redirects(10)
             .user_agent("codegg-research")
-            .build()
-            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+            .build();
         Ok(Self { client })
     }
 
@@ -84,9 +85,10 @@ impl CratesIoSource {
     async fn fetch_crate(&self, name: &str) -> Result<SourceRecord> {
         let url = format!("https://crates.io/api/v1/crates/{}", name);
 
-        let response = self
+        let mut response = self
             .client
             .get(&url)
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?
             .header("User-Agent", "codegg-research")
             .send()
             .await

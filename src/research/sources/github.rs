@@ -86,16 +86,17 @@ struct GitHubParsedUrl {
 }
 
 pub struct GitHubSource {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl GitHubSource {
     pub fn try_new() -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(API_TIMEOUT)
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_core::Timeout::from_secs(API_TIMEOUT.as_secs()))
+            .follow_redirects(true)
+            .max_redirects(10)
             .user_agent("codegg-research")
-            .build()
-            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+            .build();
         Ok(Self { client })
     }
 
@@ -189,9 +190,10 @@ impl GitHubSource {
     }
 
     async fn check_rate_limit(&self) -> Result<u64> {
-        let response = self
+        let mut response = self
             .client
             .get("https://api.github.com/rate_limit")
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?
             .header("User-Agent", "codegg-research")
             .send()
             .await
@@ -216,9 +218,10 @@ impl GitHubSource {
     async fn fetch_repo_metadata(&self, owner: &str, repo: &str) -> Result<SourceRecord> {
         let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
 
-        let response = self
+        let mut response = self
             .client
             .get(&url)
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?
             .header("User-Agent", "codegg-research")
             .send()
             .await
@@ -317,9 +320,10 @@ impl GitHubSource {
             owner, repo, path
         );
 
-        let response = self
+        let mut response = self
             .client
             .get(&url)
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?
             .header("User-Agent", "codegg-research")
             .send()
             .await
@@ -395,9 +399,10 @@ impl GitHubSource {
             owner, repo, number
         );
 
-        let response = self
+        let mut response = self
             .client
             .get(&url)
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?
             .header("User-Agent", "codegg-research")
             .send()
             .await

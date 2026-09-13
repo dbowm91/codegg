@@ -17,9 +17,8 @@
 //! tool to internal hosts.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::Deserialize;
-use std::time::Duration;
 
 use crate::security::ssrf::{revalidate_dns, validate_host_ip};
 
@@ -27,14 +26,15 @@ use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
 fn build_client() -> Client {
     Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Timeout::from_secs(20))
+        .follow_redirects(true)
+        .max_redirects(10)
         .user_agent("codegg-websearch/1.0 (+https://github.com/dbowm91/codegg)")
         .build()
-        .unwrap_or_default()
 }
 
 async fn validate(url: &str) -> Result<(), SearchError> {
-    let parsed = reqwest::Url::parse(url)
+    let parsed = url::Url::parse(url)
         .map_err(|e| SearchError::Transport(format!("invalid url {url}: {e}")))?;
     let host = parsed
         .host_str()
@@ -89,11 +89,13 @@ impl SearchProvider for ExaProvider {
             "type": "auto",
             "livecrawl": "fallback",
         });
-        let resp = self
+        let mut resp = self
             .client
             .post(url)
+            .map_err(SearchError::from)?
             .header("x-api-key", api_key)
             .json(&body)
+            .map_err(SearchError::from)?
             .send()
             .await?;
         let status = resp.status();
@@ -174,11 +176,13 @@ impl SearchProvider for TavilyProvider {
             "max_results": num_results,
             "search_depth": "basic",
         });
-        let resp = self
+        let mut resp = self
             .client
             .post(url)
-            .header("Authorization", format!("Bearer {api_key}"))
+            .map_err(SearchError::from)?
+            .header("Authorization", &format!("Bearer {api_key}"))
             .json(&body)
+            .map_err(SearchError::from)?
             .send()
             .await?;
         let status = resp.status();
@@ -257,12 +261,14 @@ impl SearchProvider for BraveProvider {
             .ok_or_else(|| SearchError::NotConfigured("BRAVE_API_KEY".into()))?;
         let url = "https://api.search.brave.com/res/v1/web/search";
         validate(url).await?;
-        let resp = self
+        let mut resp = self
             .client
             .get(url)
+            .map_err(SearchError::from)?
             .header("Accept", "application/json")
             .header("X-Subscription-Token", api_key)
-            .query(&[("q", query), ("count", &num_results.to_string())])
+            .query("q", query)
+            .query("count", &num_results.to_string())
             .send()
             .await?;
         let status = resp.status();
@@ -346,15 +352,14 @@ impl SearchProvider for SerpApiProvider {
             .ok_or_else(|| SearchError::NotConfigured("SERPAPI_API_KEY".into()))?;
         let url = "https://serpapi.com/search";
         validate(url).await?;
-        let resp = self
+        let mut resp = self
             .client
             .get(url)
-            .query(&[
-                ("q", query),
-                ("api_key", api_key),
-                ("engine", "google"),
-                ("num", &num_results.to_string()),
-            ])
+            .map_err(SearchError::from)?
+            .query("q", query)
+            .query("api_key", api_key)
+            .query("engine", "google")
+            .query("num", &num_results.to_string())
             .send()
             .await?;
         let status = resp.status();
@@ -431,11 +436,13 @@ impl SearchProvider for KagiProvider {
             .ok_or_else(|| SearchError::NotConfigured("KAGI_API_KEY".into()))?;
         let url = "https://kagi.com/api/search";
         validate(url).await?;
-        let resp = self
+        let mut resp = self
             .client
             .get(url)
-            .header("Authorization", format!("Bot {api_key}"))
-            .query(&[("q", query), ("limit", &num_results.to_string())])
+            .map_err(SearchError::from)?
+            .header("Authorization", &format!("Bot {api_key}"))
+            .query("q", query)
+            .query("limit", &num_results.to_string())
             .send()
             .await?;
         let status = resp.status();

@@ -5,10 +5,9 @@
 //! blocks for title, link, pubDate.
 
 use async_trait::async_trait;
+use eggfetch_core::{Client, Timeout};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::Client;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -28,10 +27,11 @@ impl GoogleNewsProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(15))
+                .timeout(Timeout::from_secs(15))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent("codegg-websearch/1.0")
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -55,15 +55,14 @@ impl SearchProvider for GoogleNewsProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, 50);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[
-                ("q", query),
-                ("hl", "en-US"),
-                ("gl", "US"),
-                ("ceid", "US:en"),
-            ])
+            .map_err(SearchError::from)?
+            .query("q", query)
+            .query("hl", "en-US")
+            .query("gl", "US")
+            .query("ceid", "US:en")
             .send()
             .await?;
         let status = resp.status();

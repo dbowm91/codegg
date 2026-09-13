@@ -10,16 +10,17 @@ const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
 pub struct DocsRsSource {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl DocsRsSource {
     pub fn try_new() -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(API_TIMEOUT)
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_core::Timeout::from_secs(API_TIMEOUT.as_secs()))
+            .follow_redirects(true)
+            .max_redirects(10)
             .user_agent("codegg-research")
-            .build()
-            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+            .build();
         Ok(Self { client })
     }
 
@@ -100,9 +101,10 @@ impl DocsRsSource {
             format!("https://docs.rs/{}/latest/{}", crate_name, path)
         };
 
-        let response = self
+        let mut response = self
             .client
             .get(&url)
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?
             .header("User-Agent", "codegg-research")
             .send()
             .await

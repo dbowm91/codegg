@@ -64,6 +64,22 @@ fn token_store_error(message: &str) -> McpError {
     McpError::OAuth(message.to_string())
 }
 
+fn oauth_client() -> eggfetch_core::Client {
+    eggfetch_core::Client::builder()
+        .timeout(eggfetch_core::Timeout::from_secs(30))
+        .follow_redirects(true)
+        .max_redirects(10)
+        .build()
+}
+
+fn form_body(params: &[(&str, &str)]) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in params {
+        serializer.append_pair(key, value);
+    }
+    serializer.finish()
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenSet {
     pub access_token: String,
@@ -256,14 +272,21 @@ impl OAuthManager {
             ("code_verifier", code_verifier),
         ];
 
-        let client = reqwest::Client::new();
-        let mut request = client.post(token_url).form(&params);
+        let client = oauth_client();
+        let mut request = client
+            .post(token_url)
+            .map_err(|e| McpError::OAuth(format!("token request build failed: {e}")))?
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_body(&params));
 
         if let Some(secret) = client_secret {
-            request = request.basic_auth(client_id, Some(secret));
+            request = request.auth(
+                eggfetch_core::AuthScheme::basic(client_id, secret)
+                    .map_err(|e| McpError::OAuth(format!("invalid client credentials: {e}")))?,
+            );
         }
 
-        let resp = request
+        let mut resp = request
             .send()
             .await
             .map_err(|e| McpError::OAuth(e.to_string()))?;
@@ -420,14 +443,21 @@ impl OAuthManager {
             ("client_id", client_id),
         ];
 
-        let client = reqwest::Client::new();
-        let mut request = client.post(token_url).form(&params);
+        let client = oauth_client();
+        let mut request = client
+            .post(token_url)
+            .map_err(|e| McpError::OAuth(format!("token request build failed: {e}")))?
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_body(&params));
 
         if let Some(secret) = client_secret {
-            request = request.basic_auth(client_id, Some(secret));
+            request = request.auth(
+                eggfetch_core::AuthScheme::basic(client_id, secret)
+                    .map_err(|e| McpError::OAuth(format!("invalid client credentials: {e}")))?,
+            );
         }
 
-        let resp = request
+        let mut resp = request
             .send()
             .await
             .map_err(|e| McpError::OAuth(e.to_string()))?;
@@ -496,14 +526,21 @@ impl OAuthManager {
     ) -> Result<(), McpError> {
         let params = vec![("token", token), ("client_id", client_id)];
 
-        let client = reqwest::Client::new();
-        let mut request = client.post(revocation_url).form(&params);
+        let client = oauth_client();
+        let mut request = client
+            .post(revocation_url)
+            .map_err(|e| McpError::OAuth(format!("revocation request build failed: {e}")))?
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_body(&params));
 
         if let Some(secret) = client_secret {
-            request = request.basic_auth(client_id, Some(secret));
+            request = request.auth(
+                eggfetch_core::AuthScheme::basic(client_id, secret)
+                    .map_err(|e| McpError::OAuth(format!("invalid client credentials: {e}")))?,
+            );
         }
 
-        let resp = request
+        let mut resp = request
             .send()
             .await
             .map_err(|e| McpError::OAuth(e.to_string()))?;

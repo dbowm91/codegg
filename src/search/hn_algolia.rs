@@ -5,9 +5,8 @@
 //! finding primary links from HN threads.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::Deserialize;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -21,10 +20,11 @@ impl HnAlgoliaProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(15))
+                .timeout(Timeout::from_secs(15))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent("codegg-websearch/1.0")
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -48,14 +48,13 @@ impl SearchProvider for HnAlgoliaProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, 30);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[
-                ("query", query),
-                ("tags", "story"),
-                ("hitsPerPage", &limit.to_string()),
-            ])
+            .map_err(SearchError::from)?
+            .query("query", query)
+            .query("tags", "story")
+            .query("hitsPerPage", &limit.to_string())
             .send()
             .await?;
         let status = resp.status();

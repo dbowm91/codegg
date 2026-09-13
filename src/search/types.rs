@@ -18,9 +18,22 @@ pub enum SearchError {
     Empty,
 }
 
-impl From<reqwest::Error> for SearchError {
-    fn from(e: reqwest::Error) -> Self {
+impl From<eggfetch_core::Error> for SearchError {
+    fn from(e: eggfetch_core::Error) -> Self {
         SearchError::Transport(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eggfetch_transport_errors_map_without_transport_type_coupling() {
+        let error = SearchError::from(eggfetch_core::Error::Connect("fixture failure".into()));
+        assert!(
+            matches!(error, SearchError::Transport(message) if message == "connect error: fixture failure")
+        );
     }
 }
 

@@ -1459,7 +1459,7 @@ fn normalize(request: &CreateEggpoolConnectionRequest) -> Result<NormalizedSpec,
     } else {
         "https://".to_owned()
     };
-    let parsed = reqwest::Url::parse(&format!("{scheme}{raw}"))
+    let parsed = url::Url::parse(&format!("{scheme}{raw}"))
         .map_err(|_| EggpoolError::InvalidEndpoint("host must be a valid HTTP(S) origin".into()))?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
         return Err(EggpoolError::InvalidEndpoint(

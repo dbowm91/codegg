@@ -174,6 +174,10 @@ pub(crate) fn scan_risk_markers(
                 "UdpSocket",
                 "axum::",
                 "hyper::",
+                "eggfetch_core::Client",
+                "eggfetch_core::RequestBuilder",
+                "Client::get(",
+                "Client::post(",
                 "reqwest::",
                 "hyper::Client",
                 "bind(",
@@ -488,6 +492,23 @@ mod tests {
         );
         let result = scan_risk_markers(&excerpt, &Some(vec!["process".to_string()]), 80);
         assert!(result.markers.iter().all(|m| m.category == "process"));
+    }
+
+    #[test]
+    fn scanner_catches_eggfetch_and_legacy_http_clients() {
+        let excerpt = make_excerpt(
+            "let client = eggfetch_core::Client::new();\nclient.get(\"https://example.invalid\");\nreqwest::Client::new();",
+            1,
+        );
+        let result = scan_risk_markers(&excerpt, &Some(vec!["network".to_string()]), 80);
+        assert!(result
+            .markers
+            .iter()
+            .any(|marker| marker.matched_text.contains("eggfetch_core::Client")));
+        assert!(result
+            .markers
+            .iter()
+            .any(|marker| marker.matched_text.contains("reqwest::")));
     }
 
     #[test]

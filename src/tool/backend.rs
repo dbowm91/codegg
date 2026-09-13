@@ -249,7 +249,7 @@ pub struct ToolProvenance {
     /// so the JSON serialization is stable across schema revisions.
     pub backend: String,
     /// Human-readable implementation name (e.g. "eggsearch",
-    /// "codegg/websearch", "reqwest-html2text").
+    /// "codegg/websearch", "eggfetch-html2text").
     pub implementation: String,
     /// Optional version string from the backend (e.g. MCP server
     /// version, or crate version for native calls).
@@ -810,7 +810,7 @@ pub fn build_report(
     };
     let webfetch_impl = match search_backend {
         crate::config::schema::SearchBackendConfig::Disabled => "—".to_string(),
-        crate::config::schema::SearchBackendConfig::Builtin => "codegg/reqwest".to_string(),
+        crate::config::schema::SearchBackendConfig::Builtin => "codegg/eggfetch".to_string(),
         crate::config::schema::SearchBackendConfig::Eggsearch => {
             format!("{}/web_fetch", eggsearch_server)
         }

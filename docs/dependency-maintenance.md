@@ -30,8 +30,9 @@ MSRV. Existing YAML files are not rewritten automatically.
 
 The accepted dependency baseline keeps feature ownership explicit:
 
-- `reqwest` consumers disable defaults and select Rustls only where HTTPS
-  clients need it;
+- `eggfetch-core` consumers disable defaults and select only `http1`,
+  `tls-rustls`, and (where needed) `json`; its packaged WebPKI trust set is
+  preferred over native roots;
 - `sqlx` consumers disable defaults and select Tokio, SQLite, macros/migrations,
   and only the serialization/time features their source uses;
 - `arboard` disables defaults so the default clipboard surface remains

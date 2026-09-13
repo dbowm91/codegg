@@ -6,24 +6,26 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub struct AdvisorySource {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl AdvisorySource {
     pub fn try_new() -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_core::Timeout::from_secs(10))
+            .follow_redirects(true)
+            .max_redirects(10)
+            .build();
         Ok(Self { client })
     }
 
     async fn fetch_crate_versions(&self, crate_name: &str) -> Result<SourceRecord> {
         let url = format!("https://crates.io/api/v1/crates/{crate_name}/versions");
 
-        let response = self
+        let mut response = self
             .client
             .get(&url)
+            .map_err(|e| ResearchError::UrlFetch(format!("request build failed: {e}")))?
             .header("User-Agent", "codegg-research/0.1")
             .send()
             .await

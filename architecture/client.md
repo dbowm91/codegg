@@ -37,6 +37,8 @@ pub async fn run_attach(
 
 2. **Health Check** (`sdk.rs:35`)
    - `RemoteClient::health()` → `GET /health` with 10s timeout.
+   - The client uses `eggfetch-core 0.1.4` with the packaged WebPKI trust set
+     and explicit redirect bounds.
    - Returns `Err(ClientError::Unreachable)` on non-success.
 
 3. **WebSocket Connection** (`attach.rs:37-73`)

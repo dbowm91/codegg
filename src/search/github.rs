@@ -7,9 +7,8 @@
 //! queries.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::Deserialize;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -23,10 +22,11 @@ impl GitHubProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(15))
+                .timeout(Timeout::from_secs(15))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent("codegg-websearch/1.0")
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -50,10 +50,12 @@ impl SearchProvider for GitHubProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, 15);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[("q", query), ("per_page", &limit.to_string())])
+            .map_err(SearchError::from)?
+            .query("q", query)
+            .query("per_page", &limit.to_string())
             .header("Accept", "application/vnd.github+json")
             .send()
             .await?;

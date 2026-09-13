@@ -217,9 +217,14 @@ pub async fn install_from_path_into(
 }
 
 pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError> {
-    let client = reqwest::Client::new();
-    let resp = client
+    let client = eggfetch_core::Client::builder()
+        .timeout(eggfetch_core::Timeout::from_secs(30))
+        .follow_redirects(true)
+        .max_redirects(10)
+        .build();
+    let mut resp = client
         .get(url)
+        .map_err(|e| InstallError::DownloadFailed(e.to_string()))?
         .send()
         .await
         .map_err(|e| InstallError::DownloadFailed(e.to_string()))?;

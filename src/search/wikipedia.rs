@@ -9,9 +9,8 @@
 //! This module sends `codegg-websearch/1.0 (research; contact via codegg)`.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::Deserialize;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -26,10 +25,11 @@ impl WikipediaProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(15))
+                .timeout(Timeout::from_secs(15))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent(USER_AGENT)
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -53,18 +53,17 @@ impl SearchProvider for WikipediaProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, 20);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[
-                ("action", "query"),
-                ("list", "search"),
-                ("srsearch", query),
-                ("srlimit", &limit.to_string()),
-                ("format", "json"),
-                ("utf8", "1"),
-                ("origin", "*"),
-            ])
+            .map_err(SearchError::from)?
+            .query("action", "query")
+            .query("list", "search")
+            .query("srsearch", query)
+            .query("srlimit", &limit.to_string())
+            .query("format", "json")
+            .query("utf8", "1")
+            .query("origin", "*")
             .send()
             .await?;
         let status = resp.status();

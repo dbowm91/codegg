@@ -53,17 +53,6 @@ impl From<anyhow::Error> for AxumAppError {
 }
 
 #[cfg(feature = "server")]
-impl From<reqwest::Error> for AxumAppError {
-    fn from(e: reqwest::Error) -> Self {
-        let status = e.status().map(|status| status.as_u16());
-        AxumAppError(AppError::Http(HttpError::new(
-            e.without_url().to_string(),
-            status,
-        )))
-    }
-}
-
-#[cfg(feature = "server")]
 impl IntoResponse for AxumAppError {
     fn into_response(self) -> Response<Body> {
         let status = match &self.0 {

@@ -5,9 +5,8 @@
 //! queries go to the polite pool and rate limits are generous.
 
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::Deserialize;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -22,10 +21,11 @@ impl OpenAlexProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(20))
+                .timeout(Timeout::from_secs(20))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent("codegg-websearch/1.0 (mailto:codegg-research@example.invalid)")
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -49,14 +49,13 @@ impl SearchProvider for OpenAlexProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, 25);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[
-                ("search", query),
-                ("per_page", &limit.to_string()),
-                ("mailto", MAILTO),
-            ])
+            .map_err(SearchError::from)?
+            .query("search", query)
+            .query("per_page", &limit.to_string())
+            .query("mailto", MAILTO)
             .send()
             .await?;
         let status = resp.status();

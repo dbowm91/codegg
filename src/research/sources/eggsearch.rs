@@ -195,7 +195,7 @@ impl EggsearchSource {
             .find_map(|field| item.get(*field).and_then(Value::as_str))?
             .trim()
             .to_string();
-        let parsed = reqwest::Url::parse(&uri).ok()?;
+        let parsed = url::Url::parse(&uri).ok()?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return None;
         }

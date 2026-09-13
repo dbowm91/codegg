@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use tokio::fs;
 use tracing::info;
 
@@ -86,9 +86,14 @@ async fn download_server(
     let url = resolve_url(spec);
     info!(server = server.id, url = %url, "downloading from URL");
 
-    let client = Client::new();
-    let resp = client
+    let client = Client::builder()
+        .timeout(Timeout::from_secs(30))
+        .follow_redirects(true)
+        .max_redirects(10)
+        .build();
+    let mut resp = client
         .get(&url)
+        .map_err(|e| LspError::DownloadFailed(format!("failed to build download request: {e}")))?
         .send()
         .await
         .map_err(|e| LspError::DownloadFailed(format!("failed to download {}: {}", url, e)))?;
@@ -339,6 +344,56 @@ fn extract_tar_xz(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn download_follows_redirect_and_preserves_raw_bytes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            let redirect = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{address}/binary\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(redirect.as_bytes()).await.unwrap();
+
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\nbinary contents",
+                )
+                .await
+                .unwrap();
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        let url = format!("http://{address}/redirect");
+        let url_template: &'static str = Box::leak(url.into_boxed_str());
+        let server_def = LspServerDef {
+            id: "fixture",
+            languages: &[],
+            extensions: &[],
+            repo: "fixture/fixture",
+            command: "fixture",
+            args: &[],
+            download: None,
+        };
+        let spec = DownloadSpec {
+            url_template,
+            archive_type: ArchiveType::Raw,
+            binary_name: "fixture",
+        };
+
+        let path = download_server(&server_def, &spec, &dest).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"binary contents");
+        server.await.unwrap();
+    }
 
     /// Build a raw tar entry header. `name` may contain malicious
     /// components to test rejection. `entry_type` follows the tar

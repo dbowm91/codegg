@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 
 use crate::error::ClientError;
 
@@ -11,21 +9,18 @@ pub struct RemoteClient {
 
 impl RemoteClient {
     pub fn new(base_url: &str, token: Option<&str>) -> Result<Self, ClientError> {
-        let mut builder = Client::builder();
+        let mut builder = Client::builder()
+            .timeout(Timeout::from_secs(10))
+            .follow_redirects(true)
+            .max_redirects(10);
         if let Some(t) = token {
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", t).parse().map_err(|e| {
-                    ClientError::Connection(format!("invalid authorization header: {}", e))
-                })?,
-            );
-            builder = builder.default_headers(headers);
+            builder = builder
+                .default_header("authorization", &format!("Bearer {t}"))
+                .map_err(|e| {
+                    ClientError::Connection(format!("invalid authorization header: {e}"))
+                })?;
         }
-        let http = builder
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| ClientError::Connection(format!("failed to build client: {}", e)))?;
+        let http = builder.build();
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http,
@@ -37,7 +32,8 @@ impl RemoteClient {
         let resp = self
             .http
             .get(&url)
-            .timeout(Duration::from_secs(10))
+            .map_err(|e| ClientError::Unreachable(e.to_string()))?
+            .timeout(Timeout::from_secs(10))
             .send()
             .await
             .map_err(|e| ClientError::Unreachable(e.to_string()))?;
@@ -49,5 +45,18 @@ impl RemoteClient {
                 resp.status()
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_authorization_header_at_construction() {
+        let result = RemoteClient::new("http://127.0.0.1:1", Some("bad\r\ntoken"));
+        assert!(
+            matches!(result, Err(ClientError::Connection(message)) if message.contains("authorization"))
+        );
     }
 }

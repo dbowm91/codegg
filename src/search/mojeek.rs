@@ -5,10 +5,9 @@
 //! corroboration.
 
 use async_trait::async_trait;
+use eggfetch_core::{Client, Timeout};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::Client;
-use std::time::Duration;
 
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
@@ -41,13 +40,14 @@ impl MojeekProvider {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(20))
+                .timeout(Timeout::from_secs(20))
+                .follow_redirects(true)
+                .max_redirects(10)
                 .user_agent(
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
                      Chrome/124.0.0.0 Safari/537.36",
                 )
-                .build()
-                .unwrap_or_default(),
+                .build(),
         }
     }
 }
@@ -71,10 +71,11 @@ impl SearchProvider for MojeekProvider {
     }
     async fn search(&self, query: &str, num_results: usize) -> Result<Vec<SearchHit>, SearchError> {
         let limit = num_results.clamp(1, MAX_RESULTS_CAP);
-        let resp = self
+        let mut resp = self
             .client
             .get(ENDPOINT)
-            .query(&[("q", query)])
+            .map_err(SearchError::from)?
+            .query("q", query)
             .header("Accept", "text/html")
             .send()
             .await?;

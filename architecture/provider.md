@@ -419,8 +419,8 @@ Provider HTTP transport is owned by `eggfetch-core 0.1.4` with the explicit
 `http1`, `tls-rustls`, and `json` feature profile. Provider modules retain
 request formatting, authentication, status classification, SSE framing,
 stream-idle bounds, and cancellation. The transport migration does not
-reproduce reqwest's duration-valued TCP keep-idle setting; application-level
-deadlines remain the correctness bound for provider streams.
+reproduce the previous reqwest client's duration-valued TCP keep-idle setting;
+application-level deadlines remain the correctness bound for provider streams.
 
 ## Invariants & Gotchas
 

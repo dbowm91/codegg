@@ -1,8 +1,7 @@
 use async_trait::async_trait;
-use reqwest::Client;
+use eggfetch_core::{Client, Timeout};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::time::Duration;
 
 use crate::error::ToolError;
 use crate::security::ssrf::{revalidate_dns, validate_host_ip};
@@ -31,9 +30,10 @@ impl ImageTool {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .unwrap_or_default(),
+                .timeout(Timeout::from_secs(120))
+                .follow_redirects(true)
+                .max_redirects(10)
+                .build(),
             api_key: std::env::var("OPENAI_API_KEY").ok(),
             base_url: "https://api.openai.com/v1/images/generations".to_string(),
         }
@@ -109,7 +109,7 @@ impl Tool for ImageTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'prompt' parameter".to_string()))?;
 
-        let parsed_url = reqwest::Url::parse(&self.base_url)
+        let parsed_url = url::Url::parse(&self.base_url)
             .map_err(|e| ToolError::Execution(format!("invalid base_url: {}", e)))?;
 
         let host = parsed_url
@@ -136,12 +136,14 @@ impl Tool for ImageTool {
         revalidate_dns(host, port, &validated_ips)
             .map_err(|e| ToolError::Execution(format!("SSRF protection: {}", e)))?;
 
-        let response = self
+        let mut response = self
             .client
             .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", api_key))
+            .map_err(|e| ToolError::Execution(format!("request build failed: {}", e)))?
+            .header("Authorization", &format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .json(&body)
+            .map_err(|e| ToolError::Execution(format!("request serialization failed: {}", e)))?
             .send()
             .await
             .map_err(|e| ToolError::Execution(format!("request failed: {}", e)))?;

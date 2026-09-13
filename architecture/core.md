@@ -134,7 +134,7 @@ but **never** on UI/server/plugin crates:
 ```
 codegg-config, codegg-git, codegg-protocol, codegg-providers
 egggit, egglsp, eggsentry
-anyhow, base64, reqwest, async-trait, chrono, dashmap, dirs,
+anyhow, base64, async-trait, chrono, dashmap, dirs,
 md5, once_cell, parking_lot, rand, regex, serde, serde_json,
 sha2, similar, sqlx, thiserror, tokio, tokio-util, toml,
 tracing, uuid, rustpython-parser

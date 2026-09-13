@@ -133,9 +133,8 @@ Variants: `NotFound`, `Invalid`.
 
 Newtype wrapper for `AppError` implementing `IntoResponse`. Also has `From`
 impls for `StorageError`, `std::io::Error`, `serde_json::Error`,
-`anyhow::Error`, and the root package's legacy `reqwest::Error` adapter so
-`?` works directly in axum handlers. The adapter strips the transport URL
-before constructing `HttpError`.
+`anyhow::Error`, so `?` works directly in axum handlers. HTTP transport
+failures are converted at their owning boundary into CodeGG error types.
 
 ### AxumServerRuntimeError (`src/error.rs:171`)
 
@@ -212,7 +211,7 @@ None. Error types are determined by the codebase, not configuration.
 | `codegg_config::ConfigError` | `ConfigError` | Explicit `From` impl |
 | `codegg_config::AppError` | `AppError` | Matches Config/Io/Other |
 | `sqlx::Error` | `StorageError::Database` | Via `codegg-providers` |
-| `reqwest::Error` | `ProviderError::Api` | HTTP failures; `.url()` extracts endpoint |
+| `eggfetch_core::Error` | `ProviderError::Api` | HTTP failures are classified without retaining raw endpoint URLs |
 | `CircuitError::Open` | `ProviderError::CircuitOpen` | Circuit breaker integration |
 | `egglsp::LspError` | `LspError` | Several variants collapsed to `RequestFailed` |
 | `eggsentry::EggsecError` | `ToolError` | Io/FileTooLarge/Join mapped |

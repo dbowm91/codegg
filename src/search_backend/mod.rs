@@ -203,7 +203,7 @@ impl SearchRuntimeContext {
                 "web fetch is disabled ([search].backend = \"disabled\")".to_string(),
             )),
             SearchBackendConfig::Builtin => {
-                // Use the built-in reqwest-based path via a private helper.
+                // Use the built-in Eggfetch-based path via a private helper.
                 crate::tool::webfetch::execute_builtin(input, max_chars).await
             }
             SearchBackendConfig::Eggsearch => match self.mcp() {
