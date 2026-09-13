@@ -423,6 +423,13 @@ fn format_rpc_error(error: &JsonRpcError) -> String {
     }
 }
 
+fn resolved_addresses_for_snapshot(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> {
+    ips.iter()
+        .copied()
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 struct JsonRpcNotification {
     jsonrpc: String,
@@ -985,11 +992,7 @@ impl RemoteClient {
                 .await
                 .map_err(|e| McpError::Connection(format!("DNS revalidation task failed: {}", e)))?
                 .map_err(McpError::Connection)?;
-                Some(
-                    ips.into_iter()
-                        .map(|ip| SocketAddr::new(ip, port))
-                        .collect::<Vec<_>>(),
-                )
+                Some(resolved_addresses_for_snapshot(&ips, port))
             } else {
                 None
             };
@@ -1102,5 +1105,44 @@ impl RemoteClient {
 
         serde_json::from_str::<JsonRpcResponse>(&data)
             .map_err(|e| McpError::Server(format!("invalid SSE data: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_addresses_for_snapshot;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn mcp_snapshot_addresses_keep_logical_url_separate_from_wire_destination() {
+        let ips = [IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7))];
+        let addresses = resolved_addresses_for_snapshot(&ips, 443);
+        assert_eq!(addresses, [SocketAddr::from(([203, 0, 113, 7], 443))]);
+
+        let request = eggfetch_core::Client::new()
+            .post("https://mcp.example.invalid/rpc")
+            .unwrap()
+            .header("Mcp-Session-Id", "session-1")
+            .resolved_addresses(addresses)
+            .build()
+            .unwrap();
+        assert_eq!(request.url().host_str(), Some("mcp.example.invalid"));
+        assert_eq!(
+            request
+                .transport_hints()
+                .resolved_target
+                .as_ref()
+                .unwrap()
+                .addresses(),
+            &[SocketAddr::from(([203, 0, 113, 7], 443))]
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get_str("Mcp-Session-Id")
+                .unwrap()
+                .unwrap(),
+            "session-1"
+        );
     }
 }
