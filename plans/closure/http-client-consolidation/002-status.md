@@ -130,6 +130,7 @@ disposition. No new CI lane or permanent dependency scanner was added.
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | low | Eggfetch 0.1.4 cannot express reqwest's duration-valued TCP keep-idle setting | Long-lived idle TCP behavior is represented by application deadlines rather than that socket knob | Revisit only with a future typed upstream capability and reproducible regression evidence; no M002 action. |
+| low | GitHub Dependabot alert 16 reports an `lru` `IterMut` Stacked Borrows issue | Transitive `lru v0.12.5` comes from `ratatui`, not the M002 provider transport | Track through the existing Dependabot alert; outside M002 scope. |
 
 No critical, high, or medium findings remain. The remaining reqwest reverse
 dependencies are deliberately owned by M003.
