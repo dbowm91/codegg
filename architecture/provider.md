@@ -406,13 +406,21 @@ adapter explicitly sets `text_tool_repair` to `hermes_xml`, `invoke_json`,
 or `raw_json_envelope`. Validates against the current tool surface and
 argument schema. Unconfigured adapters never scan assistant prose.
 
-## HTTP Client (`provider_core.rs:23`)
+## HTTP Client (`provider_core.rs`)
 
 ```rust
-pub fn create_http_client() -> reqwest::Client {
-    // 60s timeout, 10s connect, 32 idle per host, 30s keepalive
+pub fn create_http_client() -> eggfetch_core::Client {
+    // 60s total, 10s connect, 32 idle per host, 30s idle-pool timeout,
+    // explicit ordinary-client redirect following capped at 10 hops.
 }
 ```
+
+Provider HTTP transport is owned by `eggfetch-core 0.1.4` with the explicit
+`http1`, `tls-rustls`, and `json` feature profile. Provider modules retain
+request formatting, authentication, status classification, SSE framing,
+stream-idle bounds, and cancellation. The transport migration does not
+reproduce reqwest's duration-valued TCP keep-idle setting; application-level
+deadlines remain the correctness bound for provider streams.
 
 ## Invariants & Gotchas
 

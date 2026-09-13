@@ -920,15 +920,15 @@ pub fn create_sse_stream<F, Fut>(
 ) -> Result<EventStream, ProviderError>
 where
     F: FnOnce() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = Result<reqwest::Response, ProviderError>> + Send,
+    Fut: std::future::Future<Output = Result<eggfetch_core::Response, ProviderError>> + Send,
 {
     // Raw bytes awaiting UTF-8 decoding.
     let pending_bytes: Vec<u8> = Vec::new();
     // Decoded text awaiting parsing.
     let buffer = String::new();
-    let response = tokio::runtime::Handle::current().block_on(send_request())?;
+    let mut response = tokio::runtime::Handle::current().block_on(send_request())?;
 
-    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    if response.status() == http::StatusCode::TOO_MANY_REQUESTS {
         return Err(ProviderError::RateLimit);
     }
 
@@ -943,7 +943,7 @@ where
         ));
     }
 
-    let stream = response.bytes_stream();
+    let stream = response.bytes_stream().map_err(ProviderError::from)?;
 
     Ok(Box::pin(futures_util::stream::unfold(
         (stream, pending_bytes, buffer),

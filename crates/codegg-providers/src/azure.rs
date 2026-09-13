@@ -13,7 +13,7 @@ use serde_json::json;
 pub struct AzureProvider {
     api_key: String,
     endpoint: String,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl AzureProvider {
@@ -161,16 +161,18 @@ impl Provider for AzureProvider {
             endpoint, model
         );
 
-        let resp = client
+        let mut resp = client
             .post(&url)
+            .map_err(ProviderError::from)?
             .header("api-key", &api_key)
             .header("content-type", "application/json")
             .json(&body)
+            .map_err(|e| ProviderError::api("serialization", e.to_string()))?
             .send()
             .await
             .map_err(ProviderError::from)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -186,7 +188,7 @@ impl Provider for AzureProvider {
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
 
         Ok(Box::pin(unfold(

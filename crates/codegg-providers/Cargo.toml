@@ -13,7 +13,8 @@ codegg-config = { version = "=0.1.0", path = "../codegg-config" }
 async-trait = "0.1"
 bytes = "1"
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
+eggfetch-core = { version = "0.1.4", default-features = false, features = ["http1", "tls-rustls", "json"] }
+http = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "2"

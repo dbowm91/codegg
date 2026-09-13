@@ -33,11 +33,17 @@ impl ModelCatalog {
     }
 
     pub async fn fetch_live(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()?;
+        let client = eggfetch_core::Client::builder()
+            .timeout(
+                eggfetch_core::Timeout::builder()
+                    .total(Duration::from_secs(10))
+                    .build(),
+            )
+            .follow_redirects(true)
+            .max_redirects(10)
+            .build();
 
-        let resp = client.get("https://models.dev/api/models").send().await?;
+        let mut resp = client.get("https://models.dev/api/models")?.send().await?;
 
         if resp.status().is_success() {
             let body: serde_json::Value = resp.json().await?;

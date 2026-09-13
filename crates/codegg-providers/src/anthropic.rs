@@ -13,7 +13,7 @@ use serde_json::json;
 pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
     id_override: Option<String>,
     name_override: Option<String>,
     models_override: Option<Vec<ModelInfo>>,
@@ -200,17 +200,19 @@ impl Provider for AnthropicProvider {
         let api_key = self.api_key.clone();
         let client = self.client.clone();
 
-        let resp = client
+        let mut resp = client
             .post(&url)
+            .map_err(ProviderError::from)?
             .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)
+            .map_err(|e| ProviderError::api("serialization", e.to_string()))?
             .send()
             .await
             .map_err(ProviderError::from)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -226,7 +228,7 @@ impl Provider for AnthropicProvider {
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
         let current_tool: Option<(String, String, String)> = None;
         let args_buffer = String::new();

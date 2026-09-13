@@ -12,7 +12,7 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct OpenRouterProvider {
     api_key: String,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
     app_name: Option<String>,
     app_url: Option<String>,
 }
@@ -166,7 +166,8 @@ impl Provider for OpenRouterProvider {
 
         let req_builder = client
             .post(url)
-            .header("authorization", format!("Bearer {}", api_key))
+            .map_err(ProviderError::from)?
+            .header("authorization", &format!("Bearer {}", api_key))
             .header("content-type", "application/json")
             .header(
                 "HTTP-Referer",
@@ -174,13 +175,14 @@ impl Provider for OpenRouterProvider {
             )
             .header("X-Title", app_name.as_deref().unwrap_or("Codegg"));
 
-        let resp = req_builder
+        let mut resp = req_builder
             .json(&body)
+            .map_err(|e| ProviderError::api("serialization", e.to_string()))?
             .send()
             .await
             .map_err(ProviderError::from)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -196,7 +198,7 @@ impl Provider for OpenRouterProvider {
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
 
         Ok(Box::pin(unfold(

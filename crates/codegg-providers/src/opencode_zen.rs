@@ -14,7 +14,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct OpencodeZenProvider {
     api_key: String,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
     base_url: String,
 }
 
@@ -169,17 +169,23 @@ impl Provider for OpencodeZenProvider {
 
         let req_builder = client
             .post(&url)
-            .header("authorization", format!("Bearer {}", api_key))
+            .map_err(ProviderError::from)?
+            .header("authorization", &format!("Bearer {}", api_key))
             .header("content-type", "application/json");
 
-        let resp = req_builder.json(&body).send().await.map_err(|e| {
-            tracing::error!("CodeggZen: request failed: {}", e);
-            ProviderError::from(e)
-        })?;
+        let mut resp = req_builder
+            .json(&body)
+            .map_err(|e| ProviderError::api("serialization", e.to_string()))?
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!("CodeggZen: request failed: {}", e);
+                ProviderError::from(e)
+            })?;
 
         tracing::debug!("CodeggZen: received response with status {}", resp.status());
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -196,7 +202,7 @@ impl Provider for OpencodeZenProvider {
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
 
         tracing::debug!("CodeggZen: starting stream processing");
@@ -303,9 +309,14 @@ impl Provider for OpencodeZenProvider {
         let url = format!("{}/models", self.base_url);
         let client = self.client.clone();
 
-        let resp = client.get(&url).send().await.map_err(ProviderError::from)?;
+        let mut resp = client
+            .get(&url)
+            .map_err(ProviderError::from)?
+            .send()
+            .await
+            .map_err(ProviderError::from)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 

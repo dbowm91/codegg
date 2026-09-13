@@ -84,14 +84,48 @@ impl From<&str> for ProviderError {
     }
 }
 
-impl From<reqwest::Error> for ProviderError {
-    fn from(e: reqwest::Error) -> Self {
-        let url = e.url().map(|u| u.to_string()).unwrap_or_default();
-        Self::Api {
-            code: "request_error".to_string(),
-            message: e.to_string(),
-            url,
+impl From<eggfetch_core::Error> for ProviderError {
+    fn from(error: eggfetch_core::Error) -> Self {
+        if matches!(error, eggfetch_core::Error::Timeout { .. }) {
+            return Self::Timeout(error.kind().to_string());
         }
+
+        // Eggfetch errors intentionally do not cross this boundary verbatim:
+        // some request URLs contain credentials (for example Google API keys).
+        // The stable category is enough for provider retry/error policy and
+        // keeps transport diagnostics free of URL and secret data.
+        Self::api(
+            "request_error",
+            format!("HTTP transport error ({})", error.kind()),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eggfetch_transport_errors_are_secret_safe_and_classified() {
+        let error: ProviderError = eggfetch_core::Error::InvalidUrl(
+            "https://example.test/models?key=secret-api-key".to_string(),
+        )
+        .into();
+        assert!(matches!(
+            error,
+            ProviderError::Api { ref code, ref message, ref url }
+                if code == "request_error"
+                    && message == "HTTP transport error (invalid_url)"
+                    && url.is_empty()
+        ));
+        assert!(!error.to_string().contains("secret-api-key"));
+
+        let timeout: ProviderError = eggfetch_core::Error::Timeout {
+            phase: eggfetch_core::TimeoutPhase::Connect,
+            elapsed: std::time::Duration::from_secs(10),
+        }
+        .into();
+        assert!(matches!(timeout, ProviderError::Timeout(ref phase) if phase == "timeout_connect"));
     }
 }
 

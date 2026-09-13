@@ -5,7 +5,6 @@
 //! endpoint and obtain a small, deterministic model catalog.
 
 use futures_util::StreamExt;
-use reqwest::redirect::Policy;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -64,7 +63,7 @@ impl fmt::Display for EggpoolProbeReasonCode {
     }
 }
 
-/// A redacted probe error.  It deliberately carries no reqwest or serde
+/// A redacted probe error.  It deliberately carries no transport or serde
 /// source error because those can contain a URL, response text, or headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EggpoolProbeError {
@@ -246,13 +245,13 @@ pub fn normalize_eggpool_base_url(input: &str) -> Result<String, EggpoolProbeErr
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-/// A reqwest-backed Eggpool probe.  The API key is private and has no public
+/// An Eggfetch-backed Eggpool probe.  The API key is private and has no public
 /// accessor, preventing accidental inclusion in redacted result objects.
 pub struct EggpoolProbe {
     base_url: String,
     api_key: EggpoolApiKey,
     options: EggpoolProbeOptions,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl fmt::Debug for EggpoolProbe {
@@ -277,12 +276,15 @@ impl EggpoolProbe {
         if api_key.0.chars().any(char::is_control) {
             return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
         }
-        let client = reqwest::Client::builder()
-            .connect_timeout(options.connect_timeout)
-            .timeout(options.request_timeout)
-            .redirect(Policy::none())
-            .build()
-            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?;
+        let client = eggfetch_core::Client::builder()
+            .timeout(
+                eggfetch_core::Timeout::builder()
+                    .connect(options.connect_timeout)
+                    .total(options.request_timeout)
+                    .build(),
+            )
+            .follow_redirects(false)
+            .build();
 
         Ok(Self {
             base_url,
@@ -317,12 +319,15 @@ impl EggpoolProbe {
         }
 
         let url = format!("{}/models", self.base_url);
-        let mut request = self.client.get(url);
+        let mut request = self
+            .client
+            .get(&url)
+            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?;
         if !self.api_key.0.is_empty() {
             let value = format!("Bearer {}", self.api_key.0);
             request = request
-                .header(reqwest::header::AUTHORIZATION, value)
-                .header(reqwest::header::ACCEPT, "application/json");
+                .header("authorization", &value)
+                .header("accept", "application/json");
         }
 
         let response = select_cancel(cancellation, request.send()).await?;
@@ -332,9 +337,9 @@ impl EggpoolProbe {
         }
 
         let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-            || status == reqwest::StatusCode::PROXY_AUTHENTICATION_REQUIRED
+        if status == http::StatusCode::UNAUTHORIZED
+            || status == http::StatusCode::FORBIDDEN
+            || status == http::StatusCode::PROXY_AUTHENTICATION_REQUIRED
         {
             return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Auth));
         }
@@ -395,7 +400,7 @@ async fn select_cancel<F, T>(
     operation: F,
 ) -> Result<T, EggpoolProbeError>
 where
-    F: std::future::Future<Output = Result<T, reqwest::Error>>,
+    F: std::future::Future<Output = Result<T, eggfetch_core::Error>>,
 {
     tokio::select! {
         _ = cancellation.cancelled() => Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled)),
@@ -404,12 +409,12 @@ where
 }
 
 async fn read_body_bounded(
-    response: reqwest::Response,
+    mut response: eggfetch_core::Response,
     limit: usize,
     cancellation: &EggpoolCancellationToken,
 ) -> Result<Vec<u8>, EggpoolProbeError> {
     let mut body = Vec::with_capacity(limit.min(16 * 1024));
-    let mut stream = response.bytes_stream();
+    let mut stream = response.bytes_stream().map_err(classify_body_error)?;
     while let Some(chunk) = tokio::select! {
         _ = cancellation.cancelled() => return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled)),
         chunk = stream.next() => chunk,
@@ -423,8 +428,8 @@ async fn read_body_bounded(
     Ok(body)
 }
 
-fn classify_request_error(error: reqwest::Error) -> EggpoolProbeError {
-    if error.is_timeout() {
+fn classify_request_error(error: eggfetch_core::Error) -> EggpoolProbeError {
+    if matches!(error, eggfetch_core::Error::Timeout { .. }) {
         return EggpoolProbeError::new(EggpoolProbeReasonCode::Timeout);
     }
     if looks_like_tls_error(&error) {
@@ -433,23 +438,21 @@ fn classify_request_error(error: reqwest::Error) -> EggpoolProbeError {
     EggpoolProbeError::new(EggpoolProbeReasonCode::Unreachable)
 }
 
-fn classify_body_error(error: reqwest::Error) -> EggpoolProbeError {
+fn classify_body_error(error: eggfetch_core::Error) -> EggpoolProbeError {
     classify_request_error(error)
 }
 
-fn looks_like_tls_error(error: &reqwest::Error) -> bool {
-    // Classification only; this string is never returned or logged.
-    let text = error.to_string().to_ascii_lowercase();
-    [
-        "tls",
-        "ssl",
-        "certificate",
-        "handshake",
-        "rustls",
-        "invalid peer",
-    ]
-    .iter()
-    .any(|marker| text.contains(marker))
+fn looks_like_tls_error(error: &eggfetch_core::Error) -> bool {
+    matches!(
+        error.kind(),
+        "tls"
+            | "tls_config"
+            | "certificate_verification"
+            | "hostname_verification"
+            | "ca_bundle"
+            | "client_cert"
+            | "private_key"
+    )
 }
 
 fn parse_summary(

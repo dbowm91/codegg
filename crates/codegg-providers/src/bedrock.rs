@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 pub struct BedrockProvider {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
     region: String,
     access_key: String,
     secret_key: String,
@@ -248,6 +248,7 @@ Ok::<_, ProviderError>(format!(
 
         let mut req_builder = client
             .post(&url)
+            .map_err(ProviderError::from)?
             .header("content-type", "application/json")
             .header("x-amz-date", &amz_date_for_req)
             .header("authorization", &authorization)
@@ -257,9 +258,9 @@ Ok::<_, ProviderError>(format!(
             req_builder = req_builder.header("x-amz-security-token", token);
         }
 
-        let resp = req_builder.send().await.map_err(ProviderError::from)?;
+        let mut resp = req_builder.send().await.map_err(ProviderError::from)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -275,7 +276,7 @@ Ok::<_, ProviderError>(format!(
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
 
         Ok(Box::pin(unfold(

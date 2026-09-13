@@ -1198,7 +1198,7 @@ impl Default for ResponsesTransportConfig {
 /// separate from the Chat Completions transport. Supports cancellation,
 /// per-request timeout, and stream-idle bounds.
 pub struct ResponsesTransport {
-    http_client: reqwest::Client,
+    http_client: eggfetch_core::Client,
     base_url: String,
     api_key: String,
     config: ResponsesTransportConfig,
@@ -1218,14 +1218,18 @@ impl ResponsesTransport {
         api_key: String,
         config: ResponsesTransportConfig,
     ) -> Self {
-        let http_client = reqwest::Client::builder()
-            .timeout(config.request_timeout)
-            .connect_timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(32)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_keepalive(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+        let http_client = eggfetch_core::Client::builder()
+            .timeout(
+                eggfetch_core::Timeout::builder()
+                    .connect(Duration::from_secs(10))
+                    .total(config.request_timeout)
+                    .build(),
+            )
+            .max_idle_connections_per_host(32)
+            .idle_timeout(Duration::from_secs(30))
+            .follow_redirects(true)
+            .max_redirects(10)
+            .build();
 
         Self {
             http_client,
@@ -1262,15 +1266,16 @@ impl ResponsesTransport {
         let body = serde_json::to_vec(request)
             .map_err(|e| crate::error::ProviderError::api("serialization", e.to_string()))?;
 
-        let response = self
+        let mut response = self
             .http_client
             .post(&url)
-            .bearer_auth(&self.api_key)
+            .map_err(crate::error::ProviderError::from)?
+            .header("authorization", &format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .body(body)
             .send()
             .await
-            .map_err(|e| crate::error::ProviderError::api("network", e.to_string()))?;
+            .map_err(crate::error::ProviderError::from)?;
 
         if !response.status().is_success() {
             let text = response
@@ -1306,15 +1311,16 @@ impl ResponsesTransport {
         let body = serde_json::to_vec(&req_body)
             .map_err(|e| crate::error::ProviderError::api("serialization", e.to_string()))?;
 
-        let response = self
+        let mut response = self
             .http_client
             .post(&url)
-            .bearer_auth(&self.api_key)
+            .map_err(crate::error::ProviderError::from)?
+            .header("authorization", &format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .body(body)
             .send()
             .await
-            .map_err(|e| crate::error::ProviderError::api("network", e.to_string()))?;
+            .map_err(crate::error::ProviderError::from)?;
 
         if !response.status().is_success() {
             let text = response
@@ -1332,7 +1338,9 @@ impl ResponsesTransport {
         let idle_timeout = self.config.stream_idle_timeout;
         let max_buffer = self.config.max_sse_buffer_size;
 
-        let byte_stream = response.bytes_stream();
+        let byte_stream = response
+            .bytes_stream()
+            .map_err(crate::error::ProviderError::from)?;
         let stream = futures_util::stream::unfold(
             (byte_stream, String::new()),
             move |(mut byte_stream, mut buffer)| {

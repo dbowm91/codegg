@@ -11,7 +11,7 @@ use serde_json::json;
 #[derive(Clone)]
 pub struct GoogleProvider {
     api_key: String,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl GoogleProvider {
@@ -202,16 +202,18 @@ impl Provider for GoogleProvider {
             model
         );
 
-        let resp = client
+        let mut resp = client
             .post(&url)
+            .map_err(ProviderError::from)?
             .header("content-type", "application/json")
             .header("x-goog-api-key", &api_key)
             .json(&body)
+            .map_err(|e| ProviderError::api("serialization", e.to_string()))?
             .send()
             .await
             .map_err(ProviderError::from)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -227,7 +229,7 @@ impl Provider for GoogleProvider {
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
 
         Ok(Box::pin(unfold(

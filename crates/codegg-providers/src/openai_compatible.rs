@@ -9,7 +9,7 @@ use crate::{
 use async_trait::async_trait;
 use futures_util::stream::unfold;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderName, HeaderValue};
+use http::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
 use std::sync::LazyLock;
@@ -78,7 +78,7 @@ pub struct OpenAiCompatibleProvider {
     pub name: String,
     pub config: OpenAiCompatibleConfig,
     session_affinity_header: Option<HeaderName>,
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
 }
 
 impl OpenAiCompatibleProvider {
@@ -137,7 +137,7 @@ impl OpenAiCompatibleProvider {
         request: &ChatRequest,
         url: &str,
         body: &serde_json::Value,
-    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+    ) -> Result<eggfetch_core::RequestBuilder, ProviderError> {
         let auth_name =
             HeaderName::from_bytes(self.config.auth_header.as_bytes()).map_err(|_| {
                 ProviderError::api(
@@ -160,10 +160,18 @@ impl OpenAiCompatibleProvider {
             reserved.push(name.clone());
         }
 
-        let mut builder = self.client.post(url).header(auth_name, auth_value).header(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("application/json"),
-        );
+        let auth_value = auth_value.to_str().map_err(|_| {
+            ProviderError::api(
+                "invalid_header",
+                "configured authentication value is invalid",
+            )
+        })?;
+        let mut builder = self
+            .client
+            .post(url)
+            .map_err(ProviderError::from)?
+            .header(auth_name.as_str(), auth_value)
+            .header("content-type", "application/json");
 
         let mut extra_names = Vec::with_capacity(self.config.extra_headers.len());
         for (name, value) in &self.config.extra_headers {
@@ -180,7 +188,10 @@ impl OpenAiCompatibleProvider {
                 ));
             }
             extra_names.push(header_name.clone());
-            builder = builder.header(header_name, header_value);
+            let header_value = header_value.to_str().map_err(|_| {
+                ProviderError::api("invalid_header", "configured extra header value is invalid")
+            })?;
+            builder = builder.header(header_name.as_str(), header_value);
         }
 
         if let Some(session_header) = &self.session_affinity_header {
@@ -196,10 +207,18 @@ impl OpenAiCompatibleProvider {
                     "session context is not a valid HTTP header value",
                 )
             })?;
-            builder = builder.header(session_header.clone(), session_value);
+            let session_value = session_value.to_str().map_err(|_| {
+                ProviderError::api(
+                    "invalid_session_context",
+                    "session context is not a valid HTTP header value",
+                )
+            })?;
+            builder = builder.header(session_header.as_str(), session_value);
         }
 
-        Ok(builder.json(body))
+        builder
+            .json(body)
+            .map_err(|e| ProviderError::api("serialization", e.to_string()))
     }
 
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
@@ -517,7 +536,7 @@ impl Provider for OpenAiCompatibleProvider {
             first_tool_arg_shape
         );
 
-        let resp = {
+        let mut resp = {
             tracing::debug!(
                 "OpenAiCompatible({}): sending request to {}, auth_header={}, model={}",
                 self.name,
@@ -531,7 +550,7 @@ impl Provider for OpenAiCompatibleProvider {
                 .map_err(ProviderError::from)?
         };
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
             return Err(ProviderError::RateLimit);
         }
 
@@ -554,7 +573,7 @@ impl Provider for OpenAiCompatibleProvider {
             ));
         }
 
-        let stream = resp.bytes_stream();
+        let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
         let provider_name = self.name.clone();
         let adapter = request_policy(&self.id, &request.model);
@@ -636,12 +655,13 @@ impl Provider for OpenAiCompatibleProvider {
 
         let url = format!("{}/models", self.config.base_url);
 
-        let resp = match self
+        let mut resp = match self
             .client
             .get(&url)
+            .map_err(ProviderError::from)?
             .header(
                 &self.config.auth_header,
-                self.config.credential.authorization_header_value(),
+                &self.config.credential.authorization_header_value(),
             )
             .send()
             .await
