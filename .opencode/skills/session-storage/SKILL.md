@@ -18,14 +18,19 @@ in `architecture/session.md`, `architecture/storage.md`,
 `architecture/identity.md`; this skill covers the invariants that are
 easy to violate.
 
+Current schema, migration, table, and event totals are deliberately not copied
+here. When a count matters, derive it from the owning source or the verified
+census in `architecture/overview.md` rather than turning this operational guide
+into a second source of truth.
+
 ## Ownership Map
 
 | Layer | Location | Role |
 |-------|----------|------|
 | Session stores | `crates/codegg-core/src/session/store.rs`, `models.rs`, `message.rs`, `row.rs`, `status.rs`, `state.rs` | `SessionStore`, `TodoStore`, `MessageStore`, `PartStore`, `PermissionStore`, `UsageStore`, `EventStore`; `TuiSessionState` derived from events |
-| Schema | `crates/codegg-core/src/session/schema.rs` | Sequential `migrate_vN` chain (71 `CREATE TABLE` names); each migration in `BEGIN IMMEDIATE` |
-| Storage | `crates/codegg-core/src/storage/mod.rs`, `paths.rs`, `preferences.rs` | `STORAGE_LAYOUT_VERSION` (56), pool init, WAL, `DaemonPaths`, `UserPreferences` |
-| Events | `crates/codegg-core/src/session/events.rs` | 20 typed `SessionEvent` variants + `EventMeta` |
+| Schema | `crates/codegg-core/src/session/schema.rs` | Sequential `migrate_vN` chain and schema declarations; each migration in `BEGIN IMMEDIATE` |
+| Storage | `crates/codegg-core/src/storage/mod.rs`, `paths.rs`, `preferences.rs` | Canonical `STORAGE_LAYOUT_VERSION`, pool init, WAL, `DaemonPaths`, `UserPreferences` |
+| Events | `crates/codegg-core/src/session/events.rs` | Typed `SessionEvent` variants + `EventMeta`; the enum definition owns the current variant set |
 | Catalog | `crates/codegg-core/src/project_catalog.rs`, `project_storage.rs` | Daemon-owned project list/get/register/archive/restore; path-independent identity |
 | Identity | `crates/codegg-core/src/identity.rs` | Opaque string newtypes (UUIDv4), validated parsing, lexical contract |
 | Run artifacts | `crates/codegg-core/src/run_store.rs`, `src/run_rerun.rs` | Persistent run index + artifact storage; rerun linkage |
@@ -37,9 +42,9 @@ easy to violate.
    `scripts/check_project_catalog_invariants.py`).
 2. **Storage tests use `isolated_pool()`.** Migrations run inside; never
    add an extra `migrate()` call.
-3. **Four pool entry points only.** `init_daemon_catalog`,
+3. **Use only the canonical pool entry points.** `init_daemon_catalog`,
    `init_migrated_daemon_catalog` (production bootstrap authority),
-   `init_legacy_project_store`, `init_pool_at`. Deprecated `init()` is
+   `init_legacy_project_store`, and `init_pool_at`. Deprecated `init()` is
    tests-only; new code MUST NOT use it.
 4. **Sessions resolve through workspace binding.** `CoreDaemon::
    bind_runtime_for_session` resolves `session_id` via `SessionStore` +
@@ -55,7 +60,7 @@ easy to violate.
 
 ```bash
 bash scripts/check-core-boundary.sh                # codegg-core stays UI/server/plugin/auth-free
-bash scripts/check_project_catalog_invariants.py   # layout version + catalog invariants
+python3 scripts/check_project_catalog_invariants.py # layout version + catalog invariants
 ```
 
 ## Testing

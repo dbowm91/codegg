@@ -20,7 +20,7 @@ to violate.
 
 | Layer | Location | Role |
 |-------|----------|------|
-| Trait + registry | `crates/codegg-providers/src/provider_core.rs` | `Provider` trait, `ProviderRegistry`, `register_builtin` (15 env-var providers), `register_builtin_with_config` (17 config-aware), `CredentialCapability` |
+| Trait + registry | `crates/codegg-providers/src/provider_core.rs` | `Provider` trait, `ProviderRegistry`, `register_builtin`, `register_builtin_with_config`, `CredentialCapability`; derive current provider totals from the registry rather than pinning them here |
 | Backends | `anthropic.rs`, `openai.rs`, `google.rs`, `openrouter.rs`, `opencode_zen.rs`, `additional.rs`, `openai_compatible.rs`, `azure.rs`, `vertex.rs`, `bedrock.rs`, `copilot.rs`, `cloudflare.rs`, `gitlab.rs`, `eggpool.rs` | Per-provider request/stream/models mapping |
 | Auth types | `crates/codegg-providers/src/auth_types.rs` | `AuthConfig`, `Credential`, `CredentialKind`, `CredentialStore`, `AuthResolver`, `AuthError`; `ExternalCommand` unsupported |
 | Auth CLI | `src/auth/cli.rs`, `src/auth/mod.rs` | `codegg auth set-key/status/logout`; `src/auth` re-exports providers types |
@@ -30,9 +30,10 @@ to violate.
 
 ## Hard Rules
 
-1. **Two registration paths only.** `register_builtin` (env-var, 15) and
-   `register_builtin_with_config` (config-first, 17). Adding any
-   config-defined provider disables all env-var auto-registration.
+1. **Two registration paths only.** `register_builtin` is the env-var path and
+   `register_builtin_with_config` is the config-first path. Adding any
+   config-defined provider disables all env-var auto-registration. Current
+   provider totals are registry state, not part of this contract.
 2. **`ExternalCommand` auth is unsupported.** Never add it as a production
    credential source.
 3. **Never log secrets.** `codegg auth status` never prints stored secrets;

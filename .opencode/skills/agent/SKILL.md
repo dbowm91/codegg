@@ -26,7 +26,7 @@ invariants that are easy to violate.
 | Compaction | `src/context/compaction.rs` (owner), `src/agent/compaction.rs` (compat re-export), `context_runtime.rs`, `context_frame.rs` | Canonical `ContextTracker`/budget engine; turn-lifecycle `compact_if_needed`; post-compaction `ContextFrame` snapshot |
 | Delegated runs | `src/agent/worker.rs`, `run_control.rs`, `run_integration.rs`, `convergence.rs` | `SubAgentPool`/`SubAgentSpawner`, run control (owner/ancestor lineage, `wait` bounded long-poll), convergence tracking |
 | Assets | `src/agent/asset_snapshot*.rs`, `asset_context.rs`, `asset_refresh.rs`, `instructions.rs`, `definition.rs`, `registry.rs`, `file_agents.rs` | Immutable `ProjectAssetSnapshot`, explicit `AssetContext`, single-flight `AssetRefreshCoordinator`, instruction fragments, agent resolution |
-| Built-ins | `assets/agents/*.toml` + `assets/prompts/` → `src/agent/builtins/generated.rs` | 10 compiled agents; never edit `generated.rs` directly |
+| Built-ins | `assets/agents/*.toml` + `assets/prompts/` → `src/agent/builtins/generated.rs` | Generated built-in agents; never edit `generated.rs` directly. Derive the current set from the assets/generator rather than pinning a count here. |
 
 ## Hard Rules
 

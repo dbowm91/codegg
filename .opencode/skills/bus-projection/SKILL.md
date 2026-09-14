@@ -22,8 +22,8 @@ violate.
 
 | Layer | Location | Role |
 |-------|----------|------|
-| Bus | `crates/codegg-core/src/bus/global.rs`, `events.rs`, `mod.rs` | `GlobalEventBus` (tokio broadcast, cap 4096, sync `publish()`), `AppEvent` (53 variants), `PermissionRegistry` + `QuestionRegistry` (sync) |
-| Projection contract | `crates/codegg-protocol/src/projection/` | `ProjectionEnvelope`/`ProjectionEvent` (46 variants), `SessionProjectionSnapshot`, deterministic canonical reducer (no I/O), `caps`/`limits`/`dto`/`adapters`/`fixtures` |
+| Bus | `crates/codegg-core/src/bus/global.rs`, `events.rs`, `mod.rs` | `GlobalEventBus` (tokio broadcast, cap 4096, sync `publish()`), `AppEvent`, `PermissionRegistry` + `QuestionRegistry` (sync); `events.rs` owns the current event set |
+| Projection contract | `crates/codegg-protocol/src/projection/` | `ProjectionEnvelope`/`ProjectionEvent`, `SessionProjectionSnapshot`, deterministic canonical reducer (no I/O), `caps`/`limits`/`dto`/`adapters`/`fixtures`; the projection enum owns the current variant set |
 | Replay | `crates/codegg-core/src/projection_replay/` | Durable replay for reconnect/resume |
 | Daemon seam | `src/core/daemon_projection.rs`, `daemon.rs` | Projection request family handler; SSE uses the global bus (no per-state `event_bus` field) |
 | Collaboration | `crates/codegg-core/src/collaboration.rs`, `src/tui/app/state/chat.rs` | Project channels/messages (threads, mentions, refs, edits/redactions, read markers, retention, bounded sync); bodies stay inert text |
