@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M003 closed, M004 active | M004 proceeds independently; M005 blocked on a generalized external updater interface. |
+| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M004 closed, M005 blocked | M001-M004 closed; M005 blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
@@ -65,13 +65,13 @@ Canonical direction remains in:
 | Dependency security and workspace consolidation | M001 security and duplicate graph convergence | closed | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/001-status.md`; implementation `3bd54ccd`. |
 | Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | closed | `plans/implementation/dependency-security-workspace-consolidation/002-workspace-dependency-ownership-normalization.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/002-status.md`; implementation `05e7b258`. |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | closed | `plans/implementation/dependency-security-workspace-consolidation/003-optional-image-feature-graph-slimming.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/003-status.md`. |
-| Dependency security and workspace consolidation | M004 reusable crate boundary qualification | active | `plans/implementation/dependency-security-workspace-consolidation/004-reusable-crate-boundary-qualification.md` | Predecessor M002 closed; proceeds independently of M003 without automatic publication. |
+| Dependency security and workspace consolidation | M004 reusable crate boundary qualification | closed | `plans/implementation/dependency-security-workspace-consolidation/004-reusable-crate-boundary-qualification.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/004-status.md`; implementation `b95d37ec`. |
 
 ## Current execution order and dependency gates
 
 1. Dependency security/workspace M001 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/001-status.md`). It delivered Ratatui/LRU security convergence, CodeGG-owned DashMap 5→6 convergence, SQLx feature contraction, and audit-ignore reconciliation without broadening into general dependency modernization.
 2. M002 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/002-status.md`). Workspace inheritance is established once on the converged baseline (Ratatui 0.30 / crossterm 0.29 / DashMap 6 / SQLx derive-only) with a minimal-feature policy and no lockfile churn at its commit.
-3. M003 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/003-status.md`). The optional image graph is contracted to PNG/JPEG/GIF/WebP (+BMP retained as a proven built-in extra) with `image` defaults off and `ratatui-image` on the `crossterm` backend only; the default graph is unchanged. M004 proceeds independently: it owns reusable-package qualification without automatic publication.
+3. M003 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/003-status.md`). The optional image graph is contracted to PNG/JPEG/GIF/WebP (+BMP retained as a proven built-in extra) with `image` defaults off and `ratatui-image` on the `crossterm` backend only; the default graph is unchanged. M004 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/004-status.md`): `egggit`, `eggsentry`, `codegg-protocol`, and `eggcontext` are qualified publishable (the last with an explicit deterministic-tokenizer vs model-policy split), `codegg-git`/`codegg-config`/`codegg-providers` are retained internal, and no new crate was introduced without publication.
 4. M005 requires only the generalized external updater contract now (its M002 hard dependency is satisfied). CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent.
 5. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on the published crates.io `eggfetch-core 0.1.4` surface; do not substitute a Git/path dependency.
 6. No previously registered implementation plan was unblocked by HTTP M003 closure; the remaining unrelated conditional blockers are listed below.
@@ -115,6 +115,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| Dependency security and workspace consolidation | M004 reusable crate boundary qualification | closed | `plans/closure/dependency-security-workspace-consolidation/004-status.md` | `b95d37ec` |
 | Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | closed | `plans/closure/dependency-security-workspace-consolidation/002-status.md` | `05e7b258` |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | closed | `plans/closure/dependency-security-workspace-consolidation/003-status.md` | `e9b72c56` |
 | Dependency security and workspace consolidation | M001 security and duplicate graph convergence | closed | `plans/closure/dependency-security-workspace-consolidation/001-status.md` | `3bd54ccd` |

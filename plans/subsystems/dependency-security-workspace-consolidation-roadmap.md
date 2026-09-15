@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation Roadmap
 
-Status: active; M001-M003 closed, M004 ready, M005 externally blocked
+Status: active; M001-M004 closed, M005 externally blocked
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 
@@ -155,9 +155,9 @@ Goals:
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/004-reusable-crate-boundary-qualification.md`
 
-Status: **ready** (unblocked by M002 accepted closure `plans/closure/dependency-security-workspace-consolidation/002-status.md`; unaffected by M003).
+Status: **closed**. Closure: `plans/closure/dependency-security-workspace-consolidation/004-status.md` (implementation `b95d37ec`).
 
-Goals:
+Goals (met):
 - refactor `eggcontext` model-name policy away from low-level tokenizer primitives if needed for a stable reusable contract;
 - improve package metadata/docs/tests only where required for standalone consumption;
 - explicitly retain `codegg-git`, `codegg-config`, and `codegg-providers` as CodeGG-owned unless evidence demonstrates a second consumer and stable generic boundary;
