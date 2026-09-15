@@ -240,9 +240,19 @@ landlock = { version = "0.4.7", default-features = false }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process", "fs"] }
 
-# Image support (optional)
-ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
-image = { version = "0.25", optional = true, features = ["png", "jpeg", "gif", "webp"] }
+# Image support (optional; M003 narrowed to the formats CodeGG decodes).
+# `image` keeps `default-features = false` so `rayon` + `default-formats`
+# (avif/dds/exr/hdr/ico/pnm/qoi/tga/tiff, ...) stay out of the optional
+# graph. `png`/`jpeg`/`gif`/`webp` are the advertised TUI formats; `bmp`
+# is retained as a proven runtime extra because
+# `is_supported_image_format` already accepts `image/bmp` and `bmp` is a
+# built-in decoder with no additional dependency family.
+# `ratatui-image` keeps only the `crossterm` backend; `image-defaults`
+# (`image/default`) is dropped because CodeGG's direct `image` dependency
+# already owns the required decoders and ratatui-image itself only needs
+# `png` (its own minimal `image` dep is `default-features = false` + `png`).
+ratatui-image = { version = "10", default-features = false, features = ["crossterm"], optional = true }
+image = { version = "0.25", default-features = false, optional = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Extracted tool crates
 codegg-config.workspace = true

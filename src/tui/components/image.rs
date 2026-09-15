@@ -196,3 +196,144 @@ pub fn detect_terminal_protocol() -> &'static str {
     }
     "none"
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{is_supported_image_format, parse_data_uri};
+
+    #[test]
+    fn supported_mime_allowlist_matches_retained_set() {
+        for mime in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+        ] {
+            assert!(
+                is_supported_image_format(mime),
+                "{mime} must stay supported"
+            );
+        }
+        for mime in [
+            "image/svg+xml",
+            "image/x-icon",
+            "image/tiff",
+            "image/avif",
+            "text/plain",
+            "",
+        ] {
+            assert!(
+                !is_supported_image_format(mime),
+                "{mime} must stay rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_data_uri_handles_base64_and_rejects_malformed() {
+        let uri = "data:image/png;base64,aGk=";
+        let (mime, data) = parse_data_uri(uri).expect("valid data URI parses");
+        assert_eq!(mime, "image/png");
+        assert_eq!(data, b"hi");
+
+        assert!(parse_data_uri("https://example.com/x.png").is_none());
+        assert!(parse_data_uri("data:image/png;base64").is_none());
+        assert!(parse_data_uri("data:image/png;base64,!!!not-base64!!!").is_none());
+    }
+
+    #[cfg(feature = "image")]
+    mod image_feature_tests {
+        use image::{ExtendedColorType, ImageEncoder};
+
+        fn red_2x2_rgb() -> Vec<u8> {
+            vec![
+                255, 0, 0, 255, 0, 0, //
+                255, 0, 0, 255, 0, 0, //
+            ]
+        }
+
+        fn decode_ok(bytes: &[u8]) -> image::DynamicImage {
+            image::load_from_memory(bytes).expect("retained format must decode")
+        }
+
+        #[test]
+        fn png_roundtrip_decodes() {
+            let mut buf = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut buf)
+                .write_image(&red_2x2_rgb(), 2, 2, ExtendedColorType::Rgb8)
+                .expect("png encode");
+            let img = decode_ok(&buf);
+            assert_eq!((img.width(), img.height()), (2, 2));
+        }
+
+        #[test]
+        fn jpeg_roundtrip_decodes() {
+            let mut buf = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut buf)
+                .write_image(&red_2x2_rgb(), 2, 2, ExtendedColorType::Rgb8)
+                .expect("jpeg encode");
+            let img = decode_ok(&buf);
+            assert_eq!((img.width(), img.height()), (2, 2));
+        }
+
+        #[test]
+        fn gif_roundtrip_decodes() {
+            let mut buf = Vec::new();
+            image::codecs::gif::GifEncoder::new(&mut buf)
+                .write_image(&red_2x2_rgb(), 2, 2, ExtendedColorType::Rgb8)
+                .expect("gif encode");
+            let img = decode_ok(&buf);
+            assert_eq!((img.width(), img.height()), (2, 2));
+        }
+
+        #[test]
+        fn webp_roundtrip_decodes() {
+            let mut buf = Vec::new();
+            image::codecs::webp::WebPEncoder::new_lossless(&mut buf)
+                .write_image(&red_2x2_rgb(), 2, 2, ExtendedColorType::Rgb8)
+                .expect("webp encode");
+            let img = decode_ok(&buf);
+            assert_eq!((img.width(), img.height()), (2, 2));
+        }
+
+        #[test]
+        fn bmp_roundtrip_decodes() {
+            let mut buf = Vec::new();
+            image::codecs::bmp::BmpEncoder::new(&mut buf)
+                .write_image(&red_2x2_rgb(), 2, 2, ExtendedColorType::Rgb8)
+                .expect("bmp encode");
+            let img = decode_ok(&buf);
+            assert_eq!((img.width(), img.height()), (2, 2));
+        }
+
+        #[test]
+        fn render_preparation_accepts_decoded_image() {
+            let mut buf = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut buf)
+                .write_image(&red_2x2_rgb(), 2, 2, ExtendedColorType::Rgb8)
+                .expect("png encode");
+            let img = decode_ok(&buf);
+            let _source =
+                ratatui_image::protocol::ImageSource::new(img, (9, 18), image::Rgba([0, 0, 0, 0]));
+        }
+
+        #[test]
+        fn malformed_and_unsupported_inputs_fail_safely() {
+            assert!(image::load_from_memory(b"not an image").is_err());
+            assert!(image::load_from_memory(&[0u8; 32]).is_err());
+            // Truncated PNG header must not panic.
+            assert!(image::load_from_memory(&[0x89, b'P', b'N', b'G']).is_err());
+
+            let mut viewer = super::super::ImageViewer::new();
+            assert!(viewer
+                .load_from_data_uri("data:image/svg+xml;base64,aGk=")
+                .is_err());
+            assert!(viewer.load_from_data_uri("not-a-data-uri").is_err());
+            // Supported mime with corrupt payload fails through the decode path.
+            assert!(viewer
+                .load_from_data_uri("data:image/png;base64,!!!not-base64!!!")
+                .is_err());
+        }
+    }
+}

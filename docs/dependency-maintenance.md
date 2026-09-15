@@ -46,6 +46,15 @@ The accepted dependency baseline keeps feature ownership explicit:
   used directly instead of the removed umbrella dependencies;
 - the legacy MD5 dependency remains only for compatibility reads/migration;
   new durable memory namespaces use domain-separated SHA-256.
+- the optional `image` stack disables defaults: `image` is
+  `default-features = false` with only `png`, `jpeg`, `gif`, `webp`
+  plus `bmp` (the `bmp` decoder is built-in with no extra dependency
+  family and is retained because `is_supported_image_format` already
+  accepts `image/bmp`); `ratatui-image` enables only the `crossterm`
+  backend and no longer enables `image-defaults` (`image/default`,
+  which pulled `rayon` + all 15 `default-formats`). The TUI decoding
+  contract is PNG/JPEG/GIF/WebP (+BMP retained); no broader format
+  support is advertised.
 
 These are review checkpoints for bounded maintenance, not a continuously
 enforced binary-size or dependency-update gate.
