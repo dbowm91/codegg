@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation Roadmap
 
-Status: active; M001 dependency-ready, M002-M004 predecessor-gated, M005 externally blocked
+Status: active; M001 closed, M002 ready, M003-M004 predecessor-gated, M005 externally blocked
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 
@@ -117,7 +117,7 @@ M003 and M004 are ordered after M002 to avoid repeated manifest churn. They may 
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md`
 
-Status: **ready**.
+Status: **closed**. Closure: `plans/closure/dependency-security-workspace-consolidation/001-status.md` (implementation `3bd54ccd`).
 
 Goals:
 
@@ -131,7 +131,7 @@ Goals:
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/002-workspace-dependency-ownership-normalization.md`
 
-Status: **blocked on M001 accepted closure**.
+Status: **ready** (unblocked by M001 closure `plans/closure/dependency-security-workspace-consolidation/001-status.md`; build on the converged Ratatui 0.30 / crossterm 0.29 / DashMap 6 / SQLx derive-only baseline).
 
 Goals:
 

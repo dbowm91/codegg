@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation M001 — Security and Duplicate Graph Convergence
 
-Status: active
+Status: implemented
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 

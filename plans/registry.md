@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001 active | M002-M004 predecessor-gated; M005 additionally blocked on a generalized external updater interface. |
+| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001 closed, M002 ready | M003/M004 predecessor-gated on M002; M005 additionally blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
@@ -62,12 +62,13 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | M001 security and duplicate graph convergence | active | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | No predecessor; begin with fresh advisory/reverse-tree census and stop if current graph materially differs from the reviewed baseline. |
+| Dependency security and workspace consolidation | M001 security and duplicate graph convergence | closed | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/001-status.md`; implementation `3bd54ccd`. |
+| Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | ready | `plans/implementation/dependency-security-workspace-consolidation/002-workspace-dependency-ownership-normalization.md` | Predecessor M001 closed; build workspace inheritance on the converged Ratatui 0.30 / crossterm 0.29 / DashMap 6 / SQLx derive-only baseline. |
 
 ## Current execution order and dependency gates
 
-1. Dependency security/workspace M001 is the current dependency-ready handoff. It owns Ratatui/LRU security convergence, CodeGG-owned DashMap 5→6 convergence, SQLx feature contraction, and audit-ignore reconciliation. It must not broaden into general dependency modernization.
-2. M002 remains blocked until M001 has accepted closure so workspace inheritance is built on the final converged versions/features rather than creating churn twice.
+1. Dependency security/workspace M001 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/001-status.md`). It delivered Ratatui/LRU security convergence, CodeGG-owned DashMap 5→6 convergence, SQLx feature contraction, and audit-ignore reconciliation without broadening into general dependency modernization.
+2. M002 is now dependency-ready on the converged baseline (Ratatui 0.30 / crossterm 0.29 / DashMap 6 / SQLx derive-only) so workspace inheritance is built once on final versions/features.
 3. M003 and M004 remain blocked until M002 closes. They may then proceed independently: M003 owns optional image-feature slimming; M004 owns reusable-package qualification without automatic publication.
 4. M005 additionally requires a generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent.
 5. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on the published crates.io `eggfetch-core 0.1.4` surface; do not substitute a Git/path dependency.
@@ -80,7 +81,6 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | M001 accepted closure. |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | M002 accepted closure. |
 | Dependency security and workspace consolidation | M004 reusable crate boundary qualification | M002 accepted closure. |
 | Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure plus a generalized external updater package/interface that is not Gregg/greggd-specific. |
@@ -115,6 +115,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| Dependency security and workspace consolidation | M001 security and duplicate graph convergence | closed | `plans/closure/dependency-security-workspace-consolidation/001-status.md` | `3bd54ccd` |
 | HTTP client consolidation and Eggfetch adoption | M001 transport boundary and pinned HTTP adoption | closed | `plans/closure/http-client-consolidation/001-status.md` | `756e036`, `2a37be3` |
 | HTTP client consolidation and Eggfetch adoption | M002 provider streaming and Eggpool adoption | closed | `plans/closure/http-client-consolidation/002-status.md` | `42dc22a` |
 | HTTP client consolidation and Eggfetch adoption | M003 remaining HTTP consumers and reqwest retirement | closed | `plans/closure/http-client-consolidation/003-status.md` | `ff448fc` |
