@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001 ready | M002-M004 predecessor-gated; M005 additionally blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
@@ -61,21 +62,28 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| — | — | — | — | No dependency-ready implementation plans currently registered. |
+| Dependency security and workspace consolidation | M001 security and duplicate graph convergence | ready | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | No predecessor; begin with fresh advisory/reverse-tree census and stop if current graph materially differs from the reviewed baseline. |
 
 ## Current execution order and dependency gates
 
-1. HTTP client consolidation M001-M003 are closed with accepted closure evidence. CodeGG's direct HTTP ownership is on the published crates.io `eggfetch-core 0.1.4` surface; do not substitute a Git/path dependency.
-2. No registered implementation plan was unblocked by M003 closure; the remaining conditional blockers are the unrelated architecture-convergence and runtime-safety evidence listed below.
-3. M009 is closed: its approved Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption landed; M008's historical conditional record remains unchanged.
-4. M007 is closed against the final M006 MCP representation.
+1. Dependency security/workspace M001 is the current dependency-ready handoff. It owns Ratatui/LRU security convergence, CodeGG-owned DashMap 5→6 convergence, SQLx feature contraction, and audit-ignore reconciliation. It must not broaden into general dependency modernization.
+2. M002 remains blocked until M001 has accepted closure so workspace inheritance is built on the final converged versions/features rather than creating churn twice.
+3. M003 and M004 remain blocked until M002 closes. They may then proceed independently: M003 owns optional image-feature slimming; M004 owns reusable-package qualification without automatic publication.
+4. M005 additionally requires a generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent.
+5. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on the published crates.io `eggfetch-core 0.1.4` surface; do not substitute a Git/path dependency.
+6. No previously registered implementation plan was unblocked by HTTP M003 closure; the remaining unrelated conditional blockers are listed below.
+7. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
 
-Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This HTTP-client work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, generic secret-store/DI system, or generic CodeGG-wide HTTP service layer.
+Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This dependency-consolidation work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, generic secret-store/DI system, generic CodeGG-wide HTTP service layer, or speculative networking abstraction.
 
 ## Blocked work
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | M001 accepted closure. |
+| Dependency security and workspace consolidation | M003 optional image feature-graph slimming | M002 accepted closure. |
+| Dependency security and workspace consolidation | M004 reusable crate boundary qualification | M002 accepted closure. |
+| Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure plus a generalized external updater package/interface that is not Gregg/greggd-specific. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
@@ -85,6 +93,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
+| Dependency security and workspace consolidation | M001 ready | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md`; current `Cargo.toml`/`Cargo.lock`; prior dependency/HTTP/footprint closure records |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 and M009 closure records |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
@@ -123,11 +132,13 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | TUI/frontend convergence corrective | M009 keyboard sidebar and agent-tree inspector | closed | `plans/closure/tui-project-sessions/009-status.md` | `2d10e72` |
 | TUI/frontend convergence corrective | M010 command discovery and keybinding convergence | closed | `plans/closure/tui-project-sessions/010-status.md` | `876a956b` |
 
-Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective passes own new closure evidence rather than editing history.
+Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective/new-evidence passes own new closure evidence rather than editing history.
 
 ## Verification policy
 
 Verification remains deliberately light. Newly registered milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add new CI lanes, scanners, coverage/benchmark/binary-size gates, dependency bots, release automation, or fixed release cadence.
+
+The dependency security/workspace roadmap may use `cargo audit`, `cargo tree -d`, reverse dependency trees, feature trees, package dry-runs, and `cargo bloat` as temporary local/closure evidence. It MUST NOT turn advisory status, duplicate counts, package counts, or artifact size into new continuous CI gates. M001 may update an existing explicit audit ignore only when reachability/applicability evidence changes. M002 must prove feature equivalence rather than centralizing maximal feature unions. M004 may run `cargo package` dry-runs but MUST NOT publish automatically. M005 remains blocked until its external package interface exists.
 
 The HTTP client consolidation roadmap may use deterministic loopback HTTP/TLS/SSE fixtures plus temporary `rg`/`cargo tree` dependency censuses for closure evidence. It MUST NOT add network-dependent CI, a permanent dependency scanner, a binary-size threshold, or a generic HTTP abstraction solely for verification.
 
@@ -155,7 +166,6 @@ These remain outside active handoff unless concrete product priority/evidence ma
 - arbitrary LSP `workspace/executeCommand` support;
 - binary topology split or separate daemon/TUI packaging without measured deployment need;
 - replacing RustPython with a custom Tool Program parser;
-- broad Comrak/MSRV or Ratatui dependency migrations;
 - production hosted Tool Program transport;
 - seccomp, namespace, container, or remote-execution sandbox expansion;
 - persistent search indexing;
@@ -164,4 +174,6 @@ These remain outside active handoff unless concrete product priority/evidence ma
 - OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now closed;
 - generalized OAuth/provider credential-store unification absent a token-set abstraction justified by multiple consumers;
 - remote workspace/node/distributed execution phases until identity/audit dependencies make them ready;
-- release automation or a fixed release cadence.
+- release automation or a fixed release cadence;
+- upstreaming the validated-destination/SSRF policy into Eggfetch or creating a generic network-policy crate before a second independent consumer justifies that boundary;
+- replacing Axum/Tower with Eggserve or adding Eggress/greggd solely for Eggstack component uniformity.
