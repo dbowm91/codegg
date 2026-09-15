@@ -23,7 +23,7 @@ anyhow = "1"
 base64 = "0.22"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-dashmap = "5"
+dashmap = "6"
 dirs = "6"
 once_cell = "1"
 parking_lot = "0.12"
@@ -37,7 +37,7 @@ subtle = "2"
 # Legacy project-memory namespace reads/migration only; new writes use SHA-256.
 md5 = "0.8"
 similar = "3.0.0"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "derive", "chrono", "json"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
 tokio-util = "0.7"

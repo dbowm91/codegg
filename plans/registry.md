@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001 ready | M002-M004 predecessor-gated; M005 additionally blocked on a generalized external updater interface. |
+| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001 active | M002-M004 predecessor-gated; M005 additionally blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
@@ -62,7 +62,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | M001 security and duplicate graph convergence | ready | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | No predecessor; begin with fresh advisory/reverse-tree census and stop if current graph materially differs from the reviewed baseline. |
+| Dependency security and workspace consolidation | M001 security and duplicate graph convergence | active | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | No predecessor; begin with fresh advisory/reverse-tree census and stop if current graph materially differs from the reviewed baseline. |
 
 ## Current execution order and dependency gates
 

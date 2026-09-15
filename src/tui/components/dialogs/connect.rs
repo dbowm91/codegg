@@ -124,7 +124,7 @@ impl Clone for ConnectDialog {
             rotation_target: self.rotation_target.clone(),
             cursor_pos: self.cursor_pos,
             error_message: self.error_message.clone(),
-            list_state: self.list_state.clone(),
+            list_state: self.list_state,
         }
     }
 }

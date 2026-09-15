@@ -33,8 +33,13 @@ The accepted dependency baseline keeps feature ownership explicit:
 - `eggfetch-core` consumers disable defaults and select only `http1`,
   `tls-rustls`, and (where needed) `json`; its packaged WebPKI trust set is
   preferred over native roots;
-- `sqlx` consumers disable defaults and select Tokio, SQLite, macros/migrations,
-  and only the serialization/time features their source uses;
+- `sqlx` consumers disable defaults and select Tokio, SQLite, `derive`
+  (`sqlx::FromRow` is the only macro facility used; handwritten migrations
+  replace `migrate`), and only the serialization/time features their source
+  uses. `sqlx-mysql`/`sqlx-postgres`/`rsa` remain in the lockfile union but
+  are unreachable in every supported feature resolution (`cargo tree -i`
+  empty); the `rsa` audit exception in `.cargo/audit.toml` documents that
+  upstream-only path;
 - `arboard` disables defaults so the default clipboard surface remains
   text-capable without enabling image clipboard support;
 - `futures-util`, `futures-executor`, `grep-regex`, and `grep-searcher` are

@@ -2,11 +2,18 @@
 ignore = [
     # RUSTSEC-2023-0071: Marvin Attack on `rsa` crate
     # Severity: medium (5.9)
-    # The RustSec advisory database notes "No fixed upgrade is
-    # available" — the only fix is to migrate away from the `rsa`
-    # crate. `rsa` is pulled in transitively via `sqlx-mysql` /
-    # `sqlx` features we don't use, and there's no path to swap it
-    # out until upstream removes the dependency. Tracking the
-    # upstream issue; revisit once a replacement is published.
+    # Owner path (lock-union): `sqlx 0.8.6` -> `sqlx-mysql 0.8.6` -> `rsa 0.9.10`
+    # (also referenced by `sqlx-macros-core 0.8.6` metadata).
+    # CodeGG enables only `sqlx`/`runtime-tokio,sqlite,derive,chrono,json`
+    # (root + `codegg-core`; `codegg-providers` uses `runtime-tokio,sqlite`
+    # only). `cargo tree -i sqlx-mysql/rsa` is empty: no enabled feature
+    # pulls the MySQL/RSA path into any supported build. `Cargo.lock`
+    # still lists the optional packages because the lockfile is a
+    # feature-union, and `cargo audit` scans the lockfile unconditionally.
+    # The advisory database records `patched = []` (still affected as of
+    # 2026-09-12: `rsa 0.9.10` latest stable); there is no fixed upgrade,
+    # only migration away from `rsa`, which requires upstream SQLx to drop
+    # the dependency. Retained until upstream removes it; do not broaden
+    # this ignore to any other advisory.
     "RUSTSEC-2023-0071",
 ]
