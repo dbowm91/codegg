@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation Roadmap
 
-Status: active; M001 closed, M002 ready, M003-M004 predecessor-gated, M005 externally blocked
+Status: active; M001-M003 closed, M004 ready, M005 externally blocked
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 
@@ -131,7 +131,7 @@ Goals:
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/002-workspace-dependency-ownership-normalization.md`
 
-Status: **ready** (unblocked by M001 closure `plans/closure/dependency-security-workspace-consolidation/001-status.md`; build on the converged Ratatui 0.30 / crossterm 0.29 / DashMap 6 / SQLx derive-only baseline).
+Status: **closed**. Closure: `plans/closure/dependency-security-workspace-consolidation/002-status.md` (implementation `05e7b258`).
 
 Goals:
 
@@ -144,11 +144,9 @@ Goals:
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/003-optional-image-feature-graph-slimming.md`
 
-Status: **blocked on M002 accepted closure**.
+Status: **closed**. Closure: `plans/closure/dependency-security-workspace-consolidation/003-status.md`.
 
 Goals:
-
-- disable `image` default features;
 - remove `ratatui-image`'s `image-defaults` expansion unless a real supported behavior requires it;
 - retain PNG/JPEG/GIF/WebP behavior;
 - measure optional-image graph/artifact contraction and preserve all image tests.
@@ -157,11 +155,9 @@ Goals:
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/004-reusable-crate-boundary-qualification.md`
 
-Status: **blocked on M002 accepted closure**.
+Status: **ready** (unblocked by M002 accepted closure `plans/closure/dependency-security-workspace-consolidation/002-status.md`; unaffected by M003).
 
 Goals:
-
-- qualify `egggit`, `eggsentry`, `codegg-protocol`, and `eggcontext` against independent-package criteria;
 - refactor `eggcontext` model-name policy away from low-level tokenizer primitives if needed for a stable reusable contract;
 - improve package metadata/docs/tests only where required for standalone consumption;
 - explicitly retain `codegg-git`, `codegg-config`, and `codegg-providers` as CodeGG-owned unless evidence demonstrates a second consumer and stable generic boundary;
@@ -171,7 +167,7 @@ Goals:
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/005-generic-updater-interface-and-codegg-adoption.md`
 
-Status: **blocked**.
+Status: **blocked on the external generalized updater interface** (M002 hard dependency satisfied by `plans/closure/dependency-security-workspace-consolidation/002-status.md`).
 
 Hard dependency: M002 accepted closure.
 
