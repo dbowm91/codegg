@@ -1,8 +1,9 @@
 # Dependency Security and Workspace Consolidation M004 — Reusable Crate Boundary Qualification
 
-Status: ready
+Status: implemented
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
+Work baseline: `b1aa4d50d8867b24249c4e6aadc6d41e73e2b4a3`
 
 Source subsystem roadmap:
 

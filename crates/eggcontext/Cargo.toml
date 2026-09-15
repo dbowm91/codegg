@@ -7,6 +7,13 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Token counting and context packing utilities extracted from Codegg."
+readme = "README.md"
+keywords = ["tokenizer", "llm", "context"]
+categories = ["text-processing", "development-tools"]
+# Default features are minimal by construction: this crate defines no
+# optional features. The deterministic tokenizer layer is always
+# available; the volatile model-name mapping is a pure helper, not a
+# feature-gated dependency.
 
 [dependencies]
 thiserror.workspace = true

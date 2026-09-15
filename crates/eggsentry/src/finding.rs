@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
+/// Stable severity identifier.
+///
+/// Serializes as `snake_case` (`info`, `low`, `medium`, `high`,
+/// `critical`). The ordering (`Info < Low < Medium < High < Critical`)
+/// is part of the contract. Do not parse `compact_summary` output;
+/// match on this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
@@ -20,6 +26,12 @@ pub enum Confidence {
     High,
 }
 
+/// Stable finding-category identifier.
+///
+/// Serializes as `snake_case` and [`label`](Self::label) returns the
+/// same string. Both forms are stable wire identifiers: adding a new
+/// variant is minor, renaming or removing one is major. Human
+/// `evidence`/`recommendation` strings are not identifiers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityCategory {
@@ -42,6 +54,11 @@ pub enum SecurityCategory {
 }
 
 impl SecurityCategory {
+    /// Canonical wire string for this category.
+    ///
+    /// Always equals the `snake_case` serde representation. Consumers
+    /// must match on the typed value or this string, never on human
+    /// `evidence` text.
     pub fn label(&self) -> &'static str {
         match self {
             SecurityCategory::SecretExposure => "secret_exposure",

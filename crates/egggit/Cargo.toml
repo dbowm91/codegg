@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Read-only git and worktree facts extracted from Codegg."
+readme = "README.md"
+keywords = ["git", "vcs", "worktree"]
+categories = ["development-tools", "filesystem"]
+# Default features are minimal by construction: this crate defines no
+# optional features, so downstream consumers get the full read-only
+# contract without feature unification risk.
 
 [dependencies]
 serde.workspace = true

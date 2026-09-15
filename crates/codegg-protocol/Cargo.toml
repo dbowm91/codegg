@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Core protocol types for codegg daemon/frontend communication"
+readme = "README.md"
+keywords = ["protocol", "codegg", "daemon"]
+categories = ["development-tools", "network-programming"]
+# Default features are minimal by construction: this crate defines no
+# optional features, so protocol consumers get the full DTO surface
+# without feature unification risk.
 
 [dependencies]
 serde.workspace = true

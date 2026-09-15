@@ -7,6 +7,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Deterministic security scanning primitives extracted from Codegg."
+readme = "README.md"
+keywords = ["security", "scanning", "secrets"]
+categories = ["development-tools"]
+# Default features are minimal by construction: this crate defines no
+# optional features, so downstream consumers get the deterministic
+# scanner contract without feature unification risk.
 
 [dependencies]
 serde.workspace = true
