@@ -1,5 +1,3 @@
-#![deny(unsafe_code)]
-
 pub mod agent_convergence;
 pub mod agent_run;
 pub mod agent_run_control;

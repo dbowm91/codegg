@@ -49,3 +49,40 @@ The accepted dependency baseline keeps feature ownership explicit:
 
 These are review checkpoints for bounded maintenance, not a continuously
 enforced binary-size or dependency-update gate.
+
+## Workspace ownership (M002)
+
+The root `Cargo.toml` is the authoritative owner of shared versions and
+default-feature policy:
+
+- `[workspace.package]` owns `version`, `edition`, `rust-version`,
+  `license`, `repository`, and `homepage`. Descriptions and `authors`
+  stay local because packages intentionally differ.
+- `[workspace.dependencies]` owns versions/default policy for
+  dependencies repeated across multiple members (tokio, serde,
+  serde_json, thiserror, anyhow, tracing, chrono, sqlx, dashmap, dirs,
+  regex, url, uuid, async-trait, futures-util/executor, tokio-util,
+  tempfile, toml, sha2, base64, rand, aes-gcm, argon2, hmac, hex,
+  similar, libc, once_cell, subtle, flate2, tar, walkdir, eggfetch-core,
+  http, tokio-stream, parking_lot, proptest, and the internal
+  `codegg-*`/`egg*` path+version pairs). The baseline keeps minimal
+  features; member manifests add only the features they use
+  (for example `sqlx` baseline is version/default policy only, root/core
+  add `runtime-tokio,sqlite,derive,chrono,json` while providers adds
+  only `runtime-tokio,sqlite`; `uuid` baseline is `v4`, serde stays
+  local; `url` baseline has no `serde`, egglsp adds it).
+- Single-consumer dependencies (clap, ratatui, crossterm, comrak,
+  syntect, image stack, server/plugin optionals, lsp-types/zip/xz2,
+  rustpython-parser, notify, and similar) stay local to their owning
+  crate and must not be hoisted for uniformity.
+- `[workspace.lints.rust] unsafe_code = "deny"` is inherited only by
+  `codegg-core`, the one library crate that already enforced it with no
+  deliberate unsafe. The root package stays outside package-wide
+  inheritance because `src/bin/codegg-sandbox-helper.rs` contains
+  deliberate, reviewed `unsafe` (fd ownership + fcntl); its library
+  keeps `#![deny(unsafe_code)]` in `src/lib.rs`. Other crates keep
+  explicit local `#[allow(unsafe_code)]` on reviewed test helpers.
+- Remaining duplicate majors in `cargo tree -d` are third-party owned
+  (for example `base64` 0.22/0.23 via `eggsact`, `md5` 0.7/0.8,
+  `strum` 0.26/0.28 via Ratatui) and are retained with evidence, not
+  patched.

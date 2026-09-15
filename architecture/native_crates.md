@@ -45,6 +45,25 @@ Non-member binary crate:
 
 Workspace members (10 total): root `codegg` + 9 crates under `crates/`.
 
+## Workspace Dependency Ownership
+
+Root `Cargo.toml` owns shared versions and default-feature policy;
+crate-specific features stay local and minimal:
+
+- `[workspace.package]` owns `version`, `edition`, `rust-version`,
+  `license`, `repository`, `homepage`. Descriptions/authors stay local.
+- `[workspace.dependencies]` owns repeated external versions plus the
+  internal `codegg-*`/`egg*` path+version pairs. The baseline is
+  minimal-feature (for example `sqlx` and `eggfetch-core` carry only
+  version/default policy; tokio/futures-util/tokio-util carry no union
+  features). Members add only what their source uses via
+  `dep = { workspace = true, features = [...] }` and preserve
+  optionality (`optional = true` stays in the member).
+- Single-consumer dependencies stay local and must not be hoisted.
+- `[workspace.lints.rust] unsafe_code = "deny"` is inherited only by
+  `codegg-core`. The root package remains outside because the
+  sandbox-helper binary contains deliberate, reviewed `unsafe`.
+
 ## Codegg ↔ Crate Boundary
 
 | Side | Direction | Notes |

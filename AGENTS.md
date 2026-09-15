@@ -28,6 +28,12 @@ are allowed in tests (`clippy.toml`).
   `src/lsp/` is a thin shim), `egggit` (read-only git facts), `eggsentry` (security
   scanning), `eggcontext` (tokens). `crates/egglsp-test-server/` is NOT a member; it
   builds the `codegg-lsp-test-server` binary behind `lsp-test-support`.
+- Workspace ownership: root `Cargo.toml` `[workspace.package]`/`[workspace.dependencies]`
+  own shared versions/default policy; members use `*.workspace = true` plus only their
+  local features (`sqlx`/`eggfetch-core` baselines carry no union features; `uuid` baseline
+  is `v4`, serde stays local). Single-consumer deps stay local. `[workspace.lints]`
+  `unsafe_code = deny` is inherited only by `codegg-core`; root stays outside because
+  `src/bin/codegg-sandbox-helper.rs` has deliberate reviewed `unsafe`.
 - Aliases (`.cargo/config.toml`): `cargo ck` (workspace check),
   `ckroot ckcore ckprotocol ckconfig ckproviders ckgit cksplit`.
 - Features: `server` (axum HTTP/WS), `plugins` (wasmtime), `image`,

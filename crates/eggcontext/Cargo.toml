@@ -1,13 +1,13 @@
 [package]
 name = "eggcontext"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Token counting and context packing utilities extracted from Codegg."
-license = "MIT"
-rust-version = "1.89"
-repository = "https://github.com/dbowm91/codegg"
-homepage = "https://github.com/dbowm91/codegg"
 
 [dependencies]
-thiserror = "2"
+thiserror.workspace = true
 tiktoken = "3.1"
