@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Context continuity and multi-compaction coherence | active | `plans/subsystems/context-continuity-compaction-roadmap.md` | M001 ready; M002-M004 dependency-gated | M001 has no external blocker; M002/M003 require M001 closure; M004 requires M002+M003 closure. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
@@ -62,19 +63,29 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Context continuity and multi-compaction coherence | M001 durable continuation checkpoint and epoch foundation | ready | `plans/implementation/context-continuity-compaction/001-durable-continuation-checkpoint-and-epoch-foundation.md` | No external blocker; establishes typed persistence/event contract before model-visible behavior changes. |
 | Dependency security and workspace consolidation | M006 Rustls advisory remediation and planning reconciliation | closed | `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/006-status.md`; independent of blocked M005. |
 | Dependency security and workspace consolidation | M001 security and duplicate graph convergence | closed | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/001-status.md`; implementation `3bd54ccd`. |
 | Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | closed | `plans/implementation/dependency-security-workspace-consolidation/002-workspace-dependency-ownership-normalization.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/002-status.md`; implementation `05e7b258`. |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | closed | `plans/implementation/dependency-security-workspace-consolidation/003-optional-image-feature-graph-slimming.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/003-status.md`. |
 | Dependency security and workspace consolidation | M004 reusable crate boundary qualification | closed | `plans/implementation/dependency-security-workspace-consolidation/004-reusable-crate-boundary-qualification.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/004-status.md`; implementation `b95d37ec`. |
 
+## Dependency-gated implementation plans
+
+| Subsystem | Milestone | Status | Implementation plan | Dependency |
+|---|---|---|---|---|
+| Context continuity and multi-compaction coherence | M002 authoritative intent, plan, and frame projection | blocked | `plans/implementation/context-continuity-compaction/002-authoritative-intent-plan-and-frame-projection.md` | M001 accepted closure. |
+| Context continuity and multi-compaction coherence | M003 bounded exact context recovery references | blocked | `plans/implementation/context-continuity-compaction/003-bounded-exact-context-recovery-references.md` | M001 accepted closure; may run in parallel with M002 after M001. |
+| Context continuity and multi-compaction coherence | M004 transactional rollover and multi-compaction qualification | blocked | `plans/implementation/context-continuity-compaction/004-transactional-rollover-and-multi-compaction-qualification.md` | M002 and M003 accepted closure. |
+
 ## Current execution order and dependency gates
 
-1. Dependency security/workspace M006 is closed: post-baseline RUSTSEC-2026-0285 was remediated with a targeted lock-only Rustls 0.23.41 → 0.23.45 patch (plus required `rustls-webpki` companion) and the planning control points reconciled. Closure evidence at `plans/closure/dependency-security-workspace-consolidation/006-status.md`.
-2. M001-M004 remain closed with accepted closure evidence. M001 delivered Ratatui/LRU security convergence, DashMap 6 convergence and SQLx feature contraction; M002 established workspace version/default-policy ownership; M003 narrowed the optional image graph; M004 qualified reusable crate boundaries without speculative extraction.
-3. M005 remains independently blocked on the generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. Its curl/shell execution-path hardening remains landed at `plans/closure/dependency-security-workspace-consolidation/005-status.md`.
-4. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on published `eggfetch-core 0.1.4`; M006 must preserve its HTTP/1 + Rustls/WebPKI feature/trust profile.
-5. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
+1. Context continuity M001 is the next dependency-ready handoff. It establishes the durable continuation checkpoint/epoch store and atomic `ContextCompacted` commit marker without changing model-visible compaction behavior. M002 and M003 remain gated on M001 closure; M004 remains gated on both.
+2. Dependency security/workspace M006 is closed: post-baseline RUSTSEC-2026-0285 was remediated with a targeted lock-only Rustls 0.23.41 → 0.23.45 patch (plus required `rustls-webpki` companion) and the planning control points reconciled. Closure evidence at `plans/closure/dependency-security-workspace-consolidation/006-status.md`.
+3. Dependency-security M001-M004 remain closed with accepted closure evidence. M001 delivered Ratatui/LRU security convergence, DashMap 6 convergence and SQLx feature contraction; M002 established workspace version/default-policy ownership; M003 narrowed the optional image graph; M004 qualified reusable crate boundaries without speculative extraction.
+4. Dependency-security M005 remains independently blocked on the generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. Its curl/shell execution-path hardening remains landed at `plans/closure/dependency-security-workspace-consolidation/005-status.md`.
+5. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on published `eggfetch-core 0.1.4`; dependency-security M006 preserves its HTTP/1 + Rustls/WebPKI feature/trust profile.
+6. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
 
 Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This dependency-consolidation work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, generic secret-store/DI system, generic CodeGG-wide HTTP service layer, or speculative networking abstraction.
 
@@ -92,6 +103,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
+| Context continuity and multi-compaction coherence | M001 ready; M002-M004 dependency-gated | `plans/subsystems/context-continuity-compaction-roadmap.md`; four implementation plans under `plans/implementation/context-continuity-compaction/`; current compaction/goal/session/artifact architecture |
 | Dependency security and workspace consolidation | M006 closed; M005 blocked | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md`; `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md`; M001-M006 closure records; current `Cargo.toml`/`Cargo.lock` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 and M009 closure records |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
@@ -149,6 +161,8 @@ The HTTP client consolidation roadmap may use deterministic loopback HTTP/TLS/SS
 The upstream tool-surface corrective may use deterministic modern/legacy MCP fixtures and one optional local real-binary smoke for closure evidence. It MUST NOT add a permanent compatibility matrix, scheduled upstream smoke, network-dependent CI check, duplicate search cache, or duplicate progressive-discovery framework.
 
 Repository-surface M001 may repair the existing project-catalog guard and use temporary census commands for documentation review, but it MUST NOT introduce a permanent docs-lint framework or network-dependent CI check.
+
+The context-continuity roadmap may add focused deterministic checkpoint-store, compaction, restart, cancellation, and repeated-trajectory tests. Its closure may force small effective context limits with local fake providers, but MUST NOT add live-provider/network CI, a new benchmark gate, a vector-history service, or another permanent verification framework.
 
 Normal broad local posture remains:
 
