@@ -13,6 +13,7 @@ use crate::permission::approval::{
     source as approval_source, ApprovalDecision, ApprovalMode, ApprovalRequest, ApprovalRouter,
     DeterministicVerdict, ExecutionPolicySnapshot,
 };
+use crate::permission::reviewer as approval_reviewer;
 use crate::permission::{PermissionDecisionReceipt, PermissionResult};
 use crate::provider::ToolCall;
 use crate::tool::question::{format_question_answers, parse_question_questions};
@@ -435,15 +436,12 @@ impl AgentLoop {
                         }
                     }
                     ApprovalMode::Automatic => {
-                        // M003 placeholder: safely defer to the human via
-                        // the Interactive fallback. Never auto-allow.
-                        self.resolve_escalation_via_human(
-                            tc,
-                            &request,
-                            &router,
-                            approval_source::AUTOMATIC_DEFER,
-                        )
-                        .await
+                        // M006: resolve through the bounded read-only
+                        // reviewer when configured; otherwise safely defer
+                        // to the human (M003 behavior preserved). Never
+                        // auto-allow without a reviewer verdict.
+                        self.resolve_automatic_escalation(tc, &request, &router, snapshot, None)
+                            .await
                     }
                     ApprovalMode::Interactive => {
                         self.resolve_escalation_via_human(
@@ -504,12 +502,11 @@ impl AgentLoop {
                 };
             }
             ApprovalMode::Automatic => {
-                let perm_id = format!("{}-{}", tc.id, tc.name);
-                let outcome = router
-                    .request_human_approval(&perm_id, request, dialog_args)
-                    .await;
+                // M006: reviewer first (preserving the original dialog
+                // payload for the human fallback); unconfigured reviewer
+                // falls back to the human, never auto-allows.
                 return self
-                    .apply_human_outcome(tc, request, outcome, approval_source::AUTOMATIC_DEFER)
+                    .resolve_automatic_escalation(tc, request, router, snapshot, Some(dialog_args))
                     .await;
             }
             ApprovalMode::Interactive => {}
@@ -605,6 +602,225 @@ impl AgentLoop {
                 tool_id: tc.id.to_string(),
                 message: format!("Tool '{}' deferred: {reason}", tc.name),
             },
+        }
+    }
+
+    /// M006: resolve one `Automatic` escalation through the bounded
+    /// read-only reviewer, with safe human fallback.
+    ///
+    /// - Deterministic `Deny` never reaches here (normalized above); only
+    ///   `Escalate` is reviewed.
+    /// - Unconfigured/unknown reviewer model → human fallback (interactive)
+    ///   or explicit deny (configured headless mode). Never fail-open.
+    /// - Reviewer `Allow` applies only when policy/sandbox still match the
+    ///   captured snapshot; a mid-review change discards the verdict.
+    /// - Reviewer `Deny` returns bounded feedback to the primary model and
+    ///   records the equivalent-denial backstop.
+    /// - Reviewer `Defer`/failure → human fallback (interactive) or deny
+    ///   (headless). Cancellation never falls back to a human wait.
+    /// - `general_ask_dialog_args`: `Some` preserves the original dialog
+    ///   payload for the general-`Ask` human fallback; `None` uses the
+    ///   escalation-path payload.
+    async fn resolve_automatic_escalation(
+        &mut self,
+        tc: &ToolCall,
+        request: &ApprovalRequest,
+        router: &ApprovalRouter,
+        snapshot: &ExecutionPolicySnapshot,
+        general_ask_dialog_args: Option<Option<serde_json::Value>>,
+    ) -> ToolPermissionOutcome {
+        let reviewer_config = approval_reviewer::ReviewerConfig::from_config(&self.services.config);
+        let headless = reviewer_config.headless_deny;
+        let max_denials = reviewer_config.max_equivalent_denials;
+
+        // Equivalent-denial backstop before spending a reviewer call.
+        let denial_key = approval_reviewer::denial_key_for(
+            &tc.name,
+            request.path.as_deref(),
+            request.args_summary.as_deref(),
+        );
+        let prior = self
+            .reviewer_denial_counts
+            .get(&denial_key)
+            .copied()
+            .unwrap_or(0);
+        if prior >= max_denials {
+            if headless {
+                return ToolPermissionOutcome::Denied {
+                    tool_id: tc.id.to_string(),
+                    message: format!(
+                        "Tool '{}' denied: repeated reviewer denials ({prior})",
+                        tc.name
+                    ),
+                };
+            }
+            return self
+                .automatic_human_fallback(tc, request, router, general_ask_dialog_args)
+                .await;
+        }
+
+        // Reviewer availability: a configured, registry-validated model id.
+        // Absent/unknown → documented defer behavior (human or headless
+        // deny), never a silent provider switch or auto-allow.
+        let model_id = match reviewer_config.resolve_model(&self.services.provider_registry) {
+            Ok(model) => model,
+            Err(_) => {
+                if headless {
+                    return ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!(
+                            "Tool '{}' denied: automatic reviewer unavailable",
+                            tc.name
+                        ),
+                    };
+                }
+                return self
+                    .automatic_human_fallback(tc, request, router, general_ask_dialog_args)
+                    .await;
+            }
+        };
+
+        // Snapshot owned inputs so the review phase holds no `&mut` use.
+        let workspace_root = self.workspace_root.clone();
+        let session_id = self.session_id.clone();
+        let user_objective = self.original_user_prompt.clone();
+        let provider_box = self.services.provider.clone_box();
+        let cancel = self.cancel_rx.clone();
+        let snapshot_before = snapshot.clone();
+        let request_owned = request.clone();
+
+        let outcome = {
+            let investigator = approval_reviewer::RegistryReviewerInvestigator::new(
+                &self.services.tool_registry,
+                workspace_root.clone(),
+                session_id.clone(),
+            );
+            let backend = approval_reviewer::ProviderReviewerBackend::new(provider_box, model_id)
+                .with_max_output_chars(reviewer_config.max_output_chars);
+            let reviewer_request = approval_reviewer::ReviewerRequest::from_approval_request(
+                format!("{}-{}", tc.id, tc.name),
+                &request_owned,
+                &snapshot_before,
+                user_objective,
+                None,
+                None,
+                None,
+                Some(workspace_root.to_string_lossy().into_owned()),
+            );
+            approval_reviewer::resolve_automatic_escalation(
+                &snapshot_before,
+                &request_owned,
+                &reviewer_request,
+                &reviewer_config,
+                &backend,
+                &investigator,
+                cancel,
+                snapshot_before.policy_revision().map(str::to_owned),
+            )
+            .await
+        };
+
+        // Cancellation of the primary turn cancels the reviewer: never fall
+        // back to a human wait after cancel.
+        if self
+            .cancel_rx
+            .as_ref()
+            .map(|rx| *rx.borrow())
+            .unwrap_or(false)
+        {
+            return ToolPermissionOutcome::Denied {
+                tool_id: tc.id.to_string(),
+                message: format!("Tool '{}' denied: turn cancelled during review", tc.name),
+            };
+        }
+
+        // A policy/sandbox change during review invalidates a stale Allow:
+        // discard and defer/re-review rather than apply it.
+        if outcome.decision.allowed() {
+            let fresh = self.capture_execution_snapshot();
+            let changed = fresh.approval_mode() != snapshot_before.approval_mode()
+                || fresh.sandbox_profile() != snapshot_before.sandbox_profile()
+                || fresh.policy_revision() != snapshot_before.policy_revision();
+            if changed {
+                tracing::warn!(
+                    tool = %tc.name,
+                    "automatic reviewer allow discarded: policy changed during review"
+                );
+                if headless {
+                    return ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!("Tool '{}' denied: policy changed during review", tc.name),
+                    };
+                }
+                return self
+                    .automatic_human_fallback(tc, request, router, general_ask_dialog_args)
+                    .await;
+            }
+            return ToolPermissionOutcome::Allowed {
+                tool_call: tc.clone(),
+                receipt: self.accepted_permission_receipt(approval_source::REVIEWER_ALLOW),
+            };
+        }
+
+        // Reviewer deny: record the backstop and return bounded feedback to
+        // the primary model so it can choose a safer alternative.
+        if outcome.decision.source() == approval_source::REVIEWER_DENY {
+            let entry = self.reviewer_denial_counts.entry(denial_key).or_insert(0);
+            *entry = entry.saturating_add(1);
+            let mut message = format!("Tool '{}' denied by approval reviewer", tc.name);
+            if let Some(feedback) = outcome.primary_feedback.as_deref() {
+                let bounded = feedback.chars().take(512).collect::<String>();
+                if !bounded.trim().is_empty() {
+                    message.push_str(&format!(": {bounded}"));
+                }
+            }
+            return ToolPermissionOutcome::Denied {
+                tool_id: tc.id.to_string(),
+                message,
+            };
+        }
+
+        // Defer or fail-closed error: human fallback (interactive) or deny
+        // (headless). `fall_back_to_human` is false only in headless mode.
+        if outcome.fall_back_to_human {
+            return self
+                .automatic_human_fallback(tc, request, router, general_ask_dialog_args)
+                .await;
+        }
+        ToolPermissionOutcome::Denied {
+            tool_id: tc.id.to_string(),
+            message: format!("Tool '{}' denied: automatic reviewer unavailable", tc.name),
+        }
+    }
+
+    /// Human fallback for `Automatic` when the reviewer defers, is
+    /// unavailable, or hits the equivalent-denial backstop. Preserves the
+    /// M003 `automatic_defer` receipt source.
+    async fn automatic_human_fallback(
+        &mut self,
+        tc: &ToolCall,
+        request: &ApprovalRequest,
+        router: &ApprovalRouter,
+        general_ask_dialog_args: Option<Option<serde_json::Value>>,
+    ) -> ToolPermissionOutcome {
+        match general_ask_dialog_args {
+            Some(dialog_args) => {
+                let perm_id = format!("{}-{}", tc.id, tc.name);
+                let outcome = router
+                    .request_human_approval(&perm_id, request, dialog_args)
+                    .await;
+                self.apply_human_outcome(tc, request, outcome, approval_source::AUTOMATIC_DEFER)
+                    .await
+            }
+            None => {
+                self.resolve_escalation_via_human(
+                    tc,
+                    request,
+                    router,
+                    approval_source::AUTOMATIC_DEFER,
+                )
+                .await
+            }
         }
     }
 

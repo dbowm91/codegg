@@ -4594,3 +4594,214 @@ async fn m001_secret_bearing_transport_stays_redacted_and_permanent() {
         "no URL query may surface: {err}"
     );
 }
+
+// =============================================================================
+// M006: Automatic approval reviewer loop integration
+// =============================================================================
+
+/// Build an `Automatic`-mode loop whose reviewer is served by the same
+/// scripted provider stream (the reviewer consumes one stream response as
+/// its bounded verdict) and whose `echo_args` tool requires escalation.
+fn build_automatic_reviewer_loop(provider: Box<dyn Provider>, registry: ToolRegistry) -> AgentLoop {
+    use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
+
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![ToolRule {
+                tool: "echo_args".to_string(),
+                level: PermissionLevel::Ask,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        });
+    let mut config = Config::default();
+    config.approval_reviewer = Some(codegg::config::schema::ApprovalReviewerConfig {
+        // Bare model id: resolved against the primary provider, never a
+        // silent switch to an unknown provider.
+        model: Some("reviewer-mini".to_string()),
+        ..Default::default()
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_config(provider, registry, permission_checker, config);
+    agent_loop.set_approval_mode(codegg_core::approval::ApprovalMode::Automatic);
+    agent_loop
+}
+
+fn drain_permission_pending_for(rx: &mut broadcast::Receiver<AppEvent>, perm_id: &str) -> bool {
+    let mut seen = false;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::PermissionPending { perm_id: pid, .. }) if pid == perm_id => {
+                seen = true;
+            }
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    seen
+}
+
+#[tokio::test]
+async fn test_approval_automatic_reviewer_allows_without_human_prompt() {
+    // Primary turn emits an escalating tool call; the reviewer verdict
+    // (consumed from the same scripted stream) allows it. No human
+    // PermissionPending may be published for the escalation.
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_auto_allow".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "auto_allowed"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let reviewer_verdict = serde_json::json!({
+        "verdict": "allow",
+        "risk": "low",
+        "reason": "necessary and proportionate",
+    })
+    .to_string();
+    let response2 = vec![
+        ChatEvent::TextDelta(reviewer_verdict.into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response3 = vec![
+        ChatEvent::TextDelta("Tool executed".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2, response3]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry);
+    agent_loop.set_session_id("auto-reviewer-allow");
+    let perm_id = "call_auto_allow-echo_args".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+
+    let request = make_chat_request("Use echo_args");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), handle)
+        .await
+        .expect("loop timed out; reviewer likely fell back to a human wait")
+        .unwrap();
+    assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
+
+    assert!(
+        !drain_permission_pending_for(&mut rx, &perm_id),
+        "reviewer Allow must not publish a human PermissionPending"
+    );
+
+    let requests = scripted_provider.get_requests().await;
+    assert!(
+        requests.len() >= 3,
+        "primary turn + reviewer call + follow-up expected, got {}",
+        requests.len()
+    );
+    let with_result = requests
+        .iter()
+        .rev()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_auto_allow"))
+        })
+        .expect("expected a request containing the tool result");
+    assert_tool_result_with_id(
+        &with_result.messages,
+        "call_auto_allow",
+        Some("auto_allowed"),
+    );
+}
+
+#[tokio::test]
+async fn test_approval_automatic_reviewer_deny_returns_feedback_without_human() {
+    // The reviewer denies with primary-agent feedback; the denial (with
+    // feedback) reaches the primary model as the tool outcome, and no
+    // human is prompted.
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_auto_deny".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "auto_denied"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let reviewer_verdict = serde_json::json!({
+        "verdict": "deny",
+        "risk": "high",
+        "reason": "disproportionate scope",
+        "primary_agent_feedback": "narrow the request first",
+    })
+    .to_string();
+    let response2 = vec![
+        ChatEvent::TextDelta(reviewer_verdict.into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response3 = vec![
+        ChatEvent::TextDelta("Understood".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2, response3]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_automatic_reviewer_loop(scripted_provider.clone(), registry);
+    agent_loop.set_session_id("auto-reviewer-deny");
+    let perm_id = "call_auto_deny-echo_args".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+
+    let request = make_chat_request("Use echo_args");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), handle)
+        .await
+        .expect("loop timed out; reviewer likely fell back to a human wait")
+        .unwrap();
+    assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
+
+    assert!(
+        !drain_permission_pending_for(&mut rx, &perm_id),
+        "reviewer Deny must not publish a human PermissionPending"
+    );
+
+    let requests = scripted_provider.get_requests().await;
+    let with_result = requests
+        .iter()
+        .rev()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_auto_deny"))
+        })
+        .expect("expected a request containing the denial outcome");
+    assert_tool_result_with_id(
+        &with_result.messages,
+        "call_auto_deny",
+        Some("denied by approval reviewer"),
+    );
+    assert_tool_result_with_id(
+        &with_result.messages,
+        "call_auto_deny",
+        Some("narrow the request first"),
+    );
+}

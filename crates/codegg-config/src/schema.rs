@@ -239,6 +239,10 @@ pub struct Config {
     pub agent: Option<HashMap<String, AgentConfig>>,
     pub mcp: Option<HashMap<String, McpEntry>>,
     pub permission: Option<PermissionConfig>,
+    /// M006 automatic approval reviewer preferences (additive, all optional).
+    /// When absent or when `model` is absent, `Automatic` escalations safely
+    /// defer to the human (M003 behavior preserved).
+    pub approval_reviewer: Option<ApprovalReviewerConfig>,
     pub compaction: Option<CompactionConfig>,
     pub subagent: Option<SubagentConfig>,
     pub skills: Option<SkillsConfig>,
@@ -1000,6 +1004,73 @@ pub struct PermissionConfig {
     pub paths: Option<Vec<String>>,
     pub doomloop_threshold: Option<usize>,
     pub sandbox_mode: Option<String>,
+}
+
+/// M006 automatic approval reviewer preferences.
+///
+/// All fields are optional and bounded. This config selects the fast/cheap
+/// reviewer model and its safety bounds; it never grants authority, changes
+/// the sandbox profile, or overrides a deterministic deny. Absent config
+/// means the reviewer is unavailable and `Automatic` defers to the human.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ApprovalReviewerConfig {
+    /// Preferred reviewer model id (for example `"openai/gpt-4o-mini"` or a
+    /// bare model id resolved against the primary provider). When `None`,
+    /// the reviewer is unavailable and Automatic defers to the human.
+    pub model: Option<String>,
+    /// Maximum read-only investigation calls per review. Default 2, hard
+    /// cap 3 (values above 3 are clamped).
+    pub max_investigation_calls: Option<usize>,
+    /// Reviewer deadline in milliseconds. Default 30_000, clamped to
+    /// 1_000..=120_000.
+    pub deadline_ms: Option<u64>,
+    /// Maximum reviewer output characters collected from the provider
+    /// stream. Default 4000, clamped to 512..=16_384.
+    pub max_output_chars: Option<usize>,
+    /// When `true`, reviewer unavailability/malformed/timeout maps to an
+    /// explicit deny (headless/noninteractive operation). When `false`
+    /// (default), it maps to `DeferUser` (interactive human fallback).
+    pub headless_deny: Option<bool>,
+    /// Equivalent-denial backstop: after this many denials of the same
+    /// normalized action, stop re-invoking the reviewer and defer/deny.
+    /// Default 3, clamped to 1..=10.
+    pub max_equivalent_denials: Option<usize>,
+}
+
+impl ApprovalReviewerConfig {
+    pub fn resolved_max_investigation_calls(&self) -> usize {
+        self.max_investigation_calls.unwrap_or(2).min(3)
+    }
+
+    pub fn resolved_deadline_ms(&self) -> u64 {
+        self.deadline_ms.unwrap_or(30_000).clamp(1_000, 120_000)
+    }
+
+    pub fn resolved_max_output_chars(&self) -> usize {
+        self.max_output_chars.unwrap_or(4_000).clamp(512, 16_384)
+    }
+
+    pub fn resolved_headless_deny(&self) -> bool {
+        self.headless_deny.unwrap_or(false)
+    }
+
+    pub fn resolved_max_equivalent_denials(&self) -> usize {
+        self.max_equivalent_denials.unwrap_or(3).clamp(1, 10)
+    }
+
+    /// Bounded model id, if configured. Empty/oversize values are treated
+    /// as absent (reviewer unavailable) rather than failing config load.
+    pub fn resolved_model(&self) -> Option<String> {
+        self.model.as_ref().and_then(|m| {
+            let trimmed = m.trim().to_owned();
+            if trimmed.is_empty() || trimmed.len() > 256 || trimmed.contains('\0') {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]

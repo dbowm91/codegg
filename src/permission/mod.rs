@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 
 pub mod approval;
 pub mod modes;
+pub mod reviewer;
 
 use crate::config::schema::{AgentConfig, Config, PermissionRule};
 use crate::error::PermissionError;

@@ -287,6 +287,9 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `agent` — agent definitions (model, prompt, permissions, etc.)
 - `mcp` — MCP server entries
 - `permission` — permission rules per tool
+- `approval_reviewer` — M006 Automatic reviewer preferences (optional
+  `model`, investigation/deadline/output/headless/backstop bounds; absent
+  model means Automatic defers — see `approval_reviewer.md`)
 - `compaction` — context compaction settings (M004: explicit
   `mode=programmatic|agent|hybrid` honored; `auto=true` + omitted mode uses
   the resolved Hybrid default — deterministic without a provider/model, so

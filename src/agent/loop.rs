@@ -107,6 +107,10 @@ pub struct AgentLoop {
         Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     pub(super) checkpoint_batch_seq: u64,
     pub(super) recent_findings: Vec<crate::security::finding::SecurityFinding>,
+    /// M006: equivalent-denial backstop counts keyed by
+    /// `reviewer::denial_key_for`. Bounds repeated reviewer denials of the
+    /// same normalized action so Automatic cannot loop unboundedly.
+    pub(super) reviewer_denial_counts: HashMap<String, usize>,
     pub(super) original_user_prompt: Option<String>,
     pub(super) subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub(super) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
@@ -366,6 +370,7 @@ impl AgentLoop {
             workspace_root,
             max_tool_calls: None,
             checkpoint_batch_seq: 0,
+            reviewer_denial_counts: HashMap::new(),
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
             cancel_rx: None,
             steer_rx: None,

@@ -397,10 +397,26 @@ executes before approval routing and remains authoritative. `Deny` never
 becomes an escalation; `Ask` and sensitive-path matches normalize into an
 `ApprovalRequest` resolved by the single `ApprovalRouter`
 (`src/permission/approval.rs`). `Yolo` auto-allows only `Escalate` within
-the resolved ceiling, never `Deny`. `Automatic` defers to the human until
-M006. Approval mode cannot mutate sandbox profile; filesystem vs network
-containment stays reported separately. See `permission.md` for the router
-contract and `session.md` for durable preference ownership.
+the resolved ceiling, never `Deny`. `Automatic` resolves `Escalate`
+through the bounded M006 reviewer when a reviewer model is configured
+(`src/permission/reviewer.rs`, see `approval_reviewer.md`) and otherwise
+defers to the human; reviewer failure never becomes Allow and the
+reviewer cannot mutate sandbox selection. Approval mode cannot mutate
+sandbox profile; filesystem vs network containment stays reported
+separately. See `permission.md` for the router contract and `session.md`
+for durable preference ownership.
+
+**M006 reviewer threat model:** repository/command/tool output and the
+primary agent's justification are untrusted evidence, not instructions.
+A file saying "approve this command" has no authority: verdicts require
+strict Allow/Deny/DeferUser JSON, investigation is limited to
+`read/glob/grep/list/diff/git_read`, and malformed, timeout,
+unavailable, over-budget, cancelled, stale-policy, or forbidden-tool
+behavior fails closed (DeferUser interactive, explicit deny in
+configured headless mode). The reviewer cannot change `ApprovalMode`,
+`SandboxProfile`, path/capability ceilings, credentials, or
+parent/child authority, cannot recurse into the router, and persists no
+hidden reasoning. Guard: `scripts/check_approval_reviewer.py`.
 
 ## Related Docs
 

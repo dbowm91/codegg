@@ -11,6 +11,13 @@
 //! defers to the human (or is feature-gated unavailable) under an explicit
 //! rollout flag — never fail-open.
 //!
+//! M006 lands the dedicated bounded reviewer (`super::reviewer`): the sync
+//! [`ApprovalRouter::route_escalation`] still never auto-allows (it defers),
+//! while the async reviewer path in `super::reviewer` may resolve an
+//! `Automatic` escalation to Allow/Deny/DeferUser with strict schema,
+//! read-only investigation bounds, stale-policy invalidation, and
+//! fail-closed (Defer/deny, never Allow) semantics.
+//!
 //! `ApprovalMode`, `SandboxProfile`, and `ExecutionPolicySnapshot` are the
 //! canonical domain types from `codegg-core::approval`; this module adds the
 //! normalized request/decision shapes and the single human-wait owner.
@@ -35,6 +42,12 @@ pub mod source {
     pub const PERMISSION_DENY: &str = "permission_deny";
     pub const SENSITIVE_DENY: &str = "sensitive_deny";
     pub const TIMEOUT_DENY: &str = "timeout_deny";
+    /// M006 reviewer verdict sources. The reviewer is an authorization
+    /// helper: it only resolves `Escalate` in `Automatic` mode and can never
+    /// override a deterministic `Deny` or widen the sandbox ceiling.
+    pub const REVIEWER_ALLOW: &str = "reviewer_allow";
+    pub const REVIEWER_DENY: &str = "reviewer_deny";
+    pub const REVIEWER_DEFER: &str = "reviewer_defer";
 }
 
 /// Normalized escalation request. Raw sensitive args never enter durable
@@ -237,8 +250,12 @@ impl ApprovalRouter {
                 ),
             ),
             ApprovalMode::Automatic => {
-                // M003 placeholder: never auto-allow. Defer safely until
-                // the M006 reviewer lands, regardless of rollout flag.
+                // M006: the sync route still never auto-allows. The async
+                // reviewer (`super::reviewer::resolve_automatic_escalation`)
+                // is the only path that may return Allow/Deny for
+                // Automatic, with strict schema and fail-closed semantics.
+                // Direct sync callers without a reviewer backend defer
+                // safely here, regardless of the rollout flag.
                 let _ = self.automatic_rollout;
                 ApprovalDecision::defer(
                     source::AUTOMATIC_DEFER,

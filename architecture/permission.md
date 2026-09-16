@@ -20,6 +20,7 @@ stuck-agent loops, and provide mode-based permission envelopes
 | `ModeDefinition`, `BuiltinModes` (review/debug/docs) | `src/permission/modes.rs` |
 | `PermissionRegistry` (ask-response broker) | `crates/codegg-core/src/bus/mod.rs` |
 | `ApprovalRouter`, `ApprovalMode`, `ApprovalRequest/Decision` | `src/permission/approval.rs` (domain: `crates/codegg-core/src/approval.rs`) |
+| `ApprovalReviewer` (Automatic Escalate-only helper) | `src/permission/reviewer.rs` (see `architecture/approval_reviewer.md`) |
 | `RuntimePreferenceStore` (daemon-owned, principal-scoped) | `crates/codegg-core/src/approval.rs` (table `runtime_preferences`, v58) |
 | `ExecutionPolicySnapshot` (immutable turn/batch) | `crates/codegg-core/src/approval.rs` |
 | `PermissionDecision` (bus DTO) | `crates/codegg-core/src/bus/mod.rs` |
@@ -428,6 +429,18 @@ allow_all_bash = false
    return a bounded `SandboxEscalationRequest`, never a silent turn-wide
    `FullHost` switch. Protocol exposes `SandboxEnforcementDto` on the
    snapshot (additive `sandbox_enforcement`).
+9. **M006 automatic reviewer (ADR-0004).** `Automatic` escalations resolve
+   through the dedicated bounded reviewer (`src/permission/reviewer.rs`,
+   see `approval_reviewer.md`) when a reviewer model is configured and
+   registry-validated; otherwise Automatic keeps the M003 defer behavior.
+   The reviewer sees only `Escalate` (never deterministic `Allow`/`Deny`),
+   investigates only via `read/glob/grep/list/diff/git_read`, returns
+   strict Allow/Deny/DeferUser JSON, and fails closed (Defer interactive,
+   deny headless) on malformed/timeout/unavailable/stale/cancelled
+   output. Valid Allow applies only to the unchanged original
+   request/policy revision; Deny returns bounded feedback to the primary
+   model; repeated equivalent denials backstop to defer/deny. Guard:
+   `scripts/check_approval_reviewer.py`.
 
 ## Testing
 
