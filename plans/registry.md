@@ -114,7 +114,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | M006 Rustls advisory remediation and planning reconciliation | closed | `plans/closure/dependency-security-workspace-consolidation/006-status.md` | `1e097786` |
+| Dependency security and workspace consolidation | M006 Rustls advisory remediation and planning reconciliation | closed | `plans/closure/dependency-security-workspace-consolidation/006-status.md` | `5896a127` |
 | Dependency security and workspace consolidation | M004 reusable crate boundary qualification | closed | `plans/closure/dependency-security-workspace-consolidation/004-status.md` | `b95d37ec` |
 | Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | closed | `plans/closure/dependency-security-workspace-consolidation/002-status.md` | `05e7b258` |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | closed | `plans/closure/dependency-security-workspace-consolidation/003-status.md` | `e9b72c56` |
