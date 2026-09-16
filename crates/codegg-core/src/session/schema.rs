@@ -190,6 +190,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 56 {
         migrate_and_record(pool, 56).await?;
     }
+    if current_version < 57 {
+        migrate_and_record(pool, 57).await?;
+    }
 
     Ok(())
 }
@@ -258,6 +261,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             54 => migrate_v54(&mut tx).await?,
             55 => migrate_v55(&mut tx).await?,
             56 => migrate_v56(&mut tx).await?,
+            57 => migrate_v57(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2415,6 +2419,48 @@ async fn migrate_v55(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// `IF NOT EXISTS`, safe on existing databases.
 async fn migrate_v56(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::collaboration::CHAT_ACTION_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Context continuity M001: durable continuation-checkpoint candidates.
+///
+/// A dedicated additive table rather than the historical `checkpoints`
+/// table (a different full-session snapshot contract) or the user-facing
+/// goal Markdown journal. Rows move `prepared -> installed | aborted`;
+/// only `installed` rows are resume authority. The install path commits
+/// the status change together with the durable `ContextCompacted` event
+/// in one transaction, so restart never observes one without the other.
+async fn migrate_v57(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS continuation_checkpoint (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK (sequence > 0),
+            previous_installed_id TEXT,
+            schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+            status TEXT NOT NULL CHECK (status IN ('prepared', 'installed', 'aborted')),
+            payload_digest TEXT NOT NULL,
+            payload_json TEXT NOT NULL CHECK (length(payload_json) <= 131072),
+            abort_reason TEXT CHECK (abort_reason IS NULL OR length(abort_reason) <= 1024),
+            created_at INTEGER NOT NULL,
+            installed_at INTEGER,
+            aborted_at INTEGER,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE,
+            UNIQUE(session_id, sequence)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_continuation_checkpoint_latest ON \
+         continuation_checkpoint(session_id, status, sequence DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_continuation_checkpoint_session_id ON \
+         continuation_checkpoint(session_id, id)",
+        "CREATE INDEX IF NOT EXISTS idx_continuation_checkpoint_lineage ON \
+         continuation_checkpoint(session_id, sequence)",
+    ] {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

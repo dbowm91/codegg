@@ -246,6 +246,28 @@ Delegates to `eggcontext::estimate_tokens_sync()` for token counting.
 The model string selects the tokenizer (tiktoken base, model-specific
 multipliers handled by the tokenizer crate).
 
+## Durable continuation foundation (M001)
+
+`codegg-core::session::continuation::ContinuationCheckpointStore` owns
+the durable context-epoch contract: typed checkpoint identity, bounded
+128 KiB payload envelope with SHA-256 digest, `prepared | installed |
+aborted` lifecycle, per-session sequence with explicit
+`previous_installed_id` lineage, and atomic
+`install_with_compaction_event()` which commits the `Installed` state
+together with the durable `SessionEvent::ContextCompacted` commit
+marker (stable event ID `continuation-checkpoint:<checkpoint_id>`).
+Only `Installed` checkpoints are resume authority; restart ignores
+`Prepared`/`Aborted` rows. The `ContextCompacted` event carries
+additive optional lineage (`checkpoint_id`, `checkpoint_digest`,
+`epoch_sequence`, `previous_checkpoint_id`,
+`continuity_degraded_reason`); old stored JSON remains readable.
+
+M001 changes no model-visible compaction strategy, default, or
+retained-message behavior. Production compaction still publishes only
+the in-process `AppEvent::CompactionTriggered`; the durable event is
+written only through the checkpoint install path, and no checkpoint is
+marked `Installed` from the legacy compaction path.
+
 ## Integration
 
 Called from `AgentLoop::compact_if_needed()` (`src/agent/context_runtime.rs:620`).

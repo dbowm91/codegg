@@ -259,6 +259,7 @@ Key storage-layout migrations:
 - **v54**: append-only `audit_event` + separate `audit_body` retention split (M004)
 - **v55**: project chat — `chat_channel`, `chat_message` (live retention window, per-channel `seq`, idempotency keys), append-only `chat_revision` history (survives retention pruning), `chat_read_marker` (collaboration M001; composing stays ephemeral in memory)
 - **v56**: structured chat actions — `chat_action` reference/status projection (`action_id`, channel/message/project locators, actor, kind, title, job, status, `(channel, idempotency_key)` unique retry backstop; collaboration M003, jobs stay canonical in scheduler/job stores)
+- **v57**: durable continuation checkpoints — `continuation_checkpoint` candidates (`prepared | installed | aborted`, per-session sequence with `UNIQUE(session_id, sequence)`, explicit installed-parent lineage, SHA-256 payload digest, 128 KiB payload bound, latest/installed/lineage indexes; context-continuity M001, atomic install + `ContextCompacted` commit marker)
 
 ## Testing
 

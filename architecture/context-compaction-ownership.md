@@ -28,6 +28,7 @@ calculate the context budget.
 | Volatile-tail policy | `context::volatile_tail` | `agent::context_runtime` | No direct provider call | Existing artifact handles remain authoritative | synchronous mutation only in explicit compact mode |
 | Token primitive | `eggcontext` | `context::compaction` and projection helpers | None | None | synchronous |
 | Historical API path | `agent::compaction` re-export | Existing integrations/tests | Delegates entirely to `context::compaction` | None | compatibility adapter only |
+| Durable continuation checkpoints | `codegg-core::session::continuation::ContinuationCheckpointStore` | Later M004 rollover sequencing (M001 lands the store only) | None; the store never calls a provider/model | `continuation_checkpoint` (v57) + atomic `ContextCompacted` commit marker | durable epoch foundation, no model-visible behavior change |
 
 ## Before and after ownership map
 
@@ -57,6 +58,12 @@ and passes it to every model-backed compaction request. A caller may provide a
 provider-backed future so dropping the future aborts the in-flight operation
 and returns the typed `Cancelled` result without replacing the input history.
 
-No compaction state is persisted separately. Existing session/history data is
-read as-is, hidden reasoning remains private, and recovery handles continue to
-point at the existing artifact store.
+Compaction policy state itself is not persisted separately. Durable
+context-epoch state lives in `codegg-core` as continuation checkpoints
+(`prepared -> installed | aborted`, explicit lineage, SHA-256 digest,
+128 KiB bound) with an atomic `ContextCompacted` commit marker. Existing
+session/history data is otherwise read as-is, hidden reasoning remains
+private, checkpoint diagnostics carry IDs/digests/sizes only, and
+recovery handles continue to point at the existing artifact store.
+The historical `checkpoints` table and the goal Markdown journal are
+not continuation storage and were not repurposed.

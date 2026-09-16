@@ -2694,30 +2694,86 @@ impl EventStore {
                 if stored_payload == payload_json {
                     return Ok(());
                 }
-                // Tool Program notification events use semantic equality
-                // for conflict reconciliation: the durable identity is
-                // anchored to `injection_key` (== `meta.id`) and the
-                // notification fields, but `meta.created_at` is stamped
-                // on reconstruction and may legitimately differ from the
-                // stored value. Full payload comparison would treat that
-                // as a collision and break restart recovery. Any other
-                // field change still fails closed.
-                if let (
-                    super::events::SessionEvent::ToolProgramNotification(incoming),
-                    super::events::SessionEvent::ToolProgramNotification(stored_notification),
-                ) = (
-                    event,
-                    serde_json::from_str::<super::events::SessionEvent>(&stored_payload)
-                        .map_err(|e| {
-                            StorageError::Database(format!(
-                                "session event identity collision: malformed stored payload for {}: {}",
-                                meta.id, e
-                            ))
-                        })?,
-                ) {
-                    if incoming.semantic_equals(&stored_notification) {
-                        return Ok(());
-                    }
+                // Tool Program notification and ContextCompacted events use
+                // semantic equality for conflict reconciliation: the durable
+                // identity is anchored to the event ID and content fields,
+                // but `meta.created_at` is stamped on reconstruction and may
+                // legitimately differ from the stored value. Full payload
+                // comparison would treat that as a collision and break
+                // restart recovery. Any other field change still fails
+                // closed.
+                if events_semantically_equal(event, &stored_payload, &meta.id)? {
+                    return Ok(());
+                }
+                Err(StorageError::Database(format!(
+                    "session event identity collision: {}",
+                    meta.id
+                )))
+            }
+        }
+    }
+
+    /// Transaction-aware idempotent event append.
+    ///
+    /// Shares serialization and collision semantics with
+    /// [`Self::append_idempotent`] so continuation-checkpoint installation
+    /// does not hand-maintain a second event-row encoding path. The caller
+    /// owns the surrounding SQLite transaction and commits the checkpoint
+    /// state change together with this event row.
+    pub(crate) async fn append_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        event: &super::events::SessionEvent,
+    ) -> Result<(), StorageError> {
+        let meta = event.meta();
+        let event_type = event.event_type_tag();
+        let payload_json =
+            serde_json::to_string(event).map_err(|e| StorageError::Database(e.to_string()))?;
+        let created_at = meta.created_at.to_rfc3339();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO session_events (id, session_id, created_at, event_type, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(&meta.id)
+        .bind(&meta.session_id)
+        .bind(&created_at)
+        .bind(event_type)
+        .bind(&payload_json)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+
+        let existing: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT session_id, event_type, payload_json FROM session_events WHERE id = ?",
+        )
+        .bind(&meta.id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        match existing {
+            None => Err(StorageError::Database(format!(
+                "session event disappeared after idempotent append: {}",
+                meta.id
+            ))),
+            Some((session_id, stored_type, stored_payload)) => {
+                if session_id != meta.session_id || stored_type != event_type {
+                    return Err(StorageError::Database(format!(
+                        "session event identity collision: {}",
+                        meta.id
+                    )));
+                }
+                if stored_payload == payload_json {
+                    return Ok(());
+                }
+                if events_semantically_equal(event, &stored_payload, &meta.id)? {
+                    return Ok(());
                 }
                 Err(StorageError::Database(format!(
                     "session event identity collision: {}",
@@ -2854,6 +2910,38 @@ impl EventStore {
                 expected_meta.id, e
             ))),
         }
+    }
+}
+
+/// Shared idempotency reconciliation for [`EventStore::append_idempotent`]
+/// and [`EventStore::append_in_tx`].
+///
+/// Returns `Ok(true)` when the stored payload is semantically identical to
+/// the incoming event ignoring only `meta.created_at` for the event kinds
+/// that stamp it on reconstruction (`ToolProgramNotification` and
+/// `ContextCompacted`). All other field differences fail closed via
+/// `Ok(false)`; a malformed stored payload is a collision error.
+fn events_semantically_equal(
+    incoming: &super::events::SessionEvent,
+    stored_payload: &str,
+    event_id: &str,
+) -> Result<bool, StorageError> {
+    let stored: super::events::SessionEvent =
+        serde_json::from_str(stored_payload).map_err(|e| {
+            StorageError::Database(format!(
+                "session event identity collision: malformed stored payload for {event_id}: {e}"
+            ))
+        })?;
+    match (incoming, &stored) {
+        (
+            super::events::SessionEvent::ToolProgramNotification(a),
+            super::events::SessionEvent::ToolProgramNotification(b),
+        ) => Ok(a.semantic_equals(b)),
+        (
+            super::events::SessionEvent::ContextCompacted(a),
+            super::events::SessionEvent::ContextCompacted(b),
+        ) => Ok(a.semantic_equals(b)),
+        _ => Ok(false),
     }
 }
 

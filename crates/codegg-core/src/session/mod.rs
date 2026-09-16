@@ -5,6 +5,7 @@
 //! resumed across CLI invocations.
 
 pub mod checkpoint;
+pub mod continuation;
 pub mod events;
 pub mod legacy_resolution;
 pub mod message;
@@ -22,8 +23,16 @@ use serde_json;
 use tracing::warn;
 
 pub use checkpoint::{compute_checksum, create_working_file, verify_file, CheckpointStore};
+pub use continuation::{
+    compute_payload_digest, continuation_event_id, ContinuationCheckpoint,
+    ContinuationCheckpointPayload, ContinuationCheckpointStatus, ContinuationCheckpointStore,
+    CONTINUATION_CHECKPOINT_MAX_DIAGNOSTIC_CHARS, CONTINUATION_CHECKPOINT_MAX_ID_LEN,
+    CONTINUATION_CHECKPOINT_MAX_PAYLOAD_BYTES, CONTINUATION_CHECKPOINT_SCHEMA_VERSION,
+    CONTINUATION_EVENT_ID_PREFIX, CONTINUATION_EVENT_MAX_ITEMS, CONTINUATION_EVENT_MAX_ITEM_CHARS,
+};
 pub use events::{
-    AgentPlan, AgentPlanItem, EventMeta, FileChangeKind, PlanItemStatus, SessionEvent, ToolRisk,
+    AgentPlan, AgentPlanItem, ContextCompactedEvent, EventMeta, FileChangeKind, PlanItemStatus,
+    SessionEvent, ToolRisk,
 };
 pub use models::{
     CreateSession, LegacyResolution, PermissionEntry, Session, SessionAnalytics,

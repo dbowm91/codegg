@@ -441,6 +441,11 @@ mod tests {
                 pinned_items: vec!["current goal".into()],
                 summarized_items: vec!["previous exploration".into()],
                 dropped_items: vec!["raw shell logs".into()],
+                checkpoint_id: None,
+                checkpoint_digest: None,
+                epoch_sequence: None,
+                previous_checkpoint_id: None,
+                continuity_degraded_reason: None,
             }),
             SessionEvent::ContextCompacted(ContextCompactedEvent {
                 meta: m2,
@@ -451,6 +456,11 @@ mod tests {
                 pinned_items: vec!["updated goal".into()],
                 summarized_items: vec![],
                 dropped_items: vec!["resolved errors".into()],
+                checkpoint_id: None,
+                checkpoint_digest: None,
+                epoch_sequence: None,
+                previous_checkpoint_id: None,
+                continuity_degraded_reason: None,
             }),
         ];
         let state = TuiSessionState::from_events(&events);

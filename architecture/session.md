@@ -31,8 +31,12 @@ session/
 ├── row.rs               # SessionRow, MessageRow, PartRow, TodoRow,
 │                        # PermissionRow — sqlx FromRow conversions
 ├── status.rs            # SessionStatus enum, SessionState struct
+├── continuation.rs      # Durable continuation checkpoints (M001):
+│                        # typed payload/envelope, lineage, digest,
+│                        # ContinuationCheckpointStore
 ├── events.rs            # 20 typed SessionEvent variants, EventMeta,
-│                        # ToolRisk, ToolCallStatus, PlanItemStatus
+│                        # ToolRisk, ToolCallStatus, PlanItemStatus,
+│                        # ContextCompacted lineage fields
 ├── state.rs             # TuiSessionState — derived from events
 ├── selection_catalog.rs # Read-only model/health catalog helpers
 └── legacy_resolution.rs # Legacy provider/model string resolver
@@ -97,6 +101,15 @@ tables (v31)
 **Runtime assets (v30):**
 `runtime_asset_refresh`
 
+**Continuation checkpoints (v57):**
+`continuation_checkpoint` — durable context-epoch candidates with
+`prepared | installed | aborted` lifecycle, explicit
+`previous_installed_id` lineage, per-session sequence, SHA-256 payload
+digest, and bounded 128 KiB payload envelope. Only `installed` rows are
+resume authority. Distinct from the historical `checkpoints` table (a
+different full-session snapshot contract) and from the user-facing goal
+Markdown journal.
+
 ### Column additions to session table
 
 The `session` table gains columns across multiple migrations:
@@ -141,9 +154,21 @@ variants into the `session_events` table. Events are:
 - `FindingRaised`, `CheckpointCreated`, `SessionExported`
 
 `EventStore::append_idempotent()` provides exactly-once semantics.
-ToolProgramNotification events use `semantic_equals()` which ignores
-`meta.created_at` (stamped on crash recovery) while requiring all
-identity and content fields to match.
+ToolProgramNotification and ContextCompacted events use
+`semantic_equals()` which ignores `meta.created_at` (stamped on crash
+recovery) while requiring all identity and content fields to match.
+`EventStore::append_in_tx()` shares the same serialization and
+collision semantics inside a caller-owned transaction so continuation
+installation commits checkpoint state and its commit-marker event
+atomically.
+
+`ContextCompacted` carries additive optional continuation lineage
+(`checkpoint_id`, `checkpoint_digest`, `epoch_sequence`,
+`previous_checkpoint_id`, `continuity_degraded_reason`) with
+`#[serde(default)]`. Pre-M001 stored JSON without those fields remains
+deserializable. The continuation payload itself is never embedded in
+the event; the event is structural evidence and the atomic install
+commit marker.
 
 ### TUI Session State
 
@@ -289,6 +314,27 @@ Methods: `append`, `append_idempotent`, `list_for_session`,
 Methods: `save`, `load`, `load_latest`, `list`, `delete`,
 `delete_all`, `has_checkpoint`
 
+Historical full-session snapshots only. Not a continuation store and
+never repurposed for context epochs.
+
+### ContinuationCheckpointStore (`session/continuation.rs`)
+
+Durable context-epoch foundation (M001). Methods: `prepare`,
+`get`, `latest_installed`, `list_for_session`,
+`mark_aborted`, `install_with_compaction_event`, `delete_candidate`.
+
+Lifecycle: `Prepared -> Installed | Aborted`; re-abort is idempotent;
+install retry with semantically identical content converges; a stale
+candidate whose parent no longer equals the latest installed checkpoint
+is rejected; an `Installed` checkpoint can never become `Aborted`.
+`latest_installed()` never returns `Prepared`/`Aborted` and fails
+closed on digest or schema mismatch. Payloads are bounded to 128 KiB,
+digests are SHA-256 over the canonical envelope JSON, and diagnostics
+carry IDs/digests/sizes only — never payload bodies.
+`ContinuationCheckpoint::build_compacted_event()` is the small
+application-facing helper so later AgentLoop integration does not
+serialize SQL or event rows manually.
+
 ### Data Models
 
 **MessageData** (`session/message.rs:13`):
@@ -349,7 +395,9 @@ pub struct SessionAnalytics {
    existing active binding.
 8. **ToolProgramNotification semantic equality**: `meta.created_at` is
    ignored during conflict reconciliation because crash recovery stamps
-   a fresh timestamp. All other fields must match exactly.
+   a fresh timestamp. All other fields must match exactly. The same
+   rule applies to `ContextCompacted` continuation commit markers,
+   whose stable event ID is `continuation-checkpoint:<checkpoint_id>`.
 9. **Test state staleness**: `TestState::Passed` transitions to `Stale`
    on any `FileChanged` event. `TestState::Failed` does not go stale.
 10. **Message/Part ordering**: All queries use `ORDER BY time_created
@@ -373,6 +421,8 @@ cargo test -p codegg-core --lib session::state    # TUI state tests
 cargo test -p codegg-core --test session_crud     # integration CRUD
 cargo test -p codegg-core --lib session::legacy_resolution
 cargo test -p codegg-core --lib session::store::event_store_idempotency_tests
+cargo test -p codegg-core --lib session::continuation
+cargo test -p codegg-core --test continuation_checkpoint
 ```
 
 ## Related Docs

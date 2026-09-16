@@ -229,6 +229,46 @@ pub struct ContextCompactedEvent {
     pub pinned_items: Vec<String>,
     pub summarized_items: Vec<String>,
     pub dropped_items: Vec<String>,
+    /// M001 durable continuation lineage. All fields are optional with
+    /// `#[serde(default)]` so pre-M001 stored JSON remains deserializable.
+    /// The continuation payload itself is never embedded here; this event
+    /// is structural evidence and the atomic install commit marker.
+    #[serde(default)]
+    pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub checkpoint_digest: Option<String>,
+    #[serde(default)]
+    pub epoch_sequence: Option<i64>,
+    #[serde(default)]
+    pub previous_checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub continuity_degraded_reason: Option<String>,
+}
+
+impl ContextCompactedEvent {
+    /// Semantic equality that ignores `meta.created_at`.
+    ///
+    /// Continuation install retries reconstruct the commit-marker event
+    /// with a fresh timestamp even though the durable identity (derived
+    /// from the checkpoint ID) is the same. Full payload comparison
+    /// would treat that as a collision and break idempotent retry; any
+    /// other field change still fails closed.
+    pub fn semantic_equals(&self, other: &Self) -> bool {
+        self.meta.id == other.meta.id
+            && self.meta.session_id == other.meta.session_id
+            && self.messages_removed == other.messages_removed
+            && self.messages_remaining == other.messages_remaining
+            && self.token_estimate_before == other.token_estimate_before
+            && self.token_estimate_after == other.token_estimate_after
+            && self.pinned_items == other.pinned_items
+            && self.summarized_items == other.summarized_items
+            && self.dropped_items == other.dropped_items
+            && self.checkpoint_id == other.checkpoint_id
+            && self.checkpoint_digest == other.checkpoint_digest
+            && self.epoch_sequence == other.epoch_sequence
+            && self.previous_checkpoint_id == other.previous_checkpoint_id
+            && self.continuity_degraded_reason == other.continuity_degraded_reason
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -416,6 +456,11 @@ mod tests {
                 pinned_items: vec!["goal".into()],
                 summarized_items: vec![],
                 dropped_items: vec![],
+                checkpoint_id: None,
+                checkpoint_digest: None,
+                epoch_sequence: None,
+                previous_checkpoint_id: None,
+                continuity_degraded_reason: None,
             }),
             SessionEvent::ModelRouted(ModelRoutedEvent {
                 meta: meta.clone(),
