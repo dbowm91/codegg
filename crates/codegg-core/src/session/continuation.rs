@@ -577,6 +577,109 @@ impl ContinuationCheckpointStore {
         })
     }
 
+    /// Prepares an immutable `Prepared` candidate with a caller-allocated
+    /// checkpoint identity (M004 evidence ordering).
+    ///
+    /// The caller allocates the UUID before evidence materialization so
+    /// `ctx://evidence/{session}/{checkpoint}/{evidence}` handles can be
+    /// written and verified before the payload digest is final. The payload
+    /// must already contain the verified handles; the checkpoint is still
+    /// `Prepared` (never resume authority) until `install_with_compaction_event`.
+    /// An abandoned candidate remains `Prepared`/`Aborted`.
+    pub async fn prepare_with_id(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+        previous_installed_id: Option<&str>,
+        payload: ContinuationCheckpointPayload,
+    ) -> Result<ContinuationCheckpoint, StorageError> {
+        validate_session_id(session_id)?;
+        validate_checkpoint_id(checkpoint_id)?;
+        if let Some(parent) = previous_installed_id {
+            validate_checkpoint_id(parent)?;
+        }
+        payload.validate()?;
+        let payload_json = payload.canonical_json()?;
+        if payload_json.len() > CONTINUATION_CHECKPOINT_MAX_PAYLOAD_BYTES {
+            return Err(StorageError::Database(format!(
+                "continuation payload exceeds {} bytes",
+                CONTINUATION_CHECKPOINT_MAX_PAYLOAD_BYTES
+            )));
+        }
+        let payload_digest = payload.digest()?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let latest: Option<ContinuationCheckpointRow> = sqlx::query_as(
+            "SELECT id, session_id, sequence, previous_installed_id, schema_version, \
+             status, payload_digest, payload_json, abort_reason, created_at, installed_at, \
+             aborted_at FROM continuation_checkpoint \
+             WHERE session_id = ? AND status = 'installed' \
+             ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let latest_id = latest.as_ref().map(|row| row.id.as_str());
+        if latest_id != previous_installed_id {
+            return Err(StorageError::Database(format!(
+                "continuation checkpoint stale parent for session {session_id}"
+            )));
+        }
+
+        let next_sequence: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM continuation_checkpoint \
+             WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let created_at = Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO continuation_checkpoint (id, session_id, sequence, \
+             previous_installed_id, schema_version, status, payload_digest, payload_json, \
+             abort_reason, created_at, installed_at, aborted_at) \
+             VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, NULL, ?, NULL, NULL)",
+        )
+        .bind(checkpoint_id)
+        .bind(session_id)
+        .bind(next_sequence)
+        .bind(previous_installed_id)
+        .bind(i64::from(CONTINUATION_CHECKPOINT_SCHEMA_VERSION))
+        .bind(&payload_digest)
+        .bind(&payload_json)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(ContinuationCheckpoint {
+            id: checkpoint_id.to_string(),
+            session_id: session_id.to_string(),
+            sequence: next_sequence,
+            previous_installed_id: previous_installed_id.map(str::to_string),
+            schema_version: CONTINUATION_CHECKPOINT_SCHEMA_VERSION,
+            status: ContinuationCheckpointStatus::Prepared,
+            payload_digest,
+            payload,
+            created_at,
+            installed_at: None,
+            aborted_at: None,
+            abort_reason: None,
+        })
+    }
+
     /// Loads one checkpoint by session and checkpoint identity.
     pub async fn get(
         &self,

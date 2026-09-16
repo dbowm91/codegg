@@ -68,3 +68,17 @@ private, checkpoint diagnostics carry IDs/digests/sizes only, and
 recovery handles continue to point at the existing artifact store.
 The historical `checkpoints` table and the goal Markdown journal are
 not continuation storage and were not repurposed.
+
+## Transactional rollover (M004)
+
+`src/context/rollover.rs` owns steps C-F + D validation, `prepare_candidate`
+/ `install_prepared` / `degraded_fallback`, source-revision capture/
+revalidation, restart validation/rendering, and bounded diagnostics.
+`AgentLoop::compact_if_needed` sequences A-J and owns the in-memory
+replacement (H) between verification (F) and atomic install (I); it never
+destroys history before a verified prepared checkpoint exists.
+`AgentLoop::inject_installed_continuation_for_turn` loads the latest
+installed checkpoint at turn start, merges a newer goal with M002
+precedence, and injects exactly one bounded block. Production selection uses
+the resolved default when `auto=true` and mode is omitted (deterministic
+without a provider/model); legacy helpers are compat-only.

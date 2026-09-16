@@ -359,22 +359,65 @@ returns `NotFound` and the checkpoint summary remains usable.
 
 ## Integration
 
-Called from `AgentLoop::compact_if_needed()` (`src/agent/context_runtime.rs:620`).
+Called from `AgentLoop::compact_if_needed()` (`src/agent/context_runtime.rs`).
 The flow is:
 
 1. `detect_overflow()` → if over limit, `prune_tool_outputs()` runs first
 2. `ContextTracker::needs_compaction()` → check threshold
 3. `SessionCompacting` hook dispatched (can block)
-4. If new config has `mode` set → `compact_with_policy()` (hybrid engine)
-5. Otherwise → `auto_compact_async()` (legacy path)
-6. Post-compaction: `build_context_frame()` + `push_control_instruction()`
+4. Production strategy (M004 §6.7): explicit `mode=programmatic|agent|hybrid`
+   honored; `auto=false` → bounded `DropMiddleMessages` compat;
+   `auto=true` + omitted mode → resolved default Hybrid (deterministic
+   programmatic frame when no provider/model, hybrid enrichment when
+   model-backed auto configured). Legacy `auto_compact_*` helpers remain for
+   compatibility/tests only; see `production_strategy_matrix()`.
+5. Post-compaction: transactional rollover (M004) — prepare/verify/install —
+   then single-frame normalize + todo reminder + bounded events.
+
+## Transactional rollover and multi-compaction qualification (M004)
+
+Context epoch/checkpoint mental model: one logical task crosses many model
+windows as bounded context epochs over durable task state. Each epoch ends
+with a typed `ContinuationCheckpoint` (`prepared -> installed | aborted`,
+explicit `previous_installed_id` lineage, SHA-256 digest, 128 KiB bound).
+Only `Installed` is resume authority.
+
+```text
+A. capture authoritative source revisions/state
+B. run deterministic compaction + optional semantic enrichment
+C. materialize/verify required evidence refs
+D. validate replacement invariants + post-compaction capacity
+E. persist checkpoint as Prepared (pre-allocated ID)
+F. read back + verify digest/schema/parent
+G. revalidate source revisions (one bounded rebuild on stale)
+H. replace in-memory/provider-visible messages
+I. atomically mark Installed + append ContextCompacted event
+J. reset tracker / publish bounded diagnostics
+```
+
+Step H never precedes durable verification. Abandoned candidates stay
+`Prepared`/`Aborted`. Restart loads only `Installed` via
+`load_usable_installed_checkpoint()` and injects one bounded projection
+before the current user turn; a newer active goal merges with M002
+precedence, never hidden. Ordinary storage failure defers (history
+unchanged, retry later); hard-capacity failure uses pair-safe emergency
+compaction + host frame in memory with `continuity_degraded_reason` and no
+false install. Recovery handles are verified `ctx://evidence/...` /
+reused `ctx://tool/...` refs; missing optional evidence degrades to
+summary-only. Prior rendered frames are stripped before new input so
+checkpoint N+1 derives from host state + epoch evidence + typed prior
+fields, never by summarizing rendered text. Diagnostics carry IDs/digests/
+sizes/counts only (`RolloverDiagnostics::bounded_line`).
 
 ## Testing
 
 - `tests/compaction.rs` — extensive module tests
+- `tests/context_continuity_m004.rs` — eight-compaction trajectory,
+  stable digests, transaction/cancellation/restart/strategy/security matrix
 - Narrowest run:
   ```bash
   cargo test -p codegg --test compaction
+  cargo test --test context_continuity_m004 --locked -- --test-threads=1
   ```
 
 ## Related Docs

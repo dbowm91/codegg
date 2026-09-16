@@ -267,6 +267,17 @@ All three tool result insertion sites (bootstrap, main loop,
 streaming/retry) use the same semantics: checked handle building,
 config gating, store failure logging, no unrecoverable handles.
 
+## Continuation recovery handles (M004)
+
+Checkpoint evidence reuses `ctx://tool/...` handles when the detail already
+lives in the artifact store; otherwise it writes one bounded redacted
+`ContinuationEvidence` artifact per ref keyed by
+`ctx://evidence/{session}/{checkpoint}/{evidence}` (64 refs / 256 KiB total
+/ 64 KiB single / 280-char summaries). Handles are checkpoint-scoped stable
+IDs, verified by exact read-back (session + digest) before install; missing
+optional artifacts degrade to summary-only and never invalidate the
+checkpoint. `context_read` recovers both forms same-session and bounded.
+
 ## Testing
 
 Integration tests live in `src/context/mod.rs` (projection, artifact,

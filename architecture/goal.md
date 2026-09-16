@@ -252,6 +252,13 @@ when the journal is included, callers use the bounded tail so newer
 progress appended after the old head prefix is not hidden. Turn-start
 projection uses `render_goal_context_with_tail`.
 
+Host-owned Goal/Todo revisions stay authoritative through compaction
+(M004): the rollover captures goal ID/revision, plan digest, todo revision,
+and parent lineage before enrichment and revalidates before install. A
+newer active goal revision than the installed checkpoint merges with M002
+precedence at turn start and is never hidden by stale checkpoint next
+steps.
+
 ### Render Helpers (`crates/codegg-core/src/goal/render.rs`)
 
 - `render_goal_context()` — full goal context for system prompt (legacy excerpt form; truncation is char-boundary-safe)

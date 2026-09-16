@@ -859,6 +859,30 @@ pub struct ContextCompactionRequest<'a> {
     /// When present, the hybrid engine starts from the known objective /
     /// current task instead of `"unknown"` / `"none"`.
     pub baseline: Option<&'a crate::context::continuation::ContinuationSnapshot>,
+    /// Proposed M001 checkpoint identity allocated by the caller before
+    /// evidence materialization (M004 §6.1-6.2). When present, stable
+    /// evidence IDs are scoped to this checkpoint; the checkpoint itself is
+    /// still `Prepared` until the transactional install commits. `None`
+    /// preserves the pure-reduction path for compatibility callers.
+    pub proposed_checkpoint_id: Option<&'a str>,
+}
+
+/// Typed continuation candidate carried through the compaction boundary
+/// (M004 §6.1). The agent loop persists this candidate — no persistence SQL
+/// lives in pure compaction policy functions.
+///
+/// `snapshot` is the final M002 semantic merge (host facts + advisory
+/// enrichment). `evidence` is the raw pass-local index; the caller selects,
+/// materializes, and verifies handles via `evidence.rs` before preparing the
+/// durable payload. Only verified M003 refs are installed.
+#[derive(Debug, Clone)]
+pub struct ContinuationCandidate {
+    pub snapshot: crate::context::continuation::ContinuationSnapshot,
+    pub evidence: Vec<EvidenceRef>,
+    pub frame: crate::agent::context_frame::ContextFrame,
+    /// `success` (semantic enriched), `fallback` (host-only after semantic
+    /// failure), or `disabled` (no provider/model configured).
+    pub semantic_outcome: String,
 }
 
 #[derive(Debug)]
@@ -870,6 +894,9 @@ pub struct ContextCompactionResult {
     pub tokens_after: usize,
     pub provider_failure: Option<String>,
     pub diagnostics: Vec<CompactionDiagnostic>,
+    /// In-memory continuation candidate for the transactional rollover
+    /// (M004). `None` when no baseline was supplied.
+    pub continuation_candidate: Option<ContinuationCandidate>,
 }
 
 impl ContextCompactionResult {
@@ -888,6 +915,7 @@ impl ContextCompactionResult {
             tokens_after: tokens_before,
             provider_failure: None,
             diagnostics,
+            continuation_candidate: None,
         }
     }
 }
@@ -982,15 +1010,29 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
             tokens_after,
             provider_failure,
             diagnostics,
+            continuation_candidate: None,
         };
     }
 
+    // M004 §6.7 production strategy reconciliation: explicit
+    // `mode=programmatic|agent|hybrid` is honored via the resolved config.
+    // When `auto` is true and `mode` is omitted, the resolved default
+    // (Hybrid) is used rather than the unrelated legacy branch. Without a
+    // provider/model the hybrid engine emits a deterministic programmatic
+    // frame, so no silent billable model call is introduced. Legacy
+    // `auto_compact_*` helpers remain for compatibility/tests but are no
+    // longer the normal production path.
+    let mut continuation_candidate: Option<ContinuationCandidate> = None;
     if !request.auto {
         messages = compact_messages_sync(messages, CompactionStrategy::DropMiddleMessages);
+        diagnostics.push(CompactionDiagnostic {
+            level: CompactionDiagnosticLevel::Info,
+            message: format!(
+                "strategy(auto=false) -> DropMiddleMessages compat; {}",
+                production_strategy_matrix()
+            ),
+        });
     } else {
-        let has_hybrid_config = request
-            .compaction_config
-            .is_some_and(|config| config.mode.is_some());
         let mut config = request
             .compaction_config
             .map(|config| {
@@ -1007,6 +1049,18 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
         config.max_tool_output_tokens = request.max_tool_result_tokens;
         config.auto = request.auto;
         config.prune = request.prune;
+        let explicit_mode = request
+            .compaction_config
+            .and_then(|c| c.mode)
+            .map(|m| format!("{m:?}"))
+            .unwrap_or_else(|| "omitted->resolved Hybrid".to_string());
+        diagnostics.push(CompactionDiagnostic {
+            level: CompactionDiagnosticLevel::Info,
+            message: format!(
+                "strategy(auto=true, mode={explicit_mode}) -> resolved {:?}/{:?}",
+                config.mode, config.policy
+            ),
+        });
 
         let input = CompactionInput {
             messages: &messages,
@@ -1015,85 +1069,70 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
             baseline: request.baseline,
         };
 
-        if has_hybrid_config {
-            match compact_with_policy_cancellable(
-                input,
-                request.provider,
-                request.provider_context.clone(),
-                request.cancellation,
-            )
-            .await
-            {
-                Ok(output) => {
-                    messages = output.messages;
-                    diagnostics.extend(output.diagnostics);
-                }
-                Err(error) => {
-                    provider_failure = Some(error.to_string());
+        match compact_with_policy_cancellable(
+            input,
+            request.provider,
+            request.provider_context.clone(),
+            request.cancellation,
+        )
+        .await
+        {
+            Ok(output) => {
+                messages = output.messages;
+                diagnostics.extend(output.diagnostics);
+                continuation_candidate = output.continuation_candidate;
+                if let Some(proposed) = request.proposed_checkpoint_id {
                     diagnostics.push(CompactionDiagnostic {
-                        level: CompactionDiagnosticLevel::Warn,
+                        level: CompactionDiagnosticLevel::Info,
                         message: format!(
-                            "hybrid compaction failed; using legacy fallback: {error}"
+                            "continuation_candidate(checkpoint={proposed}, semantic={})",
+                            continuation_candidate
+                                .as_ref()
+                                .map(|c| c.semantic_outcome.as_str())
+                                .unwrap_or("none"),
                         ),
                     });
-                    if cancellation_requested(request.cancellation) {
-                        return ContextCompactionResult::unchanged(
-                            CompactionStatus::Cancelled,
-                            request.messages,
-                            capacity,
-                            tokens_before,
-                            diagnostics,
-                        );
-                    }
-                    let Some(compacted) = auto_compact_async_cancellable(
-                        &messages,
-                        request.context_limit,
-                        request.threshold,
-                        request.prune,
-                        request.provider,
-                        request
-                            .compaction_config
-                            .and_then(|config| config.summarize_model.as_deref()),
-                        request.provider_context.clone(),
-                        request.cancellation,
-                    )
-                    .await
-                    else {
-                        return ContextCompactionResult::unchanged(
-                            CompactionStatus::Cancelled,
-                            request.messages,
-                            capacity,
-                            tokens_before,
-                            diagnostics,
-                        );
-                    };
-                    messages = compacted;
                 }
             }
-        } else {
-            let Some(compacted) = auto_compact_async_cancellable(
-                &messages,
-                request.context_limit,
-                request.threshold,
-                request.prune,
-                request.provider,
-                request
-                    .compaction_config
-                    .and_then(|config| config.summarize_model.as_deref()),
-                request.provider_context.clone(),
-                request.cancellation,
-            )
-            .await
-            else {
-                return ContextCompactionResult::unchanged(
-                    CompactionStatus::Cancelled,
+            Err(error) => {
+                if cancellation_requested(request.cancellation) {
+                    return ContextCompactionResult::unchanged(
+                        CompactionStatus::Cancelled,
+                        request.messages,
+                        capacity,
+                        tokens_before,
+                        diagnostics,
+                    );
+                }
+                provider_failure = Some(error.to_string());
+                diagnostics.push(CompactionDiagnostic {
+                    level: CompactionDiagnosticLevel::Warn,
+                    message: format!(
+                        "resolved-policy compaction failed; using pair-safe fallback: {error}"
+                    ),
+                });
+                // Cancellation races the provider future; a non-cancellation
+                // error here still falls back to host-only state rather than
+                // failing the turn. The fallback preserves tool pairs and
+                // will be paired with a host-only candidate below.
+                messages = emergency_pair_safe_compaction(
                     request.messages,
-                    capacity,
-                    tokens_before,
-                    diagnostics,
+                    &ResolvedCompactionConfig::default(),
                 );
-            };
-            messages = compacted;
+                if let Some(baseline) = request.baseline {
+                    // Host-only candidate so a durable checkpoint can still
+                    // be installed without model enrichment.
+                    let snapshot = baseline.clone();
+                    let evidence = build_evidence_index(request.messages);
+                    let frame = snapshot.to_context_frame();
+                    continuation_candidate = Some(ContinuationCandidate {
+                        snapshot,
+                        evidence,
+                        frame,
+                        semantic_outcome: String::from("fallback"),
+                    });
+                }
+            }
         }
     }
 
@@ -1135,6 +1174,7 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
         tokens_after: after_tracker.current_tokens(),
         provider_failure,
         diagnostics,
+        continuation_candidate,
     }
 }
 
@@ -1225,6 +1265,38 @@ pub struct CompactionOutput {
     pub diagnostics: Vec<CompactionDiagnostic>,
     pub tokens_before: usize,
     pub tokens_after: usize,
+    /// In-memory continuation candidate (M004 §6.1). Present when the input
+    /// carried an authoritative baseline.
+    pub continuation_candidate: Option<ContinuationCandidate>,
+}
+
+/// Effective production strategy after M004 reconciliation (§6.7).
+///
+/// Explicit `mode=programmatic|agent|hybrid` is always honored. When `auto`
+/// is true and `mode` is omitted, the resolved default (Hybrid) is used —
+/// deterministically programmatic when no provider/model is configured, so
+/// no silent billable model call is introduced. `auto=false` keeps the
+/// bounded `DropMiddleMessages` compatibility path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveCompactionStrategy {
+    DropMiddleNonAuto,
+    ResolvedPolicy,
+}
+
+pub fn resolve_effective_strategy(
+    auto: bool,
+    compaction_config: Option<&crate::config::schema::CompactionConfig>,
+) -> EffectiveCompactionStrategy {
+    if !auto {
+        return EffectiveCompactionStrategy::DropMiddleNonAuto;
+    }
+    let _ = compaction_config;
+    EffectiveCompactionStrategy::ResolvedPolicy
+}
+
+/// Human-readable production strategy/default matrix for docs and closure.
+pub fn production_strategy_matrix() -> &'static str {
+    "explicit mode=programmatic|agent|hybrid honored; auto=false -> DropMiddleMessages (compat); auto=true + mode omitted -> resolved default Hybrid (deterministic programmatic frame when no provider/model, hybrid enrichment when model-backed auto configured); legacy auto_compact helpers retained for compat/tests only"
 }
 
 // === Phase 3 Helper Functions ===
@@ -2592,7 +2664,14 @@ async fn compact_agent_only(
     input: CompactionInput<'_>,
     provider: Option<&dyn crate::provider::Provider>,
     context: ProviderRequestContext,
-) -> Result<Vec<Message>, crate::error::AppError> {
+) -> Result<
+    (
+        Vec<Message>,
+        crate::agent::context_frame::ContextFrame,
+        String,
+    ),
+    crate::error::AppError,
+> {
     if let Some(provider) = provider {
         if let Some(model) = input.config.compaction_model.as_deref() {
             let programmatic = build_programmatic_state_with_baseline(
@@ -2635,10 +2714,21 @@ async fn compact_agent_only(
                     for msg in non_system.iter().rev().take(keep) {
                         result.push((*msg).clone());
                     }
-                    return Ok(result);
+                    let outcome = String::from("success");
+                    let out_frame = frame;
+                    return Ok((result, out_frame, outcome));
                 }
                 Err(err) => {
                     tracing::warn!("Agent mode failed: {}, falling back to programmatic", err);
+                    let programmatic = build_programmatic_state_with_baseline(
+                        input.messages,
+                        &input.config,
+                        input.baseline,
+                    );
+                    let frame = programmatic.frame.clone();
+                    let messages =
+                        compile_programmatic_messages(input.messages, &programmatic, &input.config);
+                    return Ok((messages, frame, String::from("fallback")));
                 }
             }
         }
@@ -2646,11 +2736,9 @@ async fn compact_agent_only(
 
     let programmatic =
         build_programmatic_state_with_baseline(input.messages, &input.config, input.baseline);
-    Ok(compile_programmatic_messages(
-        input.messages,
-        &programmatic,
-        &input.config,
-    ))
+    let frame = programmatic.frame.clone();
+    let messages = compile_programmatic_messages(input.messages, &programmatic, &input.config);
+    Ok((messages, frame, String::from("disabled")))
 }
 
 /// Run the hybrid engine while racing provider work against cancellation.
@@ -2686,6 +2774,10 @@ pub async fn compact_with_policy_cancellable(
     result
 }
 
+/// Legacy compatibility helper (M004 §6.7): retained for compatibility/tests
+/// but no longer the normal production path. Production `auto=true` uses the
+/// resolved policy engine above.
+#[allow(dead_code)]
 async fn auto_compact_async_cancellable(
     messages: &[Message],
     context_limit: usize,
@@ -2745,12 +2837,24 @@ pub async fn compact_with_policy(
     let active_model = input.active_model;
     let baseline = input.baseline;
 
+    // Track the semantic-enrichment outcome for the continuation candidate.
+    // `disabled` when no provider/model is configured (deterministic
+    // programmatic frame, no silent billable call); `fallback` when the
+    // model call fails and host-only state is used; `success` on enrichment.
+    let semantic_outcome: String;
     let mut output_frame = programmatic.frame.clone();
     let mut messages = match mode {
         CompactionMode::Programmatic => {
+            semantic_outcome = String::from("disabled");
             compile_programmatic_messages(messages_ref, &programmatic, &input.config)
         }
-        CompactionMode::Agent => compact_agent_only(input, provider, context.clone()).await?,
+        CompactionMode::Agent => {
+            let (agent_messages, agent_frame, agent_outcome) =
+                compact_agent_only(input, provider, context.clone()).await?;
+            semantic_outcome = agent_outcome;
+            output_frame = agent_frame;
+            agent_messages
+        }
         CompactionMode::Hybrid => {
             let mut frame = programmatic.frame.clone();
             if let (Some(provider), Some(model)) =
@@ -2767,11 +2871,17 @@ pub async fn compact_with_policy(
                 )
                 .await
                 {
-                    Ok(semantic_frame) => merge_frames(&mut frame, semantic_frame),
+                    Ok(semantic_frame) => {
+                        merge_frames(&mut frame, semantic_frame);
+                        semantic_outcome = String::from("success");
+                    }
                     Err(err) => {
                         tracing::warn!("Semantic checkpoint failed: {}", err);
+                        semantic_outcome = String::from("fallback");
                     }
                 }
+            } else {
+                semantic_outcome = String::from("disabled");
             }
             output_frame = frame.clone();
             compile_hybrid_messages(messages_ref, &programmatic, frame, &input.config)
@@ -2811,12 +2921,40 @@ pub async fn compact_with_policy(
         ),
     });
 
+    // Typed continuation candidate (M004 §6.1): the final M002 semantic merge
+    // plus the raw pass-local evidence index. The caller materializes and
+    // verifies M003 handles before durable preparation; no SQL here.
+    // The prior checkpoint's rendered continuation frame is stripped before
+    // semantic input construction except where typed fields are supplied
+    // separately (M004 §6.8): `build_programmatic_state_with_baseline` starts
+    // from the authoritative snapshot and `compile_frame_messages` strips
+    // earlier CodeGG-owned frames, so checkpoint N+1 derives from host state
+    // + current epoch evidence + typed prior fields, never by summarizing
+    // rendered checkpoint text.
+    let continuation_candidate = baseline.map(|snapshot| {
+        let mut enriched = snapshot.clone();
+        // Merge the final semantic frame into the snapshot without
+        // overwriting host facts (advisory only).
+        crate::context::continuation::apply_semantic_enrichment(
+            &mut enriched,
+            &output_frame,
+            semantic_outcome.as_str(),
+        );
+        ContinuationCandidate {
+            snapshot: enriched,
+            evidence: programmatic.evidence.clone(),
+            frame: output_frame.clone(),
+            semantic_outcome: semantic_outcome.clone(),
+        }
+    });
+
     Ok(CompactionOutput {
         messages,
         frame: Some(output_frame),
         diagnostics,
         tokens_before,
         tokens_after,
+        continuation_candidate,
     })
 }
 
@@ -3466,6 +3604,7 @@ mod tests {
             provider_context: ProviderRequestContext::default(),
             cancellation: None,
             baseline: None,
+            proposed_checkpoint_id: None,
         })
         .await;
 
@@ -3497,6 +3636,7 @@ mod tests {
             provider_context: ProviderRequestContext::default(),
             cancellation: Some(&cancellation),
             baseline: None,
+            proposed_checkpoint_id: None,
         })
         .await;
 

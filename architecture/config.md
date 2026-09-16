@@ -287,7 +287,10 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `agent` — agent definitions (model, prompt, permissions, etc.)
 - `mcp` — MCP server entries
 - `permission` — permission rules per tool
-- `compaction` — context compaction settings
+- `compaction` — context compaction settings (M004: explicit
+  `mode=programmatic|agent|hybrid` honored; `auto=true` + omitted mode uses
+  the resolved Hybrid default — deterministic without a provider/model, so
+  no silent billable call; `auto=false` keeps DropMiddle compat)
 - `subagent` — delegation bounds (max_concurrent, max_depth, etc.)
 - `search` — web search/fetch backend config
 - `lsp` / `lsp_semantic_cache` — LSP integration

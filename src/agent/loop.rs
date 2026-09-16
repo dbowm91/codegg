@@ -870,6 +870,14 @@ impl AgentLoop {
         self.inject_pending_notifications(&mut request.messages)
             .await;
 
+        // M004 turn-start recovery: load the latest installed continuation
+        // checkpoint and inject its bounded projection before the current
+        // user turn. Prepared/Aborted rows are ignored; corrupt rows fall
+        // back to durable goal/todo/session state with a diagnostic. A newer
+        // active goal revision is merged with M002 precedence, never hidden.
+        self.inject_installed_continuation_for_turn(&mut request.messages, &model_profile)
+            .await;
+
         loop {
             if let Some(reason) = self.check_limits() {
                 tracing::info!("Agent loop stopping: {}", reason);

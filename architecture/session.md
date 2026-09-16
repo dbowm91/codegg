@@ -31,9 +31,9 @@ session/
 ├── row.rs               # SessionRow, MessageRow, PartRow, TodoRow,
 │                        # PermissionRow — sqlx FromRow conversions
 ├── status.rs            # SessionStatus enum, SessionState struct
-├── continuation.rs      # Durable continuation checkpoints (M001):
+├── continuation.rs      # Durable continuation checkpoints (M001+M004):
 │                        # typed payload/envelope, lineage, digest,
-│                        # ContinuationCheckpointStore
+│                        # ContinuationCheckpointStore + prepare_with_id
 ├── events.rs            # 20 typed SessionEvent variants, EventMeta,
 │                        # ToolRisk, ToolCallStatus, PlanItemStatus,
 │                        # ContextCompacted lineage fields

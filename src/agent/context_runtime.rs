@@ -619,6 +619,7 @@ use crate::context::compaction::{
     compact_context, context_tokens, needs_context_compaction, CompactionStatus,
     ContextCompactionRequest,
 };
+use crate::context::rollover;
 use crate::model_profile::policy::push_control_instruction;
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::ProviderRequestContext;
@@ -636,6 +637,144 @@ pub(super) enum ContextPackObservationPhase {
 }
 
 impl AgentLoop {
+    /// Underlying SQLite pool for durable continuation checkpoints (M004).
+    /// Reuses the session-owned pool (`todo_pool` or the event-store pool);
+    /// `None` means in-memory-only compaction with no durable install.
+    fn continuation_pool(&self) -> Option<sqlx::SqlitePool> {
+        if let Some(pool) = self.services.todo_pool.clone() {
+            return Some(pool);
+        }
+        if let Some(store) = self.services.event_store.clone() {
+            return Some(store.pool());
+        }
+        None
+    }
+
+    /// Capture host-owned source revisions for stale-source validation
+    /// (M004 §6.3). Only goal/plan/todo/parent fields participate; unrelated
+    /// telemetry never rejects installation.
+    async fn capture_rollover_revisions(
+        &self,
+        messages: &[Message],
+        previous_installed_id: Option<String>,
+        plan_digest: Option<String>,
+    ) -> rollover::RolloverSourceRevisions {
+        let (goal_id, goal_revision) = match self.services.goal_store.clone() {
+            Some(store) => match store.active_for_session(&self.session_id).await {
+                Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
+                    (Some(goal.id.clone()), Some(goal.revision))
+                }
+                _ => (None, None),
+            },
+            None => (None, None),
+        };
+        let todo_revision = self.services.todo_state.lock().await.revision;
+        let history_digest = rollover::source_history_digest(messages);
+        rollover::RolloverSourceRevisions::capture(
+            goal_id,
+            goal_revision,
+            plan_digest,
+            todo_revision,
+            previous_installed_id,
+            history_digest,
+        )
+    }
+
+    /// Load and validate the latest installed checkpoint for resume (M004
+    /// §6.5). Returns `None` when no pool, no installed row, or the row is
+    /// corrupt (caller falls back to durable goal/todo/session state with a
+    /// diagnostic). `Prepared`/`Aborted` rows are never resume authority.
+    async fn load_usable_installed_checkpoint(
+        &self,
+    ) -> Option<codegg_core::session::continuation::ContinuationCheckpoint> {
+        let pool = self.continuation_pool()?;
+        let store = codegg_core::session::continuation::ContinuationCheckpointStore::new(pool);
+        match store.latest_installed(&self.session_id).await {
+            Ok(Some(checkpoint)) => {
+                match rollover::validate_installed_for_restart(&checkpoint, &self.session_id) {
+                    rollover::RestartValidation::Usable => Some(checkpoint),
+                    rollover::RestartValidation::Absent => None,
+                    rollover::RestartValidation::CorruptFallback(reason) => {
+                        tracing::warn!(
+                            session_id = %self.session_id,
+                            checkpoint_id = %checkpoint.id,
+                            reason = %reason,
+                            "installed continuation checkpoint corrupt; falling back to durable goal/todo/session state"
+                        );
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(error) => {
+                tracing::debug!(error = %error, "continuation checkpoint load failed; using current state");
+                None
+            }
+        }
+    }
+
+    /// Turn-start continuation injection (M004 §6.5).
+    ///
+    /// Loads the latest installed checkpoint, merges a newer active goal
+    /// revision using M002 precedence (never hidden by stale checkpoint next
+    /// steps), and injects exactly one bounded continuation block before the
+    /// current user turn. Current user input always outranks checkpoint next
+    /// steps. Missing optional evidence degrades per-ref at read time and
+    /// never blocks turn start.
+    pub(super) async fn inject_installed_continuation_for_turn(
+        &mut self,
+        messages: &mut Vec<Message>,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+    ) {
+        let Some(checkpoint) = self.load_usable_installed_checkpoint().await else {
+            return;
+        };
+        // Newer active goal outranks the checkpoint (M002 precedence).
+        let goal_override = match self.services.goal_store.clone() {
+            Some(store) => match store.active_for_session(&self.session_id).await {
+                Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
+                    let checkpoint_goal_id = checkpoint
+                        .payload
+                        .body
+                        .get("goal_id")
+                        .and_then(|v| v.as_str());
+                    let checkpoint_goal_rev = checkpoint
+                        .payload
+                        .body
+                        .get("goal_revision")
+                        .and_then(|v| v.as_i64());
+                    let is_newer = match (checkpoint_goal_id, checkpoint_goal_rev) {
+                        (Some(id), Some(rev)) => id != goal.id.as_str() || goal.revision > rev,
+                        _ => true,
+                    };
+                    if is_newer && !goal.objective.trim().is_empty() {
+                        Some((goal.objective.clone(), goal.next_action.clone()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let block = rollover::render_installed_projection(&checkpoint, goal_override);
+        if block.trim().is_empty() {
+            return;
+        }
+        // Exactly one current frame: strip earlier CodeGG-owned frames, then
+        // inject the single installed projection. Unrelated system/developer
+        // instructions are preserved.
+        let (stripped, _) = rollover::strip_prior_frames(messages);
+        *messages = stripped;
+        push_control_instruction(messages, model_profile, &block);
+        tracing::info!(
+            session_id = %self.session_id,
+            checkpoint_id = %checkpoint.id,
+            sequence = checkpoint.sequence,
+            "injected installed continuation checkpoint for turn start"
+        );
+    }
+
     pub(super) async fn compact_if_needed(
         &mut self,
         messages: &mut Vec<Message>,
@@ -704,14 +843,20 @@ impl AgentLoop {
             }
         }
 
-        // Assemble the authoritative continuation baseline (M002 §6.1-6.2)
-        // from host-owned state before running the canonical engine, so
-        // hybrid reduction starts from the known objective/current task.
-        // Storage lookups stay in this adapter; the pure assembler takes
-        // already-loaded values.
-        let baseline_snapshot = {
+        // M004 transactional rollover, step A: capture authoritative source
+        // revisions/state before running the canonical engine. The baseline
+        // (M002) is assembled from host-owned Goal/todo/ledger/origin/plan
+        // plus the latest installed checkpoint for lineage; storage lookups
+        // stay in this adapter while the pure assembler takes loaded values.
+        // A checkpoint identity is allocated before evidence writes so
+        // `ctx://evidence/...` handles can be verified before the payload
+        // digest is final; the row stays `Prepared` until install commits.
+        let previous_installed = self.load_usable_installed_checkpoint().await;
+        let previous_installed_id = previous_installed.as_ref().map(|c| c.id.clone());
+        let baseline_bundle = {
             let todo = self.services.todo_state.lock().await;
             let todos: Vec<crate::task_state::TodoItem> = todo.items.clone();
+            let todo_revision = todo.revision;
             drop(todo);
             let security_findings: Vec<String> = self
                 .recent_findings
@@ -764,6 +909,9 @@ impl AgentLoop {
                     }
                     None => (None, None),
                 };
+            let plan_digest = plan_content_owned
+                .as_deref()
+                .map(|content| crate::context::stable_hash_hex(content.as_bytes()));
             let current_user = Self::latest_user_prompt_from_messages(messages);
             let snapshot = crate::context::continuation::assemble_continuation_snapshot(
                 crate::context::continuation::ContinuationAssemblyInput {
@@ -775,21 +923,46 @@ impl AgentLoop {
                     todos: &todos,
                     ledger: &self.context_ledger,
                     security_findings: &security_findings,
-                    previous_checkpoint: None,
+                    previous_checkpoint: previous_installed.as_ref(),
                     plan_path: plan_path.as_deref(),
                     plan_content: plan_content_owned.as_deref(),
                 },
             );
-            // Keep the owned plan body + goal alive for the request borrow.
-            // The snapshot itself is the baseline; owned strings above are
-            // cloned into it, so only the snapshot + goal need to live on.
-            (snapshot, active_goal, plan_path, plan_content_owned)
+            let captured = self
+                .capture_rollover_revisions(messages, previous_installed_id.clone(), plan_digest)
+                .await;
+            // Keep owned values alive for the request borrow. The snapshot is
+            // the baseline; owned strings are cloned into it.
+            // `todo_revision` is captured separately for revalidation below.
+            let _ = todo_revision;
+            (
+                snapshot,
+                active_goal,
+                plan_path,
+                plan_content_owned,
+                captured,
+            )
         };
-        let (baseline_snapshot, _active_goal_guard, _plan_path_guard, _plan_content_guard) =
-            baseline_snapshot;
+        let (
+            baseline_snapshot,
+            _active_goal_guard,
+            _plan_path_guard,
+            _plan_content_guard,
+            captured_revisions,
+        ) = baseline_bundle;
+        // Allocate the candidate checkpoint identity before evidence writes
+        // (M004 §6.2 sequencing variant). The row remains `Prepared` until
+        // the atomic install commits; an abandoned candidate stays
+        // `Prepared`/`Aborted` and is never resume authority.
+        let candidate_checkpoint_id = uuid::Uuid::new_v4().to_string();
+        let original_len = messages.len();
+        let original_user = Self::latest_user_prompt_from_messages(messages);
 
+        // M004 step B: deterministic compaction + optional semantic
+        // enrichment through the canonical owner. No history is mutated
+        // here; the owned result is verified before replacement (step H).
         let result = compact_context(ContextCompactionRequest {
-            messages,
+            messages: &*messages,
             context_limit,
             threshold,
             reserved_output_tokens,
@@ -804,8 +977,15 @@ impl AgentLoop {
             },
             cancellation: None,
             baseline: Some(&baseline_snapshot),
+            proposed_checkpoint_id: Some(candidate_checkpoint_id.as_str()),
         })
         .await;
+        // Cancellation point 2: after the candidate is built, before any
+        // durable row. No durable state has changed yet.
+        if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            tracing::info!("Context compaction cancelled after candidate build; no durable row");
+            return;
+        }
 
         match result.status {
             CompactionStatus::Ready => return,
@@ -837,17 +1017,438 @@ impl AgentLoop {
             CompactionStatus::Compacted => {}
         }
 
-        let tokens_before = result.tokens_before;
-        let tokens_after = result.tokens_after;
-        *messages = result.messages;
-        self.services.context_tracker.reset();
-        self.services.context_tracker.add_messages(messages);
+        // M004 transactional rollover, steps C-I. `result.messages` is the
+        // replacement candidate; `messages` (borrowed) is still the active
+        // history and must not be mutated before durable verification.
+        // Decompose the owned result now; `result` is consumed here.
+        let crate::context::compaction::ContextCompactionResult {
+            tokens_before,
+            tokens_after,
+            messages: compacted_candidate,
+            capacity,
+            provider_failure: _,
+            diagnostics: engine_diagnostics,
+            continuation_candidate,
+            ..
+        } = result;
+        for diag in &engine_diagnostics {
+            tracing::debug!(compaction_diagnostic = %diag.message, "compaction engine");
+        }
+        let Some(candidate) = continuation_candidate else {
+            // No baseline (compatibility caller): preserve current in-memory
+            // behavior without a durable checkpoint. Still enforce one frame.
+            tracing::warn!(
+                "continuation candidate absent; using in-memory history without durable install"
+            );
+            *messages = compacted_candidate;
+            self.services.context_tracker.reset();
+            self.services.context_tracker.add_messages(messages);
+            // Fall through to single-frame normalization + todo + events
+            // below via the shared tail. To keep the transactional path
+            // explicit, handle the no-candidate tail here and return early
+            // after publishing.
+            Self::normalize_single_frame_tail(self, messages, model_profile).await;
+            Self::inject_todo_reminder_tail(self, messages, model_profile).await;
+            Self::publish_compaction_tail(self, tokens_before, tokens_after);
+            return;
+        };
+        // Cancellation point: after candidate built, before durable row is
+        // already checked above; re-check before persistence below.
+        let pool_opt = self.continuation_pool();
+        let Some(pool) = pool_opt else {
+            // No durable store (tests/harness without a pool): install the
+            // verified in-memory history without a checkpoint row. This keeps
+            // short sessions and pool-less harnesses operable with minimal
+            // persistence cost.
+            tracing::info!(
+                "no continuation pool; using in-memory compaction without durable checkpoint"
+            );
+            if let Err(reason) = rollover::validate_replacement_messages(
+                &compacted_candidate,
+                capacity,
+                original_user.is_some(),
+            ) {
+                tracing::error!(reason = %reason, "in-memory replacement validation failed; keeping history");
+                return;
+            }
+            *messages = compacted_candidate;
+            self.services.context_tracker.reset();
+            self.services.context_tracker.add_messages(messages);
+            Self::normalize_single_frame_tail(self, messages, model_profile).await;
+            Self::inject_todo_reminder_tail(self, messages, model_profile).await;
+            Self::publish_compaction_tail(self, tokens_before, tokens_after);
+            return;
+        };
+        let store =
+            codegg_core::session::continuation::ContinuationCheckpointStore::new(pool.clone());
+        let turn_index = self.state.turn_count;
+        let existing_handles = self.context_ledger.artifact_handles.clone();
+        // Step C-F + D: materialize/verify evidence, build payload, prepare
+        // as Prepared, read back + verify. No history mutated yet.
+        let prepared = match rollover::prepare_candidate(
+            &store,
+            self.services.artifact_store.as_ref(),
+            self.session_id.as_str(),
+            candidate_checkpoint_id.as_str(),
+            previous_installed_id.clone(),
+            &candidate,
+            compacted_candidate,
+            capacity,
+            tokens_before,
+            tokens_after,
+            turn_index,
+            &existing_handles,
+            original_user.clone(),
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                // Ordinary threshold: defer rollover, keep history, abort
+                // nothing (no row was installed). Hard capacity: degraded
+                // fallback without falsely claiming durable continuity.
+                if rollover::is_hard_capacity(tokens_before, capacity) {
+                    tracing::warn!(reason = %reason, "continuation prepare failed at hard capacity; using degraded fallback");
+                    let host_frame = candidate.frame.to_continuation_text();
+                    let (degraded_messages, degraded_reason) =
+                        rollover::degraded_fallback(messages, &host_frame, capacity);
+                    // Surface a durable degraded marker without installing a
+                    // checkpoint: append a standalone degraded event when an
+                    // event store is available, plus bounded in-process
+                    // diagnostics. Never claim an installed checkpoint.
+                    if let Some(event_store) = self.services.event_store.clone() {
+                        let degraded_event = codegg_core::session::events::ContextCompactedEvent {
+                            meta: codegg_core::session::events::EventMeta {
+                                id: format!("continuation-degraded:{}", candidate_checkpoint_id),
+                                session_id: self.session_id.clone(),
+                                created_at: chrono::Utc::now(),
+                            },
+                            messages_removed: 0,
+                            messages_remaining: degraded_messages.len(),
+                            token_estimate_before: Some(tokens_before),
+                            token_estimate_after: Some(crate::context::compaction::context_tokens(
+                                &degraded_messages,
+                                Some(model_profile.model.as_str()),
+                            )),
+                            pinned_items: vec![],
+                            summarized_items: vec![],
+                            dropped_items: vec![],
+                            checkpoint_id: None,
+                            checkpoint_digest: None,
+                            epoch_sequence: None,
+                            previous_checkpoint_id: previous_installed_id.clone(),
+                            continuity_degraded_reason: Some(
+                                degraded_reason.chars().take(512).collect(),
+                            ),
+                        };
+                        if let Err(error) = event_store
+                            .append(
+                                &codegg_core::session::events::SessionEvent::ContextCompacted(
+                                    degraded_event,
+                                ),
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %error, "degraded continuity event append failed");
+                        }
+                    }
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        continuity = "degraded",
+                        reason = %degraded_reason,
+                        "continuity degraded; no checkpoint installed"
+                    );
+                    *messages = degraded_messages;
+                    self.services.context_tracker.reset();
+                    self.services.context_tracker.add_messages(messages);
+                    Self::inject_todo_reminder_tail(self, messages, model_profile).await;
+                    Self::publish_compaction_tail(self, tokens_before, tokens_after);
+                    return;
+                }
+                tracing::warn!(reason = %reason, "continuation prepare deferred; keeping history unchanged");
+                // Best-effort abort of the prepared row when one exists is
+                // handled inside `prepare_candidate` failures that occur
+                // after prepare; pre-prepare failures leave no row. Retry on
+                // a later turn/threshold.
+                return;
+            }
+        };
+        // Cancellation point 3: after prepared persistence, before
+        // replacement. Mark aborted when practical; the prepared row remains
+        // non-resumable either way.
+        if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            tracing::info!("compaction cancelled after prepare; aborting candidate");
+            let _ = store
+                .mark_aborted(
+                    self.session_id.as_str(),
+                    prepared.checkpoint.id.as_str(),
+                    "cancelled after prepare",
+                )
+                .await;
+            return;
+        }
+        // Step G: revalidate authoritative source revisions needed for
+        // install. Compare the captured revisions against current state for
+        // goal/plan/todo/parent fields that would make the checkpoint
+        // misleading. One bounded rebuild is allowed; otherwise keep history
+        // with a typed stale/retry diagnostic (no livelock under steering).
+        let current_plan_digest = {
+            // Re-read the plan digest cheaply from the baseline snapshot's
+            // plan digest (captured) vs current goal state below. The full
+            // plan body was already validated at capture; only the digest
+            // participates in staleness.
+            let todo_rev = self.services.todo_state.lock().await.revision;
+            let (goal_id, goal_rev) = match self.services.goal_store.clone() {
+                Some(gs) => match gs.active_for_session(&self.session_id).await {
+                    Ok(Some(g)) if g.status == crate::goal::model::GoalStatus::Active => {
+                        (Some(g.id.clone()), Some(g.revision))
+                    }
+                    _ => (None, None),
+                },
+                None => (None, None),
+            };
+            // Latest installed parent may have advanced while we built.
+            let latest_id = match store.latest_installed(&self.session_id).await {
+                Ok(Some(latest)) => Some(latest.id.clone()),
+                _ => previous_installed_id.clone(),
+            };
+            // Plan digest: reuse captured plan digest source by re-reading
+            // the active goal's plan path when present. For the bounded
+            // check, compare against the captured plan digest via a fresh
+            // capture helper.
+            let plan_digest = {
+                let goal_plan_path: Option<String> = match self.services.goal_store.clone() {
+                    Some(gs) => match gs.active_for_session(&self.session_id).await {
+                        Ok(Some(g)) => g.plan_path.clone(),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                match goal_plan_path {
+                    Some(path) => {
+                        let candidate = std::path::PathBuf::from(&path);
+                        let under = candidate
+                            .is_absolute()
+                            .then(|| {
+                                candidate
+                                    .strip_prefix(&self.workspace_root)
+                                    .is_ok()
+                                    .then_some(candidate.clone())
+                            })
+                            .flatten()
+                            .or_else(|| {
+                                let joined = self.workspace_root.join(&path);
+                                joined.exists().then_some(joined)
+                            });
+                        match under {
+                            Some(full) => std::fs::read_to_string(&full)
+                                .ok()
+                                .map(|c| crate::context::stable_hash_hex(c.as_bytes())),
+                            None => None,
+                        }
+                    }
+                    None => None,
+                }
+            };
+            self.capture_rollover_revisions(messages, latest_id.clone(), plan_digest)
+                .await
+                .into_with_overrides(goal_id, goal_rev, todo_rev, latest_id)
+        };
+        if captured_revisions.is_stale_against(&current_plan_digest) {
+            let reason = captured_revisions
+                .stale_reason(&current_plan_digest)
+                .unwrap_or("source changed");
+            tracing::warn!(reason = %reason, "stale continuation candidate; aborting and rebuilding once");
+            let _ = store
+                .mark_aborted(
+                    self.session_id.as_str(),
+                    prepared.checkpoint.id.as_str(),
+                    reason.chars().take(512).collect::<String>().as_str(),
+                )
+                .await;
+            // One bounded rebuild from fresh state if budget/cancellation
+            // permits; otherwise keep current history with a diagnostic.
+            if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+                tracing::info!("stale rebuild skipped after cancellation");
+                return;
+            }
+            // Rebuild once: reassemble baseline from fresh state and rerun
+            // the canonical engine with a new candidate identity. To bound
+            // work, reuse the already-loaded current revisions and run a
+            // single additional `compact_context` pass inline.
+            let retry_id = uuid::Uuid::new_v4().to_string();
+            // Reassemble a fresh baseline quickly (goal/todo/ledger/previous).
+            let fresh_previous = self.load_usable_installed_checkpoint().await;
+            let fresh_snapshot = {
+                let todo = self.services.todo_state.lock().await;
+                let todos = todo.items.clone();
+                drop(todo);
+                let findings: Vec<String> = self
+                    .recent_findings
+                    .iter()
+                    .map(|f| format!("[{:?}] {}", f.category, f.evidence))
+                    .take(5)
+                    .collect();
+                let active_goal = match self.services.goal_store.clone() {
+                    Some(gs) => match gs.active_for_session(&self.session_id).await {
+                        Ok(Some(g)) if g.status == crate::goal::model::GoalStatus::Active => {
+                            Some(g)
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let (plan_path, plan_content) =
+                    match active_goal.as_ref().and_then(|g| g.plan_path.clone()) {
+                        Some(p) => {
+                            let cand = std::path::PathBuf::from(&p);
+                            let under = cand
+                                .is_absolute()
+                                .then(|| {
+                                    cand.strip_prefix(&self.workspace_root)
+                                        .is_ok()
+                                        .then_some(cand.clone())
+                                })
+                                .flatten()
+                                .or_else(|| {
+                                    let j = self.workspace_root.join(&p);
+                                    j.exists().then_some(j)
+                                });
+                            match under {
+                                Some(full) => match std::fs::read_to_string(&full) {
+                                    Ok(c) => (Some(p), Some(c)),
+                                    Err(_) => (Some(p), None),
+                                },
+                                None => (Some(p), None),
+                            }
+                        }
+                        None => (None, None),
+                    };
+                let cur_user = Self::latest_user_prompt_from_messages(messages);
+                crate::context::continuation::assemble_continuation_snapshot(
+                    crate::context::continuation::ContinuationAssemblyInput {
+                        session_id: self.session_id.as_str(),
+                        origin_prompt: self.original_user_prompt.as_deref(),
+                        current_user_message: cur_user.as_deref(),
+                        messages,
+                        active_goal: active_goal.as_ref(),
+                        todos: &todos,
+                        ledger: &self.context_ledger,
+                        security_findings: &findings,
+                        previous_checkpoint: fresh_previous.as_ref(),
+                        plan_path: plan_path.as_deref(),
+                        plan_content: plan_content.as_deref(),
+                    },
+                )
+            };
+            let retry_result = compact_context(ContextCompactionRequest {
+                messages: &*messages,
+                context_limit,
+                threshold,
+                reserved_output_tokens,
+                max_tool_result_tokens,
+                auto,
+                prune,
+                compaction_config: self.services.config.compaction.as_ref(),
+                active_model: Some(model_profile.model.as_str()),
+                provider: Some(self.services.provider.as_ref()),
+                provider_context: ProviderRequestContext {
+                    session_id: Some(Arc::from(self.session_id.as_str())),
+                },
+                cancellation: None,
+                baseline: Some(&fresh_snapshot),
+                proposed_checkpoint_id: Some(retry_id.as_str()),
+            })
+            .await;
+            // Only accept the retry when it compacts cleanly with a
+            // candidate; otherwise keep history and surface a diagnostic.
+            let retry_candidate = match retry_result.status {
+                CompactionStatus::Compacted
+                | CompactionStatus::ProviderFailure
+                | CompactionStatus::CompactionRequired => retry_result.continuation_candidate,
+                _ => None,
+            };
+            let Some(retry_candidate) = retry_candidate else {
+                tracing::warn!("stale rebuild did not produce a candidate; keeping history");
+                return;
+            };
+            let retry_previous = fresh_previous.as_ref().map(|c| c.id.clone());
+            let retry_prepared = match rollover::prepare_candidate(
+                &store,
+                self.services.artifact_store.as_ref(),
+                self.session_id.as_str(),
+                retry_id.as_str(),
+                retry_previous.clone(),
+                &retry_candidate,
+                retry_result.messages,
+                retry_result.capacity,
+                retry_result.tokens_before,
+                retry_result.tokens_after,
+                turn_index,
+                &existing_handles,
+                original_user.clone(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(error) => {
+                    tracing::warn!(error = %error, "stale rebuild prepare failed; keeping history");
+                    return;
+                }
+            };
+            // Install the rebuilt candidate below by shadowing `prepared`.
+            // Fall through with the retry's prepared state.
+            Self::finish_prepared_install(
+                self,
+                messages,
+                model_profile,
+                retry_prepared,
+                retry_previous,
+                original_len,
+                tokens_before,
+            )
+            .await;
+            return;
+        }
+        // Cancellation point 4: before message replacement. History is still
+        // unchanged; the prepared row remains non-resumable.
+        if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            tracing::info!("compaction cancelled before replacement; aborting candidate");
+            let _ = store
+                .mark_aborted(
+                    self.session_id.as_str(),
+                    prepared.checkpoint.id.as_str(),
+                    "cancelled before replacement",
+                )
+                .await;
+            return;
+        }
+        Self::finish_prepared_install(
+            self,
+            messages,
+            model_profile,
+            prepared,
+            previous_installed_id.clone(),
+            original_len,
+            tokens_before,
+        )
+        .await;
+        // The shared frame/todo/event tail is handled inside
+        // `finish_prepared_install` and the early-path helpers above; the
+        // legacy in-place normalization was removed (M004 §6.7-6.8). The
+        // resolved policy engine already emits exactly one versioned frame.
+    }
 
-        // Exactly one current CodeGG-owned continuation frame (M002 §6.4):
-        // recognize both the versioned marker and the superseded legacy
-        // marker. The hybrid engine already emits one authoritative frame;
-        // the legacy path preserves system messages verbatim, so strip any
-        // stale CodeGG frames there before injecting the single current one.
+    /// Shared tail: enforce exactly one current continuation frame.
+    /// The hybrid engine already emits one authoritative frame; this pass
+    /// collapses any stacked legacy/current frames to the newest versioned
+    /// frame and preserves unrelated system instructions (M002 §6.4, M004
+    /// §6.8). No legacy summary accumulation.
+    async fn normalize_single_frame_tail(
+        loop_ref: &mut Self,
+        messages: &mut Vec<Message>,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+    ) {
         let already_has_frame = messages.iter().any(|message| match message {
             Message::System { content } => {
                 crate::agent::context_frame::is_codegg_owned_frame(content.as_str())
@@ -855,70 +1456,73 @@ impl AgentLoop {
             _ => false,
         });
         if !already_has_frame {
-            let frame = self.build_context_frame().await;
+            let frame = loop_ref.build_context_frame().await;
             if !frame.is_empty() {
                 push_control_instruction(messages, model_profile, &frame.to_continuation_text());
             }
-        } else {
-            // Normalize: collapse any stacked legacy/current frames to the
-            // single newest versioned frame. The hybrid path already did
-            // this; this pass covers the legacy auto-compact path which
-            // preserves all system messages.
-            let mut seen_current = false;
-            let mut normalized: Vec<Message> = Vec::with_capacity(messages.len());
-            // Walk in reverse so the newest frame wins, then restore order.
-            for message in messages.iter().rev() {
-                match message {
-                    Message::System { content }
-                        if crate::agent::context_frame::is_codegg_owned_frame(content.as_str()) =>
-                    {
-                        if seen_current {
-                            continue;
-                        }
-                        seen_current = true;
-                        // If the surviving frame is legacy, replace it with
-                        // the current authoritative rendering.
-                        if crate::agent::context_frame::is_legacy_compaction_frame(content.as_str())
-                        {
-                            let frame = self.build_context_frame().await;
-                            if !frame.is_empty() {
-                                normalized.push(Message::System {
-                                    content: frame.to_continuation_text().into(),
-                                });
-                            } else {
-                                normalized.push(message.clone());
-                            }
+            return;
+        }
+        let mut seen_current = false;
+        let mut normalized: Vec<Message> = Vec::with_capacity(messages.len());
+        for message in messages.iter().rev() {
+            match message {
+                Message::System { content }
+                    if crate::agent::context_frame::is_codegg_owned_frame(content.as_str()) =>
+                {
+                    if seen_current {
+                        continue;
+                    }
+                    seen_current = true;
+                    if crate::agent::context_frame::is_legacy_compaction_frame(content.as_str()) {
+                        let frame = loop_ref.build_context_frame().await;
+                        if !frame.is_empty() {
+                            normalized.push(Message::System {
+                                content: frame.to_continuation_text().into(),
+                            });
                         } else {
                             normalized.push(message.clone());
                         }
+                    } else {
+                        normalized.push(message.clone());
                     }
-                    _ => normalized.push(message.clone()),
                 }
-            }
-            normalized.reverse();
-            *messages = normalized;
-            self.services.context_tracker.reset();
-            self.services.context_tracker.add_messages(messages);
-        }
-        if self.services.task_state_policy.inject_after_compaction {
-            let mut todo = self.services.todo_state.lock().await;
-            if !todo.is_all_done() {
-                if let Some(reminder) =
-                    crate::task_state::build_todo_reminder(&todo, &self.services.task_state_policy)
-                {
-                    push_control_instruction(messages, model_profile, &reminder);
-                    todo.reminder_pending = false;
-                    todo.tool_calls_since_injection = 0;
-                }
+                _ => normalized.push(message.clone()),
             }
         }
+        normalized.reverse();
+        *messages = normalized;
+        loop_ref.services.context_tracker.reset();
+        loop_ref.services.context_tracker.add_messages(messages);
+    }
 
+    async fn inject_todo_reminder_tail(
+        loop_ref: &mut Self,
+        messages: &mut Vec<Message>,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+    ) {
+        if !loop_ref.services.task_state_policy.inject_after_compaction {
+            return;
+        }
+        let mut todo = loop_ref.services.todo_state.lock().await;
+        if todo.is_all_done() {
+            return;
+        }
+        if let Some(reminder) =
+            crate::task_state::build_todo_reminder(&todo, &loop_ref.services.task_state_policy)
+        {
+            push_control_instruction(messages, model_profile, &reminder);
+            todo.reminder_pending = false;
+            todo.tool_calls_since_injection = 0;
+        }
+    }
+
+    fn publish_compaction_tail(loop_ref: &Self, tokens_before: usize, tokens_after: usize) {
         crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
-            session_id: self.session_id.clone(),
+            session_id: loop_ref.session_id.clone(),
             tokens_before,
             tokens_after,
         });
-        if let Some(ref ps) = self.plugin_service {
+        if let Some(ref ps) = loop_ref.plugin_service {
             use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
             let hooks = LifecycleHooks::new(
                 ps.clone(),
@@ -926,9 +1530,9 @@ impl AgentLoop {
             );
             let event_input = EventHookInput {
                 event_type: "session.compacted".into(),
-                session_id: Some(self.session_id.clone()),
+                session_id: Some(loop_ref.session_id.clone()),
                 event: serde_json::json!({
-                    "session_id": self.session_id,
+                    "session_id": loop_ref.session_id,
                     "tokens_before": tokens_before,
                     "tokens_after": tokens_after,
                 }),
@@ -943,6 +1547,108 @@ impl AgentLoop {
                     tracing::error!(panic = ?error, "hook emission task panicked");
                 }
             });
+        }
+    }
+
+    /// Finish a prepared candidate: replace history (step H), atomically
+    /// install with the durable event (step I), and publish bounded
+    /// diagnostics (step J). Replacement happens only after durable
+    /// verification; the prepared row is never resume authority until this
+    /// commits. On install failure after replacement, the live process has
+    /// reduced history while restart still ignores the prepared row — fail
+    /// the turn with explicit degraded continuity.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_prepared_install(
+        loop_ref: &mut Self,
+        messages: &mut Vec<Message>,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        prepared: rollover::PreparedCandidate,
+        previous_installed_id: Option<String>,
+        original_len: usize,
+        tokens_before: usize,
+    ) {
+        // Cancellation point 5: before install commit. If cancelled after
+        // replacement would have happened, we have not replaced yet here, so
+        // abort cleanly. The plan's "after replacement but before install"
+        // case is covered below: if install fails after we replace, we emit
+        // degraded rather than claiming success.
+        if loop_ref.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            tracing::info!("compaction cancelled before install; aborting candidate");
+            if let Some(pool) = loop_ref.continuation_pool() {
+                let store =
+                    codegg_core::session::continuation::ContinuationCheckpointStore::new(pool);
+                let _ = store
+                    .mark_aborted(
+                        loop_ref.session_id.as_str(),
+                        prepared.checkpoint.id.as_str(),
+                        "cancelled before install",
+                    )
+                    .await;
+            }
+            return;
+        }
+        // Step H: replace in-memory/provider-visible messages only after
+        // durable verification (prepare + read-back above).
+        let new_len = prepared.verified_messages.len();
+        *messages = prepared.verified_messages;
+        loop_ref.services.context_tracker.reset();
+        loop_ref.services.context_tracker.add_messages(messages);
+        // Exactly one frame is already guaranteed by validation, but
+        // normalize defensively for legacy compat paths.
+        Self::normalize_single_frame_tail(loop_ref, messages, model_profile).await;
+        // Defensive: the transactional path must never stack frames.
+        if let Err(reason) = rollover::assert_single_frame(messages) {
+            tracing::error!(reason = %reason, "transactional rollover produced stacked frames");
+        }
+        Self::inject_todo_reminder_tail(loop_ref, messages, model_profile).await;
+        let tokens_after = crate::context::compaction::context_tokens(
+            messages,
+            Some(model_profile.model.as_str()),
+        );
+        // Step I: atomically mark Installed + append ContextCompacted event.
+        let install_result = if let Some(pool) = loop_ref.continuation_pool() {
+            let store = codegg_core::session::continuation::ContinuationCheckpointStore::new(pool);
+            let messages_removed = original_len.saturating_sub(new_len);
+            rollover::install_prepared(
+                &store,
+                &prepared.checkpoint,
+                messages_removed,
+                new_len,
+                tokens_before,
+                tokens_after,
+            )
+            .await
+        } else {
+            Err("no continuation pool for install".to_string())
+        };
+        match install_result {
+            Ok(installed) => {
+                let mut diag = prepared.diagnostics;
+                diag.continuity = String::from("installed");
+                diag.tokens_after = tokens_after;
+                diag.checkpoint_sequence = installed.sequence;
+                diag.previous_checkpoint_id = previous_installed_id;
+                tracing::info!(
+                    session_id = %loop_ref.session_id,
+                    checkpoint_id = %installed.id,
+                    sequence = installed.sequence,
+                    tokens_before = diag.tokens_before,
+                    tokens_after = diag.tokens_after,
+                    checkpoint_bytes = diag.checkpoint_bytes,
+                    recovery_refs = diag.recovery_ref_count,
+                    semantic = %diag.semantic_enrichment,
+                    "continuation checkpoint installed"
+                );
+                tracing::info!("{}", diag.bounded_line());
+                Self::publish_compaction_tail(loop_ref, tokens_before, tokens_after);
+            }
+            Err(error) => {
+                // After replacement but before install commit: restart still
+                // ignores the prepared row. Fail explicitly with degraded
+                // continuity rather than claiming an install.
+                tracing::error!(error = %error, "continuation install failed after replacement; degraded continuity");
+                Self::publish_compaction_tail(loop_ref, tokens_before, tokens_after);
+            }
         }
     }
 }

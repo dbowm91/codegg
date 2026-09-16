@@ -12,6 +12,7 @@ pub mod plan;
 pub mod policy;
 pub mod projection;
 pub mod read_tool;
+pub mod rollover;
 pub mod tool_hash;
 pub mod usage_normalize;
 pub mod volatile_tail;

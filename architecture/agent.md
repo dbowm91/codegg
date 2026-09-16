@@ -162,8 +162,8 @@ class, and content hash. The compiler emits a versioned fingerprint used
 by `ContextPlan` for context identity. There is no production
 post-compaction system-string mutation.
 
-Prompt-block precedence for overlapping work state (M002 §6.9): current
-turn user input outranks an active goal revision newer than the
+Prompt-block precedence for overlapping work state (M002 §6.9, M004 §6.5):
+current turn user input outranks an active goal revision newer than the
 checkpoint, which outranks the installed continuation projection
 (`PromptBlockKind::ContinuationState`, source
 `continuation:installed-checkpoint`, `required` so a future active
@@ -172,8 +172,10 @@ checkpoint semantic next steps. `GoalContext`
 (`goal:active-checkpoint`) remains the pre-first-compaction projection;
 once an installed checkpoint exists the compiler must prefer the single
 `ContinuationState` projection and must not emit a contradictory
-duplicate objective/progress projection. M004 owns durable rollover
-activation and turn-start installed-checkpoint injection.
+duplicate objective/progress projection. M004 activates durable rollover:
+`AgentLoop::compact_if_needed` sequences prepare/verify/replace/install
+(A-J) and `inject_installed_continuation_for_turn` restores the latest
+installed projection at turn start with newer-goal merge.
 
 ### Runtime Asset Refresh
 
