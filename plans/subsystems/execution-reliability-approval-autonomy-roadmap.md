@@ -266,11 +266,13 @@ Class: invariant/infrastructure
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md`
 
-Status: ready (unblocked by M001 closure `plans/closure/execution-reliability-approval-autonomy/001-status.md`).
+Status: closed.
 
 Introduce a propagated retry chain/deadline/budget and map ToolEffectClass/idempotency plus acknowledgement state into safe retry/reconcile/stop behavior.
 
 Exit condition: nested retry layers cannot multiply beyond the configured chain budget and ambiguous non-idempotent effects are reconciled or surfaced rather than replayed.
+
+Closure: `plans/closure/execution-reliability-approval-autonomy/002-status.md` (implementation `8d810fc3`).
 
 ### M003 — ApprovalRouter and durable approval-mode state
 
@@ -435,7 +437,7 @@ This roadmap closes only when:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md` | `plans/closure/execution-reliability-approval-autonomy/001-status.md` | — |
-| M002 | ready | `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md` | — | M001 closure (satisfied) |
+| M002 | closed | `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md` | `plans/closure/execution-reliability-approval-autonomy/002-status.md` | — |
 | M003 | ready | `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md` | — | — |
 | M004 | blocked | `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md` | — | M003 preference-store contract |
 | M005 | blocked | `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md` | — | M003 |
