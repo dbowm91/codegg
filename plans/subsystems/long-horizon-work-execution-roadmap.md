@@ -218,7 +218,7 @@ Class: invariant/capability
 
 Plan: `plans/implementation/long-horizon-work-execution/001-goal-progress-and-continuation-correctness.md`
 
-Status: ready.
+Status: closed (`plans/closure/long-horizon-work-execution/001-status.md`, implementation `5d79bd9d`).
 
 Correct the nonexistent Blocked-status prompt contract, compute host-owned progress/wait/no-progress signals for Goal continuation, reuse existing recovery semantics, and bound replan/AwaitingUser transitions.
 
@@ -230,7 +230,7 @@ Class: infrastructure/invariant
 
 Plan: `plans/implementation/long-horizon-work-execution/002-durable-work-plan-foundation.md`
 
-Status: blocked on M001 closure for ordered handoff.
+Status: ready for handoff (unblocked by M001 closure).
 
 Add bounded WorkPlan/WorkItem types, additive storage/migration, revision/CAS, lifecycle semantics, optional Goal binding, and provenance/evidence reference shape without changing model-visible behavior yet.
 
@@ -353,8 +353,8 @@ This roadmap closes only when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/long-horizon-work-execution/001-goal-progress-and-continuation-correctness.md` | — | — |
-| M002 | blocked | `plans/implementation/long-horizon-work-execution/002-durable-work-plan-foundation.md` | — | M001 closure |
+| M001 | closed | `plans/implementation/long-horizon-work-execution/001-goal-progress-and-continuation-correctness.md` | `plans/closure/long-horizon-work-execution/001-status.md` | — |
+| M002 | ready | `plans/implementation/long-horizon-work-execution/002-durable-work-plan-foundation.md` | — | — |
 | M003 | blocked | `plans/implementation/long-horizon-work-execution/003-work-plan-projection-and-completion-arbiter.md` | — | M002 closure |
 | M004 | blocked | `plans/implementation/long-horizon-work-execution/004-context-epoch-reset-and-handoff-integration.md` | — | M003 + closed context-continuity foundation |
-| M005 | blocked | `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md` | — | M001-M004 closure |
+| M005 | blocked | `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md` | — | M002-M004 closure (M001 closed) |

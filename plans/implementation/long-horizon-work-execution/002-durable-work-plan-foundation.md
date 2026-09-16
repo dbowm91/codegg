@@ -1,6 +1,6 @@
 # Long-Horizon Work Execution M002 — Durable WorkPlan Foundation
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
