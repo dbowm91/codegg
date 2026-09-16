@@ -1,6 +1,6 @@
 # Context Continuity and Multi-Compaction Coherence Roadmap
 
-Status: active; M001 closed, M002-M003 ready, M004 dependency-gated
+Status: active; M001-M002 closed, M003 ready, M004 dependency-gated
 
 Repository baseline reviewed: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 
@@ -247,7 +247,7 @@ Exit condition: CodeGG can durably prepare, verify, install, query, and restart-
 
 Plan: `plans/implementation/context-continuity-compaction/002-authoritative-intent-plan-and-frame-projection.md`
 
-Status: **ready** (M001 accepted closure at `plans/closure/context-continuity-compaction/001-status.md`).
+Status: **closed** (`plans/closure/context-continuity-compaction/002-status.md`, implementation `a96ed0fc`).
 
 Build continuation state from host-owned Goal/Todo/runtime evidence plus bounded exact user intent, fix source precedence, fix stale goal-journal rendering, eliminate stacked CodeGG compaction frames, and make semantic enrichment update only fields it owns.
 
