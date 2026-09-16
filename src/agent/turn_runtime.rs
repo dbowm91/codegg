@@ -145,6 +145,12 @@ pub struct TurnRunInput {
     /// separate from the `Arc` so run/agent metadata can record provenance
     /// without serializing asset bodies or paths.
     pub asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    /// M003: resolved effective approval mode for this turn. `None` means
+    /// the `Interactive` default; the daemon resolves the persisted
+    /// principal preference before spawning the turn.
+    pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
+    /// M003: sandbox profile preference, separate from approval mode.
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 /// Minimal output from a turn execution.
@@ -212,6 +218,8 @@ impl TurnRuntime for DefaultTurnRuntime {
             repository_id,
             asset_snapshot,
             asset_pin,
+            approval_mode,
+            sandbox_profile,
         } = input;
 
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
@@ -645,6 +653,8 @@ impl TurnRuntime for DefaultTurnRuntime {
             execution,
             workspace_service_lease,
             notification_service: Some(notification_service),
+            approval_mode,
+            sandbox_profile,
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());

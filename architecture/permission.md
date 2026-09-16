@@ -19,6 +19,9 @@ stuck-agent loops, and provide mode-based permission envelopes
 | `PermissionChecker`, `PermissionStore`, `DoomLoopDetector`, ruleset types | `src/permission/mod.rs` |
 | `ModeDefinition`, `BuiltinModes` (review/debug/docs) | `src/permission/modes.rs` |
 | `PermissionRegistry` (ask-response broker) | `crates/codegg-core/src/bus/mod.rs` |
+| `ApprovalRouter`, `ApprovalMode`, `ApprovalRequest/Decision` | `src/permission/approval.rs` (domain: `crates/codegg-core/src/approval.rs`) |
+| `RuntimePreferenceStore` (daemon-owned, principal-scoped) | `crates/codegg-core/src/approval.rs` (table `runtime_preferences`, v58) |
+| `ExecutionPolicySnapshot` (immutable turn/batch) | `crates/codegg-core/src/approval.rs` |
 | `PermissionDecision` (bus DTO) | `crates/codegg-core/src/bus/mod.rs` |
 | `ToolCategory` enum | `src/tool/mod.rs` |
 | Destructive bash patterns | `src/tool/destructive.rs` |
@@ -372,7 +375,9 @@ allow_all_bash = false
 1. **PermissionRegistry is synchronous.** `register()`, `respond()`,
    `answer_question()` are `fn`, not `async fn`. Do NOT `.await` them.
 2. **Registration-before-publish.** Always register the oneshot channel
-   BEFORE publishing the `PermissionPending` event.
+   BEFORE publishing the `PermissionPending` event. Only
+   `ApprovalRouter::request_human_approval()` performs this in production
+   (`scripts/check_approval_router.py` enforces the single owner).
 3. **Agent loop does not treat external origin as approval.** Unknown
    raw MCP tools follow the normal mutating default and remain `Ask`
    until explicit policy or user decision allows them.
@@ -390,6 +395,26 @@ allow_all_bash = false
    layers.
 6. **Exec mode** (`with_exec_mode()`) sets `default = Allow` and allows
    bash, edit, task, todowrite — for CI/CD where no TUI is available.
+   It is a headless compatibility adapter, distinct from user `Yolo`
+   (M003 preserves `with_exec_mode()` and documents the separation).
+7. **M003 approval routing (ADR-0004).** Deterministic
+   `PermissionChecker`/`SecurityService` evaluation normalizes to
+   `Allow | Deny | Escalate(ApprovalRequest)` before routing. `Allow`
+   returns immediately, `Deny` never becomes `Escalate`, and only
+   `Escalate` reaches the router. `Interactive` performs the single
+   human wait, `Yolo` auto-allows only `Escalate` within the resolved
+   ceiling, and `Automatic` safely defers to the human until M006 (never
+   fail-open, even with rollout enabled). The turn/batch captures an
+   immutable `ExecutionPolicySnapshot` (mode + sandbox + policy revision);
+   concurrent mode changes apply on the next boundary. Child loops narrow
+   via `narrow_for_child()` and can never broaden the parent. Approval
+   mode and sandbox profile are separate fields. Production `Always`
+   decisions use `canonical_permission_store_path()` (env
+   `CODEGG_PERMISSIONS_PATH` override or `~/.config/codegg/permissions.json`);
+   subagents use an ephemeral store. Write failure applies in-memory but
+   reports `user_choice_unpersisted`. Frontend state is a projection, not
+   authority; durable preference lives in daemon-owned
+   `runtime_preferences` (revision/CAS, secret-free, additive v58).
 
 ## Testing
 

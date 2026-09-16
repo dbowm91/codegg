@@ -1324,6 +1324,11 @@ async fn execute_agent_task(
         .collect();
     available_tools.sort();
 
+    // M003: subagents receive an ephemeral (non-durable) decision store.
+    // They must not get an independent global store; the parent ceiling
+    // remains authoritative and subagent `Always` choices stay in-memory.
+    // Subagent loops also default to `Interactive` so they never exceed a
+    // parent Yolo/Automatic ceiling without explicit narrowing.
     let permission_checker =
         PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
 

@@ -88,6 +88,15 @@ pub(super) struct AgentLoopServices {
     pub(super) habit_store: Option<Arc<codegg_core::memory::habit::HabitStore>>,
     pub(super) agents: HashMap<String, Agent>,
     pub(super) config: Config,
+    /// M003: user-facing approval mode for escalation routing. Defaults to
+    /// `Interactive`; daemon turns resolve the persisted principal
+    /// preference before construction. Approval and sandbox are separate
+    /// fields: changing one never changes the other.
+    pub(super) approval_mode: codegg_core::approval::ApprovalMode,
+    /// M003: filesystem containment profile. Separate from approval mode;
+    /// production wiring lands in M005, but the preference is already
+    /// durable and part of the captured snapshot.
+    pub(super) sandbox_profile: codegg_core::approval::SandboxProfile,
 }
 
 /// Explicit lifecycle states used by the coordinator.

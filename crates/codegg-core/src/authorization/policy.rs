@@ -856,6 +856,26 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectChat),
         ),
+        // ── Execution Reliability M003: Approval / Sandbox / Policy ──
+        //
+        // Principal-scoped daemon-owned preferences. Transport-level scope
+        // is `Global` with no semantic capability: the daemon binds the
+        // principal server-side from transport authority (payloads carry
+        // no identity), and mode changes never override explicit deny or
+        // project/admin ceilings (enforced in the handler/router, not by
+        // widening this gate).
+        R::ApprovalPreferenceGet => {
+            OperationDescriptor::new("approval_preference_get", ScopeKind::Global, None)
+        }
+        R::ApprovalModeSet { .. } => {
+            OperationDescriptor::new("approval_mode_set", ScopeKind::Global, None)
+        }
+        R::SandboxProfileSet { .. } => {
+            OperationDescriptor::new("sandbox_profile_set", ScopeKind::Global, None)
+        }
+        R::ExecutionPolicyGet { .. } => {
+            OperationDescriptor::new("execution_policy_get", ScopeKind::Global, None)
+        }
     }
 }
 
@@ -1502,6 +1522,16 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             message_id: None,
             limit: None,
         },
+        R::ApprovalPreferenceGet,
+        R::ApprovalModeSet {
+            approval_mode: String::new(),
+            expected_revision: None,
+        },
+        R::SandboxProfileSet {
+            sandbox_profile: String::new(),
+            expected_revision: None,
+        },
+        R::ExecutionPolicyGet { session_id: None },
     ]
 }
 

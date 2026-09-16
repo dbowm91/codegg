@@ -193,6 +193,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 57 {
         migrate_and_record(pool, 57).await?;
     }
+    if current_version < 58 {
+        migrate_and_record(pool, 58).await?;
+    }
 
     Ok(())
 }
@@ -262,6 +265,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             55 => migrate_v55(&mut tx).await?,
             56 => migrate_v56(&mut tx).await?,
             57 => migrate_v57(&mut tx).await?,
+            58 => migrate_v58(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2461,6 +2465,22 @@ async fn migrate_v57(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "CREATE INDEX IF NOT EXISTS idx_continuation_checkpoint_lineage ON \
          continuation_checkpoint(session_id, sequence)",
     ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Execution-reliability M003: daemon-owned principal-scoped runtime
+/// preferences for approval mode, sandbox profile, and (reserved) last
+/// provider/model identity.
+///
+/// Additive `IF NOT EXISTS`, safe on existing databases. Pre-preference
+/// databases open cleanly with no rows; readers fall back to
+/// `Interactive`/`WorkspaceWrite`. No secrets are stored here.
+async fn migrate_v58(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

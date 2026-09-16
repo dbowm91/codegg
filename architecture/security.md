@@ -371,6 +371,18 @@ cargo test -p eggsentry
 cargo test -p codegg --lib security::untrusted_http
 ```
 
+## Approval-vs-security boundary (M003, ADR-0004)
+
+Deterministic `SecurityService` classification (`Observe | Ask | Deny`)
+executes before approval routing and remains authoritative. `Deny` never
+becomes an escalation; `Ask` and sensitive-path matches normalize into an
+`ApprovalRequest` resolved by the single `ApprovalRouter`
+(`src/permission/approval.rs`). `Yolo` auto-allows only `Escalate` within
+the resolved ceiling, never `Deny`. `Automatic` defers to the human until
+M006. Approval mode cannot mutate sandbox profile; filesystem vs network
+containment stays reported separately. See `permission.md` for the router
+contract and `session.md` for durable preference ownership.
+
 ## Related Docs
 
 - [tool.md](tool.md) — Uses security validation

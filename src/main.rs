@@ -1392,8 +1392,11 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     let safe_agent =
         selected_agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
-    let permission_checker =
-        codegg::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
+    let permission_checker = codegg::permission::PermissionChecker::new(
+        Some(&config),
+        codegg::permission::approval::canonical_permission_store_path(),
+    )
+    .with_active_mode(&config);
     // Bootstraps the search backend (eggsearch by default) before the agent
     // loop starts. Idempotent if already bootstrapped. The explicit
     // runtime context (M005) flows into the registry so wrappers never

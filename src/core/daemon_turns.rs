@@ -273,6 +273,34 @@ impl CoreDaemon {
                     .acquire(&runtime.workspace_id)
                     .await
                     .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                // M003: resolve the persisted principal approval/sandbox
+                // preference for this turn. Restart reloads the last
+                // preference; explicit turn overrides (none in this path)
+                // would win, then project ceiling, then persisted, then
+                // Interactive/WorkspaceWrite defaults. The snapshot is
+                // captured by the loop at the batch boundary so concurrent
+                // mode changes apply on the next turn, never retroactively.
+                let (approval_mode, sandbox_profile) = match self.pool.clone() {
+                    None => (None, None),
+                    Some(pool) => {
+                        let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                        let principal = authority.principal_id().as_str().to_owned();
+                        match store.get(&principal).await {
+                            Ok(Some(pref)) => (
+                                Some(pref.effective_approval_mode()),
+                                Some(pref.effective_sandbox_profile()),
+                            ),
+                            Ok(None) => (None, None),
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "approval preference read failed; using defaults"
+                                );
+                                (None, None)
+                            }
+                        }
+                    }
+                };
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,
@@ -300,6 +328,8 @@ impl CoreDaemon {
                     repository_id: None,
                     asset_snapshot,
                     asset_pin,
+                    approval_mode,
+                    sandbox_profile,
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 

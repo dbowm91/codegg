@@ -331,6 +331,8 @@ impl AgentLoop {
                 habit_store,
                 agents: map,
                 config,
+                approval_mode: codegg_core::approval::ApprovalMode::Interactive,
+                sandbox_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
             },
             lifecycle: TurnLifecycle::new(),
             state: AgentLoopState {
@@ -657,6 +659,46 @@ impl AgentLoop {
             .context_tracker
             .set_model(Some(policy.model.clone()));
         self.services.execution_policy = Some(policy);
+    }
+
+    /// M003: explicit approval mode for escalation routing. Separate from
+    /// sandbox profile and built-in permission modes. Daemon turns resolve
+    /// the persisted principal preference before construction; frontends
+    /// change it via the approval protocol (next turn boundary).
+    pub fn set_approval_mode(&mut self, mode: codegg_core::approval::ApprovalMode) {
+        self.services.approval_mode = mode;
+    }
+
+    pub fn approval_mode(&self) -> codegg_core::approval::ApprovalMode {
+        self.services.approval_mode
+    }
+
+    /// M003: explicit sandbox profile preference. Separate from approval
+    /// mode; production enforcement wiring lands in M005.
+    pub fn set_sandbox_profile(&mut self, profile: codegg_core::approval::SandboxProfile) {
+        self.services.sandbox_profile = profile;
+    }
+
+    pub fn sandbox_profile(&self) -> codegg_core::approval::SandboxProfile {
+        self.services.sandbox_profile
+    }
+
+    /// M003: capture the immutable effective execution-policy snapshot for
+    /// the turn/accepted-tool-batch boundary. Mode changes after capture
+    /// apply on the next boundary and cannot retroactively bless pending
+    /// actions.
+    pub(super) fn capture_execution_snapshot(
+        &self,
+    ) -> codegg_core::approval::ExecutionPolicySnapshot {
+        codegg_core::approval::ExecutionPolicySnapshot::capture(
+            self.services.approval_mode,
+            self.services.sandbox_profile,
+            None,
+            Some(self.session_id.clone()),
+            Some(self.state.current_agent.clone()),
+            Some(format!("config:{:016x}", self.permission_version())),
+            None,
+        )
     }
 
     pub fn set_max_tool_calls(&mut self, max: Option<usize>) {

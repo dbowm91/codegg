@@ -322,6 +322,173 @@ impl CoreDaemon {
                 }
                 Ok(CoreResponse::Ack)
             }
+            // ── Execution Reliability M003: Approval / Sandbox / Policy ──
+            //
+            // Principal-scoped daemon-owned preferences. The principal is
+            // derived from transport authority; payloads carry no identity.
+            // Mode changes never override explicit deny or project/admin
+            // ceilings (deny/ceiling enforcement lives in the router and
+            // M005 policy wiring, not in this persistence seam).
+            CoreRequest::ApprovalPreferenceGet => {
+                let principal_id = authority.principal_id().as_str().to_owned();
+                match self.pool.clone() {
+                    None => Ok(CoreResponse::ApprovalPreference {
+                        preference: crate::protocol::core::RuntimePreferenceDto {
+                            principal_id,
+                            approval_mode: crate::protocol::core::ApprovalModeDto::Interactive,
+                            sandbox_profile:
+                                crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+                            revision: 0,
+                            updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                        },
+                    }),
+                    Some(pool) => {
+                        let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                        match store.get(&principal_id).await {
+                            Ok(Some(pref)) => Ok(CoreResponse::ApprovalPreference {
+                                preference: approval_preference_to_dto(&pref),
+                            }),
+                            Ok(None) => Ok(CoreResponse::ApprovalPreference {
+                                preference: crate::protocol::core::RuntimePreferenceDto {
+                                    principal_id,
+                                    approval_mode:
+                                        crate::protocol::core::ApprovalModeDto::Interactive,
+                                    sandbox_profile:
+                                        crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
+                                    revision: 0,
+                                    updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                                },
+                            }),
+                            Err(error) => Ok(CoreResponse::Error {
+                                code: "preference_read_failed".to_string(),
+                                message: error.to_string(),
+                            }),
+                        }
+                    }
+                }
+            }
+            CoreRequest::ApprovalModeSet {
+                approval_mode,
+                expected_revision,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "preference_unavailable".to_string(),
+                        message: "approval preference requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Some(mode) = codegg_core::approval::ApprovalMode::parse(&approval_mode) else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_approval_mode".to_string(),
+                        message: format!("unknown approval mode: {approval_mode}"),
+                    });
+                };
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                match store
+                    .set_approval_mode(&principal_id, mode, expected_revision)
+                    .await
+                {
+                    Ok(pref) => Ok(CoreResponse::ApprovalPreference {
+                        preference: approval_preference_to_dto(&pref),
+                    }),
+                    Err(codegg_core::approval::PreferenceError::Conflict { expected, current }) => {
+                        Ok(CoreResponse::Error {
+                            code: "preference_conflict".to_string(),
+                            message: format!(
+                                "stale preference revision: expected {expected}, current {current}"
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "preference_write_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SandboxProfileSet {
+                sandbox_profile,
+                expected_revision,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "preference_unavailable".to_string(),
+                        message: "sandbox preference requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Some(profile) = codegg_core::approval::SandboxProfile::parse(&sandbox_profile)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_sandbox_profile".to_string(),
+                        message: format!("unknown sandbox profile: {sandbox_profile}"),
+                    });
+                };
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                match store
+                    .set_sandbox_profile(&principal_id, profile, expected_revision)
+                    .await
+                {
+                    Ok(pref) => Ok(CoreResponse::ApprovalPreference {
+                        preference: approval_preference_to_dto(&pref),
+                    }),
+                    Err(codegg_core::approval::PreferenceError::Conflict { expected, current }) => {
+                        Ok(CoreResponse::Error {
+                            code: "preference_conflict".to_string(),
+                            message: format!(
+                                "stale preference revision: expected {expected}, current {current}"
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "preference_write_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ExecutionPolicyGet { session_id } => {
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let (mode, profile, revision) = match self.pool.clone() {
+                    None => (
+                        codegg_core::approval::ApprovalMode::Interactive,
+                        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                        None,
+                    ),
+                    Some(pool) => {
+                        let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                        match store.get(&principal_id).await {
+                            Ok(Some(pref)) => (
+                                pref.effective_approval_mode(),
+                                pref.effective_sandbox_profile(),
+                                Some(pref.revision.to_string()),
+                            ),
+                            Ok(None) => (
+                                codegg_core::approval::ApprovalMode::Interactive,
+                                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                                None,
+                            ),
+                            Err(error) => {
+                                return Ok(CoreResponse::Error {
+                                    code: "preference_read_failed".to_string(),
+                                    message: error.to_string(),
+                                });
+                            }
+                        }
+                    }
+                };
+                let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    mode,
+                    profile,
+                    Some(principal_id.clone()),
+                    session_id.clone(),
+                    None,
+                    revision,
+                    None,
+                );
+                Ok(CoreResponse::ExecutionPolicy {
+                    snapshot: execution_snapshot_to_dto(&snapshot),
+                })
+            }
             // ── Session Projections M2: Replay Protocol ──────────────────────
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
@@ -331,5 +498,72 @@ impl CoreDaemon {
                 })
             }
         }
+    }
+}
+
+fn approval_preference_to_dto(
+    pref: &codegg_core::approval::RuntimePreference,
+) -> crate::protocol::core::RuntimePreferenceDto {
+    crate::protocol::core::RuntimePreferenceDto {
+        principal_id: pref.principal_id.clone(),
+        approval_mode: match pref.effective_approval_mode() {
+            codegg_core::approval::ApprovalMode::Interactive => {
+                crate::protocol::core::ApprovalModeDto::Interactive
+            }
+            codegg_core::approval::ApprovalMode::Automatic => {
+                crate::protocol::core::ApprovalModeDto::Automatic
+            }
+            codegg_core::approval::ApprovalMode::Yolo => {
+                crate::protocol::core::ApprovalModeDto::Yolo
+            }
+        },
+        sandbox_profile: match pref.effective_sandbox_profile() {
+            codegg_core::approval::SandboxProfile::ReadOnly => {
+                crate::protocol::core::SandboxProfileDto::ReadOnly
+            }
+            codegg_core::approval::SandboxProfile::WorkspaceWrite => {
+                crate::protocol::core::SandboxProfileDto::WorkspaceWrite
+            }
+            codegg_core::approval::SandboxProfile::FullHost => {
+                crate::protocol::core::SandboxProfileDto::FullHost
+            }
+        },
+        revision: pref.revision,
+        updated_at_ms: pref.updated_at_ms,
+    }
+}
+
+fn execution_snapshot_to_dto(
+    snapshot: &codegg_core::approval::ExecutionPolicySnapshot,
+) -> crate::protocol::core::ExecutionPolicySnapshotDto {
+    crate::protocol::core::ExecutionPolicySnapshotDto {
+        approval_mode: match snapshot.approval_mode() {
+            codegg_core::approval::ApprovalMode::Interactive => {
+                crate::protocol::core::ApprovalModeDto::Interactive
+            }
+            codegg_core::approval::ApprovalMode::Automatic => {
+                crate::protocol::core::ApprovalModeDto::Automatic
+            }
+            codegg_core::approval::ApprovalMode::Yolo => {
+                crate::protocol::core::ApprovalModeDto::Yolo
+            }
+        },
+        sandbox_profile: match snapshot.sandbox_profile() {
+            codegg_core::approval::SandboxProfile::ReadOnly => {
+                crate::protocol::core::SandboxProfileDto::ReadOnly
+            }
+            codegg_core::approval::SandboxProfile::WorkspaceWrite => {
+                crate::protocol::core::SandboxProfileDto::WorkspaceWrite
+            }
+            codegg_core::approval::SandboxProfile::FullHost => {
+                crate::protocol::core::SandboxProfileDto::FullHost
+            }
+        },
+        principal_id: snapshot.principal_id().map(str::to_owned),
+        session_id: snapshot.session_id().map(str::to_owned),
+        agent_id: snapshot.agent_id().map(str::to_owned),
+        policy_revision: snapshot.policy_revision().map(str::to_owned),
+        reviewer_config_id: snapshot.reviewer_config_id().map(str::to_owned),
+        captured_at_ms: snapshot.captured_at_ms(),
     }
 }

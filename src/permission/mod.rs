@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
+pub mod approval;
 pub mod modes;
 
 use crate::config::schema::{AgentConfig, Config, PermissionRule};
@@ -323,6 +324,11 @@ impl PermissionStore {
             decisions,
             store_path,
         }
+    }
+
+    /// Canonical path backing this store, when durable.
+    pub fn store_path(&self) -> Option<&std::path::PathBuf> {
+        self.store_path.as_ref()
     }
 
     /// Record a decision; returns `false` when persistence failed so the
@@ -870,26 +876,53 @@ impl PermissionChecker {
         }
     }
 
-    pub async fn always_allow(&self, tool: &str, path: Option<&str>, session_id: Option<&str>) {
+    /// Record an always-allow decision. Returns `true` when the decision
+    /// was persisted (or when there is no store path and the decision is
+    /// intentionally ephemeral). Returns `false` when persistence failed:
+    /// the in-memory decision still applies for the current run, but the
+    /// caller must surface that it was not persisted.
+    pub async fn always_allow(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        session_id: Option<&str>,
+    ) -> bool {
         self.store
             .write()
             .await
-            .add_decision(tool, path, PermissionLevel::Allow, session_id);
+            .add_decision(tool, path, PermissionLevel::Allow, session_id)
     }
 
-    pub async fn always_allow_legacy(&self, tool: &str, path: Option<&str>) {
-        self.always_allow(tool, path, None).await;
+    pub async fn always_allow_legacy(&self, tool: &str, path: Option<&str>) -> bool {
+        self.always_allow(tool, path, None).await
     }
 
-    pub async fn always_deny(&self, tool: &str, path: Option<&str>, session_id: Option<&str>) {
+    /// Record an always-deny decision. See [`Self::always_allow`] for the
+    /// persistence-failure contract.
+    pub async fn always_deny(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        session_id: Option<&str>,
+    ) -> bool {
         self.store
             .write()
             .await
-            .add_decision(tool, path, PermissionLevel::Deny, session_id);
+            .add_decision(tool, path, PermissionLevel::Deny, session_id)
     }
 
-    pub async fn always_deny_legacy(&self, tool: &str, path: Option<&str>) {
-        self.always_deny(tool, path, None).await;
+    pub async fn always_deny_legacy(&self, tool: &str, path: Option<&str>) -> bool {
+        self.always_deny(tool, path, None).await
+    }
+
+    /// Canonical store path when durable persistence is configured.
+    pub async fn store_path(&self) -> Option<PathBuf> {
+        self.store.read().await.store_path().cloned()
+    }
+
+    /// `true` when `Always` decisions survive restart on this checker.
+    pub async fn is_persistent(&self) -> bool {
+        self.store.read().await.store_path().is_some()
     }
 
     pub async fn clear_decisions(&self) {

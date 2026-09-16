@@ -527,6 +527,98 @@ pub struct ChatActionDto {
     pub updated_at_ms: i64,
 }
 
+// ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
+//
+// Frontend-neutral approval state. Authority stays daemon-owned: the
+// principal is derived server-side from transport authority, never from a
+// payload field. Older clients ignore these variants/fields.
+
+/// Wire approval mode name. Unknown values fail closed at the daemon
+/// boundary (invalid mode, never a silent default).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalModeDto {
+    Interactive,
+    Automatic,
+    Yolo,
+}
+
+impl ApprovalModeDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::Automatic => "automatic",
+            Self::Yolo => "yolo",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "interactive" => Some(Self::Interactive),
+            "automatic" | "auto" => Some(Self::Automatic),
+            "yolo" => Some(Self::Yolo),
+            _ => None,
+        }
+    }
+}
+
+/// Wire sandbox profile name. Orthogonal to approval mode.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxProfileDto {
+    ReadOnly,
+    WorkspaceWrite,
+    FullHost,
+}
+
+impl SandboxProfileDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::FullHost => "full_host",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "read_only" | "readonly" | "read-only" => Some(Self::ReadOnly),
+            "workspace_write" | "workspace-write" => Some(Self::WorkspaceWrite),
+            "full_host" | "full-host" | "fullhost" => Some(Self::FullHost),
+            _ => None,
+        }
+    }
+}
+
+/// Daemon-owned principal preference projection. Secret-free.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimePreferenceDto {
+    pub principal_id: String,
+    pub approval_mode: ApprovalModeDto,
+    pub sandbox_profile: SandboxProfileDto,
+    pub revision: u64,
+    pub updated_at_ms: i64,
+}
+
+/// Effective execution-policy snapshot projection. Immutable once captured
+/// for a turn/tool batch; mode changes apply on the next boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionPolicySnapshotDto {
+    pub approval_mode: ApprovalModeDto,
+    pub sandbox_profile: SandboxProfileDto,
+    #[serde(default)]
+    pub principal_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub policy_revision: Option<String>,
+    #[serde(default)]
+    pub reviewer_config_id: Option<String>,
+    pub captured_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {
     pub protocol_version: u32,
@@ -1094,6 +1186,19 @@ pub enum CoreResponse {
     ChatActionList {
         channel_id: String,
         actions: Vec<ChatActionDto>,
+    },
+    // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
+    /// Daemon-owned principal preference (approval + sandbox + revision).
+    /// The principal comes from transport authority; the payload carries
+    /// no identity field.
+    ApprovalPreference {
+        preference: RuntimePreferenceDto,
+    },
+    /// Effective execution-policy snapshot for the caller's session
+    /// context. Immutable once captured for a turn; mode changes apply
+    /// on the next boundary.
+    ExecutionPolicy {
+        snapshot: ExecutionPolicySnapshotDto,
     },
 }
 
@@ -1944,6 +2049,35 @@ pub enum CoreRequest {
         message_id: Option<String>,
         #[serde(default)]
         limit: Option<u32>,
+    },
+    // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
+    //
+    // Principal-scoped, daemon-owned. Payloads carry no identity field;
+    // the daemon derives the principal from transport authority. Setting
+    // Yolo/Automatic requires normal authenticated authority; the mode
+    // change cannot exceed project/admin policy and never overrides an
+    // explicit deny. Older clients ignore these variants.
+    /// Read the caller's durable approval/sandbox preference.
+    ApprovalPreferenceGet,
+    /// Persist the caller's approval mode. CAS via `expected_revision`:
+    /// stale writes fail with `preference_conflict` for reload.
+    ApprovalModeSet {
+        approval_mode: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// Persist the caller's sandbox profile. CAS via `expected_revision`.
+    SandboxProfileSet {
+        sandbox_profile: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// Read the effective execution-policy snapshot (persisted preference
+    /// resolved against built-in defaults). Immutable once captured for a
+    /// turn; concurrent mode changes apply on the next boundary.
+    ExecutionPolicyGet {
+        #[serde(default)]
+        session_id: Option<String>,
     },
 }
 

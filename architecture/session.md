@@ -299,6 +299,20 @@ Methods: `create`, `get`, `list_by_message`, `list_by_session`,
 
 Methods: `get`, `upsert`, `delete`
 
+### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58)
+
+Daemon-owned principal-scoped durable preference for approval mode,
+sandbox profile, and reserved last provider/model identity (M003/M004).
+Methods: `get`, `set_approval_mode`, `set_sandbox_profile`,
+`set_model_preference` (reserved). Revision-gated CAS (stale writes get
+`Conflict`, never last-write-wins), bounded lengths, secret-free,
+additive/empty on upgrade. Restart reloads the last preference; explicit
+turn overrides win, then project ceiling, then persisted, then
+`Interactive`/`WorkspaceWrite` defaults. Frontend manifests stay display
+hints, never authority. Protocol: `ApprovalPreferenceGet`,
+`ApprovalModeSet`, `SandboxProfileSet`, `ExecutionPolicyGet` ->
+`ApprovalPreference` / `ExecutionPolicy` (principal derived server-side).
+
 ### UsageStore (`session/store.rs:2441`)
 
 Methods: `insert`, `get_session_usage`, `get_all_usage`,

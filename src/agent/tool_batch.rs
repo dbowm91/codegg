@@ -7,8 +7,12 @@ use super::r#loop::{
 };
 use crate::agent::progress_recovery::ToolExecutionOutcome;
 use crate::bus::events::AppEvent;
-use crate::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
+use crate::bus::QuestionRegistry;
 use crate::error::{AppError, ToolError};
+use crate::permission::approval::{
+    source as approval_source, ApprovalDecision, ApprovalMode, ApprovalRequest, ApprovalRouter,
+    DeterministicVerdict, ExecutionPolicySnapshot,
+};
 use crate::permission::{PermissionDecisionReceipt, PermissionResult};
 use crate::provider::ToolCall;
 use crate::tool::question::{format_question_answers, parse_question_questions};
@@ -96,6 +100,7 @@ impl AgentLoop {
         accepted_call_ordinal: usize,
         timeout_ms: Option<u64>,
         receipt: &PermissionDecisionReceipt,
+        snapshot: &ExecutionPolicySnapshot,
     ) -> crate::tool::backend::ToolExecutionContext {
         let backend = self.resolve_native_backend(&tc.name);
         let agent_id = self.state.current_agent.clone();
@@ -113,7 +118,9 @@ impl AgentLoop {
             // The workspace root is captured during construction and is the
             // sole cwd authority for this loop's tool execution context.
             cwd: self.workspace_root.clone(),
-            permission_mode: None,
+            // M003: durable approval mode from the captured batch snapshot,
+            // never `None` on production construction paths.
+            permission_mode: Some(snapshot.approval_mode().as_str().to_owned()),
             timeout_ms,
             invocation_key: Some(invocation_key),
             turn_id: self.turn_id.clone(),
@@ -197,7 +204,26 @@ impl AgentLoop {
         )
     }
 
+    #[allow(dead_code)]
     pub(super) async fn check_tool_permission(&mut self, tc: &ToolCall) -> ToolPermissionOutcome {
+        // Capture the immutable batch snapshot at evaluation entry so a
+        // concurrent mode toggle cannot retroactively bless this pending
+        // action. Batch-level callers capture once per batch and use the
+        // `_with_snapshot` entrypoint directly.
+        let snapshot = self.capture_execution_snapshot();
+        self.check_tool_permission_with_snapshot(tc, &snapshot)
+            .await
+    }
+
+    /// M003: single production escalation owner. All deterministic
+    /// `Ask`/security/sensitive branches normalize into one
+    /// [`ApprovalRouter`] decision; no call site registers
+    /// `PermissionPending` directly (see `scripts/check_approval_router.py`).
+    pub(super) async fn check_tool_permission_with_snapshot(
+        &mut self,
+        tc: &ToolCall,
+        snapshot: &ExecutionPolicySnapshot,
+    ) -> ToolPermissionOutcome {
         if tc.name.trim().is_empty() {
             return ToolPermissionOutcome::Denied {
                 tool_id: tc.id.to_string(),
@@ -273,188 +299,297 @@ impl AgentLoop {
         if let Some(ref finding) = security_hint.finding {
             self.recent_findings.push(finding.clone());
         }
-        // Check if the path targets a sensitive file, regardless of permission level
+        // Sensitive paths escalate regardless of permission level, but never
+        // override an explicit deny (deny is normalized first below).
         let sensitive_match = self.services.config.security.as_ref().and_then(|sec| {
             crate::security::matches_sensitive_path(path.as_deref(), &sec.sensitive_paths)
         });
 
-        match perm_result {
-            PermissionResult::Allow => {
-                if let Some(sensitive) = sensitive_match {
-                    // Escalate: sensitive paths always require user confirmation
+        let policy_revision = Some(format!("config:{:016x}", self.permission_version()));
+        let router = ApprovalRouter::new(snapshot.clone());
+
+        // ── Normalize deterministic policy + security into one verdict ──
+        // Hard deny and authority ceilings precede routing: Deny never
+        // becomes Escalate/Yolo Allow.
+        let verdict = match perm_result {
+            PermissionResult::Deny => DeterministicVerdict::Deny {
+                reason: format!("Tool '{}' denied by permissions", tc.name),
+                source: approval_source::PERMISSION_DENY.to_owned(),
+            },
+            PermissionResult::Allow | PermissionResult::Ask(_) => {
+                if matches!(
+                    security_hint.action,
+                    crate::security::policy::SecurityAction::Deny
+                ) {
+                    DeterministicVerdict::Deny {
+                        reason: format!(
+                            "Tool '{}' denied by security policy: {}",
+                            tc.name, security_hint.reason
+                        ),
+                        source: approval_source::SECURITY_DENY.to_owned(),
+                    }
+                } else if let Some(sensitive) = sensitive_match.as_ref() {
                     let reason = sensitive
                         .reason
                         .clone()
                         .unwrap_or_else(|| "sensitive path".to_string());
-                    let perm_id = format!("{}-{}", tc.id, tc.name);
-                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    PermissionRegistry::register_with_session(
+                    let request = ApprovalRequest::new(
+                        tc.name.to_string(),
+                        path.clone(),
+                        bash_command.clone().map(|c| truncate_for_audit(&c)),
+                        vec![format!("sensitive path: {reason}")],
+                        Some(format!(
+                            "review_level:{}",
+                            sensitive.review_level.as_deref().unwrap_or("standard")
+                        )),
+                        policy_revision.clone(),
                         self.session_id.clone(),
-                        None,
-                        perm_id.clone(),
-                        resp_tx,
+                        self.turn_id.clone(),
                     );
-                    let args = serde_json::json!({
-                        "command": bash_command.as_deref().unwrap_or(""),
-                        "security": {
-                            "action": "ask",
-                            "reason": format!("Sensitive path access: {}", reason),
-                            "review_level": sensitive.review_level.as_deref().unwrap_or("standard"),
-                        }
-                    });
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
-                        session_id: self.session_id.clone(),
-                        perm_id: perm_id.clone(),
-                        turn_id: None,
-                        tool: (*tc.name).clone(),
-                        path: path.clone(),
-                        args: Some(args),
-                    });
-                    let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
-                    {
-                        Ok(Ok(choice)) => choice,
-                        _ => PermissionDecision::DenyOnce,
-                    };
-                    PermissionRegistry::unregister_scoped(&self.session_id, &perm_id);
-                    if choice.allowed() {
-                        ToolPermissionOutcome::Allowed {
-                            tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt("user_choice"),
-                        }
-                    } else {
-                        ToolPermissionOutcome::Denied {
-                            tool_id: tc.id.to_string(),
-                            message: format!(
-                                "Tool '{}' denied: access to sensitive path refused",
-                                tc.name
-                            ),
-                        }
-                    }
-                } else if matches!(
-                    security_hint.action,
-                    crate::security::policy::SecurityAction::Deny
-                ) {
-                    ToolPermissionOutcome::Denied {
-                        tool_id: tc.id.to_string(),
-                        message: format!(
-                            "Tool '{}' denied by security policy: {}",
-                            tc.name, security_hint.reason
-                        ),
-                    }
+                    DeterministicVerdict::Escalate { request }
                 } else if matches!(
                     security_hint.action,
                     crate::security::policy::SecurityAction::Ask
                 ) {
-                    let perm_id = format!("{}-{}", tc.id, tc.name);
-                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    PermissionRegistry::register_with_session(
+                    let request = ApprovalRequest::new(
+                        tc.name.to_string(),
+                        path.clone(),
+                        bash_command.clone().map(|c| truncate_for_audit(&c)),
+                        vec![format!("security escalation: {}", security_hint.reason)],
+                        security_hint
+                            .finding
+                            .as_ref()
+                            .map(|f| format!("{:?}", f.category)),
+                        policy_revision.clone(),
                         self.session_id.clone(),
-                        None,
-                        perm_id.clone(),
-                        resp_tx,
+                        self.turn_id.clone(),
                     );
-                    let args = serde_json::json!({
-                        "command": bash_command.as_deref().unwrap_or(""),
-                        "security": {
-                            "action": "ask",
-                            "reason": security_hint.reason,
-                            "category": security_hint.finding.as_ref().map(|f| format!("{:?}", f.category)).unwrap_or_default(),
-                        }
-                    });
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
-                        session_id: self.session_id.clone(),
-                        perm_id: perm_id.clone(),
-                        turn_id: None,
-                        tool: (*tc.name).clone(),
-                        path: path.clone(),
-                        args: Some(args),
-                    });
-                    let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
+                    DeterministicVerdict::Escalate { request }
+                } else if let PermissionResult::Ask(req) = perm_result {
+                    // Preserve the narrow local-file UX exception. External
+                    // MCP origin is never evidence that an unknown tool is
+                    // safe.
+                    if is_workspace_file_mutation(
+                        tc.name.as_str(),
+                        req.path.as_deref(),
+                        &self.workspace_root,
+                    ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
+                        && sensitive_match.is_none()
                     {
-                        Ok(Ok(choice)) => choice,
-                        _ => PermissionDecision::DenyOnce,
+                        return ToolPermissionOutcome::Allowed {
+                            tool_call: tc.clone(),
+                            receipt: self.accepted_permission_receipt(
+                                approval_source::WORKSPACE_FILE_MUTATION,
+                            ),
+                        };
+                    }
+                    let dialog_args = req.args.clone();
+                    let request = ApprovalRequest::new(
+                        req.tool.clone(),
+                        req.path.clone(),
+                        req.args.clone().map(|a| truncate_for_audit(&a.to_string())),
+                        vec!["permission policy ask".to_owned()],
+                        None,
+                        policy_revision.clone(),
+                        self.session_id.clone(),
+                        self.turn_id.clone(),
+                    );
+                    // Stash the original dialog payload alongside the
+                    // normalized request via the escalation path below.
+                    // The router carries only the bounded summary; the
+                    // human dialog below uses the original args.
+                    return self
+                        .resolve_general_ask_via_human(tc, &request, dialog_args, &router, snapshot)
+                        .await;
+                } else {
+                    return ToolPermissionOutcome::Allowed {
+                        tool_call: tc.clone(),
+                        receipt: self
+                            .accepted_permission_receipt(approval_source::PERMISSION_EVALUATION),
                     };
-                    PermissionRegistry::unregister_scoped(&self.session_id, &perm_id);
-                    if choice.allowed() {
+                }
+            }
+        };
+
+        // ── Route through the single ApprovalRouter ──
+        match verdict {
+            DeterministicVerdict::Allow => ToolPermissionOutcome::Allowed {
+                tool_call: tc.clone(),
+                receipt: self.accepted_permission_receipt(approval_source::PERMISSION_EVALUATION),
+            },
+            DeterministicVerdict::Deny { reason, .. } => ToolPermissionOutcome::Denied {
+                tool_id: tc.id.to_string(),
+                message: reason,
+            },
+            DeterministicVerdict::Escalate { request } => {
+                match snapshot.approval_mode() {
+                    ApprovalMode::Yolo => {
+                        // Yolo auto-allows only Escalate within the already
+                        // resolved ceiling; Deny never reaches here.
                         ToolPermissionOutcome::Allowed {
                             tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt("user_choice"),
-                        }
-                    } else {
-                        ToolPermissionOutcome::Denied {
-                            tool_id: tc.id.to_string(),
-                            message: format!(
-                                "Tool '{}' denied by user (security escalation)",
-                                tc.name
-                            ),
+                            receipt: self.accepted_permission_receipt(approval_source::YOLO),
                         }
                     }
-                } else {
-                    ToolPermissionOutcome::Allowed {
-                        tool_call: tc.clone(),
-                        receipt: self.accepted_permission_receipt("permission_evaluation"),
+                    ApprovalMode::Automatic => {
+                        // M003 placeholder: safely defer to the human via
+                        // the Interactive fallback. Never auto-allow.
+                        self.resolve_escalation_via_human(
+                            tc,
+                            &request,
+                            &router,
+                            approval_source::AUTOMATIC_DEFER,
+                        )
+                        .await
+                    }
+                    ApprovalMode::Interactive => {
+                        self.resolve_escalation_via_human(
+                            tc,
+                            &request,
+                            &router,
+                            approval_source::USER_CHOICE,
+                        )
+                        .await
                     }
                 }
             }
-            PermissionResult::Deny => ToolPermissionOutcome::Denied {
-                tool_id: tc.id.to_string(),
-                message: format!("Tool '{}' denied by permissions", tc.name),
-            },
-            PermissionResult::Ask(req) => {
-                // Preserve the narrow local-file UX exception. External MCP
-                // origin is never evidence that an unknown tool is safe.
-                if is_workspace_file_mutation(
-                    tc.name.as_str(),
-                    req.path.as_deref(),
-                    &self.workspace_root,
-                ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
-                    && sensitive_match.is_none()
-                {
-                    return ToolPermissionOutcome::Allowed {
-                        tool_call: tc.clone(),
-                        receipt: self.accepted_permission_receipt("workspace_file_mutation"),
-                    };
-                }
+        }
+    }
 
-                let perm_id = format!("{}-{}", tc.id, tc.name);
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                PermissionRegistry::register_with_session(
-                    self.session_id.clone(),
-                    None,
-                    perm_id.clone(),
-                    resp_tx,
-                );
-                crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
-                    session_id: self.session_id.clone(),
-                    perm_id: perm_id.clone(),
-                    turn_id: None,
-                    tool: req.tool.clone(),
-                    path: req.path.clone(),
-                    args: req.args.clone(),
-                });
-                let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await {
-                    Ok(Ok(choice)) => choice,
-                    _ => PermissionDecision::DenyOnce,
+    /// Single human-wait path for Interactive and Automatic-fallback
+    /// escalations. Preserves reason metadata in the dialog payload,
+    /// persists `Always` choices with visible failure diagnostics, and
+    /// records timeout distinctly from explicit deny.
+    async fn resolve_escalation_via_human(
+        &mut self,
+        tc: &ToolCall,
+        request: &ApprovalRequest,
+        router: &ApprovalRouter,
+        success_source: &str,
+    ) -> ToolPermissionOutcome {
+        let perm_id = format!("{}-{}", tc.id, tc.name);
+        // Rebuild the dialog args with escalation reasons preserved. Raw
+        // sensitive args stay out; only bounded summaries cross the bus.
+        let args = serde_json::json!({
+            "command": request.args_summary.clone().unwrap_or_default(),
+            "escalation_reasons": request.escalation_reasons,
+            "effect": request.effect_metadata,
+        });
+        let outcome = router
+            .request_human_approval(&perm_id, request, Some(args))
+            .await;
+        self.apply_human_outcome(tc, request, outcome, success_source)
+            .await
+    }
+
+    /// Human-wait path for general policy `Ask` that preserves the
+    /// original dialog args payload (bounded by the checker) alongside the
+    /// normalized redacted summary.
+    async fn resolve_general_ask_via_human(
+        &mut self,
+        tc: &ToolCall,
+        request: &ApprovalRequest,
+        dialog_args: Option<serde_json::Value>,
+        router: &ApprovalRouter,
+        snapshot: &ExecutionPolicySnapshot,
+    ) -> ToolPermissionOutcome {
+        match snapshot.approval_mode() {
+            ApprovalMode::Yolo => {
+                return ToolPermissionOutcome::Allowed {
+                    tool_call: tc.clone(),
+                    receipt: self.accepted_permission_receipt(approval_source::YOLO),
                 };
-                PermissionRegistry::unregister_scoped(&self.session_id, &perm_id);
-                let allowed = choice.allowed();
-                if choice.persist() {
-                    if allowed {
-                        self.services
-                            .permission_checker
-                            .always_allow(&tc.name, req.path.as_deref(), Some(&self.session_id))
-                            .await;
-                    } else {
-                        self.services
-                            .permission_checker
-                            .always_deny(&tc.name, req.path.as_deref(), Some(&self.session_id))
-                            .await;
+            }
+            ApprovalMode::Automatic => {
+                let perm_id = format!("{}-{}", tc.id, tc.name);
+                let outcome = router
+                    .request_human_approval(&perm_id, request, dialog_args)
+                    .await;
+                return self
+                    .apply_human_outcome(tc, request, outcome, approval_source::AUTOMATIC_DEFER)
+                    .await;
+            }
+            ApprovalMode::Interactive => {}
+        }
+        let perm_id = format!("{}-{}", tc.id, tc.name);
+        let outcome = router
+            .request_human_approval(&perm_id, request, dialog_args)
+            .await;
+        self.apply_human_outcome(tc, request, outcome, approval_source::USER_CHOICE)
+            .await
+    }
+
+    /// Apply one human verdict: persist `Always` choices with visible
+    /// diagnostics, map timeout vs explicit deny, and preserve
+    /// sensitive/security denial messages.
+    async fn apply_human_outcome(
+        &mut self,
+        tc: &ToolCall,
+        request: &ApprovalRequest,
+        outcome: crate::permission::approval::HumanApprovalOutcome,
+        success_source: &str,
+    ) -> ToolPermissionOutcome {
+        use crate::permission::approval::HumanApprovalOutcome;
+        let HumanApprovalOutcome {
+            decision,
+            persist,
+            allow,
+        } = outcome;
+        // Persist explicit `Always` choices. In-memory decision applies
+        // regardless; failure is logged and surfaced via the receipt
+        // source, never silent.
+        let mut receipt_source = success_source.to_owned();
+        if persist {
+            let persisted_source = self
+                .persist_always_choice(
+                    &tc.name,
+                    request.path.as_deref(),
+                    &request.session_id,
+                    allow,
+                )
+                .await;
+            // Preserve the mode-specific success source when persistence
+            // succeeded; surface the unpersisted diagnostic otherwise.
+            if persisted_source == approval_source::USER_CHOICE_UNPERSISTED
+                || success_source == approval_source::USER_CHOICE
+            {
+                receipt_source = persisted_source.to_owned();
+            }
+        }
+        match decision {
+            ApprovalDecision::Allow { .. } => ToolPermissionOutcome::Allowed {
+                tool_call: tc.clone(),
+                receipt: self.accepted_permission_receipt(receipt_source.as_str()),
+            },
+            ApprovalDecision::Deny { reason, source } => {
+                // Human timeout vs explicit deny already distinguished by
+                // the router source (`timeout_deny` vs `user_choice`).
+                let _ = source;
+                if reason.contains("timeout") {
+                    ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!("Tool '{}' denied: approval timeout", tc.name),
                     }
-                }
-                if allowed {
-                    ToolPermissionOutcome::Allowed {
-                        tool_call: tc.clone(),
-                        receipt: self.accepted_permission_receipt("user_choice"),
+                } else if request
+                    .escalation_reasons
+                    .iter()
+                    .any(|r| r.contains("sensitive path"))
+                {
+                    ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!(
+                            "Tool '{}' denied: access to sensitive path refused",
+                            tc.name
+                        ),
+                    }
+                } else if request
+                    .escalation_reasons
+                    .iter()
+                    .any(|r| r.contains("security escalation"))
+                {
+                    ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!("Tool '{}' denied by user (security escalation)", tc.name),
                     }
                 } else {
                     ToolPermissionOutcome::Denied {
@@ -463,6 +598,43 @@ impl AgentLoop {
                     }
                 }
             }
+            ApprovalDecision::DeferUser { reason, .. } => ToolPermissionOutcome::Denied {
+                tool_id: tc.id.to_string(),
+                message: format!("Tool '{}' deferred: {reason}", tc.name),
+            },
+        }
+    }
+
+    /// Persist an explicit `Always` human choice with visible diagnostics.
+    /// Returns the receipt source to record (`user_choice` vs
+    /// `user_choice_unpersisted`). In-memory decision applies regardless;
+    /// `false` persistence is logged and surfaced, never silent.
+    async fn persist_always_choice(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        session_id: &str,
+        allow: bool,
+    ) -> &'static str {
+        let persisted = if allow {
+            self.services
+                .permission_checker
+                .always_allow(tool, path, Some(session_id))
+                .await
+        } else {
+            self.services
+                .permission_checker
+                .always_deny(tool, path, Some(session_id))
+                .await
+        };
+        if persisted {
+            approval_source::USER_CHOICE
+        } else {
+            tracing::warn!(
+                tool = %tool,
+                "permission Always decision applied in-memory but NOT persisted"
+            );
+            approval_source::USER_CHOICE_UNPERSISTED
         }
     }
 
@@ -474,9 +646,16 @@ impl AgentLoop {
         let mut tool_results = Vec::with_capacity(16);
         let mut has_pending_question = false;
 
+        // M003: fixed snapshot for the accepted tool batch. Mode changes
+        // from another frontend apply on the next boundary and cannot
+        // retroactively bless pending actions in this batch.
+        let batch_snapshot = self.capture_execution_snapshot();
         let mut allowed_tools = Vec::with_capacity(tool_calls.len());
         for (idx, tc) in tool_calls.iter().enumerate() {
-            match self.check_tool_permission(tc).await {
+            match self
+                .check_tool_permission_with_snapshot(tc, &batch_snapshot)
+                .await
+            {
                 ToolPermissionOutcome::QuestionTool => {
                     has_pending_question = true;
                     tool_results.push((
@@ -758,6 +937,7 @@ impl AgentLoop {
             )
         };
         let agent_id = self.state.current_agent.clone();
+        let batch_snapshot_for_ctx = batch_snapshot.clone();
         for (orig_idx, tc, receipt) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
@@ -770,6 +950,7 @@ impl AgentLoop {
                 orig_idx,
                 Some(timeout.as_millis() as u64),
                 &receipt,
+                &batch_snapshot_for_ctx,
             );
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
@@ -1503,6 +1684,17 @@ fn invocation_key_for(
         "agent-invocation-{:x}",
         sha2::Sha256::digest(invocation_material.as_bytes())
     )
+}
+
+/// Bounded redacted summary for audit/bus payloads. Callers must not pass
+/// raw secrets; this truncates and strips NULs as a second bound.
+fn truncate_for_audit(value: &str) -> String {
+    const MAX: usize = 512;
+    let mut out = value.to_owned();
+    if out.len() > MAX {
+        out.truncate(MAX);
+    }
+    out.replace('\0', "")
 }
 
 #[cfg(test)]

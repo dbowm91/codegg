@@ -105,7 +105,11 @@ impl ExecMode {
             )));
         }
 
-        let permission_checker = PermissionChecker::new(Some(&config), None).with_exec_mode();
+        let permission_checker = PermissionChecker::new(
+            Some(&config),
+            crate::permission::approval::canonical_permission_store_path(),
+        )
+        .with_exec_mode();
         // Bootstraps the search backend (eggsearch by default) before the agent
         // loop starts. Idempotent if already bootstrapped. The explicit
         // runtime context (M005) flows into the registry so wrappers never

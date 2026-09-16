@@ -30,12 +30,21 @@ pub struct AgentLoopBuildInput {
     pub workspace_service_lease: Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    /// M003: resolved effective approval mode for this turn. `None` means
+    /// the `Interactive` default; daemon turns resolve the persisted
+    /// principal preference before construction.
+    pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
+    /// M003: sandbox profile preference, separate from approval mode.
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 /// Build a fully initialized loop from the daemon-resolved turn identity.
 pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::AgentLoop {
-    let permission_checker = crate::permission::PermissionChecker::new(Some(&input.config), None)
-        .with_active_mode(&input.config);
+    let permission_checker = crate::permission::PermissionChecker::new(
+        Some(&input.config),
+        crate::permission::approval::canonical_permission_store_path(),
+    )
+    .with_active_mode(&input.config);
     let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
         input.agents,
         input.provider,
@@ -63,6 +72,12 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     agent_loop.set_task_state_policy(input.task_state_policy);
     if let Some(svc) = input.notification_service {
         agent_loop.set_notification_service(svc);
+    }
+    if let Some(mode) = input.approval_mode {
+        agent_loop.set_approval_mode(mode);
+    }
+    if let Some(profile) = input.sandbox_profile {
+        agent_loop.set_sandbox_profile(profile);
     }
     agent_loop
 }
