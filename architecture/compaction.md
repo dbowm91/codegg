@@ -182,12 +182,23 @@ pub struct ProgrammaticCompactionState {
 
 ```rust
 pub struct EvidenceRef {
-    pub id: String,
+    pub id: String, // pass-local diagnostic only (msg_0001/tool_0001)
     pub kind: EvidenceKind,
     pub summary: String,
     pub content_hash: Option<String>,
+    pub recovery_handle: Option<String>, // ctx://tool/... reuse or ctx://evidence/...
+    pub stable_id: Option<String>,       // checkpoint-scoped: {checkpoint_id}:{evidence_id}
+    pub checkpoint_id: Option<String>,
+    pub source_ordinal: Option<usize>,
+    pub tool_call_id: Option<String>,    // reuse key for existing tool artifacts
 }
 ```
+
+Pass-local `id` values are never durable identity. Installed checkpoint
+refs carry checkpoint-scoped `stable_id` plus digest so IDs stay stable
+across later compactions. `recovery_handle = None` means summary-only
+(optional evidence missing → degrade to summary, never invalidate the
+checkpoint).
 
 ### Invariant Validation (`src/context/compaction.rs`)
 
@@ -323,6 +334,28 @@ the snapshot/frame bounded to the most recent 32, deduplicated
 
 M002 prepares/renders checkpoint candidates in memory. M004 owns durable
 rollover sequencing and production activation.
+
+## Bounded exact recovery references (M003)
+
+`src/context/evidence.rs` materializes selected compaction evidence into
+the existing durable `FileArtifactStore` (no new history database or
+search index). Flow for M004:
+
+```text
+build evidence index (compaction.rs)
+  → select materializable evidence (evidence.rs: checkpoint-scoped stable IDs, 64-ref cap, priority order)
+  → persist selected evidence with candidate checkpoint ID (reuse ctx://tool/... when available, else bounded ctx://evidence/... write)
+  → verify artifacts (read-back digest/session checks; missing → summary-only)
+  → attach verified handles to checkpoint candidate
+```
+
+Bounds: 64 refs/checkpoint, 256 KiB total new bytes/checkpoint, 64 KiB
+per artifact, 280-char summaries. Content: visible `User`/`Assistant`
+text only, `ToolCall` args never persisted, secret/URL redaction applied,
+digest covers the redacted body. Deterministic evidence handles converge
+on identical content and fail closed on conflict. `context_read` recovers
+both handle forms same-session and bounded; missing optional evidence
+returns `NotFound` and the checkpoint summary remains usable.
 
 ## Integration
 

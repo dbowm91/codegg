@@ -60,10 +60,20 @@ Deterministic token estimation. See [Related Docs](#related-docs).
 ### Handle Format
 
 `ctx://tool/{session_id}/{turn_index}/{tool_call_id}`
+`ctx://evidence/{session_id}/{checkpoint_id}/{evidence_id}`
 
-Parsed by `ContextHandle::parse()` (`handle.rs`). Built by
-`ContextHandle::build_tool()` which rejects `/`, control chars,
-and whitespace in segments.
+Parsed by `ContextHandle::parse()` (`handle.rs`). Tool handles are built
+by `ContextHandle::build_tool()`; checkpoint-scoped evidence handles are
+built by `ContextHandle::build_evidence()`. Both reject empty segments
+and `/`, control chars, and whitespace in segments. Tool-handle wire
+strings are unchanged from all historical runtimes.
+
+Evidence handles resolve through the same durable `FileArtifactStore`
+via `context_read` with exact same-session matching. `evidence_id` is a
+deterministic host-chosen identity (source ordinal/kind plus digest),
+never a model-invented path. `ArtifactKind::ContinuationEvidence`
+(`continuation_evidence`) backs new evidence artifacts; old artifact JSON
+remains readable.
 
 ### Projection Logic (`projection.rs`)
 
@@ -94,17 +104,24 @@ When `project_tool_output()` is called:
 
 ```rust
 pub struct ContextHandle {
-    pub kind: ContextHandleKind,
     pub session_id: String,
-    pub turn_index: usize,
-    pub tool_call_id: String,
+    pub kind: ContextHandleKind,
+}
+
+pub enum ContextHandleKind {
+    Tool { turn_index: usize, tool_call_id: String },
+    Evidence { checkpoint_id: String, evidence_id: String },
 }
 ```
 
 | Method | Signature | Notes |
 |--------|-----------|-------|
-| `parse()` | `fn(&str) -> Result<Self, ...>` | Validates format, rejects unsafe chars |
-| `build_tool()` | `fn(&str, usize, &str) -> Result<String, ...>` | Checked construction |
+| `parse()` | `fn(&str) -> Result<Self, ...>` | Validates both `tool` and `evidence` forms, rejects unsafe chars |
+| `build_tool()` | `fn(&str, usize, &str) -> Result<String, ...>` | Checked construction, wire-compatible |
+| `build_evidence()` | `fn(&str, &str, &str) -> Result<String, ...>` | Checkpoint-scoped evidence handles (M003) |
+| `render()` | `fn(&self) -> String` | Canonical wire string |
+| `turn_index()` / `tool_call_id()` | `fn(&self) -> Option<...>` | Tool accessors preserving historical call sites |
+| `checkpoint_id()` / `evidence_id()` | `fn(&self) -> Option<&str>` | Evidence accessors |
 | `same_session()` | `fn(&self, &str) -> bool` | Exact session match |
 
 ### ContextArtifact (`artifact.rs:22`)
@@ -131,8 +148,21 @@ pub struct ContextArtifact {
 pub enum ArtifactKind {
     ToolResult, CommandOutput, ReadResult, Diff,
     TestOutput, WebFetch, Image,
+    ContinuationEvidence, // `continuation_evidence` (M003)
 }
 ```
+
+M003 evidence bounds (`src/context/evidence.rs`): max 64 refs per
+checkpoint, max 256 KiB total new evidence bytes per checkpoint, max
+64 KiB per single evidence artifact, max 280 chars per ref summary.
+Selection prioritizes user steering → failures/errors → tests →
+decisions/constraints → recent assistant evidence; `ToolCall` argument
+JSON is never persisted. Evidence text persists visible `User`/`Assistant`
+text only (provider-private reasoning excluded) through secret/URL
+redaction; the content digest always covers the redacted stored body.
+Deterministic `ctx://evidence/...` handles converge on identical content;
+conflicting writes to the same handle fail closed. Missing optional
+evidence degrades to the checkpoint summary via `context_read` `NotFound`.
 
 ### ContextArtifactStore (`artifact.rs:36`)
 
@@ -175,9 +205,11 @@ pub struct ToolOutputProjection {
 
 ### ContextReadTool (`read_tool.rs`)
 
-Tool trait impl. Accepts `handle` (required), `offset` (default 0),
-`max_bytes` (default 20000). Uses `ContextHandle::parse()` for exact
-session matching and `clamp_to_char_boundary()` for safe UTF-8 slicing.
+Tool trait impl. Accepts `handle` (required; `ctx://tool/...` or
+`ctx://evidence/...`), `offset` (default 0), `max_bytes` (default
+20000). Uses `ContextHandle::parse()` for exact session matching and
+`clamp_to_char_boundary()` for safe UTF-8 slicing. Returns kind/offset
+metadata; never enumerates other sessions. Category remains read-only.
 
 Registered when `artifact_store = true` regardless of `project_tool_outputs`.
 

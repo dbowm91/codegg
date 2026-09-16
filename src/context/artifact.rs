@@ -16,6 +16,18 @@ pub enum ArtifactKind {
     TestOutput,
     WebFetch,
     Image,
+    /// Bounded exact continuation evidence for M003 recovery references.
+    /// Serializes as `continuation_evidence`; old runtimes treat files with
+    /// this variant as forward-only data, while the current runtime reads
+    /// all historical variants.
+    ContinuationEvidence,
+}
+
+/// True for checkpoint-scoped evidence handles (`ctx://evidence/...`).
+/// Used to scope deterministic-identity collision checks without paying a
+/// full typed parse on every artifact write.
+pub fn is_evidence_handle(handle: &str) -> bool {
+    handle.starts_with("ctx://evidence/")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +78,21 @@ impl Default for InMemoryArtifactStore {
 impl ContextArtifactStore for InMemoryArtifactStore {
     async fn put(&self, artifact: ContextArtifact) -> anyhow::Result<()> {
         let mut map = self.inner.write().await;
+        // Deterministic evidence identity must converge: the same evidence
+        // handle with different backing content fails closed instead of
+        // silently overwriting. Tool handles retain historical
+        // last-write-wins behavior because they are unique per turn/call.
+        if is_evidence_handle(&artifact.handle) {
+            if let Some(existing) = map.get(&artifact.handle) {
+                if existing.content_hash != artifact.content_hash
+                    || existing.redacted_content != artifact.redacted_content
+                {
+                    anyhow::bail!("context evidence handle collision with different content");
+                }
+                // Identical content converges idempotently.
+                return Ok(());
+            }
+        }
         map.insert(artifact.handle.clone(), artifact);
         Ok(())
     }
@@ -125,6 +152,23 @@ impl ContextArtifactStore for FileArtifactStore {
         }
         tokio::fs::create_dir_all(&self.base_dir).await?;
         let target = self.path_for(&artifact.handle);
+        // Deterministic evidence identity must converge on identical
+        // content. Concurrent writers to the same `ctx://evidence/...`
+        // handle with different bodies fail closed rather than overwriting
+        // silently. Identical rewrites converge idempotently.
+        if is_evidence_handle(&artifact.handle) && target.exists() {
+            let existing_bytes = tokio::fs::read(&target).await?;
+            if let Ok(existing) = serde_json::from_slice::<ContextArtifact>(&existing_bytes) {
+                if existing.handle == artifact.handle {
+                    if existing.content_hash != artifact.content_hash
+                        || existing.redacted_content != artifact.redacted_content
+                    {
+                        anyhow::bail!("context evidence handle collision with different content");
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let temporary = self.base_dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
         tokio::fs::write(&temporary, bytes).await?;
         if let Err(error) = tokio::fs::rename(&temporary, &target).await {
@@ -333,12 +377,27 @@ mod tests {
             ArtifactKind::TestOutput,
             ArtifactKind::WebFetch,
             ArtifactKind::Image,
+            ArtifactKind::ContinuationEvidence,
         ];
         for variant in variants {
             let json = serde_json::to_string(&variant).unwrap();
             let back: ArtifactKind = serde_json::from_str(&json).unwrap();
             assert_eq!(back, variant);
         }
+    }
+
+    #[test]
+    fn test_continuation_evidence_kind_wire_name() {
+        let json = serde_json::to_string(&ArtifactKind::ContinuationEvidence).unwrap();
+        assert_eq!(json, "\"continuation_evidence\"");
+    }
+
+    #[test]
+    fn test_old_artifact_json_remains_deserializable() {
+        // Pre-M003 records without the new variant must still decode.
+        let json = r#"{"handle":"ctx://tool/s1/0/c1","session_id":"s1","turn_index":0,"tool_call_id":"c1","tool_name":"bash","kind":"tool_result","created_at_ms":1000,"content_hash":"abc","redacted_content":"out","raw_bytes_len":3,"estimated_tokens":1}"#;
+        let back: ContextArtifact = serde_json::from_str(json).unwrap();
+        assert_eq!(back.kind, ArtifactKind::ToolResult);
     }
 
     #[test]
@@ -547,5 +606,150 @@ mod tests {
         let text = "This is a longer piece of text that should be used to test the token estimation heuristic. It has many words and should produce a reasonable token count.";
         let tokens = estimate_tokens(text);
         assert!((20..=40).contains(&tokens));
+    }
+
+    fn evidence_artifact(handle: &str, session_id: &str, content: &str) -> ContextArtifact {
+        ContextArtifact {
+            handle: handle.into(),
+            session_id: session_id.into(),
+            turn_index: 0,
+            tool_call_id: None,
+            tool_name: None,
+            kind: ArtifactKind::ContinuationEvidence,
+            created_at_ms: 1000,
+            content_hash: compute_content_hash(content),
+            redacted_content: content.into(),
+            raw_bytes_len: content.len(),
+            estimated_tokens: estimate_tokens(content),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_evidence_write_read_roundtrip() {
+        let store = InMemoryArtifactStore::new();
+        let handle = "ctx://evidence/s1/ckpt-1/ev-user-0000-abc123";
+        store
+            .put(evidence_artifact(handle, "s1", "exact steering"))
+            .await
+            .unwrap();
+        let got = store.get(handle).await.unwrap().unwrap();
+        assert_eq!(got.kind, ArtifactKind::ContinuationEvidence);
+        assert_eq!(got.redacted_content, "exact steering");
+        assert_eq!(got.content_hash, compute_content_hash("exact steering"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_evidence_same_content_rewrite_converges() {
+        let store = InMemoryArtifactStore::new();
+        let handle = "ctx://evidence/s1/ckpt-1/ev-1";
+        store
+            .put(evidence_artifact(handle, "s1", "same body"))
+            .await
+            .unwrap();
+        // Identical rewrite converges idempotently.
+        store
+            .put(evidence_artifact(handle, "s1", "same body"))
+            .await
+            .unwrap();
+        let got = store.get(handle).await.unwrap().unwrap();
+        assert_eq!(got.redacted_content, "same body");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_evidence_conflicting_content_rejected() {
+        let store = InMemoryArtifactStore::new();
+        let handle = "ctx://evidence/s1/ckpt-1/ev-1";
+        store
+            .put(evidence_artifact(handle, "s1", "original body"))
+            .await
+            .unwrap();
+        let err = store
+            .put(evidence_artifact(handle, "s1", "different body"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("collision"));
+        // Original preserved.
+        let got = store.get(handle).await.unwrap().unwrap();
+        assert_eq!(got.redacted_content, "original body");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_file_store_evidence_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = "ctx://evidence/sess-1/ckpt-1/ev-user-0000-deadbeef";
+        let content = "restart-durable steering";
+        {
+            let store = FileArtifactStore::new(dir.path());
+            store
+                .put(evidence_artifact(handle, "sess-1", content))
+                .await
+                .unwrap();
+        }
+        // Destroy and recreate store objects; the handle must still resolve
+        // with matching digest and same-session enforcement intact.
+        {
+            let store = FileArtifactStore::new(dir.path());
+            let got = store.get(handle).await.unwrap().unwrap();
+            assert_eq!(got.redacted_content, content);
+            assert_eq!(got.content_hash, compute_content_hash(content));
+            assert_eq!(got.session_id, "sess-1");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_file_store_evidence_conflict_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = "ctx://evidence/s1/ckpt-1/ev-1";
+        let store = FileArtifactStore::new(dir.path());
+        store
+            .put(evidence_artifact(handle, "s1", "first"))
+            .await
+            .unwrap();
+        let err = store
+            .put(evidence_artifact(handle, "s1", "second"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("collision"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_file_store_tampered_handle_mismatch_rejected() {
+        use tokio::io::AsyncWriteExt;
+        let dir = tempfile::tempdir().unwrap();
+        let handle = "ctx://evidence/s1/ckpt-1/ev-1";
+        let store = FileArtifactStore::new(dir.path());
+        store
+            .put(evidence_artifact(handle, "s1", "original"))
+            .await
+            .unwrap();
+        // Tamper the stored file so its embedded handle no longer matches
+        // the lookup handle.
+        let path = dir
+            .path()
+            .join(".codegg")
+            .join("context_artifacts")
+            .join(format!("{}.json", stable_hash_hex(handle)));
+        let mut artifact: ContextArtifact =
+            serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        artifact.handle = "ctx://evidence/s1/ckpt-1/ev-tampered".to_string();
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .await
+            .unwrap();
+        file.write_all(&serde_json::to_vec(&artifact).unwrap())
+            .await
+            .unwrap();
+        file.shutdown().await.unwrap();
+        let err = store.get(handle).await.unwrap_err();
+        assert!(err.to_string().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_is_evidence_handle() {
+        assert!(is_evidence_handle("ctx://evidence/s1/ckpt-1/ev-1"));
+        assert!(!is_evidence_handle("ctx://tool/s1/0/c1"));
+        assert!(!is_evidence_handle("other"));
     }
 }

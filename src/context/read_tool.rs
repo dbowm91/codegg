@@ -25,7 +25,9 @@ impl crate::tool::Tool for ContextReadTool {
 
     fn description(&self) -> &str {
         "Read the full content of a stored context artifact by its ctx:// handle. \
-         Use this to recover full tool output that was compressed in the model transcript."
+         Use this to recover full tool output that was compressed in the model transcript, \
+         or to recover checkpoint evidence omitted from the active prompt \
+         (ctx://evidence/session_id/checkpoint_id/evidence_id)."
     }
 
     fn parameters(&self) -> Value {
@@ -34,7 +36,7 @@ impl crate::tool::Tool for ContextReadTool {
             "properties": {
                 "handle": {
                     "type": "string",
-                    "description": "The ctx:// handle of the artifact to read (e.g. ctx://tool/session_id/turn_index/tool_call_id)"
+                    "description": "The ctx:// handle of the artifact to read (ctx://tool/session_id/turn_index/tool_call_id or ctx://evidence/session_id/checkpoint_id/evidence_id)"
                 },
                 "offset": {
                     "type": "integer",
@@ -321,5 +323,101 @@ mod tests {
         let result = tool.execute(input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid handle"));
+    }
+
+    fn make_evidence_store(
+        handle: &str,
+        session_id: &str,
+        content: &str,
+    ) -> Arc<dyn ContextArtifactStore> {
+        let store = Arc::new(InMemoryArtifactStore::new());
+        let artifact = ContextArtifact {
+            handle: handle.into(),
+            session_id: session_id.into(),
+            turn_index: 0,
+            tool_call_id: None,
+            tool_name: None,
+            kind: ArtifactKind::ContinuationEvidence,
+            created_at_ms: 1000,
+            content_hash: crate::context::compute_content_hash(content),
+            redacted_content: content.into(),
+            raw_bytes_len: content.len(),
+            estimated_tokens: 10,
+        };
+        futures_executor::block_on(store.put(artifact)).unwrap();
+        store
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_evidence_success() {
+        let handle = "ctx://evidence/s1/ckpt-1/ev-user-0000-abc123";
+        let store = make_evidence_store(handle, "s1", "exact steering text");
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": handle});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("exact steering text"));
+        assert!(result.contains(handle));
+        assert!(result.contains("ContinuationEvidence"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_evidence_cross_session_denied() {
+        let handle = "ctx://evidence/other/ckpt-1/ev-user-0000-abc123";
+        let store = make_evidence_store(handle, "other", "secret evidence");
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": handle});
+        let result = tool.execute(input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cross-session"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_evidence_substring_denied() {
+        let handle = "ctx://evidence/not-s1/ckpt-1/ev-1";
+        let store = make_evidence_store(handle, "not-s1", "secret");
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": handle});
+        let result = tool.execute(input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cross-session"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_evidence_not_found() {
+        let store = Arc::new(InMemoryArtifactStore::new());
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": "ctx://evidence/s1/ckpt-1/ev-missing"});
+        let result = tool.execute(input).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no artifact found"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_evidence_malformed_rejected() {
+        let store = Arc::new(InMemoryArtifactStore::new());
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": "ctx://evidence/s1/ckpt-1"});
+        let result = tool.execute(input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid handle"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_context_read_evidence_offset_utf8_safe() {
+        let handle = "ctx://evidence/s1/ckpt-1/ev-1";
+        let store = make_evidence_store(handle, "s1", "你好世界🚀🎉");
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": handle, "offset": 1, "max_bytes": 10});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("---"));
     }
 }

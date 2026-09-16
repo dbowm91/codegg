@@ -1159,6 +1159,29 @@ pub struct EvidenceRef {
     pub kind: EvidenceKind,
     pub summary: String,
     pub content_hash: Option<String>,
+    /// Exact resolvable recovery handle (M003). Either a reused
+    /// `ctx://tool/...` handle or a new `ctx://evidence/...` handle.
+    /// `None` means summary-only: the checkpoint summary remains usable
+    /// but exact recovery is unavailable (missing optional evidence).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_handle: Option<String>,
+    /// Checkpoint-scoped stable identity (M003). Pass-local `id` values
+    /// such as `msg_0001` remain local diagnostics only; installed
+    /// checkpoint refs carry a `stable_id` that includes the checkpoint
+    /// scope so IDs stay stable across later compactions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_id: Option<String>,
+    /// Checkpoint that owns `stable_id`, when assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_id: Option<String>,
+    /// Source message ordinal in the reduction pass, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ordinal: Option<usize>,
+    /// Originating tool call ID for tool-derived evidence, when known.
+    /// Used to reuse an existing `ctx://tool/...` artifact instead of
+    /// writing a duplicate evidence artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1815,16 +1838,22 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
     let mut msg_counter = 0;
     let mut tool_counter = 0;
 
-    for msg in messages {
+    for (message_index, msg) in messages.iter().enumerate() {
         match msg {
             Message::User { content } => {
                 let text = extract_text_from_content(content);
                 if !text.is_empty() {
+                    let ordinal = msg_counter;
                     evidence.push(EvidenceRef {
-                        id: format!("msg_{:04}", msg_counter),
+                        id: format!("msg_{ordinal:04}"),
                         kind: EvidenceKind::UserMessage,
                         summary: truncate_for_summary(&text, 200),
                         content_hash: Some(crate::context::compute_content_hash(&text)),
+                        recovery_handle: None,
+                        stable_id: None,
+                        checkpoint_id: None,
+                        source_ordinal: Some(message_index),
+                        tool_call_id: None,
                     });
                     msg_counter += 1;
                 }
@@ -1836,8 +1865,9 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
             } => {
                 if !tool_calls.is_empty() {
                     for tc in tool_calls {
+                        let ordinal = tool_counter;
                         evidence.push(EvidenceRef {
-                            id: format!("tool_{:04}", tool_counter),
+                            id: format!("tool_{ordinal:04}"),
                             kind: EvidenceKind::ToolCall,
                             summary: format!(
                                 "{}({})",
@@ -1845,34 +1875,54 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
                                 truncate_for_summary(&tc.arguments.to_string(), 100)
                             ),
                             content_hash: None,
+                            recovery_handle: None,
+                            stable_id: None,
+                            checkpoint_id: None,
+                            source_ordinal: Some(message_index),
+                            tool_call_id: Some(tc.id.to_string()),
                         });
                         tool_counter += 1;
                     }
                 } else {
                     let text = extract_text_from_content(content);
                     if !text.is_empty() {
+                        let ordinal = msg_counter;
                         evidence.push(EvidenceRef {
-                            id: format!("msg_{:04}", msg_counter),
+                            id: format!("msg_{ordinal:04}"),
                             kind: EvidenceKind::AssistantMessage,
                             summary: truncate_for_summary(&text, 200),
                             content_hash: Some(crate::context::compute_content_hash(&text)),
+                            recovery_handle: None,
+                            stable_id: None,
+                            checkpoint_id: None,
+                            source_ordinal: Some(message_index),
+                            tool_call_id: None,
                         });
                         msg_counter += 1;
                     }
                 }
             }
-            Message::Tool { content, .. } => {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => {
                 let is_test = looks_like_test_output(content);
                 let kind = if is_test {
                     EvidenceKind::TestRun
                 } else {
                     EvidenceKind::ToolResult
                 };
+                let ordinal = tool_counter;
                 evidence.push(EvidenceRef {
-                    id: format!("tool_{:04}", tool_counter),
+                    id: format!("tool_{ordinal:04}"),
                     kind,
                     summary: truncate_for_summary(content, 200),
                     content_hash: Some(crate::context::compute_content_hash(content)),
+                    recovery_handle: None,
+                    stable_id: None,
+                    checkpoint_id: None,
+                    source_ordinal: Some(message_index),
+                    tool_call_id: Some(tool_call_id.to_string()),
                 });
                 tool_counter += 1;
             }
