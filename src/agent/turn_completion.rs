@@ -155,12 +155,14 @@ impl AgentLoop {
 
     /// Decide whether to autonomously continue the active goal.
     ///
-    /// Called from `run()` after `account_goal_for_turn()`. If the goal
-    /// runtime returns `Continue`, we queue a continuation prompt and
-    /// recurse through `drain_follow_up`. If it returns `BudgetLimited`,
-    /// we queue a wrap-up prompt and let the loop drain that single
-    /// follow-up without scheduling another continuation. This mirrors
-    /// codex's `maybe_start_goal_continuation_turn` pattern.
+    /// Called from `run()` after `account_goal_for_turn()`. Each cycle reloads
+    /// the current Goal revision, checks budget/terminal status, then assesses
+    /// host-observed progress (`Progress` / `VerifiedWait` / `NoProgress`).
+    /// Genuine progress resets stagnation; a verified live wait polls the
+    /// existing canonical handle without relaunching it; repeated no-progress
+    /// issues a bounded nudge/replan sequence and then transitions the same
+    /// Goal revision to the existing `AwaitingUser` state. The 32-iteration
+    /// cap remains as an emergency invariant only.
     pub(super) async fn maybe_continue_goal(
         &mut self,
         request: &mut ChatRequest,
@@ -175,56 +177,264 @@ impl AgentLoop {
         }
 
         // Bounded safety: don't run the continuation loop forever even
-        // if the runtime returns Continue on every tick. We rely on
-        // the budget/terminal-status checks inside `should_continue`
-        // to break out, but cap the outer iterations as a guard.
+        // if the runtime returns Continue on every tick. Normal stagnation
+        // exits well before this via replan/AwaitingUser; the cap is only an
+        // emergency invariant.
         const MAX_CONTINUATIONS: usize = 32;
+
+        let initial_goal_id: Option<String> =
+            match goal_store.active_for_session(&self.session_id).await {
+                Ok(Some(goal)) => Some(goal.id.clone()),
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::warn!("goal continuation initial load failed: {e}");
+                    return;
+                }
+            };
+        let mut previous_evidence: Option<codegg_core::goal::progress::GoalContinuationEvidence> =
+            None;
+        let mut consecutive_no_progress: u8 = 0;
+
         for _ in 0..MAX_CONTINUATIONS {
-            let decision = match crate::goal::runtime::should_continue_for_session(
-                &goal_store,
-                &self.session_id,
-            )
-            .await
+            // User steering/cancellation interrupts continuation normally and
+            // is never converted into blocker progression.
+            if self.steering.load(Ordering::SeqCst)
+                || self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow())
             {
-                Ok(Some(d)) => d,
+                tracing::info!(
+                    session_id = %self.session_id,
+                    "goal continuation interrupted by user; stopping"
+                );
+                return;
+            }
+
+            let goal = match goal_store.active_for_session(&self.session_id).await {
+                Ok(Some(goal)) => goal,
                 Ok(None) => return,
                 Err(e) => {
                     tracing::warn!("goal runtime decision failed: {e}");
                     return;
                 }
             };
-            if !decision.should_continue {
-                if let Some(prompt) = decision.prompt {
+            // Replacement aborts the stale continuation decision.
+            if let Some(ref initial) = initial_goal_id {
+                if goal.id != *initial {
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        "goal replaced during continuation; aborting stale path"
+                    );
+                    return;
+                }
+            }
+            // Budget/terminal gate remains authoritative. Progress policy never
+            // revives Paused/Cancelled/BudgetLimited/Complete goals.
+            let budget_decision = crate::goal::runtime::should_continue(&goal);
+            if !budget_decision.should_continue {
+                if let Some(prompt) = budget_decision.prompt {
                     // Final wrap-up prompt (e.g. budget-limited).
                     if let Err(error) = self.follow_up_tx.try_send(prompt) {
                         tracing::warn!(?error, "goal wrap-up prompt dropped");
                     }
                     self.drain_follow_up(request, all_events, processor).await;
+                } else {
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        goal_id = %goal.id,
+                        reason = %budget_decision.reason,
+                        "goal continuation stopped (terminal status)"
+                    );
                 }
                 return;
             }
-            let Some(prompt) = decision.prompt else {
-                return;
+
+            // Assemble host-owned evidence without holding the todo lock
+            // across the job-store query.
+            let todo_snapshot = self.services.todo_state.lock().await.clone();
+            let pool = goal_store.pool.clone();
+            let assembled = crate::goal_continuation::assemble_continuation_evidence(
+                &pool,
+                &self.session_id,
+                &goal,
+                &todo_snapshot,
+            )
+            .await;
+            let previous_fingerprint: Option<String> = previous_evidence
+                .as_ref()
+                .map(codegg_core::goal::progress::goal_continuation_fingerprint);
+            let disposition = match &assembled {
+                Ok(evidence) => codegg_core::goal::progress::assess_goal_continuation(
+                    previous_evidence.as_ref(),
+                    evidence,
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        goal_id = %goal.id,
+                        error = %error,
+                        "goal progress evidence unavailable; treating as no-progress"
+                    );
+                    codegg_core::goal::progress::disposition_for_evidence_failure(
+                        previous_fingerprint.as_deref(),
+                    )
+                }
             };
-            tracing::info!(
-                "goal continuation queued (session={}): {}",
-                self.session_id,
-                decision.reason
-            );
-            // Reset per-turn token/tool counters so the next
-            // accounting tick measures the *continuation* turn, not
-            // a stale carry-over from the user's turn.
-            if let Err(error) = self.follow_up_tx.try_send(prompt) {
-                tracing::warn!(?error, "goal continuation prompt dropped");
+
+            match disposition {
+                codegg_core::goal::progress::GoalProgressDisposition::Progress { fingerprint } => {
+                    consecutive_no_progress = 0;
+                    if let Ok(evidence) = assembled {
+                        previous_evidence = Some(evidence);
+                    }
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        goal_id = %goal.id,
+                        reason = "progress",
+                        fingerprint = %fingerprint,
+                        "goal continuation queued"
+                    );
+                    let prompt = crate::goal::runtime::build_continuation_prompt(&goal);
+                    if let Err(error) = self.follow_up_tx.try_send(prompt) {
+                        tracing::warn!(?error, "goal continuation prompt dropped");
+                    }
+                    self.drain_follow_up(request, all_events, processor).await;
+                    self.account_goal_for_turn().await;
+                }
+                codegg_core::goal::progress::GoalProgressDisposition::VerifiedWait {
+                    handle,
+                    fingerprint,
+                } => {
+                    // A verified wait is not stagnation: it resets the
+                    // no-progress counter but does not relaunch the awaited
+                    // operation. The next boundary reloads the handle; a
+                    // terminal outcome becomes progress evidence.
+                    consecutive_no_progress = 0;
+                    if let Ok(evidence) = assembled {
+                        previous_evidence = Some(evidence);
+                    }
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        goal_id = %goal.id,
+                        reason = "verified_wait",
+                        handle_kind = %handle.kind_str(),
+                        handle_id = %handle.job_id(),
+                        fingerprint = %fingerprint,
+                        "goal continuation waiting on live handle"
+                    );
+                    let prompt = crate::goal::runtime::build_verified_wait_prompt(
+                        &goal,
+                        &handle,
+                        &fingerprint,
+                    );
+                    if let Err(error) = self.follow_up_tx.try_send(prompt) {
+                        tracing::warn!(?error, "goal wait prompt dropped");
+                    }
+                    self.drain_follow_up(request, all_events, processor).await;
+                    self.account_goal_for_turn().await;
+                }
+                codegg_core::goal::progress::GoalProgressDisposition::NoProgress {
+                    fingerprint,
+                    reason,
+                } => {
+                    consecutive_no_progress = consecutive_no_progress.saturating_add(1);
+                    if let Ok(evidence) = assembled {
+                        previous_evidence = Some(evidence);
+                    }
+                    let reason_code = match reason {
+                        codegg_core::goal::progress::GoalNoProgressReason::NoStateChange => {
+                            "no_progress"
+                        }
+                        codegg_core::goal::progress::GoalNoProgressReason::BlockerReported => {
+                            "blocker_reported"
+                        }
+                        codegg_core::goal::progress::GoalNoProgressReason::EvidenceLoadFailed => {
+                            "evidence_load_failed"
+                        }
+                    };
+                    let step =
+                        codegg_core::goal::progress::stagnation_step(consecutive_no_progress);
+                    tracing::info!(
+                        session_id = %self.session_id,
+                        goal_id = %goal.id,
+                        reason = %reason_code,
+                        step = %codegg_core::goal::progress::stagnation_step_str(step),
+                        consecutive_no_progress = consecutive_no_progress,
+                        fingerprint = %fingerprint,
+                        "goal continuation no-progress"
+                    );
+                    match step {
+                        codegg_core::goal::progress::GoalStagnationStep::ContinueWithNudge => {
+                            let prompt = crate::goal::runtime::build_continuation_prompt(&goal);
+                            if let Err(error) = self.follow_up_tx.try_send(prompt) {
+                                tracing::warn!(?error, "goal nudge prompt dropped");
+                            }
+                            self.drain_follow_up(request, all_events, processor).await;
+                            self.account_goal_for_turn().await;
+                        }
+                        codegg_core::goal::progress::GoalStagnationStep::ContinueWithReplan => {
+                            let prompt = crate::goal::runtime::build_replan_prompt(
+                                &goal,
+                                reason_code,
+                                consecutive_no_progress,
+                            );
+                            if let Err(error) = self.follow_up_tx.try_send(prompt) {
+                                tracing::warn!(?error, "goal replan prompt dropped");
+                            }
+                            self.drain_follow_up(request, all_events, processor).await;
+                            self.account_goal_for_turn().await;
+                        }
+                        codegg_core::goal::progress::GoalStagnationStep::EscalateToAwaitingUser => {
+                            // CAS against the observed revision so a concurrent
+                            // progress update, pause, cancel, or replacement
+                            // wins deterministically.
+                            match goal_store
+                                .update_status_if_revision(
+                                    &goal.id,
+                                    goal.revision,
+                                    codegg_core::goal::GoalStatus::AwaitingUser,
+                                )
+                                .await
+                            {
+                                Ok(Some(updated)) => {
+                                    let report =
+                                        crate::goal::runtime::build_awaiting_user_blocker_report(
+                                            &goal,
+                                            &fingerprint,
+                                            consecutive_no_progress,
+                                        );
+                                    tracing::info!(
+                                        session_id = %self.session_id,
+                                        goal_id = %goal.id,
+                                        report = %report,
+                                        "goal escalated to awaiting_user after repeated no-progress"
+                                    );
+                                    crate::bus::global::GlobalEventBus::publish(
+                                        crate::bus::events::AppEvent::GoalUpdated {
+                                            session_id: self.session_id.clone(),
+                                            goal: Box::new(Some(updated.to_snapshot())),
+                                        },
+                                    );
+                                }
+                                Ok(None) => {
+                                    tracing::info!(
+                                        session_id = %self.session_id,
+                                        goal_id = %goal.id,
+                                        "stale awaiting_user escalation aborted (goal changed)"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        session_id = %self.session_id,
+                                        goal_id = %goal.id,
+                                        error = %e,
+                                        "awaiting_user escalation failed"
+                                    );
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
             }
-            self.drain_follow_up(request, all_events, processor).await;
-            // After the continuation turn finishes, account for it
-            // before deciding whether to continue again.
-            // We can't call `account_goal_for_turn` here directly
-            // because it borrows self immutably and we already have
-            // &mut self via the request parameter. Inline the
-            // accounting using a clone of the wall-clock state.
-            self.account_goal_for_turn().await;
         }
         tracing::warn!("goal continuation hit MAX_CONTINUATIONS={MAX_CONTINUATIONS}, halting");
     }

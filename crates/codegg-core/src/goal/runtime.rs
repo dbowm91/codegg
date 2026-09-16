@@ -260,8 +260,13 @@ absent evidence does not count as completion.
 - Do not shrink the objective to fit the budget.
 - Do not mark complete just because the budget is nearly exhausted.
 - If a blocker is real, call `goal_update_progress` with
-  `open_questions` populated; the runtime will count consecutive
-  blocked turns before allowing a `Blocked` status.
+  `open_questions` populated with the concrete blocker evidence and the
+  next action you need. The host tracks repeated no-progress turns and
+  moves the goal to the existing `AwaitingUser` state when the blocker
+  remains unresolved. There is no `Blocked` goal status.
+- Report open questions and blocker evidence through `goal_update_progress`;
+  narration alone without host-observable state change does not count as
+  progress.
 - When complete, call `goal_request_completion` with concrete evidence
   and at least one passing test command.
 "#,
@@ -390,6 +395,92 @@ Objective: {objective}
     )
 }
 
+/// Continuation prompt for a verified live wait.
+///
+/// The named handle is host-owned and already running. The model must poll
+/// the existing handle through the established job/run mechanism and must
+/// not relaunch the operation.
+pub fn build_verified_wait_prompt(
+    goal: &Goal,
+    handle: &super::progress::WaitHandleRef,
+    fingerprint: &str,
+) -> String {
+    let bounded_id: String = handle.job_id().chars().take(128).collect();
+    format!(
+        r#"## Goal Verified Wait
+
+The active goal "{title}" has a live host-owned operation that is still
+running. Do not start a duplicate operation.
+
+- Wait handle: {kind} {id}
+- Progress fingerprint: {fingerprint}
+- Poll the existing handle using the established job/run mechanism and
+  report its durable outcome. Repeating narration without host-observable
+  state change does not count as progress.
+
+Objective: {objective}
+"#,
+        title = goal.title,
+        kind = handle.kind_str(),
+        id = bounded_id,
+        fingerprint = fingerprint,
+        objective = goal.objective,
+    )
+}
+
+/// Replan prompt issued after repeated no-progress turns and before the
+/// terminal `AwaitingUser` handoff. Bounded and free of command output.
+pub fn build_replan_prompt(goal: &Goal, reason: &str, consecutive_no_progress: u8) -> String {
+    let bounded_reason: String = reason.chars().take(240).collect();
+    format!(
+        r#"## Goal Replan Required
+
+The last {count} continuation turn(s) produced no host-observable progress
+for goal "{title}" (reason: {reason}).
+
+- Re-read the objective, success criteria, and the latest host-owned
+  evidence (todos, test/delegated-run records).
+- Propose a different next action via `goal_update_progress`. If you are
+  blocked, populate `open_questions` with the concrete blocker evidence
+  and the exact user input needed.
+- Do not repeat the same calls with the same arguments. Narration alone
+  does not count as progress.
+
+Objective: {objective}
+"#,
+        count = consecutive_no_progress,
+        title = goal.title,
+        reason = bounded_reason,
+        objective = goal.objective,
+    )
+}
+
+/// Concise blocker report recorded when stagnation escalates to
+/// `AwaitingUser`. Contains only bounded metadata, never raw tool output or
+/// model reasoning.
+pub fn build_awaiting_user_blocker_report(
+    goal: &Goal,
+    fingerprint: &str,
+    consecutive_no_progress: u8,
+) -> String {
+    let open_count = goal.open_questions.len();
+    format!(
+        "goal '{title}' entered awaiting_user after {count} consecutive no-progress turn(s); \
+fingerprint {fingerprint}; open_questions {open_count}; next_action '{next}'",
+        title = goal.title.chars().take(120).collect::<String>(),
+        count = consecutive_no_progress,
+        fingerprint = fingerprint,
+        open_count = open_count,
+        next = goal
+            .next_action
+            .as_deref()
+            .unwrap_or("(none recorded)")
+            .chars()
+            .take(160)
+            .collect::<String>(),
+    )
+}
+
 /// Convenience: shared `Arc<GoalStore>` for the runtime.
 pub type SharedGoalStore = Arc<GoalStore>;
 
@@ -490,12 +581,127 @@ mod tests {
     }
 
     #[test]
+    fn should_continue_blocks_on_each_budget_axis() {
+        let mut budget = GoalBudget {
+            max_tool_calls: Some(2),
+            ..Default::default()
+        };
+        let mut usage = GoalUsage {
+            tool_calls: 2,
+            ..Default::default()
+        };
+        assert!(!should_continue(&test_goal(budget, usage)).should_continue);
+
+        budget = GoalBudget {
+            max_turns: Some(1),
+            ..Default::default()
+        };
+        usage = GoalUsage {
+            turns_used: 1,
+            ..Default::default()
+        };
+        let d = should_continue(&test_goal(budget, usage));
+        assert!(!d.should_continue);
+        assert!(d.reason.contains("turn budget"));
+
+        budget = GoalBudget {
+            max_wallclock_secs: Some(10),
+            ..Default::default()
+        };
+        usage = GoalUsage {
+            wallclock_secs: 10,
+            ..Default::default()
+        };
+        let d = should_continue(&test_goal(budget, usage));
+        assert!(!d.should_continue);
+        assert!(d.reason.contains("wall-clock budget"));
+    }
+
+    #[test]
+    fn should_continue_never_revives_non_active_status() {
+        for status in [
+            GoalStatus::Paused,
+            GoalStatus::AwaitingUser,
+            GoalStatus::BudgetLimited,
+            GoalStatus::Cancelled,
+            GoalStatus::Failed,
+        ] {
+            let mut g = test_goal(GoalBudget::default(), GoalUsage::default());
+            g.status = status;
+            assert!(
+                !should_continue(&g).should_continue,
+                "status must not continue"
+            );
+        }
+    }
+
+    #[test]
     fn continuation_prompt_mentions_audit() {
         let g = test_goal(GoalBudget::default(), GoalUsage::default());
         let prompt = build_continuation_prompt(&g);
         assert!(prompt.contains("completion audit"));
         assert!(prompt.contains("Ship a feature"));
         assert!(prompt.contains("All tests pass"));
+    }
+
+    #[test]
+    fn continuation_prompt_has_no_blocked_status_contract() {
+        let g = test_goal(GoalBudget::default(), GoalUsage::default());
+        let prompt = build_continuation_prompt(&g);
+        // Guard against reintroducing the nonexistent `Blocked` goal status
+        // contract. The prompt may deny the status ("There is no `Blocked`")
+        // but must never offer it ("allowing a `Blocked` status") or describe
+        // consecutive-blocked counting. `TodoStatus::Blocked` is a separate
+        // todo-level state and must not be presented as a goal status here.
+        assert!(
+            !prompt.contains("allowing a `Blocked`"),
+            "continuation prompt must not offer a `Blocked` goal status"
+        );
+        assert!(
+            !prompt
+                .to_lowercase()
+                .contains("consecutive blocked turns before"),
+            "continuation prompt must not describe consecutive-blocked goal behavior"
+        );
+        assert!(
+            prompt.contains("AwaitingUser"),
+            "continuation prompt must direct blockers to the existing AwaitingUser state"
+        );
+        assert!(
+            prompt.contains("There is no `Blocked`"),
+            "continuation prompt must explicitly deny the Blocked goal status"
+        );
+    }
+
+    #[test]
+    fn verified_wait_prompt_names_handle_without_relaunch() {
+        use crate::goal::progress::WaitHandleRef;
+        let g = test_goal(GoalBudget::default(), GoalUsage::default());
+        let handle = WaitHandleRef::TestJob {
+            job_id: "job-123".into(),
+        };
+        let prompt = build_verified_wait_prompt(&g, &handle, "sha256:abc");
+        assert!(prompt.contains("job-123"));
+        assert!(prompt.contains("Do not start a duplicate"));
+        assert!(!prompt.contains("`Blocked`"));
+    }
+
+    #[test]
+    fn replan_prompt_is_bounded_and_mentions_evidence() {
+        let g = test_goal(GoalBudget::default(), GoalUsage::default());
+        let prompt = build_replan_prompt(&g, "no_state_change", 2);
+        assert!(prompt.contains("Replan"));
+        assert!(prompt.contains("no_state_change"));
+        assert!(!prompt.contains("`Blocked`"));
+    }
+
+    #[test]
+    fn awaiting_user_report_is_bounded_metadata_only() {
+        let g = test_goal(GoalBudget::default(), GoalUsage::default());
+        let report = build_awaiting_user_blocker_report(&g, "sha256:abc", 3);
+        assert!(report.contains("awaiting_user"));
+        assert!(report.contains("sha256:abc"));
+        assert!(!report.contains("`Blocked`"));
     }
 
     #[test]

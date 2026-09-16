@@ -1,5 +1,6 @@
 pub mod checkpoint;
 pub mod model;
+pub mod progress;
 pub mod render;
 pub mod runtime;
 pub mod store;

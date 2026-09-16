@@ -28,10 +28,15 @@ crates/codegg-core/src/goal/
 ├── model.rs        # Goal, GoalStatus, GoalBudget, GoalUsage structs
 ├── store.rs        # GoalStore: SQLite persistence, budget accounting
 ├── runtime.rs      # GoalWallClock, should_continue, continuation prompts
+├── progress.rs     # Host-observed Progress/VerifiedWait/NoProgress assessment (M001)
 ├── render.rs       # Goal rendering helpers for TUI
 ├── checkpoint.rs   # Session checkpoint integration for goals
 └── verification.rs # Host-owned completion proposals, evidence, and verdicts
 ```
+
+Application assembly lives in `src/goal_continuation.rs` (read-only evidence
+from `Goal` + in-memory `TodoState` + goal-labelled durable jobs) and the
+loop driver in `src/agent/turn_completion.rs::maybe_continue_goal()`.
 
 ## How It Works
 
@@ -42,15 +47,32 @@ crates/codegg-core/src/goal/
    session and inserts a new one with `Active` status.
 3. Each turn, `account_for_turn()` advances usage counters (tokens,
    tool calls, turns, wall-clock).
-4. `should_continue()` checks budget axes and returns a
-   `ContinuationDecision`. If active with budget remaining, a
-   continuation prompt is queued.
-5. `maybe_continue_goal()` loops up to 32 iterations, re-accounting
-   after each continuation.
+4. `should_continue()` checks budget axes and terminal status. It remains
+   the authoritative budget/status gate but no longer decides continuation
+   alone.
+5. `maybe_continue_goal()` reloads the current Goal revision each cycle and
+   assesses host-observed progress via `progress.rs`:
+   `Progress` (todo status or goal-owned test/delegated-run change) resets
+   stagnation and continues; `VerifiedWait` (a live goal-labelled
+   `InProgress` test/delegated run) polls the existing handle without
+   relaunching it; `NoProgress` increments a small run-local consecutive
+   counter (nudge, then explicit replan instruction). After
+   `MAX_CONSECUTIVE_NOPROGRESS_BEFORE_AWAITING_USER = 3` consecutive
+   no-progress cycles the same Goal revision is transitioned to the
+   existing `AwaitingUser` state with a concise bounded blocker report.
+   The loop still caps at `MAX_CONTINUATIONS = 32` as an emergency
+   invariant only.
 6. Budget exhaustion → `BudgetLimited` status + wrap-up prompt.
 7. `goal_request_completion` submits a model proposal to the host-owned
    verifier. Only a deterministic `Met` verdict can transition the goal to
    `Complete`; model prose and claimed file/test lists are not authority.
+
+There is no `Blocked` goal status. `GoalStatus` is exactly `Active`,
+`Paused`, `AwaitingUser`, `BudgetLimited`, `Complete`, `Failed`,
+`Cancelled`. Blockers are reported through `goal_update_progress`
+`open_questions`; repeated unresolved no-progress state becomes
+`AwaitingUser`. Todo-level `Blocked` is a separate short-horizon todo
+state and never a goal status.
 
 Convergence stores its semantic `Pass | Revise | Inconclusive` verdict
 separately from goal verification. A semantic pass is explanatory evidence and
@@ -196,6 +218,33 @@ pub struct ContinuationDecision {
 }
 ```
 
+### Continuation progress (`crates/codegg-core/src/goal/progress.rs`)
+
+```rust
+pub enum GoalProgressDisposition {
+    Progress { fingerprint: String },
+    VerifiedWait { handle: WaitHandleRef, fingerprint: String },
+    NoProgress { fingerprint: String, reason: GoalNoProgressReason },
+}
+```
+
+`GoalContinuationEvidence` carries goal id/revision/status, todo revision
+plus per-status counts, open-question count, and goal-labelled
+test/delegated-run records. `goal_continuation_fingerprint()` hashes only
+that bounded metadata (SHA-256, `sha256:` prefix); free-form
+`progress_summary`, file contents, command output, and transcript text never
+enter the fingerprint, so prose-only updates cannot read as progress.
+`assess_goal_continuation()` maps todo/execution changes to `Progress`
+(`NewEvidence`/`StateChanged`/`ChildAdvanced` vocabulary), a persisting live
+execution to `VerifiedWait`, and anything else to `NoProgress`
+(`NoStateChange`/`BlockerReported`/`EvidenceLoadFailed`).
+`stagnation_step()` adapts the graduated `Nudge -> Replan -> Stall`
+semantics to continuation scope (`ContinueWithNudge`,
+`ContinueWithReplan`, `EscalateToAwaitingUser`) without creating a second
+general recovery controller. Operator reason codes are `progress`,
+`verified_wait`, `replan`, `awaiting_user_no_progress`, and
+`budget_limited`; diagnostics never dump command output or plan content.
+
 ### GoalStore (`crates/codegg-core/src/goal/store.rs:56`)
 
 SQLite-backed. Key methods:
@@ -294,8 +343,20 @@ Budget axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
   limited goal for the session before creating the new one.
 - `increment_usage()` only advances if goal `is_active()`. Terminal
   goals silently skip accounting.
-- `maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per run to
-  prevent infinite loops.
+- `maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per run as an
+  emergency invariant only. Normal stagnation exits after 3 consecutive
+  no-progress cycles via replan then `AwaitingUser`, well before the cap.
+- An Active goal never auto-continues on budget alone: every cycle needs
+  `Progress` or a `VerifiedWait` on a live goal-owned handle. `VerifiedWait`
+  polls the existing handle and never relaunches the operation; a handle
+  that disappears is reloaded and its terminal outcome becomes
+  progress/evidence.
+- Failure to load progress evidence is `NoProgress(EvidenceLoadFailed)`,
+  never `Progress`. Cancellation/steering stops continuation immediately
+  and is never converted into blocker progression. Replacement aborts the
+  stale path; `AwaitingUser` escalation uses `update_status_if_revision`
+  so concurrent progress wins. The no-progress counter is run-local and
+  restarts conservatively on daemon restart without ever marking complete.
 - `GoalRequestCompletionTool` submits a bounded model proposal; only a
   passing exact-goal-owned test/delegated-job evidence set can produce `Met`.
   Failed/missing evidence produces `NotMet`, and non-empty natural-language

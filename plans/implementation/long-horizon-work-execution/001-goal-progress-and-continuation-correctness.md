@@ -1,6 +1,6 @@
 # Long-Horizon Work Execution M001 — Goal Progress and Continuation Correctness
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
