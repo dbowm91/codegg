@@ -1,6 +1,6 @@
 # Execution Reliability, Approval, and Autonomy M002 — Unified Retry Budget and Side-Effect Reconciliation
 
-Status: blocked
+Status: ready
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 

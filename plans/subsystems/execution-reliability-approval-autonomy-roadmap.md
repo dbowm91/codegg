@@ -252,11 +252,13 @@ Class: invariant/reliability
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md`
 
-Status: ready.
+Status: closed.
 
 Add provider-attempt identity/lifecycle, prevent transparent whole-turn replay after externally visible output unless supersession is explicit, classify transient versus permanent errors correctly, honor retry hints, add jitter, and charge mid-stream failure to provider health/circuit state.
 
 Exit condition: every provider attempt is attributable; transient failures before visible output can retry; mid-stream failures cannot silently merge two generations; bad auth is not blindly retried while retryable transport/5xx/429 conditions are classified correctly.
+
+Closure: `plans/closure/execution-reliability-approval-autonomy/001-status.md` (implementation `88694706`).
 
 ### M002 — Unified retry budget and uncertain-side-effect reconciliation
 
@@ -264,7 +266,7 @@ Class: invariant/infrastructure
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md`
 
-Status: blocked on M001.
+Status: ready (unblocked by M001 closure `plans/closure/execution-reliability-approval-autonomy/001-status.md`).
 
 Introduce a propagated retry chain/deadline/budget and map ToolEffectClass/idempotency plus acknowledgement state into safe retry/reconcile/stop behavior.
 
@@ -432,8 +434,8 @@ This roadmap closes only when:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md` | — | — |
-| M002 | blocked | `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md` | — | M001 closure |
+| M001 | closed | `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md` | `plans/closure/execution-reliability-approval-autonomy/001-status.md` | — |
+| M002 | ready | `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md` | — | M001 closure (satisfied) |
 | M003 | ready | `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md` | — | — |
 | M004 | blocked | `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md` | — | M003 preference-store contract |
 | M005 | blocked | `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md` | — | M003 |
