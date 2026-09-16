@@ -1,6 +1,6 @@
 # Execution Reliability, Approval, and Autonomy Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
@@ -354,11 +354,13 @@ Class: invariant/closure
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/008-fault-injection-and-reliability-qualification.md`
 
-Status: ready (M001+M002+M003+M004+M005+M006+M007 closed).
+Status: closed.
 
 Run deterministic fault matrices for provider streaming/retries, persistence/restart, reviewer failure, sandbox helper failure, uncertain effects, child ceilings, and mode/model restoration. Add only focused static guards/fixtures needed to prevent recurrence.
 
 Exit condition: closure evidence demonstrates bounded recovery without duplicate side effects, fail-open approval, silent sandbox degradation, or runtime preference drift.
+
+Closure: `plans/closure/execution-reliability-approval-autonomy/008-status.md` (implementation `f9e37930`).
 
 ## 8. Cross-cutting requirements
 
@@ -457,4 +459,4 @@ This roadmap closes only when:
 | M005 | closed | `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md` | `plans/closure/execution-reliability-approval-autonomy/005-status.md` | — |
 | M006 | closed | `plans/implementation/execution-reliability-approval-autonomy/006-automatic-approval-reviewer.md` | `plans/closure/execution-reliability-approval-autonomy/006-status.md` | — |
 | M007 | closed | `plans/implementation/execution-reliability-approval-autonomy/007-yolo-auto-and-full-host-user-surfaces.md` | `plans/closure/execution-reliability-approval-autonomy/007-status.md` | — |
-| M008 | ready | `plans/implementation/execution-reliability-approval-autonomy/008-fault-injection-and-reliability-qualification.md` | — | — |
+| M008 | closed | `plans/implementation/execution-reliability-approval-autonomy/008-fault-injection-and-reliability-qualification.md` | `plans/closure/execution-reliability-approval-autonomy/008-status.md` | — |
