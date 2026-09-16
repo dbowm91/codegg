@@ -25,6 +25,8 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Long-horizon work execution | active | `plans/subsystems/long-horizon-work-execution-roadmap.md` | M001 ready; M002-M005 dependency-blocked | ADR-0003 accepted; M001 uses the closed Goal/runtime/context foundations. M002 waits for M001 closure, then M003-M005 are dependency ordered. |
+| Execution reliability, approval, and autonomy | active | `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md` | M001 and M003 ready; M002/M004-M008 dependency-blocked | ADR-0004 accepted. M001 provider retry and M003 ApprovalRouter/persistence may proceed in parallel. |
 | Context continuity and multi-compaction coherence | closed | `plans/subsystems/context-continuity-compaction-roadmap.md` | M001+M002+M003+M004 closed | `plans/closure/context-continuity-compaction/004-status.md` |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
@@ -63,6 +65,9 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Long-horizon work execution | M001 Goal progress and continuation correctness | ready | `plans/implementation/long-horizon-work-execution/001-goal-progress-and-continuation-correctness.md` | ADR-0003 accepted; existing Goal, RecoveryController, scheduler/run evidence and closed context-continuity foundation satisfy dependencies. |
+| Execution reliability, approval, and autonomy | M001 provider retry attempt safety and taxonomy | ready | `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md` | ProviderTurnAdapter/ProviderError/FallbackProvider are existing canonical owners; independent of approval work. |
+| Execution reliability, approval, and autonomy | M003 ApprovalRouter and durable mode state | ready | `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md` | ADR-0004 accepted; deterministic PermissionChecker/SecurityService and daemon persistence foundations exist. May run in parallel with M001. |
 | Context continuity and multi-compaction coherence | M001 durable continuation checkpoint and epoch foundation | closed | `plans/implementation/context-continuity-compaction/001-durable-continuation-checkpoint-and-epoch-foundation.md` | Closure accepted at `plans/closure/context-continuity-compaction/001-status.md`; implementation `fde6c2e3`. |
 | Context continuity and multi-compaction coherence | M002 authoritative intent, plan, and frame projection | closed | `plans/implementation/context-continuity-compaction/002-authoritative-intent-plan-and-frame-projection.md` | Closure accepted at `plans/closure/context-continuity-compaction/002-status.md`; implementation `a96ed0fc`. |
 | Context continuity and multi-compaction coherence | M003 bounded exact context recovery references | closed | `plans/implementation/context-continuity-compaction/003-bounded-exact-context-recovery-references.md` | Closure accepted at `plans/closure/context-continuity-compaction/003-status.md`; implementation `3ea77e9f`. |
@@ -75,19 +80,31 @@ Canonical direction remains in:
 
 ## Current execution order and dependency gates
 
-1. Context continuity M001+M002+M003+M004 are closed: the durable checkpoint/epoch store (M001), the authoritative intent/plan/frame projection (M002, in-memory candidates), bounded exact recovery references (M003, checkpoint-scoped evidence handles), and transactional rollover with multi-compaction qualification (M004, prepare/verify/replace/install, restart injection, strategy reconciliation, degraded fallback, eight-compaction trajectory) have landed. The workstream is complete; no M005 is registered.
-2. Dependency security/workspace M006 is closed: post-baseline RUSTSEC-2026-0285 was remediated with a targeted lock-only Rustls 0.23.41 → 0.23.45 patch (plus required `rustls-webpki` companion) and the planning control points reconciled. Closure evidence at `plans/closure/dependency-security-workspace-consolidation/006-status.md`.
-3. Dependency-security M001-M004 remain closed with accepted closure evidence. M001 delivered Ratatui/LRU security convergence, DashMap 6 convergence and SQLx feature contraction; M002 established workspace version/default-policy ownership; M003 narrowed the optional image graph; M004 qualified reusable crate boundaries without speculative extraction.
-4. Dependency-security M005 remains independently blocked on the generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. Its curl/shell execution-path hardening remains landed at `plans/closure/dependency-security-workspace-consolidation/005-status.md`.
-5. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on published `eggfetch-core 0.1.4`; dependency-security M006 preserves its HTTP/1 + Rustls/WebPKI feature/trust profile.
-6. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
+1. Long-horizon M001 is dependency-ready. It should correct Goal progress/wait/no-progress behavior first; M002 durable WorkPlan follows its closure, then M003 projection/completion arbitration, M004 context-epoch integration, and M005 trajectory qualification.
+2. Execution-reliability M001 and M003 are independently dependency-ready and may proceed in parallel: M001 fixes provider attempt safety/taxonomy; M003 establishes ApprovalRouter, durable approval/sandbox preference, and real PermissionStore persistence. M002 follows M001. M004/M005/M006/M007 follow the M003 policy/preference chain as defined by the roadmap. M008 is final qualification.
+3. The closed context-continuity M001-M004 workstream remains the canonical compaction/rollover foundation. New long-horizon work consumes installed continuation checkpoints and does not register a context-continuity M005.
+4. Dependency security/workspace M006 is closed: post-baseline RUSTSEC-2026-0285 was remediated with a targeted lock-only Rustls 0.23.41 → 0.23.45 patch (plus required `rustls-webpki` companion) and the planning control points reconciled. Closure evidence at `plans/closure/dependency-security-workspace-consolidation/006-status.md`.
+5. Dependency-security M001-M004 remain closed with accepted closure evidence. M001 delivered Ratatui/LRU security convergence, DashMap 6 convergence and SQLx feature contraction; M002 established workspace version/default-policy ownership; M003 narrowed the optional image graph; M004 qualified reusable crate boundaries without speculative extraction.
+6. Dependency-security M005 remains independently blocked on the generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. Its curl/shell execution-path hardening remains landed at `plans/closure/dependency-security-workspace-consolidation/005-status.md`.
+7. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on published `eggfetch-core 0.1.4`; dependency-security M006 preserves its HTTP/1 + Rustls/WebPKI feature/trust profile.
+8. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
 
-Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. This dependency-consolidation work does not authorize a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, duplicate progressive-discovery system, generic secret-store/DI system, generic CodeGG-wide HTTP service layer, or speculative networking abstraction.
+Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. The new workstreams do not authorize a new daemon, scheduler, workflow engine, context-history service, authorization engine, sandbox framework, verification framework, release automation, or silent provider failover.
 
 ## Blocked work
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Long-horizon work execution | M002 durable WorkPlan foundation | Ordered handoff waits for M001 Goal continuation correctness closure. |
+| Long-horizon work execution | M003 WorkPlan projection and completion arbiter | M002 closure. |
+| Long-horizon work execution | M004 context-epoch reset and handoff integration | M003 closure plus the already-closed context-continuity foundation. |
+| Long-horizon work execution | M005 long-horizon trajectory qualification | M001-M004 closure. |
+| Execution reliability, approval, and autonomy | M002 unified retry budget and side-effect reconciliation | M001 provider retry closure. |
+| Execution reliability, approval, and autonomy | M004 selected-model/runtime-preference convergence | M003 RuntimePreferenceStore contract. |
+| Execution reliability, approval, and autonomy | M005 production sandbox policy wiring | M003 execution-policy/ApprovalRouter contract. |
+| Execution reliability, approval, and autonomy | M006 automatic approval reviewer | M003 + M005 closure. |
+| Execution reliability, approval, and autonomy | M007 Yolo/Automatic/FullHost user surfaces | M003-M006 closure, including M004 preference convergence. |
+| Execution reliability, approval, and autonomy | M008 fault-injection and reliability qualification | M001-M007 closure. |
 | Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific (hardening landed; see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
@@ -98,6 +115,8 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
+| Long-horizon work execution | active; M001 ready | `plans/adrs/ADR-0003-long-horizon-work-state-and-context-epochs.md`; `plans/subsystems/long-horizon-work-execution-roadmap.md`; five plans under `plans/implementation/long-horizon-work-execution/`; existing Goal/Todo/RecoveryController/context-continuity architecture |
+| Execution reliability, approval, and autonomy | active; M001 + M003 ready | `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`; `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md`; eight plans under `plans/implementation/execution-reliability-approval-autonomy/`; current provider/permission/security/sandbox/session-selection architecture |
 | Context continuity and multi-compaction coherence | M001+M002+M003+M004 closed | `plans/subsystems/context-continuity-compaction-roadmap.md`; four implementation plans under `plans/implementation/context-continuity-compaction/`; `plans/closure/context-continuity-compaction/001-status.md`; `plans/closure/context-continuity-compaction/002-status.md`; `plans/closure/context-continuity-compaction/003-status.md`; `plans/closure/context-continuity-compaction/004-status.md`; current compaction/goal/session/artifact architecture |
 | Dependency security and workspace consolidation | M006 closed; M005 blocked | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md`; `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md`; M001-M006 closure records; current `Cargo.toml`/`Cargo.lock` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 and M009 closure records |
@@ -152,6 +171,10 @@ Historical closure records MUST NOT be rewritten to conceal predecessor defects 
 ## Verification policy
 
 Verification remains deliberately light. Newly registered milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add new CI lanes, scanners, coverage/benchmark/binary-size gates, dependency bots, release automation, or fixed release cadence.
+
+The long-horizon work roadmap may add deterministic WorkPlan/Goal/Todo/context-transition/restart scenarios and force small context limits with scripted providers. It MUST NOT add live-provider CI, a second history/compaction store, a generic workflow engine, or an unbounded plan dump/benchmark gate.
+
+The execution-reliability/approval roadmap may add deterministic provider fault streams, retry/side-effect fixtures, permission/reviewer/sandbox matrices, preference restart tests, and the existing supported-Linux sandbox fixture. It MUST NOT add live-provider CI, a permanent chaos service, a new authorization engine, a second scheduler, a new cross-platform sandbox framework, or network-containment claims without an actual backend.
 
 The dependency security/workspace roadmap may use `cargo audit`, `cargo tree -d`, reverse dependency trees, feature trees, package dry-runs, and `cargo bloat` as temporary local/closure evidence. It MUST NOT turn advisory status, duplicate counts, package counts, or artifact size into new continuous CI gates. M001 may update an existing explicit audit ignore only when reachability/applicability evidence changes. M002 must prove feature equivalence rather than centralizing maximal feature unions. M004 may run `cargo package` dry-runs but MUST NOT publish automatically. M005 remains blocked until its external package interface exists. M006 may perform only targeted Rustls/required-companion updates and focused Eggfetch/provider/TLS-consumer verification; it MUST NOT add an advisory ignore, broad lockfile update, TLS framework, or public-network CI test.
 
