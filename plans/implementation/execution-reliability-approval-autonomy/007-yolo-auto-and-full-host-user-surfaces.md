@@ -1,6 +1,8 @@
 # Execution Reliability, Approval, and Autonomy M007 — Yolo, Automatic, and Full Host User Surfaces
 
-Status: ready for handoff
+Status: implemented
+
+Closure: `plans/closure/execution-reliability-approval-autonomy/007-status.md` (implementation `36f0f48d`).
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
