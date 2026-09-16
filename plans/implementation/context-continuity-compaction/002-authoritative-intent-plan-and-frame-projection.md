@@ -1,6 +1,6 @@
 # Context Continuity and Compaction M002 — Authoritative Intent, Plan, and Frame Projection
 
-Status: blocked on M001 accepted closure
+Status: ready
 
 Repository baseline: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 

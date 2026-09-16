@@ -1,6 +1,6 @@
 # Context Continuity and Compaction M001 — Durable Continuation Checkpoint and Epoch Foundation
 
-Status: ready
+Status: implemented
 
 Repository baseline: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 

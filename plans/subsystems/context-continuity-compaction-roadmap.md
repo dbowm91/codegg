@@ -1,6 +1,6 @@
 # Context Continuity and Multi-Compaction Coherence Roadmap
 
-Status: active; M001 ready, M002-M004 dependency-gated
+Status: active; M001 closed, M002-M003 ready, M004 dependency-gated
 
 Repository baseline reviewed: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 
@@ -237,7 +237,7 @@ M002 and M003 may execute in parallel after M001 if separate implementation agen
 
 Plan: `plans/implementation/context-continuity-compaction/001-durable-continuation-checkpoint-and-epoch-foundation.md`
 
-Status: **ready**.
+Status: **closed** (`plans/closure/context-continuity-compaction/001-status.md`, implementation `fde6c2e3`).
 
 Establish the typed checkpoint identity, additive SQLite storage, prepared/installed/aborted lifecycle, lineage fields, and durable compaction event contract. Wire no model-visible behavior change beyond any required event correctness fix.
 
@@ -247,7 +247,7 @@ Exit condition: CodeGG can durably prepare, verify, install, query, and restart-
 
 Plan: `plans/implementation/context-continuity-compaction/002-authoritative-intent-plan-and-frame-projection.md`
 
-Status: **blocked on M001 accepted closure**.
+Status: **ready** (M001 accepted closure at `plans/closure/context-continuity-compaction/001-status.md`).
 
 Build continuation state from host-owned Goal/Todo/runtime evidence plus bounded exact user intent, fix source precedence, fix stale goal-journal rendering, eliminate stacked CodeGG compaction frames, and make semantic enrichment update only fields it owns.
 
@@ -257,7 +257,7 @@ Exit condition: one compacted continuation frame contains the correct objective/
 
 Plan: `plans/implementation/context-continuity-compaction/003-bounded-exact-context-recovery-references.md`
 
-Status: **blocked on M001 accepted closure**.
+Status: **ready** (M001 accepted closure at `plans/closure/context-continuity-compaction/001-status.md`).
 
 Extend the existing context-artifact/handle surface so a checkpoint can point to bounded exact evidence discarded from the active prompt. Preserve `ctx://tool/...`, use the existing durable `FileArtifactStore`, and do not expose hidden reasoning or sensitive tool inputs.
 

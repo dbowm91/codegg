@@ -1,6 +1,6 @@
 # Context Continuity and Compaction M003 — Bounded Exact Context Recovery References
 
-Status: blocked on M001 accepted closure
+Status: ready
 
 Repository baseline: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 
