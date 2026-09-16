@@ -57,6 +57,26 @@ pub struct GoalUsageSnapshot {
     pub wallclock_secs: i64,
 }
 
+/// Bounded WorkPlan snapshot for TUI status and remote clients.
+///
+/// Frontends are read/projection consumers: they render this snapshot but
+/// never own WorkPlan state or determine completion. All text is preview
+/// bounded; the full durable plan stays in `codegg-core::work_plan`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkPlanSnapshot {
+    pub plan_id: String,
+    pub revision: i64,
+    pub status: String,
+    pub objective_preview: String,
+    pub current_phase: Option<String>,
+    pub current_item_id: Option<String>,
+    pub total_items: usize,
+    pub actionable_count: usize,
+    pub blocked_count: usize,
+    pub in_progress_count: usize,
+    pub assessment: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppEvent {
     /// A new session was created.
@@ -138,6 +158,14 @@ pub enum AppEvent {
         session_id: String,
         goal_id: String,
         evidence: String,
+    },
+    /// Bounded WorkPlan progress update. The durable plan remains the
+    /// authority; this event only carries a frontend summary so TUI status
+    /// can render without re-reading the store. Model tools and the daemon
+    /// service own mutations.
+    WorkPlanUpdated {
+        session_id: String,
+        plan: WorkPlanSnapshot,
     },
     /// The agent was changed.
     AgentChanged { name: String },
@@ -389,6 +417,7 @@ impl AppEvent {
             AppEvent::GoalUsageUpdated { .. } => "goal:usage_updated",
             AppEvent::GoalBudgetLimited { .. } => "goal:budget_limited",
             AppEvent::GoalCompleted { .. } => "goal:completed",
+            AppEvent::WorkPlanUpdated { .. } => "work_plan:updated",
             AppEvent::AgentChanged { .. } => "agent:changed",
             AppEvent::ModelChanged { .. } => "model:changed",
             AppEvent::CompactionTriggered { .. } => "compaction:triggered",

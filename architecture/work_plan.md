@@ -1,16 +1,18 @@
 # WorkPlan Module Architecture
 
-Durable detailed work state for long-horizon execution (M002). `WorkPlan`/
-`WorkItem` records what remains, what blocks it, and what host-owned
-evidence could satisfy it — without becoming execution authority.
+Durable detailed work state for long-horizon execution (M002 foundation,
+M003 projection and arbitration). `WorkPlan`/`WorkItem` records what
+remains, what blocks it, and what host-owned evidence could satisfy it —
+without becoming execution authority.
 
 ## Purpose
 
 Give large tasks a revisioned, restart-durable plan that survives
 compaction and restart independently of transcript summaries, TodoState
-projection, Goal progress text, and continuation checkpoints. Model-facing
-plan tools and automatic completion arbitration belong to M003; this module
-lands storage/domain semantics only with no model-visible behavior change.
+projection, Goal progress text, and continuation checkpoints. M002 landed
+storage/domain semantics with no model-visible behavior change; M003 adds
+the bounded model read/update surface, one-way Todo projection, canonical
+evidence correlation, and the host-owned completion arbiter.
 
 ## Where It Lives
 
@@ -18,9 +20,17 @@ lands storage/domain semantics only with no model-visible behavior change.
 |-----------|----------|
 | Core types, validation, actionability | `crates/codegg-core/src/work_plan/model.rs` |
 | Durable store, CAS, Goal scope checks | `crates/codegg-core/src/work_plan/store.rs` |
+| Pure completion assessment (M003) | `crates/codegg-core/src/work_plan/assessment.rs` |
+| Bounded projection/pagination (M003) | `crates/codegg-core/src/work_plan/projection.rs` |
+| Host-evidence snapshot (M003) | `crates/codegg-core/src/work_plan/evidence.rs` |
+| One-way Todo contract (M003) | `crates/codegg-core/src/work_plan/todo_projection.rs` |
 | Module re-exports | `crates/codegg-core/src/work_plan/mod.rs` |
+| Model tools (`work_plan_get`, `work_plan_update_item`) | `src/tool/work_plan.rs` |
+| Evidence assembly (jobs/runs) | `src/work_plan_evidence.rs` |
+| Completion arbiter + turn/Goal gates | `src/work_plan_arbiter.rs` |
+| Todo one-way sync | `src/work_plan_todo_sync.rs` |
 | DB schema | `crates/codegg-core/src/session/schema.rs` migration v59; layout `storage::STORAGE_LAYOUT_VERSION = 59` |
-| Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs` + in-module unit tests |
+| Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `crates/codegg-core/tests/work_plan_projection_arbiter.rs`, `tests/work_plan_projection_arbiter.rs` + in-module unit tests |
 
 ## How It Works
 
@@ -170,11 +180,53 @@ backfill. Legacy sessions simply have no active plan.
 - WorkPlan is detailed work state, not execution authority. It references
   `AgentRun`/`Job` IDs for provenance; those refs grant no write permission.
 - Goal status/budget remain authoritative when a plan is Goal-bound.
-- TodoState stays bounded and independent; M002 adds no Todo projection or
-  writing integration (M003).
-- Continuation checkpoints remain distinct with their own lifecycle; M002
+  GoalVerification remains the final Goal completion authority; the WorkPlan
+  arbiter is an additional prerequisite, not a replacement.
+- TodoState is a bounded one-way projection (M003): WorkPlan selects
+  current/actionable items, TodoState renders a small subset per
+  `TaskStatePolicy`. Permitted Todo status changes translate back only on
+  exact `wi_*@rN` identity/revision mapping; a Todo `completed` flag alone
+  never satisfies host-only acceptance. Child-owned items require the
+  explicit WorkPlan tool with matching `caller_run_id`.
+- Continuation checkpoints remain distinct with their own lifecycle; M003
   adds no checkpoint coupling (M004).
-- No model-facing WorkPlan tools in M002; no Todo/runtime behavior change.
+- Model tools cannot set host evidence (`acceptance`/`evidence`/`owner`
+  refs), rewrite `objective`/`origin_provenance`/`dependencies`, or mark
+  host-only items complete by assertion. Stale writers receive explicit
+  conflicts.
+
+## M003 projection and arbitration
+
+- Assessment (`assessment.rs`): pure `Complete` / `ActionableWorkRemaining`
+  / `Blocked` / `AwaitingUserJudgment` / `InFlight` from plan/items plus the
+  host-evidence snapshot. `Blocked` is a WorkPlan state, not a GoalStatus.
+  Completed items without host satisfaction read as actionable, never done.
+- Projection (`projection.rs`): defaults to current/actionable (limit 5,
+  max 8 items, 4096 bytes); completed history requires explicit
+  `include_completed` with pagination. Single-item lookup stays bounded.
+- Evidence (`evidence.rs` + `src/work_plan_evidence.rs`): Test/Scheduler/
+  Delegated refs resolve against the durable job store; AgentRun refs
+  resolve against `agent_run` (job-store fallback); Artifact/Commit refs
+  stay `Unavailable` without a host `Satisfied` acceptance. Missing targets
+  are unavailable, never satisfied; claimed test text alone never passes.
+- Todo contract (`todo_projection.rs` + `src/work_plan_todo_sync.rs`):
+  projection truncates to `policy.max_total_items` (Disabled 0, Sparse 8,
+  Explicit 10, Guided 4) with at most one `InProgress`. Feedback validates
+  exact revision, allowed transitions, blocker discipline, and host-evidence
+  gating for `Completed`.
+- Arbiter (`src/work_plan_arbiter.rs` + `src/agent/loop.rs` hook):
+  terminal-answer boundary checks the active plan before the turn is
+  considered done. Actionable work injects one bounded control message
+  (current item, unmet condition, next action) and continues within existing
+  turn/tool/time/token limits; `InFlight` polls the existing handle;
+  `Blocked`/`Inconclusive` preserve state and surface a typed report;
+  `AwaitingUserJudgment`/`Complete` return control. Ordinary turn-scoped
+  plans auto-complete only after the host passes and budgets have not
+  expired; Goal-bound plans additionally pass `GoalVerificationService`,
+  whose `NotMet` may update one actionable item's `next_action` through CAS.
+- Protocol (`codegg-core::bus::events::WorkPlanUpdated` + `WorkPlanSnapshot`):
+  bounded frontend summary (ids, revision, status, counts, assessment code).
+  Frontends render only; mutations stay in model tools/daemon service.
 
 ## Invariants & Gotchas
 
@@ -194,7 +246,10 @@ backfill. Legacy sessions simply have no active plan.
 ## Testing
 
 ```bash
-cargo test -p codegg-core -- work_plan
+cargo test -p codegg-core --lib -- work_plan
+cargo test -p codegg-core --test work_plan_foundation
+cargo test -p codegg-core --test work_plan_projection_arbiter
+cargo test --test work_plan_projection_arbiter
 cargo test -p codegg-core -- migration
 ```
 

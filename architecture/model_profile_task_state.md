@@ -378,14 +378,25 @@ Narrowest: `cargo test -p codegg-core -- model_profile::adapter::tests`
 for adapter matching, `cargo test -p codegg-core -- task_state::tests`
 for state machine.
 
-## WorkPlan relation (M002)
+## WorkPlan relation (M002 foundation, M003 projection)
 
 `WorkPlan` (`architecture/work_plan.md`, `crates/codegg-core/src/work_plan/`)
 is the durable detailed plan beneath an objective. TodoState remains the
 bounded model-facing short-horizon projection and is intentionally not
-expanded into a durable project graph (ADR-0003 Option A rejected). M002
-adds no Todo projection/writing integration; M003 maps actionable WorkItems
-into existing TodoState policy with one-way authority rules.
+expanded into a durable project graph (ADR-0003 Option A rejected). M003
+maps actionable WorkItems into existing TodoState policy with one-way
+authority: `project_to_todo_items()` selects current/actionable items
+truncated to `policy.max_total_items` (Disabled 0, SparsePlan 8,
+ExplicitTodo 10, GuidedCurrentTask 4) with at most one `InProgress` and no
+terminal history. Projected Todo ids carry exact identity/revision
+(`wi_*@rN`); `validate_todo_feedback()` translates status changes back only
+on exact match, valid `can_transition_item` edges, blocker discipline, and
+host-evidence gating for `Completed`. A Todo `completed` flag alone never
+satisfies host-only acceptance; child-owned items require the explicit
+`work_plan_update_item` tool with matching `caller_run_id`. Todo injection
+remains bounded per `TaskStatePolicy`; durable WorkPlan mutations persist
+the projection to the session Todo store so restart reconstructs the same
+slice without erasing plan history.
 
 ## Related Docs
 

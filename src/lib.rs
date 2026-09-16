@@ -10,7 +10,7 @@ pub use codegg_core::run_result;
 pub use codegg_core::{
     agent_convergence, agent_run, agent_run_control, agent_run_group, bus, goal, identity, memory,
     migration, model_profile, project_storage, repository_lineage, resilience, run_store, session,
-    snapshot, storage, task_state, workspace, workspace_services, worktree,
+    snapshot, storage, task_state, work_plan, workspace, workspace_services, worktree,
 };
 
 pub mod acp;
@@ -68,6 +68,9 @@ pub mod tts;
 pub mod tui;
 pub mod upgrade;
 pub mod util;
+pub mod work_plan_arbiter;
+pub mod work_plan_evidence;
+pub mod work_plan_todo_sync;
 
 pub use tts::TtsEngine;
 

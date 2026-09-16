@@ -282,6 +282,71 @@ impl Tool for GoalRequestCompletionTool {
             }
         };
 
+        // M003 Goal-bound WorkPlan gate: a bound plan must assess
+        // Complete/AwaitingUserJudgment before the authoritative Goal
+        // verifier can complete the Goal. Other assessments return bounded
+        // feedback without mutating the plan.
+        let goal_plan = crate::work_plan_arbiter::assess_goal_plan(&self.pool, &goal.id)
+            .await
+            .map_err(ToolError::Execution)?;
+        if let Some((bound_plan, bound_items, assessment)) = goal_plan.as_ref() {
+            let gate = crate::work_plan_arbiter::decide_from_assessment(assessment);
+            match gate {
+                crate::work_plan_arbiter::ArbiterDecision::AllowCompletion
+                | crate::work_plan_arbiter::ArbiterDecision::NeedsUserJudgment(_) => {}
+                crate::work_plan_arbiter::ArbiterDecision::ContinueWithPrompt(prompt) => {
+                    return Ok(serde_json::json!({
+                        "accepted": false,
+                        "verdict": "not_met",
+                        "goal_id": goal.id,
+                        "work_plan_id": bound_plan.id.as_str(),
+                        "work_plan_assessment": assessment.reason_code(),
+                        "next_action": prompt,
+                    })
+                    .to_string());
+                }
+                crate::work_plan_arbiter::ArbiterDecision::WaitForHandle {
+                    handle_kind,
+                    handle_id,
+                } => {
+                    return Ok(serde_json::json!({
+                        "accepted": false,
+                        "verdict": "not_met",
+                        "goal_id": goal.id,
+                        "work_plan_id": bound_plan.id.as_str(),
+                        "work_plan_assessment": "in_flight",
+                        "next_action": format!(
+                            "canonical work is still running ({handle_kind}:{handle_id}); poll the existing handle instead of relaunching it"
+                        ),
+                    })
+                    .to_string());
+                }
+                crate::work_plan_arbiter::ArbiterDecision::BlockedReport(blocker) => {
+                    return Ok(serde_json::json!({
+                        "accepted": false,
+                        "verdict": "not_met",
+                        "goal_id": goal.id,
+                        "work_plan_id": bound_plan.id.as_str(),
+                        "work_plan_assessment": "blocked",
+                        "next_action": blocker,
+                    })
+                    .to_string());
+                }
+                crate::work_plan_arbiter::ArbiterDecision::Inconclusive(reason) => {
+                    return Ok(serde_json::json!({
+                        "accepted": false,
+                        "verdict": "not_met",
+                        "goal_id": goal.id,
+                        "work_plan_id": bound_plan.id.as_str(),
+                        "work_plan_assessment": "inconclusive",
+                        "next_action": reason,
+                    })
+                    .to_string());
+                }
+            }
+            let _ = (bound_items, assessment);
+        }
+
         let host_evidence = crate::goal_verification::assemble(
             &self.pool,
             &self.session_id,
@@ -294,6 +359,32 @@ impl Tool for GoalRequestCompletionTool {
 
         match verdict {
             GoalVerificationVerdict::Met { summary } => {
+                // Re-check the bound plan under the same revision discipline:
+                // WorkPlan Complete/AwaitingUserJudgment is a prerequisite,
+                // GoalVerification remains the final authority.
+                if let Some((bound_plan, bound_items, assessment)) =
+                    crate::work_plan_arbiter::assess_goal_plan(&self.pool, &goal.id)
+                        .await
+                        .map_err(ToolError::Execution)?
+                {
+                    let gate = crate::work_plan_arbiter::decide_from_assessment(&assessment);
+                    if !matches!(
+                        gate,
+                        crate::work_plan_arbiter::ArbiterDecision::AllowCompletion
+                            | crate::work_plan_arbiter::ArbiterDecision::NeedsUserJudgment(_)
+                    ) {
+                        return Ok(serde_json::json!({
+                            "accepted": false,
+                            "verdict": "not_met",
+                            "goal_id": goal.id,
+                            "work_plan_id": bound_plan.id.as_str(),
+                            "work_plan_assessment": assessment.reason_code(),
+                            "next_action": "bound WorkPlan still has required work; resolve it before requesting Goal completion",
+                        })
+                        .to_string());
+                    }
+                    let _ = (bound_plan, bound_items);
+                }
                 let Some(updated_goal) = store
                     .complete_if_active(&goal.id, goal.revision)
                     .await
@@ -354,6 +445,29 @@ impl Tool for GoalRequestCompletionTool {
                 evidence_gaps,
                 next_action,
             } => {
+                // M003: verifier NotMet may create/update an actionable
+                // WorkItem when a bounded existing-item mapping exists;
+                // otherwise return bounded feedback without mutating the plan.
+                if let Ok(Some((bound_plan, bound_items, _))) =
+                    crate::work_plan_arbiter::assess_goal_plan(&self.pool, &goal.id).await
+                {
+                    let recorded = crate::work_plan_arbiter::record_verifier_feedback(
+                        &self.pool,
+                        &bound_plan,
+                        &bound_items,
+                        &next_action,
+                    )
+                    .await
+                    .unwrap_or(false);
+                    if recorded {
+                        tracing::info!(
+                            session_id = %self.session_id,
+                            goal_id = %goal.id,
+                            plan_id = %bound_plan.id.as_str(),
+                            "goal verifier NotMet recorded as actionable WorkItem next_action"
+                        );
+                    }
+                }
                 let mut open_questions = unmet_criteria;
                 open_questions.extend(evidence_gaps);
                 open_questions.truncate(codegg_core::goal::verification::MAX_VERDICT_ITEMS);

@@ -151,13 +151,17 @@ impl Tool for TodoWriteTool {
 
         let mut state = self.state.lock().await;
         state
-            .replace_from_model(items, &self.policy)
+            .replace_from_model(items.clone(), &self.policy)
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         let projection = state.full_projection_for_user();
         let revision = state.revision;
         let snapshot_items: Vec<crate::bus::events::TodoItemSnapshot> =
             state.items.iter().map(|item| item.to_snapshot()).collect();
+        // Clone the accepted Todo items for exact-revision WorkPlan feedback
+        // after the lock is released. Free-form todos without a `wi_*@rN`
+        // id never map and are ignored.
+        let accepted_todos = state.items.clone();
         let session_items: Option<Vec<crate::session::models::TodoItemInput>> =
             if self.pool.is_some() {
                 Some(
@@ -191,7 +195,34 @@ impl Tool for TodoWriteTool {
             });
         }
 
-        Ok(projection)
+        // One-way Todo -> WorkPlan feedback (M003): only exact
+        // identity/revision mappings translate, owned child items require the
+        // explicit WorkPlan tool, and a Todo `completed` flag alone never
+        // satisfies host-only acceptance. Best-effort; never fails the Todo
+        // write. Stale mappings are ignored.
+        let mut feedback_note = String::new();
+        if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
+            let translated = crate::work_plan_todo_sync::try_translate_todo_feedback(
+                pool,
+                session_id,
+                &accepted_todos,
+            )
+            .await;
+            if translated > 0 {
+                feedback_note =
+                    format!("\nWorkPlan feedback: {translated} mapped item(s) updated.");
+                // Refresh the durable Todo projection so restart reconstructs
+                // the same WorkPlan-derived state.
+                let _ = crate::work_plan_todo_sync::project_plan_to_session_todos(
+                    pool,
+                    session_id,
+                    &self.policy,
+                )
+                .await;
+            }
+        }
+
+        Ok(format!("{projection}{feedback_note}"))
     }
 }
 

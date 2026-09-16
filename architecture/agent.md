@@ -70,8 +70,14 @@ TurnSubmit (daemon)
           → ProviderInvocation (ProviderTurnAdapter)
           → ToolExecution (ToolBatchExecutor, when calls exist)
           → Recovery (AutonomyState / RecoveryController)
-        → Completion when the provider has no further calls
-      Completion: projection, goal accounting, follow-ups, SessionEnd hooks
+        → Completion when the provider has no further calls, gated by the
+          WorkPlan arbiter (`src/work_plan_arbiter.rs`): actionable work
+          injects one bounded continuation prompt and continues within the
+          existing turn/tool/time/token limits; `InFlight` polls the live
+          handle; other assessments end the turn without marking complete
+      Completion: WorkPlan turn-end close (ordinary plans only, host-passed
+        and budget-intact), projection, goal accounting, follow-ups,
+        goal continuation, SessionEnd hooks
 ```
 
 ### Semantic model routing

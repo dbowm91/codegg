@@ -245,15 +245,21 @@ general recovery controller. Operator reason codes are `progress`,
 `verified_wait`, `replan`, `awaiting_user_no_progress`, and
 `budget_limited`; diagnostics never dump command output or plan content.
 
-### WorkPlan binding (M002)
+### WorkPlan binding (M002 seam, M003 arbiter)
 
 A Goal may have at most one active bound `WorkPlan`
 (`crates/codegg-core/src/work_plan/`). Binding is an exact Goal-ID
 reference validated for same session/project ownership; it changes no Goal
 runtime behavior. Goal status/budget/verification remain authoritative —
 the plan owns detailed execution progress only. Goal completion for bound
-plans additionally requires no actionable/unmet work (M003 arbiter); M002
-establishes the reference seam with CAS bind/unbind. See
+plans additionally requires the WorkPlan assessment to be
+`Complete`/`AwaitingUserJudgment` (`src/work_plan_arbiter.rs`
+`check_goal_completion_gate`); other assessments return bounded `not_met`
+feedback with the plan assessment code and never complete the Goal.
+`GoalVerificationService` remains the final authority. Verifier `NotMet`
+may update one actionable item's `next_action` through CAS
+(`record_verifier_feedback`) when a bounded existing-item mapping exists,
+otherwise it returns bounded feedback without mutating the plan. See
 `architecture/work_plan.md`.
 
 ### GoalStore (`crates/codegg-core/src/goal/store.rs:56`)

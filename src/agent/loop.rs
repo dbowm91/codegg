@@ -1398,6 +1398,110 @@ impl AgentLoop {
                         ),
                     });
                 }
+                // M003 WorkPlan completion arbiter: before accepting a terminal
+                // answer, check the active plan. Required actionable work
+                // injects one bounded control message and continues within the
+                // existing turn/tool/time/token limits; other assessments end
+                // the turn without marking the plan complete unless the host
+                // assessment is Complete.
+                if let Some(pool) = self
+                    .services
+                    .goal_store
+                    .as_ref()
+                    .map(|store| store.pool.clone())
+                    .or_else(|| self.services.todo_pool.clone())
+                {
+                    match crate::work_plan_arbiter::check_ordinary_completion(
+                        &pool,
+                        &self.session_id,
+                    )
+                    .await
+                    {
+                        Ok(None) => {}
+                        Ok(Some(decision)) => match decision {
+                            crate::work_plan_arbiter::ArbiterDecision::AllowCompletion => {}
+                            crate::work_plan_arbiter::ArbiterDecision::NeedsUserJudgment(
+                                reason,
+                            ) => {
+                                tracing::info!(
+                                    session_id = %self.session_id,
+                                    reason = %reason,
+                                    "work plan arbiter: awaiting user judgment, returning control"
+                                );
+                            }
+                            crate::work_plan_arbiter::ArbiterDecision::ContinueWithPrompt(
+                                prompt,
+                            ) => {
+                                tracing::info!(
+                                    session_id = %self.session_id,
+                                    "work plan arbiter: actionable work remains, continuing"
+                                );
+                                if let Some(msg) = processor.to_assistant_message() {
+                                    self.services.context_tracker.add_message(&msg);
+                                    request.messages.push(msg);
+                                }
+                                crate::model_profile::policy::push_control_instruction(
+                                    &mut request.messages,
+                                    &model_profile,
+                                    &prompt,
+                                );
+                                processor.reset();
+                                just_executed_tools = false;
+                                continue;
+                            }
+                            crate::work_plan_arbiter::ArbiterDecision::WaitForHandle {
+                                handle_kind,
+                                handle_id,
+                            } => {
+                                tracing::info!(
+                                    session_id = %self.session_id,
+                                    handle_kind = %handle_kind,
+                                    handle_id = %handle_id,
+                                    "work plan arbiter: canonical work in flight, waiting"
+                                );
+                                if let Some(msg) = processor.to_assistant_message() {
+                                    self.services.context_tracker.add_message(&msg);
+                                    request.messages.push(msg);
+                                }
+                                let prompt = format!(
+                                    "WorkPlan arbiter: canonical work is still running ({handle_kind}:{handle_id}). Poll the existing handle instead of relaunching it; use work_plan_get for the bounded current slice."
+                                );
+                                crate::model_profile::policy::push_control_instruction(
+                                    &mut request.messages,
+                                    &model_profile,
+                                    &prompt,
+                                );
+                                processor.reset();
+                                just_executed_tools = false;
+                                continue;
+                            }
+                            crate::work_plan_arbiter::ArbiterDecision::BlockedReport(blocker) => {
+                                tracing::info!(
+                                    session_id = %self.session_id,
+                                    blocker = %blocker,
+                                    "work plan arbiter: blocked, returning terminal report"
+                                );
+                            }
+                            crate::work_plan_arbiter::ArbiterDecision::Inconclusive(reason) => {
+                                tracing::warn!(
+                                    session_id = %self.session_id,
+                                    reason = %reason,
+                                    "work plan arbiter inconclusive; not marking complete"
+                                );
+                                crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                                    message: format!("WorkPlan arbiter inconclusive: {reason}"),
+                                });
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %self.session_id,
+                                error = %error,
+                                "work plan arbiter check failed; not marking complete"
+                            );
+                        }
+                    }
+                }
                 break;
             }
             self.observe_tool_palette_starvation(&tool_calls);
@@ -1775,6 +1879,55 @@ impl AgentLoop {
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await;
+        // M003 ordinary turn-scoped WorkPlan close: only after the host
+        // arbiter passes, never on budget expiry. Goal-bound plans close
+        // through Goal verification, not here. Remaining state is preserved
+        // for resume when budgets expire first.
+        if let Some(pool) = self
+            .services
+            .goal_store
+            .as_ref()
+            .map(|store| store.pool.clone())
+            .or_else(|| self.services.todo_pool.clone())
+        {
+            match crate::work_plan_arbiter::assess_active_plan(&pool, &self.session_id).await {
+                Ok(Some((plan, _items, assessment))) if plan.goal_id.is_none() => {
+                    let budget_expired = self.check_limits().is_some();
+                    match crate::work_plan_arbiter::maybe_complete_plan_on_turn_end(
+                        &pool,
+                        &plan,
+                        &assessment,
+                        budget_expired,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            tracing::info!(
+                                session_id = %self.session_id,
+                                plan_id = %plan.id.as_str(),
+                                "ordinary work plan completed after host arbiter passed"
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %self.session_id,
+                                error = %error,
+                                "ordinary work plan close failed; preserving remaining state"
+                            );
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        error = %error,
+                        "work plan turn-end assessment failed; preserving state"
+                    );
+                }
+            }
+        }
         self.publish_agent_finished(&all_events);
         self.account_goal_for_turn().await;
         // After draining queued follow-ups and accounting, decide

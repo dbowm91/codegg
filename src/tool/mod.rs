@@ -68,6 +68,7 @@ pub mod tool_search;
 pub mod util;
 pub mod webfetch;
 pub mod websearch;
+pub mod work_plan;
 pub mod write;
 
 use async_trait::async_trait;
@@ -547,6 +548,20 @@ impl ToolRegistry {
                     crate::model_profile::types::TaskStatePolicy::explicit_todo(),
                 ));
             }
+        }
+
+        // --- WorkPlan tools (M003, session persistence gated) ---
+        // Bounded model-facing plan reads/updates. Registered whenever a
+        // session pool is present so durable plans remain usable without a
+        // full plan-editor UI. Frontends stay read/projection consumers.
+        if let (Some(pool), Some(session_id)) = (options.pool.clone(), options.session_id.clone()) {
+            registry.register(crate::tool::work_plan::WorkPlanGetTool::new(
+                pool.clone(),
+                session_id.clone(),
+            ));
+            registry.register(crate::tool::work_plan::WorkPlanUpdateItemTool::new(
+                pool, session_id,
+            ));
         }
 
         registry.register(crate::tool::skill::SkillTool::with_snapshot(
