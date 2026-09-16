@@ -95,6 +95,15 @@ key). No arguments, commands, or secrets. Bus events unchanged (M001
 attempt lifecycle); retry-chain diagnostics are tracing-local to avoid
 breaking protocol compat.
 
+## Qualification (M008)
+
+Integrated fault-injection qualification lives in
+`tests/reliability_qualification_m008.rs`: transient/permanent/conditional
+taxonomy, bounded `Retry-After`, nested-budget exhaustion, cancellation
+during backoff, idempotent recovery vs exactly-once uncertain surfacing,
+and secret-safe diagnostics. No production change; the suite proves the
+M001+M002 contract holds under injected faults.
+
 ## What is out of scope
 
 No semantic rollback of arbitrary shell, no distributed transactions, no

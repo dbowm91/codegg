@@ -430,6 +430,14 @@ family; the scope is part of the HMAC-signed material so it cannot be
 tampered away, while pre-M007 signed broad rows still verify. See
 `permission.md` M007 item and `src/policy_surface.rs`.
 
+**M008 qualification:** `tests/reliability_qualification_m008.rs` proves
+WorkspaceWrite failure reports `Unavailable` (never silent FullHost),
+FullHost stays explicit/auditable (Yolo+FullHost Strong/2 confirmations),
+sandbox-helper status frames fail closed, and diagnostics stay secret-safe.
+Supported-Linux Landlock enforcement is covered by existing
+`sandbox_landlock` fixtures; this host (darwin) exercises the
+unsupported-host `Unavailable` path.
+
 ## Related Docs
 
 - [tool.md](tool.md) — Uses security validation

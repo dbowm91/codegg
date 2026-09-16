@@ -460,6 +460,11 @@ cargo test -p codegg-core --lib session::continuation
 cargo test -p codegg-core --test continuation_checkpoint
 ```
 
+M008 qualification (`tests/reliability_qualification_m008.rs`) proves stale
+catalog/disabled-connection never silently reroute, explicit selection wins,
+and preference/model/sandbox state restores through restart with
+re-resolved enforcement.
+
 ## Related Docs
 
 - [storage.md](storage.md) — Database initialization, connection

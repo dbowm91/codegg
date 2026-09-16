@@ -600,6 +600,11 @@ cargo test --test tool_structured_execution              # execute_capture contr
 cargo test --test agent_loop_harness::test_live_dispatcher  # dispatcher integration
 ```
 
+M008 qualification (`tests/reliability_qualification_m008.rs`) proves
+idempotent recovery with stable keys, exactly-once uncertain surfacing for
+non-idempotent ack loss (secret-safe diagnostics), fake-mutation-backend
+reconciliation without replay, and cancellation during backoff.
+
 ## Related Docs
 
 - [tool_broker.md](tool_broker.md) — Canonical execution boundary
