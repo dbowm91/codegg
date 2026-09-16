@@ -4805,3 +4805,176 @@ async fn test_approval_automatic_reviewer_deny_returns_feedback_without_human() 
         Some("narrow the request first"),
     );
 }
+
+// =============================================================================
+// M007: Yolo/Automatic/FullHost user-surface loop integration
+// =============================================================================
+
+/// Build a loop with an explicit approval mode and sandbox profile whose
+/// `echo_args` tool requires escalation.
+fn build_m007_policy_loop(
+    provider: Box<dyn Provider>,
+    registry: ToolRegistry,
+    mode: codegg_core::approval::ApprovalMode,
+    profile: codegg_core::approval::SandboxProfile,
+) -> AgentLoop {
+    use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![ToolRule {
+                tool: "echo_args".to_string(),
+                level: PermissionLevel::Ask,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(provider, registry, permission_checker);
+    agent_loop.set_approval_mode(mode);
+    agent_loop.set_sandbox_profile(profile);
+    agent_loop
+}
+
+#[tokio::test]
+async fn test_approval_yolo_workspace_write_skips_prompt_but_stays_sandboxed() {
+    // Yolo resolves the escalation without a human prompt, but the
+    // execution snapshot keeps the WorkspaceWrite containment profile:
+    // autonomy never implies FullHost.
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_yolo_ww".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "yolo_allowed"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Tool executed".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_m007_policy_loop(
+        scripted_provider.clone(),
+        registry,
+        codegg_core::approval::ApprovalMode::Yolo,
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+    );
+    agent_loop.set_session_id("yolo-workspace-write");
+    assert_eq!(
+        agent_loop.sandbox_profile(),
+        codegg_core::approval::SandboxProfile::WorkspaceWrite
+    );
+    let perm_id = "call_yolo_ww-echo_args".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+
+    let request = make_chat_request("Use echo_args");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), handle)
+        .await
+        .expect("Yolo loop must not block on a human wait")
+        .unwrap();
+    assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
+
+    assert!(
+        !drain_permission_pending_for(&mut rx, &perm_id),
+        "Yolo must resolve the escalation without a human PermissionPending"
+    );
+
+    let requests = scripted_provider.get_requests().await;
+    let with_result = requests
+        .iter()
+        .rev()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_yolo_ww"))
+        })
+        .expect("expected a request containing the tool result");
+    assert_tool_result_with_id(&with_result.messages, "call_yolo_ww", Some("yolo_allowed"));
+}
+
+#[tokio::test]
+async fn test_approval_yolo_explicit_deny_remains_denied() {
+    // A deterministic Deny is not an escalation: Yolo never overrides it.
+    use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![ToolRule {
+                tool: "echo_args".to_string(),
+                level: PermissionLevel::Deny,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        });
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_yolo_deny".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "must_not_run"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("done".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_test_agent_loop_with_permissions(
+        scripted_provider.clone(),
+        registry,
+        permission_checker,
+    );
+    agent_loop.set_approval_mode(codegg_core::approval::ApprovalMode::Yolo);
+    agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
+    agent_loop.set_session_id("yolo-deny");
+    let perm_id = "call_yolo_deny-echo_args".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+
+    let request = make_chat_request("Use echo_args");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), handle)
+        .await
+        .expect("denied Yolo loop must finish promptly")
+        .unwrap();
+    assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
+
+    assert!(
+        !drain_permission_pending_for(&mut rx, &perm_id),
+        "deterministic Deny publishes no escalation in any mode"
+    );
+    let requests = scripted_provider.get_requests().await;
+    let with_result = requests
+        .iter()
+        .rev()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_yolo_deny"))
+        })
+        .expect("expected a request containing the denial outcome");
+    assert_tool_result_with_id(&with_result.messages, "call_yolo_deny", Some("denied"));
+}

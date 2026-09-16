@@ -47,6 +47,7 @@ pub mod managed_process;
 pub mod mcp;
 pub mod permission;
 pub mod plugin;
+pub mod policy_surface;
 pub mod preflight;
 pub mod protocol_conversions;
 pub mod python_script;

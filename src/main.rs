@@ -67,6 +67,27 @@ struct Cli {
     #[arg(long, short = 'm')]
     model: Option<String>,
 
+    /// Approval mode for this invocation (interactive, automatic, yolo).
+    /// Maps to the same daemon policy contract as the TUI approval
+    /// selector; when absent the stored preference (or built-in default)
+    /// applies. `--yolo` is an exact alias for `--approval-mode yolo`.
+    #[arg(long = "approval-mode", value_name = "MODE")]
+    approval_mode: Option<String>,
+
+    /// Sandbox profile for this invocation (read-only, workspace-write,
+    /// full-host). Orthogonal to `--approval-mode`: automatic modes never
+    /// imply full-host access.
+    #[arg(long = "sandbox", value_name = "PROFILE")]
+    sandbox: Option<String>,
+
+    /// Autonomous execution without approval prompts. Exact alias for
+    /// `--approval-mode yolo` (conflicts with a different explicit mode).
+    /// Sandbox containment still applies unless `--sandbox full-host` is
+    /// also given (strongly warned, interactive confirmation required in
+    /// the TUI).
+    #[arg(long = "yolo")]
+    yolo: bool,
+
     /// Override agent
     #[arg(long, short = 'a')]
     agent: Option<String>,
@@ -213,6 +234,24 @@ enum Commands {
         /// Resume existing session
         #[arg(long, short = 's')]
         session: Option<String>,
+
+        /// Approval mode for this run (interactive, automatic, yolo).
+        /// When absent, exec keeps its legacy permissive behavior
+        /// (compatibility alias for autonomous workspace execution).
+        /// Explicit modes map to the same daemon policy contract as the
+        /// TUI selector; deterministic denies and security escalations
+        /// still apply.
+        #[arg(long = "approval-mode", value_name = "MODE")]
+        approval_mode: Option<String>,
+
+        /// Sandbox profile for this run (read-only, workspace-write,
+        /// full-host). Orthogonal to `--approval-mode`.
+        #[arg(long = "sandbox", value_name = "PROFILE")]
+        sandbox: Option<String>,
+
+        /// Exact alias for `--approval-mode yolo`.
+        #[arg(long = "yolo")]
+        yolo: bool,
     },
     /// Generate shell completions
     Completions {
@@ -515,6 +554,9 @@ async fn main() -> Result<(), AppError> {
                 json_output,
                 quiet,
                 session,
+                approval_mode,
+                sandbox,
+                yolo,
             } => {
                 cmd_exec(
                     json.as_deref(),
@@ -522,6 +564,9 @@ async fn main() -> Result<(), AppError> {
                     *json_output,
                     *quiet,
                     session.as_deref(),
+                    approval_mode.as_deref(),
+                    sandbox.as_deref(),
+                    *yolo,
                 )
                 .await?;
             }
@@ -1331,6 +1376,9 @@ async fn cmd_exec(
     json_output: bool,
     quiet: bool,
     session: Option<&str>,
+    approval_mode: Option<&str>,
+    sandbox: Option<&str>,
+    yolo: bool,
 ) -> Result<(), AppError> {
     let input_json = if let Some(path) = file_input {
         tokio::fs::read_to_string(path).await?
@@ -1345,7 +1393,15 @@ async fn cmd_exec(
     let input: ExecInput = serde_json::from_str(&input_json)
         .map_err(|e| AppError::Other(anyhow::anyhow!("Failed to parse exec input JSON: {}", e)))?;
 
-    let exec_mode = ExecMode::new(quiet, json_output, session.map(String::from));
+    // M007: explicit headless flags map to the same daemon policy
+    // contract as the TUI selector. Absent flags keep the legacy
+    // permissive exec behavior (documented compatibility alias).
+    let policy = codegg::policy_surface::resolve_cli_policy(approval_mode, sandbox, yolo)
+        .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
+    let mut exec_mode = ExecMode::new(quiet, json_output, session.map(String::from));
+    if let Some(policy) = policy {
+        exec_mode = exec_mode.with_policy(policy);
+    }
     let output = exec_mode.run(input).await?;
     exec_mode.print_output(&output);
     std::process::exit(ExecMode::exit_code(&output));
@@ -1425,6 +1481,33 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         uuid::Uuid::new_v4().to_string(),
     );
     agent_loop.set_agent(&safe_agent.name)?;
+
+    // M007: top-level --approval-mode/--sandbox/--yolo map to the same
+    // daemon policy contract as the TUI selector. Absent flags leave the
+    // built-in Interactive/WorkspaceWrite snapshot untouched.
+    match codegg::policy_surface::resolve_cli_policy(
+        cli.approval_mode.as_deref(),
+        cli.sandbox.as_deref(),
+        cli.yolo,
+    ) {
+        Ok(Some(policy)) => {
+            if let Some(mode) = policy.approval_mode {
+                agent_loop.set_approval_mode(mode);
+            }
+            if let Some(profile) = policy.sandbox_profile {
+                if profile.is_full_host() {
+                    eprintln!(
+                        "WARNING: --sandbox full-host disables CodeGG filesystem containment; the process has the OS user's host authority"
+                    );
+                }
+                agent_loop.set_sandbox_profile(profile);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            return Err(AppError::Other(anyhow::anyhow!(e)));
+        }
+    }
 
     let resolved_profile =
         codegg::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
@@ -1777,6 +1860,72 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     };
     app.set_core_client(core_client);
 
+    // M007: top-level --approval-mode/--sandbox/--yolo seed the
+    // daemon-owned preference once at startup (no expected revision: an
+    // explicit invocation wins over the stored preference). The flag
+    // itself is the deliberate act, so no blocking confirmation is
+    // collected here; FullHost is strongly warned on stderr and the
+    // startup restore notice below shows the daemon-resolved effective
+    // state inside the TUI.
+    match codegg::policy_surface::resolve_cli_policy(
+        cli.approval_mode.as_deref(),
+        cli.sandbox.as_deref(),
+        cli.yolo,
+    ) {
+        Ok(Some(policy)) => {
+            if policy.sandbox_profile.is_some_and(|p| p.is_full_host()) {
+                eprintln!(
+                    "WARNING: --sandbox full-host disables CodeGG filesystem containment; the process has the OS user's host authority and network is unrestricted"
+                );
+            }
+            if policy.approval_mode.is_some_and(|m| m.as_str() == "yolo") {
+                eprintln!(
+                    "note: yolo mode skips approval prompts for escalations; explicit denies and the configured sandbox remain enforced"
+                );
+            }
+            if let Some(client) = app.core_client.clone() {
+                let request = codegg::core::new_request(
+                    format!("cli-policy-override-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::RuntimePolicySet {
+                        approval_mode: policy.approval_mode.map(|m| m.as_str().to_string()),
+                        sandbox_profile: policy.sandbox_profile.map(|p| p.as_str().to_string()),
+                        expected_revision: None,
+                    },
+                );
+                match client.request(request).await {
+                    Ok(CoreResponse::ApprovalPreference { preference }) => {
+                        eprintln!(
+                            "runtime policy: approval={} sandbox={} (revision {})",
+                            preference.approval_mode.as_str(),
+                            preference.sandbox_profile.as_str(),
+                            preference.revision
+                        );
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        eprintln!(
+                            "warning: CLI policy override not applied ({}): {}",
+                            code, message
+                        );
+                    }
+                    Ok(other) => {
+                        eprintln!(
+                            "warning: CLI policy override got an unexpected response: {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("warning: CLI policy override request failed: {}", e);
+                    }
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("invalid policy flags: {}", e);
+            std::process::exit(2);
+        }
+    }
+
     // Create a shared LspTool for security-review enrichment and other
     // LSP-backed TUI operations.  Only in local (non-socket) mode —
     // socket mode has no LspTool on the client side.
@@ -1914,6 +2063,24 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             .map(|tx| tx.try_send(crate::tui::TuiCommand::ManifestRestoreRequested));
         if let Some(Err(e)) = send_result {
             tracing::warn!("failed to enqueue manifest restore request: {e}");
+        }
+    }
+
+    // M007: kick off the runtime-policy restore snapshot. The completion
+    // announces the daemon-restored approval/sandbox preference (and any
+    // ceiling narrowing) once; the TUI manifest model hint stays
+    // display-only and the daemon selection remains authoritative.
+    if !cli.no_session {
+        let request_id = app.policy_ui.request.begin();
+        #[allow(clippy::result_large_err)]
+        let send_result = app.tui_cmd_tx.as_ref().map(|tx| {
+            tx.try_send(crate::tui::TuiCommand::PolicySnapshotRequested {
+                request_id,
+                reason: codegg::tui::commands::policy::PolicySnapshotReason::StartupRestore,
+            })
+        });
+        if let Some(Err(e)) = send_result {
+            tracing::warn!("failed to enqueue policy restore request: {e}");
         }
     }
 

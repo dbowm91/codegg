@@ -873,6 +873,9 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::SandboxProfileSet { .. } => {
             OperationDescriptor::new("sandbox_profile_set", ScopeKind::Global, None)
         }
+        R::RuntimePolicySet { .. } => {
+            OperationDescriptor::new("runtime_policy_set", ScopeKind::Global, None)
+        }
         R::ExecutionPolicyGet { .. } => {
             OperationDescriptor::new("execution_policy_get", ScopeKind::Global, None)
         }
@@ -1529,6 +1532,11 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::SandboxProfileSet {
             sandbox_profile: String::new(),
+            expected_revision: None,
+        },
+        R::RuntimePolicySet {
+            approval_mode: None,
+            sandbox_profile: None,
             expected_revision: None,
         },
         R::ExecutionPolicyGet { session_id: None },

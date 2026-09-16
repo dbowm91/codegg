@@ -994,6 +994,31 @@ pub enum TuiCommand {
         channel_id: String,
         message_id: String,
     },
+    /// M007: request a daemon-resolved policy snapshot
+    /// (`ApprovalPreferenceGet` + `ExecutionPolicyGet`). The completion
+    /// carries daemon DTOs only; the TUI never invents effective state.
+    PolicySnapshotRequested {
+        request_id: u64,
+        reason: crate::tui::commands::policy::PolicySnapshotReason,
+    },
+    /// M007: completion of a policy snapshot round-trip. Stale
+    /// completions (mismatched request id) are dropped at apply time.
+    PolicySnapshotLoaded {
+        request_id: u64,
+        reason: crate::tui::commands::policy::PolicySnapshotReason,
+        preference: Option<crate::protocol::core::RuntimePreferenceDto>,
+        snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto>,
+        error: Option<String>,
+    },
+    /// M007: completion of a `RuntimePolicySet` round-trip (followed by
+    /// a snapshot refresh in the same task). Failed updates leave the
+    /// previous effective policy cached and report the error.
+    PolicyUpdateFinished {
+        request_id: u64,
+        preference: Option<crate::protocol::core::RuntimePreferenceDto>,
+        snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto>,
+        error: Option<String>,
+    },
 }
 
 /// Send a command on the bounded TUI effect channel.

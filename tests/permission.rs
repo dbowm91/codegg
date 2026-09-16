@@ -526,6 +526,7 @@ fn test_persistent_decision_empty_path() {
     let decision = PersistentDecision {
         tool: "bash".to_string(),
         path: None,
+        scope: None,
         level: PermissionLevel::Allow,
         created_at: 0,
         signature: String::new(),
@@ -540,6 +541,7 @@ fn test_persistent_decision_with_path() {
     let decision = PersistentDecision {
         tool: "edit".to_string(),
         path: Some("/tmp/test.txt".to_string()),
+        scope: None,
         level: PermissionLevel::Deny,
         created_at: 12345,
         signature: String::new(),

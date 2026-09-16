@@ -299,6 +299,14 @@ impl CommandRegistry {
                 .with_aliases(&["quit", "q"])
                 .with_description("Exit the app"),
             Command::new("/status", CommandCategory::System, None).with_description("View status"),
+            Command::new("/policy", CommandCategory::System, None)
+                .with_description("Show effective approval mode and sandbox profile (/policy)"),
+            Command::new("/approval", CommandCategory::System, None)
+                .with_aliases(&["/approval-mode"])
+                .with_description("Select approval mode: interactive, automatic, or yolo (/approval [mode])"),
+            Command::new("/sandbox", CommandCategory::System, None)
+                .with_aliases(&["/sandbox-profile"])
+                .with_description("Select sandbox profile: read-only, workspace-write, or full-host (/sandbox [profile])"),
             Command::new("/themes", CommandCategory::System, None)
                 .with_aliases(&["/theme"])
                 .with_description("Switch theme (/theme, /theme list, /theme use <name>, /theme reload, /theme diagnostics)"),
@@ -847,7 +855,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 139);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 142);
     }
 
     #[test]

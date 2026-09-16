@@ -441,6 +441,33 @@ allow_all_bash = false
    request/policy revision; Deny returns bounded feedback to the primary
    model; repeated equivalent denials backstop to defer/deny. Guard:
    `scripts/check_approval_reviewer.py`.
+10. **M007 user surfaces (ADR-0004).** Mode/profile selection is
+    frontend-neutral: `RuntimePolicySet { approval_mode?, sandbox_profile? }`
+    (single-revision atomic write via `RuntimePreferenceStore::set_policy`,
+    CAS `expected_revision`, fail-closed validation) plus the existing
+    single-dimension sets; `ExecutionPolicyGet` additionally projects
+    `reviewer_available`/`reviewer_detail` (daemon-resolved from
+    `[approval_reviewer].model`) and the M004 last-model identity now
+    reaches frontends through `RuntimePreferenceDto`. Presentation logic
+    lives in `src/policy_surface.rs` (warning/confirmation matrix,
+    effective-state rendering, restore summaries, CLI resolution; no
+    daemon/TUI/server/authority imports — guard:
+    `scripts/check_policy_surface.py`). The TUI exposes `/approval`,
+    `/sandbox`, `/policy` (`src/tui/commands/policy.rs`, async
+    start/apply pattern, stale completions dropped), renders the cached
+    daemon-resolved line in the status bar and `/status`, announces the
+    restored preference once at startup, and chains one confirmation for
+    `Yolo`+contained/`FullHost` and two for `Yolo`+`FullHost`; cancelling
+    changes nothing and concurrent changes fail CAS for reload. Headless
+    flags (`--approval-mode`, `--sandbox`, `--yolo` alias; `codegg exec`
+    equivalents) resolve through the same contract; bare `exec` keeps the
+    legacy permissive behavior as a documented compatibility alias.
+    Remembered approvals are capability-scoped where deterministic
+    command data exists (`PersistentDecision.scope`: `cmd:<argv0>` for
+    shell, `git:<subcommand>` for git; exact-scope first, legacy broad
+    rows still match; scope is HMAC-signed, legacy signatures still
+    verify for unscoped rows). The TUI manifest model hint stays
+    display-only (`reconcile_tab_model_with_daemon`).
 
 ## Testing
 

@@ -45,6 +45,59 @@ fn get_signature_key() -> Option<[u8; 32]> {
 fn compute_signature(
     tool: &str,
     path: Option<&str>,
+    scope: Option<&str>,
+    level: &PermissionLevel,
+    timestamp: i64,
+    key: &[u8; 32],
+) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC can take key of any size");
+    mac.update(tool.as_bytes());
+    if let Some(p) = path {
+        mac.update(p.as_bytes());
+    }
+    // M007: the capability scope is part of the signed material so a
+    // stored narrow grant cannot be tampered into a broader one by
+    // dropping the scope. Unscoped (legacy-shaped) decisions sign the
+    // empty scope.
+    if let Some(s) = scope {
+        mac.update(s.as_bytes());
+    }
+    mac.update(level.as_str().as_bytes());
+    mac.update(timestamp.to_string().as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn verify_signature(decision: &PersistentDecision, key: &[u8; 32]) -> bool {
+    let expected = compute_signature(
+        &decision.tool,
+        decision.path.as_deref(),
+        decision.scope.as_deref(),
+        &decision.level,
+        decision.created_at,
+        key,
+    );
+    if expected == decision.signature {
+        return true;
+    }
+    // Pre-M007 signed decisions carry no scope material. Unscoped rows
+    // keep verifying against the legacy shape so existing persisted
+    // broad grants remain readable; scoped rows never fall back.
+    if decision.scope.is_none() {
+        let legacy = compute_legacy_signature(
+            &decision.tool,
+            decision.path.as_deref(),
+            &decision.level,
+            decision.created_at,
+            key,
+        );
+        return legacy == decision.signature;
+    }
+    false
+}
+
+fn compute_legacy_signature(
+    tool: &str,
+    path: Option<&str>,
     level: &PermissionLevel,
     timestamp: i64,
     key: &[u8; 32],
@@ -57,17 +110,6 @@ fn compute_signature(
     mac.update(level.as_str().as_bytes());
     mac.update(timestamp.to_string().as_bytes());
     hex::encode(mac.finalize().into_bytes())
-}
-
-fn verify_signature(decision: &PersistentDecision, key: &[u8; 32]) -> bool {
-    let expected = compute_signature(
-        &decision.tool,
-        decision.path.as_deref(),
-        &decision.level,
-        decision.created_at,
-        key,
-    );
-    expected == decision.signature
 }
 
 pub const PERMISSION_TYPES: &[&str] = &[
@@ -307,10 +349,131 @@ impl Default for PermissionRuleset {
 pub struct PersistentDecision {
     pub tool: String,
     pub path: Option<String>,
+    /// M007 additive capability scope (for example `cmd:cargo` or
+    /// `git:commit`). `None` is the legacy broad shape: it matches every
+    /// command family for the tool/path. `Some` narrows the grant to one
+    /// deterministic command family; it never matches a request with a
+    /// different scope. Missing in pre-M007 JSON (`#[serde(default)]`),
+    /// so legacy persisted decisions stay readable.
+    #[serde(default)]
+    pub scope: Option<String>,
     pub level: PermissionLevel,
     pub created_at: i64,
     pub signature: String,
     pub session_id: Option<String>,
+}
+
+/// Maximum serialized length of a capability scope. Scopes are short
+/// deterministic fingerprints, never raw command text.
+pub const DECISION_SCOPE_MAX_LEN: usize = 80;
+
+/// Normalize a shell command into a capability scope (`cmd:<argv0>`).
+///
+/// Only the deterministic first-token family is used: leading `VAR=value`
+/// assignments and `sudo`/`env` wrappers are skipped, the basename of the
+/// executable is lowercased, and only `[a-z0-9._-]` survives. Returns
+/// `None` when no family can be determined, in which case callers keep
+/// the legacy broad behavior. This is deliberately not a shell parser
+/// (see the M007 stop conditions): metacharacters, quoting, and compound
+/// commands do not change the family.
+pub fn decision_scope_for_shell_command(command: &str) -> Option<String> {
+    let mut tokens = command.split_whitespace();
+    let argv0 = loop {
+        let token = tokens.next()?.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if token == "sudo" || token == "env" {
+            continue;
+        }
+        if is_env_assignment(token) {
+            continue;
+        }
+        break token;
+    };
+    // Strip a leading path: `/usr/bin/cargo` and `cargo` are one family.
+    let base = argv0.rsplit('/').next().unwrap_or(argv0);
+    let normalized: String = base
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
+        .collect();
+    if normalized.is_empty() || normalized.len() > 64 {
+        return None;
+    }
+    let scope = format!("cmd:{normalized}");
+    if scope.len() > DECISION_SCOPE_MAX_LEN {
+        return None;
+    }
+    Some(scope)
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_ascii_alphabetic() || c == '_')
+}
+
+/// Normalize a git subcommand into a capability scope (`git:<subcommand>`).
+/// Only the first whitespace-delimited token is used, normalized like a
+/// shell family.
+pub fn decision_scope_for_git_subcommand(subcommand: &str) -> Option<String> {
+    let first = subcommand.split_whitespace().next()?.trim().to_lowercase();
+    let normalized: String = first
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if normalized.is_empty() || normalized.len() > 64 {
+        return None;
+    }
+    let scope = format!("git:{normalized}");
+    if scope.len() > DECISION_SCOPE_MAX_LEN {
+        return None;
+    }
+    Some(scope)
+}
+
+/// Capability scope for a tool call from its structured arguments.
+///
+/// - `bash`/`terminal`/`test` (shell execution): `cmd:<argv0>` from the
+///   `command`/`cmd` argument.
+/// - `git`: `git:<subcommand>` from the `subcommand`/`command` argument.
+/// - everything else: `None` (broad legacy behavior unchanged).
+///
+/// `None` means "no deterministic family available": the decision stays
+/// broad rather than inventing a narrower grant from unparseable input.
+pub fn decision_scope_for_tool_call(
+    tool: &str,
+    args: Option<&serde_json::Value>,
+) -> Option<String> {
+    let args = args?;
+    let command_text = |keys: &[&str]| -> Option<String> {
+        if let Some(text) = args.as_str() {
+            return Some(text.to_string());
+        }
+        keys.iter().find_map(|key| {
+            args.get(*key)
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+    };
+    match tool {
+        "bash" | "terminal" | "test" => {
+            let command = command_text(&["command", "cmd"])?;
+            decision_scope_for_shell_command(&command)
+        }
+        "git" => {
+            let subcommand = command_text(&["subcommand", "command"])?;
+            decision_scope_for_git_subcommand(&subcommand)
+        }
+        _ => None,
+    }
 }
 
 pub struct PermissionStore {
@@ -341,10 +504,28 @@ impl PermissionStore {
         level: PermissionLevel,
         session_id: Option<&str>,
     ) -> bool {
+        self.add_decision_scoped(tool, path, None, level, session_id)
+    }
+
+    /// Record a capability-scoped decision (M007).
+    ///
+    /// `Some(scope)` narrows the grant to one deterministic command
+    /// family; `None` is the legacy broad shape. A scoped row coexists
+    /// with broad rows for the same tool/path: lookups prefer the exact
+    /// scope and fall back to broad rows, so narrowing never widens and
+    /// legacy grants stay readable.
+    pub fn add_decision_scoped(
+        &mut self,
+        tool: &str,
+        path: Option<&str>,
+        scope: Option<&str>,
+        level: PermissionLevel,
+        session_id: Option<&str>,
+    ) -> bool {
         let timestamp = chrono::Utc::now().timestamp();
 
         let signature = if let Some(key) = get_signature_key() {
-            compute_signature(tool, path, &level, timestamp, &key)
+            compute_signature(tool, path, scope, &level, timestamp, &key)
         } else {
             String::new()
         };
@@ -352,6 +533,7 @@ impl PermissionStore {
         let decision = PersistentDecision {
             tool: tool.to_string(),
             path: path.map(|p| p.to_string()),
+            scope: scope.map(|s| s.to_string()),
             level,
             created_at: timestamp,
             signature,
@@ -360,6 +542,7 @@ impl PermissionStore {
         self.decisions.retain(|d| {
             !(d.tool == decision.tool
                 && d.path == decision.path
+                && d.scope == decision.scope
                 && d.session_id == decision.session_id)
         });
         self.decisions.push(decision);
@@ -372,23 +555,73 @@ impl PermissionStore {
         path: Option<&str>,
         session_id: Option<&str>,
     ) -> Option<PermissionLevel> {
+        self.get_decision_scoped(tool, path, None, session_id)
+    }
+
+    /// Scoped lookup (M007): exact-scope rows first (session, then
+    /// global), then legacy broad rows (session, then global) when the
+    /// request carries a scope. A scoped row never matches a different
+    /// scope; a broad row (scope `None`) still matches every scope, so
+    /// pre-M007 grants keep working.
+    pub fn get_decision_scoped(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        scope: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Option<PermissionLevel> {
         let key = get_signature_key();
 
         if let Some(sid) = session_id {
             if let Some(k) = key {
-                if let Some(level) = self.find_decision(tool, path, sid, &k) {
+                if let Some(level) = self.find_decision(tool, path, scope, sid, &k) {
                     return Some(level);
                 }
-            } else {
-                if let Some(level) = self.find_decision_no_sig(tool, path, sid) {
-                    return Some(level);
-                }
+            } else if let Some(level) = self.find_decision_no_sig(tool, path, scope, sid) {
+                return Some(level);
             }
         }
 
+        if let Some(level) = self.find_global_decision(tool, path, scope, key.as_ref()) {
+            return Some(level);
+        }
+
+        // Broad fallback: legacy unscoped rows still authorize scoped
+        // requests. Scoped rows never authorize a different scope, and a
+        // scope is never silently dropped to reach further than the
+        // exact pass already did.
+        if scope.is_some() {
+            let key = get_signature_key();
+            if let Some(sid) = session_id {
+                if let Some(k) = key {
+                    if let Some(level) = self.find_decision(tool, path, None, sid, &k) {
+                        return Some(level);
+                    }
+                } else if let Some(level) = self.find_decision_no_sig(tool, path, None, sid) {
+                    return Some(level);
+                }
+            }
+            if let Some(level) = self.find_global_decision(tool, path, None, key.as_ref()) {
+                return Some(level);
+            }
+        }
+        None
+    }
+
+    fn find_global_decision(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        scope: Option<&str>,
+        key: Option<&[u8; 32]>,
+    ) -> Option<PermissionLevel> {
         self.decisions.iter().rev().find_map(|d| {
-            if d.tool == tool && d.path.as_deref() == path && d.session_id.is_none() {
-                if let Some(ref k) = key {
+            if d.tool == tool
+                && d.path.as_deref() == path
+                && d.scope.as_deref() == scope
+                && d.session_id.is_none()
+            {
+                if let Some(k) = key {
                     if d.signature.is_empty() {
                         return None;
                     }
@@ -413,12 +646,14 @@ impl PermissionStore {
         &self,
         tool: &str,
         path: Option<&str>,
+        scope: Option<&str>,
         session_id: &str,
         key: &[u8; 32],
     ) -> Option<PermissionLevel> {
         self.decisions.iter().rev().find_map(|d| {
             if d.tool == tool
                 && d.path.as_deref() == path
+                && d.scope.as_deref() == scope
                 && d.session_id.as_deref() == Some(session_id)
             {
                 if d.signature.is_empty() {
@@ -438,11 +673,13 @@ impl PermissionStore {
         &self,
         tool: &str,
         path: Option<&str>,
+        scope: Option<&str>,
         session_id: &str,
     ) -> Option<PermissionLevel> {
         self.decisions.iter().rev().find_map(|d| {
             if d.tool == tool
                 && d.path.as_deref() == path
+                && d.scope.as_deref() == scope
                 && d.session_id.as_deref() == Some(session_id)
                 && d.signature.is_empty()
             {
@@ -611,6 +848,14 @@ impl PermissionChecker {
 
     /// Configure for exec mode (CI/CD) where no TUI is available to respond
     /// to permission requests. All destructive tools are auto-allowed.
+    ///
+    /// M007 compatibility note: this is the legacy permissive headless
+    /// path, retained so existing CI keeps working. New headless callers
+    /// should prefer the explicit `ApprovalMode`/`SandboxProfile` contract
+    /// (`AgentLoop::set_approval_mode`/`set_sandbox_profile`, or the
+    /// `codegg exec --approval-mode/--sandbox` flags), which keeps
+    /// deterministic denies, security escalations, and sandbox
+    /// enforcement truthful instead of Allow-all.
     pub fn with_exec_mode(mut self) -> Self {
         self.session_rules = PermissionRuleset {
             default: PermissionLevel::Allow,
@@ -781,9 +1026,18 @@ impl PermissionChecker {
     ) -> PermissionResult {
         // Persistent decisions always win (so a user who clicks "always
         // allow" or "always deny" on a previous prompt doesn't get re-prompted).
+        // M007: the lookup is capability-scoped where the arguments carry a
+        // deterministic command family, so allowing `cargo test` does not
+        // imply all Bash. Legacy broad rows still match as fallback.
+        let scope = match tool {
+            "bash" | "terminal" | "test" => args.and_then(decision_scope_for_shell_command),
+            "git" => args.and_then(decision_scope_for_git_subcommand),
+            _ => None,
+        };
         {
             let store = self.store.read().await;
-            if let Some(level) = store.get_decision(tool, path, session_id) {
+            if let Some(level) = store.get_decision_scoped(tool, path, scope.as_deref(), session_id)
+            {
                 return match level {
                     PermissionLevel::Allow => PermissionResult::Allow,
                     PermissionLevel::Deny => PermissionResult::Deny,
@@ -888,10 +1142,26 @@ impl PermissionChecker {
         path: Option<&str>,
         session_id: Option<&str>,
     ) -> bool {
-        self.store
-            .write()
-            .await
-            .add_decision(tool, path, PermissionLevel::Allow, session_id)
+        self.always_allow_scoped(tool, path, None, session_id).await
+    }
+
+    /// Record a capability-scoped always-allow decision (M007). `scope`
+    /// comes from [`decision_scope_for_tool_call`] at the persist seam;
+    /// `None` keeps the legacy broad shape.
+    pub async fn always_allow_scoped(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        scope: Option<&str>,
+        session_id: Option<&str>,
+    ) -> bool {
+        self.store.write().await.add_decision_scoped(
+            tool,
+            path,
+            scope,
+            PermissionLevel::Allow,
+            session_id,
+        )
     }
 
     pub async fn always_allow_legacy(&self, tool: &str, path: Option<&str>) -> bool {
@@ -906,10 +1176,25 @@ impl PermissionChecker {
         path: Option<&str>,
         session_id: Option<&str>,
     ) -> bool {
-        self.store
-            .write()
-            .await
-            .add_decision(tool, path, PermissionLevel::Deny, session_id)
+        self.always_deny_scoped(tool, path, None, session_id).await
+    }
+
+    /// Record a capability-scoped always-deny decision (M007). See
+    /// [`Self::always_allow_scoped`].
+    pub async fn always_deny_scoped(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        scope: Option<&str>,
+        session_id: Option<&str>,
+    ) -> bool {
+        self.store.write().await.add_decision_scoped(
+            tool,
+            path,
+            scope,
+            PermissionLevel::Deny,
+            session_id,
+        )
     }
 
     pub async fn always_deny_legacy(&self, tool: &str, path: Option<&str>) -> bool {
@@ -2011,5 +2296,191 @@ mod tests {
                 mode.name
             );
         }
+    }
+
+    #[test]
+    fn decision_scope_shell_normalization_is_bounded() {
+        assert_eq!(
+            decision_scope_for_shell_command("cargo test --all"),
+            Some("cmd:cargo".to_string())
+        );
+        assert_eq!(
+            decision_scope_for_shell_command("  FOO=1 /usr/bin/cargo test"),
+            Some("cmd:cargo".to_string())
+        );
+        assert_eq!(
+            decision_scope_for_shell_command("sudo rm -rf /tmp/x"),
+            Some("cmd:rm".to_string())
+        );
+        assert_eq!(
+            decision_scope_for_shell_command("GIT status"),
+            Some("cmd:git".to_string())
+        );
+        // Unparseable input yields no scope (broad legacy behavior),
+        // never a fabricated family.
+        assert_eq!(decision_scope_for_shell_command(""), None);
+        assert_eq!(decision_scope_for_shell_command("   "), None);
+        assert_eq!(decision_scope_for_shell_command("!!!"), None);
+        let long = format!("{} arg", "a".repeat(100));
+        assert_eq!(decision_scope_for_shell_command(&long), None);
+    }
+
+    #[test]
+    fn decision_scope_git_normalization_is_bounded() {
+        assert_eq!(
+            decision_scope_for_git_subcommand("commit -m msg"),
+            Some("git:commit".to_string())
+        );
+        assert_eq!(
+            decision_scope_for_git_subcommand("PUSH origin main"),
+            Some("git:push".to_string())
+        );
+        assert_eq!(decision_scope_for_git_subcommand(""), None);
+    }
+
+    #[test]
+    fn decision_scope_for_tool_call_shapes() {
+        let bash_args = serde_json::json!({"command": "cargo test"});
+        assert_eq!(
+            decision_scope_for_tool_call("bash", Some(&bash_args)),
+            Some("cmd:cargo".to_string())
+        );
+        let git_args = serde_json::json!({"subcommand": "commit -m x"});
+        assert_eq!(
+            decision_scope_for_tool_call("git", Some(&git_args)),
+            Some("git:commit".to_string())
+        );
+        assert_eq!(decision_scope_for_tool_call("edit", Some(&bash_args)), None);
+        assert_eq!(decision_scope_for_tool_call("bash", None), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_decision_narrows_without_widening() {
+        let checker = PermissionChecker::new(None, None);
+        // Narrow grant: only `cargo` commands.
+        assert!(
+            checker
+                .always_allow_scoped("bash", None, Some("cmd:cargo"), None)
+                .await
+        );
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("cargo test --all"), None)
+                .await,
+            PermissionResult::Allow
+        ));
+        // A catastrophic command from a different family still escalates:
+        // the narrow `cargo` grant does not cover `rm`.
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("rm -rf /"), None)
+                .await,
+            PermissionResult::Ask(_)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_broad_decision_still_matches_scoped_requests() {
+        let checker = PermissionChecker::new(None, None);
+        assert!(checker.always_allow("bash", None, None).await);
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("cargo test"), None)
+                .await,
+            PermissionResult::Allow
+        ));
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("rm -rf /tmp/x"), None)
+                .await,
+            PermissionResult::Allow
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_deny_does_not_bleed_across_families() {
+        let checker = PermissionChecker::new(None, None);
+        assert!(
+            checker
+                .always_deny_scoped("git", None, Some("git:push"), None)
+                .await
+        );
+        assert!(matches!(
+            checker
+                .check_with_args("git", None, Some("push origin main"), None)
+                .await,
+            PermissionResult::Deny
+        ));
+        // `commit` is unaffected by the `push` denial.
+        assert!(!matches!(
+            checker
+                .check_with_args("git", None, Some("commit -m x"), None)
+                .await,
+            PermissionResult::Deny
+        ));
+    }
+
+    #[test]
+    fn legacy_signed_broad_decisions_verify_under_new_scheme() {
+        let key = [7u8; 32];
+        // Simulate a pre-M007 signed row: legacy signature, no scope.
+        let legacy_sig = compute_legacy_signature("bash", None, &PermissionLevel::Allow, 42, &key);
+        let legacy = PersistentDecision {
+            tool: "bash".to_string(),
+            path: None,
+            scope: None,
+            level: PermissionLevel::Allow,
+            created_at: 42,
+            signature: legacy_sig,
+            session_id: None,
+        };
+        assert!(verify_signature(&legacy, &key));
+
+        // A scoped row never verifies against a legacy-shaped signature.
+        let scoped_legacy_sig =
+            compute_legacy_signature("bash", None, &PermissionLevel::Allow, 42, &key);
+        let scoped = PersistentDecision {
+            scope: Some("cmd:cargo".to_string()),
+            signature: scoped_legacy_sig,
+            ..legacy.clone()
+        };
+        assert!(!verify_signature(&scoped, &key));
+
+        // The new scheme signs the scope: stripping it (broadening by
+        // tamper) invalidates the signature.
+        let scoped_sig = compute_signature(
+            "bash",
+            None,
+            Some("cmd:cargo"),
+            &PermissionLevel::Allow,
+            42,
+            &key,
+        );
+        let scoped_valid = PersistentDecision {
+            scope: Some("cmd:cargo".to_string()),
+            signature: scoped_sig,
+            ..legacy.clone()
+        };
+        assert!(verify_signature(&scoped_valid, &key));
+        let stripped = PersistentDecision {
+            scope: None,
+            signature: scoped_valid.signature.clone(),
+            ..legacy.clone()
+        };
+        assert!(!verify_signature(&stripped, &key));
+    }
+
+    #[test]
+    fn legacy_decision_json_without_scope_stays_readable() {
+        let legacy = serde_json::json!({
+            "tool": "bash",
+            "path": null,
+            "level": "allow",
+            "created_at": 0,
+            "signature": "",
+            "session_id": null
+        });
+        let decoded: PersistentDecision = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.scope, None);
     }
 }

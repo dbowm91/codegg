@@ -12,14 +12,14 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 139 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 142 built-in commands
 - `src/config/schema.rs` — `CommandConfig` for config-file commands
 
 ## How It Works
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 139 hardcoded commands (highest priority)
+1. **Built-in commands**: 142 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -208,7 +208,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (139 total)
+### Built-in Commands (142 total)
 
 Representative built-ins:
 
@@ -218,6 +218,9 @@ Representative built-ins:
 | `/connections` | | Manage connections |
 | `/exit` | `quit`, `q` | Exit the app |
 | `/status` | | View status |
+| `/policy` | | Show effective approval mode and sandbox profile |
+| `/approval` | `/approval-mode` | Select approval mode (interactive/automatic/yolo) |
+| `/sandbox` | `/sandbox-profile` | Select sandbox profile (read-only/workspace-write/full-host) |
 | `/themes` | | Switch theme |
 | `/help` | | Help |
 | `/sessions` | `resume`, `continue` | Switch session |
@@ -321,7 +324,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 139**: Tested by
+- **Built-in count is 142**: Tested by
   `built_in_command_count_matches_release_docs` in
   `src/tui/command.rs`. Update both the test assertion and this doc
   when adding built-ins.
@@ -339,7 +342,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-139 count stays in sync with this documentation.
+142 count stays in sync with this documentation.
 
 ## Related Docs
 

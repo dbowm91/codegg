@@ -41,6 +41,10 @@ pub struct StatusBarWidget {
     /// Compact LSP status line (e.g. "LSP: ready | rust-analyzer gen=3").
     /// Cached string populated by the App before each render.
     pub lsp_status: Option<String>,
+    /// M007 effective runtime-policy line (e.g.
+    /// "approval:yolo sandbox:workspace-write"). Daemon-resolved;
+    /// the widget only renders the cached string.
+    pub policy_status: Option<String>,
     /// Activity chips to render in the status bar (e.g. "agent:build", "mem:2", "tasks:3").
     pub activity_chips: Vec<String>,
 }
@@ -59,6 +63,7 @@ impl StatusBarWidget {
             undo_message: None,
             goal_str: None,
             lsp_status: None,
+            policy_status: None,
             activity_chips: Vec::new(),
         }
     }
@@ -108,6 +113,13 @@ impl StatusBarWidget {
     /// Set the compact LSP status line. `None` clears the indicator.
     pub fn set_lsp_status(&mut self, lsp_status: Option<String>) {
         self.lsp_status = lsp_status;
+    }
+
+    /// Set the M007 effective runtime-policy line. `None` clears it
+    /// (no daemon snapshot yet). The string is daemon-resolved; the
+    /// widget never derives policy itself.
+    pub fn set_policy_status(&mut self, policy_status: Option<String>) {
+        self.policy_status = policy_status;
     }
 
     pub fn apply_summary(&mut self, summary: &TuiStatusSummary) {
@@ -240,6 +252,21 @@ impl Widget for &StatusBarWidget {
             ));
         }
 
+        if let Some(ref policy) = self.policy_status {
+            let degraded = policy.contains("narrowed")
+                || policy.contains("reviewer unavailable")
+                || policy.contains("no containment");
+            middle_spans.push(Span::styled("  ", Style::default()));
+            middle_spans.push(Span::styled(
+                policy.clone(),
+                Style::default().fg(if degraded {
+                    self.theme.warning
+                } else {
+                    self.theme.secondary
+                }),
+            ));
+        }
+
         for chip in &self.activity_chips {
             middle_spans.push(Span::styled("  ", Style::default()));
             middle_spans.push(Span::styled(
@@ -332,5 +359,20 @@ mod tests {
 
         let line = rendered_line(&buf, area.width);
         assert!(line.contains("─"));
+    }
+
+    #[test]
+    fn policy_segment_renders_effective_state() {
+        let mut widget = StatusBarWidget::default();
+        widget.set_status("idle".to_string());
+        widget.set_policy_status(Some("approval:yolo sandbox:workspace-write".to_string()));
+
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        (&widget).render(area, &mut buf);
+
+        let line = rendered_line(&buf, area.width);
+        assert!(line.contains("approval:yolo"));
+        assert!(line.contains("sandbox:workspace-write"));
     }
 }

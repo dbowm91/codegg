@@ -540,10 +540,17 @@ impl AgentLoop {
         // source, never silent.
         let mut receipt_source = success_source.to_owned();
         if persist {
+            // M007: narrow the remembered grant toward the deterministic
+            // command family (for example `cmd:cargo`) where the tool
+            // call carries structured command/effect data. `None` keeps
+            // the legacy broad shape; legacy rows stay readable.
+            let scope =
+                crate::permission::decision_scope_for_tool_call(&tc.name, Some(&tc.arguments));
             let persisted_source = self
                 .persist_always_choice(
                     &tc.name,
                     request.path.as_deref(),
+                    scope.as_deref(),
                     &request.session_id,
                     allow,
                 )
@@ -832,18 +839,19 @@ impl AgentLoop {
         &self,
         tool: &str,
         path: Option<&str>,
+        scope: Option<&str>,
         session_id: &str,
         allow: bool,
     ) -> &'static str {
         let persisted = if allow {
             self.services
                 .permission_checker
-                .always_allow(tool, path, Some(session_id))
+                .always_allow_scoped(tool, path, scope, Some(session_id))
                 .await
         } else {
             self.services
                 .permission_checker
-                .always_deny(tool, path, Some(session_id))
+                .always_deny_scoped(tool, path, scope, Some(session_id))
                 .await
         };
         if persisted {

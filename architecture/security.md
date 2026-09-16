@@ -418,6 +418,18 @@ configured headless mode). The reviewer cannot change `ApprovalMode`,
 parent/child authority, cannot recurse into the router, and persists no
 hidden reasoning. Guard: `scripts/check_approval_reviewer.py`.
 
+**M007 FullHost warning semantics:** `FullHost` is explicit only — it is
+never selected by silent fallback, never implied by `Yolo`/`Automatic`,
+and never produced by sandbox unavailability (constrained requests fail
+closed as `FilesystemEnforcement::Unavailable`). Interactive frontends
+require one explicit confirmation for any `FullHost` selection and two
+for `Yolo`+`FullHost`; the confirmation binds the preference revision
+(CAS), not a permanent bypass token. Capability-scoped remembered
+approvals (`PersistentDecision.scope`) narrow grants toward one command
+family; the scope is part of the HMAC-signed material so it cannot be
+tampered away, while pre-M007 signed broad rows still verify. See
+`permission.md` M007 item and `src/policy_surface.rs`.
+
 ## Related Docs
 
 - [tool.md](tool.md) — Uses security validation

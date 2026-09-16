@@ -182,6 +182,33 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             apply_project_catalog_refreshed(app, request_id, supported, entries, truncated, error);
         }
+        TuiCommand::PolicySnapshotRequested {
+            request_id: _,
+            reason,
+        } => {
+            super::super::commands::policy::start_snapshot_refresh(app, reason);
+        }
+        TuiCommand::PolicySnapshotLoaded {
+            request_id,
+            reason,
+            preference,
+            snapshot,
+            error,
+        } => {
+            super::super::commands::policy::apply_snapshot_loaded(
+                app, request_id, reason, preference, snapshot, error,
+            );
+        }
+        TuiCommand::PolicyUpdateFinished {
+            request_id,
+            preference,
+            snapshot,
+            error,
+        } => {
+            super::super::commands::policy::apply_policy_updated(
+                app, request_id, preference, snapshot, error,
+            );
+        }
         TuiCommand::RefreshPresence { project_id } => {
             super::super::commands::presence::start_refresh_presence(app, project_id);
         }

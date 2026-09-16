@@ -757,6 +757,86 @@ impl RuntimePreferenceStore {
         .await
     }
 
+    /// M007: atomically persist approval mode and/or sandbox profile in a
+    /// single revision bump.
+    ///
+    /// `None` leaves that dimension unchanged; at least one dimension must
+    /// be `Some` (otherwise [`PreferenceError::Validation`]). Both values
+    /// are validated before anything is written (fail closed), and the
+    /// optimistic-concurrency check runs once against the current row, so
+    /// two frontends racing a two-dimension change converge on one winner
+    /// via [`PreferenceError::Conflict`] instead of interleaving separate
+    /// single-field writes.
+    pub async fn set_policy(
+        &self,
+        principal_id: &str,
+        mode: Option<ApprovalMode>,
+        profile: Option<SandboxProfile>,
+        expected_revision: Option<u64>,
+    ) -> Result<RuntimePreference, PreferenceError> {
+        validate_principal_id(principal_id)?;
+        if mode.is_none() && profile.is_none() {
+            return Err(PreferenceError::Validation(
+                "set_policy requires an approval mode and/or a sandbox profile".into(),
+            ));
+        }
+        let current = self.get(principal_id).await?;
+        let current_revision = current.as_ref().map(|p| p.revision).unwrap_or(0);
+        if let Some(expected) = expected_revision {
+            if expected != current_revision {
+                return Err(PreferenceError::Conflict {
+                    expected,
+                    current: current_revision,
+                });
+            }
+        }
+        let next_revision = current_revision.saturating_add(1).max(1);
+        let now = now_millis();
+        let approval_mode = match (mode, current.as_ref()) {
+            (Some(m), _) => Some(m.as_str().to_owned()),
+            (None, Some(p)) => p.approval_mode.map(|m| m.as_str().to_owned()),
+            (None, None) => None,
+        };
+        let sandbox_profile = match (profile, current.as_ref()) {
+            (Some(s), _) => Some(s.as_str().to_owned()),
+            (None, Some(p)) => p.sandbox_profile.map(|s| s.as_str().to_owned()),
+            (None, None) => None,
+        };
+        let (connection_id, model_id) = match current.as_ref() {
+            Some(p) => (
+                p.last_provider_connection_id.clone(),
+                p.last_model_id.clone(),
+            ),
+            None => (None, None),
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO runtime_preferences
+                (principal_id, approval_mode, sandbox_profile,
+                 last_provider_connection_id, last_model_id, revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(principal_id) DO UPDATE SET
+                approval_mode = excluded.approval_mode,
+                sandbox_profile = excluded.sandbox_profile,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(principal_id)
+        .bind(approval_mode)
+        .bind(sandbox_profile)
+        .bind(connection_id)
+        .bind(model_id)
+        .bind(next_revision as i64)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+        self.get(principal_id)
+            .await?
+            .ok_or_else(|| PreferenceError::Storage("preference write lost".into()))
+    }
+
     /// Reserved M004 contract: persist last-used connection/model identity.
     /// Re-resolved against the provider catalog on use; a stale identity
     /// never authorizes a silent provider/model switch (that check lives in
@@ -1115,7 +1195,6 @@ mod tests {
         // Approval mode is retained across sandbox writes.
         assert_eq!(second.approval_mode, Some(ApprovalMode::Yolo));
     }
-
     #[tokio::test(flavor = "current_thread")]
     async fn runtime_preference_cas_conflicts_instead_of_last_write_wins() {
         let store = RuntimePreferenceStore::new(temp_pool().await);
@@ -1130,6 +1209,49 @@ mod tests {
         assert!(matches!(err, PreferenceError::Conflict { .. }));
         let current = store.get("alice").await.unwrap().unwrap();
         assert_eq!(current.approval_mode, Some(ApprovalMode::Interactive));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_policy_writes_both_dimensions_in_one_revision() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        let pref = store
+            .set_policy(
+                "dave",
+                Some(ApprovalMode::Yolo),
+                Some(SandboxProfile::FullHost),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 1);
+        assert_eq!(pref.approval_mode, Some(ApprovalMode::Yolo));
+        assert_eq!(pref.sandbox_profile, Some(SandboxProfile::FullHost));
+
+        // Partial update preserves the untouched dimension and bumps once.
+        let pref = store
+            .set_policy("dave", Some(ApprovalMode::Automatic), None, Some(1))
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 2);
+        assert_eq!(pref.approval_mode, Some(ApprovalMode::Automatic));
+        assert_eq!(pref.sandbox_profile, Some(SandboxProfile::FullHost));
+
+        // Stale CAS fails without touching the row.
+        let err = store
+            .set_policy("dave", Some(ApprovalMode::Yolo), None, Some(1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PreferenceError::Conflict { .. }));
+        let current = store.get("dave").await.unwrap().unwrap();
+        assert_eq!(current.revision, 2);
+        assert_eq!(current.approval_mode, Some(ApprovalMode::Automatic));
+
+        // Empty update is rejected.
+        let err = store
+            .set_policy("dave", None, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PreferenceError::Validation(_)));
     }
 
     #[tokio::test(flavor = "current_thread")]

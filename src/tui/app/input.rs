@@ -136,6 +136,9 @@ impl App {
             TuiMsg::ConfirmResult(confirmed) => {
                 self.close_dialog();
                 if confirmed == Some(true) {
+                    if crate::tui::commands::policy::apply_policy_confirm_result(self, true) {
+                        return;
+                    }
                     if let Some((action, connection_id, expected_revision)) =
                         self.dialog_state.pending_connection_lifecycle.take()
                     {
@@ -202,6 +205,10 @@ impl App {
                     self.dialog_state.pending_bulk_archive_ids = None;
                     self.dialog_state.pending_shell_command = None;
                     self.dialog_state.pending_connection_lifecycle = None;
+                    // M007: cancelling a mode-change dialog changes nothing.
+                    if self.dialog_state.pending_policy_confirm.take().is_some() {
+                        self.messages_state.toasts.info("Runtime policy unchanged.");
+                    }
                 }
             }
             TuiMsg::McpAction {

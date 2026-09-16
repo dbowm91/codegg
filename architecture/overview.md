@@ -308,7 +308,7 @@ Counts below were re-verified against the current tree (see source column).
 | LSP servers | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
 | AppEvent variants | 53 | `crates/codegg-core/src/bus/events.rs::AppEvent` |
-| Built-in slash commands | 139 (asserted by `built_in_command_count_matches_release_docs`) | `src/tui/command.rs` |
+| Built-in slash commands | 142 (asserted by `built_in_command_count_matches_release_docs`) | `src/tui/command.rs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Database tables | 71 (`CREATE TABLE` names) | `crates/codegg-core/src/session/schema.rs` |
 | Storage layout version | 56 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
@@ -432,7 +432,7 @@ Deep-dive index. Every architecture document in this directory is listed here.
 
 ### User Interface
 - [TUI](tui.md) — Ratatui terminal UI, async commands, state management
-- [Command](command.md) — 139 built-in slash commands (count asserted by `built_in_command_count_matches_release_docs`)
+- [Command](command.md) — 142 built-in slash commands (count asserted by `built_in_command_count_matches_release_docs`)
 - [Theme](theme.md) — Frontend-neutral theme system
 - [Human Shell](human_shell.md) — `!`/`!!` commands, 10-phase projection pipeline
 

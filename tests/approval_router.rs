@@ -7,8 +7,8 @@
 
 use codegg::bus::{PermissionDecision, PermissionRegistry};
 use codegg::permission::approval::{
-    source as approval_source, ApprovalMode, ApprovalRequest, ApprovalRouter, DeterministicVerdict,
-    ExecutionPolicySnapshot, SandboxProfile,
+    source as approval_source, ApprovalDecision, ApprovalMode, ApprovalRequest, ApprovalRouter,
+    DeterministicVerdict, ExecutionPolicySnapshot, SandboxProfile,
 };
 use codegg::permission::{PermissionChecker, PermissionLevel, PermissionResult};
 use codegg_core::approval::{child_mode_allowed, RuntimePreferenceStore};
@@ -334,6 +334,8 @@ fn protocol_snapshot_is_additive_for_older_clients() {
         reviewer_config_id: None,
         captured_at_ms: 1,
         sandbox_enforcement: None,
+        reviewer_available: false,
+        reviewer_detail: String::new(),
     };
     let json = serde_json::to_value(&full).unwrap();
     let back: codegg_protocol::core::ExecutionPolicySnapshotDto =
@@ -348,4 +350,54 @@ fn permission_level_ask_maps_to_router_escalate() {
     let router = ApprovalRouter::new(snapshot_for(ApprovalMode::Yolo));
     let decision = router.route_escalation(&approval_request());
     assert!(decision.allowed());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_human_wait_uses_captured_snapshot_despite_mode_toggle() {
+    // M007 contention: a permission already pending under Interactive
+    // keeps its captured snapshot when another frontend toggles the mode
+    // to Yolo mid-wait. The pending item still resolves via the human
+    // answer (no retroactive blessing); only new escalations follow the
+    // new snapshot.
+    let old_router = ApprovalRouter::new(snapshot_for(ApprovalMode::Interactive));
+    let request = approval_request();
+    let handle = tokio::spawn(async move {
+        old_router
+            .request_human_approval("it-perm-toggle-1", &request, None)
+            .await
+    });
+
+    // Concurrent toggle: a brand-new Yolo snapshot governs new
+    // escalations from here on.
+    let yolo_router = ApprovalRouter::new(snapshot_for(ApprovalMode::Yolo));
+    assert!(yolo_router.route_escalation(&approval_request()).allowed());
+
+    // Wait until the pending wait has registered before answering it.
+    let mut rx = codegg::bus::global::GlobalEventBus::subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match rx.recv().await {
+                Ok(codegg::bus::events::AppEvent::PermissionPending { perm_id, .. })
+                    if perm_id == "it-perm-toggle-1" =>
+                {
+                    break;
+                }
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+    })
+    .await
+    .expect("pending permission was never published");
+
+    // The pending wait still needs the human verdict.
+    assert!(PermissionRegistry::respond_scoped(
+        "session-it",
+        "it-perm-toggle-1",
+        PermissionDecision::DenyOnce,
+    ));
+    let outcome = handle.await.unwrap();
+    assert!(!outcome.allow);
+    assert!(!outcome.persist);
+    assert!(matches!(outcome.decision, ApprovalDecision::Deny { .. }));
 }

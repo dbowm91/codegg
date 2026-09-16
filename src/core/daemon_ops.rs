@@ -340,6 +340,8 @@ impl CoreDaemon {
                                 crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
                             revision: 0,
                             updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                            last_provider_connection_id: None,
+                            last_model_id: None,
                         },
                     }),
                     Some(pool) => {
@@ -357,6 +359,8 @@ impl CoreDaemon {
                                         crate::protocol::core::SandboxProfileDto::WorkspaceWrite,
                                     revision: 0,
                                     updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                                    last_provider_connection_id: None,
+                                    last_model_id: None,
                                 },
                             }),
                             Err(error) => Ok(CoreResponse::Error {
@@ -427,6 +431,75 @@ impl CoreDaemon {
                 let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
                 match store
                     .set_sandbox_profile(&principal_id, profile, expected_revision)
+                    .await
+                {
+                    Ok(pref) => Ok(CoreResponse::ApprovalPreference {
+                        preference: approval_preference_to_dto(&pref),
+                    }),
+                    Err(codegg_core::approval::PreferenceError::Conflict { expected, current }) => {
+                        Ok(CoreResponse::Error {
+                            code: "preference_conflict".to_string(),
+                            message: format!(
+                                "stale preference revision: expected {expected}, current {current}"
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "preference_write_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::RuntimePolicySet {
+                approval_mode,
+                sandbox_profile,
+                expected_revision,
+            } => {
+                // M007: validate every named dimension before writing
+                // anything, so a failed update leaves the previous
+                // effective policy untouched.
+                let mode = match approval_mode.as_deref() {
+                    None => None,
+                    Some(raw) => match codegg_core::approval::ApprovalMode::parse(raw) {
+                        Some(mode) => Some(mode),
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_approval_mode".to_string(),
+                                message: format!("unknown approval mode: {raw}"),
+                            });
+                        }
+                    },
+                };
+                let profile = match sandbox_profile.as_deref() {
+                    None => None,
+                    Some(raw) => match codegg_core::approval::SandboxProfile::parse(raw) {
+                        Some(profile) => Some(profile),
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_sandbox_profile".to_string(),
+                                message: format!("unknown sandbox profile: {raw}"),
+                            });
+                        }
+                    },
+                };
+                if mode.is_none() && profile.is_none() {
+                    return Ok(CoreResponse::Error {
+                        code: "empty_policy_update".to_string(),
+                        message:
+                            "runtime policy update names neither an approval mode nor a sandbox profile"
+                                .to_string(),
+                    });
+                }
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "preference_unavailable".to_string(),
+                        message: "runtime policy requires a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                match store
+                    .set_policy(&principal_id, mode, profile, expected_revision)
                     .await
                 {
                     Ok(pref) => Ok(CoreResponse::ApprovalPreference {
@@ -530,6 +603,33 @@ fn approval_preference_to_dto(
         },
         revision: pref.revision,
         updated_at_ms: pref.updated_at_ms,
+        last_provider_connection_id: pref.last_provider_connection_id.clone(),
+        last_model_id: pref.last_model_id.clone(),
+    }
+}
+
+/// M007: reviewer availability for the effective-policy snapshot.
+///
+/// The daemon owns the `[approval_reviewer]` config, so it — not the
+/// frontend — decides whether `Automatic` can reach the reviewer. The
+/// model id itself is not projected (frontends need availability, not
+/// credentials-adjacent routing detail).
+fn reviewer_availability() -> (bool, String, Option<String>) {
+    let config = super::load_config_or_default();
+    match config
+        .approval_reviewer
+        .as_ref()
+        .and_then(|reviewer| reviewer.resolved_model())
+    {
+        Some(_) => (true, String::new(), Some("approval_reviewer".to_string())),
+        None => {
+            let detail = if config.approval_reviewer.is_some() {
+                "reviewer model not configured ([approval_reviewer].model is absent)"
+            } else {
+                "no reviewer configured ([approval_reviewer] section absent)"
+            };
+            (false, detail.to_string(), None)
+        }
     }
 }
 
@@ -563,6 +663,7 @@ fn execution_snapshot_to_dto(
             reason,
         )
     };
+    let reviewer = reviewer_availability();
     crate::protocol::core::ExecutionPolicySnapshotDto {
         approval_mode: match snapshot.approval_mode() {
             codegg_core::approval::ApprovalMode::Interactive => {
@@ -580,8 +681,13 @@ fn execution_snapshot_to_dto(
         session_id: snapshot.session_id().map(str::to_owned),
         agent_id: snapshot.agent_id().map(str::to_owned),
         policy_revision: snapshot.policy_revision().map(str::to_owned),
-        reviewer_config_id: snapshot.reviewer_config_id().map(str::to_owned),
+        // M007: daemon-resolved reviewer availability. A configured
+        // reviewer model advertises a stable config id; otherwise the id
+        // stays absent and frontends render Automatic as degraded.
+        reviewer_config_id: reviewer.2,
         captured_at_ms: snapshot.captured_at_ms(),
         sandbox_enforcement: Some(enforcement),
+        reviewer_available: reviewer.0,
+        reviewer_detail: reviewer.1,
     }
 }

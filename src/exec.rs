@@ -62,6 +62,11 @@ pub struct ExecMode {
     quiet: bool,
     json_output: bool,
     session_id: Option<String>,
+    /// M007 explicit headless policy. `None` keeps the legacy permissive
+    /// exec behavior (documented compatibility alias for autonomous
+    /// workspace execution); `Some` selects the same daemon
+    /// `ApprovalMode`/`SandboxProfile` contract the TUI selector uses.
+    policy: Option<crate::policy_surface::CliPolicyOverride>,
 }
 
 impl ExecMode {
@@ -70,7 +75,15 @@ impl ExecMode {
             quiet,
             json_output,
             session_id,
+            policy: None,
         }
+    }
+
+    /// Select an explicit approval/sandbox contract instead of the legacy
+    /// permissive default.
+    pub fn with_policy(mut self, policy: crate::policy_surface::CliPolicyOverride) -> Self {
+        self.policy = Some(policy);
+        self
     }
 
     pub async fn run(&self, input: ExecInput) -> Result<ExecOutput, AppError> {
@@ -110,6 +123,24 @@ impl ExecMode {
             crate::permission::approval::canonical_permission_store_path(),
         )
         .with_exec_mode();
+        if let Some(policy) = &self.policy {
+            // M007: explicit headless contract. The legacy permissive
+            // ruleset above stays (ordinary tools must not block headless
+            // runs), but the execution snapshot carries the requested
+            // mode/profile so security/sensitive escalations, receipts,
+            // and sandbox enforcement follow the same contract as the TUI.
+            if let Some(mode) = policy.approval_mode {
+                eprintln!("exec approval mode: {}", mode.as_str());
+            }
+            if let Some(profile) = policy.sandbox_profile {
+                eprintln!("exec sandbox profile: {}", profile.as_str());
+                if profile.is_full_host() {
+                    eprintln!(
+                        "WARNING: exec requested full-host access: CodeGG filesystem containment is disabled and the process has the OS user's host authority"
+                    );
+                }
+            }
+        }
         // Bootstraps the search backend (eggsearch by default) before the agent
         // loop starts. Idempotent if already bootstrapped. The explicit
         // runtime context (M005) flows into the registry so wrappers never
@@ -143,6 +174,14 @@ impl ExecMode {
             invocation_session_id.clone(),
         );
         loop_instance.setup_question_channel_for_exec();
+        if let Some(policy) = &self.policy {
+            if let Some(mode) = policy.approval_mode {
+                loop_instance.set_approval_mode(mode);
+            }
+            if let Some(profile) = policy.sandbox_profile {
+                loop_instance.set_sandbox_profile(profile);
+            }
+        }
 
         let messages = vec![Message::User {
             content: vec![ContentPart::Text {

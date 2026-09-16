@@ -257,6 +257,15 @@ The TUI supports multiple open project tabs with a project picker; execution is 
 
 Human shell commands have an explicit context boundary: `!command` runs locally without promoting its output into model context, while `!!command` deliberately promotes the bounded/redacted result. See [`architecture/human_shell.md`](architecture/human_shell.md).
 
+### Approval modes and sandbox profiles
+
+Two orthogonal dimensions control autonomy and containment, visible in the status bar and via `/policy`:
+
+- **Approval:** `interactive` (escalations ask you), `automatic` (escalations go to a bounded read-only reviewer; defers to you when no reviewer model is configured — never silent Yolo), `yolo` (escalations auto-allow within the authority ceiling; explicit denies still deny).
+- **Sandbox:** `read-only`, `workspace-write` (filesystem containment on supported hosts), `full-host` (no CodeGG filesystem containment; the process has your OS user's host authority).
+
+Select them with `/approval [interactive|automatic|yolo]` and `/sandbox [read-only|workspace-write|full-host]`. `Yolo` inside containment needs one confirmation; any `full-host` selection needs an explicit confirmation, and `yolo`+`full-host` needs two. The same contract is available headlessly (`--approval-mode`, `--sandbox`, `--yolo`). The last selection is restored on startup with any ceiling narrowing reported. See [`architecture/permission.md`](architecture/permission.md) and [`architecture/security.md`](architecture/security.md).
+
 ## Tools and coding workflow
 
 The native tool registry includes file reads/edits, glob/grep search, patching, shell and Python execution, Git operations, testing, LSP-backed code intelligence, deterministic tools from `eggsact`, and higher-level review/security workflows.
@@ -333,6 +342,8 @@ printf '%s\n' '{"prompt":"Review this repository","model":"openai/<model-id>","a
 ```
 
 Other useful CLI entry points include `research`, `doctor`, `validate`, `completions`, `upgrade`, and the session import/export commands. Run the relevant `--help` before scripting against a subcommand.
+
+`exec` accepts the same policy contract (`--approval-mode`, `--sandbox`, `--yolo`); without flags it keeps its legacy permissive behavior for existing CI.
 
 ## Safety model
 

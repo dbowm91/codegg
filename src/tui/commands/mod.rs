@@ -10,6 +10,10 @@ pub(super) mod memory;
 pub(super) mod observe;
 pub(super) mod plugin_management;
 pub(super) mod plugins;
+/// M007 runtime-policy commands. Public so the binary startup path can
+/// enqueue the restore snapshot and so the `TuiCommand` policy variants
+/// (which name [`policy::PolicySnapshotReason`]) stay well-formed.
+pub mod policy;
 pub(super) mod presence;
 pub(super) mod project_catalog;
 pub(super) mod project_picker;

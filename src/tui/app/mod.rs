@@ -231,6 +231,10 @@ pub struct App {
     pub command_registry: crate::tui::command::CommandRegistry,
     pub sidebar: SidebarWidget,
     pub status_bar: StatusBarWidget,
+    /// M007 frontend-local cache of the daemon-resolved runtime policy
+    /// (approval mode / sandbox profile / enforcement / reviewer
+    /// availability). Display only; authority stays daemon-side.
+    pub policy_ui: crate::tui::commands::policy::PolicyUiState,
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
@@ -680,6 +684,7 @@ impl App {
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
                 pending_connection_lifecycle: None,
+                pending_policy_confirm: None,
                 shell_detail_id: None,
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -707,6 +712,7 @@ impl App {
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
+            policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
             message_store: None,
             memory_store: None,
@@ -1155,6 +1161,7 @@ impl App {
                 pending_bulk_archive_ids: None,
                 pending_shell_command: None,
                 pending_connection_lifecycle: None,
+                pending_policy_confirm: None,
                 shell_detail_id: None,
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1182,6 +1189,7 @@ impl App {
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
+            policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
             message_store: None,
             memory_store: None,
@@ -3419,7 +3427,7 @@ impl App {
                 self.open_connection_selection_dialog();
             }
             "/status" => {
-                self.messages_state.toasts.info(&format!(
+                let mut status = format!(
                     "status: {:?} | tokens: {}↑ {}↓ | model: {}",
                     self.session_state.session_status,
                     self.session_state.token_in,
@@ -3429,7 +3437,83 @@ impl App {
                         .split('/')
                         .next_back()
                         .unwrap_or(&self.agent_state.current_model)
-                ));
+                );
+                // M007: daemon-resolved effective policy alongside the
+                // legacy status line (observers can read policy here;
+                // /policy itself stays control-gated).
+                if let Some(line) = self.policy_ui.status_line() {
+                    status.push_str(&format!(" | {}", line));
+                }
+                self.messages_state.toasts.info(&status);
+            }
+            "/policy" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                if self.core_client.is_none() {
+                    self.messages_state
+                        .toasts
+                        .warning("Runtime policy unavailable: no core connection");
+                    return;
+                }
+                crate::tui::commands::policy::start_snapshot_refresh(
+                    self,
+                    crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
+                );
+            }
+            "/approval" | "/approval-mode" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let arg = query
+                    .strip_prefix("/approval-mode")
+                    .or_else(|| query.strip_prefix("/approval"))
+                    .map(|s| s.trim())
+                    .unwrap_or("");
+                if arg.is_empty() {
+                    crate::tui::commands::policy::request_policy_change(self, None, None);
+                    return;
+                }
+                match crate::policy_surface::parse_approval_mode(arg) {
+                    Ok(mode) => {
+                        crate::tui::commands::policy::request_policy_change(self, Some(mode), None)
+                    }
+                    Err(e) => {
+                        self.messages_state.toasts.warning(&format!(
+                            "{} (usage: /approval [interactive|automatic|yolo])",
+                            e
+                        ));
+                    }
+                }
+            }
+            "/sandbox" | "/sandbox-profile" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let arg = query
+                    .strip_prefix("/sandbox-profile")
+                    .or_else(|| query.strip_prefix("/sandbox"))
+                    .map(|s| s.trim())
+                    .unwrap_or("");
+                if arg.is_empty() {
+                    crate::tui::commands::policy::request_policy_change(self, None, None);
+                    return;
+                }
+                match crate::policy_surface::parse_sandbox_profile(arg) {
+                    Ok(profile) => crate::tui::commands::policy::request_policy_change(
+                        self,
+                        None,
+                        Some(profile),
+                    ),
+                    Err(e) => {
+                        self.messages_state.toasts.warning(&format!(
+                            "{} (usage: /sandbox [read-only|workspace-write|full-host])",
+                            e
+                        ));
+                    }
+                }
             }
             "/context" => {
                 self.ui_state.command_mode = false;

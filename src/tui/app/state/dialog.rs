@@ -50,6 +50,11 @@ pub struct DialogState {
     pub pending_shell_command: Option<(String, bool, std::path::PathBuf)>,
     pub pending_connection_lifecycle:
         Option<(crate::tui::app::ConnectionLifecycleAction, String, u64)>,
+    /// M007: confirmed-but-not-yet-applied approval/sandbox change
+    /// awaiting explicit confirmation dialog(s). Bound to the preference
+    /// revision the user saw (CAS); cancelling clears it and changes
+    /// nothing.
+    pub pending_policy_confirm: Option<crate::tui::commands::policy::PendingPolicyConfirm>,
     /// Currently viewed shell detail command ID (for shell detail dialog action shortcuts).
     pub shell_detail_id: Option<u64>,
     /// Async request state for import preview/confirm operations.

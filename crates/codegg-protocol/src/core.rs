@@ -598,6 +598,15 @@ pub struct RuntimePreferenceDto {
     pub sandbox_profile: SandboxProfileDto,
     pub revision: u64,
     pub updated_at_ms: i64,
+    /// M007: last-used provider connection identity from the durable
+    /// M004 preference, shown as daemon state (not a TUI manifest hint).
+    /// `None` decodes from pre-M007 payloads and means "no preference".
+    #[serde(default)]
+    pub last_provider_connection_id: Option<String>,
+    /// M007: last-used model identity from the durable M004 preference.
+    /// `None` decodes from pre-M007 payloads and means "no preference".
+    #[serde(default)]
+    pub last_model_id: Option<String>,
 }
 
 /// Obtained filesystem enforcement projection (M005).
@@ -735,6 +744,16 @@ pub struct ExecutionPolicySnapshotDto {
     /// daemons); new daemons always populate it.
     #[serde(default)]
     pub sandbox_enforcement: Option<SandboxEnforcementDto>,
+    /// M007: `true` when an `Automatic` escalation can actually reach the
+    /// bounded reviewer (a reviewer model is configured). `false` decodes
+    /// from pre-M007 payloads; frontends must render `Automatic` as
+    /// degraded/deferring rather than silent Yolo when this is `false`.
+    #[serde(default)]
+    pub reviewer_available: bool,
+    /// M007: bounded human-readable reason for reviewer unavailability
+    /// (empty when available). Pre-M007 payloads decode to empty.
+    #[serde(default)]
+    pub reviewer_detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2187,6 +2206,21 @@ pub enum CoreRequest {
     /// Persist the caller's sandbox profile. CAS via `expected_revision`.
     SandboxProfileSet {
         sandbox_profile: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// M007: atomically persist the caller's approval mode and/or sandbox
+    /// profile in a single revision bump. Each dimension is optional
+    /// (`None` leaves it unchanged; at least one must be `Some`).
+    /// Validation runs before any write: an unknown mode/profile name
+    /// rejects the whole update and the previous effective policy stands.
+    /// CAS via `expected_revision`: stale writes fail with
+    /// `preference_conflict` for reload.
+    RuntimePolicySet {
+        #[serde(default)]
+        approval_mode: Option<String>,
+        #[serde(default)]
+        sandbox_profile: Option<String>,
         #[serde(default)]
         expected_revision: Option<u64>,
     },

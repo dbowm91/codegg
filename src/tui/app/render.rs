@@ -688,6 +688,11 @@ impl App {
         self.status_bar.set_theme(&self.ui_state.theme);
         self.status_bar.apply_summary(&summary);
 
+        // M007: daemon-resolved effective policy line (cached from the
+        // last snapshot; cleared until the first snapshot lands).
+        self.status_bar
+            .set_policy_status(self.policy_ui.status_line());
+
         if let Some(ref lsp_tool) = self.lsp_tool {
             let handle = tokio::runtime::Handle::current();
             let lsp_status = handle.block_on(lsp_tool.lsp_status_line());
