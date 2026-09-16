@@ -223,7 +223,7 @@ transport from the underlying agent and session logic.
 | `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
 | `core::notification` | `NotificationRouter`, `AudioArbiter` | TTS and notification policy routing. |
 | `core::session_runtime` | `SessionRuntimeRegistry` | Active session runtime state tracking. |
-| `core::session_selection` | `SelectionService` | Session-level connection/model selection via typed stores. |
+| `core::session_selection` | `SelectionService` | Session-level connection/model selection via typed stores. M004: `ModelSelect` adapter, `apply_last_used_preference`, durable-projected runtime cache. |
 | `core::provider_connections` | `ConnectionManager`, `ProviderConnectionStore` | Provider instance caching, lifecycle, and purge. |
 | `core::eggpool` | `EggpoolProvisioner` | Connection provisioning and background refresh. |
 | `core::project_activation` | `ProjectActivationRegistry` | Owner-scoped activation leases for projects. |

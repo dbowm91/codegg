@@ -36,6 +36,11 @@
 //! - Frontend-local tab IDs are regenerated; the plan uses
 //!   `ProjectTabId::new()` for each entry.
 //! - The plan carries at most one `pending_heavy_load` entry.
+//! - M004: the persisted `selected_model_id` is a display-only hint.
+//!   The daemon-owned durable selection is authoritative: once a
+//!   `SnapshotSession`/selection snapshot arrives,
+//!   [`reconcile_tab_model_with_daemon`] overwrites the hint and the
+//!   next manifest write persists the daemon value.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -550,6 +555,28 @@ impl DaemonLookupSnapshot {
     }
 }
 
+/// M004: reconcile a restored tab's display-hint model with the
+/// daemon-owned durable selection.
+///
+/// The manifest hint is applied first by [`apply_restore_plan`] so the
+/// UI has something to render before the daemon responds. Once the
+/// daemon `SnapshotSession`/selection snapshot arrives, the daemon
+/// value wins: when `daemon_model` is `Some`, the tab is overwritten
+/// (even if the hint was empty or stale) and the caller should persist
+/// on the next manifest write. Returns `true` when the tab changed.
+pub fn reconcile_tab_model_with_daemon(
+    tab: &mut ProjectTabState,
+    daemon_model: Option<&str>,
+) -> bool {
+    match daemon_model {
+        Some(daemon) if tab.model != daemon => {
+            tab.model = daemon.to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Apply a `RestorePlan` to a mutable [`ProjectTabs`] container.
 /// The plan is consumed deterministically: each entry that
 /// `opens_tab()` becomes a `ProjectTabState`; the active tab is set
@@ -988,5 +1015,25 @@ mod tests {
         };
         let plan = snap.build_restore_plan(&m);
         assert!(plan.entries.is_empty());
+    }
+
+    #[test]
+    fn daemon_model_wins_over_manifest_hint() {
+        use crate::tui::app::state::project_tabs::{ProjectTabId, ProjectTabState};
+        let mut tab = ProjectTabState::empty(ProjectTabId::new(), "p1".into());
+        tab.model = "openai/stale-model".to_string();
+        assert!(reconcile_tab_model_with_daemon(
+            &mut tab,
+            Some("openai/gpt-4o")
+        ));
+        assert_eq!(tab.model, "openai/gpt-4o");
+        // Idempotent when already matching.
+        assert!(!reconcile_tab_model_with_daemon(
+            &mut tab,
+            Some("openai/gpt-4o")
+        ));
+        // No daemon snapshot yet: hint is kept.
+        assert!(!reconcile_tab_model_with_daemon(&mut tab, None));
+        assert_eq!(tab.model, "openai/gpt-4o");
     }
 }

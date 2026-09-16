@@ -294,7 +294,7 @@ Class: capability/infrastructure
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md`
 
-Status: ready.
+Status: active.
 
 Converge `ModelSelect` on the durable session-selection service, persist principal-scoped last connection/model preference, restore it only when a session has no explicit selection, and expose effective runtime preferences through frontend-neutral protocol.
 
@@ -445,7 +445,7 @@ This roadmap closes only when:
 | M001 | closed | `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md` | `plans/closure/execution-reliability-approval-autonomy/001-status.md` | — |
 | M002 | closed | `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md` | `plans/closure/execution-reliability-approval-autonomy/002-status.md` | — |
 | M003 | closed | `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md` | `plans/closure/execution-reliability-approval-autonomy/003-status.md` | — |
-| M004 | ready | `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md` | — | — |
+| M004 | active | `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md` | — | — |
 | M005 | ready | `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md` | — | — |
 | M006 | blocked | `plans/implementation/execution-reliability-approval-autonomy/006-automatic-approval-reviewer.md` | — | M005 (M003 closed) |
 | M007 | blocked | `plans/implementation/execution-reliability-approval-autonomy/007-yolo-auto-and-full-host-user-surfaces.md` | — | M004-M006 (M003 closed) |

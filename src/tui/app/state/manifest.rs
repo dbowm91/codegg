@@ -108,9 +108,11 @@ pub struct PersistedProjectTab {
     /// Display-only label hint. Never used as identity.
     #[serde(default)]
     pub label_hint: Option<String>,
-    /// Display-only selected model id. The restore coordinator
-    /// validates against the model catalog and falls back to the
-    /// user's default on missing/unsupported ids.
+    /// Display-only selected model id (M004). This is a restoration
+    /// hint only: the daemon-owned durable session selection is
+    /// authoritative, and `restore::reconcile_tab_model_with_daemon`
+    /// overwrites the hint once the daemon snapshot arrives. Never
+    /// influences daemon authority.
     #[serde(default)]
     pub selected_model_id: Option<String>,
     /// Display-only selected agent name. Validated against the

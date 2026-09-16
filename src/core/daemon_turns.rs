@@ -638,28 +638,122 @@ impl CoreDaemon {
                 Ok(CoreResponse::Ack)
             }
             CoreRequest::ModelSelect { session_id, model } => {
-                let runtime = match self.bind_runtime_for_session(&session_id).await {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        return Ok(CoreResponse::Error {
-                            code: "session_unbound".to_string(),
-                            message: format!(
-                                "session {} has no resolvable workspace: {}",
-                                session_id, e
-                            ),
-                        });
-                    }
+                // M004 convergence: `ModelSelect` is a compatibility
+                // adapter over the durable `SelectionService`. The
+                // runtime cache is only updated after durable success;
+                // failures leave both durable state and the cache
+                // untouched (no silent fallback, no runtime-only
+                // authority).
+                let Some(service) = self.selection_service.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_selection_unavailable".to_string(),
+                        message: "Model selection requires a daemon SQLite catalog".to_string(),
+                    });
                 };
+                let (connection_id, model_id) =
+                    match crate::core::session_selection::resolve_model_select_target(
+                        service.connection_store.as_ref(),
+                        &model,
+                    )
+                    .await
+                    {
+                        Ok(target) => target,
+                        Err(resolve_error) => {
+                            return Ok(CoreResponse::Error {
+                                code: resolve_error.code().to_string(),
+                                message: resolve_error.message(),
+                            });
+                        }
+                    };
+                // Resolve the current connection/catalog revision first
+                // and perform a CAS update so a concurrent catalog bump
+                // surfaces a stale diagnostic instead of overwriting.
+                let (expected_connection_revision, expected_catalog_revision) =
+                    match service.connection_store.get(&connection_id).await {
+                        Ok(Some(connection)) => {
+                            let catalog = service
+                                .models(&session_id, &connection_id)
+                                .await
+                                .map(|(revision, _)| revision)
+                                .unwrap_or(None);
+                            (Some(connection.revision), catalog)
+                        }
+                        Ok(None) => (None, None),
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "connection_store_error".to_string(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                match service
+                    .update(
+                        &session_id,
+                        &connection_id,
+                        &model_id,
+                        expected_connection_revision,
+                        expected_catalog_revision,
+                    )
+                    .await
                 {
-                    let mut selected = runtime.selected_model.write().await;
-                    *selected = Some(model.clone());
+                    Ok(crate::core::session_selection::SelectionUpdateOutcome::Updated(
+                        selection,
+                    )) => {
+                        // Durable success: project the canonical
+                        // `provider/model` string into the runtime cache.
+                        // Best-effort only; the durable row is canonical
+                        // and `SnapshotSession` lazily reconciles on read.
+                        let canonical =
+                            crate::core::session_selection::durable_selected_runtime_model(
+                                &selection,
+                            )
+                            .unwrap_or_else(|| model.clone());
+                        if let Some(runtime) = self.sessions.get(&session_id) {
+                            let mut selected = runtime.selected_model.write().await;
+                            *selected = Some(canonical);
+                        }
+                        // Remember the principal's last-used preference.
+                        // A preference write failure never rolls back the
+                        // explicit selection; it is reported via tracing
+                        // and the selection still acknowledges.
+                        if let Some(pool) = self.pool.clone() {
+                            let principal_id = authority.principal_id().as_str().to_owned();
+                            let preference_store =
+                                codegg_core::approval::RuntimePreferenceStore::new(pool);
+                            if let Err(error) = preference_store
+                                .set_model_preference(
+                                    &principal_id,
+                                    Some(connection_id.as_str()),
+                                    Some(&model_id),
+                                    None,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    session_id = %session_id,
+                                    "model selection persisted but last-used preference was not saved"
+                                );
+                            }
+                        }
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::SessionUpdated {
+                                id: session_id.clone(),
+                            },
+                        );
+                        Ok(CoreResponse::Ack)
+                    }
+                    Ok(other) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_outcome_code(&other)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_outcome_message(&other),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: crate::core::session_selection::selection_error_code(&error)
+                            .to_string(),
+                        message: crate::core::session_selection::selection_error_message(&error),
+                    }),
                 }
-                crate::bus::global::GlobalEventBus::publish(
-                    crate::bus::events::AppEvent::SessionUpdated {
-                        id: session_id.clone(),
-                    },
-                );
-                Ok(CoreResponse::Ack)
             }
             CoreRequest::SnapshotSession { session_id } => {
                 let Some(pool) = self.pool.clone() else {
@@ -695,6 +789,41 @@ impl CoreDaemon {
                     }
                 };
 
+                // M004: the runtime `selected_model` cache is a
+                // projection of the durable selection row. When the
+                // durable row is `Selected`, its canonical
+                // `provider/model` string wins over any stale cache and
+                // the cache is repaired in place (restart
+                // reconstruction). Unselected/legacy states keep the
+                // existing cache (e.g. a turn-level override).
+                let durable_canonical = if let Some(service) = self.selection_service.as_ref() {
+                    match service.get(&session_id).await {
+                        Ok(selection) => {
+                            crate::core::session_selection::durable_selected_runtime_model(
+                                &selection,
+                            )
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                session_id = %session_id,
+                                error = %error,
+                                "durable selection read failed during snapshot; using runtime cache"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some(canonical) = durable_canonical.clone() {
+                    if let Some(runtime) = self.sessions.get(&session_id) {
+                        let cached = runtime.selected_model.read().await.clone();
+                        if cached.as_deref() != Some(canonical.as_str()) {
+                            let mut selected = runtime.selected_model.write().await;
+                            *selected = Some(canonical.clone());
+                        }
+                    }
+                }
                 let (
                     status,
                     selected_model,
@@ -706,7 +835,9 @@ impl CoreDaemon {
                     active_subagents,
                 ) = if let Some(runtime) = self.sessions.get(&session_id) {
                     let status = format!("{:?}", *runtime.status.read().await);
-                    let model = runtime.selected_model.read().await.clone();
+                    let cached = runtime.selected_model.read().await.clone();
+                    // Durable `Selected` always wins over the cache.
+                    let model = durable_canonical.or(cached);
                     let agent = runtime.selected_agent.read().await.clone();
                     let pending_permissions: Vec<String> = runtime
                         .pending_permissions

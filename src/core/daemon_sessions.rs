@@ -167,6 +167,41 @@ impl CoreDaemon {
                         crate::core::session_selection::SelectionUpdateOutcome::Updated(
                             selection,
                         ) => {
+                            // M004: project the durable selection into the
+                            // runtime cache (best-effort; the row is
+                            // canonical) and remember the principal's
+                            // last-used preference. A preference write
+                            // failure never rolls back the selection.
+                            if let Some(canonical) =
+                                crate::core::session_selection::durable_selected_runtime_model(
+                                    &selection,
+                                )
+                            {
+                                if let Some(runtime) = self.sessions.get(&req.session_id) {
+                                    let mut selected = runtime.selected_model.write().await;
+                                    *selected = Some(canonical);
+                                }
+                            }
+                            if let Some(pool) = self.pool.clone() {
+                                let principal_id = authority.principal_id().as_str().to_owned();
+                                let preference_store =
+                                    codegg_core::approval::RuntimePreferenceStore::new(pool);
+                                if let Err(error) = preference_store
+                                    .set_model_preference(
+                                        &principal_id,
+                                        Some(connection_id.as_str()),
+                                        Some(&req.model_id),
+                                        None,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        error = %error,
+                                        session_id = %req.session_id,
+                                        "session selection persisted but last-used preference was not saved"
+                                    );
+                                }
+                            }
                             // M003: the provider selection carries the
                             // requesting principal's origin.
                             self.record_origin_with_decision(
@@ -309,6 +344,19 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(session) => {
+                        // M004: new sessions carry no explicit selection;
+                        // reuse the principal's last valid preference
+                        // (exact connection/model, current revisions).
+                        // Invalid preferences leave the session unselected.
+                        let principal_id = authority.principal_id().as_str().to_owned();
+                        self.apply_model_preference_best_effort(session.id.as_str(), &principal_id)
+                            .await;
+                        let session = store
+                            .get(session.id.as_str())
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(session);
                         let refresh = self
                             .refresh_project_context(
                                 &context,
@@ -381,6 +429,24 @@ impl CoreDaemon {
                 let store = crate::session::SessionStore::new(pool);
                 match store.get(&session_id).await {
                     Ok(Some(session)) => {
+                        // M004: opening an otherwise unselected session
+                        // reuses the principal's last valid preference.
+                        // Explicit selections win; invalid preferences
+                        // leave the session unselected.
+                        if !crate::core::session_selection::has_explicit_selection(&session) {
+                            let principal_id = authority.principal_id().as_str().to_owned();
+                            self.apply_model_preference_best_effort(
+                                session.id.as_str(),
+                                &principal_id,
+                            )
+                            .await;
+                        }
+                        let session = store
+                            .get(&session_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(session);
                         let context = match self
                             .resolve_session_context(&session_id, &session.directory)
                             .await
@@ -920,6 +986,17 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(session) => {
+                        // M004: template sessions also start unselected;
+                        // reuse the principal's last valid preference.
+                        let principal_id = authority.principal_id().as_str().to_owned();
+                        self.apply_model_preference_best_effort(session.id.as_str(), &principal_id)
+                            .await;
+                        let session = store
+                            .get(session.id.as_str())
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(session);
                         let refresh = self
                             .refresh_project_context(
                                 &context,
@@ -988,6 +1065,94 @@ impl CoreDaemon {
                     code: "unimplemented".to_string(),
                     message: "This request type is not yet implemented".to_string(),
                 })
+            }
+        }
+    }
+
+    /// M004: best-effort application of a principal's last-used
+    /// connection/model preference to an otherwise unselected session.
+    ///
+    /// Never fails session creation/open: invalid preferences keep the
+    /// session unselected with a bounded diagnostic, and store errors
+    /// are logged. On `Applied`, the runtime cache is projected from
+    /// the new durable row when a runtime is already bound (otherwise
+    /// `SnapshotSession` lazily reconciles on read).
+    pub(crate) async fn apply_model_preference_best_effort(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) {
+        let Some(service) = self.selection_service.as_ref() else {
+            return;
+        };
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        let preference_store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+        match crate::core::session_selection::apply_last_used_preference(
+            service.session_store.as_ref(),
+            service.connection_store.as_ref(),
+            &preference_store,
+            session_id,
+            principal_id,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                use codegg_core::approval::PreferenceApplicationOutcome as Outcome;
+                match outcome {
+                    Outcome::Applied {
+                        connection_id,
+                        model_id,
+                    } => {
+                        tracing::info!(
+                            session_id = %session_id,
+                            connection_id = %connection_id,
+                            model_id = %model_id,
+                            "applied last-used model preference to unselected session"
+                        );
+                        // Project the new durable row into the runtime
+                        // cache when a runtime is already bound.
+                        if let Ok(selection) = service.get(session_id).await {
+                            if let Some(canonical) =
+                                crate::core::session_selection::durable_selected_runtime_model(
+                                    &selection,
+                                )
+                            {
+                                if let Some(runtime) = self.sessions.get(session_id) {
+                                    let mut selected = runtime.selected_model.write().await;
+                                    *selected = Some(canonical);
+                                }
+                            }
+                        }
+                    }
+                    Outcome::ExplicitSelectionPresent | Outcome::NoPreference => {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            code = %outcome.code(),
+                            "model preference not applied: {}",
+                            outcome.message()
+                        );
+                    }
+                    Outcome::UnavailableConnection { .. }
+                    | Outcome::UnknownModel { .. }
+                    | Outcome::StaleCatalog { .. } => {
+                        tracing::info!(
+                            session_id = %session_id,
+                            code = %outcome.code(),
+                            "model preference left session unselected: {}",
+                            outcome.message()
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %error,
+                    code = %crate::core::session_selection::apply_preference_error_code(&error),
+                    "model preference application failed; session left unselected"
+                );
             }
         }
     }

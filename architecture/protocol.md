@@ -124,7 +124,8 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 **Session Lifecycle (2)**: `SessionLifecycleGet`
 
 **Turn (5)**: `TurnSubmit`, `TurnCancel`, `TurnSteer`, `AgentSelect`,
-`ModelSelect`
+`ModelSelect` (M004 compatibility adapter over durable
+`SessionSelectionUpdate`; runtime-only mutation is not authoritative)
 
 **Model (1)**: `ModelsRefresh`
 

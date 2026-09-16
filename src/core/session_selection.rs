@@ -1,11 +1,17 @@
-//! Provider Connections Milestone 3: daemon-owned session selection
-//! service.
+//! Provider Connections Milestone 3 + Execution Reliability M004:
+//! daemon-owned session selection service.
 //!
 //! This module exposes the typed operations that the protocol uses to
 //! read, list, and update a session's connection + model selection. The
 //! service is owned by the daemon; the TUI and remote clients never
 //! construct providers or resolve secrets — they only call into this
 //! module.
+//!
+//! M004 convergence: `CoreRequest::ModelSelect` is a compatibility
+//! adapter over [`update_selection`]. The runtime `selected_model`
+//! cache is only a projection of the durable row, and the principal's
+//! last-used preference is only a convenience default for otherwise
+//! unselected sessions.
 //!
 //! ## Invariants
 //!
@@ -16,6 +22,9 @@
 //! - A missing, disabled, or credential-missing connection returns a
 //!   typed diagnostic; it never chooses another connection.
 //! - The TUI never constructs providers or resolves secrets.
+//! - An explicit durable session selection always wins over the
+//!   last-used preference; the preference never reroutes an established
+//!   binding or silently falls back to another model.
 
 use std::sync::Arc;
 
@@ -647,6 +656,318 @@ impl SelectionService {
             expected_catalog_revision,
         )
         .await
+    }
+}
+
+/// M004: `true` when the session row already carries an explicit
+/// durable selection. Explicit bindings are authoritative over the
+/// last-used preference.
+pub fn has_explicit_selection(session: &Session) -> bool {
+    session
+        .provider_connection_id
+        .as_deref()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+        && session
+            .selected_model_id
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+}
+
+/// M004: canonical runtime cache form for a durable selection:
+/// `provider_kind/model_id` (e.g. `openai/gpt-4o`). The runtime cache
+/// is a projection of this string, never an independent source.
+pub fn canonical_runtime_model(provider_kind: &str, model_id: &str) -> String {
+    format!("{provider_kind}/{model_id}")
+}
+
+/// M004: project the runtime cache value for a durable selection DTO.
+/// Returns `None` for unselected/legacy-unresolved states so callers
+/// keep the prior cache instead of inventing a model.
+pub fn durable_selected_runtime_model(
+    selection: &codegg_protocol::provider::SessionSelectionDto,
+) -> Option<String> {
+    match selection {
+        codegg_protocol::provider::SessionSelectionDto::Selected {
+            connection, model, ..
+        } => Some(canonical_runtime_model(
+            &connection.provider_kind,
+            &model.model_id,
+        )),
+        _ => None,
+    }
+}
+
+/// M004: typed failure resolving a legacy `ModelSelect` model string
+/// (`provider/model`) to an explicit connection + model pair. No
+/// variant ever selects a different credentialed endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSelectResolveError {
+    EmptyModel,
+    ModelRequired {
+        provider_kind: String,
+    },
+    UnknownProvider {
+        provider_kind: String,
+    },
+    AmbiguousProvider {
+        provider_kind: String,
+        count: usize,
+    },
+    ConnectionNotSelectable {
+        connection_id: String,
+        state: String,
+    },
+    Store(String),
+}
+
+impl ModelSelectResolveError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::EmptyModel => "model_not_specified",
+            Self::ModelRequired { .. } => "model_required",
+            Self::UnknownProvider { .. } => "unknown_provider",
+            Self::AmbiguousProvider { .. } => "ambiguous_provider",
+            Self::ConnectionNotSelectable { .. } => "connection_not_selectable",
+            Self::Store(_) => "connection_store_error",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::EmptyModel => "Model must be specified as 'provider/model'.".to_string(),
+            Self::ModelRequired { provider_kind } => format!(
+                "Model is required: '{provider_kind}' names a provider but no model. Use 'provider/model'."
+            ),
+            Self::UnknownProvider { provider_kind } => format!(
+                "No active connection matches provider '{provider_kind}'. Open /connect to create one, or select an existing connection explicitly."
+            ),
+            Self::AmbiguousProvider {
+                provider_kind,
+                count,
+            } => format!(
+                "Multiple connections match provider '{provider_kind}' ({count}). Choose one explicitly via SessionSelectionUpdate."
+            ),
+            Self::ConnectionNotSelectable {
+                connection_id,
+                state,
+            } => format!(
+                "Connection '{connection_id}' is in state '{state}' and cannot be selected."
+            ),
+            Self::Store(detail) => format!("connection store error: {detail}"),
+        }
+    }
+}
+
+/// M004: resolve a `ModelSelect` model string to its explicit
+/// connection + model pair using the read-only legacy resolver. The
+/// caller must still validate the model against the bounded catalog
+/// via [`update_selection`]; this step only resolves identity.
+pub async fn resolve_model_select_target(
+    connection_store: &ProviderConnectionStore,
+    model: &str,
+) -> Result<(ProviderConnectionId, String), ModelSelectResolveError> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(ModelSelectResolveError::EmptyModel);
+    }
+    let resolution =
+        legacy_resolution::resolve_legacy_model_string(connection_store, Some(trimmed))
+            .await
+            .map_err(|e| ModelSelectResolveError::Store(e.to_string()))?;
+    match resolution {
+        LegacyResolution::Unset => Err(ModelSelectResolveError::EmptyModel),
+        LegacyResolution::Resolved {
+            connection_id,
+            model_id: Some(model_id),
+            ..
+        } => {
+            let id = ProviderConnectionId::parse(&connection_id)
+                .map_err(|_| ModelSelectResolveError::Store("invalid connection id".to_string()))?;
+            if model_id.trim().is_empty() {
+                return Err(ModelSelectResolveError::ModelRequired {
+                    provider_kind: trimmed.to_string(),
+                });
+            }
+            Ok((id, model_id))
+        }
+        LegacyResolution::Resolved {
+            connection_id: _,
+            model_id: None,
+            ..
+        } => {
+            let provider_kind = match trimmed.split_once('/') {
+                Some((p, _)) => p.to_string(),
+                None => trimmed.to_string(),
+            };
+            Err(ModelSelectResolveError::ModelRequired { provider_kind })
+        }
+        LegacyResolution::UnresolvedLegacyProvider { provider_kind } => {
+            Err(ModelSelectResolveError::UnknownProvider { provider_kind })
+        }
+        LegacyResolution::AmbiguousLegacyProvider {
+            provider_kind,
+            candidates,
+        } => Err(ModelSelectResolveError::AmbiguousProvider {
+            provider_kind,
+            count: candidates.len(),
+        }),
+        LegacyResolution::DisabledLegacyConnection { connection_id, .. } => {
+            Err(ModelSelectResolveError::ConnectionNotSelectable {
+                connection_id,
+                state: "disabled".to_string(),
+            })
+        }
+        LegacyResolution::MissingCredentialLegacyConnection { connection_id, .. } => {
+            Err(ModelSelectResolveError::ConnectionNotSelectable {
+                connection_id,
+                state: "credential_missing".to_string(),
+            })
+        }
+    }
+}
+
+/// M004: error applying a last-used preference. Preference-store
+/// failures are distinct from selection-store failures so callers can
+/// report "preference unavailable" without implying the session is
+/// broken.
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyPreferenceError {
+    #[error("selection error: {0}")]
+    Selection(#[from] SelectionError),
+    #[error("preference error: {0}")]
+    Preference(#[from] codegg_core::approval::PreferenceError),
+}
+
+pub fn apply_preference_error_code(error: &ApplyPreferenceError) -> &'static str {
+    match error {
+        ApplyPreferenceError::Selection(inner) => selection_error_code(inner),
+        ApplyPreferenceError::Preference(inner) => match inner {
+            codegg_core::approval::PreferenceError::Validation(_) => "preference_invalid",
+            codegg_core::approval::PreferenceError::Conflict { .. } => "preference_conflict",
+            codegg_core::approval::PreferenceError::CeilingExceeded(_) => "preference_ceiling",
+            codegg_core::approval::PreferenceError::Storage(_) => "preference_unavailable",
+        },
+    }
+}
+
+/// M004: apply a principal's last-used connection/model preference to
+/// an otherwise unselected session.
+///
+/// Contract (plan §6):
+/// 1. load the session; an explicit durable selection wins immediately
+///    (`ExplicitSelectionPresent`);
+/// 2. load the principal preference; absent/incomplete rows yield
+///    `NoPreference`;
+/// 3. resolve the exact remembered connection (active + credential
+///    state via the selection service path);
+/// 4. verify the remembered model exists in the current bounded
+///    catalog;
+/// 5. apply the durable selection with current revisions (CAS against
+///    the just-read connection/catalog revision so a concurrent bump
+///    surfaces `StaleCatalog` instead of overwriting);
+/// 6. on any invalid state keep the session unselected/legacy and
+///    return the bounded diagnostic.
+///
+/// Project/admin/model restrictions, when present, override the
+/// preference (hook point: check before `update_selection`).
+pub async fn apply_last_used_preference(
+    session_store: &SessionStore,
+    connection_store: &ProviderConnectionStore,
+    preference_store: &codegg_core::approval::RuntimePreferenceStore,
+    session_id: &str,
+    principal_id: &str,
+) -> Result<codegg_core::approval::PreferenceApplicationOutcome, ApplyPreferenceError> {
+    use codegg_core::approval::PreferenceApplicationOutcome;
+
+    let session = session_store
+        .get(session_id)
+        .await
+        .map_err(|e| SelectionError::SessionStore(e.to_string()))?
+        .ok_or_else(|| SelectionError::SessionNotFound(session_id.to_string()))?;
+    if has_explicit_selection(&session) {
+        return Ok(PreferenceApplicationOutcome::ExplicitSelectionPresent);
+    }
+    let preference = preference_store.get(principal_id).await?;
+    let Some(preference) = preference else {
+        return Ok(PreferenceApplicationOutcome::NoPreference);
+    };
+    if !preference.has_model_preference() {
+        return Ok(PreferenceApplicationOutcome::NoPreference);
+    }
+    let connection_id_str = preference
+        .last_provider_connection_id
+        .clone()
+        .unwrap_or_default();
+    let model_id = preference.last_model_id.clone().unwrap_or_default();
+    let Ok(connection_id) = ProviderConnectionId::parse(&connection_id_str) else {
+        return Ok(PreferenceApplicationOutcome::UnavailableConnection {
+            reason: "remembered provider connection id is invalid".to_string(),
+        });
+    };
+    let Some(connection) = connection_store
+        .get(&connection_id)
+        .await
+        .map_err(|e| SelectionError::ConnectionStore(e.to_string()))?
+    else {
+        return Ok(PreferenceApplicationOutcome::UnavailableConnection {
+            reason: "remembered provider connection no longer exists".to_string(),
+        });
+    };
+    if connection.state != ProviderConnectionState::Active {
+        return Ok(PreferenceApplicationOutcome::UnavailableConnection {
+            reason: format!(
+                "remembered provider connection {} is {}",
+                connection_id.as_str(),
+                connection.state.storage_key()
+            ),
+        });
+    }
+    let models = list_models(connection_store, &connection_id).await?;
+    if !models.iter().any(|m| m.0 == model_id) {
+        return Ok(PreferenceApplicationOutcome::UnknownModel {
+            connection_id: connection_id.as_str().to_string(),
+            model_id,
+        });
+    }
+    let catalog_revision =
+        catalog_revision_for(connection_store, &connection_id, connection.revision).await?;
+    match update_selection(
+        session_store,
+        connection_store,
+        session_id,
+        &connection_id,
+        &model_id,
+        Some(connection.revision),
+        catalog_revision.clone(),
+    )
+    .await?
+    {
+        SelectionUpdateOutcome::Updated(_) => Ok(PreferenceApplicationOutcome::Applied {
+            connection_id: connection_id.as_str().to_string(),
+            model_id,
+        }),
+        SelectionUpdateOutcome::StaleRevision { .. }
+        | SelectionUpdateOutcome::StaleCatalog { .. } => {
+            Ok(PreferenceApplicationOutcome::StaleCatalog {
+                detail: format!(
+                    "connection revision {} catalog {:?} moved during apply",
+                    connection.revision, catalog_revision
+                ),
+            })
+        }
+        SelectionUpdateOutcome::ConnectionNotSelectable { state, .. } => {
+            Ok(PreferenceApplicationOutcome::UnavailableConnection {
+                reason: format!("connection became {state} during apply"),
+            })
+        }
+        SelectionUpdateOutcome::UnknownModel { .. } => {
+            Ok(PreferenceApplicationOutcome::UnknownModel {
+                connection_id: connection_id.as_str().to_string(),
+                model_id,
+            })
+        }
     }
 }
 

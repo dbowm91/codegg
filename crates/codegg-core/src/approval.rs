@@ -311,6 +311,97 @@ impl RuntimePreference {
     pub fn effective_sandbox_profile(&self) -> SandboxProfile {
         self.sandbox_profile.unwrap_or_default()
     }
+
+    /// `true` when a last-used model preference is present (both
+    /// connection and model identity). M004 convenience default for
+    /// otherwise unselected sessions; never overrides an explicit
+    /// session selection.
+    pub fn has_model_preference(&self) -> bool {
+        self.last_provider_connection_id
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+            && self
+                .last_model_id
+                .as_deref()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+    }
+}
+
+/// M004: bounded outcome of applying a principal's last-used
+/// connection/model preference to a session with no explicit durable
+/// selection.
+///
+/// The preference stores no catalog revision as lasting authority;
+/// the catalog is re-resolved at use. No variant ever authorizes a
+/// silent switch to a different provider connection or model: invalid
+/// preferences keep the session unselected and surface a diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreferenceApplicationOutcome {
+    /// Durable selection was applied with current revisions.
+    Applied {
+        connection_id: String,
+        model_id: String,
+    },
+    /// The session already carries an explicit durable selection;
+    /// the preference was not consulted.
+    ExplicitSelectionPresent,
+    /// No usable preference exists for this principal.
+    NoPreference,
+    /// The remembered connection is missing, not active, or not
+    /// credential-ready. The session is left unselected.
+    UnavailableConnection { reason: String },
+    /// The remembered model is not in the connection's current
+    /// bounded catalog. The session is left unselected.
+    UnknownModel {
+        connection_id: String,
+        model_id: String,
+    },
+    /// The catalog revision moved during application. The session is
+    /// left unchanged; the caller must reload and retry explicitly.
+    StaleCatalog { detail: String },
+}
+
+impl PreferenceApplicationOutcome {
+    /// Stable wire/diagnostic code for frontend-neutral reporting.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Applied { .. } => "preference_applied",
+            Self::ExplicitSelectionPresent => "explicit_selection_present",
+            Self::NoPreference => "no_preference",
+            Self::UnavailableConnection { .. } => "preference_connection_unavailable",
+            Self::UnknownModel { .. } => "preference_unknown_model",
+            Self::StaleCatalog { .. } => "preference_catalog_stale",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Applied {
+                connection_id,
+                model_id,
+            } => format!(
+                "Applied last-used preference {connection_id}/{model_id} with current revisions."
+            ),
+            Self::ExplicitSelectionPresent => {
+                "Session already has an explicit selection; preference not applied.".to_string()
+            }
+            Self::NoPreference => "No last-used model preference for this principal.".to_string(),
+            Self::UnavailableConnection { reason } => format!(
+                "Remembered provider connection is unavailable ({reason}); session left unselected."
+            ),
+            Self::UnknownModel {
+                connection_id,
+                model_id,
+            } => format!(
+                "Remembered model '{model_id}' is not in the current catalog of connection '{connection_id}'; session left unselected."
+            ),
+            Self::StaleCatalog { detail } => format!(
+                "Catalog moved during preference application ({detail}); session left unchanged."
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -822,5 +913,96 @@ mod tests {
         let store = RuntimePreferenceStore::new(pool);
         let pref = store.get("carol").await.unwrap().unwrap();
         assert_eq!(pref.effective_approval_mode(), ApprovalMode::Interactive);
+    }
+
+    #[test]
+    fn preference_application_outcome_codes_are_stable() {
+        let applied = PreferenceApplicationOutcome::Applied {
+            connection_id: "conn-1".into(),
+            model_id: "model-1".into(),
+        };
+        assert_eq!(applied.code(), "preference_applied");
+        assert!(applied.message().contains("conn-1"));
+        assert_eq!(
+            PreferenceApplicationOutcome::ExplicitSelectionPresent.code(),
+            "explicit_selection_present"
+        );
+        assert_eq!(
+            PreferenceApplicationOutcome::NoPreference.code(),
+            "no_preference"
+        );
+        assert_eq!(
+            PreferenceApplicationOutcome::UnavailableConnection {
+                reason: "missing".into()
+            }
+            .code(),
+            "preference_connection_unavailable"
+        );
+        assert_eq!(
+            PreferenceApplicationOutcome::UnknownModel {
+                connection_id: "c".into(),
+                model_id: "m".into()
+            }
+            .code(),
+            "preference_unknown_model"
+        );
+        assert_eq!(
+            PreferenceApplicationOutcome::StaleCatalog {
+                detail: "rev".into()
+            }
+            .code(),
+            "preference_catalog_stale"
+        );
+    }
+
+    #[test]
+    fn runtime_preference_has_model_preference_gate() {
+        let mut pref = RuntimePreference {
+            principal_id: "p".into(),
+            approval_mode: None,
+            sandbox_profile: None,
+            last_provider_connection_id: Some("conn-1".into()),
+            last_model_id: Some("model-1".into()),
+            revision: 1,
+            updated_at_ms: 0,
+        };
+        assert!(pref.has_model_preference());
+        pref.last_model_id = None;
+        assert!(!pref.has_model_preference());
+    }
+
+    #[test]
+    fn runtime_preference_serialization_is_secret_free() {
+        let pref = RuntimePreference {
+            principal_id: "local-owner".into(),
+            approval_mode: Some(ApprovalMode::Interactive),
+            sandbox_profile: Some(SandboxProfile::WorkspaceWrite),
+            last_provider_connection_id: Some("conn-1".into()),
+            last_model_id: Some("model-1".into()),
+            revision: 1,
+            updated_at_ms: 0,
+        };
+        let value = serde_json::to_value(&pref).expect("serialize preference");
+        let object = value.as_object().expect("preference is an object");
+        // Secret-free allowlist: identifiers + mode/profile + metadata only.
+        for key in object.keys() {
+            assert!(
+                matches!(
+                    key.as_str(),
+                    "principal_id"
+                        | "approval_mode"
+                        | "sandbox_profile"
+                        | "last_provider_connection_id"
+                        | "last_model_id"
+                        | "revision"
+                        | "updated_at_ms"
+                ),
+                "unexpected preference field: {key}"
+            );
+        }
+        let raw = value.to_string().to_lowercase();
+        for forbidden in ["token", "secret", "api_key", "apikey", "bearer", "password"] {
+            assert!(!raw.contains(forbidden), "preference leaks {forbidden}");
+        }
     }
 }

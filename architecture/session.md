@@ -302,16 +302,37 @@ Methods: `get`, `upsert`, `delete`
 ### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58)
 
 Daemon-owned principal-scoped durable preference for approval mode,
-sandbox profile, and reserved last provider/model identity (M003/M004).
-Methods: `get`, `set_approval_mode`, `set_sandbox_profile`,
-`set_model_preference` (reserved). Revision-gated CAS (stale writes get
-`Conflict`, never last-write-wins), bounded lengths, secret-free,
-additive/empty on upgrade. Restart reloads the last preference; explicit
-turn overrides win, then project ceiling, then persisted, then
-`Interactive`/`WorkspaceWrite` defaults. Frontend manifests stay display
-hints, never authority. Protocol: `ApprovalPreferenceGet`,
-`ApprovalModeSet`, `SandboxProfileSet`, `ExecutionPolicyGet` ->
-`ApprovalPreference` / `ExecutionPolicy` (principal derived server-side).
+sandbox profile, and last-used provider/model identity (M003 foundation,
+M004 convergence). Methods: `get`, `set_approval_mode`,
+`set_sandbox_profile`, `set_model_preference`. Revision-gated CAS (stale
+writes get `Conflict`, never last-write-wins), bounded lengths,
+secret-free, additive/empty on upgrade. Restart reloads the last
+preference; explicit turn overrides win, then project ceiling, then
+persisted, then `Interactive`/`WorkspaceWrite` defaults. Frontend
+manifests stay display hints, never authority. Protocol:
+`ApprovalPreferenceGet`, `ApprovalModeSet`, `SandboxProfileSet`,
+`ExecutionPolicyGet` -> `ApprovalPreference` / `ExecutionPolicy`
+(principal derived server-side).
+
+### Selection/preference convergence (M004)
+
+Durable session selection (`provider_connection_id`,
+`provider_connection_revision`, `model_catalog_revision`,
+`selected_model_id` + `SelectionService::update_selection`) is the only
+model authority. `CoreRequest::ModelSelect` is a compatibility adapter
+over it (`session_selection::resolve_model_select_target` + CAS update);
+the runtime `selected_model` cache is only projected after durable
+success and `SnapshotSession` repairs it from the durable row. The
+principal last-used preference (`last_provider_connection_id` /
+`last_model_id`, outcome `PreferenceApplicationOutcome`) is a
+convenience default applied only to otherwise unselected sessions at
+create/open (`apply_last_used_preference` + best-effort
+`apply_model_preference_best_effort`); explicit bindings always win,
+and unavailable/unknown/stale preferences leave the session unselected
+with a bounded diagnostic (never silent fallback). Guard:
+`scripts/check_model_select_convergence.py`. TUI manifest
+`selected_model_id` is a display hint reconciled by
+`restore::reconcile_tab_model_with_daemon` (daemon wins).
 
 ### UsageStore (`session/store.rs:2441`)
 
