@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation Roadmap
 
-Status: active; M001-M004 closed, M005 externally blocked, M006 ready
+Status: active; M001-M004 closed, M005 externally blocked, M006 closed
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 
@@ -190,7 +190,9 @@ This roadmap intentionally does not authorize creating that external package ins
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md`
 
-Status: **ready**. No hard predecessor; M005 does not block this work.
+Status: **closed**. No hard predecessor; M005 does not block this work.
+
+Closure: `plans/closure/dependency-security-workspace-consolidation/006-status.md` (lock-only Rustls 0.23.41 → 0.23.45; RUSTSEC-2026-0285 absent; broad verification green).
 
 Goals:
 

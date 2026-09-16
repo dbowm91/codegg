@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 ready; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 has no blocker; M005 blocked on a generalized external updater interface. |
+| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
@@ -62,7 +62,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | M006 Rustls advisory remediation and planning reconciliation | ready | `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md` | No hard predecessor; reproduce current advisory/reverse-tree state first; independent of blocked M005. |
+| Dependency security and workspace consolidation | M006 Rustls advisory remediation and planning reconciliation | closed | `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/006-status.md`; independent of blocked M005. |
 | Dependency security and workspace consolidation | M001 security and duplicate graph convergence | closed | `plans/implementation/dependency-security-workspace-consolidation/001-security-and-duplicate-graph-convergence.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/001-status.md`; implementation `3bd54ccd`. |
 | Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | closed | `plans/implementation/dependency-security-workspace-consolidation/002-workspace-dependency-ownership-normalization.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/002-status.md`; implementation `05e7b258`. |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | closed | `plans/implementation/dependency-security-workspace-consolidation/003-optional-image-feature-graph-slimming.md` | Closure accepted at `plans/closure/dependency-security-workspace-consolidation/003-status.md`. |
@@ -70,7 +70,7 @@ Canonical direction remains in:
 
 ## Current execution order and dependency gates
 
-1. Dependency security/workspace M006 is the current dependency-ready handoff. It owns only the post-baseline RUSTSEC-2026-0285 remediation and planning reconciliation. Prefer a targeted lock-only Rustls 0.23 patch to the authoritative fixed floor or newer compatible patch; do not broaden into general dependency modernization.
+1. Dependency security/workspace M006 is closed: post-baseline RUSTSEC-2026-0285 was remediated with a targeted lock-only Rustls 0.23.41 → 0.23.45 patch (plus required `rustls-webpki` companion) and the planning control points reconciled. Closure evidence at `plans/closure/dependency-security-workspace-consolidation/006-status.md`.
 2. M001-M004 remain closed with accepted closure evidence. M001 delivered Ratatui/LRU security convergence, DashMap 6 convergence and SQLx feature contraction; M002 established workspace version/default-policy ownership; M003 narrowed the optional image graph; M004 qualified reusable crate boundaries without speculative extraction.
 3. M005 remains independently blocked on the generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. Its curl/shell execution-path hardening remains landed at `plans/closure/dependency-security-workspace-consolidation/005-status.md`.
 4. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on published `eggfetch-core 0.1.4`; M006 must preserve its HTTP/1 + Rustls/WebPKI feature/trust profile.
@@ -92,7 +92,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| Dependency security and workspace consolidation | M006 ready; M005 blocked | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md`; `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md`; M001-M005 closure records; current `Cargo.toml`/`Cargo.lock` |
+| Dependency security and workspace consolidation | M006 closed; M005 blocked | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md`; `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md`; M001-M006 closure records; current `Cargo.toml`/`Cargo.lock` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 and M009 closure records |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
@@ -114,6 +114,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| Dependency security and workspace consolidation | M006 Rustls advisory remediation and planning reconciliation | closed | `plans/closure/dependency-security-workspace-consolidation/006-status.md` | `1e097786` |
 | Dependency security and workspace consolidation | M004 reusable crate boundary qualification | closed | `plans/closure/dependency-security-workspace-consolidation/004-status.md` | `b95d37ec` |
 | Dependency security and workspace consolidation | M002 workspace dependency ownership normalization | closed | `plans/closure/dependency-security-workspace-consolidation/002-status.md` | `05e7b258` |
 | Dependency security and workspace consolidation | M003 optional image feature-graph slimming | closed | `plans/closure/dependency-security-workspace-consolidation/003-status.md` | `e9b72c56` |
