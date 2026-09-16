@@ -1,3 +1,21 @@
+//! Self-update version check with a retired in-place execution path.
+//!
+//! M005 (dependency-security workspace consolidation) hardening:
+//!
+//! - The normal `codegg upgrade` path is check-only. It queries GitHub
+//!   release metadata through the existing Eggfetch transport with an
+//!   explicit timeout and bounded redirect policy.
+//! - CodeGG does not download and execute a network-fetched shell
+//!   installer script, does not shell out to external `curl`, acquires no
+//!   candidate binary bytes, and attempts no executable replacement.
+//! - Fresh installation via `install.sh` remains supported as a manual
+//!   operator action; [`installer_invocation`] pins the only version-pin
+//!   name the installer honors (`CODEGG_VERSION`).
+//! - Automatic verified binary replacement remains blocked on a
+//!   generalized external updater interface that is not Gregg/greggd
+//!   specific (see M005 plan and closure record). CodeGG intentionally
+//!   does not duplicate those mechanics locally.
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -5,7 +23,11 @@ use eggfetch_core::{Client, Timeout};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Installer script URL used by [`upgrade()`].
+/// Installer script URL referenced by fresh-install guidance.
+///
+/// This URL is never fetched or executed by CodeGG itself. It is printed
+/// by the check-only CLI path so an operator can perform a manual
+/// fresh installation. See [`installer_invocation`].
 pub const INSTALLER_SCRIPT_URL: &str =
     "https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh";
 
@@ -82,37 +104,50 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
 
 pub async fn upgrade() -> Result<String, AppError> {
     let info = check_for_updates().await?;
+    describe_upgrade(&info)
+}
+
+/// Pure fail-closed disposition for a checked [`VersionInfo`].
+///
+/// This is the entire in-place update decision surface after M005
+/// hardening:
+///
+/// - already-current yields `Ok` without touching the executable;
+/// - a missing latest tag or an invalid semver tag fails closed;
+/// - a valid newer tag fails closed with manual fresh-install guidance.
+///
+/// No candidate bytes are acquired, no checksum is required (there is
+/// nothing to verify because nothing is downloaded), and no executable
+/// replacement is attempted, so checksum mismatch, wrong program or
+/// version identity, unwritable destination, interrupted download,
+/// replacement failure, and unsupported-target cases all reduce to the
+/// same property: the existing executable is left intact. Verified
+/// binary replacement awaits the blocked external generic updater
+/// interface and is intentionally not reimplemented here.
+pub fn describe_upgrade(info: &VersionInfo) -> Result<String, AppError> {
     if !info.needs_update {
         return Ok(format!("Already on latest version ({})", info.current));
     }
 
     let latest = info
         .latest
+        .as_ref()
         .ok_or_else(|| AppError::Upgrade("no latest version found".to_string()))?;
 
-    semver::Version::parse(&latest)
-        .map_err(|_| AppError::Upgrade(format!("invalid semver version: {}", latest)))?;
+    semver::Version::parse(latest)
+        .map_err(|_| AppError::Upgrade(format!("invalid semver version: {latest}")))?;
 
     let target = format!("v{latest}");
-
     let (script_url, version_env) = installer_invocation(&target);
-
-    let mut cmd = std::process::Command::new("curl");
-    cmd.args(["-fsSL", script_url])
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-    for (key, value) in &version_env {
-        cmd.env(key, value);
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| AppError::Upgrade(format!("failed to run installer: {e}")))?;
-
-    if !output.status.success() {
-        return Err(AppError::Upgrade(
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
-    }
-
-    Ok(format!("Upgraded to {latest}"))
+    let pin = version_env
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Err(AppError::Upgrade(format!(
+        "automatic in-place update is disabled; existing executable left intact. \
+New version available: {latest} (current: {}). \
+For a manual fresh installation only, run: {pin} curl -fsSL {script_url} | sh",
+        info.current
+    )))
 }

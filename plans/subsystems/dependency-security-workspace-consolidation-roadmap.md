@@ -167,7 +167,7 @@ Goals (met):
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/005-generic-updater-interface-and-codegg-adoption.md`
 
-Status: **blocked on the external generalized updater interface** (M002 hard dependency satisfied by `plans/closure/dependency-security-workspace-consolidation/002-status.md`).
+Status: **blocked on the external generalized updater interface** (M002 hard dependency satisfied by `plans/closure/dependency-security-workspace-consolidation/002-status.md`). CodeGG-side curl/shell execution-path hardening is landed and recorded in `plans/closure/dependency-security-workspace-consolidation/005-status.md`; verified binary replacement remains blocked.
 
 Hard dependency: M002 accepted closure.
 

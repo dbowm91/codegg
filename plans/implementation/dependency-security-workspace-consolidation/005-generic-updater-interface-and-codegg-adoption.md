@@ -1,8 +1,12 @@
 # Dependency Security and Workspace Consolidation M005 — Generic Updater Interface and CodeGG Adoption
 
-Status: blocked
+Status: implemented
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
+
+Work baseline: `d2877a7b940e9c7ada25c7a3df852c53e9c9e98d` (M004 closure)
+
+Closure: `plans/closure/dependency-security-workspace-consolidation/005-status.md` (blocked for full adoption; curl/shell execution-path hardening landed)
 
 Source subsystem roadmap:
 

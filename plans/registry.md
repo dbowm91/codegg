@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M004 closed, M005 blocked | M001-M004 closed; M005 blocked on a generalized external updater interface. |
+| Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M004 closed, M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M005 blocked on a generalized external updater interface (see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
@@ -72,7 +72,7 @@ Canonical direction remains in:
 1. Dependency security/workspace M001 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/001-status.md`). It delivered Ratatui/LRU security convergence, CodeGG-owned DashMap 5→6 convergence, SQLx feature contraction, and audit-ignore reconciliation without broadening into general dependency modernization.
 2. M002 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/002-status.md`). Workspace inheritance is established once on the converged baseline (Ratatui 0.30 / crossterm 0.29 / DashMap 6 / SQLx derive-only) with a minimal-feature policy and no lockfile churn at its commit.
 3. M003 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/003-status.md`). The optional image graph is contracted to PNG/JPEG/GIF/WebP (+BMP retained as a proven built-in extra) with `image` defaults off and `ratatui-image` on the `crossterm` backend only; the default graph is unchanged. M004 is closed with accepted closure evidence (`plans/closure/dependency-security-workspace-consolidation/004-status.md`): `egggit`, `eggsentry`, `codegg-protocol`, and `eggcontext` are qualified publishable (the last with an explicit deterministic-tokenizer vs model-policy split), `codegg-git`/`codegg-config`/`codegg-providers` are retained internal, and no new crate was introduced without publication.
-4. M005 requires only the generalized external updater contract now (its M002 hard dependency is satisfied). CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent.
+4. M005 requires only the generalized external updater contract now (its M002 hard dependency is satisfied). CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. The curl/shell execution-path hardening is landed and recorded in `plans/closure/dependency-security-workspace-consolidation/005-status.md`; verified binary replacement remains blocked.
 5. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on the published crates.io `eggfetch-core 0.1.4` surface; do not substitute a Git/path dependency.
 6. No previously registered implementation plan was unblocked by HTTP M003 closure; the remaining unrelated conditional blockers are listed below.
 7. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
@@ -83,7 +83,7 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific. |
+| Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific (hardening landed; see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 

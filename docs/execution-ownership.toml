@@ -287,7 +287,7 @@ reason = "IDE diff helper uses ManagedProcessService blocking adapter for user-c
 [[site]]
 path = "src/upgrade/"
 owner = "standalone_compat"
-reason = "Self-upgrade uses curl to fetch release metadata; one-shot administrative action"
+reason = "Self-update version check uses Eggfetch only with bounded timeout/redirects; in-place execution path retired (no subprocess, no curl, no shell, no replacement), one-shot administrative check"
 
 # ---------------------------------------------------------------------
 # Server / HTTP (transport-only; work dispatch is via CoreRequest::JobSubmit)

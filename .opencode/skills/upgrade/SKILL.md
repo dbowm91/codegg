@@ -59,7 +59,8 @@ The function:
 
 ### upgrade()
 
-Performs the actual upgrade by running the installer script:
+Fail-closed check plus manual fresh-install guidance (M005 hardening).
+Automatic in-place binary replacement is retired:
 
 ```rust
 pub async fn upgrade() -> Result<String, AppError>
@@ -67,12 +68,30 @@ pub async fn upgrade() -> Result<String, AppError>
 
 The function:
 1. Checks for updates via `check_for_updates()`
-2. Returns "Already on latest version" if `needs_update` is false
-3. Validates the latest version is valid semver
-4. Runs `curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh` with `CODEGG_VERSION` env var set to `v{version}` (the only pin name `install.sh` honors; see `installer_invocation()`)
-5. Returns error if installer fails
+2. Delegates to the pure `describe_upgrade()` disposition
+3. Returns "Already on latest version" if `needs_update` is false
+4. Validates the latest version is valid semver (fail-closed on invalid)
+5. For a valid newer version, returns `Err` with manual fresh-install
+   guidance (`CODEGG_VERSION=v{version}` plus the `install.sh` URL) and
+   leaves the existing executable intact
 
-**Note**: This function is currently **not called** by `cmd_upgrade()` in `main.rs`. The CLI command only checks and reports, but does not actually perform the upgrade.
+It never spawns `curl`, never fetches or executes a shell script, and
+never replaces the running binary. Verified binary replacement awaits
+the blocked M005 external generic updater interface.
+
+### describe_upgrade()
+
+Pure fail-closed disposition, deterministic without network:
+
+```rust
+pub fn describe_upgrade(info: &VersionInfo) -> Result<String, AppError>
+```
+
+Covers already-current, missing-tag, invalid-semver, and valid-newer
+(fail-closed with manual guidance) cases. Because no candidate bytes
+are acquired, checksum / identity / permission / download / replacement
+/ unsupported-target failures all reduce to "existing executable left
+intact" by construction.
 
 ### installer_invocation()
 
@@ -96,13 +115,8 @@ pins the supported name; do not rename the env var without updating
 
 Location: `src/upgrade/mod.rs`
 
-### PATH Handling
-
-The `upgrade()` function uses the user's actual PATH:
-
-```rust
-.env("PATH", std::env::var_os("PATH").unwrap_or_default())
-```
+No subprocess is spawned from this module. There is no `PATH` handling,
+no `env_clear()`, and no `std::process::Command` in the update path.
 
 ### Error Handling
 
@@ -114,14 +128,14 @@ Error variants include:
 - `AppError::Upgrade("failed to parse response: ...")` - JSON parsing failed
 - `AppError::Upgrade("no latest version found")` - No `tag_name` in response
 - `AppError::Upgrade("invalid semver version: ...")` - Latest version not valid semver
-- `AppError::Upgrade("failed to run installer: ...")` - Could not spawn curl
-- `AppError::Upgrade("...")` - Installer returned non-zero exit
+- `AppError::Upgrade("automatic in-place update is disabled; ...")` - Valid newer version; manual fresh-install guidance, existing executable left intact
 
 ## Security Considerations
 
-1. **HTTPS only**: GitHub API and installer script use HTTPS
-2. **PATH preservation**: User's PATH is preserved through upgrade process
-3. **env_clear()**: Other environment variables are cleared for security
+1. **HTTPS only**: GitHub API metadata uses HTTPS via Eggfetch
+2. **No shell execution**: CodeGG never downloads and executes a network-fetched shell script
+3. **No external curl**: the update path uses Eggfetch only; `curl` appears solely inside the printed manual fresh-install guidance for operators
+4. **Fail-closed**: missing/invalid/newer tags never replace the running binary
 
 ## Testing
 
@@ -131,6 +145,12 @@ Tests in `tests/upgrade.rs`:
 - `test_version_info_needs_update()` - VersionInfo with newer version
 - `test_version_info_up_to_date()` - VersionInfo with matching versions
 - `test_installer_invocation_pins_supported_env()` - Pins `CODEGG_VERSION` as the only supported pin name (see `installer_invocation()` regression history above)
+- `test_describe_upgrade_already_current_is_noop()` - Already-current yields Ok without touching the executable
+- `test_describe_upgrade_current_only_is_noop()` - No-latest without need yields Ok
+- `test_describe_upgrade_valid_newer_fails_closed_with_manual_guidance()` - Valid newer yields Err with pin/URL/intact messaging
+- `test_describe_upgrade_missing_latest_fails_closed()` - Missing tag fails closed
+- `test_describe_upgrade_invalid_semver_fails_closed()` - Invalid semver fails closed
+- `test_describe_upgrade_never_reports_automatic_success_for_newer()` - Guards against reintroducing an automatic "Upgraded to" path
 
 Note: `check_for_updates()` is not integration-tested (requires network).
 
