@@ -1,6 +1,6 @@
 # Execution Reliability, Approval, and Autonomy M004 — Selected-Model and Runtime-Preference Convergence
 
-Status: active
+Status: implemented
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
