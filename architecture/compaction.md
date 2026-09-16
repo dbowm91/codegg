@@ -268,6 +268,62 @@ the in-process `AppEvent::CompactionTriggered`; the durable event is
 written only through the checkpoint install path, and no checkpoint is
 marked `Installed` from the legacy compaction path.
 
+## Authoritative continuation projection (M002)
+
+`src/context/continuation.rs` is the single host-side continuation
+snapshot assembler. It accepts typed inputs (session ID, session-origin
+prompt, current provider-visible messages/current user turn, active
+`Goal`, todos, `ContextLedgerState`, security findings, previous
+installed checkpoint, plan path + already-read plan body) and returns a
+typed `ContinuationSnapshot` accepted by the M001 store. Storage lookups
+stay in the agent/turn adapter; the assembler itself is pure and
+synchronous.
+
+Source precedence (encoded in `assemble_continuation_snapshot`):
+
+| Field | Precedence |
+|---|---|
+| Objective | 1. Active durable `Goal.objective` + ID/revision; 2. immutable `original_user_prompt`; never an LLM paraphrase. Origin digest/text retained as provenance either way. |
+| Current task | 1. Goal `next_action` / `current_phase`; 2. in-progress todo; 3. most recent host-owned continuation next action; 4. none (no invented fallback). |
+| Plan | Metadata only: `plan_path` + SHA-256 digest when readable under the workspace, current phase/action, bounded item descriptors, explicit `plan_unavailable` diagnostic. Never infers project identity. |
+| Deterministic evidence | Touched files, commands, tests, errors, security findings, artifact handles from host/runtime state. |
+| Semantic | Constraints/decisions/blockers/next steps merged against the previous installed checkpoint plus current-epoch evidence; advisory only. |
+
+Exact user-intent spine: immutable origin + most recent steering since
+the previous checkpoint + current triggering user message, within a
+20k-token estimated budget (CodeGG estimation) with per-entry 8k-char
+caps, origin/current boundary retention, content digests, and truncation
+diagnostics. Assistant responses are never intent. Checkpoint-owned
+intent IDs/digests are used; no MessageStore IDs are invented.
+
+Frame replacement: new frames render `[codegg continuation state v1]`
+(`ContextFrame::to_continuation_text`). The old `[codegg compacted
+session state]` marker is recognized for migration/cleanup but never
+rendered. `compile_*` strips earlier CodeGG-owned frames and emits
+exactly one current frame; unrelated system/developer instructions are
+preserved. `compact_if_needed` additionally normalizes the legacy
+auto-compact path (which preserves all system messages) to one frame.
+
+Hybrid correctness: `build_programmatic_state_with_baseline` and
+`semantic_checkpoint_with_baseline` receive the authoritative snapshot
+before enrichment, so the model never sees `"unknown"`/`"none"` for a
+known objective/task. `parse_semantic_response` reads only the four
+semantic-owned fields; `merge_frames` never overwrites `user_goal`,
+`current_task`, files, commands, tests, or artifact handles. Semantic
+failure falls back to host-only state.
+
+Multi-tool retention: `select_retained_messages` resolves every
+tool-call ID (not `.first()`), keeping all N results of a retained
+N-call assistant message together; `validate_message_invariants` remains
+a backstop.
+
+Artifact handles: `ContextLedgerState::artifact_handles` projects into
+the snapshot/frame bounded to the most recent 32, deduplicated
+(`bounded_artifact_handles`).
+
+M002 prepares/renders checkpoint candidates in memory. M004 owns durable
+rollover sequencing and production activation.
+
 ## Integration
 
 Called from `AgentLoop::compact_if_needed()` (`src/agent/context_runtime.rs:620`).

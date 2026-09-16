@@ -180,6 +180,26 @@ fn build_base_prompt_blocks(ctx: PromptContext<'_>) -> Vec<PromptBlock> {
 /// Versioned, deterministic prompt-compilation result.  Blocks retain their
 /// identity for the context-plan/cache milestone while `text` remains a
 /// provider-compatible flattened representation for today's request model.
+/// Prompt block ownership (M002 §6.9).
+///
+/// Precedence when several blocks describe overlapping work state:
+///
+/// ```text
+/// current turn user input (newest, always visible)
+///   outranks active goal revision newer than the checkpoint
+///     outranks installed continuation state
+///       (PromptBlockKind::ContinuationState,
+///        source "continuation:installed-checkpoint")
+///         outranks stale checkpoint semantic next steps
+/// ```
+///
+/// `GoalContext` (`goal:active-checkpoint`) remains useful before the
+/// first compaction. Once an installed continuation checkpoint exists,
+/// the compiler must prefer the single `ContinuationState` projection and
+/// must not emit a contradictory duplicate objective/progress projection.
+/// The continuation block is `required` so a future active packer cannot
+/// silently omit the state required to resume after an installed
+/// compaction (M004 owns durable rollover activation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PromptBlockKind {
     HarnessContract,
@@ -190,6 +210,7 @@ pub enum PromptBlockKind {
     AgentInstructions,
     MemorySummary,
     GoalContext,
+    ContinuationState,
     SecurityEvidence,
     ResearchEvidence,
     LspContext,
@@ -206,7 +227,7 @@ impl PromptBlockKind {
             Self::HarnessContract | Self::RoleContract => 0,
             Self::ModelAdapter | Self::CapabilityContract | Self::ControlPolicy => 1,
             Self::ProjectInstructions | Self::AgentInstructions => 2,
-            Self::MemorySummary | Self::GoalContext => 3,
+            Self::MemorySummary | Self::GoalContext | Self::ContinuationState => 3,
             Self::SecurityEvidence
             | Self::ResearchEvidence
             | Self::LspContext
@@ -255,9 +276,9 @@ impl PromptBlock {
             | PromptBlockKind::ControlPolicy
             | PromptBlockKind::ProjectInstructions
             | PromptBlockKind::AgentInstructions => crate::context::CacheClass::StablePrefix,
-            PromptBlockKind::MemorySummary | PromptBlockKind::GoalContext => {
-                crate::context::CacheClass::SlowChanging
-            }
+            PromptBlockKind::MemorySummary
+            | PromptBlockKind::GoalContext
+            | PromptBlockKind::ContinuationState => crate::context::CacheClass::SlowChanging,
             PromptBlockKind::ControlInstruction | PromptBlockKind::PlanMode => {
                 crate::context::CacheClass::NeverCache
             }

@@ -38,12 +38,61 @@ pub fn render_goal_context(goal: &Goal, checkpoint_excerpt: Option<&str>) -> Str
     }
 
     if let Some(excerpt) = checkpoint_excerpt {
-        let truncated = if excerpt.len() > CHECKPOINT_EXCERPT_LIMIT {
-            &excerpt[..CHECKPOINT_EXCERPT_LIMIT]
-        } else {
-            excerpt
-        };
+        // Char-boundary-safe truncation (never split UTF-8 mid-sequence).
+        let truncated: String = excerpt.chars().take(CHECKPOINT_EXCERPT_LIMIT).collect();
         out.push_str(&format!("\nCheckpoint excerpt:\n{}\n", truncated));
+    }
+
+    out
+}
+
+/// Render current goal state with a bounded **latest** journal tail (M002
+/// §6.8).
+///
+/// Typed `Goal` fields provide the current objective/phase/progress/next
+/// action/open questions; the Markdown journal contributes only a bounded
+/// tail excerpt, kept separate from chronological updates. The plan
+/// excerpt/source (if any) should be supplied separately by the caller;
+/// this helper never parses the journal to rediscover typed fields.
+pub fn render_goal_context_with_tail(goal: &Goal, journal_tail: Option<&str>) -> String {
+    let mut out = String::with_capacity(2048);
+    out.push_str("## Active Codegg Goal\n\n");
+    out.push_str("Objective:\n");
+    out.push_str(&goal.objective);
+    out.push_str("\n\n");
+
+    out.push_str(&format!("Status: {}\n", goal.status_as_str()));
+    out.push_str(&format!("Goal revision: {}\n", goal.revision));
+
+    if let Some(ref phase) = goal.current_phase {
+        out.push_str(&format!("Current phase: {}\n", phase));
+    }
+
+    if !goal.progress_summary.is_empty() {
+        out.push_str(&format!("Progress:\n{}\n", goal.progress_summary));
+    }
+
+    if let Some(ref next) = goal.next_action {
+        out.push_str(&format!("Next action:\n{}\n", next));
+    }
+
+    if !goal.completion_criteria.is_empty() {
+        out.push_str("\nCompletion criteria:\n");
+        for (i, c) in goal.completion_criteria.iter().enumerate() {
+            out.push_str(&format!("{}. {}\n", i + 1, c));
+        }
+    }
+
+    if !goal.open_questions.is_empty() {
+        out.push_str("\nOpen questions:\n");
+        for q in &goal.open_questions {
+            out.push_str(&format!("- {}\n", q));
+        }
+    }
+
+    if let Some(tail) = journal_tail {
+        let bounded: String = tail.chars().take(CHECKPOINT_EXCERPT_LIMIT).collect();
+        out.push_str(&format!("\nLatest journal:\n{}\n", bounded));
     }
 
     out
@@ -183,5 +232,29 @@ mod tests {
     fn test_status_as_str() {
         let goal = test_goal();
         assert_eq!(goal.status_as_str(), "active");
+    }
+
+    #[test]
+    fn test_render_goal_context_with_tail_prefers_typed_state() {
+        let goal = test_goal();
+        let ctx = render_goal_context_with_tail(&goal, Some("latest tail update"));
+        assert!(ctx.contains("Implement something cool"));
+        assert!(ctx.contains("Planning"));
+        assert!(ctx.contains("Read source files"));
+        assert!(ctx.contains("Latest journal:"));
+        assert!(ctx.contains("latest tail update"));
+        assert!(ctx.contains("Goal revision:"));
+        assert!(!ctx.contains("Checkpoint excerpt:"));
+    }
+
+    #[test]
+    fn test_render_goal_context_utf8_safe() {
+        let goal = test_goal();
+        let excerpt = format!("{}é", "字".repeat(5000));
+        let ctx = render_goal_context(&goal, Some(&excerpt));
+        // Must not panic and must remain bounded; char slicing keeps it valid.
+        assert!(ctx.contains('字') || ctx.contains('é'));
+        let tail_ctx = render_goal_context_with_tail(&goal, Some(&excerpt));
+        assert!(tail_ctx.contains("Latest journal:"));
     }
 }

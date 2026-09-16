@@ -92,6 +92,14 @@ Constructs `ContextBlock` instances from runtime state. The builder takes a `ses
 | `build_goal_context_block` | GoalContext | SlowChanging | 70 | no | ProjectedRecoverable |
 | `build_memory_context_block` | MemoryContext | SlowChanging | 65 | no | ProjectedRecoverable |
 | `build_session_frame_block` | SessionFrame | Volatile | 60 | no | ProjectedRecoverable |
+
+Prompt-compiler ownership (M002 §6.9): the installed continuation
+projection is `PromptBlockKind::ContinuationState` (source
+`continuation:installed-checkpoint`, `required`, `SlowChanging` tier
+alongside `GoalContext`). It supersedes the pre-first-compaction
+`goal:active-checkpoint` block once installed; the compiler must not
+emit contradictory duplicate objective/progress projections. M004 owns
+turn-start injection.
 | `build_todo_reminder_block` | TodoReminder | Volatile | 40 | no | SummaryOnly |
 | `build_control_instruction_block` | ControlInstruction | NeverCache | 30 | no | SummaryOnly |
 | `build_artifact_summary_block` | ArtifactSummary | Volatile | 20 | no | SummaryOnly |

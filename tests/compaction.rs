@@ -834,6 +834,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         let result = compact_with_policy(input, None, ProviderRequestContext::default())
@@ -883,6 +884,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         let result = compact_with_policy(input, None, ProviderRequestContext::default())
@@ -1349,6 +1351,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         let result = compact_with_policy(input, Some(&provider), ProviderRequestContext::default())
@@ -1415,6 +1418,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         // Should not fail - falls back to programmatic
@@ -1447,6 +1451,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         // No provider needed since no model is set
@@ -1490,6 +1495,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         let result = compact_with_policy(input, Some(&provider), ProviderRequestContext::default())
@@ -1521,6 +1527,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         // No provider - should fall back to programmatic
@@ -1569,6 +1576,7 @@ mod tests {
             messages: &messages,
             config: resolved,
             active_model: None,
+            baseline: None,
         };
 
         let result = compact_with_policy(input, None, ProviderRequestContext::default())

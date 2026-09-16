@@ -100,6 +100,43 @@ pub async fn read_checkpoint_excerpt(
     }
 }
 
+/// Read the bounded **latest** tail of an append-only goal journal (M002
+/// §6.8).
+///
+/// `read_checkpoint_excerpt` returns the first N characters, which goes
+/// stale as newer progress is appended after that prefix. Typed `Goal`
+/// fields remain the current-state authority; when the Markdown journal is
+/// included at all, callers should prefer this tail so the model sees the
+/// newest updates. Slicing is by `char` count, so UTF-8 boundaries are
+/// always safe. Existing prefix callers/tests are untouched.
+pub async fn read_checkpoint_tail(
+    path: impl AsRef<Path>,
+    max_chars: usize,
+) -> Result<Option<String>, AppError> {
+    match tokio::fs::read_to_string(path.as_ref()).await {
+        Ok(content) => {
+            let total = content.chars().count();
+            if total <= max_chars {
+                return Ok(Some(content));
+            }
+            let tail: String = content.chars().skip(total - max_chars).collect();
+            Ok(Some(tail))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Synchronous tail helper for tests and adapters that already hold the
+/// journal content in memory.
+pub fn checkpoint_tail_of(content: &str, max_chars: usize) -> String {
+    let total = content.chars().count();
+    if total <= max_chars {
+        return content.to_string();
+    }
+    content.chars().skip(total - max_chars).collect()
+}
+
 pub async fn append_checkpoint_update(
     path: impl AsRef<Path>,
     update: &crate::goal::model::GoalProgressUpdate,
@@ -258,5 +295,48 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_read_checkpoint_tail_returns_latest_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let goal = test_goal();
+        let path = create_checkpoint_file(dir.path(), &goal, None)
+            .await
+            .unwrap();
+        for phase in ["Phase 1", "Phase 2", "Phase 3 newest"] {
+            append_checkpoint_update(
+                &path,
+                &GoalProgressUpdate {
+                    current_phase: Some(phase.to_string()),
+                    progress_summary: None,
+                    next_action: None,
+                    completed_items: vec![],
+                    remaining_items: vec![],
+                    open_questions: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let tail = read_checkpoint_tail(&path, 200).await.unwrap().unwrap();
+        assert!(tail.contains("Phase 3 newest"));
+        assert!(tail.chars().count() <= 200);
+        // The stale head prefix must not dominate the tail.
+        let head = read_checkpoint_excerpt(&path, 200).await.unwrap().unwrap();
+        assert!(head.contains("Goal Checkpoint"));
+        assert!(!tail.contains("Goal Checkpoint") || tail.contains("Phase 3 newest"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_read_checkpoint_tail_utf8_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tail-unicode.md");
+        let content = format!("{}é newest", "字".repeat(500));
+        tokio::fs::write(&path, &content).await.unwrap();
+        let tail = read_checkpoint_tail(&path, 10).await.unwrap().unwrap();
+        assert_eq!(tail.chars().count(), 10);
+        assert!(tail.contains("newest") || tail.contains('é') || tail.contains('字'));
+        assert!(checkpoint_tail_of(&content, 10).chars().count() <= 10);
     }
 }

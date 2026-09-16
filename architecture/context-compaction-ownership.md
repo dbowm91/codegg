@@ -29,6 +29,7 @@ calculate the context budget.
 | Token primitive | `eggcontext` | `context::compaction` and projection helpers | None | None | synchronous |
 | Historical API path | `agent::compaction` re-export | Existing integrations/tests | Delegates entirely to `context::compaction` | None | compatibility adapter only |
 | Durable continuation checkpoints | `codegg-core::session::continuation::ContinuationCheckpointStore` | Later M004 rollover sequencing (M001 lands the store only) | None; the store never calls a provider/model | `continuation_checkpoint` (v57) + atomic `ContextCompacted` commit marker | durable epoch foundation, no model-visible behavior change |
+| Authoritative continuation snapshot | `context::continuation::assemble_continuation_snapshot` (pure) + `agent::context_runtime` adapter (storage lookups) | `AgentLoop::compact_if_needed` before the canonical engine | None; assembler is sync/deterministic, provider only in semantic enrichment | In-memory M002 candidate convertible to an M001 payload; M004 owns install sequencing | one typed snapshot per compaction attempt with explicit provenance/diagnostics |
 
 ## Before and after ownership map
 

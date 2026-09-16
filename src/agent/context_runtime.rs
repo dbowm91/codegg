@@ -6,6 +6,25 @@ use crate::provider::{ChatRequest, Message, ToolCall};
 use futures_util::FutureExt;
 
 impl AgentLoop {
+    /// Latest user-authored text from provider-visible messages (M002
+    /// intent spine). Assistant responses are never treated as intent.
+    fn latest_user_prompt_from_messages(messages: &[Message]) -> Option<String> {
+        messages.iter().rev().find_map(|message| match message {
+            Message::User { content } => {
+                let prompt = content
+                    .iter()
+                    .filter_map(|part| match part {
+                        crate::provider::ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!prompt.trim().is_empty()).then_some(prompt)
+            }
+            _ => None,
+        })
+    }
+
     pub(super) fn build_packer_candidates(
         &self,
         request: &ChatRequest,
@@ -685,6 +704,90 @@ impl AgentLoop {
             }
         }
 
+        // Assemble the authoritative continuation baseline (M002 §6.1-6.2)
+        // from host-owned state before running the canonical engine, so
+        // hybrid reduction starts from the known objective/current task.
+        // Storage lookups stay in this adapter; the pure assembler takes
+        // already-loaded values.
+        let baseline_snapshot = {
+            let todo = self.services.todo_state.lock().await;
+            let todos: Vec<crate::task_state::TodoItem> = todo.items.clone();
+            drop(todo);
+            let security_findings: Vec<String> = self
+                .recent_findings
+                .iter()
+                .map(|f| {
+                    let cat = format!("{:?}", f.category);
+                    format!("[{}] {}", cat, f.evidence)
+                })
+                .take(5)
+                .collect();
+            let active_goal = match self.services.goal_store.clone() {
+                Some(store) => match store.active_for_session(&self.session_id).await {
+                    Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
+                        Some(goal)
+                    }
+                    Ok(_) => None,
+                    Err(error) => {
+                        tracing::debug!(error = %error, "goal lookup failed; using origin provenance");
+                        None
+                    }
+                },
+                None => None,
+            };
+            // Plan metadata: read the active plan file when it lives under
+            // the current workspace; otherwise record plan_unavailable.
+            let (plan_path, plan_content_owned) =
+                match active_goal.as_ref().and_then(|goal| goal.plan_path.clone()) {
+                    Some(path) => {
+                        let candidate = std::path::PathBuf::from(&path);
+                        let under_workspace = candidate
+                            .is_absolute()
+                            .then(|| {
+                                candidate
+                                    .strip_prefix(&self.workspace_root)
+                                    .is_ok()
+                                    .then_some(candidate.clone())
+                            })
+                            .flatten()
+                            .or_else(|| {
+                                let joined = self.workspace_root.join(&path);
+                                joined.exists().then_some(joined)
+                            });
+                        match under_workspace {
+                            Some(full) => match std::fs::read_to_string(&full) {
+                                Ok(content) => (Some(path), Some(content)),
+                                Err(_) => (Some(path), None),
+                            },
+                            None => (Some(path), None),
+                        }
+                    }
+                    None => (None, None),
+                };
+            let current_user = Self::latest_user_prompt_from_messages(messages);
+            let snapshot = crate::context::continuation::assemble_continuation_snapshot(
+                crate::context::continuation::ContinuationAssemblyInput {
+                    session_id: self.session_id.as_str(),
+                    origin_prompt: self.original_user_prompt.as_deref(),
+                    current_user_message: current_user.as_deref(),
+                    messages,
+                    active_goal: active_goal.as_ref(),
+                    todos: &todos,
+                    ledger: &self.context_ledger,
+                    security_findings: &security_findings,
+                    previous_checkpoint: None,
+                    plan_path: plan_path.as_deref(),
+                    plan_content: plan_content_owned.as_deref(),
+                },
+            );
+            // Keep the owned plan body + goal alive for the request borrow.
+            // The snapshot itself is the baseline; owned strings above are
+            // cloned into it, so only the snapshot + goal need to live on.
+            (snapshot, active_goal, plan_path, plan_content_owned)
+        };
+        let (baseline_snapshot, _active_goal_guard, _plan_path_guard, _plan_content_guard) =
+            baseline_snapshot;
+
         let result = compact_context(ContextCompactionRequest {
             messages,
             context_limit,
@@ -700,6 +803,7 @@ impl AgentLoop {
                 session_id: Some(Arc::from(self.session_id.as_str())),
             },
             cancellation: None,
+            baseline: Some(&baseline_snapshot),
         })
         .await;
 
@@ -739,14 +843,62 @@ impl AgentLoop {
         self.services.context_tracker.reset();
         self.services.context_tracker.add_messages(messages);
 
-        let already_has_frame = messages.iter().any(|message| {
-            matches!(message, Message::System { content } if content.contains("[codegg compacted session state]"))
+        // Exactly one current CodeGG-owned continuation frame (M002 §6.4):
+        // recognize both the versioned marker and the superseded legacy
+        // marker. The hybrid engine already emits one authoritative frame;
+        // the legacy path preserves system messages verbatim, so strip any
+        // stale CodeGG frames there before injecting the single current one.
+        let already_has_frame = messages.iter().any(|message| match message {
+            Message::System { content } => {
+                crate::agent::context_frame::is_codegg_owned_frame(content.as_str())
+            }
+            _ => false,
         });
         if !already_has_frame {
             let frame = self.build_context_frame().await;
             if !frame.is_empty() {
-                push_control_instruction(messages, model_profile, &frame.to_control_text());
+                push_control_instruction(messages, model_profile, &frame.to_continuation_text());
             }
+        } else {
+            // Normalize: collapse any stacked legacy/current frames to the
+            // single newest versioned frame. The hybrid path already did
+            // this; this pass covers the legacy auto-compact path which
+            // preserves all system messages.
+            let mut seen_current = false;
+            let mut normalized: Vec<Message> = Vec::with_capacity(messages.len());
+            // Walk in reverse so the newest frame wins, then restore order.
+            for message in messages.iter().rev() {
+                match message {
+                    Message::System { content }
+                        if crate::agent::context_frame::is_codegg_owned_frame(content.as_str()) =>
+                    {
+                        if seen_current {
+                            continue;
+                        }
+                        seen_current = true;
+                        // If the surviving frame is legacy, replace it with
+                        // the current authoritative rendering.
+                        if crate::agent::context_frame::is_legacy_compaction_frame(content.as_str())
+                        {
+                            let frame = self.build_context_frame().await;
+                            if !frame.is_empty() {
+                                normalized.push(Message::System {
+                                    content: frame.to_continuation_text().into(),
+                                });
+                            } else {
+                                normalized.push(message.clone());
+                            }
+                        } else {
+                            normalized.push(message.clone());
+                        }
+                    }
+                    _ => normalized.push(message.clone()),
+                }
+            }
+            normalized.reverse();
+            *messages = normalized;
+            self.services.context_tracker.reset();
+            self.services.context_tracker.add_messages(messages);
         }
         if self.services.task_state_policy.inject_after_compaction {
             let mut todo = self.services.todo_state.lock().await;

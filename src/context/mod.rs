@@ -3,6 +3,7 @@ pub mod block;
 pub mod block_builder;
 pub mod cache_stats;
 pub mod compaction;
+pub mod continuation;
 pub mod effective_cost;
 pub mod handle;
 pub mod packer;

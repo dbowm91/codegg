@@ -10,8 +10,13 @@ preserving diagnostic detail. Provides `context_read` for on-demand
 artifact recovery. Separately, the `eggcontext` crate provides
 deterministic token counting (see [Related Docs](#related-docs)).
 
-**Session-local and in-memory.** Artifacts are not persisted across
-sessions. `FileArtifactStore` exists as an alternative backing store.
+**Production persistence.** Production session tools construct
+`FileArtifactStore::new(&execution.workspace_root)`, writing bounded
+10 MiB records under `.codegg/context_artifacts` via temp-file + rename
+so handles survive daemon restart. `InMemoryArtifactStore` remains for
+tests. The stale claim that production artifacts are session-local /
+in-memory is corrected: `FileArtifactStore` is the current production
+store.
 
 ## Where It Lives
 
@@ -186,9 +191,11 @@ Accumulates metadata across projections:
 | `commands_run` | 10 | No (FIFO via VecDeque) |
 | `test_results` | 10 | Yes |
 | `unresolved_errors` | 10 | Yes |
-| `artifact_handles` | unlimited | Yes |
+| `artifact_handles` | unlimited in the ledger; projected bounded (most recent 32, dedup) into continuation state via `bounded_artifact_handles` | Yes |
 
-`to_context_frame()` merges into the system prompt for model awareness.
+`to_context_frame()` merges files/commands/tests/errors plus the bounded
+artifact-handle projection into the frame for model awareness (M002
+§6.6). The full unbounded ledger never goes to the prompt.
 
 ## Configuration Surface
 

@@ -513,19 +513,25 @@ impl TurnRuntime for DefaultTurnRuntime {
             ));
         }
 
+        // Current-state projection (M002 §6.8): typed Goal fields are the
+        // authority; the append-only journal contributes a bounded latest
+        // tail, never the stale head prefix.
         let goal_context = if let Some(ref p) = pool {
             let goal_store = crate::goal::GoalStore::new(p.clone());
             match goal_store.active_for_session(&session_id).await {
                 Ok(Some(goal)) if goal.status == crate::goal::GoalStatus::Active => {
-                    let checkpoint_excerpt = if let Some(ref path) = goal.checkpoint_path {
-                        crate::goal::checkpoint::read_checkpoint_excerpt(path, 4000)
+                    let journal_tail = if let Some(ref path) = goal.checkpoint_path {
+                        crate::goal::checkpoint::read_checkpoint_tail(path, 4000)
                             .await
                             .ok()
                             .flatten()
                     } else {
                         None
                     };
-                    crate::goal::render::render_goal_context(&goal, checkpoint_excerpt.as_deref())
+                    crate::goal::render::render_goal_context_with_tail(
+                        &goal,
+                        journal_tail.as_deref(),
+                    )
                 }
                 _ => String::new(),
             }

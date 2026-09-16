@@ -855,6 +855,10 @@ pub struct ContextCompactionRequest<'a> {
     pub provider: Option<&'a dyn Provider>,
     pub provider_context: ProviderRequestContext,
     pub cancellation: Option<&'a CancellationToken>,
+    /// Authoritative continuation baseline assembled by the caller (M002).
+    /// When present, the hybrid engine starts from the known objective /
+    /// current task instead of `"unknown"` / `"none"`.
+    pub baseline: Option<&'a crate::context::continuation::ContinuationSnapshot>,
 }
 
 #[derive(Debug)]
@@ -1008,6 +1012,7 @@ pub async fn compact_context(request: ContextCompactionRequest<'_>) -> ContextCo
             messages: &messages,
             config,
             active_model: request.active_model,
+            baseline: request.baseline,
         };
 
         if has_hybrid_config {
@@ -1183,6 +1188,12 @@ pub struct CompactionInput<'a> {
     pub messages: &'a [Message],
     pub config: ResolvedCompactionConfig,
     pub active_model: Option<&'a str>,
+    /// Authoritative host-owned continuation baseline (M002 §6.5). When
+    /// present, programmatic reduction starts from the known
+    /// objective/current task and semantic enrichment merges against it
+    /// rather than inferring from the transcript. `None` preserves the
+    /// legacy transcript-only path for compatibility callers.
+    pub baseline: Option<&'a crate::context::continuation::ContinuationSnapshot>,
 }
 
 pub struct CompactionOutput {
@@ -1221,8 +1232,44 @@ fn truncate_for_summary(text: &str, max_chars: usize) -> String {
 
 /// Perform semantic checkpointing: ask the model to fill in semantic fields
 /// from the reduced programmatic state.
+///
+/// Compatibility wrapper: when the reduced frame already carries the
+/// host-owned baseline (see `build_programmatic_state_with_baseline`), no
+/// separate baseline is needed. New code should prefer
+/// `semantic_checkpoint_with_baseline` so the model never receives
+/// `"unknown"` for an objective the host already knows.
 pub async fn semantic_checkpoint(
     reduced: &ProgrammaticCompactionState,
+    retained_messages: &[Message],
+    provider: &dyn crate::provider::Provider,
+    model: &str,
+    max_summary_tokens: usize,
+    context: ProviderRequestContext,
+) -> Result<crate::agent::context_frame::ContextFrame, crate::error::AppError> {
+    semantic_checkpoint_with_baseline(
+        reduced,
+        None,
+        retained_messages,
+        provider,
+        model,
+        max_summary_tokens,
+        context,
+    )
+    .await
+}
+
+/// Baseline-aware semantic enrichment (M002 §6.5).
+///
+/// The reduced programmatic state must already contain the host-owned
+/// baseline; `baseline` additionally supplies the authoritative objective,
+/// current task, and carried-forward semantic state so the prompt never
+/// falls back to `"unknown"`/`"none"` when the host knows better. The
+/// structured output remains narrowly owned: it must not return/override
+/// goal ID, goal revision, plan digest, file list, command list, or test
+/// state (enforced by `parse_semantic_response` + `merge_frames`).
+pub async fn semantic_checkpoint_with_baseline(
+    reduced: &ProgrammaticCompactionState,
+    baseline: Option<&crate::context::continuation::ContinuationSnapshot>,
     retained_messages: &[Message],
     provider: &dyn crate::provider::Provider,
     model: &str,
@@ -1316,8 +1363,27 @@ pub async fn semantic_checkpoint(
         format!("## Recent Messages\n\n{}\n", recent_text.join("\n\n"))
     };
 
-    let user_goal = reduced.frame.user_goal.as_deref().unwrap_or("unknown");
-    let current_task = reduced.frame.current_task.as_deref().unwrap_or("none");
+    // Host-owned baseline outranks transcript inference: prefer the
+    // explicit snapshot, then the already-baselined reduced frame. Only
+    // when neither knows the objective do we fall back to the legacy
+    // placeholders (which callers must treat as unknown, never authority).
+    let user_goal_owned: Option<String>;
+    let current_task_owned: Option<String>;
+    let (user_goal, current_task) = match baseline {
+        Some(snapshot) if !snapshot.objective.trim().is_empty() => {
+            user_goal_owned = Some(snapshot.objective.clone());
+            current_task_owned = snapshot.current_task.clone();
+            (
+                user_goal_owned.as_deref().unwrap(),
+                current_task_owned.as_deref().unwrap_or("none"),
+            )
+        }
+        _ => {
+            let goal = reduced.frame.user_goal.as_deref().unwrap_or("unknown");
+            let task = reduced.frame.current_task.as_deref().unwrap_or("none");
+            (goal, task)
+        }
+    };
 
     let prompt = format!(
         "You are updating compact session state for a coding agent. Use only the provided reduced ledger and retained messages. \
@@ -1416,6 +1482,9 @@ fn parse_semantic_response(
         )
     })?;
 
+    // Narrow ownership: only the four semantic-owned fields are read.
+    // Any goal ID/revision, plan digest, file list, command list, or test
+    // state the model returns is ignored by construction.
     let mut frame = crate::agent::context_frame::ContextFrame::default();
 
     if let Some(constraints) = parsed.get("constraints").and_then(|v| v.as_array()) {
@@ -1450,7 +1519,12 @@ fn parse_semantic_response(
 }
 
 /// Merge a semantic frame into a programmatic frame.
-/// Semantic fields override programmatic fields only when semantic has non-empty values.
+///
+/// Only the four semantic-owned lists are merged, and only when the
+/// semantic side is non-empty. Host facts (`user_goal`, `current_task`,
+/// `touched_files`, `commands_run`, `test_results`, `artifact_handles`)
+/// are never overwritten: the semantic model is advisory/enrichment, never
+/// authority for goal revision, file paths, commands, tests, or completion.
 pub fn merge_frames(
     base: &mut crate::agent::context_frame::ContextFrame,
     semantic: crate::agent::context_frame::ContextFrame,
@@ -1462,13 +1536,19 @@ pub fn merge_frames(
         base.decisions = semantic.decisions;
     }
     if !semantic.unresolved_errors.is_empty() {
-        base.unresolved_errors = semantic.unresolved_errors;
+        // Semantic blockers enrich but never replace deterministic errors:
+        // merge behind host-known errors with dedup.
+        for error in semantic.unresolved_errors {
+            if !base.unresolved_errors.contains(&error) {
+                base.unresolved_errors.push(error);
+            }
+        }
     }
     if !semantic.next_steps.is_empty() {
         base.next_steps = semantic.next_steps;
     }
-    // Don't override touched_files, commands_run, test_results from semantic
-    // as those are better extracted deterministically
+    // Intentionally untouched: user_goal, current_task, touched_files,
+    // commands_run, test_results, security_findings, artifact_handles.
 }
 
 // === Phase 2: Invariant Validation ===
@@ -2141,17 +2221,20 @@ pub fn select_retained_messages(
         retained.insert(idx);
     }
 
-    let tool_call_to_assistant: std::collections::HashMap<String, usize> = messages
-        .iter()
-        .enumerate()
-        .filter_map(|(i, m)| {
-            if let Message::Assistant { tool_calls, .. } = m {
-                tool_calls.first().map(|tc| (tc.id.to_string(), i))
-            } else {
-                None
+    // Resolve every tool-call ID, not just the first call of a
+    // multi-tool assistant message (M002 §6.7). If an assistant message
+    // with N calls is retained, all N result messages must be retained
+    // together or the whole group is dropped; the validator below remains
+    // a backstop, never the normal multi-tool path.
+    let mut tool_call_to_assistant: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (i, m) in messages.iter().enumerate() {
+        if let Message::Assistant { tool_calls, .. } = m {
+            for tc in tool_calls {
+                tool_call_to_assistant.entry(tc.id.to_string()).or_insert(i);
             }
-        })
-        .collect();
+        }
+    }
 
     let tool_result_to_index: std::collections::HashMap<String, usize> = messages
         .iter()
@@ -2184,11 +2267,14 @@ pub fn select_retained_messages(
 
     let assistant_ids_to_resolve: Vec<String> = retained
         .iter()
-        .filter_map(|&i| {
+        .flat_map(|&i| {
             if let Message::Assistant { tool_calls, .. } = &messages[i] {
-                tool_calls.first().map(|tc| tc.id.to_string())
+                tool_calls
+                    .iter()
+                    .map(|tc| tc.id.to_string())
+                    .collect::<Vec<_>>()
             } else {
-                None
+                Vec::new()
             }
         })
         .collect();
@@ -2199,14 +2285,123 @@ pub fn select_retained_messages(
         }
     }
 
+    // Group atomicity: a retained assistant tool-call group keeps all of
+    // its members or none. Drop groups with missing results so validation
+    // never relies on emergency fallback for ordinary multi-tool turns.
+    let mut complete_retained = retained;
+    let mut to_remove: Vec<usize> = Vec::new();
+    let retained_snapshot: Vec<usize> = complete_retained.iter().copied().collect();
+    for idx in retained_snapshot {
+        if let Message::Assistant { tool_calls, .. } = &messages[idx] {
+            if tool_calls.is_empty() {
+                continue;
+            }
+            let all_present = tool_calls
+                .iter()
+                .all(|tc| tool_result_to_index.contains_key(&tc.id.to_string()));
+            if !all_present {
+                continue;
+            }
+            let any_retained = tool_calls.iter().any(|tc| {
+                tool_result_to_index
+                    .get(&tc.id.to_string())
+                    .is_some_and(|tool_idx| complete_retained.contains(tool_idx))
+            });
+            // If none of this group's results survived the recency window,
+            // keep the group only when the assistant message itself was
+            // explicitly in the recency window; otherwise drop the whole
+            // group to preserve pair atomicity.
+            if !any_retained {
+                to_remove.push(idx);
+            }
+        }
+    }
+    for idx in to_remove {
+        // Only drop assistant messages whose tool results are all absent
+        // from retention; results already retained keep their assistant.
+        if let Message::Assistant { tool_calls, .. } = &messages[idx] {
+            let any_result_retained = tool_calls.iter().any(|tc| {
+                tool_result_to_index
+                    .get(&tc.id.to_string())
+                    .is_some_and(|tool_idx| complete_retained.contains(tool_idx))
+            });
+            if !any_result_retained {
+                complete_retained.remove(&idx);
+            }
+        }
+    }
+    retained = complete_retained;
+
     let mut indices: Vec<usize> = retained.into_iter().collect();
     indices.sort();
     indices
 }
 
+/// Explicit recognizer for CodeGG-owned continuation frames (M002 §6.4).
+///
+/// Matches only CodeGG's own versioned/new + legacy markers at the start
+/// of a System message, never arbitrary user/system text.
+pub fn is_codegg_continuation_system_message(message: &Message) -> bool {
+    match message {
+        Message::System { content } => {
+            crate::agent::context_frame::is_codegg_owned_frame(content.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// Remove/supersede earlier CodeGG continuation frames, preserving
+/// unrelated system/developer instructions. Returns the filtered messages
+/// plus the number of removed CodeGG-owned frames.
+pub fn strip_codegg_owned_frames(messages: &[Message]) -> (Vec<Message>, usize) {
+    let mut removed = 0usize;
+    let kept = messages
+        .iter()
+        .filter(|message| {
+            if is_codegg_continuation_system_message(message) {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    (kept, removed)
+}
+
+/// Count current versioned continuation frames in provider-visible history.
+pub fn count_continuation_frames(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|message| match message {
+            Message::System { content } => {
+                crate::agent::context_frame::is_continuation_frame(content.as_str())
+            }
+            _ => false,
+        })
+        .count()
+}
+
 pub fn build_programmatic_state(
     messages: &[Message],
     config: &ResolvedCompactionConfig,
+) -> ProgrammaticCompactionState {
+    build_programmatic_state_with_baseline(messages, config, None)
+}
+
+/// Host-baseline-aware programmatic reduction (M002 §6.5).
+///
+/// The reduced state receives the host-owned baseline before any semantic
+/// enrichment: `user_goal`/`current_task` come from the authoritative
+/// snapshot, never from transcript inference, and bounded artifact handles
+/// are carried into the frame. When `baseline` is `None`, the frame keeps
+/// only deterministically extracted evidence (compatibility path for
+/// callers that have not yet wired the assembler).
+pub fn build_programmatic_state_with_baseline(
+    messages: &[Message],
+    config: &ResolvedCompactionConfig,
+    baseline: Option<&crate::context::continuation::ContinuationSnapshot>,
 ) -> ProgrammaticCompactionState {
     let evidence = build_evidence_index(messages);
     let tool_pairs = collect_tool_pairs(messages);
@@ -2226,7 +2421,7 @@ pub fn build_programmatic_state(
         config.keep_recent_messages,
     );
 
-    let frame = crate::agent::context_frame::ContextFrame {
+    let mut frame = crate::agent::context_frame::ContextFrame {
         touched_files: file_paths,
         commands_run: commands,
         test_results,
@@ -2236,6 +2431,40 @@ pub fn build_programmatic_state(
     };
 
     let mut diagnostics = Vec::new();
+    if let Some(snapshot) = baseline {
+        // Authoritative host facts first; the semantic model later only
+        // enriches the four semantic-owned lists.
+        if !snapshot.objective.trim().is_empty() {
+            frame.user_goal = Some(snapshot.objective.clone());
+        }
+        frame.current_task = snapshot.current_task.clone();
+        frame.artifact_handles = snapshot.artifact_handles.clone();
+        // Merge carried-forward semantic constraints with current-epoch
+        // evidence constraints (dedup, bounded).
+        for constraint in &snapshot.semantic.constraints {
+            if !frame.constraints.contains(constraint) {
+                frame.constraints.push(constraint.clone());
+            }
+        }
+        frame.constraints.truncate(32);
+        if !snapshot.semantic.decisions.is_empty() {
+            frame.decisions = snapshot.semantic.decisions.clone();
+        }
+        if !snapshot.semantic.next_steps.is_empty() {
+            frame.next_steps = snapshot.semantic.next_steps.clone();
+        } else if frame.next_steps.is_empty() {
+            if let Some(task) = snapshot.current_task.clone() {
+                frame.next_steps.push(task);
+            }
+        }
+        diagnostics.push(CompactionDiagnostic {
+            level: CompactionDiagnosticLevel::Info,
+            message: format!(
+                "baseline(objective_source={:?}, task_source={:?})",
+                snapshot.objective_source, snapshot.current_task_source
+            ),
+        });
+    }
     diagnostics.push(CompactionDiagnostic {
         level: CompactionDiagnosticLevel::Info,
         message: format!(
@@ -2260,26 +2489,7 @@ pub fn compile_programmatic_messages(
     state: &ProgrammaticCompactionState,
     _config: &ResolvedCompactionConfig,
 ) -> Vec<Message> {
-    let mut result = Vec::new();
-
-    for msg in original {
-        if matches!(msg, Message::System { .. }) {
-            result.push(msg.clone());
-        }
-    }
-
-    let control_text = state.frame.to_compaction_control_text();
-    result.push(Message::System {
-        content: control_text.into(),
-    });
-
-    for &idx in &state.retained_message_indices {
-        if idx < original.len() && !matches!(&original[idx], Message::System { .. }) {
-            result.push(original[idx].clone());
-        }
-    }
-
-    result
+    compile_frame_messages(original, state, &state.frame)
 }
 
 pub fn compile_hybrid_messages(
@@ -2288,21 +2498,39 @@ pub fn compile_hybrid_messages(
     frame: crate::agent::context_frame::ContextFrame,
     _config: &ResolvedCompactionConfig,
 ) -> Vec<Message> {
+    compile_frame_messages(original, state, &frame)
+}
+
+/// Shared frame compiler (M002 §6.4): strips earlier CodeGG-owned
+/// continuation frames, emits exactly one current versioned frame, and
+/// preserves unrelated system/developer instructions.
+fn compile_frame_messages(
+    original: &[Message],
+    state: &ProgrammaticCompactionState,
+    frame: &crate::agent::context_frame::ContextFrame,
+) -> Vec<Message> {
     let mut result = Vec::new();
 
     for msg in original {
         if matches!(msg, Message::System { .. }) {
+            if is_codegg_continuation_system_message(msg) {
+                continue;
+            }
             result.push(msg.clone());
         }
     }
 
-    let control_text = frame.to_compaction_control_text();
+    let control_text = frame.to_continuation_text();
     result.push(Message::System {
         content: control_text.into(),
     });
 
     for &idx in &state.retained_message_indices {
         if idx < original.len() && !matches!(&original[idx], Message::System { .. }) {
+            // Never re-introduce a stale CodeGG frame via retention.
+            if is_codegg_continuation_system_message(&original[idx]) {
+                continue;
+            }
             result.push(original[idx].clone());
         }
     }
@@ -2317,9 +2545,14 @@ async fn compact_agent_only(
 ) -> Result<Vec<Message>, crate::error::AppError> {
     if let Some(provider) = provider {
         if let Some(model) = input.config.compaction_model.as_deref() {
-            let programmatic = build_programmatic_state(input.messages, &input.config);
-            match semantic_checkpoint(
+            let programmatic = build_programmatic_state_with_baseline(
+                input.messages,
+                &input.config,
+                input.baseline,
+            );
+            match semantic_checkpoint_with_baseline(
                 &programmatic,
+                input.baseline,
                 input.messages,
                 provider,
                 model,
@@ -2332,10 +2565,13 @@ async fn compact_agent_only(
                     let mut result = Vec::new();
                     for msg in input.messages {
                         if matches!(msg, Message::System { .. }) {
+                            if is_codegg_continuation_system_message(msg) {
+                                continue;
+                            }
                             result.push(msg.clone());
                         }
                     }
-                    let control_text = frame.to_compaction_control_text();
+                    let control_text = frame.to_continuation_text();
                     result.push(Message::System {
                         content: control_text.into(),
                     });
@@ -2358,7 +2594,8 @@ async fn compact_agent_only(
         }
     }
 
-    let programmatic = build_programmatic_state(input.messages, &input.config);
+    let programmatic =
+        build_programmatic_state_with_baseline(input.messages, &input.config, input.baseline);
     Ok(compile_programmatic_messages(
         input.messages,
         &programmatic,
@@ -2448,13 +2685,15 @@ pub async fn compact_with_policy(
         ContextTracker::new(usize::MAX, 0.0).with_model(input.active_model.map(|s| s.to_string()));
     let tokens_before = tracker.estimate_tokens_for_messages(input.messages);
 
-    let programmatic = build_programmatic_state(input.messages, &input.config);
+    let programmatic =
+        build_programmatic_state_with_baseline(input.messages, &input.config, input.baseline);
 
     let mode = input.config.mode;
     let policy = input.config.policy;
     let validate = input.config.validate;
     let messages_ref = input.messages;
     let active_model = input.active_model;
+    let baseline = input.baseline;
 
     let mut output_frame = programmatic.frame.clone();
     let mut messages = match mode {
@@ -2467,8 +2706,9 @@ pub async fn compact_with_policy(
             if let (Some(provider), Some(model)) =
                 (provider, input.config.compaction_model.as_deref())
             {
-                match semantic_checkpoint(
+                match semantic_checkpoint_with_baseline(
                     &programmatic,
+                    baseline,
                     messages_ref,
                     provider,
                     model,
@@ -3139,7 +3379,7 @@ mod tests {
         assert!(result.len() >= 3);
         let has_marker = result.iter().any(|m| {
             if let Message::System { content } = m {
-                content.contains("[codegg compacted session state]")
+                crate::agent::context_frame::is_continuation_frame(content.as_str())
             } else {
                 false
             }
@@ -3175,6 +3415,7 @@ mod tests {
             provider: None,
             provider_context: ProviderRequestContext::default(),
             cancellation: None,
+            baseline: None,
         })
         .await;
 
@@ -3205,10 +3446,378 @@ mod tests {
             provider: None,
             provider_context: ProviderRequestContext::default(),
             cancellation: Some(&cancellation),
+            baseline: None,
         })
         .await;
 
         assert_eq!(result.status, CompactionStatus::Cancelled);
         assert_eq!(result.messages.len(), messages.len());
+    }
+
+    // === M002: authoritative intent / frame / multi-tool tests ===
+
+    fn m002_user(text: &str) -> Message {
+        Message::User {
+            content: vec![ContentPart::Text {
+                text: text.to_string().into(),
+            }],
+        }
+    }
+
+    fn m002_snapshot_for(
+        objective: &str,
+        task: Option<&str>,
+    ) -> crate::context::continuation::ContinuationSnapshot {
+        use crate::context::continuation::{ContinuationAssemblyInput, ContinuationSnapshot};
+        let ledger = crate::agent::context_frame::ContextLedgerState::new();
+        let messages = vec![m002_user(objective)];
+        let snapshot: ContinuationSnapshot =
+            crate::context::continuation::assemble_continuation_snapshot(
+                ContinuationAssemblyInput {
+                    session_id: "sess-m002",
+                    origin_prompt: Some(objective),
+                    current_user_message: None,
+                    messages: &messages,
+                    active_goal: None,
+                    todos: &[],
+                    ledger: &ledger,
+                    security_findings: &[],
+                    previous_checkpoint: None,
+                    plan_path: None,
+                    plan_content: None,
+                },
+            );
+        let mut snapshot = snapshot;
+        if let Some(task) = task {
+            snapshot.current_task = Some(task.to_string());
+        }
+        snapshot
+    }
+
+    struct M002FailingProvider;
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for M002FailingProvider {
+        fn id(&self) -> &str {
+            "m002-failing"
+        }
+        fn name(&self) -> &str {
+            "M002 Failing"
+        }
+        fn clone_box(&self) -> Box<dyn crate::provider::Provider> {
+            Box::new(M002FailingProvider)
+        }
+        async fn stream(
+            &self,
+            _request: &crate::provider::ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            Err(crate::provider::ProviderError::NotFound(
+                "m002 semantic failure fixture".to_string(),
+            ))
+        }
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    struct M002JsonProvider {
+        response: String,
+        seen_prompt: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for M002JsonProvider {
+        fn id(&self) -> &str {
+            "m002-json"
+        }
+        fn name(&self) -> &str {
+            "M002 JSON"
+        }
+        fn clone_box(&self) -> Box<dyn crate::provider::Provider> {
+            Box::new(M002JsonProvider {
+                response: self.response.clone(),
+                seen_prompt: self.seen_prompt.clone(),
+            })
+        }
+        async fn stream(
+            &self,
+            request: &crate::provider::ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            let prompt = request
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    Message::User { content } => Some(
+                        content
+                            .iter()
+                            .filter_map(|part| match part {
+                                ContentPart::Text { text } => Some(text.as_str().to_string()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            *self.seen_prompt.lock().unwrap() = Some(prompt);
+            let text = self.response.clone();
+            let stream = futures_util::stream::iter(vec![
+                Ok(crate::provider::ChatEvent::TextDelta(text.into())),
+                Ok(crate::provider::ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: Default::default(),
+                }),
+            ]);
+            Ok(Box::pin(stream))
+        }
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn m002_baseline_sets_objective_and_task() {
+        let snapshot = m002_snapshot_for("authoritative objective", Some("authoritative task"));
+        let messages = vec![m002_user("authoritative objective")];
+        let config = ResolvedCompactionConfig::default();
+        let state = build_programmatic_state_with_baseline(&messages, &config, Some(&snapshot));
+        assert_eq!(
+            state.frame.user_goal.as_deref(),
+            Some("authoritative objective")
+        );
+        assert_eq!(
+            state.frame.current_task.as_deref(),
+            Some("authoritative task")
+        );
+    }
+
+    #[test]
+    fn m002_multi_tool_retention_keeps_all_results() {
+        let messages = vec![
+            m002_user("run tools"),
+            Message::Assistant {
+                content: vec![],
+                tool_calls: vec![
+                    crate::provider::ToolCall {
+                        id: "call_1".to_string().into(),
+                        name: "bash".to_string().into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    crate::provider::ToolCall {
+                        id: "call_2".to_string().into(),
+                        name: "bash".to_string().into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    crate::provider::ToolCall {
+                        id: "call_3".to_string().into(),
+                        name: "bash".to_string().into(),
+                        arguments: serde_json::json!({}),
+                    },
+                ],
+            },
+            Message::Tool {
+                tool_call_id: "call_1".to_string().into(),
+                content: "one".to_string().into(),
+            },
+            Message::Tool {
+                tool_call_id: "call_2".to_string().into(),
+                content: "two".to_string().into(),
+            },
+            Message::Tool {
+                tool_call_id: "call_3".to_string().into(),
+                content: "three".to_string().into(),
+            },
+            m002_user("follow up keeps the group recent"),
+        ];
+        let config = ResolvedCompactionConfig {
+            keep_recent_messages: 4,
+            ..ResolvedCompactionConfig::default()
+        };
+        let state = build_programmatic_state(&messages, &config);
+        // All three tool results must be retained together with their
+        // assistant message: no ordinary emergency fallback.
+        for id in ["call_1", "call_2", "call_3"] {
+            assert!(
+                state.retained_message_indices.iter().any(|&idx| matches!(
+                    &messages[idx],
+                    Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == id
+                )),
+                "missing tool result {id}"
+            );
+        }
+        let compiled = compile_programmatic_messages(&messages, &state, &config);
+        assert!(validate_message_invariants(&compiled).is_ok());
+    }
+
+    #[test]
+    fn m002_frame_replacement_keeps_one_current_frame() {
+        use crate::agent::context_frame::LEGACY_COMPACTION_MARKER;
+        let messages = vec![
+            Message::System {
+                content: "unrelated developer instruction".to_string().into(),
+            },
+            Message::System {
+                content: format!("{LEGACY_COMPACTION_MARKER}\n- Goal: stale one").into(),
+            },
+            Message::System {
+                content: format!("{LEGACY_COMPACTION_MARKER}\n- Goal: stale two").into(),
+            },
+            m002_user("do the work"),
+        ];
+        let config = ResolvedCompactionConfig::default();
+        let state = build_programmatic_state(&messages, &config);
+        let compiled = compile_programmatic_messages(&messages, &state, &config);
+        assert_eq!(count_continuation_frames(&compiled), 1);
+        // Unrelated system instructions survive.
+        assert!(compiled.iter().any(|message| matches!(
+            message,
+            Message::System { content } if content.as_str() == "unrelated developer instruction"
+        )));
+        // No legacy marker survives.
+        assert!(!compiled.iter().any(|message| matches!(
+            message,
+            Message::System { content } if content.contains(LEGACY_COMPACTION_MARKER)
+        )));
+    }
+
+    #[test]
+    fn m002_repeated_compaction_does_not_stack_frames() {
+        let mut messages = vec![
+            Message::System {
+                content: "system prompt".to_string().into(),
+            },
+            m002_user("task one"),
+            m002_user("task two"),
+            m002_user("task three"),
+            m002_user("task four"),
+            m002_user("task five"),
+        ];
+        let config = ResolvedCompactionConfig::default();
+        for _ in 0..5 {
+            let state = build_programmatic_state(&messages, &config);
+            messages = compile_programmatic_messages(&messages, &state, &config);
+            assert_eq!(count_continuation_frames(&messages), 1);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn m002_hybrid_receives_known_objective_not_unknown() {
+        let snapshot = m002_snapshot_for("known host objective", Some("known host task"));
+        let messages = vec![m002_user("known host objective")];
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let provider = M002JsonProvider {
+            response:
+                r#"{"constraints": [], "decisions": [], "unresolved_errors": [], "next_steps": []}"#
+                    .to_string(),
+            seen_prompt: seen.clone(),
+        };
+        let config = ResolvedCompactionConfig {
+            mode: CompactionMode::Hybrid,
+            compaction_model: Some("m002".to_string()),
+            ..ResolvedCompactionConfig::default()
+        };
+        let programmatic =
+            build_programmatic_state_with_baseline(&messages, &config, Some(&snapshot));
+        let frame = semantic_checkpoint_with_baseline(
+            &programmatic,
+            Some(&snapshot),
+            &messages,
+            &provider,
+            "m002",
+            800,
+            ProviderRequestContext::default(),
+        )
+        .await
+        .expect("semantic enrichment must succeed");
+        let prompt = seen.lock().unwrap().clone().unwrap_or_default();
+        assert!(prompt.contains("known host objective"));
+        assert!(prompt.contains("known host task"));
+        assert!(!prompt.contains("User Goal: unknown"));
+        // Narrow output ownership: no host facts in the semantic frame.
+        assert!(frame.user_goal.is_none());
+        assert!(frame.touched_files.is_empty());
+        let _ = config;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn m002_semantic_failure_leaves_host_state_intact() {
+        let snapshot = m002_snapshot_for("host objective intact", Some("host task intact"));
+        let messages = vec![m002_user("host objective intact")];
+        let config = ResolvedCompactionConfig {
+            mode: CompactionMode::Hybrid,
+            compaction_model: Some("m002".to_string()),
+            ..ResolvedCompactionConfig::default()
+        };
+        let input = CompactionInput {
+            messages: &messages,
+            config,
+            active_model: None,
+            baseline: Some(&snapshot),
+        };
+        let output = compact_with_policy(
+            input,
+            Some(&M002FailingProvider),
+            ProviderRequestContext::default(),
+        )
+        .await
+        .expect("host fallback must succeed");
+        let frame = output.frame.expect("programmatic frame must exist");
+        assert_eq!(frame.user_goal.as_deref(), Some("host objective intact"));
+        assert_eq!(frame.current_task.as_deref(), Some("host task intact"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn m002_compact_with_policy_reports_authoritative_fields() {
+        for mode in [CompactionMode::Programmatic, CompactionMode::Hybrid] {
+            let snapshot = m002_snapshot_for("authoritative goal", Some("authoritative current"));
+            let messages = vec![m002_user("authoritative goal")];
+            let config = ResolvedCompactionConfig {
+                mode,
+                ..ResolvedCompactionConfig::default()
+            };
+            let input = CompactionInput {
+                messages: &messages,
+                config,
+                active_model: None,
+                baseline: Some(&snapshot),
+            };
+            let output = compact_with_policy(input, None, ProviderRequestContext::default())
+                .await
+                .expect("compaction must succeed");
+            let frame = output.frame.expect("frame must exist");
+            assert_eq!(frame.user_goal.as_deref(), Some("authoritative goal"));
+            assert_eq!(frame.current_task.as_deref(), Some("authoritative current"));
+        }
+    }
+
+    #[test]
+    fn m002_legacy_marker_recognized_as_owned_frame() {
+        use crate::agent::context_frame::CONTINUATION_STATE_MARKER_V1;
+        use crate::agent::context_frame::{
+            is_codegg_owned_frame, is_continuation_frame, is_legacy_compaction_frame,
+            LEGACY_COMPACTION_MARKER,
+        };
+        assert!(is_continuation_frame(&format!(
+            "{CONTINUATION_STATE_MARKER_V1}\n- Goal: x"
+        )));
+        assert!(is_legacy_compaction_frame(&format!(
+            "{LEGACY_COMPACTION_MARKER}\n- Goal: x"
+        )));
+        assert!(is_codegg_owned_frame(&format!(
+            "{CONTINUATION_STATE_MARKER_V1}\n- Goal: x"
+        )));
+        assert!(is_codegg_owned_frame(&format!(
+            "{LEGACY_COMPACTION_MARKER}\n- Goal: x"
+        )));
+        assert!(!is_codegg_owned_frame("unrelated system prompt"));
+        assert!(!is_codegg_owned_frame(
+            "user mentions [codegg continuation state v1] mid-sentence"
+        ));
     }
 }

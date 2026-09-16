@@ -138,6 +138,9 @@ impl AgentLoop {
             unresolved_errors: Vec::new(),
             security_findings,
             next_steps,
+            artifact_handles: crate::agent::context_frame::bounded_artifact_handles(
+                &self.context_ledger.artifact_handles,
+            ),
         };
 
         let ledger_frame = self.context_ledger.to_context_frame();
@@ -152,6 +155,40 @@ impl AgentLoop {
         }
         if !ledger_frame.unresolved_errors.is_empty() {
             frame.unresolved_errors = ledger_frame.unresolved_errors;
+        }
+        if !ledger_frame.artifact_handles.is_empty() {
+            frame.artifact_handles = ledger_frame.artifact_handles;
+        }
+
+        // Authoritative goal precedence (M002 §6.2): an active durable Goal
+        // outranks the immutable session-origin prompt for the current
+        // objective. Origin provenance is retained separately by the
+        // continuation assembler; this compatibility frame keeps the
+        // resolved objective visible. Lookup failure falls back to origin
+        // provenance and never produces a fake goal.
+        if let Some(goal_store) = self.services.goal_store.clone() {
+            match goal_store.active_for_session(&self.session_id).await {
+                Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
+                    if !goal.objective.trim().is_empty() {
+                        frame.user_goal = Some(goal.objective.clone());
+                    }
+                    if frame.current_task.is_none() {
+                        frame.current_task = goal
+                            .next_action
+                            .clone()
+                            .filter(|action| !action.trim().is_empty())
+                            .or_else(|| {
+                                goal.current_phase
+                                    .clone()
+                                    .filter(|phase| !phase.trim().is_empty())
+                            });
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::debug!(error = %error, "goal lookup failed; using origin provenance");
+                }
+            }
         }
 
         frame

@@ -241,13 +241,22 @@ pub struct GoalUsageUpdate {
 ### Checkpoint System (`crates/codegg-core/src/goal/checkpoint.rs`)
 
 - `create_checkpoint_file()` (:9) — creates `.codegg/goals/{id}.checkpoint.md`
-- `read_checkpoint_excerpt()` (:85) — read with truncation
-- `append_checkpoint_update()` (:103) — append progress updates
+- `read_checkpoint_excerpt()` — bounded head prefix (legacy callers/tests only)
+- `read_checkpoint_tail()` / `checkpoint_tail_of()` (M002) — bounded latest tail of the append-only journal with UTF-8-safe char slicing
+- `append_checkpoint_update()` — append progress updates
+
+The Markdown journal is a user-facing historical journal, not canonical
+current-state authority. Typed `Goal` fields (objective, phase,
+progress, next action, open questions, revision) provide current state;
+when the journal is included, callers use the bounded tail so newer
+progress appended after the old head prefix is not hidden. Turn-start
+projection uses `render_goal_context_with_tail`.
 
 ### Render Helpers (`crates/codegg-core/src/goal/render.rs`)
 
-- `render_goal_context()` (:5) — full goal context for system prompt
-- `render_goal_status()` (:52) — one-line status summary
+- `render_goal_context()` — full goal context for system prompt (legacy excerpt form; truncation is char-boundary-safe)
+- `render_goal_context_with_tail()` (M002) — typed current state plus a bounded latest journal tail, kept separate from chronological updates; never parses the journal to rediscover typed fields
+- `render_goal_status()` — one-line status summary
 
 ## Configuration Surface
 

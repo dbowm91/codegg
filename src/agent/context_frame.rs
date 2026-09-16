@@ -1,6 +1,31 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+/// Maximum artifact handles carried into a continuation frame (M002 §6.6).
+/// The ledger itself remains unbounded; projection into model-visible state
+/// retains the most recent N handles in recency order, deduplicated.
+pub const MAX_CONTINUATION_ARTIFACT_HANDLES: usize = 32;
+
+/// Bound an artifact-handle list to the most recent N entries,
+/// deduplicated while preserving recency order (last occurrence wins).
+pub fn bounded_artifact_handles(handles: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for handle in handles.iter().rev() {
+        if handle.is_empty() {
+            continue;
+        }
+        if seen.insert(handle.clone()) {
+            out.push(handle.clone());
+        }
+        if out.len() >= MAX_CONTINUATION_ARTIFACT_HANDLES {
+            break;
+        }
+    }
+    out.reverse();
+    out
+}
+
 #[derive(Debug, Default)]
 pub struct ContextLedgerState {
     pub touched_files: Vec<String>,
@@ -63,9 +88,43 @@ impl ContextLedgerState {
             commands_run: self.commands_run.iter().cloned().collect(),
             test_results: self.test_results.clone(),
             unresolved_errors: self.unresolved_errors.clone(),
+            artifact_handles: bounded_artifact_handles(&self.artifact_handles),
             ..Default::default()
         }
     }
+}
+
+/// Versioned marker for the M002 authoritative continuation frame.
+///
+/// New frames render with this marker. The unversioned
+/// [`LEGACY_COMPACTION_MARKER`] is recognized for migration/cleanup only
+/// and must not be rendered by new code.
+pub const CONTINUATION_STATE_MARKER_V1: &str = "[codegg continuation state v1]";
+
+/// Pre-M002 compaction marker. Recognized as a superseded CodeGG-owned
+/// frame during transition; never rendered by new code.
+pub const LEGACY_COMPACTION_MARKER: &str = "[codegg compacted session state]";
+
+/// True when `content` is a current CodeGG continuation frame.
+///
+/// Matches only CodeGG's own versioned marker at the start of the message
+/// (after leading whitespace), not arbitrary user/system text that merely
+/// mentions the marker.
+pub fn is_continuation_frame(content: &str) -> bool {
+    content
+        .trim_start()
+        .starts_with(CONTINUATION_STATE_MARKER_V1)
+}
+
+/// True when `content` is a pre-M002 CodeGG compaction frame.
+pub fn is_legacy_compaction_frame(content: &str) -> bool {
+    content.trim_start().starts_with(LEGACY_COMPACTION_MARKER)
+}
+
+/// True when `content` is any CodeGG-owned continuation/compaction frame
+/// (current versioned form or superseded legacy form).
+pub fn is_codegg_owned_frame(content: &str) -> bool {
+    is_continuation_frame(content) || is_legacy_compaction_frame(content)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,6 +139,11 @@ pub struct ContextFrame {
     pub unresolved_errors: Vec<String>,
     pub security_findings: Vec<String>,
     pub next_steps: Vec<String>,
+    /// Bounded recoverable artifact references carried into continuation
+    /// state (M002 §6.6). Additive field; old serialized frames decode with
+    /// an empty list.
+    #[serde(default)]
+    pub artifact_handles: Vec<String>,
 }
 
 impl ContextFrame {
@@ -132,8 +196,13 @@ impl ContextFrame {
         lines.join("\n")
     }
 
-    pub fn to_compaction_control_text(&self) -> String {
-        let mut lines = vec!["[codegg compacted session state]".to_string()];
+    /// Render the current authoritative continuation frame (M002).
+    ///
+    /// Uses the versioned [`CONTINUATION_STATE_MARKER_V1`] marker. Old
+    /// `[codegg compacted session state]` text is never emitted here; it is
+    /// recognized separately for migration/cleanup.
+    pub fn to_continuation_text(&self) -> String {
+        let mut lines = vec![CONTINUATION_STATE_MARKER_V1.to_string()];
 
         if let Some(ref goal) = self.user_goal {
             lines.push(format!("- Goal: {}", goal));
@@ -177,8 +246,21 @@ impl ContextFrame {
         if !self.next_steps.is_empty() {
             lines.push(format!("- Next steps: {}", self.next_steps.join("; ")));
         }
+        if !self.artifact_handles.is_empty() {
+            lines.push(format!(
+                "- Evidence handles: {}",
+                self.artifact_handles.join(", ")
+            ));
+        }
 
         lines.join("\n")
+    }
+
+    pub fn to_compaction_control_text(&self) -> String {
+        // Compatibility alias: new production code should call
+        // `to_continuation_text()`. The versioned marker is the only form
+        // emitted; the legacy marker is recognized on read for cleanup.
+        self.to_continuation_text()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -192,6 +274,7 @@ impl ContextFrame {
             && self.unresolved_errors.is_empty()
             && self.security_findings.is_empty()
             && self.next_steps.is_empty()
+            && self.artifact_handles.is_empty()
     }
 }
 
