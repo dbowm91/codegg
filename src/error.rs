@@ -72,12 +72,16 @@ impl IntoResponse for AxumAppError {
             }
 
             AppError::Provider(ProviderError::Auth(_)) => StatusCode::UNAUTHORIZED,
-            AppError::Provider(ProviderError::RateLimit) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Provider(ProviderError::RateLimit)
+            | AppError::Provider(ProviderError::RateLimited { .. }) => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
             AppError::Provider(ProviderError::Timeout(_)) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Provider(ProviderError::NotFound(_))
             | AppError::Provider(ProviderError::ModelNotFound(_)) => StatusCode::NOT_FOUND,
             AppError::Provider(ProviderError::Api { .. })
             | AppError::Provider(ProviderError::Stream(_))
+            | AppError::Provider(ProviderError::Transport { .. })
             | AppError::Provider(ProviderError::CircuitOpen(_)) => StatusCode::BAD_GATEWAY,
 
             AppError::Agent(AgentError::NotFound(_)) => StatusCode::NOT_FOUND,

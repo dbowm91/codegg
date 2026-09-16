@@ -30,7 +30,7 @@ asset management.
 | `src/agent/context_runtime.rs` | Turn-lifecycle compaction (`compact_if_needed`) and pack-observation phase (context-owned) |
 | `src/agent/tool_batch.rs` | Typed permission/MCP/broker batch boundary for tool calls |
 | `src/context/policy.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
-| `src/agent/provider_turn.rs` | `ProviderTurnAdapter` — provider retry and stream normalization |
+| `src/agent/provider_turn.rs` | `ProviderTurnAdapter` — attempt-safe provider retry and stream normalization |
 | `src/agent/processor.rs` | `EventProcessor` — accumulates `ChatEvent` stream into messages |
 | `src/context/compaction.rs` | Canonical `ContextTracker`, budget policy, compaction engine, typed results |
 | `src/agent/compaction.rs` | Compatibility re-export for the canonical context compaction owner |
@@ -138,6 +138,31 @@ constructor (daemon callers use the typed factory).
 No coordinator field reconstructs context-token policy, subprocess lifecycle,
 Git safety/provenance, provider transport, tool authorization, scheduler
 admission, or durable completion authority.
+
+### Provider-turn attempt safety (execution-reliability M001)
+
+Each logical turn runs at most 3 attempts under one UUID-scoped attempt
+chain. Every attempt publishes `ProviderAttemptStarted`; failures publish
+`ProviderAttemptFailed` (secret-safe `error_class`, `visible_output`,
+`will_retry`); abandonment after visible output publishes
+`ProviderAttemptSuperseded` instead of replaying.
+
+- Only `Transient` taxonomy failures retry, and only before any
+  externally visible output (`TextDelta`/`ReasoningDelta`/`ToolCallStarted`).
+- After visible output the turn stops with a typed
+  `interrupted after visible output (attempt <id>, class <class>)` stream
+  error. The partial buffer is discarded, so an abandoned tool-call start
+  is never executed and two generations never merge.
+- Backoff is bounded exponential (1s/2s/4s, 30s cap) with full jitter;
+  a capped server `Retry-After` hint raises the floor. Sleeps and the
+  inter-event loop observe the turn `cancel_rx`; cancellation returns a
+  `provider turn cancelled` error with no further attempt.
+- The same provider object and request are reused; session-selected
+  provider/model never changes here. Attempt diagnostics log only
+  provider/model logical IDs plus error class — never credentials or URLs.
+- No `CoreEvent`/protocol change was needed: the new bus events map to
+  `None` in `map_app_event_to_core_event` (diagnostic-only, older clients
+  unaffected).
 
 ### Agent Resolution (5-layer priority)
 

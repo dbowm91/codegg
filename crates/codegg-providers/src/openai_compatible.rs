@@ -551,7 +551,7 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
-            return Err(ProviderError::RateLimit);
+            return Err(ProviderError::rate_limit_from_headers(resp.headers()));
         }
 
         if !resp.status().is_success() {
@@ -567,8 +567,11 @@ impl Provider for OpenAiCompatibleProvider {
                 let preview: String = err.chars().take(2000).collect();
                 tracing::info!("openai_compatible error body: {}", preview);
             }
-            return Err(ProviderError::api(
-                "http_error",
+            // Preserve the numeric status so the retry taxonomy can
+            // distinguish permanent auth/invalid-request failures from
+            // transient 5xx without reparsing the message body.
+            return Err(ProviderError::from_http_status(
+                status.as_u16(),
                 format!("API error: {err}"),
             ));
         }

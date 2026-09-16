@@ -929,11 +929,17 @@ where
     let mut response = tokio::runtime::Handle::current().block_on(send_request())?;
 
     if response.status() == http::StatusCode::TOO_MANY_REQUESTS {
-        return Err(ProviderError::RateLimit);
+        return Err(ProviderError::rate_limit_from_headers(response.headers()));
     }
 
     if !response.status().is_success() {
         let status = response.status();
+        if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN {
+            let err_text = tokio::runtime::Handle::current()
+                .block_on(response.text())
+                .unwrap_or_else(|_| "unknown error".to_string());
+            return Err(ProviderError::from_http_status(status.as_u16(), err_text));
+        }
         let err_text = tokio::runtime::Handle::current()
             .block_on(response.text())
             .unwrap_or_else(|_| "unknown error".to_string());

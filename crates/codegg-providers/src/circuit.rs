@@ -107,6 +107,27 @@ impl CircuitBreaker {
         F: core::future::Future<Output = Result<R, E>>,
         E: From<CircuitError>,
     {
+        self.try_admit().await.map_err(E::from)?;
+        let result = op.await;
+
+        match &result {
+            Ok(_) => self.record_success().await,
+            Err(_) => self.record_failure().await,
+        }
+
+        result
+    }
+
+    /// Admit one operation without recording an outcome.
+    ///
+    /// This performs exactly the same admission state machine as [`Self::call`]
+    /// (including atomic half-open probe claiming) but leaves success/failure
+    /// accounting to the caller. Stream owners use this so a successful
+    /// stream acquisition is not counted as health success before the
+    /// terminal stream outcome is known; the caller must record exactly one
+    /// [`Self::record_success`] or [`Self::record_failure`] for the admitted
+    /// attempt.
+    pub async fn try_admit(&self) -> Result<(), CircuitError> {
         enum Admission {
             Run,
             Reject,
@@ -147,7 +168,7 @@ impl CircuitBreaker {
                                     "circuit breaker {} transitioned to Open after HalfOpen timeout",
                                     self.inner.name
                                 );
-                                return Err(CircuitError::Open(self.inner.name.clone()).into());
+                                return Err(CircuitError::Open(self.inner.name.clone()));
                             }
                         }
                         Admission::Run
@@ -177,17 +198,8 @@ impl CircuitBreaker {
         };
 
         match admission {
-            Admission::Reject => Err(CircuitError::Open(self.inner.name.clone()).into()),
-            Admission::Run => {
-                let result = op.await;
-
-                match &result {
-                    Ok(_) => self.record_success().await,
-                    Err(_) => self.record_failure().await,
-                }
-
-                result
-            }
+            Admission::Reject => Err(CircuitError::Open(self.inner.name.clone())),
+            Admission::Run => Ok(()),
         }
     }
 

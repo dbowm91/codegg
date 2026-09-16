@@ -213,7 +213,7 @@ impl Provider for AnthropicProvider {
             .map_err(ProviderError::from)?;
 
         if resp.status() == http::StatusCode::TOO_MANY_REQUESTS {
-            return Err(ProviderError::RateLimit);
+            return Err(ProviderError::rate_limit_from_headers(resp.headers()));
         }
 
         if !resp.status().is_success() {

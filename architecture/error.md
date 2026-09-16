@@ -70,10 +70,18 @@ Variants: `NotFound`, `Invalid`, `Parse`, `Merge`, `Watch`.
 ### ProviderError (re-exported from `codegg_providers::error`)
 
 Variants: `NotFound`, `Api { code, message, url }`, `Stream`, `RateLimit`,
-`Auth`, `ModelNotFound`, `Timeout`, `CircuitOpen`.
+`RateLimited { retry_after }`, `Transport { kind }`, `Auth`,
+`ModelNotFound`, `Timeout`, `CircuitOpen`.
 
-Constructors: `api()` (empty URL), `api_with_url()`. `is_retryable()`
-returns `true` for `RateLimit`, `Timeout`, `Stream`, `CircuitOpen`, `Auth`.
+Constructors: `api()` (empty URL), `api_with_url()`, `rate_limited()`,
+`rate_limit_from_headers()`, `from_http_status()`.
+`retry_disposition()` is the explicit Permanent/Transient/Conditional
+taxonomy; `is_retryable()` returns `true` only for Transient
+(`RateLimit`/`RateLimited`, `Timeout`, `Stream`, transient `Transport`,
+transient-status `Api`). `Auth`, `ModelNotFound`, and `CircuitOpen`
+(conditional) are never blindly retried. `error_class()` is the
+secret-safe diagnostic label; `Transport` carries only the eggfetch
+category, never URLs or keys.
 
 ### ToolError (`crates/codegg-core/src/error.rs:119`)
 
@@ -170,10 +178,10 @@ None. Error types are determined by the codebase, not configuration.
 | Storage::NotFound | 404 |
 | Storage::Database/Migration/Import/Export/LlmOperation | 500 |
 | Provider::Auth | 401 |
-| Provider::RateLimit | 429 |
+| Provider::RateLimit/RateLimited | 429 |
 | Provider::Timeout | 504 |
 | Provider::NotFound/ModelNotFound | 404 |
-| Provider::Api/Stream/CircuitOpen | 502 |
+| Provider::Api/Stream/Transport/CircuitOpen | 502 |
 | Agent::NotFound | 404 |
 | Agent::Invalid | 400 |
 | Tool::NotFound | 404 |
@@ -211,7 +219,7 @@ None. Error types are determined by the codebase, not configuration.
 | `codegg_config::ConfigError` | `ConfigError` | Explicit `From` impl |
 | `codegg_config::AppError` | `AppError` | Matches Config/Io/Other |
 | `sqlx::Error` | `StorageError::Database` | Via `codegg-providers` |
-| `eggfetch_core::Error` | `ProviderError::Api` | HTTP failures are classified without retaining raw endpoint URLs |
+| `eggfetch_core::Error` | `ProviderError::Transport` (transient kinds) or `ProviderError::Api` (permanent) | HTTP failures are classified without retaining raw endpoint URLs |
 | `CircuitError::Open` | `ProviderError::CircuitOpen` | Circuit breaker integration |
 | `egglsp::LspError` | `LspError` | Several variants collapsed to `RequestFailed` |
 | `eggsentry::EggsecError` | `ToolError` | Io/FileTooLarge/Join mapped |

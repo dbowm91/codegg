@@ -1278,12 +1278,24 @@ impl ResponsesTransport {
             .map_err(crate::error::ProviderError::from)?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            if status == http::StatusCode::TOO_MANY_REQUESTS {
+                return Err(crate::error::ProviderError::rate_limit_from_headers(
+                    response.headers(),
+                ));
+            }
             let text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
+            if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN {
+                return Err(crate::error::ProviderError::from_http_status(
+                    status.as_u16(),
+                    text,
+                ));
+            }
             return Err(crate::error::ProviderError::api_with_url(
-                "http_error",
+                status.as_u16().to_string(),
                 text,
                 url,
             ));
@@ -1323,12 +1335,24 @@ impl ResponsesTransport {
             .map_err(crate::error::ProviderError::from)?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            if status == http::StatusCode::TOO_MANY_REQUESTS {
+                return Err(crate::error::ProviderError::rate_limit_from_headers(
+                    response.headers(),
+                ));
+            }
             let text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
+            if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN {
+                return Err(crate::error::ProviderError::from_http_status(
+                    status.as_u16(),
+                    text,
+                ));
+            }
             return Err(crate::error::ProviderError::api_with_url(
-                "http_error",
+                status.as_u16().to_string(),
                 text,
                 url,
             ));

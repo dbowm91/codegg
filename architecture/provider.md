@@ -256,8 +256,33 @@ pub struct FallbackProvider {
 ```
 
 Default retryable codes: `[429, 500, 502, 503, 504]`. Iterates providers
-in order, checks circuit breaker before calling, exponential backoff on
-retryable failures (1s, 2s, 4s... max 30s).
+in order. Acquisition uses atomic `try_admit()` admission; the terminal
+stream outcome (clean completion or terminal stream failure) is charged
+exactly once to the same slot breaker via a stream wrapper, so
+mid-stream failures are visible to health. Failover happens when either
+the configured status list or the canonical retry taxonomy marks the
+failure retryable; permanent auth/invalid-request/model errors never
+fail over implicitly.
+
+### Retry taxonomy (`error.rs`)
+
+`ProviderError::retry_disposition()` is the explicit
+Permanent/Transient/Conditional contract; `is_retryable()` is the
+compatibility surface (`true` only for Transient):
+
+- Permanent: `Auth`, `ModelNotFound`, `NotFound`, invalid-request/policy
+  `Api` (400/401/403/404/422, unknown codes default permanent).
+- Transient: `RateLimit`/`RateLimited`, `Timeout`, `Stream`,
+  transient `Transport` (connect/TLS/IO/hyper/pool/proxy-connect,
+  refused H2 streams), transient `Api` (408/425/429/5xx).
+- Conditional: `CircuitOpen` (only a half-open probe admission or
+  credential refresh may retry; the turn loop never retries it blindly).
+
+`Transport { kind }` carries only the secret-safe eggfetch category
+(never URLs/keys). `RateLimited { retry_after }` preserves a bounded
+`Retry-After` hint (clamped to 30s); adapters extract it from response
+headers where available. `from_http_status()` maps 401/403 to `Auth`
+and preserves numeric status codes so the taxonomy survives.
 
 ### CircuitBreaker (`circuit.rs:43`)
 

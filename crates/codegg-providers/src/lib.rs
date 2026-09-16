@@ -49,7 +49,7 @@ pub use eggpool::{
     EggpoolProbe, EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode,
     EggpoolProbeSummary, EGGPOOL_DEFAULT_PORT,
 };
-pub use error::{ProviderError, StorageError};
+pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
 pub use provider_core::{
     assistant_text_content_value, builtin_registration_order, create_http_client,
     credential_capability_for, openai_tool_arguments_value, project_tool_call_history,

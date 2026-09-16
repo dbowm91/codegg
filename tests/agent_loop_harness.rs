@@ -154,6 +154,9 @@ impl EventCollector {
                     AppEvent::TextDelta { session_id, .. } => session_id.as_ref() == sid,
                     AppEvent::ReasoningDelta { session_id, .. } => session_id.as_ref() == sid,
                     AppEvent::ToolCallStarted { session_id, .. } => session_id == sid,
+                    AppEvent::ProviderAttemptStarted { session_id, .. } => session_id == sid,
+                    AppEvent::ProviderAttemptFailed { session_id, .. } => session_id == sid,
+                    AppEvent::ProviderAttemptSuperseded { session_id, .. } => session_id == sid,
                     AppEvent::AgentFinished { session_id, .. } => session_id == sid,
                     AppEvent::SubagentStarted { session_id, .. } => session_id == sid,
                     AppEvent::SubagentProgress { session_id, .. } => session_id == sid,
@@ -4145,4 +4148,449 @@ async fn test_live_dispatcher_model_output_shape_is_plain_string() {
         );
     }
     let _ = counter; // silence unused warning if assertions are elided
+}
+
+// =============================================================================
+// M001 — provider retry attempt safety and error taxonomy
+// =============================================================================
+
+#[derive(Clone)]
+struct M001MidStreamTextFailProvider {
+    calls: Arc<Mutex<usize>>,
+}
+
+impl M001MidStreamTextFailProvider {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    async fn call_count(&self) -> usize {
+        *self.calls.lock().await
+    }
+}
+
+#[async_trait]
+impl Provider for M001MidStreamTextFailProvider {
+    fn id(&self) -> &str {
+        "m001-midstream-text"
+    }
+
+    fn name(&self) -> &str {
+        "M001 MidStream Text"
+    }
+
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+
+    async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        *self.calls.lock().await += 1;
+        let events: Vec<Result<ChatEvent, ProviderError>> = vec![
+            Ok(ChatEvent::TextDelta("partial-visible".to_string().into())),
+            Err(ProviderError::Stream("mid-stream interruption".to_string())),
+        ];
+        Ok(Box::pin(futures_util::stream::iter(events)))
+    }
+
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![])
+    }
+}
+
+#[derive(Clone)]
+struct M001MidStreamToolFailProvider {
+    calls: Arc<Mutex<usize>>,
+}
+
+impl M001MidStreamToolFailProvider {
+    fn new() -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    async fn call_count(&self) -> usize {
+        *self.calls.lock().await
+    }
+}
+
+#[async_trait]
+impl Provider for M001MidStreamToolFailProvider {
+    fn id(&self) -> &str {
+        "m001-midstream-tool"
+    }
+
+    fn name(&self) -> &str {
+        "M001 MidStream Tool"
+    }
+
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+
+    async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        *self.calls.lock().await += 1;
+        let events: Vec<Result<ChatEvent, ProviderError>> = vec![
+            Ok(ChatEvent::ToolCall(ToolCall {
+                id: "abandoned_call".to_string().into(),
+                name: "counting_tool".to_string().into(),
+                arguments: serde_json::json!({"value": "must-not-execute"}),
+            })),
+            Err(ProviderError::Stream(
+                "interrupted after tool start".to_string(),
+            )),
+        ];
+        Ok(Box::pin(futures_util::stream::iter(events)))
+    }
+
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![])
+    }
+}
+
+struct M001CountingTool {
+    calls: Arc<AtomicUsize>,
+}
+
+impl M001CountingTool {
+    fn new(calls: Arc<AtomicUsize>) -> Self {
+        Self { calls }
+    }
+}
+
+#[async_trait]
+impl Tool for M001CountingTool {
+    fn name(&self) -> &str {
+        "counting_tool"
+    }
+
+    fn description(&self) -> &str {
+        "Counts executions for M001 abandonment proof"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"]
+        })
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok("counted".to_string())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum M001FailKind {
+    RateLimit,
+    Server503,
+    BadRequest400,
+    Auth,
+    ModelNotFound,
+    SecretUrl,
+}
+
+#[derive(Clone)]
+struct M001StatusProvider {
+    calls: Arc<Mutex<usize>>,
+    fail_times: usize,
+    kind: M001FailKind,
+}
+
+impl M001StatusProvider {
+    fn new(fail_times: usize, kind: M001FailKind) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(0)),
+            fail_times,
+            kind,
+        }
+    }
+
+    async fn call_count(&self) -> usize {
+        *self.calls.lock().await
+    }
+
+    fn build_error(&self) -> ProviderError {
+        match self.kind {
+            M001FailKind::RateLimit => ProviderError::RateLimit,
+            M001FailKind::Server503 => ProviderError::api("503", "HTTP 503: unavailable"),
+            M001FailKind::BadRequest400 => ProviderError::api("400", "HTTP 400: bad request"),
+            M001FailKind::Auth => ProviderError::Auth("invalid token".to_string()),
+            M001FailKind::ModelNotFound => {
+                ProviderError::ModelNotFound("no-such-model".to_string())
+            }
+            M001FailKind::SecretUrl => ProviderError::from(eggfetch_core::Error::InvalidUrl(
+                "https://example.test/models?key=SECRET-API-KEY-123".to_string(),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for M001StatusProvider {
+    fn id(&self) -> &str {
+        "m001-status"
+    }
+
+    fn name(&self) -> &str {
+        "M001 Status"
+    }
+
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+
+    async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls <= self.fail_times {
+            return Err(self.build_error());
+        }
+        let events = vec![
+            ChatEvent::TextDelta("recovered".to_string().into()),
+            ChatEvent::Finish {
+                stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ];
+        Ok(Box::pin(futures_util::stream::iter(
+            events.into_iter().map(Ok::<_, ProviderError>),
+        )))
+    }
+
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![])
+    }
+}
+
+fn m001_attempt_ids(collector: &EventCollector, variant: &str) -> Vec<String> {
+    collector
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AppEvent::ProviderAttemptStarted { attempt_id, .. } if variant == "started" => {
+                Some(attempt_id.clone())
+            }
+            AppEvent::ProviderAttemptSuperseded { attempt_id, .. } if variant == "superseded" => {
+                Some(attempt_id.clone())
+            }
+            AppEvent::ProviderAttemptFailed { attempt_id, .. } if variant == "failed" => {
+                Some(attempt_id.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn m001_midstream_text_failure_does_not_replay() {
+    let provider_inner = M001MidStreamTextFailProvider::new();
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    let session_id = "m001-midstream-text".to_string();
+    agent_loop.set_session_id(&session_id);
+    let mut collector = EventCollector::with_session(session_id.clone());
+
+    let result = agent_loop.run(make_chat_request("hello")).await;
+    collector.collect();
+
+    assert!(result.is_err(), "mid-stream failure must surface");
+    let err_text = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_text.contains("interrupted after visible output"),
+        "error must carry the typed interruption marker, got: {err_text}"
+    );
+    assert_eq!(
+        provider_inner.call_count().await,
+        1,
+        "visible-output failure must not trigger a second attempt"
+    );
+    // The abandoned partial delta escaped (streaming UX) but no second
+    // generation was merged: exactly one text delta exists.
+    let deltas = collector
+        .events
+        .iter()
+        .filter(|e| matches!(e, AppEvent::TextDelta { .. }))
+        .count();
+    assert_eq!(deltas, 1, "exactly the abandoned partial delta is visible");
+    let started = m001_attempt_ids(&collector, "started");
+    let superseded = m001_attempt_ids(&collector, "superseded");
+    let failed = m001_attempt_ids(&collector, "failed");
+    assert_eq!(started.len(), 1);
+    assert_eq!(
+        superseded, started,
+        "supersession must attribute the same attempt"
+    );
+    assert_eq!(
+        failed, started,
+        "failure record must attribute the same attempt"
+    );
+    let failed_event = collector
+        .events
+        .iter()
+        .find_map(|e| match e {
+            AppEvent::ProviderAttemptFailed {
+                visible_output,
+                will_retry,
+                error_class,
+                ..
+            } => Some((*visible_output, *will_retry, error_class.clone())),
+            _ => None,
+        })
+        .expect("ProviderAttemptFailed must be published");
+    assert!(failed_event.0, "visible_output must be true");
+    assert!(
+        !failed_event.1,
+        "will_retry must be false after visible output"
+    );
+    assert_eq!(failed_event.2, "stream_interrupted");
+}
+
+#[tokio::test]
+async fn m001_midstream_tool_start_is_explicit_and_not_executed() {
+    let provider_inner = M001MidStreamToolFailProvider::new();
+    let provider = Box::new(provider_inner.clone());
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(M001CountingTool::new(tool_calls.clone()));
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    let session_id = "m001-midstream-tool".to_string();
+    agent_loop.set_session_id(&session_id);
+    let mut collector = EventCollector::with_session(session_id);
+
+    let result = agent_loop.run(make_chat_request("do work")).await;
+    collector.collect();
+
+    assert!(result.is_err(), "abandoned tool attempt must surface");
+    let err_text = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_text.contains("interrupted after visible output"),
+        "{err_text}"
+    );
+    assert_eq!(provider_inner.call_count().await, 1);
+    assert_eq!(
+        tool_calls.load(Ordering::SeqCst),
+        0,
+        "tool from the abandoned attempt must never execute"
+    );
+    assert!(
+        collector
+            .events
+            .iter()
+            .any(|e| matches!(e, AppEvent::ToolCallStarted { .. })),
+        "abandoned ToolCallStarted remains visible for attribution"
+    );
+    assert!(
+        collector
+            .events
+            .iter()
+            .any(|e| matches!(e, AppEvent::ProviderAttemptSuperseded { .. })),
+        "supersession must be explicit"
+    );
+    assert!(
+        !collector
+            .events
+            .iter()
+            .any(|e| matches!(e, AppEvent::ToolResult { .. })),
+        "no ToolResult may be produced for the abandoned attempt"
+    );
+}
+
+#[tokio::test]
+async fn m001_transient_503_retries_before_visible_output() {
+    let provider_inner = M001StatusProvider::new(1, M001FailKind::Server503);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    agent_loop.set_session_id("m001-503-retry");
+    let result = agent_loop.run(make_chat_request("hi")).await;
+    assert!(result.is_ok(), "503 before visible output must recover");
+    assert_eq!(provider_inner.call_count().await, 2);
+}
+
+#[tokio::test]
+async fn m001_transient_ratelimit_retries_before_visible_output() {
+    let provider_inner = M001StatusProvider::new(1, M001FailKind::RateLimit);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    agent_loop.set_session_id("m001-429-retry");
+    let result = agent_loop.run(make_chat_request("hi")).await;
+    assert!(result.is_ok(), "429 before visible output must recover");
+    assert_eq!(provider_inner.call_count().await, 2);
+}
+
+#[tokio::test]
+async fn m001_permanent_bad_request_does_not_retry() {
+    let provider_inner = M001StatusProvider::new(99, M001FailKind::BadRequest400);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    agent_loop.set_session_id("m001-400-once");
+    let result = agent_loop.run(make_chat_request("hi")).await;
+    assert!(result.is_err(), "400 must surface without exhaustion");
+    assert_eq!(
+        provider_inner.call_count().await,
+        1,
+        "invalid request must not retry to exhaustion"
+    );
+}
+
+#[tokio::test]
+async fn m001_permanent_auth_does_not_retry() {
+    let provider_inner = M001StatusProvider::new(99, M001FailKind::Auth);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    agent_loop.set_session_id("m001-auth-once");
+    let result = agent_loop.run(make_chat_request("hi")).await;
+    assert!(result.is_err());
+    assert_eq!(provider_inner.call_count().await, 1, "auth must not retry");
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(err.contains("Auth"), "auth class must survive: {err}");
+}
+
+#[tokio::test]
+async fn m001_permanent_model_missing_does_not_retry() {
+    let provider_inner = M001StatusProvider::new(99, M001FailKind::ModelNotFound);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    agent_loop.set_session_id("m001-model-once");
+    let result = agent_loop.run(make_chat_request("hi")).await;
+    assert!(result.is_err());
+    assert_eq!(provider_inner.call_count().await, 1);
+}
+
+#[tokio::test]
+async fn m001_secret_bearing_transport_stays_redacted_and_permanent() {
+    let provider_inner = M001StatusProvider::new(99, M001FailKind::SecretUrl);
+    let provider = Box::new(provider_inner.clone());
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
+    agent_loop.set_session_id("m001-secret-redacted");
+    let result = agent_loop.run(make_chat_request("hi")).await;
+    assert!(result.is_err());
+    assert_eq!(provider_inner.call_count().await, 1);
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        !err.contains("SECRET"),
+        "no secret material may surface: {err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("key="),
+        "no URL query may surface: {err}"
+    );
 }

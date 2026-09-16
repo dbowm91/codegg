@@ -206,6 +206,37 @@ pub enum AppEvent {
         tool_id: String,
         arguments: String,
     },
+    /// A provider-turn stream attempt started. `attempt_id` is stable for
+    /// exactly one replay of the logical turn; `attempt_index` is the
+    /// zero-based retry ordinal. Frontends use this to attribute streamed
+    /// deltas to an attempt; older clients may ignore it.
+    ProviderAttemptStarted {
+        session_id: String,
+        attempt_id: String,
+        attempt_index: usize,
+    },
+    /// A provider-turn stream attempt failed. `error_class` is the
+    /// secret-safe taxonomy class (never credentials/URLs);
+    /// `visible_output` reports whether externally visible deltas had
+    /// already been emitted for this attempt; `will_retry` reports
+    /// whether the turn loop will make another attempt.
+    ProviderAttemptFailed {
+        session_id: String,
+        attempt_id: String,
+        attempt_index: usize,
+        error_class: String,
+        visible_output: bool,
+        will_retry: bool,
+    },
+    /// A provider-turn attempt that emitted visible output was abandoned
+    /// without replay, so the frontend must not merge a later generation
+    /// into it. Emitted instead of a silent replay after visible output.
+    ProviderAttemptSuperseded {
+        session_id: String,
+        attempt_id: String,
+        attempt_index: usize,
+        reason: String,
+    },
     /// The agent finished processing.
     AgentFinished {
         session_id: String,
@@ -372,6 +403,9 @@ impl AppEvent {
             AppEvent::TextDelta { .. } => "text:delta",
             AppEvent::ReasoningDelta { .. } => "reasoning:delta",
             AppEvent::ToolCallStarted { .. } => "tool_call:started",
+            AppEvent::ProviderAttemptStarted { .. } => "provider_attempt:started",
+            AppEvent::ProviderAttemptFailed { .. } => "provider_attempt:failed",
+            AppEvent::ProviderAttemptSuperseded { .. } => "provider_attempt:superseded",
             AppEvent::AgentFinished { .. } => "agent:finished",
             AppEvent::FileChanged { .. } => "file:changed",
             AppEvent::PluginUiEffect { .. } => "plugin:ui_effect",

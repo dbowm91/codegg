@@ -224,7 +224,8 @@ impl ExecMode {
                 "AUTH_ERROR".to_string(),
                 "Authentication failed".to_string(),
             ),
-            AppError::Provider(ProviderError::RateLimit) => {
+            AppError::Provider(ProviderError::RateLimit)
+            | AppError::Provider(ProviderError::RateLimited { .. }) => {
                 ("RATE_LIMIT".to_string(), "Rate limit exceeded".to_string())
             }
             AppError::Provider(ProviderError::Timeout(_)) => {
@@ -241,7 +242,8 @@ impl ExecMode {
                 "API_ERROR".to_string(),
                 format!("API error [{}]: {}", code, message),
             ),
-            AppError::Provider(ProviderError::Stream(_)) => {
+            AppError::Provider(ProviderError::Stream(_))
+            | AppError::Provider(ProviderError::Transport { .. }) => {
                 ("STREAM_ERROR".to_string(), "Stream error".to_string())
             }
             AppError::Provider(ProviderError::NotFound(_)) => (
