@@ -1,6 +1,6 @@
 # Context Continuity and Multi-Compaction Coherence Roadmap
 
-Status: active; M001-M003 closed, M004 ready
+Status: closed; M001-M004 closed
 
 Repository baseline reviewed: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 
@@ -267,7 +267,7 @@ Exit condition: model-visible continuation state can recover important omitted e
 
 Plan: `plans/implementation/context-continuity-compaction/004-transactional-rollover-and-multi-compaction-qualification.md`
 
-Status: **ready** (M002 accepted closure at `plans/closure/context-continuity-compaction/002-status.md`; M003 accepted closure at `plans/closure/context-continuity-compaction/003-status.md`).
+Status: **closed** (`plans/closure/context-continuity-compaction/004-status.md`, implementation `a06b7164`).
 
 Integrate checkpoint preparation/verification with `compact_if_needed()`, load installed continuation state on later turns/restart, reconcile the actual hybrid/default path, and prove trajectory stability through many forced compactions and crash boundaries.
 
