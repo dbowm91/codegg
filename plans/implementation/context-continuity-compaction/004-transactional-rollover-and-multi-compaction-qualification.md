@@ -1,6 +1,6 @@
 # Context Continuity and Compaction M004 — Transactional Rollover and Multi-Compaction Qualification
 
-Status: blocked on M002 and M003 accepted closure
+Status: ready
 
 Repository baseline: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 

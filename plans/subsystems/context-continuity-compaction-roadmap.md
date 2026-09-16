@@ -1,6 +1,6 @@
 # Context Continuity and Multi-Compaction Coherence Roadmap
 
-Status: active; M001-M002 closed, M003 ready, M004 dependency-gated
+Status: active; M001-M003 closed, M004 ready
 
 Repository baseline reviewed: `db3b69d94fa790bf59a9b0ac093572754eb133af`
 
@@ -257,7 +257,7 @@ Exit condition: one compacted continuation frame contains the correct objective/
 
 Plan: `plans/implementation/context-continuity-compaction/003-bounded-exact-context-recovery-references.md`
 
-Status: **ready** (M001 accepted closure at `plans/closure/context-continuity-compaction/001-status.md`).
+Status: **closed** (`plans/closure/context-continuity-compaction/003-status.md`, implementation `3ea77e9f`).
 
 Extend the existing context-artifact/handle surface so a checkpoint can point to bounded exact evidence discarded from the active prompt. Preserve `ctx://tool/...`, use the existing durable `FileArtifactStore`, and do not expose hidden reasoning or sensitive tool inputs.
 
@@ -267,7 +267,7 @@ Exit condition: model-visible continuation state can recover important omitted e
 
 Plan: `plans/implementation/context-continuity-compaction/004-transactional-rollover-and-multi-compaction-qualification.md`
 
-Status: **blocked on M002 and M003 accepted closure**.
+Status: **ready** (M002 accepted closure at `plans/closure/context-continuity-compaction/002-status.md`; M003 accepted closure at `plans/closure/context-continuity-compaction/003-status.md`).
 
 Integrate checkpoint preparation/verification with `compact_if_needed()`, load installed continuation state on later turns/restart, reconcile the actual hybrid/default path, and prove trajectory stability through many forced compactions and crash boundaries.
 
