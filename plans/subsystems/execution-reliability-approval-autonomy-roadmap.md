@@ -280,11 +280,13 @@ Class: authorization capability/invariant
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md`
 
-Status: ready.
+Status: closed.
 
 Normalize deterministic `Ask`/security escalations into one router, add Interactive/Automatic/Yolo mode state and immutable per-turn execution-policy snapshot, wire a real PermissionStore path, and persist principal-scoped approval/sandbox preferences without implementing the reviewer yet.
 
 Exit condition: all production escalation paths use one router; Interactive preserves existing UX; Yolo can resolve an escalation only inside the current authority ceiling; “always” decisions and mode preference survive restart.
+
+Closure: `plans/closure/execution-reliability-approval-autonomy/003-status.md` (implementation `79cac319`).
 
 ### M004 — Selected-model and runtime-preference convergence
 
@@ -292,11 +294,13 @@ Class: capability/infrastructure
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md`
 
-Status: blocked until M003 defines the RuntimePreferenceStore contract.
+Status: ready.
 
 Converge `ModelSelect` on the durable session-selection service, persist principal-scoped last connection/model preference, restore it only when a session has no explicit selection, and expose effective runtime preferences through frontend-neutral protocol.
 
 Exit condition: session model selection and last-used preference survive restart without TUI authority or silent connection failover.
+
+M003 contract closed at `plans/closure/execution-reliability-approval-autonomy/003-status.md` (`RuntimePreferenceStore` with reserved model fields, CAS, and protocol preference shape): M004 is ready.
 
 ### M005 — Production sandbox policy wiring and authority matrix
 
@@ -304,11 +308,13 @@ Class: security invariant/capability
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md`
 
-Status: blocked on M003.
+Status: ready.
 
 Thread SandboxProfile through execution context/ToolRegistry construction, enable the existing Landlock path for constrained production shell execution where supported, distinguish FullHost from writable sandbox roots, and expose filesystem/network enforcement truthfully.
 
 Exit condition: selecting WorkspaceWrite results in an actually enforced supported-host filesystem boundary or a typed failure/escalation; approval mode cannot mutate sandbox selection.
+
+M003 contract closed at `plans/closure/execution-reliability-approval-autonomy/003-status.md` (immutable snapshot, ApprovalRouter, sandbox preference, child ceiling): M005 is ready.
 
 ### M006 — Automatic approval reviewer
 
@@ -316,7 +322,7 @@ Class: capability/security
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/006-automatic-approval-reviewer.md`
 
-Status: blocked on M003+M005.
+Status: blocked on M005 (M003 closed).
 
 Implement the dedicated cheap reviewer for escalated actions only, with strict structured verdicts, bounded read-only investigation, no recursive approval, prompt-injection resistance, primary-agent feedback, and fail-to-user/closed semantics.
 
@@ -328,7 +334,7 @@ Class: capability/polish
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/007-yolo-auto-and-full-host-user-surfaces.md`
 
-Status: blocked on M003-M006 and M004 preference convergence.
+Status: blocked on M004-M006 (M003 closed).
 
 Expose mode selection in frontend-neutral protocol plus TUI/CLI, show effective containment, add appropriate warnings/confirmation (strongest for Yolo+FullHost), persist last selection, and refine broad remembered decisions toward capability-scoped approvals where practical.
 
@@ -340,7 +346,7 @@ Class: invariant/closure
 
 Plan: `plans/implementation/execution-reliability-approval-autonomy/008-fault-injection-and-reliability-qualification.md`
 
-Status: blocked on M001-M007.
+Status: blocked on M004-M007 (M001+M002+M003 closed).
 
 Run deterministic fault matrices for provider streaming/retries, persistence/restart, reviewer failure, sandbox helper failure, uncertain effects, child ceilings, and mode/model restoration. Add only focused static guards/fixtures needed to prevent recurrence.
 
@@ -438,9 +444,9 @@ This roadmap closes only when:
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/execution-reliability-approval-autonomy/001-provider-retry-attempt-safety-and-taxonomy.md` | `plans/closure/execution-reliability-approval-autonomy/001-status.md` | — |
 | M002 | closed | `plans/implementation/execution-reliability-approval-autonomy/002-unified-retry-budget-and-side-effect-reconciliation.md` | `plans/closure/execution-reliability-approval-autonomy/002-status.md` | — |
-| M003 | ready | `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md` | — | — |
-| M004 | blocked | `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md` | — | M003 preference-store contract |
-| M005 | blocked | `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md` | — | M003 |
-| M006 | blocked | `plans/implementation/execution-reliability-approval-autonomy/006-automatic-approval-reviewer.md` | — | M003 + M005 |
-| M007 | blocked | `plans/implementation/execution-reliability-approval-autonomy/007-yolo-auto-and-full-host-user-surfaces.md` | — | M003-M006 |
-| M008 | blocked | `plans/implementation/execution-reliability-approval-autonomy/008-fault-injection-and-reliability-qualification.md` | — | M001-M007 |
+| M003 | closed | `plans/implementation/execution-reliability-approval-autonomy/003-approval-router-and-durable-mode-state.md` | `plans/closure/execution-reliability-approval-autonomy/003-status.md` | — |
+| M004 | ready | `plans/implementation/execution-reliability-approval-autonomy/004-selected-model-and-runtime-preference-convergence.md` | — | — |
+| M005 | ready | `plans/implementation/execution-reliability-approval-autonomy/005-production-sandbox-policy-wiring.md` | — | — |
+| M006 | blocked | `plans/implementation/execution-reliability-approval-autonomy/006-automatic-approval-reviewer.md` | — | M005 (M003 closed) |
+| M007 | blocked | `plans/implementation/execution-reliability-approval-autonomy/007-yolo-auto-and-full-host-user-surfaces.md` | — | M004-M006 (M003 closed) |
+| M008 | blocked | `plans/implementation/execution-reliability-approval-autonomy/008-fault-injection-and-reliability-qualification.md` | — | M004-M007 (M001+M002+M003 closed) |
