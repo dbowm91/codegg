@@ -36,6 +36,7 @@ pub mod task_state;
 pub mod team;
 pub mod tool_program;
 pub mod transport_auth;
+pub mod work_plan;
 pub mod workspace;
 pub mod workspace_services;
 pub mod worktree;

@@ -378,7 +378,18 @@ Narrowest: `cargo test -p codegg-core -- model_profile::adapter::tests`
 for adapter matching, `cargo test -p codegg-core -- task_state::tests`
 for state machine.
 
+## WorkPlan relation (M002)
+
+`WorkPlan` (`architecture/work_plan.md`, `crates/codegg-core/src/work_plan/`)
+is the durable detailed plan beneath an objective. TodoState remains the
+bounded model-facing short-horizon projection and is intentionally not
+expanded into a durable project graph (ADR-0003 Option A rejected). M002
+adds no Todo projection/writing integration; M003 maps actionable WorkItems
+into existing TodoState policy with one-way authority rules.
+
 ## Related Docs
 
 - `architecture/codegg_core.md` — the parent crate boundary
 - `architecture/native_crates.md` — library-first tool architecture
+- `architecture/work_plan.md` — durable plan foundation
+- `architecture/goal.md` — Goal-bound plan ownership

@@ -245,6 +245,17 @@ general recovery controller. Operator reason codes are `progress`,
 `verified_wait`, `replan`, `awaiting_user_no_progress`, and
 `budget_limited`; diagnostics never dump command output or plan content.
 
+### WorkPlan binding (M002)
+
+A Goal may have at most one active bound `WorkPlan`
+(`crates/codegg-core/src/work_plan/`). Binding is an exact Goal-ID
+reference validated for same session/project ownership; it changes no Goal
+runtime behavior. Goal status/budget/verification remain authoritative —
+the plan owns detailed execution progress only. Goal completion for bound
+plans additionally requires no actionable/unmet work (M003 arbiter); M002
+establishes the reference seam with CAS bind/unbind. See
+`architecture/work_plan.md`.
+
 ### GoalStore (`crates/codegg-core/src/goal/store.rs:56`)
 
 SQLite-backed. Key methods:

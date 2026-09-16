@@ -196,6 +196,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 58 {
         migrate_and_record(pool, 58).await?;
     }
+    if current_version < 59 {
+        migrate_and_record(pool, 59).await?;
+    }
 
     Ok(())
 }
@@ -266,6 +269,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             56 => migrate_v56(&mut tx).await?,
             57 => migrate_v57(&mut tx).await?,
             58 => migrate_v58(&mut tx).await?,
+            59 => migrate_v59(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2481,6 +2485,21 @@ async fn migrate_v57(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// `Interactive`/`WorkspaceWrite`. No secrets are stored here.
 async fn migrate_v58(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Long-horizon M002: durable revisioned WorkPlan/WorkItem foundation.
+///
+/// Additive `IF NOT EXISTS`, safe on existing databases. Pre-WorkPlan
+/// databases open cleanly with no rows; readers treat absence as
+/// legacy/current behavior with no active plan. No Goal/Todo/session rows
+/// are backfilled. No model-visible behavior changes.
+async fn migrate_v59(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::work_plan::WORK_PLAN_SCHEMA_STATEMENTS {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

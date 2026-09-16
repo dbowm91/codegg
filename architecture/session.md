@@ -110,6 +110,17 @@ resume authority. Distinct from the historical `checkpoints` table (a
 different full-session snapshot contract) and from the user-facing goal
 Markdown journal.
 
+**Runtime preferences (v58):**
+`runtime_preferences` — daemon-owned principal-scoped approval/sandbox/
+model preference (see `architecture/execution_reliability.md` or
+`approval.rs`).
+
+**WorkPlans (v59):**
+`work_plan` + `work_item` — durable revisioned long-horizon work state
+(see `architecture/work_plan.md`). One active plan per session; items carry
+bounded dependencies/acceptance/evidence JSON with CAS revisions. Additive
+with no backfill; legacy sessions simply have no active plan.
+
 ### Column additions to session table
 
 The `session` table gains columns across multiple migrations:
