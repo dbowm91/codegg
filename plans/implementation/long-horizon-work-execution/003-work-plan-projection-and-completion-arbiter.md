@@ -1,6 +1,6 @@
 # Long-Horizon Work Execution M003 — WorkPlan Projection and Completion Arbiter
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
