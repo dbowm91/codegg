@@ -328,6 +328,67 @@ impl JobSubmissionService {
         labels.insert(GOAL_PROVENANCE_LABEL_KEY.to_string(), goal.id);
         Ok(labels)
     }
+
+    /// M002: reconcile a durable submission after a lost acknowledgement.
+    ///
+    /// Queries the durable job store by submission key instead of creating
+    /// duplicate work. Returns the canonical durable job when the key is
+    /// already present (in-memory fast path, then durable scan for
+    /// post-restart recovery), or `None` when no job exists and the caller
+    /// may proceed to [`Self::submit`]. A fingerprint mismatch is a
+    /// [`JobSubmissionError::SubmissionKeyConflict`], never a silent
+    /// duplicate. Scheduler-owned jobs retain their canonical
+    /// attempt/reconciliation semantics; this helper never mutates them.
+    pub async fn reconcile_by_key(
+        &self,
+        key: &SubmissionKey,
+        workspace_id: &WorkspaceId,
+        fingerprint_hint: Option<&str>,
+    ) -> Result<Option<SubmittedJob>, JobSubmissionError> {
+        {
+            let idempotency = self.idempotency.lock().await;
+            if let Some(existing) = idempotency.get(key).cloned() {
+                if let Some(hint) = fingerprint_hint {
+                    if existing.fingerprint != hint {
+                        return Err(JobSubmissionError::SubmissionKeyConflict);
+                    }
+                }
+                if let Some(job) = self.store.get_job(&existing.job_id).await? {
+                    tracing::debug!(
+                        submission_key = key.as_str(),
+                        job_id = %job.job_id.as_str(),
+                        "scheduler reconciliation hit in-memory index"
+                    );
+                    return Ok(Some(to_submitted(&job)));
+                }
+            }
+        }
+        let existing_jobs = self
+            .store
+            .list_job_records(codegg_core::jobs::store::JobStoreQuery {
+                workspace_id: Some(workspace_id.clone()),
+                limit: Some(256),
+                ..Default::default()
+            })
+            .await?;
+        for existing_job in existing_jobs {
+            if !payload_matches_submission_key(&existing_job.payload, key.as_str()) {
+                continue;
+            }
+            if let Some(hint) = fingerprint_hint {
+                if fingerprint_record(&existing_job) != hint {
+                    return Err(JobSubmissionError::SubmissionKeyConflict);
+                }
+            }
+            tracing::debug!(
+                submission_key = key.as_str(),
+                job_id = %existing_job.job_id.as_str(),
+                "scheduler reconciliation hit durable store"
+            );
+            return Ok(Some(to_submitted(&existing_job)));
+        }
+        Ok(None)
+    }
 }
 
 fn to_submitted(job: &JobRecord) -> SubmittedJob {

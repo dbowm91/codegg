@@ -24,21 +24,37 @@
 use super::r#loop::AgentLoop;
 use crate::bus::events::AppEvent;
 use crate::error::{AppError, ProviderError};
-use crate::provider::{ChatEvent, ChatRequest, RetryDisposition};
+use crate::provider::{ChatEvent, ChatRequest, RetryContext, RetryDisposition};
 use std::sync::Arc;
 use std::time::Duration;
 
 /// Adapter-owned entry point for provider streaming, retries, and normalized
 /// chat events. The turn driver does not need to know wire compatibility
 /// details; it consumes the canonical event stream.
+///
+/// M002: the retry loop consumes the caller's [`RetryContext`] rather than
+/// an independent budget. Provider caps remain lower ceilings; a caller chain
+/// with fewer remaining attempts narrows this loop, and nested layers can
+/// never replenish it.
 pub(super) struct ProviderTurnAdapter;
 
 impl ProviderTurnAdapter {
+    /// Legacy single-chain entry point. Preserved for callers that have
+    /// not yet threaded a parent [`RetryContext`](crate::provider::RetryContext).
+    #[allow(dead_code)]
     pub(super) async fn receive(
         loop_: &mut AgentLoop,
         request: &ChatRequest,
     ) -> Result<Vec<ChatEvent>, AppError> {
-        stream_with_retry(loop_, request).await
+        stream_with_retry(loop_, request, None).await
+    }
+
+    pub(super) async fn receive_with_retry_context(
+        loop_: &mut AgentLoop,
+        request: &ChatRequest,
+        retry: Option<RetryContext>,
+    ) -> Result<Vec<ChatEvent>, AppError> {
+        stream_with_retry(loop_, request, retry).await
     }
 }
 
@@ -51,6 +67,7 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 async fn stream_with_retry(
     loop_: &mut AgentLoop,
     request: &ChatRequest,
+    retry: Option<RetryContext>,
 ) -> Result<Vec<ChatEvent>, AppError> {
     let session_id = loop_.session_id.clone();
     // Logical provider/model identity for diagnostics only. Credentials and
@@ -59,7 +76,24 @@ async fn stream_with_retry(
     let model_name = request.model.clone();
     let mut last_err: Option<AppError> = None;
 
-    for attempt_index in 0..MAX_ATTEMPTS {
+    // M002: bind to the caller chain when present; otherwise fall back to
+    // the provider-local ceiling. The effective bound is always the
+    // minimum, so a parent budget can only narrow this loop.
+    let mut chain = retry.unwrap_or_else(RetryContext::for_provider_turn);
+    let chain_id = chain.chain_id().as_str().to_string();
+    let effective_max = (MAX_ATTEMPTS as u8).min(chain.attempts_remaining().max(1)) as usize;
+    if chain.is_expired() {
+        tracing::warn!(
+            session_id = %session_id,
+            chain_id = %chain_id,
+            "provider retry chain already expired; no attempt made"
+        );
+        return Err(AppError::Provider(ProviderError::Timeout(
+            "provider retry chain expired".to_string(),
+        )));
+    }
+
+    for attempt_index in 0..effective_max {
         if is_cancelled(loop_) {
             tracing::info!(
                 session_id = %session_id,
@@ -79,10 +113,12 @@ async fn stream_with_retry(
             Ok((events, _visible)) => {
                 tracing::debug!(
                     session_id = %session_id,
+                    chain_id = %chain_id,
                     provider = %provider_name,
                     model = %model_name,
                     attempt_id = %attempt_id,
                     attempt_index,
+                    attempts_consumed = chain.attempts_consumed() + 1,
                     "provider attempt succeeded"
                 );
                 return Ok(events);
@@ -155,7 +191,31 @@ async fn stream_with_retry(
                     ))));
                 }
 
-                let attempts_left = MAX_ATTEMPTS - attempt_index - 1;
+                // M002: consume the shared chain for every failed attempt,
+                // including the terminal one, so nested layers observe the
+                // same bound. Cancellation/deadline wins over backoff.
+                chain.consume_one();
+                if chain.is_expired() {
+                    publish_attempt_failed(
+                        &session_id,
+                        &attempt_id,
+                        attempt_index,
+                        &error_class,
+                        visible_output,
+                        false,
+                    );
+                    tracing::warn!(
+                        session_id = %session_id,
+                        chain_id = %chain_id,
+                        attempt_id = %attempt_id,
+                        attempt_index,
+                        error_class = %error_class,
+                        "provider retry chain deadline reached; stopping"
+                    );
+                    return Err(error);
+                }
+                let attempts_left =
+                    (effective_max - attempt_index - 1).min(chain.attempts_remaining() as usize);
                 if retryable && attempts_left > 0 {
                     let hint = provider_retry_after(&error);
                     let cap = backoff_cap(attempt_index, hint);
@@ -201,12 +261,14 @@ async fn stream_with_retry(
                 );
                 tracing::warn!(
                     session_id = %session_id,
+                    chain_id = %chain_id,
                     provider = %provider_name,
                     model = %model_name,
                     attempt_id = %attempt_id,
                     attempt_index,
                     error_class = %error_class,
                     retryable,
+                    attempts_consumed = chain.attempts_consumed(),
                     "provider attempt failed terminally"
                 );
                 return Err(error);

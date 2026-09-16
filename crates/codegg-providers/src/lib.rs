@@ -28,6 +28,7 @@ pub mod openai_compatible;
 pub mod opencode_zen;
 pub mod openrouter;
 pub mod responses_api;
+pub mod retry;
 pub mod sse_parser;
 pub mod text_tool_parser;
 pub mod vertex;
@@ -67,6 +68,11 @@ pub use responses_api::{
     ResponsesUsage, DEFAULT_REQUEST_TIMEOUT, DEFAULT_STREAM_IDLE_TIMEOUT, MAX_ARGUMENT_SIZE,
     MAX_INPUT_BODY_SIZE, MAX_NESTED_CALLS, MAX_RESPONSE_ITEMS, MAX_RESULT_SIZE,
     MAX_SSE_BUFFER_SIZE,
+};
+pub use retry::{
+    AckState, ReconciliationOutcome, RetryChainId, RetryContext, RetryContextDto,
+    UncertainSideEffect, UnifiedRetryDisposition, MAX_CHAIN_ATTEMPTS, MAX_CHAIN_DURATION,
+    MAX_UNCERTAIN_DETAIL_CHARS,
 };
 
 // The core provider types and registration logic

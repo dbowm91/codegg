@@ -105,9 +105,13 @@ impl AgentLoop {
                     ContextPackObservationPhase::BeforeProviderCall,
                 );
                 self.lifecycle.set_phase(TurnPhase::ProviderInvocation);
-                let events =
-                    match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, request)
-                        .await
+                let turn_retry = crate::provider::RetryContext::for_operation();
+                let events = match crate::agent::provider_turn::ProviderTurnAdapter::receive_with_retry_context(
+                    self,
+                    request,
+                    Some(turn_retry),
+                )
+                .await
                     {
                         Ok(events) => events,
                         Err(e) => {

@@ -371,6 +371,9 @@ impl BrokerAuthority {
 /// error result, but programmatic callers must map denied, cancelled,
 /// timed-out, infrastructure-error, schema-error, and tool-error statuses
 /// to typed failures. Only Success may become a CompletedCall.
+///
+/// M002 adds `UncertainSideEffect`: an ambiguous commit that must not
+/// become a CompletedCall and must not be silently retried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgrammaticOutcome {
     Success,
@@ -379,6 +382,7 @@ pub enum ProgrammaticOutcome {
     TimedOut,
     SchemaMismatch,
     InfrastructureError,
+    UncertainSideEffect,
 }
 
 /// The result of a broker-mediated tool invocation.
@@ -406,6 +410,9 @@ impl BrokerResult {
             ToolTerminalStatus::InfrastructureError => {
                 Err(ProgrammaticOutcome::InfrastructureError)
             }
+            ToolTerminalStatus::UncertainSideEffect => {
+                Err(ProgrammaticOutcome::UncertainSideEffect)
+            }
         }
     }
 
@@ -419,6 +426,9 @@ impl BrokerResult {
             ToolTerminalStatus::TimedOut => Err(ProgrammaticOutcome::TimedOut),
             ToolTerminalStatus::InfrastructureError => {
                 Err(ProgrammaticOutcome::InfrastructureError)
+            }
+            ToolTerminalStatus::UncertainSideEffect => {
+                Err(ProgrammaticOutcome::UncertainSideEffect)
             }
         }
     }
@@ -627,7 +637,9 @@ impl ToolBroker {
     /// Execute a tool through the broker.
     ///
     /// This performs the full 10-step pipeline and returns a
-    /// `BrokerResult` with typed output.
+    /// `BrokerResult` with typed output. Single-attempt semantics are
+    /// preserved for legacy callers; use [`Self::execute_with_retry`]
+    /// to opt into the shared M002 retry chain.
     pub async fn execute(
         &self,
         registry: &ToolRegistry,
@@ -635,49 +647,37 @@ impl ToolBroker {
         input: serde_json::Value,
         ctx: BrokerInvocationContext,
     ) -> Result<BrokerResult, BrokerError> {
+        self.execute_with_retry(registry, tool_name, input, ctx, None)
+            .await
+    }
+
+    /// Execute a tool under the shared M002 retry chain.
+    ///
+    /// When `retry` is `None`, behaves exactly like [`Self::execute`]
+    /// (single attempt). When `Some`, the tool's contract retry budget
+    /// is capped by the chain: lower layers consume but never replenish
+    /// the parent budget, ambiguous non-idempotent effects become a
+    /// typed uncertain result instead of a blind replay, and
+    /// cancellation/deadline stops all further attempts. Retry never
+    /// re-resolves authority and never alters sandbox/model/provider
+    /// selection; the same validated context is reused for every attempt
+    /// with a stable invocation key.
+    pub async fn execute_with_retry(
+        &self,
+        registry: &ToolRegistry,
+        tool_name: &str,
+        input: serde_json::Value,
+        ctx: BrokerInvocationContext,
+        retry: Option<crate::provider::RetryContext>,
+    ) -> Result<BrokerResult, BrokerError> {
         let invocation_id = uuid::Uuid::new_v4().to_string();
 
         // Step 1: lookup contract (catalog, no lock needed)
-        let contract = self.lookup_contract(tool_name)?;
+        let contract = self.lookup_contract(tool_name)?.clone();
 
-        // Steps 2-5: validation pipeline
-        let effective_timeout = self.validate_pre_execution(contract, &ctx, &input)?;
+        // Steps 2-5: validation pipeline (once; retries never re-grant).
+        let effective_timeout = self.validate_pre_execution(&contract, &ctx, &input)?;
 
-        // Step 7: execute
-        let start = std::time::Instant::now();
-        let exec_ctx = ToolExecutionContext {
-            backend: super::backend::ToolBackendKind::Native,
-            session_id: ctx.session_id.clone(),
-            cwd: ctx.cwd.clone(),
-            permission_mode: ctx.permission_mode.clone(),
-            timeout_ms: Some(effective_timeout),
-            invocation_key: ctx.submission_key.clone(),
-            turn_id: ctx.turn_id.clone(),
-            agent_id: ctx.agent_id.clone(),
-            parent_job_id: ctx.job_id.clone(),
-            parent_attempt_id: ctx.attempt_id.clone(),
-            provider_name: None,
-            backend_policy: None,
-            cancellation: ctx.cancellation.clone(),
-            deadline: ctx.deadline,
-            decision_id: None,
-            decision_outcome: None,
-            workspace_path_policy_id: None,
-            workspace_path_policy_revision: None,
-            permission_policy_revision: None,
-            principal_identity: None,
-            // M003 origin: stamped by the agent loop via `apply_origin`
-            // once turn attribution is threaded through (M005).
-            origin_principal: None,
-            origin_auth_method: None,
-            origin_decision_id: None,
-            caller_class: None,
-            max_effect_class: None,
-            decision_issued_at: None,
-            decision_expires_at: None,
-            decision_revoked_at: None,
-            program_contract_snapshot: None,
-        };
         let tool = registry
             .get(tool_name)
             .ok_or_else(|| BrokerError::NotFound(tool_name.to_string()))?;
@@ -690,60 +690,316 @@ impl ToolBroker {
         validate_json_schema(&contract.input_schema, &input).map_err(|reason| {
             BrokerError::Execution(format!("input schema validation failed: {reason}"))
         })?;
-        let result = match ctx.cancellation.clone() {
-            Some(token) => {
-                tokio::select! {
-                    _ = token.cancelled() => Err(ToolError::Timeout("broker invocation cancelled".into())),
-                    result = tokio::time::timeout(
-                        std::time::Duration::from_millis(effective_timeout),
-                        tool.execute_structured(input, Some(exec_ctx)),
-                    ) => result.unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
+
+        // M002: when no chain is supplied, preserve legacy single-attempt
+        // semantics exactly.
+        let mut chain = retry;
+        let max_tool_attempts: usize = match chain.as_ref() {
+            None => 1,
+            Some(c) => {
+                let contract_budget =
+                    (contract.retry_policy.max_retries as usize).saturating_add(1);
+                contract_budget
+                    .min(c.attempts_remaining().max(1) as usize)
+                    .max(1)
+            }
+        };
+        let chain_id = chain
+            .as_ref()
+            .map(|c| c.chain_id().as_str().to_string())
+            .unwrap_or_else(|| "single".to_string());
+
+        let start = std::time::Instant::now();
+        let mut last_err_value: Option<ToolValue> = None;
+
+        for attempt_index in 0..max_tool_attempts {
+            // Cancellation wins over every further attempt, including
+            // backoff/reconciliation waits.
+            if ctx.cancellation.as_ref().is_some_and(|t| t.is_cancelled()) {
+                tracing::info!(
+                    tool = %tool_name,
+                    chain_id = %chain_id,
+                    attempt_index,
+                    "tool retry chain cancelled; no further attempt"
+                );
+                let value = ToolValue::cancelled();
+                let elapsed_ms = start.elapsed().as_millis() as u64;
+                return Ok(BrokerResult {
+                    value,
+                    contract: contract.clone(),
+                    invocation_id,
+                    elapsed_ms,
+                });
+            }
+            if chain.as_ref().is_some_and(|c| c.is_expired()) {
+                tracing::warn!(
+                    tool = %tool_name,
+                    chain_id = %chain_id,
+                    attempt_index,
+                    "tool retry chain deadline reached; stopping"
+                );
+                break;
+            }
+
+            let exec_ctx = ToolExecutionContext {
+                backend: super::backend::ToolBackendKind::Native,
+                session_id: ctx.session_id.clone(),
+                cwd: ctx.cwd.clone(),
+                permission_mode: ctx.permission_mode.clone(),
+                timeout_ms: Some(effective_timeout),
+                invocation_key: ctx.submission_key.clone(),
+                turn_id: ctx.turn_id.clone(),
+                agent_id: ctx.agent_id.clone(),
+                parent_job_id: ctx.job_id.clone(),
+                parent_attempt_id: ctx.attempt_id.clone(),
+                provider_name: None,
+                backend_policy: None,
+                cancellation: ctx.cancellation.clone(),
+                deadline: ctx.deadline,
+                decision_id: None,
+                decision_outcome: None,
+                workspace_path_policy_id: None,
+                workspace_path_policy_revision: None,
+                permission_policy_revision: None,
+                principal_identity: None,
+                origin_principal: None,
+                origin_auth_method: None,
+                origin_decision_id: None,
+                caller_class: None,
+                max_effect_class: None,
+                decision_issued_at: None,
+                decision_expires_at: None,
+                decision_revoked_at: None,
+                program_contract_snapshot: None,
+            };
+            let attempt_input = input.clone();
+            let result = match ctx.cancellation.clone() {
+                Some(token) => {
+                    tokio::select! {
+                        _ = token.cancelled() => Err(ToolError::Timeout("broker invocation cancelled".into())),
+                        result = tokio::time::timeout(
+                            std::time::Duration::from_millis(effective_timeout),
+                            tool.execute_structured(attempt_input, Some(exec_ctx)),
+                        ) => result.unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
+                    }
+                }
+                None => tokio::time::timeout(
+                    std::time::Duration::from_millis(effective_timeout),
+                    tool.execute_structured(attempt_input, Some(exec_ctx)),
+                )
+                .await
+                .unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
+            };
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+
+            match result {
+                Ok(structured) => {
+                    // Explicit tool outcome (success or structured error) is
+                    // acknowledged: no commit ambiguity, no retry on
+                    // success=false. Only transport errors below retry.
+                    let value = self.normalize_result(tool_name, structured, elapsed_ms);
+                    let value = self.validate_output(&contract, value)?;
+                    let value = self
+                        .register_artifacts(tool_name, value, &ctx, &invocation_id)
+                        .await?;
+                    if value.terminal_status == super::contract::ToolTerminalStatus::Success {
+                        tracing::debug!(
+                            tool = %tool_name,
+                            chain_id = %chain_id,
+                            attempt_index,
+                            "tool attempt succeeded"
+                        );
+                    }
+                    return Ok(BrokerResult {
+                        value,
+                        contract: contract.clone(),
+                        invocation_id,
+                        elapsed_ms,
+                    });
+                }
+                Err(e) => {
+                    let ack = super::retry::ack_for_dispatch_phase(true, &e);
+                    let err_class: &'static str = match &e {
+                        ToolError::Timeout(_) => "timeout",
+                        ToolError::Network(_) => "network",
+                        ToolError::Io(_) => "io",
+                        ToolError::Permission(_) => "permission",
+                        ToolError::Disabled(_) => "disabled",
+                        ToolError::NotFound(_) => "not_found",
+                        ToolError::Format(_) => "validation",
+                        ToolError::Execution(_) => "execution",
+                    };
+                    // Legacy single-attempt path: map directly, no chain
+                    // accounting, identical to the pre-M002 behavior.
+                    let Some(chain_ref) = chain.as_mut() else {
+                        let value = match &e {
+                            ToolError::NotFound(name) => {
+                                ToolValue::infrastructure_error(format!("Tool not found: {name}"))
+                            }
+                            ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                            ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
+                            ToolError::Disabled(msg) => {
+                                ToolValue::infrastructure_error(format!("Tool is disabled: {msg}"))
+                            }
+                            other => {
+                                ToolValue::infrastructure_error(format!("Tool error: {other}"))
+                            }
+                        };
+                        return Ok(BrokerResult {
+                            value,
+                            contract: contract.clone(),
+                            invocation_id,
+                            elapsed_ms,
+                        });
+                    };
+
+                    let decision = super::retry::decide_tool_retry(
+                        &contract,
+                        ack,
+                        ctx.submission_key.as_deref(),
+                        &e,
+                        chain_ref,
+                    );
+                    // Every failed attempt consumes the shared budget,
+                    // including the terminal one.
+                    chain_ref.consume_one();
+                    let attempts_left = chain_ref.attempts_remaining();
+                    match decision {
+                        super::retry::ToolRetryDecision::Retry { .. } => {
+                            let attempts_total =
+                                max_tool_attempts.saturating_sub(attempt_index + 1);
+                            let will_retry = attempts_total > 0 && attempts_left > 0;
+                            tracing::info!(
+                                tool = %tool_name,
+                                chain_id = %chain_id,
+                                attempt_index,
+                                error_class = %err_class,
+                                attempts_left,
+                                will_retry,
+                                "tool attempt transient; retrying within chain"
+                            );
+                            if !will_retry {
+                                last_err_value = Some(match &e {
+                                    ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                                    ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
+                                    other => ToolValue::infrastructure_error(format!(
+                                        "Tool error: {other}"
+                                    )),
+                                });
+                                break;
+                            }
+                            // Bounded backoff from the contract policy with
+                            // cancellation awareness; never exceeds the cap.
+                            let base = contract.retry_policy.base_delay_ms;
+                            let cap = contract.retry_policy.max_delay_ms.max(1);
+                            let shift = (attempt_index.min(5)) as u32;
+                            let exp = base.saturating_mul(1 << shift).min(cap);
+                            let delay = std::time::Duration::from_millis(exp);
+                            if let Some(token) = ctx.cancellation.clone() {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(delay) => {}
+                                    _ = token.cancelled() => {
+                                        tracing::info!(
+                                            tool = %tool_name,
+                                            chain_id = %chain_id,
+                                            "tool retry cancelled during backoff"
+                                        );
+                                        let value = ToolValue::cancelled();
+                                        let elapsed_ms = start.elapsed().as_millis() as u64;
+                                        return Ok(BrokerResult {
+                                            value,
+                                            contract: contract.clone(),
+                                            invocation_id,
+                                            elapsed_ms,
+                                        });
+                                    }
+                                }
+                            } else {
+                                tokio::time::sleep(delay).await;
+                            }
+                            continue;
+                        }
+                        super::retry::ToolRetryDecision::DoNotRetry { reason } => {
+                            tracing::warn!(
+                                tool = %tool_name,
+                                chain_id = %chain_id,
+                                attempt_index,
+                                error_class = %err_class,
+                                reason = %reason,
+                                "tool attempt failed terminally; not retried"
+                            );
+                            let value = match &e {
+                                ToolError::NotFound(name) => ToolValue::infrastructure_error(
+                                    format!("Tool not found: {name}"),
+                                ),
+                                ToolError::Timeout(_msg) => ToolValue::timed_out(),
+                                ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
+                                ToolError::Disabled(msg) => ToolValue::infrastructure_error(
+                                    format!("Tool is disabled: {msg}"),
+                                ),
+                                other => {
+                                    ToolValue::infrastructure_error(format!("Tool error: {other}"))
+                                }
+                            };
+                            return Ok(BrokerResult {
+                                value,
+                                contract: contract.clone(),
+                                invocation_id,
+                                elapsed_ms,
+                            });
+                        }
+                        super::retry::ToolRetryDecision::Uncertain(uncertain) => {
+                            tracing::warn!(
+                                tool = %tool_name,
+                                chain_id = %chain_id,
+                                attempt_index,
+                                error_class = %err_class,
+                                uncertain = %uncertain.summary(),
+                                "tool effect uncertain; surfacing instead of replaying"
+                            );
+                            // Secret-safe display: tool identity + chain +
+                            // error class + bounded reason. Never echoes
+                            // arguments, command bodies, or raw errors that
+                            // might carry secrets.
+                            let display = format!(
+                                "tool '{tool_name}' may not have completed \
+                                 (chain {chain_id}, class {err_class}); \
+                                 uncertain side effect surfaced instead of \
+                                 automatic retry: {}",
+                                uncertain.detail
+                            );
+                            let value = ToolValue::uncertain(display);
+                            return Ok(BrokerResult {
+                                value,
+                                contract: contract.clone(),
+                                invocation_id,
+                                elapsed_ms,
+                            });
+                        }
+                    }
                 }
             }
-            None => tokio::time::timeout(
-                std::time::Duration::from_millis(effective_timeout),
-                tool.execute_structured(input, Some(exec_ctx)),
-            )
-            .await
-            .unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
-        };
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(structured) => {
-                // Steps 8-10: convert to typed value, validate, register artifacts
-                let value = self.normalize_result(tool_name, structured, elapsed_ms);
-                let value = self.validate_output(contract, value)?;
-                let value = self
-                    .register_artifacts(tool_name, value, &ctx, &invocation_id)
-                    .await?;
-                Ok(BrokerResult {
-                    value,
-                    contract: contract.clone(),
-                    invocation_id,
-                    elapsed_ms,
-                })
-            }
-            Err(e) => {
-                let value = match &e {
-                    ToolError::NotFound(name) => {
-                        ToolValue::infrastructure_error(format!("Tool not found: {}", name))
-                    }
-                    ToolError::Timeout(_msg) => ToolValue::timed_out(),
-                    ToolError::Permission(msg) => ToolValue::denied(msg.clone()),
-                    ToolError::Disabled(msg) => {
-                        ToolValue::infrastructure_error(format!("Tool is disabled: {}", msg))
-                    }
-                    other => ToolValue::infrastructure_error(format!("Tool error: {}", other)),
-                };
-                Ok(BrokerResult {
-                    value,
-                    contract: contract.clone(),
-                    invocation_id,
-                    elapsed_ms,
-                })
-            }
         }
+
+        // Chain exhausted without a terminal mapping (budget ran out on a
+        // retryable failure). Return the last meaningful typed failure;
+        // no hidden extra layer continues.
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        if let Some(value) = last_err_value {
+            return Ok(BrokerResult {
+                value,
+                contract: contract.clone(),
+                invocation_id,
+                elapsed_ms,
+            });
+        }
+        let value = ToolValue::timed_out();
+        Ok(BrokerResult {
+            value,
+            contract: contract.clone(),
+            invocation_id,
+            elapsed_ms,
+        })
     }
 
     // ── Steps 8-10: Result normalization ────────────────────────

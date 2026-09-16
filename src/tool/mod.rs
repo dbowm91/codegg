@@ -92,6 +92,8 @@ pub use broker::{
     ToolBrokerConfig,
 };
 
+pub mod retry;
+
 // Re-export contract types for convenience.
 pub use contract::{
     ContractValidationError, IdempotencyClass, ToolArtifactHandle, ToolCaller, ToolCallerPolicy,

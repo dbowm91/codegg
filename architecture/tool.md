@@ -586,6 +586,7 @@ cargo test --test agent_loop_harness::test_live_dispatcher  # dispatcher integra
 ## Related Docs
 
 - [tool_broker.md](tool_broker.md) — Canonical execution boundary
+- [retry.md](retry.md) — Unified retry budget and side-effect reconciliation (M002)
 - [deterministic_tools.md](deterministic_tools.md) — Eggsact tools
 - [preflight.md](preflight.md) — Harness-side preflight
 - [agent.md](agent.md) — Uses ToolRegistry for execution

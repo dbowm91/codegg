@@ -1230,9 +1230,17 @@ impl AgentLoop {
             self.apply_context_plan(&mut request)?;
             self.lifecycle.set_phase(TurnPhase::ProviderInvocation);
 
+            // M002: one retry chain per logical turn bounds provider + tool
+            // retries below. The provider consumes from it; tool execution
+            // derives narrower children from the same chain.
+            let turn_retry = crate::provider::RetryContext::for_operation();
             let events =
-                match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, &request)
-                    .await
+                match crate::agent::provider_turn::ProviderTurnAdapter::receive_with_retry_context(
+                    self,
+                    &request,
+                    Some(turn_retry),
+                )
+                .await
                 {
                     Ok(events) => events,
                     Err(e) => {

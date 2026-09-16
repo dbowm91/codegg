@@ -284,6 +284,14 @@ compatibility surface (`true` only for Transient):
 headers where available. `from_http_status()` maps 401/403 to `Auth`
 and preserves numeric status codes so the taxonomy survives.
 
+### Unified retry chain (M002)
+
+See [retry.md](retry.md). `RetryContext` (`retry.rs`) bounds the whole
+turn: the provider loop consumes the caller chain
+(`receive_with_retry_context`, effective `min(3, remaining)`) and never
+replenishes it. `UnifiedRetryDisposition` composes the taxonomy above
+with tool/scheduler outcomes; `UncertainSideEffect` wins over Transient.
+
 ### CircuitBreaker (`circuit.rs:43`)
 
 ```rust

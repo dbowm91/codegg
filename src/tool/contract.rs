@@ -314,6 +314,11 @@ pub enum ToolTerminalStatus {
     /// Tool execution failed due to infrastructure (storage,
     //  network, process).
     InfrastructureError,
+    /// M002: the operation may have committed but acknowledgement was
+    /// lost and no safe reconciler could prove the outcome. Never
+    /// automatically replayed; requires model/user recovery. Maps to a
+    /// typed programmatic failure, never to success.
+    UncertainSideEffect,
 }
 
 // ─── Typed tool value ─────────────────────────────────────────────
@@ -414,6 +419,20 @@ impl ToolValue {
             artifacts: Vec::new(),
             provenance: None,
             terminal_status: ToolTerminalStatus::InfrastructureError,
+            truncated: false,
+        }
+    }
+
+    /// Build an uncertain-side-effect value (M002). The display text must
+    /// already be redacted and bounded; it tells the model/user what may
+    /// have happened and what reconciliation was attempted.
+    pub fn uncertain(display: String) -> Self {
+        Self {
+            display,
+            value: None,
+            artifacts: Vec::new(),
+            provenance: None,
+            terminal_status: ToolTerminalStatus::UncertainSideEffect,
             truncated: false,
         }
     }
