@@ -103,6 +103,263 @@ impl SandboxProfile {
             Self::FullHost => 2,
         }
     }
+
+    /// `true` when the profile requests OS filesystem containment
+    /// (`ReadOnly`/`WorkspaceWrite`). `FullHost` intentionally requests
+    /// no CodeGG filesystem containment.
+    pub const fn requires_filesystem_containment(self) -> bool {
+        !matches!(self, Self::FullHost)
+    }
+
+    /// `true` only for the explicit no-containment profile.
+    pub const fn is_full_host(self) -> bool {
+        matches!(self, Self::FullHost)
+    }
+
+    /// Legacy `SandboxMode` config name for compatibility mapping.
+    ///
+    /// `ReadOnly`/`WorkspaceWrite` map 1:1. `FullHost` maps to the
+    /// historic `danger_full_access` string, but the semantics differ:
+    /// legacy `DangerFullAccess` behaved as another writable-roots mode,
+    /// while `FullHost` means no CodeGG filesystem containment at all.
+    /// Callers must not reinterpret old `danger_full_access` config as
+    /// `FullHost` without explicit user confirmation.
+    pub const fn legacy_sandbox_mode_name(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::FullHost => "danger_full_access",
+        }
+    }
+}
+
+/// Obtained filesystem enforcement for one execution context (M005).
+///
+/// This is the *obtained* fact, distinct from the *requested*
+/// [`SandboxProfile`]. A constrained request that cannot be enforced
+/// must surface [`FilesystemEnforcement::Unavailable`] (fail closed),
+/// never a silent fallback to [`FilesystemEnforcement::FullHost`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemEnforcement {
+    /// OS filesystem containment is active.
+    Enforced { backend: String, abi: Option<u32> },
+    /// Containment was requested but is not available on this host.
+    Unavailable { reason: String },
+    /// No CodeGG filesystem containment (explicit `FullHost` only).
+    FullHost,
+}
+
+impl FilesystemEnforcement {
+    pub fn enforced(backend: impl Into<String>, abi: Option<u32>) -> Self {
+        let backend = truncate_to(backend.into(), 64);
+        Self::Enforced {
+            backend: if backend.is_empty() {
+                "unknown".to_string()
+            } else {
+                backend
+            },
+            abi,
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self::Unavailable {
+            reason: truncate_to(reason.into(), 512),
+        }
+    }
+
+    pub const fn is_enforced(&self) -> bool {
+        matches!(self, Self::Enforced { .. })
+    }
+
+    pub const fn is_full_host(&self) -> bool {
+        matches!(self, Self::FullHost)
+    }
+}
+
+/// Obtained network containment for one execution context (M005).
+///
+/// CodeGG has no OS network-isolation backend: normal shell execution
+/// under `ReadOnly`/`WorkspaceWrite`/`FullHost` reports
+/// [`NetworkEnforcement::Unrestricted`]. Permission/security policy may
+/// still classify network commands, but that is not OS isolation and
+/// must never be rendered as "sandboxed network".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkEnforcement {
+    /// OS network containment is active (no current backend produces this
+    /// for normal shell; reserved for a future measured backend).
+    Enforced { backend: String },
+    /// No OS network isolation. The truthful state for all shell paths
+    /// until a network backend exists.
+    Unrestricted,
+    /// Network state could not be determined.
+    Unavailable { reason: String },
+}
+
+impl NetworkEnforcement {
+    pub const fn is_enforced(&self) -> bool {
+        matches!(self, Self::Enforced { .. })
+    }
+}
+
+/// Requested profile plus obtained filesystem/network enforcement (M005).
+///
+/// `requested` is the daemon-resolved [`SandboxProfile`];
+/// `filesystem`/`network` are the separately reported facts per ADR-0004
+/// ("Landlock does not imply network isolation").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxEnforcement {
+    pub requested: SandboxProfile,
+    pub filesystem: FilesystemEnforcement,
+    pub network: NetworkEnforcement,
+}
+
+impl SandboxEnforcement {
+    /// Explicit `FullHost`: no CodeGG filesystem containment, network
+    /// unrestricted. Only constructed for an explicit `FullHost` request.
+    pub fn for_full_host() -> Self {
+        Self {
+            requested: SandboxProfile::FullHost,
+            filesystem: FilesystemEnforcement::FullHost,
+            network: NetworkEnforcement::Unrestricted,
+        }
+    }
+
+    /// Constrained request with active OS containment.
+    pub fn for_constrained_enforced(
+        requested: SandboxProfile,
+        backend: impl Into<String>,
+        abi: Option<u32>,
+    ) -> Self {
+        debug_assert!(requested.requires_filesystem_containment());
+        Self {
+            requested,
+            filesystem: FilesystemEnforcement::enforced(backend, abi),
+            // No network backend exists; filesystem success never implies
+            // network isolation.
+            network: NetworkEnforcement::Unrestricted,
+        }
+    }
+
+    /// Constrained request without OS containment (unsupported host,
+    /// missing helper, setup failure). Fail-closed signal: callers must
+    /// deny the action or escalate to the user, never run as `FullHost`.
+    pub fn for_constrained_unavailable(
+        requested: SandboxProfile,
+        reason: impl Into<String>,
+    ) -> Self {
+        debug_assert!(requested.requires_filesystem_containment());
+        Self {
+            requested,
+            filesystem: FilesystemEnforcement::Unavailable {
+                reason: truncate_to(reason.into(), 512),
+            },
+            network: NetworkEnforcement::Unrestricted,
+        }
+    }
+
+    pub fn is_enforced(&self) -> bool {
+        self.filesystem.is_enforced()
+    }
+
+    pub fn is_full_host(&self) -> bool {
+        matches!(self.requested, SandboxProfile::FullHost) && self.filesystem.is_full_host()
+    }
+
+    /// Short human-readable summary for status lines and diagnostics.
+    /// Never renders filesystem success as network containment.
+    pub fn describe(&self) -> String {
+        let fs = match &self.filesystem {
+            FilesystemEnforcement::Enforced { backend, abi } => match abi {
+                Some(abi) => format!("filesystem enforced ({backend} abi {abi})"),
+                None => format!("filesystem enforced ({backend})"),
+            },
+            FilesystemEnforcement::Unavailable { reason } => {
+                format!("filesystem unavailable ({reason})")
+            }
+            FilesystemEnforcement::FullHost => {
+                "no CodeGG filesystem containment (explicit FullHost)".to_string()
+            }
+        };
+        let net = match &self.network {
+            NetworkEnforcement::Enforced { backend } => {
+                format!("network enforced ({backend})")
+            }
+            NetworkEnforcement::Unrestricted => {
+                "network unrestricted (no OS isolation)".to_string()
+            }
+            NetworkEnforcement::Unavailable { reason } => {
+                format!("network unknown ({reason})")
+            }
+        };
+        format!("{} requested; {fs}; {net}", self.requested.as_str(),)
+    }
+}
+
+/// Bounded escalation hint when a command genuinely needs a path outside
+/// the current `WorkspaceWrite` roots (M005 §6).
+///
+/// M005 does not implement a temporary-expansion store; the correct
+/// behavior is to deny with this typed hint (or route through
+/// `ApprovalRouter` as an escalation) rather than silently switching
+/// the whole turn to `FullHost`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxEscalationRequest {
+    pub requested_path: String,
+    pub profile: SandboxProfile,
+    pub reason: String,
+}
+
+impl SandboxEscalationRequest {
+    pub fn new(
+        requested_path: impl Into<String>,
+        profile: SandboxProfile,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            requested_path: truncate_to(requested_path.into(), 1024),
+            profile,
+            reason: truncate_to(reason.into(), 512),
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "sandbox escalation: path '{}' is outside {} roots ({})",
+            self.requested_path,
+            self.profile.as_str(),
+            self.reason,
+        )
+    }
+}
+
+/// Resolve a child sandbox profile against its parent ceiling (M005 §6).
+///
+/// Thin named wrapper over [`child_sandbox_allowed`] so subagent
+/// construction reads as policy, not a bare boolean. `FullHost` under a
+/// `WorkspaceWrite`/`ReadOnly` parent fails with [`PreferenceError::CeilingExceeded`].
+pub fn resolve_child_sandbox(
+    parent: SandboxProfile,
+    requested: SandboxProfile,
+) -> Result<SandboxProfile, PreferenceError> {
+    if child_sandbox_allowed(parent, requested) {
+        Ok(requested)
+    } else {
+        Err(PreferenceError::CeilingExceeded(format!(
+            "child sandbox {} exceeds parent {}",
+            requested.as_str(),
+            parent.as_str()
+        )))
+    }
+}
+
+fn truncate_to(mut value: String, max_len: usize) -> String {
+    if value.len() > max_len {
+        value.truncate(max_len);
+    }
+    value.replace('\0', "")
 }
 
 /// A child loop may use a mode no broader than its parent effective mode.
@@ -969,6 +1226,88 @@ mod tests {
         assert!(pref.has_model_preference());
         pref.last_model_id = None;
         assert!(!pref.has_model_preference());
+    }
+
+    #[test]
+    fn sandbox_enforcement_matrix_is_truthful() {
+        // FullHost is explicit no-containment, never "enforced".
+        let full = SandboxEnforcement::for_full_host();
+        assert!(full.is_full_host());
+        assert!(!full.is_enforced());
+        assert!(matches!(full.filesystem, FilesystemEnforcement::FullHost));
+        assert!(matches!(full.network, NetworkEnforcement::Unrestricted));
+
+        // Constrained enforced reports filesystem + unrestricted network.
+        let enforced = SandboxEnforcement::for_constrained_enforced(
+            SandboxProfile::WorkspaceWrite,
+            "landlock",
+            Some(1),
+        );
+        assert!(enforced.is_enforced());
+        assert!(!enforced.is_full_host());
+        assert!(matches!(enforced.network, NetworkEnforcement::Unrestricted));
+        let text = enforced.describe();
+        assert!(text.contains("workspace_write"));
+        assert!(text.contains("filesystem enforced"));
+        assert!(text.contains("network unrestricted"));
+
+        // Constrained unavailable is fail-closed, never FullHost.
+        let missing = SandboxEnforcement::for_constrained_unavailable(
+            SandboxProfile::WorkspaceWrite,
+            "Landlock unavailable: test",
+        );
+        assert!(!missing.is_enforced());
+        assert!(!missing.is_full_host());
+        assert!(matches!(
+            missing.filesystem,
+            FilesystemEnforcement::Unavailable { .. }
+        ));
+
+        // ReadOnly/WorkspaceWrite require containment; FullHost does not.
+        assert!(SandboxProfile::ReadOnly.requires_filesystem_containment());
+        assert!(SandboxProfile::WorkspaceWrite.requires_filesystem_containment());
+        assert!(!SandboxProfile::FullHost.requires_filesystem_containment());
+        assert_ne!(SandboxProfile::WorkspaceWrite, SandboxProfile::FullHost);
+    }
+
+    #[test]
+    fn child_sandbox_resolution_enforces_ceiling() {
+        assert_eq!(
+            resolve_child_sandbox(SandboxProfile::WorkspaceWrite, SandboxProfile::ReadOnly)
+                .unwrap(),
+            SandboxProfile::ReadOnly
+        );
+        assert_eq!(
+            resolve_child_sandbox(
+                SandboxProfile::WorkspaceWrite,
+                SandboxProfile::WorkspaceWrite
+            )
+            .unwrap(),
+            SandboxProfile::WorkspaceWrite
+        );
+        assert!(
+            resolve_child_sandbox(SandboxProfile::WorkspaceWrite, SandboxProfile::FullHost)
+                .is_err()
+        );
+        assert!(
+            resolve_child_sandbox(SandboxProfile::ReadOnly, SandboxProfile::WorkspaceWrite)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn sandbox_escalation_is_bounded_and_explicit() {
+        let req = SandboxEscalationRequest::new(
+            "/etc/passwd",
+            SandboxProfile::WorkspaceWrite,
+            "outside workspace roots",
+        );
+        assert!(req.describe().contains("/etc/passwd"));
+        assert!(req.describe().contains("workspace_write"));
+        let long = "x".repeat(5000);
+        let bounded = SandboxEscalationRequest::new(long.clone(), SandboxProfile::ReadOnly, long);
+        assert!(bounded.requested_path.len() <= 1024);
+        assert!(bounded.reason.len() <= 512);
     }
 
     #[test]

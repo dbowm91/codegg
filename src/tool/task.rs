@@ -1549,6 +1549,14 @@ impl TaskTool {
                 .await;
 
             if let Some(ref spawner) = self.spawner {
+                // M005: parent sandbox ceiling comes from the captured batch
+                // snapshot threaded through ToolExecutionContext. Approval
+                // mode never mutates it; unknown/missing defaults to
+                // WorkspaceWrite (never FullHost).
+                let parent_sandbox = ctx
+                    .and_then(|c| c.sandbox_profile.as_deref())
+                    .and_then(codegg_core::approval::SandboxProfile::parse)
+                    .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
                 let req = SubAgentRequest {
                     task_id,
                     run_id: None,
@@ -1564,6 +1572,10 @@ impl TaskTool {
                     parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
                     workspace_locks: self.workspace_locks.clone(),
+                    parent_sandbox_profile: Some(parent_sandbox),
+                    // Inherit parent by default; worker narrows for
+                    // read-only/shared paths and enforces the ceiling.
+                    sandbox_profile: None,
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

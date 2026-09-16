@@ -317,6 +317,11 @@ impl TurnRuntime for DefaultTurnRuntime {
                     pin: asset_pin.clone(),
                 },
                 search_runtime: Some(search_runtime.clone()),
+                // M005: thread the daemon-resolved sandbox profile into
+                // ToolRegistry/BashTool construction so constrained turns
+                // receive the Landlock policy for the authoritative
+                // workspace root. `None` falls back to WorkspaceWrite.
+                sandbox_profile,
             },
         );
 

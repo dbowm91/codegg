@@ -128,6 +128,11 @@ pub struct ToolExecutionContext {
     /// Frozen contracts resolved from the same runtime Broker catalog that
     /// admitted the direct `tool_program` invocation.
     pub program_contract_snapshot: Option<Vec<crate::tool::tool_program_context::ContractEntry>>,
+    /// M005: sandbox profile from the captured batch snapshot
+    /// (`read_only`/`workspace_write`/`full_host`). Never mutated by
+    /// approval mode. Subagent construction reads this as the parent
+    /// ceiling; missing means the pre-M005 default (`workspace_write`).
+    pub sandbox_profile: Option<String>,
 }
 
 impl ToolExecutionContext {
@@ -171,6 +176,7 @@ impl ToolExecutionContext {
             decision_expires_at: None,
             decision_revoked_at: None,
             program_contract_snapshot: None,
+            sandbox_profile: None,
         }
     }
 

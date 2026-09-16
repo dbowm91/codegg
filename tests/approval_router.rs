@@ -333,6 +333,7 @@ fn protocol_snapshot_is_additive_for_older_clients() {
         policy_revision: Some("config:1".into()),
         reviewer_config_id: None,
         captured_at_ms: 1,
+        sandbox_enforcement: None,
     };
     let json = serde_json::to_value(&full).unwrap();
     let back: codegg_protocol::core::ExecutionPolicySnapshotDto =

@@ -172,6 +172,10 @@ impl AgentLoop {
             parent_model,
             workspace_root: Some(self.workspace_root.clone()),
             workspace_locks: self.workspace_locks.clone(),
+            // M005: security-review fallback inherits the parent ceiling;
+            // the worker narrows to the child profile.
+            parent_sandbox_profile: None,
+            sandbox_profile: None,
         };
         tokio::spawn(async move {
             if let Err(e) = pool.spawner().send(request).await {

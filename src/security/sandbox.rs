@@ -15,6 +15,13 @@ pub enum SandboxMode {
     #[default]
     ReadOnly,
     WorkspaceWrite,
+    /// Deprecated compat alias: historic writable-roots mode whose name
+    /// suggests host authority it never provided (M005).
+    ///
+    /// New code must use [`codegg_core::approval::SandboxProfile`] instead:
+    /// `ReadOnly`/`WorkspaceWrite` map to an enabled [`SandboxConfig`],
+    /// while `FullHost` means *no* `SandboxConfig` (explicit no CodeGG
+    /// filesystem containment). Never construct this variant for `FullHost`.
     DangerFullAccess,
 }
 
@@ -22,6 +29,149 @@ impl SandboxMode {
     fn is_writable(&self) -> bool {
         matches!(self, Self::WorkspaceWrite | Self::DangerFullAccess)
     }
+
+    /// `true` only for the deprecated compat variant.
+    pub fn is_deprecated_full_access(&self) -> bool {
+        matches!(self, Self::DangerFullAccess)
+    }
+
+    /// Compatibility parser for legacy serialized config.
+    ///
+    /// `danger_full_access`/`full_host`/`fullhost` all parse to
+    /// `DangerFullAccess` for readability, but callers must map the result
+    /// through [`sandbox_profile_for_mode`] and treat `FullHost` as "no
+    /// containment" — never silently reinterpret old writable-roots config
+    /// as host authority.
+    pub fn parse_compat(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "read_only" | "readonly" | "read-only" => Some(Self::ReadOnly),
+            "workspace_write" | "workspace-write" => Some(Self::WorkspaceWrite),
+            "danger_full_access" | "danger-full-access" | "dangerfullaccess" | "full_host"
+            | "full-host" | "fullhost" => Some(Self::DangerFullAccess),
+            _ => None,
+        }
+    }
+}
+
+/// Map a legacy [`SandboxMode`] to its M005 [`codegg_core::approval::SandboxProfile`].
+///
+/// `DangerFullAccess` maps to `FullHost` at the *vocabulary* level only;
+/// the execution mapping differs: legacy mode behaved as writable roots,
+/// while `FullHost` intentionally carries no [`SandboxConfig`]. Callers
+/// must use [`sandbox_config_for_profile`] (which returns `None` for
+/// `FullHost`) rather than reusing the old writable-roots construction.
+pub fn sandbox_profile_for_mode(mode: &SandboxMode) -> codegg_core::approval::SandboxProfile {
+    match mode {
+        SandboxMode::ReadOnly => codegg_core::approval::SandboxProfile::ReadOnly,
+        SandboxMode::WorkspaceWrite => codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        SandboxMode::DangerFullAccess => codegg_core::approval::SandboxProfile::FullHost,
+    }
+}
+
+/// Map an M005 [`codegg_core::approval::SandboxProfile`] to its legacy
+/// [`SandboxMode`] for readers of old config. `FullHost` maps to the
+/// deprecated `DangerFullAccess` name; see [`sandbox_config_for_profile`]
+/// for why the execution mapping is not 1:1.
+pub fn sandbox_mode_for_profile(
+    profile: codegg_core::approval::SandboxProfile,
+) -> Option<SandboxMode> {
+    match profile {
+        codegg_core::approval::SandboxProfile::ReadOnly => Some(SandboxMode::ReadOnly),
+        codegg_core::approval::SandboxProfile::WorkspaceWrite => Some(SandboxMode::WorkspaceWrite),
+        // FullHost has no SandboxMode execution: it is the absence of a
+        // SandboxConfig. Return None so callers cannot mistake it for a
+        // writable-roots mode.
+        codegg_core::approval::SandboxProfile::FullHost => None,
+    }
+}
+
+/// Build the authoritative [`SandboxConfig`] for a requested M005 profile.
+///
+/// - `ReadOnly`/`WorkspaceWrite`: `Some` enabled config whose allowed
+///   roots are exactly the canonical workspace/effective approved roots
+///   (plus the minimum runtime libraries/executable requirements already
+///   handled by the helper in [`SandboxConfig::launch_spec`]).
+/// - `FullHost`: `None` — explicit no CodeGG filesystem containment.
+///   Callers must record `FullHost` enforcement and must not fall back to
+///   a writable-roots config.
+pub fn sandbox_config_for_profile(
+    profile: codegg_core::approval::SandboxProfile,
+    workspace_root: &Path,
+) -> Option<SandboxConfig> {
+    sandbox_config_for_profile_with_roots(profile, &[workspace_root.to_path_buf()])
+}
+
+/// [`sandbox_config_for_profile`] with explicit approved roots (workspace
+/// root plus effective approved roots, e.g. child worktree roots).
+pub fn sandbox_config_for_profile_with_roots(
+    profile: codegg_core::approval::SandboxProfile,
+    roots: &[PathBuf],
+) -> Option<SandboxConfig> {
+    match profile {
+        codegg_core::approval::SandboxProfile::ReadOnly => {
+            let allowed = roots
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            Some(
+                SandboxConfig::new()
+                    .with_enabled(true)
+                    .with_mode(SandboxMode::ReadOnly)
+                    .with_allowed_paths(allowed),
+            )
+        }
+        codegg_core::approval::SandboxProfile::WorkspaceWrite => {
+            let allowed = roots
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            Some(
+                SandboxConfig::new()
+                    .with_enabled(true)
+                    .with_mode(SandboxMode::WorkspaceWrite)
+                    .with_allowed_paths(allowed),
+            )
+        }
+        codegg_core::approval::SandboxProfile::FullHost => None,
+    }
+}
+
+/// Resolve the truthful host enforcement for a requested profile (M005).
+///
+/// - `FullHost` → [`codegg_core::approval::SandboxEnforcement::for_full_host`].
+/// - Constrained + [`SandboxConfig::is_available`] → enforced (`landlock`,
+///   ABI unknown until launch; network always `Unrestricted` — Landlock is
+///   filesystem containment only).
+/// - Constrained + unavailable host → constrained-unavailable (fail-closed
+///   signal; never `FullHost`).
+pub fn resolve_sandbox_enforcement(
+    profile: codegg_core::approval::SandboxProfile,
+) -> codegg_core::approval::SandboxEnforcement {
+    use codegg_core::approval::SandboxEnforcement;
+    if !profile.requires_filesystem_containment() {
+        return SandboxEnforcement::for_full_host();
+    }
+    if SandboxConfig::is_available() {
+        SandboxEnforcement::for_constrained_enforced(profile, "landlock", None)
+    } else {
+        let reason = probe_landlock().unwrap_err();
+        SandboxEnforcement::for_constrained_unavailable(profile, reason)
+    }
+}
+
+/// Bounded escalation hint for a path outside the current constrained
+/// roots. Returns a [`codegg_core::approval::SandboxEscalationRequest`]
+/// describing the capability/path; callers deny or route through
+/// `ApprovalRouter` rather than switching the turn to `FullHost`.
+pub fn escalation_for_outside_path(
+    requested_path: &str,
+    profile: codegg_core::approval::SandboxProfile,
+) -> codegg_core::approval::SandboxEscalationRequest {
+    codegg_core::approval::SandboxEscalationRequest::new(
+        requested_path,
+        profile,
+        "path is outside the enforced workspace roots; select FullHost explicitly if host authority is genuinely required",
+    )
 }
 
 #[derive(Clone, Debug, Default)]
@@ -737,6 +887,67 @@ mod tests {
         std::env::remove_var(variable);
 
         assert_eq!(resolved, helper.canonicalize().expect("canonical helper"));
+    }
+
+    #[test]
+    fn m005_profile_maps_to_truthful_sandbox_config() {
+        use codegg_core::approval::SandboxProfile;
+        let dir = tempfile::tempdir().expect("workspace fixture");
+        // WorkspaceWrite builds an enabled writable config over the root.
+        let write = sandbox_config_for_profile(SandboxProfile::WorkspaceWrite, dir.path())
+            .expect("workspace_write must build a config");
+        assert!(write.enabled);
+        assert!(matches!(write.mode, SandboxMode::WorkspaceWrite));
+        // ReadOnly builds an enabled non-writable config.
+        let read = sandbox_config_for_profile(SandboxProfile::ReadOnly, dir.path())
+            .expect("read_only must build a config");
+        assert!(read.enabled);
+        assert!(matches!(read.mode, SandboxMode::ReadOnly));
+        // FullHost intentionally builds no containment.
+        assert!(
+            sandbox_config_for_profile(SandboxProfile::FullHost, dir.path()).is_none(),
+            "FullHost must not build a SandboxConfig"
+        );
+        // WorkspaceWrite and FullHost are distinct execution properties.
+        assert_ne!(
+            sandbox_config_for_profile(SandboxProfile::WorkspaceWrite, dir.path())
+                .map(|c| c.enabled),
+            sandbox_config_for_profile(SandboxProfile::FullHost, dir.path()).map(|c| c.enabled)
+        );
+    }
+
+    #[test]
+    fn m005_legacy_danger_full_access_is_compat_only() {
+        // Legacy string still parses for readability, but maps to FullHost
+        // vocabulary while execution stays "no config".
+        let mode = SandboxMode::parse_compat("danger_full_access").expect("compat parse");
+        assert!(mode.is_deprecated_full_access());
+        assert_eq!(
+            sandbox_profile_for_mode(&mode),
+            codegg_core::approval::SandboxProfile::FullHost
+        );
+        assert!(
+            sandbox_mode_for_profile(codegg_core::approval::SandboxProfile::FullHost).is_none()
+        );
+    }
+
+    #[test]
+    fn m005_enforcement_resolution_is_truthful_per_host() {
+        use codegg_core::approval::SandboxProfile;
+        let full = resolve_sandbox_enforcement(SandboxProfile::FullHost);
+        assert!(full.is_full_host());
+        let constrained = resolve_sandbox_enforcement(SandboxProfile::WorkspaceWrite);
+        // Network is always unrestricted for shell (no backend).
+        assert!(matches!(
+            constrained.network,
+            codegg_core::approval::NetworkEnforcement::Unrestricted
+        ));
+        if SandboxConfig::is_available() {
+            assert!(constrained.is_enforced());
+        } else {
+            assert!(!constrained.is_enforced());
+            assert!(!constrained.is_full_host());
+        }
     }
 
     #[test]

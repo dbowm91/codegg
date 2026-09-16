@@ -80,7 +80,7 @@ daemon never calls `restrict_self()`.
 
 **Key types:**
 ```rust
-pub enum SandboxMode { ReadOnly, WorkspaceWrite, DangerFullAccess }
+pub enum SandboxMode { ReadOnly, WorkspaceWrite, DangerFullAccess } // DangerFullAccess is deprecated compat-only
 
 pub struct SandboxConfig {
     pub enabled: bool,
@@ -100,10 +100,29 @@ pub struct SandboxLaunchSpec {
 `SandboxConfig::enforce()` refuses to restrict the calling process —
 callers must use the child launch path.
 
+**M005 production policy (execution-reliability):** the requested
+`SandboxProfile` (`ReadOnly`/`WorkspaceWrite`/`FullHost` in
+`codegg-core/src/approval.rs`) is threaded through
+`ToolRegistryOptions`/`SessionToolContext`/`TurnRunInput` into
+`BashTool` via `sandbox_config_for_profile()` using the authoritative
+workspace root. `WorkspaceWrite`/`ReadOnly` build an enabled config;
+`FullHost` intentionally builds no config (explicit no CodeGG
+filesystem containment, auditable). Obtained enforcement is reported
+separately as `SandboxEnforcement` (`FilesystemEnforcement` +
+`NetworkEnforcement`): Landlock is filesystem containment only, so
+normal shell always reports `network=Unrestricted`. `ApprovalMode`
+never mutates `SandboxProfile`. `DangerFullAccess` is retained only as
+a compat parser name mapping to `FullHost` vocabulary; it must never be
+constructed for new execution. Child sandboxes narrow via
+`resolve_child_sandbox()` and a worktree child's writable root is its
+leased worktree. Guard: `scripts/check_sandbox_policy_wiring.py`.
+
 **Platform outcomes:**
 - Linux with Landlock ABI: `Enforced { abi }` (ABI V1 minimum)
-- Non-Linux or no Landlock: Python portable fallback with sanitized
-  environment, workspace-contained cwd, snapshot-based post-exec checks
+- Non-Linux or no Landlock: constrained requests report
+  `FilesystemEnforcement::Unavailable` (fail closed, never `FullHost`);
+  Python portable fallback with sanitized environment,
+  workspace-contained cwd, snapshot-based post-exec checks
 
 **CANONICAL_PATHS_CACHE:** Static cache with 300s TTL and 100-entry
 cap (`sandbox.rs:453-458`). Entries older than 300s are evicted on

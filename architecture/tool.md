@@ -373,6 +373,8 @@ pub struct ToolRegistry {
     catalog: catalog::ToolCatalog,
     tool_backends: ToolBackendConfig,
     integrated_config: IntegratedToolRuntimeConfig,
+    search_runtime: SearchRuntimeContext,
+    sandbox_profile: SandboxProfile, // M005 resolved profile
 }
 ```
 
@@ -425,8 +427,23 @@ pub struct ToolRegistryOptions {
     pub asset_pin: Option<Arc<Mutex<RuntimeAssetPin>>>,
     pub notification_service: Option<Arc<ToolProgramNotificationService>>,
     pub search_runtime: Option<SearchRuntimeContext>,
+    pub sandbox_profile: Option<SandboxProfile>, // M005: None = WorkspaceWrite default
 }
 ```
+
+**M005 sandbox wiring:** `with_options()` resolves
+`sandbox_profile` (default `WorkspaceWrite`) and configures `BashTool`
+via `sandbox_config_for_profile()` over the authoritative
+`workspace_root`. Constrained profiles receive an enabled Landlock
+config on supported hosts; `FullHost` intentionally carries no
+containment and is logged as explicit/auditable. The resolved profile
+is stashed on the registry (`ToolRegistry::sandbox_profile()`).
+Production turn/session construction (`build_session_tool_registry`,
+`DefaultTurnRuntime`) threads the daemon-resolved profile; child
+registries narrow it via `resolve_child_sandbox()`. Workspace cwd
+validation alone is not OS containment. Guard:
+`scripts/check_sandbox_policy_wiring.py`; integration:
+`tests/sandbox_policy_wiring.rs`.
 
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`

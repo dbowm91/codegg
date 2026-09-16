@@ -415,6 +415,19 @@ allow_all_bash = false
    reports `user_choice_unpersisted`. Frontend state is a projection, not
    authority; durable preference lives in daemon-owned
    `runtime_preferences` (revision/CAS, secret-free, additive v58).
+8. **M005 sandbox wiring (ADR-0004).** The M003 snapshot profile becomes
+   a production execution property: `ToolRegistryOptions.sandbox_profile`
+   (default `WorkspaceWrite`) configures `BashTool` via
+   `sandbox_config_for_profile()` over the authoritative workspace root;
+   `FullHost` carries no containment and is explicit/auditable.
+   Enforcement is reported separately (`SandboxEnforcement`:
+   filesystem `Enforced/Unavailable/FullHost` + network
+   `Unrestricted` for shell). `ApprovalMode` cannot mutate the profile.
+   Child profiles narrow via `resolve_child_sandbox()`; a worktree
+   child's writable root is its leased worktree. Outside-path needs
+   return a bounded `SandboxEscalationRequest`, never a silent turn-wide
+   `FullHost` switch. Protocol exposes `SandboxEnforcementDto` on the
+   snapshot (additive `sandbox_enforcement`).
 
 ## Testing
 

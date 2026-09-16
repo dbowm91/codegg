@@ -600,6 +600,119 @@ pub struct RuntimePreferenceDto {
     pub updated_at_ms: i64,
 }
 
+/// Obtained filesystem enforcement projection (M005).
+///
+/// Mirrors `codegg-core::approval::FilesystemEnforcement` without taking a
+/// core dependency: `FullHost` is explicit no-containment, `Unavailable`
+/// is fail-closed (never a silent fallback), and `Enforced` carries the
+/// backend/ABI. Frontends render this; they never choose a stronger
+/// profile without a daemon-authorized mode update.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemEnforcementDto {
+    Enforced { backend: String, abi: Option<u32> },
+    Unavailable { reason: String },
+    FullHost,
+}
+
+/// Obtained network containment projection (M005).
+///
+/// CodeGG has no OS network-isolation backend: normal shell execution
+/// reports `Unrestricted` even when filesystem containment is enforced.
+/// Permission policy may classify network commands, but that is not OS
+/// isolation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkEnforcementDto {
+    Enforced { backend: String },
+    Unrestricted,
+    Unavailable { reason: String },
+}
+
+/// Requested profile plus obtained enforcement projection (M005).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SandboxEnforcementDto {
+    pub requested: SandboxProfileDto,
+    pub filesystem: FilesystemEnforcementDto,
+    pub network: NetworkEnforcementDto,
+    pub summary: String,
+}
+
+impl SandboxEnforcementDto {
+    fn truncate(value: String, max_len: usize) -> String {
+        let mut value = value;
+        if value.len() > max_len {
+            value.truncate(max_len);
+        }
+        value.replace('\0', "")
+    }
+
+    /// Truthful host enforcement for a requested profile (M005).
+    ///
+    /// - `FullHost` → no containment, network unrestricted.
+    /// - Constrained + `host_supports_landlock` → filesystem enforced
+    ///   (`landlock`, ABI unknown until launch), network unrestricted.
+    /// - Constrained + unsupported → filesystem unavailable (fail-closed,
+    ///   never `FullHost`), network unrestricted.
+    pub fn for_profile_on_host(
+        requested: SandboxProfileDto,
+        host_supports_landlock: bool,
+        unavailable_reason: Option<String>,
+    ) -> Self {
+        let (filesystem, network) = match requested {
+            SandboxProfileDto::FullHost => (
+                FilesystemEnforcementDto::FullHost,
+                NetworkEnforcementDto::Unrestricted,
+            ),
+            constrained => {
+                let filesystem = if host_supports_landlock {
+                    FilesystemEnforcementDto::Enforced {
+                        backend: "landlock".to_string(),
+                        abi: None,
+                    }
+                } else {
+                    FilesystemEnforcementDto::Unavailable {
+                        reason: Self::truncate(
+                            unavailable_reason
+                                .unwrap_or_else(|| "Landlock unavailable on this host".to_string()),
+                            512,
+                        ),
+                    }
+                };
+                // No OS network-isolation backend exists.
+                let _ = constrained;
+                (filesystem, NetworkEnforcementDto::Unrestricted)
+            }
+        };
+        let summary = match &filesystem {
+            FilesystemEnforcementDto::Enforced { backend, abi } => match abi {
+                Some(abi) => format!(
+                    "{} requested; filesystem enforced ({backend} abi {abi}); network unrestricted (no OS isolation)",
+                    requested.as_str()
+                ),
+                None => format!(
+                    "{} requested; filesystem enforced ({backend}); network unrestricted (no OS isolation)",
+                    requested.as_str()
+                ),
+            },
+            FilesystemEnforcementDto::Unavailable { reason } => format!(
+                "{} requested; filesystem unavailable ({reason}); network unrestricted (no OS isolation)",
+                requested.as_str()
+            ),
+            FilesystemEnforcementDto::FullHost => format!(
+                "{} requested; no CodeGG filesystem containment (explicit FullHost); network unrestricted (no OS isolation)",
+                requested.as_str()
+            ),
+        };
+        Self {
+            requested,
+            filesystem,
+            network,
+            summary,
+        }
+    }
+}
+
 /// Effective execution-policy snapshot projection. Immutable once captured
 /// for a turn/tool batch; mode changes apply on the next boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -617,6 +730,11 @@ pub struct ExecutionPolicySnapshotDto {
     #[serde(default)]
     pub reviewer_config_id: Option<String>,
     pub captured_at_ms: i64,
+    /// M005: obtained enforcement for the requested profile on the
+    /// current host. `None` decodes from pre-M005 payloads (older
+    /// daemons); new daemons always populate it.
+    #[serde(default)]
+    pub sandbox_enforcement: Option<SandboxEnforcementDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

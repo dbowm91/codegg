@@ -121,6 +121,9 @@ impl AgentLoop {
             // M003: durable approval mode from the captured batch snapshot,
             // never `None` on production construction paths.
             permission_mode: Some(snapshot.approval_mode().as_str().to_owned()),
+            // M005: parent sandbox ceiling for subagent construction.
+            // Approval mode never mutates this value.
+            sandbox_profile: Some(snapshot.sandbox_profile().as_str().to_owned()),
             timeout_ms,
             invocation_key: Some(invocation_key),
             turn_id: self.turn_id.clone(),

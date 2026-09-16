@@ -147,6 +147,7 @@ fn accepted_context(
         decision_expires_at: Some(now + 300_000),
         decision_revoked_at: None,
         program_contract_snapshot: Some(contracts),
+        sandbox_profile: None,
     };
     let mut context = to_core_context(Some(&direct), workspace_id, program_id).unwrap();
     context.contract_snapshot_json = contract_json;

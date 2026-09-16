@@ -1,6 +1,6 @@
 # Execution Reliability, Approval, and Autonomy M005 — Production Sandbox Policy Wiring
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 

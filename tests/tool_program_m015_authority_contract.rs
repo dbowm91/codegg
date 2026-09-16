@@ -39,6 +39,7 @@ fn accepted_context() -> ToolExecutionContext {
         decision_expires_at: Some(now + 60_000),
         decision_revoked_at: None,
         program_contract_snapshot: None,
+        sandbox_profile: None,
     }
 }
 

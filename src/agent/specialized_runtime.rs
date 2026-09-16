@@ -124,6 +124,11 @@ pub async fn coordinate_research(
             parent_model: Some(parent_model.into()),
             workspace_root: Some(workspace.to_path_buf()),
             workspace_locks: None,
+            // M005: research children inherit the parent WorkspaceWrite
+            // ceiling by default; read-only evidence work narrows further
+            // in the worker.
+            parent_sandbox_profile: None,
+            sandbox_profile: None,
         };
         let result =
             tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;

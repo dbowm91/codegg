@@ -41,6 +41,11 @@ pub struct SessionToolContext {
     /// before building the registry; when `None`, the registry falls
     /// back to an isolated config-derived default context.
     pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
+    /// M005 execution-reliability: resolved sandbox profile for this
+    /// session/turn. `None` means the `WorkspaceWrite` default. Daemon
+    /// turn construction threads the persisted principal preference here;
+    /// child construction narrows it against the parent ceiling.
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -84,6 +89,7 @@ pub fn build_session_tool_registry(
         notification_service,
         workspace_locks,
         search_runtime,
+        sandbox_profile,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
@@ -151,6 +157,7 @@ pub fn build_session_tool_registry(
         asset_pin: asset_context.pin,
         notification_service,
         search_runtime,
+        sandbox_profile,
     });
 
     // Register the task/subagent tool when a runtime is available.

@@ -536,6 +536,33 @@ fn approval_preference_to_dto(
 fn execution_snapshot_to_dto(
     snapshot: &codegg_core::approval::ExecutionPolicySnapshot,
 ) -> crate::protocol::core::ExecutionPolicySnapshotDto {
+    let sandbox_profile = match snapshot.sandbox_profile() {
+        codegg_core::approval::SandboxProfile::ReadOnly => {
+            crate::protocol::core::SandboxProfileDto::ReadOnly
+        }
+        codegg_core::approval::SandboxProfile::WorkspaceWrite => {
+            crate::protocol::core::SandboxProfileDto::WorkspaceWrite
+        }
+        codegg_core::approval::SandboxProfile::FullHost => {
+            crate::protocol::core::SandboxProfileDto::FullHost
+        }
+    };
+    // M005: obtained enforcement on the current host. Frontends render
+    // `summary`/filesystem/network but never choose a stronger profile
+    // without a daemon-authorized mode update.
+    let enforcement = {
+        let supported = crate::security::sandbox::SandboxConfig::is_available();
+        let reason = if supported {
+            None
+        } else {
+            Some(crate::security::sandbox::probe_landlock().unwrap_err())
+        };
+        crate::protocol::core::SandboxEnforcementDto::for_profile_on_host(
+            sandbox_profile,
+            supported,
+            reason,
+        )
+    };
     crate::protocol::core::ExecutionPolicySnapshotDto {
         approval_mode: match snapshot.approval_mode() {
             codegg_core::approval::ApprovalMode::Interactive => {
@@ -548,22 +575,13 @@ fn execution_snapshot_to_dto(
                 crate::protocol::core::ApprovalModeDto::Yolo
             }
         },
-        sandbox_profile: match snapshot.sandbox_profile() {
-            codegg_core::approval::SandboxProfile::ReadOnly => {
-                crate::protocol::core::SandboxProfileDto::ReadOnly
-            }
-            codegg_core::approval::SandboxProfile::WorkspaceWrite => {
-                crate::protocol::core::SandboxProfileDto::WorkspaceWrite
-            }
-            codegg_core::approval::SandboxProfile::FullHost => {
-                crate::protocol::core::SandboxProfileDto::FullHost
-            }
-        },
+        sandbox_profile,
         principal_id: snapshot.principal_id().map(str::to_owned),
         session_id: snapshot.session_id().map(str::to_owned),
         agent_id: snapshot.agent_id().map(str::to_owned),
         policy_revision: snapshot.policy_revision().map(str::to_owned),
         reviewer_config_id: snapshot.reviewer_config_id().map(str::to_owned),
         captured_at_ms: snapshot.captured_at_ms(),
+        sandbox_enforcement: Some(enforcement),
     }
 }

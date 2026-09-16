@@ -771,6 +771,7 @@ impl ToolBroker {
                 decision_expires_at: None,
                 decision_revoked_at: None,
                 program_contract_snapshot: None,
+                sandbox_profile: None,
             };
             let attempt_input = input.clone();
             let result = match ctx.cancellation.clone() {

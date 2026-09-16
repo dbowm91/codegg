@@ -852,6 +852,11 @@ impl JobExecutor for SubagentJobExecutor {
             parent_model: model,
             workspace_root,
             workspace_locks: None,
+            // M005: scheduler-owned children inherit the default ceiling;
+            // isolated worktree roots become their writable sandbox roots
+            // via the registry wiring in the worker.
+            parent_sandbox_profile: None,
+            sandbox_profile: None,
         };
         let effective_workspace_root = request.workspace_root.clone();
 

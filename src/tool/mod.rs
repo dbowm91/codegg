@@ -220,6 +220,7 @@ pub struct ToolRegistry {
     tool_backends: ToolBackendConfig,
     integrated_config: integrated_config::IntegratedToolRuntimeConfig,
     search_runtime: crate::search_backend::SearchRuntimeContext,
+    sandbox_profile: codegg_core::approval::SandboxProfile,
 }
 
 impl Default for ToolRegistry {
@@ -314,6 +315,13 @@ pub struct ToolRegistryOptions {
     /// tools never consult the deprecated process-global slots at
     /// execution time.
     pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
+    /// M005 execution-reliability: resolved sandbox profile for shell
+    /// execution. `None` means the `WorkspaceWrite` default (M003); pass
+    /// `Some(FullHost)` only for an explicit user-selected FullHost turn.
+    /// Production turn/session construction must thread the daemon-resolved
+    /// profile here so `BashTool` receives the configured Landlock policy
+    /// instead of `BashTool::default()` without containment.
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 impl ToolRegistry {
@@ -324,6 +332,7 @@ impl ToolRegistry {
             tool_backends: ToolBackendConfig::default(),
             integrated_config: integrated_config::IntegratedToolRuntimeConfig::default(),
             search_runtime: crate::search_backend::SearchRuntimeContext::default(),
+            sandbox_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
         }
     }
 
@@ -373,6 +382,38 @@ impl ToolRegistry {
             bash_tool.with_asset_pin(asset_pin)
         } else {
             bash_tool
+        };
+        // M005 production sandbox policy wiring: thread the resolved
+        // profile into BashTool Landlock configuration using the
+        // authoritative workspace root. Workspace cwd validation alone is
+        // not OS containment; constrained profiles must receive an enabled
+        // SandboxConfig on supported hosts, while FullHost intentionally
+        // carries no containment and is auditable.
+        let sandbox_profile = options
+            .sandbox_profile
+            .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+        let bash_tool = match sandbox_profile {
+            codegg_core::approval::SandboxProfile::FullHost => {
+                tracing::info!(
+                    "sandbox profile FullHost: bash runs without CodeGG filesystem containment (explicit, auditable)"
+                );
+                bash_tool
+            }
+            constrained => match workspace_root.as_ref() {
+                Some(root) => {
+                    match crate::security::sandbox::sandbox_config_for_profile(constrained, root) {
+                        Some(config) => bash_tool.with_landlock_sandbox_custom(config),
+                        None => bash_tool,
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        profile = constrained.as_str(),
+                        "sandbox profile requested without a workspace root; bash runs without OS containment (reported as unavailable, never FullHost)"
+                    );
+                    bash_tool
+                }
+            },
         };
         registry.register(bash_tool);
         registry.register(match workspace_root.as_ref() {
@@ -775,6 +816,7 @@ impl ToolRegistry {
             preflight: options.preflight_config,
         };
         registry.search_runtime = search_runtime;
+        registry.sandbox_profile = sandbox_profile;
 
         // --- Context read tool (artifact expansion) ---
         if options.context_read_enabled {
@@ -953,6 +995,7 @@ impl ToolRegistry {
             search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
                 &config.search.clone().unwrap_or_default(),
             )),
+            sandbox_profile: None,
         })
     }
 
@@ -994,6 +1037,7 @@ impl ToolRegistry {
             asset_pin: None,
             notification_service: None,
             search_runtime: None,
+            sandbox_profile: None,
         })
     }
 
@@ -1022,6 +1066,14 @@ impl ToolRegistry {
     /// this instead of the deprecated process-global slots.
     pub fn search_runtime(&self) -> &crate::search_backend::SearchRuntimeContext {
         &self.search_runtime
+    }
+
+    /// M005 execution-reliability: resolved sandbox profile captured at
+    /// construction. Production registries carry the daemon-resolved
+    /// profile; `WorkspaceWrite` default applies when the builder passed
+    /// `None`.
+    pub fn sandbox_profile(&self) -> codegg_core::approval::SandboxProfile {
+        self.sandbox_profile
     }
 
     /// Whether a tool with the given name is currently registered.

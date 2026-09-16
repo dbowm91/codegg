@@ -96,6 +96,13 @@ pub struct SubAgentRequest {
     pub workspace_root: Option<PathBuf>,
     /// Shared with the owning turn when the child runs in the same workspace.
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
+    /// M005: parent turn sandbox ceiling (`None` = pre-M005 default
+    /// `WorkspaceWrite`). The child effective profile is narrowed against
+    /// this and can never broaden it.
+    pub parent_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M005: explicitly requested child profile (`None` = inherit parent).
+    /// A request for `FullHost` under a constrained parent fails closed.
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1136,6 +1143,31 @@ async fn execute_agent_task(
     let (search_runtime, _report) =
         crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
 
+    // M005: child sandbox ceiling is the intersection/no-broader-than
+    // parent plus child worktree ownership. `None` parent means the
+    // pre-M005 default (WorkspaceWrite, never FullHost). A requested
+    // FullHost under a constrained parent fails closed here, before any
+    // child loop or tool registry exists. The child's writable sandbox
+    // root is its own workspace_root: for isolated worktree children that
+    // is the leased worktree, for shared read-only children it is the
+    // inherited parent root.
+    let parent_profile = request
+        .parent_sandbox_profile
+        .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+    let requested_child = request.sandbox_profile.unwrap_or(parent_profile);
+    let mut effective_child =
+        codegg_core::approval::resolve_child_sandbox(parent_profile, requested_child)
+            .map_err(|e| format!("child sandbox exceeds parent ceiling: {e}"))?;
+    // Read-only child agents are narrowed to ReadOnly (always ≤ parent
+    // except when parent is already ReadOnly, where it is equal).
+    if is_read_only_agent(agent) {
+        effective_child = codegg_core::approval::resolve_child_sandbox(
+            parent_profile,
+            codegg_core::approval::SandboxProfile::ReadOnly,
+        )
+        .map_err(|e| format!("read-only child sandbox narrowing failed: {e}"))?;
+    }
+
     let mut tool_registry = ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
         workspace_root: request.workspace_root.clone(),
         command_intent: config.command_intent.clone(),
@@ -1146,6 +1178,7 @@ async fn execute_agent_task(
         tool_backends: crate::tool::ToolBackendConfig::from_config(&config),
         lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
         search_runtime: Some(search_runtime.clone()),
+        sandbox_profile: Some(effective_child),
         ..Default::default()
     });
     // Subagents must NEVER have access to in-flight planning tools
@@ -1362,6 +1395,10 @@ async fn execute_agent_task(
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
+    // M005: child loop carries the narrowed sandbox ceiling; approval
+    // stays Interactive (never broader than the parent without explicit
+    // narrowing through the snapshot ceiling).
+    agent_loop.set_sandbox_profile(effective_child);
     agent_loop.set_subagent_pool(Arc::clone(&subagent_pool));
 
     // The durable control service feeds these existing loop channels.  The
@@ -1624,6 +1661,8 @@ mod admission_tests {
             parent_model: None,
             workspace_root: None,
             workspace_locks: None,
+            parent_sandbox_profile: None,
+            sandbox_profile: None,
         }
     }
 

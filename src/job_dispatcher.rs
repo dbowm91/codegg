@@ -85,6 +85,9 @@ impl JobDispatcher for SubAgentJobDispatcher {
             parent_model: model,
             workspace_root,
             workspace_locks: None,
+            // M005: durable-job fallback inherits the default ceiling.
+            parent_sandbox_profile: None,
+            sandbox_profile: None,
         };
 
         self.pool

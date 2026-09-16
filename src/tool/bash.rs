@@ -183,6 +183,59 @@ impl BashTool {
         }
         self
     }
+
+    /// M005: apply the resolved [`codegg_core::approval::SandboxProfile`]
+    /// using the authoritative workspace root.
+    ///
+    /// - `ReadOnly`/`WorkspaceWrite` build an enabled [`SandboxConfig`]
+    ///   over exactly `workspace_root`.
+    /// - `FullHost` clears any sandbox config (explicit no containment).
+    pub fn with_sandbox_profile(
+        mut self,
+        profile: codegg_core::approval::SandboxProfile,
+        workspace_root: &std::path::Path,
+    ) -> Self {
+        match crate::security::sandbox::sandbox_config_for_profile(profile, workspace_root) {
+            Some(config) => {
+                self.landlock_sandbox = Some(config);
+            }
+            None => {
+                debug_assert!(profile.is_full_host());
+                self.landlock_sandbox = None;
+            }
+        }
+        self
+    }
+
+    /// Whether this tool carries an enabled Landlock config.
+    pub fn has_landlock_config(&self) -> bool {
+        self.landlock_sandbox.as_ref().is_some_and(|c| c.enabled)
+    }
+
+    /// Truthful enforcement for the current config/host (M005).
+    ///
+    /// `requested` is the daemon-resolved profile. Filesystem enforcement
+    /// reflects host Landlock availability; network is always
+    /// `Unrestricted` for shell (no OS backend). Approval mode never
+    /// alters this value.
+    pub fn sandbox_enforcement(
+        &self,
+        requested: codegg_core::approval::SandboxProfile,
+    ) -> codegg_core::approval::SandboxEnforcement {
+        use codegg_core::approval::SandboxEnforcement;
+        if requested.is_full_host() {
+            return SandboxEnforcement::for_full_host();
+        }
+        match self.landlock_sandbox.as_ref() {
+            Some(config) if config.enabled => {
+                crate::security::sandbox::resolve_sandbox_enforcement(requested)
+            }
+            _ => SandboxEnforcement::for_constrained_unavailable(
+                requested,
+                "bash has no enabled sandbox config for this workspace (unsupported host or missing root); failing closed, never FullHost",
+            ),
+        }
+    }
 }
 
 impl Default for BashTool {
