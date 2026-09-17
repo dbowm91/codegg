@@ -93,6 +93,7 @@ pub enum ObjectiveSource {
 pub enum CurrentTaskSource {
     GoalNextAction,
     GoalPhase,
+    WorkPlanNextAction,
     InProgressTodo,
     PreviousContinuation,
     None,
@@ -179,6 +180,11 @@ pub struct ContinuationSnapshot {
     pub current_task: Option<String>,
     pub current_task_source: CurrentTaskSource,
     pub plan: ContinuationPlanState,
+    /// Bounded WorkPlan provenance (M004). `None` for legacy sessions
+    /// without an active WorkPlan; the full plan stays in
+    /// `codegg-core::work_plan` and is reachable through WorkPlan tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_plan: Option<codegg_core::work_plan::WorkPlanCheckpointProvenance>,
     pub todos: ContinuationTodoState,
     pub intent_spine: Vec<ContinuationIntentEntry>,
     pub intent_truncated: bool,
@@ -217,6 +223,12 @@ pub struct ContinuationAssemblyInput<'a> {
     /// Already-read plan file body, if readable. `None` with
     /// `plan_path = Some` records a `plan_unavailable` diagnostic.
     pub plan_content: Option<&'a str>,
+    /// Active durable WorkPlan plus its items for bounded checkpoint
+    /// provenance (M004). `None` for legacy sessions without a plan.
+    pub active_work_plan: Option<(
+        &'a codegg_core::work_plan::WorkPlan,
+        &'a [codegg_core::work_plan::WorkItem],
+    )>,
 }
 
 fn estimate_tokens(text: &str) -> usize {
@@ -519,6 +531,41 @@ pub fn assemble_continuation_snapshot(
         .iter()
         .find(|item| item.status == crate::task_state::TodoStatus::InProgress)
         .map(|item| item.content.clone());
+    // WorkPlan next action: current item's next_action, else first
+    // actionable item's next_action/description. Bounded and host-owned;
+    // never model prose.
+    let work_plan_next_action: Option<String> =
+        input.active_work_plan.as_ref().and_then(|(plan, items)| {
+            if let Some(current_id) = plan.current_item_id.as_ref() {
+                if let Some(current) = items.iter().find(|i| i.id == *current_id) {
+                    if !current.status.is_terminal() {
+                        if let Some(action) = current.next_action.as_deref() {
+                            let trimmed = action.trim();
+                            if !trimmed.is_empty() {
+                                return Some(trimmed.to_string());
+                            }
+                        }
+                        let desc = current.description.trim();
+                        if !desc.is_empty() {
+                            return Some(desc.to_string());
+                        }
+                    }
+                }
+            }
+            // Fall back to the first actionable item in stable order.
+            codegg_core::work_plan::actionable_items(items)
+                .first()
+                .and_then(|item| {
+                    item.next_action
+                        .as_deref()
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .or_else(|| {
+                            let desc = item.description.trim();
+                            (!desc.is_empty()).then(|| desc.to_string())
+                        })
+                })
+        });
     let prev_action = previous_next_action(input.previous_checkpoint);
     let (current_task, current_task_source) = match input.active_goal {
         Some(goal)
@@ -543,6 +590,15 @@ pub fn assemble_continuation_snapshot(
                 CurrentTaskSource::GoalPhase,
             )
         }
+        _ if work_plan_next_action
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty()) =>
+        {
+            (
+                work_plan_next_action.clone(),
+                CurrentTaskSource::WorkPlanNextAction,
+            )
+        }
         _ if in_progress_todo
             .as_deref()
             .is_some_and(|t| !t.trim().is_empty()) =>
@@ -555,6 +611,22 @@ pub fn assemble_continuation_snapshot(
         _ => (None, CurrentTaskSource::None),
     };
     diagnostics.push(format!("current_task_source({:?})", current_task_source));
+
+    // --- WorkPlan provenance (M004, bounded handoff, never full plan) ---
+    let work_plan = input.active_work_plan.as_ref().map(|(plan, items)| {
+        let provenance = codegg_core::work_plan::build_checkpoint_provenance(plan, items);
+        diagnostics.push(format!(
+            "work_plan_provenance(id={} revision={} actionable={} blocked={})",
+            provenance.plan_id,
+            provenance.revision,
+            provenance.actionable_count,
+            provenance.blocked_count,
+        ));
+        provenance
+    });
+    if input.active_work_plan.is_none() {
+        diagnostics.push("work_plan_provenance(absent:legacy)".to_string());
+    }
 
     // --- Plan metadata (never an unbounded body) ---
     let plan = match (input.plan_path, input.plan_content) {
@@ -712,6 +784,7 @@ pub fn assemble_continuation_snapshot(
         current_task,
         current_task_source,
         plan,
+        work_plan,
         todos,
         intent_spine,
         intent_truncated,
@@ -791,11 +864,29 @@ impl ContinuationSnapshot {
                 unresolved.push(blocker.clone());
             }
         }
+        // WorkPlan blocked summaries join the advisory blocker surface only;
+        // deterministic `unresolved_errors` stay authoritative.
+        if let Some(work_plan) = self.work_plan.as_ref() {
+            for item in work_plan.blocked.iter() {
+                let marker = format!("{}: {}", item.id, item.description);
+                if !unresolved.contains(&marker) && unresolved.len() < MAX_EVIDENCE_ITEMS {
+                    unresolved.push(marker);
+                }
+            }
+        }
         unresolved.truncate(MAX_EVIDENCE_ITEMS);
         let mut next_steps = self.semantic.next_steps.clone();
         if next_steps.is_empty() {
             if let Some(task) = self.current_task.clone() {
                 next_steps.push(task);
+            } else if let Some(work_plan) = self.work_plan.as_ref() {
+                if let Some(first) = work_plan.actionable.first() {
+                    if let Some(action) = first.next_action.clone() {
+                        next_steps.push(action);
+                    } else {
+                        next_steps.push(first.description.clone());
+                    }
+                }
             }
         }
         ContextFrame {
@@ -824,6 +915,18 @@ impl ContinuationSnapshot {
                 "\n- Goal ref: {} rev {}",
                 goal.goal_id, goal.revision
             ));
+        }
+        if let Some(work_plan) = &self.work_plan {
+            provenance.push_str(&format!(
+                "\n- WorkPlan: {} rev {} status {}",
+                work_plan.plan_id, work_plan.revision, work_plan.status
+            ));
+            if let Some(phase) = work_plan.current_phase.as_deref() {
+                provenance.push_str(&format!(" phase {phase}"));
+            }
+            if let Some(item) = work_plan.current_item_id.as_deref() {
+                provenance.push_str(&format!(" item {item}"));
+            }
         }
         if let Some(digest) = &self.origin_digest {
             let short = digest.chars().take(12).collect::<String>();
@@ -861,7 +964,7 @@ impl ContinuationSnapshot {
     /// Keys avoid the store's forbidden content classes; user text travels
     /// as values only.
     pub fn to_payload_body(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut body = serde_json::json!({
             "snapshot_kind": "continuation_snapshot_v1",
             "session_id": self.session_id,
             "objective": self.objective,
@@ -877,6 +980,7 @@ impl ContinuationSnapshot {
             "current_task_source": match self.current_task_source {
                 CurrentTaskSource::GoalNextAction => "goal_next_action",
                 CurrentTaskSource::GoalPhase => "goal_phase",
+                CurrentTaskSource::WorkPlanNextAction => "work_plan_next_action",
                 CurrentTaskSource::InProgressTodo => "in_progress_todo",
                 CurrentTaskSource::PreviousContinuation => "previous_continuation",
                 CurrentTaskSource::None => "none",
@@ -921,7 +1025,17 @@ impl ContinuationSnapshot {
                 })
             }),
             "diagnostics": self.diagnostics,
-        })
+        });
+        // Additive WorkPlan provenance (M004). Absent for legacy sessions;
+        // present bodies never embed the full plan.
+        if let Some(work_plan) = self.work_plan.as_ref() {
+            if let Ok(json) = serde_json::to_value(work_plan) {
+                if let Some(map) = body.as_object_mut() {
+                    map.insert("work_plan".to_string(), json);
+                }
+            }
+        }
+        body
     }
 
     /// Build the M001 payload envelope for this snapshot.
@@ -995,6 +1109,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         assert_eq!(snapshot.objective, "goal objective authoritative");
         assert_eq!(snapshot.objective_source, ObjectiveSource::ActiveGoal);
@@ -1019,6 +1134,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         assert_eq!(snapshot.objective, "origin only");
         assert_eq!(snapshot.objective_source, ObjectiveSource::SessionOrigin);
@@ -1049,6 +1165,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         assert_eq!(snapshot.current_task.as_deref(), Some("goal next"));
         assert_eq!(
@@ -1078,6 +1195,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         // Origin and current boundaries retained.
         assert!(snapshot
@@ -1123,6 +1241,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         assert!(snapshot.artifact_handles.len() <= 32);
         assert_eq!(
@@ -1154,6 +1273,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: Some("plans/ impl.md"),
             plan_content: Some("plan body"),
+            active_work_plan: None,
         });
         let second = assemble_continuation_snapshot(ContinuationAssemblyInput {
             session_id: "s",
@@ -1167,6 +1287,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: Some("plans/ impl.md"),
             plan_content: Some("plan body"),
+            active_work_plan: None,
         });
         assert_eq!(first.plan.plan_digest, second.plan.plan_digest);
         assert!(first.plan.plan_unavailable.is_none());
@@ -1183,6 +1304,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: Some("plans/missing.md"),
             plan_content: None,
+            active_work_plan: None,
         });
         assert!(missing.plan.plan_digest.is_none());
         assert!(missing.plan.plan_unavailable.is_some());
@@ -1203,6 +1325,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         let mut snapshot = snapshot;
         let semantic = ContextFrame {
@@ -1281,6 +1404,7 @@ mod tests {
             previous_checkpoint: Some(&previous),
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         // Previous semantic state carried forward.
         assert!(snapshot
@@ -1324,6 +1448,7 @@ mod tests {
                 previous_checkpoint: None,
                 plan_path: None,
                 plan_content: None,
+                active_work_plan: None,
             })
         };
         let first = build();
@@ -1347,6 +1472,7 @@ mod tests {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         });
         let payload = snapshot.to_payload().expect("payload must validate");
         assert_eq!(payload.schema_version, 1);

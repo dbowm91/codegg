@@ -5,6 +5,7 @@ pub mod cache_stats;
 pub mod compaction;
 pub mod continuation;
 pub mod effective_cost;
+pub mod epoch;
 pub mod evidence;
 pub mod handle;
 pub mod packer;

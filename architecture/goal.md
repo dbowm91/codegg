@@ -397,6 +397,17 @@ Indexes on `(session_id, status)` and `(project_id, status)`. Migration v45
 adds a monotonic `goal.revision` used by host verification compare-and-set
 transitions; old rows receive revision zero.
 
+## M004 epoch-handoff relation
+
+Fresh context epochs (`src/context/epoch.rs`,
+`codegg-core::work_plan::epoch_policy`) never change Goal authority:
+budgets, pause/cancel, status, and verification remain Goal-owned, and an
+epoch reset cannot bypass an approval or replay a denied action. Goal
+ID/revision travels in the checkpoint alongside WorkPlan provenance; a newer
+active Goal revision outranks stale checkpoint next steps at turn start
+(M002 precedence) and in `rollover::render_installed_projection`. Goal/plan
+revision drift aborts epoch activation rather than installing stale work.
+
 ## Testing
 
 ```bash

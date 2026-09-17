@@ -6,6 +6,8 @@
 //! `todo_projection` for the one-way WorkPlan-to-Todo contract.
 
 pub mod assessment;
+pub mod checkpoint;
+pub mod epoch_policy;
 pub mod evidence;
 pub mod model;
 pub mod projection;
@@ -15,6 +17,16 @@ pub mod todo_projection;
 pub use assessment::{
     assess_work_plan, WorkPlanCompletionAssessment, MAX_ASSESSMENT_REASON_CHARS,
     MAX_ASSESSMENT_TEXT_CHARS,
+};
+pub use checkpoint::{
+    build_provenance as build_checkpoint_provenance, insert_provenance_into_body,
+    provenance_from_body, revalidate_against_current, validate_provenance, WorkPlanCheckpointItem,
+    WorkPlanCheckpointProvenance, MAX_CHECKPOINT_ITEM_TEXT_CHARS, MAX_CHECKPOINT_PHASE_CHARS,
+    MAX_CHECKPOINT_WORK_ITEMS,
+};
+pub use epoch_policy::{
+    decide_epoch, decision_diagnostic, epoch_supported_for_profile, ContextEpochDecision,
+    ContextEpochInputs, ContextEpochKeepReason, ContextEpochPolicy, ContextEpochTrigger,
 };
 pub use evidence::{
     item_has_failed_evidence, item_has_in_progress_evidence, item_has_unavailable_evidence,

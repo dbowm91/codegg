@@ -295,6 +295,7 @@ async fn m004_eight_compaction_trajectory() {
             previous_checkpoint: previous.as_ref(),
             plan_path: Some("plans/checkout.md"),
             plan_content: Some("plan body with 12 steps for checkout migration"),
+            active_work_plan: None,
         });
         // No unknown objective when host knows it.
         assert!(
@@ -639,6 +640,7 @@ async fn m004_stable_checkpoint_digests() {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         })
     };
     let first = build_snapshot();
@@ -683,6 +685,7 @@ async fn m004_transaction_ordering() {
         previous_checkpoint: None,
         plan_path: None,
         plan_content: None,
+        active_work_plan: None,
     });
     let checkpoint_id = "ckpt-order-1";
     let result = compact_context(ContextCompactionRequest {
@@ -1162,6 +1165,7 @@ async fn m004_strategy_matrix() {
             previous_checkpoint: None,
             plan_path: None,
             plan_content: None,
+            active_work_plan: None,
         })
     };
     let result = compact_context(ContextCompactionRequest {
@@ -1223,6 +1227,7 @@ async fn m004_repeated_compaction_invariants() {
         previous_checkpoint: None,
         plan_path: None,
         plan_content: None,
+        active_work_plan: None,
     });
     let result = compact_context(ContextCompactionRequest {
         messages: &messages,

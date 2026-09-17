@@ -651,8 +651,9 @@ impl AgentLoop {
     }
 
     /// Capture host-owned source revisions for stale-source validation
-    /// (M004 §6.3). Only goal/plan/todo/parent fields participate; unrelated
-    /// telemetry never rejects installation.
+    /// (M004 §6.3, M004 work package A). Only goal/plan/todo/work-plan/
+    /// parent fields participate; unrelated telemetry never rejects
+    /// installation.
     async fn capture_rollover_revisions(
         &self,
         messages: &[Message],
@@ -670,14 +671,62 @@ impl AgentLoop {
         };
         let todo_revision = self.services.todo_state.lock().await.revision;
         let history_digest = rollover::source_history_digest(messages);
-        rollover::RolloverSourceRevisions::capture(
+        let (work_plan_id, work_plan_revision) = self.load_work_plan_revision().await;
+        rollover::RolloverSourceRevisions::capture_with_work_plan(
             goal_id,
             goal_revision,
             plan_digest,
             todo_revision,
             previous_installed_id,
             history_digest,
+            work_plan_id,
+            work_plan_revision,
         )
+    }
+
+    /// Load the active WorkPlan identity/revision for rollover revalidation.
+    ///
+    /// Returns `(None, None)` for legacy sessions without a plan or when the
+    /// store is unavailable; revalidation then degrades to the pre-M004
+    /// goal/plan/todo/parent check rather than blocking compaction.
+    async fn load_work_plan_revision(&self) -> (Option<String>, Option<i64>) {
+        let Some(pool) = self.continuation_pool() else {
+            return (None, None);
+        };
+        let store = codegg_core::work_plan::WorkPlanStore::new(pool);
+        match store.active_for_session(&self.session_id).await {
+            Ok(Some(plan)) => (Some(plan.id.as_str().to_string()), Some(plan.revision)),
+            _ => (None, None),
+        }
+    }
+
+    /// Load the active WorkPlan plus items for bounded checkpoint provenance.
+    ///
+    /// Returns `None` for legacy sessions; storage errors degrade to `None`
+    /// with a debug log rather than aborting compaction.
+    async fn load_active_work_plan_for_snapshot(
+        &self,
+    ) -> Option<(
+        codegg_core::work_plan::WorkPlan,
+        Vec<codegg_core::work_plan::WorkItem>,
+    )> {
+        let pool = self.continuation_pool()?;
+        let store = codegg_core::work_plan::WorkPlanStore::new(pool);
+        let plan = match store.active_for_session(&self.session_id).await {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::debug!(error = %error, "work plan lookup failed; using legacy snapshot");
+                return None;
+            }
+        };
+        match store.list_items(&plan.id).await {
+            Ok(items) => Some((plan, items)),
+            Err(error) => {
+                tracing::debug!(error = %error, "work plan items lookup failed; using legacy snapshot");
+                None
+            }
+        }
     }
 
     /// Load and validate the latest installed checkpoint for resume (M004
@@ -913,6 +962,13 @@ impl AgentLoop {
                 .as_deref()
                 .map(|content| crate::context::stable_hash_hex(content.as_bytes()));
             let current_user = Self::latest_user_prompt_from_messages(messages);
+            // M004: bounded WorkPlan provenance for the checkpoint handoff.
+            // Loaded from the same pool as continuation checkpoints; legacy
+            // sessions without a plan degrade to `None`.
+            let active_work_plan = self.load_active_work_plan_for_snapshot().await;
+            let active_work_plan_ref = active_work_plan
+                .as_ref()
+                .map(|(plan, items)| (plan as &codegg_core::work_plan::WorkPlan, items.as_slice()));
             let snapshot = crate::context::continuation::assemble_continuation_snapshot(
                 crate::context::continuation::ContinuationAssemblyInput {
                     session_id: self.session_id.as_str(),
@@ -926,6 +982,7 @@ impl AgentLoop {
                     previous_checkpoint: previous_installed.as_ref(),
                     plan_path: plan_path.as_deref(),
                     plan_content: plan_content_owned.as_deref(),
+                    active_work_plan: active_work_plan_ref,
                 },
             );
             let captured = self
@@ -941,6 +998,7 @@ impl AgentLoop {
                 plan_path,
                 plan_content_owned,
                 captured,
+                active_work_plan,
             )
         };
         let (
@@ -949,6 +1007,7 @@ impl AgentLoop {
             _plan_path_guard,
             _plan_content_guard,
             captured_revisions,
+            _work_plan_guard,
         ) = baseline_bundle;
         // Allocate the candidate checkpoint identity before evidence writes
         // (M004 §6.2 sequencing variant). The row remains `Prepared` until
@@ -1250,9 +1309,20 @@ impl AgentLoop {
                     None => None,
                 }
             };
+            // M004: current WorkPlan revision participates in staleness so a
+            // stale handoff with a superseded plan revision cannot install.
+            let (current_work_plan_id, current_work_plan_revision) =
+                self.load_work_plan_revision().await;
             self.capture_rollover_revisions(messages, latest_id.clone(), plan_digest)
                 .await
-                .into_with_overrides(goal_id, goal_rev, todo_rev, latest_id)
+                .into_with_work_plan_overrides(
+                    goal_id,
+                    goal_rev,
+                    todo_rev,
+                    latest_id,
+                    current_work_plan_id,
+                    current_work_plan_revision,
+                )
         };
         if captured_revisions.is_stale_against(&current_plan_digest) {
             let reason = captured_revisions
@@ -1325,6 +1395,12 @@ impl AgentLoop {
                         None => (None, None),
                     };
                 let cur_user = Self::latest_user_prompt_from_messages(messages);
+                // M004: fresh baseline carries the current WorkPlan provenance
+                // so the retry handoff cannot install a stale plan revision.
+                let fresh_work_plan = self.load_active_work_plan_for_snapshot().await;
+                let fresh_work_plan_ref = fresh_work_plan.as_ref().map(|(plan, items)| {
+                    (plan as &codegg_core::work_plan::WorkPlan, items.as_slice())
+                });
                 crate::context::continuation::assemble_continuation_snapshot(
                     crate::context::continuation::ContinuationAssemblyInput {
                         session_id: self.session_id.as_str(),
@@ -1338,6 +1414,7 @@ impl AgentLoop {
                         previous_checkpoint: fresh_previous.as_ref(),
                         plan_path: plan_path.as_deref(),
                         plan_content: plan_content.as_deref(),
+                        active_work_plan: fresh_work_plan_ref,
                     },
                 )
             };
@@ -1650,6 +1727,354 @@ impl AgentLoop {
                 Self::publish_compaction_tail(loop_ref, tokens_before, tokens_after);
             }
         }
+    }
+
+    /// Attempt a fresh provider-visible context epoch at a safe turn boundary
+    /// (long-horizon M004).
+    ///
+    /// This is a consumer of the existing compaction/rollover owners, not a
+    /// second engine: policy comes from
+    /// `codegg-core::work_plan::epoch_policy`, reconstruction from
+    /// `crate::context::epoch`, persistence from the existing
+    /// `prepare_candidate` / `finish_prepared_install` sequencing. Durable
+    /// session history is never deleted; only the in-memory/provider-visible
+    /// sequence is replaced after a verified prepared checkpoint exists.
+    ///
+    /// Returns `Ok(None)` when the policy keeps normal compaction (the
+    /// canonical default), `Ok(Some(lineage))` after a fresh epoch installs,
+    /// and `Err(reason)` when a supported policy aborts (stale revision,
+    /// cancellation, unsupported profile form, or prepare failure). Callers
+    /// use normal compaction on `Ok(None)` and on the unsupported-profile
+    /// `Err`; stale-revision `Err` must abort/rebuild rather than install.
+    #[allow(dead_code)]
+    pub(super) async fn try_start_fresh_epoch(
+        &mut self,
+        messages: &mut Vec<Message>,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+        policy: &codegg_core::work_plan::ContextEpochPolicy,
+        epoch_inputs: &codegg_core::work_plan::ContextEpochInputs,
+        prior_compaction_count: usize,
+    ) -> Result<Option<crate::context::epoch::ContextEpochLineage>, String> {
+        use crate::context::epoch;
+        let decision = epoch::decide_epoch(policy, epoch_inputs);
+        if !decision.should_reset {
+            tracing::debug!(
+                decision = %decision.reason_code(),
+                "fresh epoch not selected; normal compaction remains"
+            );
+            return Ok(None);
+        }
+        if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            return Err("cancelled before fresh epoch".to_string());
+        }
+        // Authoritative host state for reconstruction.
+        let previous_installed = self.load_usable_installed_checkpoint().await;
+        let previous_installed_id = previous_installed.as_ref().map(|c| c.id.clone());
+        let active_goal = match self.services.goal_store.clone() {
+            Some(store) => match store.active_for_session(&self.session_id).await {
+                Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active => {
+                    Some(goal)
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let active_work_plan = self.load_active_work_plan_for_snapshot().await;
+        let todo_items = self.services.todo_state.lock().await.items.clone();
+        let todos: Vec<String> = todo_items
+            .iter()
+            .take(8)
+            .map(|t| t.content.clone())
+            .collect();
+        // Canonical system instructions: first non-CodeGG System block, else
+        // the session origin. Stale CodeGG frames are never copied.
+        let system_instructions: String = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::System { content } => {
+                    let text = content.as_str();
+                    (!crate::agent::context_frame::is_codegg_owned_frame(text))
+                        .then(|| text.to_string())
+                }
+                _ => None,
+            })
+            .next()
+            .or_else(|| self.original_user_prompt.clone())
+            .unwrap_or_default();
+        let objective: String = active_goal
+            .as_ref()
+            .map(|g| g.objective.clone())
+            .or_else(|| self.original_user_prompt.clone())
+            .or_else(|| Self::latest_user_prompt_from_messages(messages))
+            .unwrap_or_default();
+        let goal_projection = active_goal.as_ref().map(|g| epoch::FreshEpochGoal {
+            goal_id: g.id.as_str(),
+            revision: g.revision,
+            objective: g.objective.as_str(),
+            current_phase: g.current_phase.as_deref(),
+            next_action: g.next_action.as_deref(),
+        });
+        let work_plan_provenance = active_work_plan
+            .as_ref()
+            .map(|(plan, items)| codegg_core::work_plan::build_checkpoint_provenance(plan, items));
+        let continuation_frame_text = match previous_installed.as_ref() {
+            Some(checkpoint) => {
+                let override_goal = active_goal.as_ref().and_then(|goal| {
+                    let checkpoint_goal_id = checkpoint
+                        .payload
+                        .body
+                        .get("goal_id")
+                        .and_then(|v| v.as_str());
+                    let checkpoint_goal_rev = checkpoint
+                        .payload
+                        .body
+                        .get("goal_revision")
+                        .and_then(|v| v.as_i64());
+                    let is_newer = match (checkpoint_goal_id, checkpoint_goal_rev) {
+                        (Some(id), Some(rev)) => id != goal.id.as_str() || goal.revision > rev,
+                        _ => true,
+                    };
+                    is_newer.then(|| (goal.objective.clone(), goal.next_action.clone()))
+                });
+                crate::context::rollover::render_installed_projection(checkpoint, override_goal)
+            }
+            None => String::new(),
+        };
+        let recovery_handles = self.context_ledger.artifact_handles.clone();
+        // Bounded latest user steering spine (exact texts, newest last).
+        let mut steering: Vec<String> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::User { content } => {
+                    let text = content
+                        .iter()
+                        .filter_map(|p| match p {
+                            crate::provider::ContentPart::Text { text } => {
+                                Some(text.trim().to_string())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (!text.trim().is_empty()).then_some(text)
+                }
+                _ => None,
+            })
+            .collect();
+        if steering.len() > epoch::MAX_EPOCH_STEERING_MESSAGES {
+            steering = steering
+                .into_iter()
+                .rev()
+                .take(epoch::MAX_EPOCH_STEERING_MESSAGES)
+                .rev()
+                .collect();
+        }
+        let checkpoint_hint = previous_installed
+            .as_ref()
+            .map(|c| c.id.as_str())
+            .unwrap_or("");
+        let checkpoint_seq = previous_installed.as_ref().map(|c| c.sequence).unwrap_or(0);
+        let fresh_inputs = epoch::FreshEpochInputs {
+            system_instructions: system_instructions.as_str(),
+            objective: objective.as_str(),
+            goal: goal_projection,
+            work_plan: work_plan_provenance.as_ref(),
+            todos: todos.as_slice(),
+            continuation_frame_text: continuation_frame_text.as_str(),
+            recovery_handles: recovery_handles.as_slice(),
+            steering: steering.as_slice(),
+            checkpoint_id: checkpoint_hint,
+            checkpoint_sequence: checkpoint_seq,
+        };
+        // Candidate preparation reuses rollover capture/revalidation: abort
+        // rather than install stale next action.
+        let captured = self
+            .capture_rollover_revisions(messages, previous_installed_id.clone(), None)
+            .await;
+        let fresh_messages = epoch::build_fresh_epoch_messages(&fresh_inputs, model_profile)
+            .map_err(|e| {
+                // Unsupported profile form falls back to normal compaction;
+                // surface as a bounded error the caller maps to Keep.
+                format!("fresh epoch reconstruction: {e}")
+            })?;
+        // Capacity + replacement validation through the existing owner.
+        let (context_limit, reserved_output) = match self.services.execution_policy.as_ref() {
+            Some(policy) => (policy.context_window, policy.reserved_output_tokens),
+            None => (128_000, 8_192),
+        };
+        let capacity =
+            crate::context::compaction::ContextCapacity::new(context_limit, reserved_output);
+        let tokens_before = crate::context::compaction::context_tokens(
+            messages,
+            Some(model_profile.model.as_str()),
+        );
+        let tokens_after = crate::context::compaction::context_tokens(
+            &fresh_messages,
+            Some(model_profile.model.as_str()),
+        );
+        crate::context::rollover::validate_replacement_messages(
+            &fresh_messages,
+            capacity,
+            // Fresh epochs always carry the latest steering as visible input
+            // when steering exists; require it exactly then.
+            !steering.is_empty(),
+        )
+        .map_err(|e| format!("fresh epoch replacement validation: {e}"))?;
+        // Assemble the durable baseline snapshot (host facts + WorkPlan
+        // provenance) and persist as Prepared before replacing history.
+        let pool = self
+            .continuation_pool()
+            .ok_or_else(|| "no continuation pool for fresh epoch".to_string())?;
+        let store =
+            codegg_core::session::continuation::ContinuationCheckpointStore::new(pool.clone());
+        let baseline_snapshot = {
+            let findings: Vec<String> = self
+                .recent_findings
+                .iter()
+                .map(|f| format!("[{:?}] {}", f.category, f.evidence))
+                .take(5)
+                .collect();
+            let work_plan_ref = active_work_plan
+                .as_ref()
+                .map(|(plan, items)| (plan as &codegg_core::work_plan::WorkPlan, items.as_slice()));
+            crate::context::continuation::assemble_continuation_snapshot(
+                crate::context::continuation::ContinuationAssemblyInput {
+                    session_id: self.session_id.as_str(),
+                    origin_prompt: self.original_user_prompt.as_deref(),
+                    current_user_message: Self::latest_user_prompt_from_messages(messages)
+                        .as_deref(),
+                    messages,
+                    active_goal: active_goal.as_ref(),
+                    todos: &todo_items,
+                    ledger: &self.context_ledger,
+                    security_findings: &findings,
+                    previous_checkpoint: previous_installed.as_ref(),
+                    plan_path: active_goal.as_ref().and_then(|g| g.plan_path.as_deref()),
+                    plan_content: None,
+                    active_work_plan: work_plan_ref,
+                },
+            )
+        };
+        let candidate = crate::context::compaction::ContinuationCandidate {
+            snapshot: baseline_snapshot,
+            evidence: Vec::new(),
+            frame: crate::agent::context_frame::ContextFrame::default(),
+            semantic_outcome: String::from("fresh_epoch"),
+        };
+        // Rebuild the frame from the snapshot so the persisted candidate and
+        // the handoff agree on current work.
+        let mut candidate = candidate;
+        candidate.frame = candidate.snapshot.to_context_frame();
+        let epoch_checkpoint_id = uuid::Uuid::new_v4().to_string();
+        let original_len = messages.len();
+        let original_user = Self::latest_user_prompt_from_messages(messages);
+        let prepared = crate::context::rollover::prepare_candidate(
+            &store,
+            self.services.artifact_store.as_ref(),
+            self.session_id.as_str(),
+            epoch_checkpoint_id.as_str(),
+            previous_installed_id.clone(),
+            &candidate,
+            fresh_messages,
+            capacity,
+            tokens_before,
+            tokens_after,
+            self.state.turn_count,
+            &self.context_ledger.artifact_handles.clone(),
+            original_user,
+        )
+        .await
+        .map_err(|e| format!("fresh epoch prepare: {e}"))?;
+        if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            let _ = store
+                .mark_aborted(
+                    self.session_id.as_str(),
+                    prepared.checkpoint.id.as_str(),
+                    "cancelled after fresh epoch prepare",
+                )
+                .await;
+            return Err("cancelled after fresh epoch prepare".to_string());
+        }
+        // Revalidate before activation; revision drift aborts/rebuilds.
+        let current = self
+            .capture_rollover_revisions(
+                messages,
+                {
+                    match store.latest_installed(&self.session_id).await {
+                        Ok(Some(latest)) => Some(latest.id.clone()),
+                        _ => previous_installed_id.clone(),
+                    }
+                },
+                None,
+            )
+            .await;
+        if captured.is_stale_against(&current) {
+            let reason = captured.stale_reason(&current).unwrap_or("source changed");
+            let _ = store
+                .mark_aborted(
+                    self.session_id.as_str(),
+                    prepared.checkpoint.id.as_str(),
+                    reason.chars().take(512).collect::<String>().as_str(),
+                )
+                .await;
+            // Also revalidate WorkPlan provenance explicitly so the error
+            // names the stale plan revision for diagnostics.
+            if let Some(provenance) = work_plan_provenance.as_ref() {
+                let current_plan = self.load_active_work_plan_for_snapshot().await;
+                let current_ref = current_plan.as_ref().map(|(plan, items)| {
+                    (plan as &codegg_core::work_plan::WorkPlan, items.as_slice())
+                });
+                if let Err(plan_reason) = codegg_core::work_plan::revalidate_against_current(
+                    Some(provenance),
+                    current_ref,
+                ) {
+                    return Err(format!("stale work plan for fresh epoch: {plan_reason}"));
+                }
+            }
+            return Err(format!("stale source for fresh epoch: {reason}"));
+        }
+        // Explicit WorkPlan revalidation even when the coarse revision check
+        // passes (defense-in-depth against installing a superseded handoff).
+        if let Some(provenance) = work_plan_provenance.as_ref() {
+            let current_plan = self.load_active_work_plan_for_snapshot().await;
+            let current_ref = current_plan
+                .as_ref()
+                .map(|(plan, items)| (plan as &codegg_core::work_plan::WorkPlan, items.as_slice()));
+            codegg_core::work_plan::revalidate_against_current(Some(provenance), current_ref)
+                .map_err(|e| format!("stale work plan for fresh epoch: {e}"))?;
+        }
+        let installed_id = prepared.checkpoint.id.clone();
+        let installed_seq = prepared.checkpoint.sequence;
+        let work_plan_id = work_plan_provenance.as_ref().map(|p| p.plan_id.clone());
+        let work_plan_revision = work_plan_provenance.as_ref().map(|p| p.revision);
+        Self::finish_prepared_install(
+            self,
+            messages,
+            model_profile,
+            prepared,
+            previous_installed_id.clone(),
+            original_len,
+            tokens_before,
+        )
+        .await;
+        let lineage = epoch::ContextEpochLineage {
+            epoch_id: uuid::Uuid::new_v4().to_string(),
+            reason: decision.reason_code().to_string(),
+            trigger: decision
+                .trigger
+                .map(|t| t.as_str().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            checkpoint_id: installed_id.clone(),
+            checkpoint_sequence: installed_seq,
+            work_plan_id: work_plan_id.clone(),
+            work_plan_revision,
+            prior_compaction_count,
+            profile_id: model_profile.model.clone(),
+        };
+        tracing::info!("{}", lineage.bounded_line());
+        let event = epoch::build_epoch_started_event(&self.session_id, &decision, &lineage);
+        crate::bus::global::GlobalEventBus::publish(event);
+        Ok(Some(lineage))
     }
 }
 

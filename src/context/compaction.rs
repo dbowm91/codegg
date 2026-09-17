@@ -3675,6 +3675,7 @@ mod tests {
                     previous_checkpoint: None,
                     plan_path: None,
                     plan_content: None,
+                    active_work_plan: None,
                 },
             );
         let mut snapshot = snapshot;

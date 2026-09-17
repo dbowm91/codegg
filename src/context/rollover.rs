@@ -101,6 +101,10 @@ pub struct RolloverSourceRevisions {
     pub todo_revision: u64,
     pub previous_installed_id: Option<String>,
     pub source_history_digest: String,
+    /// Durable WorkPlan identity/revision (M004). `None` for legacy
+    /// sessions without an active plan; presence requires exact match.
+    pub work_plan_id: Option<String>,
+    pub work_plan_revision: Option<i64>,
 }
 
 impl RolloverSourceRevisions {
@@ -119,6 +123,31 @@ impl RolloverSourceRevisions {
             todo_revision,
             previous_installed_id,
             source_history_digest,
+            work_plan_id: None,
+            work_plan_revision: None,
+        }
+    }
+
+    /// Capture including durable WorkPlan provenance (M004 work package A).
+    pub fn capture_with_work_plan(
+        goal_id: Option<String>,
+        goal_revision: Option<i64>,
+        plan_digest: Option<String>,
+        todo_revision: u64,
+        previous_installed_id: Option<String>,
+        source_history_digest: String,
+        work_plan_id: Option<String>,
+        work_plan_revision: Option<i64>,
+    ) -> Self {
+        Self {
+            goal_id,
+            goal_revision,
+            plan_digest,
+            todo_revision,
+            previous_installed_id,
+            source_history_digest,
+            work_plan_id,
+            work_plan_revision,
         }
     }
 
@@ -140,6 +169,12 @@ impl RolloverSourceRevisions {
         if self.previous_installed_id != current.previous_installed_id {
             return true;
         }
+        if self.work_plan_id != current.work_plan_id {
+            return true;
+        }
+        if self.work_plan_revision != current.work_plan_revision {
+            return true;
+        }
         false
     }
 
@@ -158,6 +193,12 @@ impl RolloverSourceRevisions {
         }
         if self.previous_installed_id != current.previous_installed_id {
             return Some("newer checkpoint installed during build");
+        }
+        if self.work_plan_id != current.work_plan_id {
+            return Some("active work plan changed");
+        }
+        if self.work_plan_revision != current.work_plan_revision {
+            return Some("active work plan revision changed");
         }
         None
     }
@@ -178,6 +219,30 @@ impl RolloverSourceRevisions {
             todo_revision,
             previous_installed_id,
             source_history_digest: self.source_history_digest,
+            work_plan_id: self.work_plan_id,
+            work_plan_revision: self.work_plan_revision,
+        }
+    }
+
+    /// Rebuild with WorkPlan overrides (M004 revalidation at install).
+    pub fn into_with_work_plan_overrides(
+        self,
+        goal_id: Option<String>,
+        goal_revision: Option<i64>,
+        todo_revision: u64,
+        previous_installed_id: Option<String>,
+        work_plan_id: Option<String>,
+        work_plan_revision: Option<i64>,
+    ) -> Self {
+        Self {
+            goal_id,
+            goal_revision,
+            plan_digest: self.plan_digest,
+            todo_revision,
+            previous_installed_id,
+            source_history_digest: self.source_history_digest,
+            work_plan_id,
+            work_plan_revision,
         }
     }
 }
@@ -344,7 +409,9 @@ pub enum RestartValidation {
 /// self-consistency, and optional goal/plan provenance shape. `Prepared` and
 /// `Aborted` rows are never passed here — callers load only
 /// `latest_installed`. A missing optional M003 artifact handle does not block
-/// turn start; that degrades per-ref at read time.
+/// turn start; that degrades per-ref at read time. Pre-M004 checkpoints
+/// without `work_plan` remain usable; a present but malformed `work_plan`
+/// fails closed so a misleading handoff never becomes resume authority.
 pub fn validate_installed_for_restart(
     checkpoint: &codegg_core::session::continuation::ContinuationCheckpoint,
     session_id: &str,
@@ -375,7 +442,23 @@ pub fn validate_installed_for_restart(
     if checkpoint.sequence <= 0 {
         return RestartValidation::CorruptFallback("invalid epoch sequence".to_string());
     }
+    // M004: bounded WorkPlan provenance, when present, must decode.
+    if let Err(reason) = codegg_core::work_plan::provenance_from_body(&checkpoint.payload.body) {
+        return RestartValidation::CorruptFallback(format!(
+            "work plan provenance decode: {reason}"
+        ));
+    }
     RestartValidation::Usable
+}
+
+/// Extract bounded WorkPlan provenance from an installed checkpoint.
+///
+/// Returns `None` for legacy checkpoints without `work_plan` (still usable).
+/// Returns `Err` for a present but malformed block so callers fail closed.
+pub fn work_plan_provenance_of(
+    checkpoint: &codegg_core::session::continuation::ContinuationCheckpoint,
+) -> Result<Option<codegg_core::work_plan::WorkPlanCheckpointProvenance>, String> {
+    codegg_core::work_plan::provenance_from_body(&checkpoint.payload.body)
 }
 
 /// Render the model-visible continuation projection for an installed
@@ -443,6 +526,52 @@ pub fn render_installed_projection(
     let commands = get_list(&["commands"]);
     let tests = get_list(&["tests"]);
     let errors = get_list(&["errors"]);
+    // M004 WorkPlan provenance: bounded handoff, never the full plan.
+    // Legacy checkpoints without `work_plan` render exactly as before.
+    let work_plan_footer: Option<String> = match codegg_core::work_plan::provenance_from_body(body)
+    {
+        Ok(Some(provenance)) => {
+            let mut footer = format!(
+                "WorkPlan: {} rev {} status {}",
+                provenance.plan_id, provenance.revision, provenance.status
+            );
+            if let Some(phase) = provenance.current_phase.as_deref() {
+                footer.push_str(&format!(" phase {phase}"));
+            }
+            if let Some(item) = provenance.current_item_id.as_deref() {
+                footer.push_str(&format!(" item {item}"));
+            }
+            Some(footer)
+        }
+        Ok(None) => None,
+        // Malformed work_plan never blocks rendering with a panic; the
+        // restart validator already fails closed, and the projection
+        // degrades to the non-WorkPlan fields with a bounded marker.
+        Err(_) => Some("WorkPlan: unavailable (provenance decode)".to_string()),
+    };
+    let work_plan_next_fallback: Option<String> =
+        match codegg_core::work_plan::provenance_from_body(body) {
+            Ok(Some(provenance)) => provenance
+                .actionable
+                .first()
+                .and_then(|item| item.next_action.clone().filter(|a| !a.trim().is_empty()))
+                .or_else(|| {
+                    provenance
+                        .actionable
+                        .first()
+                        .map(|item| item.description.clone())
+                }),
+            _ => None,
+        };
+    // WorkPlan next action keeps the trajectory actionable when the
+    // checkpoint has no semantic next steps and no current task override.
+    if next_steps.is_empty() {
+        if let Some(fallback) = work_plan_next_fallback {
+            if !fallback.trim().is_empty() {
+                next_steps.push(fallback);
+            }
+        }
+    }
     // Recovery handles: verified evidence refs carry exact handles; the
     // projection lists them bounded, never the evidence bodies.
     let handles: Vec<String> = body
@@ -491,6 +620,9 @@ pub fn render_installed_projection(
     // Defense-in-depth bound identical to the live renderer.
     let mut text = frame.to_continuation_text();
     // Provenance footer: IDs/digests only, never bodies.
+    if let Some(work_plan_line) = work_plan_footer.as_deref() {
+        text.push_str(&format!("\n- {work_plan_line}"));
+    }
     let short_digest: String = checkpoint.payload_digest.chars().take(12).collect();
     text.push_str(&format!(
         "\n- Checkpoint: {} seq {} digest {short_digest}",

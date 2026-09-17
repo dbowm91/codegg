@@ -243,6 +243,32 @@ backfill. Legacy sessions simply have no active plan.
   `storage::STORAGE_LAYOUT_VERSION` must advance together (guard:
   `scripts/check_project_catalog_invariants.py`).
 
+## M004 checkpoint provenance and fresh epochs
+
+- Provenance (`work_plan/checkpoint.rs`): bounded `WorkPlanCheckpointProvenance`
+  (ID/revision/status/phase/item + ≤5 actionable/blocked summaries + source
+  digest + counts). Built by `build_checkpoint_provenance`, validated by
+  `validate_provenance`, carried additively in continuation payloads under
+  `work_plan`. Pre-M004 checkpoints without it remain readable; malformed
+  blocks fail closed at restart validation.
+- Snapshot (`src/context/continuation.rs`): `ContinuationSnapshot.work_plan`
+  plus `WorkPlanNextAction` current-task precedence (Goal → WorkPlan →
+  Todo → previous). Frame/footer and `rollover::render_installed_projection`
+  surface the plan ID/revision/phase/item without embedding the full plan.
+- Revalidation (`work_plan/checkpoint.rs::revalidate_against_current` +
+  `rollover::RolloverSourceRevisions` work-plan fields): captured ID/revision
+  must equal current durable state before install; drift aborts/rebuilds.
+- Policy (`work_plan/epoch_policy.rs`): deterministic `decide_epoch` with
+  typed triggers (`phase_boundary`, `repeated_compaction`,
+  `explicit_operator`, `model_profile_policy`) and keep reasons
+  (`disabled`, `unsupported_profile`, ...). Default disabled; supported
+  profiles are long-horizon only; same state → same decision.
+- Reconstruction (`src/context/epoch.rs` + `AgentLoop::try_start_fresh_epoch`):
+  consumer of the canonical compaction/rollover owners (no second engine,
+  guarded by `no_second_compaction_engine_or_history_store`). Emits one
+  versioned handoff block, preserves steering/handles, publishes bounded
+  `context_epoch:started`. Normal compaction remains default.
+
 ## Testing
 
 ```bash

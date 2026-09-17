@@ -398,6 +398,19 @@ remains bounded per `TaskStatePolicy`; durable WorkPlan mutations persist
 the projection to the session Todo store so restart reconstructs the same
 slice without erasing plan history.
 
+## Fresh-epoch profile compatibility (M004)
+
+`codegg-core::work_plan::epoch_policy::epoch_supported_for_profile` is the
+conservative opt-in: only `LongContextPlanner`, `FrontierReasoning`, and
+`FrontierExecutor` prompt profiles support fresh epochs. Every other profile
+— including the repository default, fast executors, local-strict, and
+tool-fragile adapters — stays on normal compaction, and existing profiles
+with no epoch field inherit that behavior. A supported profile alone never
+triggers reset; it only permits the host policy (explicit operator, verified
+phase boundary, repeated-compaction threshold, or bounded model-profile
+recovery) to select it. Unsupported forms fall back to normal compaction
+with a bounded reason instead of a provider-specific history model.
+
 ## Related Docs
 
 - `architecture/codegg_core.md` — the parent crate boundary

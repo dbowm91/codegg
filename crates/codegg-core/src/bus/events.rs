@@ -159,6 +159,22 @@ pub enum AppEvent {
         goal_id: String,
         evidence: String,
     },
+    /// A fresh provider-visible context epoch started from authoritative
+    /// host state (long-horizon M004). The durable session history is
+    /// unchanged; this event only carries bounded lineage (IDs, revisions,
+    /// counts, reason codes) so frontends can explain why a clean context
+    /// began. Never carries payload contents, user text, or secrets.
+    ContextEpochStarted {
+        session_id: String,
+        reason: String,
+        trigger: String,
+        checkpoint_id: String,
+        checkpoint_sequence: i64,
+        work_plan_id: Option<String>,
+        work_plan_revision: Option<i64>,
+        prior_compaction_count: usize,
+        profile_id: String,
+    },
     /// Bounded WorkPlan progress update. The durable plan remains the
     /// authority; this event only carries a frontend summary so TUI status
     /// can render without re-reading the store. Model tools and the daemon
@@ -417,6 +433,7 @@ impl AppEvent {
             AppEvent::GoalUsageUpdated { .. } => "goal:usage_updated",
             AppEvent::GoalBudgetLimited { .. } => "goal:budget_limited",
             AppEvent::GoalCompleted { .. } => "goal:completed",
+            AppEvent::ContextEpochStarted { .. } => "context_epoch:started",
             AppEvent::WorkPlanUpdated { .. } => "work_plan:updated",
             AppEvent::AgentChanged { .. } => "agent:changed",
             AppEvent::ModelChanged { .. } => "model:changed",

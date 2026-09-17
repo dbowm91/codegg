@@ -82,3 +82,31 @@ installed checkpoint at turn start, merges a newer goal with M002
 precedence, and injects exactly one bounded block. Production selection uses
 the resolved default when `auto=true` and mode is omitted (deterministic
 without a provider/model); legacy helpers are compat-only.
+
+## Fresh context epochs — M004 handoff integration (consumer, not owner)
+
+`src/context/epoch.rs` is a consumer/path of the canonical owner above, not
+a second compaction engine. It owns no token-accounting algorithm, no
+transcript store, and no history rewrite:
+
+- policy is `codegg-core::work_plan::epoch_policy::decide_epoch`
+  (deterministic host-state function; default disabled/conservative);
+- reconstruction is `build_fresh_epoch_messages` from canonical
+  system/objective/Goal/WorkPlan/Todo/continuation/steering/handles only;
+- validation reuses `rollover::validate_replacement_messages` and
+  `compaction::{validate_message_invariants, count_continuation_frames}`;
+- persistence reuses `rollover::prepare_candidate` /
+  `AgentLoop::finish_prepared_install` (Prepared → Installed + atomic
+  `ContextCompacted` marker) via `AgentLoop::try_start_fresh_epoch`;
+- durable session history is never deleted; only the
+  in-memory/provider-visible sequence is replaced after verification.
+
+Checkpoints carry bounded WorkPlan provenance
+(`codegg-core::work_plan::checkpoint`, max 5 actionable + 5 blocked
+summaries, never the full plan); pre-M004 checkpoints without `work_plan`
+remain readable and render safely. Rollover revalidation compares
+WorkPlan ID/revision alongside goal/plan/todo/parent and aborts/rebuilds on
+drift. Restarts load only `Installed` rows. The `context_epoch:started`
+bus event carries IDs/revisions/counts/reasons only. Normal compaction
+remains the canonical fallback/default path; unsupported profiles
+(default/fast/local/tool-fragile) stay on it.

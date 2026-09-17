@@ -409,15 +409,39 @@ checkpoint N+1 derives from host state + epoch evidence + typed prior
 fields, never by summarizing rendered text. Diagnostics carry IDs/digests/
 sizes/counts only (`RolloverDiagnostics::bounded_line`).
 
+## Fresh context epochs — M004 handoff integration (consumer path)
+
+`src/context/epoch.rs` + `AgentLoop::try_start_fresh_epoch` rebuild a fresh
+provider-visible sequence at a safe policy-selected boundary from canonical
+system instructions, objective, Goal/WorkPlan/Todo projections, installed
+continuation state, bounded steering, and exact handles. Checkpoints carry
+bounded WorkPlan provenance (ID/revision/status/phase/item + ≤5
+actionable/blocked summaries); rollover revalidates WorkPlan ID/revision
+before install and aborts on drift. Policy
+(`codegg-core::work_plan::epoch_policy`) defaults to disabled; supported
+profiles are long-horizon only (`LongContextPlanner`, `FrontierReasoning`,
+`FrontierExecutor`) and every other profile stays on normal compaction.
+Triggers are explicit operator, verified phase boundary,
+repeated-compaction threshold, or bounded model-profile recovery — never an
+unconditional per-N-turn loop. Validation reuses the canonical
+pair/frame/capacity checks; persistence reuses prepare/install; the
+`context_epoch:started` event carries IDs/revisions/counts/reasons only.
+Durable history, workspace/Git/jobs/budgets/permissions/sandbox, and user
+steering are never reset.
+
 ## Testing
 
 - `tests/compaction.rs` — extensive module tests
 - `tests/context_continuity_m004.rs` — eight-compaction trajectory,
   stable digests, transaction/cancellation/restart/strategy/security matrix
+- `tests/context_epoch_handoff.rs` — M004 WorkPlan provenance, policy
+  matrix, fresh reconstruction/single-frame, phase/repeated/steering,
+  restart/race/contention/security/migration guards
 - Narrowest run:
   ```bash
   cargo test -p codegg --test compaction
   cargo test --test context_continuity_m004 --locked -- --test-threads=1
+  cargo test --test context_epoch_handoff --locked -- --test-threads=1
   ```
 
 ## Related Docs

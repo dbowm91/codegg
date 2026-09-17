@@ -92,6 +92,7 @@ fn inactive_kind_for(event: &AppEvent) -> InactiveSummaryKind {
         | AppEvent::ToolCallStarted { .. }
         | AppEvent::ToolResult { .. } => InactiveSummaryKind::UnreadActivity,
         AppEvent::CompactionTriggered { .. }
+        | AppEvent::ContextEpochStarted { .. }
         | AppEvent::ContextUpdated { .. }
         | AppEvent::TodoUpdated { .. }
         | AppEvent::GoalUpdated { .. }
@@ -126,6 +127,9 @@ fn inactive_detail_for(event: &AppEvent) -> Option<String> {
             Some(format!("subagent {agent} failed: {error}"))
         }
         AppEvent::CompactionTriggered { .. } => Some("compaction triggered".to_string()),
+        AppEvent::ContextEpochStarted {
+            reason, trigger, ..
+        } => Some(format!("fresh context epoch ({trigger}/{reason})")),
         AppEvent::TestRunCompleted { status, .. } => Some(format!("test run {status}")),
         AppEvent::RunRerunLinked {
             parent_run_id,
@@ -642,6 +646,27 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                     app.messages_state
                         .toasts
                         .info(&format!("Goal completed: {}", evidence));
+                }
+            }
+            true
+        }
+        AppEvent::ContextEpochStarted {
+            session_id: event_session,
+            reason,
+            trigger,
+            checkpoint_id,
+            work_plan_id,
+            ..
+        } => {
+            if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
+                if event_session == active_id {
+                    let plan_part = work_plan_id
+                        .as_deref()
+                        .map(|id| format!(" plan {id}"))
+                        .unwrap_or_default();
+                    app.messages_state.toasts.info(&format!(
+                        "Fresh context epoch ({trigger}/{reason}) checkpoint {checkpoint_id}{plan_part}"
+                    ));
                 }
             }
             true
