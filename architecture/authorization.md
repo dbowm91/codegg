@@ -173,6 +173,19 @@ origin attribution is captured immutably on creation
 (`OriginAttributionStore` scope `work_order`, first-write-wins). See
 `architecture/work_orders.md`.
 
+### Project work-order triggers (M005)
+
+Trigger *management* is ordinary principal-authorized project
+mutation/reads: `work_order_trigger_create/revoke` require
+`session.create`, `work_order_trigger_list/get` require
+`session.read`, trigger locators resolve server-side through the
+durable row, and denials keep the `project_not_found` shape.
+Trigger *firing* is deliberately not a Core operation — no
+`WorkOrderTriggerFire` request variant exists — so a trigger bearer
+can never authorize general Core APIs. The bearer verifies against
+the stored verifier inside the narrow HTTP POST route only and never
+enters principal resolution. See `architecture/work_orders.md`.
+
 ## Failure, restart, contention
 
 - Denied requests have zero side effect (gate precedes dispatch).
@@ -197,7 +210,9 @@ rendering (188 native operations; M004 adds `audit_capabilities`,
 audit store contract; collaboration M001 adds fourteen `chat_*`
 operations below, all `project.chat`; M003 adds three `chat_action_*`
 rows on the same gate; work orders M001 adds seventeen `work_order_*`
-rows below, all project-scoped on `session.create`/`session.read`):
+rows below, all project-scoped on `session.create`/`session.read`;
+M005 adds four `work_order_trigger_*` management rows on the same
+gates (firing is not a Core operation):
 
 | Operation | Scope | Capability |
 |---|---|---|
@@ -366,6 +381,10 @@ rows below, all project-scoped on `session.create`/`session.read`):
 | `work_order_pause` | direct_project | `session.create` |
 | `work_order_resume` | direct_project | `session.create` |
 | `work_order_summary` | direct_project | `session.read` |
+| `work_order_trigger_create` | direct_project | `session.create` |
+| `work_order_trigger_get` | direct_project | `session.read` |
+| `work_order_trigger_list` | direct_project | `session.read` |
+| `work_order_trigger_revoke` | direct_project | `session.create` |
 | `work_order_update` | direct_project | `session.create` |
 | `workspace_archive` | opaque | `project.configure` |
 | `workspace_config_reload` | opaque | `project.configure` |

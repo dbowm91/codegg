@@ -1406,6 +1406,22 @@ pub enum CoreResponse {
     WorkOrderSummary {
         summary: crate::work_order::WorkOrderSummaryDto,
     },
+    // ── Project Work Orders M005: trigger management responses ───────
+    /// One task trigger. `secret` carries the one-time bearer only on a
+    /// fresh creation; converged retries and all other paths set it to
+    /// `None`. `duplicate` marks idempotent convergence.
+    WorkOrderTrigger {
+        trigger: crate::work_order::TaskTriggerMetadataDto,
+        #[serde(default)]
+        secret: Option<String>,
+        #[serde(default)]
+        duplicate: bool,
+    },
+    /// Bounded trigger metadata listing (never secrets or verifiers).
+    WorkOrderTriggerList {
+        triggers: Vec<crate::work_order::TaskTriggerMetadataDto>,
+        truncated: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2423,6 +2439,31 @@ pub enum CoreRequest {
     WorkOrderSummary {
         project_id: String,
     },
+    // ── Project Work Orders M005: external task triggers ─────────────
+    //
+    // Narrow capability management over the ordinary authenticated
+    // project protocol. Creation requires modify/schedule authority;
+    // list/get require read authority; revocation is monotonic. The
+    // secret is returned exactly once inside `WorkOrderTrigger.secret`;
+    // list/get never carry it. Firing is NOT a Core operation: the
+    // bearer fires through the narrow HTTP POST route only, so trigger
+    // capabilities can never authorize general Core APIs.
+    /// Create one task trigger bound to a work order's external gate.
+    WorkOrderTriggerCreate {
+        request: crate::work_order::TaskTriggerCreateRequest,
+    },
+    /// Bounded trigger metadata listing for one project (never secrets).
+    WorkOrderTriggerList {
+        request: crate::work_order::TaskTriggerListRequest,
+    },
+    /// Fetch one trigger's metadata by opaque locator (never secrets).
+    WorkOrderTriggerGet {
+        trigger_id: String,
+    },
+    /// Revoke one trigger (monotonic; rotation is revoke + create).
+    WorkOrderTriggerRevoke {
+        trigger_id: String,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -2944,6 +2985,19 @@ pub enum CoreEvent {
         project_id: String,
         work_order_id: String,
         occurrence_id: String,
+        change: String,
+        state: String,
+    },
+    /// A task trigger was created, revoked, or fired (M005).
+    ///
+    /// Structural hint only: receivers re-fetch trigger metadata
+    /// through the authorized get/list path on doubt. `change` names
+    /// the transition (`created`, `revoked`, `fired`, `replay`);
+    /// `state` is the effective trigger status. Payloads carry
+    /// identity and state only, never secrets, verifiers, or reasoning.
+    WorkOrderTriggerChanged {
+        project_id: String,
+        trigger_id: String,
         change: String,
         state: String,
     },

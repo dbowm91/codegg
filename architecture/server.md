@@ -87,6 +87,9 @@ core that defeats the singleton invariant.
   ├── /file/{read,list,write,delete}  — file ops
   ├── /project, /projects  — project management
   └── /workspace           — workspace management
+/api/v1/task-triggers/{id}/fire (POST) — narrow external trigger fire
+  (M005; bearer-only capability, outside the principal auth layer —
+  see below)
 /ws                        — deprecated JSON-RPC WebSocket
 /tui                       — TuiMessage protocol WebSocket
 /core                      — CoreFrame protocol WebSocket
@@ -254,6 +257,57 @@ personal tokens:
    operator holds a personal token; it always maps to `LocalOwner` and
    never to distinct identities. Delete it to complete the migration.
 
+### External task-trigger fire endpoint (M005)
+
+Project Work Orders M005 exposes one narrow capability endpoint for
+external automation (shell scripts, CI glue, cron wrappers) to
+satisfy a declared `ExternalTrigger` gate — see
+[work_orders.md](work_orders.md) for the trigger lifecycle. The
+endpoint lives outside the principal `auth_middleware`: the bearer
+`cggtr_<trigger-id>.<secret>` verifies against the stored trigger
+verifier only and never binds an `AuthenticatedPrincipal`.
+
+```text
+POST /api/v1/task-triggers/<trigger-id>/fire
+Authorization: Bearer cggtr_<trigger-id>.<secret>
+Idempotency-Key: <optional caller-generated value>
+Content-Length: 0
+```
+
+```bash
+# Fire a waiting task from a script. The secret travels in the header,
+# never in the URL (query-string secrets are ignored, never accepted).
+curl -sS -X POST \
+  "http://127.0.0.1:8080/api/v1/task-triggers/${TRIGGER_ID}/fire" \
+  -H "Authorization: Bearer ${TRIGGER_TOKEN}" \
+  -H "Idempotency-Key: ci-run-${GITHUB_RUN_ID:-local}-1" \
+  -H "Content-Length: 0"
+# {"status":"accepted","receipt_id":"..."} — or "already_fired" on replay.
+```
+
+Contract notes:
+
+- POST-only: any other method answers `405` with zero side effect.
+  `GET` can never fire (safe against link previewers and crawlers).
+- The body must be empty (tiny 4 KiB cap enforced before parsing;
+  even tiny bodies are rejected so no prompt/task mutation can ride
+  a fire request).
+- Success returns `{"status":"accepted"|"already_fired",
+  "receipt_id":"..."}` — a stable opaque receipt, no project,
+  work-order, occurrence, session, model, or gate detail.
+- Unknown locators, wrong secrets, and revoked/expired/exhausted
+  triggers share one generic `401` (`trigger_invalid`); the error
+  carries no locator, project, secret, or verifier content.
+- The `Authorization` value never enters logs, events, audit
+  metadata, or error bodies (only the public locator and the narrow
+  outcome word are logged). Responses carry hardening headers and
+  the route has its own IP-keyed rate limiter plus a tiny body cap.
+- Firing latches the bound gate and wakes the WorkOrder coordinator;
+  it never starts an agent/session directly and never widens
+  authority. Principal-shaped bearers presented here are rejected
+  without principal verification, and trigger bearers presented to
+  normal auth never bind a principal.
+
 ## Invariants & Gotchas
 
 - **Fail-closed auth**: When token auth is enabled (the default) but no
@@ -277,6 +331,12 @@ personal tokens:
   migrated.
 - **`RenderFrame` unsupported**: Both `/tui` and remote clients see
   `Error { code: "unsupported_render_frame" }`.
+- **`ConnectInfo` must be served explicitly**: `run_server` serves
+  `into_make_service_with_connect_info::<SocketAddr>()` because the
+  IP-keyed HTTP rate limiter extracts `ConnectInfo` — a bare `Router`
+  discards the accept-side address and every request would 500 (found
+  by M005 HTTP qualification; the WebSocket test harness already used
+  this pattern).
 
 ## Testing
 
@@ -298,4 +358,6 @@ python3 scripts/check_projection_transport_lifecycle.py
 - [client.md](client.md) — remote TUI client
 - [protocol.md](protocol.md) — CoreRequest/CoreResponse, TuiMessage
 - [bus.md](bus.md) — GlobalEventBus, PermissionRegistry
+- [work_orders.md](work_orders.md) — external task-trigger lifecycle (M005)
+- [authorization.md](authorization.md) — trigger management capability mapping
 - `architecture/server.md` — implementation guide

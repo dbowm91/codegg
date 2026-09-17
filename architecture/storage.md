@@ -265,6 +265,7 @@ Key storage-layout migrations:
 - **v60**: project work orders — `work_order` (revisioned intent, bounded prompt/gates/repeat, `(project, submission_key)` idempotency, spec digests), `work_order_occurrence` (`UNIQUE(work_order_id, occurrence_index)`, explicit 0-based indexing), `work_order_batch` retry ledger, `sequence_lane` + normalized `sequence_lane_member` ordering (project Work Orders M001; empty by default, no schedule backfill, no session rows)
 - **v61**: `origin_attribution` scope rebuild admitting `work_order` — row-preserving table rebuild extending the v53 scope-kind `CHECK`; legacy attribution rows survive verbatim (project Work Orders M001)
 - **v62**: `runtime_preferences` Task-composer model scope — nullable `last_task_provider_connection_id`/`last_task_model_id` (project Work Orders M003; existing rows untouched, bounds enforced in Rust)
+- **v63**: external task triggers — verifier-only `task_trigger` credentials (SHA-256 hex, never plaintext) plus the `task_trigger_receipt` idempotency ledger (project Work Orders M005; existing work orders untouched)
 
 ## Testing
 

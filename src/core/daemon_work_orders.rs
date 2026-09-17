@@ -12,13 +12,14 @@
 //! server-side through the durable row; unknown or foreign ids report
 //! the privacy-preserving not-found shape, never a project oracle.
 
-use codegg_core::identity::{ProjectId, SequenceLaneId, WorkOrderId};
+use codegg_core::identity::{ProjectId, SequenceLaneId, TaskTriggerId, WorkOrderId};
 use codegg_core::work_order::{
-    validate_gate_set, validate_idempotency_key, validate_lane_label, validate_model,
-    validate_parent_ref, validate_prompt, validate_repeat_count, validate_title, ApprovalRequest,
-    GateJoin, GateKind, GateSpec, LaneFailurePolicy, NewSequenceLane, NewWorkOrder, ReleaseGateSet,
-    SandboxRequest, SequenceLane, WorkOrder, WorkOrderError, WorkOrderPatch, WorkOrderState,
-    WorkspacePolicy,
+    split_presented_trigger, task_trigger_project, validate_gate_set, validate_idempotency_key,
+    validate_lane_label, validate_model, validate_parent_ref, validate_prompt,
+    validate_repeat_count, validate_title, ApprovalRequest, FireOutcome, GateJoin, GateKind,
+    GateSpec, LaneFailurePolicy, NewSequenceLane, NewTaskTrigger, NewWorkOrder, ReleaseGateSet,
+    SandboxRequest, SequenceLane, TaskTrigger, WorkOrder, WorkOrderError, WorkOrderPatch,
+    WorkOrderState, WorkspacePolicy,
 };
 
 use crate::error::AppError;
@@ -59,6 +60,10 @@ impl CoreDaemon {
                 | CoreRequest::WorkOrderOccurrenceGet { .. }
                 | CoreRequest::WorkOrderOccurrenceList { .. }
                 | CoreRequest::WorkOrderSummary { .. }
+                | CoreRequest::WorkOrderTriggerCreate { .. }
+                | CoreRequest::WorkOrderTriggerList { .. }
+                | CoreRequest::WorkOrderTriggerGet { .. }
+                | CoreRequest::WorkOrderTriggerRevoke { .. }
         )
     }
 
@@ -77,6 +82,8 @@ impl CoreDaemon {
                 | CoreRequest::WorkOrderLaneCreate { .. }
                 | CoreRequest::WorkOrderLaneReorder { .. }
                 | CoreRequest::WorkOrderLaneAttach { .. }
+                | CoreRequest::WorkOrderTriggerCreate { .. }
+                | CoreRequest::WorkOrderTriggerRevoke { .. }
         )
     }
 
@@ -444,6 +451,114 @@ impl CoreDaemon {
                     Err(error) => Ok(work_order_error(error)),
                 }
             }
+            CoreRequest::WorkOrderTriggerCreate { request } => {
+                let project = ok_or_response!(parse_project(&request.project_id));
+                let work_order_id = ok_or_response!(WorkOrderId::parse(&request.work_order_id)
+                    .map_err(|error| Box::new(work_order_error(WorkOrderError::invalid(
+                        "work_order_id",
+                        error.to_string()
+                    )))));
+                let input = NewTaskTrigger {
+                    trigger_ref: request.trigger_ref.clone(),
+                    expires_at_ms: request.expires_at_ms,
+                    max_fires: request.max_fires,
+                    idempotency_key: request.idempotency_key.clone(),
+                };
+                match self
+                    .work_orders
+                    .create_task_trigger(&project, &work_order_id, &principal, input, now_ms)
+                    .await
+                {
+                    Ok(outcome) => {
+                        self.after_trigger_mutation(
+                            authority,
+                            authz_decision,
+                            &outcome.trigger,
+                            "trigger_create",
+                            outcome.duplicate,
+                            now_ms,
+                        )
+                        .await;
+                        Ok(CoreResponse::WorkOrderTrigger {
+                            trigger: outcome.trigger.metadata(now_ms).to_dto(),
+                            secret: outcome.plaintext_secret,
+                            duplicate: outcome.duplicate,
+                        })
+                    }
+                    Err(error) => Ok(work_order_error(error)),
+                }
+            }
+            CoreRequest::WorkOrderTriggerList { request } => {
+                let project = ok_or_response!(parse_project(&request.project_id));
+                let work_order_id = ok_or_response!(request
+                    .work_order_id
+                    .as_deref()
+                    .map(WorkOrderId::parse)
+                    .transpose()
+                    .map_err(|error| Box::new(work_order_error(WorkOrderError::invalid(
+                        "work_order_id",
+                        error.to_string()
+                    )))));
+                match self
+                    .work_orders
+                    .list_task_triggers(&project, work_order_id.as_ref(), request.limit)
+                    .await
+                {
+                    Ok(page) => Ok(CoreResponse::WorkOrderTriggerList {
+                        triggers: page
+                            .triggers
+                            .iter()
+                            .map(|trigger| trigger.metadata(now_ms).to_dto())
+                            .collect(),
+                        truncated: page.truncated,
+                    }),
+                    Err(error) => Ok(work_order_error(error)),
+                }
+            }
+            CoreRequest::WorkOrderTriggerGet { trigger_id } => {
+                match self.resolve_trigger(&trigger_id).await {
+                    Err(response) => Ok(*response),
+                    Ok((id, project)) => {
+                        match self.work_orders.get_task_trigger(&project, &id).await {
+                            Ok(Some(trigger)) => Ok(CoreResponse::WorkOrderTrigger {
+                                trigger: trigger.metadata(now_ms).to_dto(),
+                                secret: None,
+                                duplicate: false,
+                            }),
+                            Ok(None) | Err(_) => Ok(work_order_not_found()),
+                        }
+                    }
+                }
+            }
+            CoreRequest::WorkOrderTriggerRevoke { trigger_id } => {
+                let (id, project) = match self.resolve_trigger(&trigger_id).await {
+                    Err(response) => return Ok(*response),
+                    Ok(pair) => pair,
+                };
+                match self
+                    .work_orders
+                    .revoke_task_trigger(&project, &id, now_ms)
+                    .await
+                {
+                    Ok(trigger) => {
+                        self.after_trigger_mutation(
+                            authority,
+                            authz_decision,
+                            &trigger,
+                            "trigger_revoke",
+                            false,
+                            now_ms,
+                        )
+                        .await;
+                        Ok(CoreResponse::WorkOrderTrigger {
+                            trigger: trigger.metadata(now_ms).to_dto(),
+                            secret: None,
+                            duplicate: false,
+                        })
+                    }
+                    Err(error) => Ok(work_order_error(error)),
+                }
+            }
             _ => Ok(CoreResponse::Error {
                 code: "unimplemented".to_string(),
                 message: "This request type is not yet implemented".to_string(),
@@ -697,6 +812,156 @@ impl CoreDaemon {
             Some(project) => Ok((id, project)),
             None => Err(Box::new(work_order_not_found())),
         }
+    }
+
+    /// Resolve one task-trigger locator to its `(TaskTriggerId,
+    /// ProjectId)` pair through the durable row. Unknown ids report the
+    /// privacy-preserving not-found shape; malformed ids report invalid
+    /// input. Neither leaks which projects or triggers exist. The
+    /// response never carries secret or verifier content.
+    async fn resolve_trigger(
+        &self,
+        trigger_id: &str,
+    ) -> Result<(TaskTriggerId, ProjectId), Box<CoreResponse>> {
+        let id = TaskTriggerId::parse(trigger_id).map_err(|error| {
+            Box::new(CoreResponse::Error {
+                code: "work_order_invalid_input".to_owned(),
+                message: error.to_string(),
+            })
+        })?;
+        let Some(pool) = self.pool.clone() else {
+            return Err(Box::new(CoreResponse::Error {
+                code: "work_order_unavailable".to_owned(),
+                message: "project work orders require a durable database pool".to_owned(),
+            }));
+        };
+        match task_trigger_project(&pool, id.as_str()).await {
+            Some(project) => Ok((id, project)),
+            None => Err(Box::new(work_order_not_found())),
+        }
+    }
+
+    /// Post-mutation evidence for one trigger write: structural audit
+    /// with the authorizing decision id plus a structural trigger
+    /// liveness event. Neither carries the secret or its verifier.
+    /// Retried (duplicate) creations emit no new event or audit row:
+    /// they converged on existing truth.
+    async fn after_trigger_mutation(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+        trigger: &TaskTrigger,
+        operation: &str,
+        duplicate: bool,
+        now_ms: i64,
+    ) {
+        if duplicate {
+            return;
+        }
+        let provenance = codegg_core::authorization::audit_provenance(authz_decision);
+        let mut chain = codegg_core::audit_instrumentation::AuditChainContext::new();
+        chain.project = authz_decision.project_id.clone();
+        let builder = codegg_core::audit::AuditEventBuilder::new(
+            codegg_core::audit::AuditAction::WorkOrderLifecycle,
+            authority.principal(),
+            &provenance,
+        )
+        .with_visibility(codegg_core::audit::AuditVisibility::Project)
+        .with_metadata("project.id", trigger.project_id.as_str())
+        .with_metadata("task_trigger.id", trigger.id.as_str())
+        .with_metadata("work_order.id", trigger.work_order_id.as_str())
+        .with_metadata("work_order.op", operation)
+        .with_metadata("task_trigger.state", trigger.state.as_str())
+        .with_metadata(
+            "task_trigger.fire_count",
+            trigger.fire_count.to_string().as_str(),
+        )
+        .with_metadata("decision.id", provenance.decision_id())
+        .with_metadata("decision.outcome", "allow");
+        let builder = codegg_core::audit_instrumentation::apply_chain(
+            builder,
+            &chain,
+            chain.project.as_ref(),
+        );
+        Box::pin(self.append_audit_event(builder)).await;
+        let change = match operation {
+            "trigger_create" => "created",
+            "trigger_revoke" => "revoked",
+            _ => "updated",
+        };
+        self.event_log
+            .publish(
+                None,
+                None,
+                CoreEvent::WorkOrderTriggerChanged {
+                    project_id: trigger.project_id.as_str().to_owned(),
+                    trigger_id: trigger.id.as_str().to_owned(),
+                    change: change.to_owned(),
+                    state: trigger.status_at(now_ms).as_str().to_owned(),
+                },
+            )
+            .await;
+    }
+
+    /// Fire one task-trigger bearer: verify the narrow capability,
+    /// latch the bound gate, and wake the M002 coordinator.
+    ///
+    /// This is the only production path that accepts a trigger bearer.
+    /// The bearer is verified against the stored verifier and never
+    /// enters principal resolution: it grants no list/get/edit/cancel/
+    /// session/project access. Failures use the privacy-safe generic
+    /// shape from the store. After a committed latch the coordinator
+    /// wakes for the trigger's project; a wake failure is recoverable
+    /// via the coordinator due/reconciliation scan, so wake errors are
+    /// intentionally not propagated to the unaffiliated caller.
+    pub async fn fire_work_order_trigger(
+        &self,
+        presented: &str,
+        idempotency_key: Option<&str>,
+        now_ms: i64,
+    ) -> Result<FireOutcome, WorkOrderError> {
+        let outcome = self
+            .work_orders
+            .fire_task_trigger(presented, idempotency_key, now_ms)
+            .await?;
+        // Best-effort post-commit effects: structural event plus
+        // coordinator wake. The latch is already durable, so a dropped
+        // effect here only delays release until the next due scan.
+        if let Some((locator, _)) = split_presented_trigger(presented) {
+            if let Some(pool) = self.pool.clone() {
+                if let Some(project) = task_trigger_project(&pool, &locator).await {
+                    if let Ok(trigger_id) = TaskTriggerId::parse(&locator) {
+                        let status = self
+                            .work_orders
+                            .get_task_trigger(&project, &trigger_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|trigger| trigger.status_at(now_ms).as_str().to_owned())
+                            .unwrap_or_else(|| "active".to_owned());
+                        let change = if outcome.latched && !outcome.duplicate {
+                            "fired"
+                        } else {
+                            "replay"
+                        };
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::WorkOrderTriggerChanged {
+                                    project_id: project.as_str().to_owned(),
+                                    trigger_id: locator.clone(),
+                                    change: change.to_owned(),
+                                    state: status,
+                                },
+                            )
+                            .await;
+                        let _ = self.wake_work_orders_for_project(&project, now_ms).await;
+                    }
+                }
+            }
+        }
+        Ok(outcome)
     }
 }
 

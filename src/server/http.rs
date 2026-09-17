@@ -39,7 +39,7 @@ impl Predicate for CompressionPredicate {
 }
 
 #[derive(Clone)]
-struct RateLimiter {
+pub(crate) struct RateLimiter {
     cache: Arc<tokio::sync::Mutex<HashMap<String, Vec<Instant>>>>,
     max_requests: usize,
     window: Duration,
@@ -50,7 +50,7 @@ struct RateLimiter {
 const MAX_RATE_LIMITER_KEYS: usize = 10_000;
 
 impl RateLimiter {
-    fn new(max_requests: usize, window_secs: u64) -> Self {
+    pub(crate) fn new(max_requests: usize, window_secs: u64) -> Self {
         Self {
             cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             max_requests,
@@ -94,7 +94,7 @@ fn rate_limit_header_value(value: impl ToString) -> HeaderValue {
     HeaderValue::from_str(&value.to_string()).unwrap_or_else(|_| HeaderValue::from_static("0"))
 }
 
-async fn rate_limit_middleware(
+pub(crate) async fn rate_limit_middleware(
     State(rate_limiter): State<RateLimiter>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     request: Request,
@@ -268,27 +268,33 @@ pub async fn run_server(
             "/api/sessions",
             get(routes::list_sessions).post(routes::create_session),
         )
-        .route("/api/sessions/:id", get(routes::get_session))
-        .route("/api/sessions/:id/archive", delete(routes::archive_session))
-        .route("/api/sessions/:id/fork", post(routes::fork_session))
-        .route("/api/sessions/:id/share", post(routes::share_session))
-        .route("/api/sessions/:id/unshare", post(routes::unshare_session))
-        .route("/api/sessions/:id/revert", post(routes::revert_session))
-        .route("/api/sessions/:id/unrevert", post(routes::unrevert_session))
-        .route("/api/sessions/:id/messages", get(routes::list_messages))
+        .route("/api/sessions/{id}", get(routes::get_session))
+        .route(
+            "/api/sessions/{id}/archive",
+            delete(routes::archive_session),
+        )
+        .route("/api/sessions/{id}/fork", post(routes::fork_session))
+        .route("/api/sessions/{id}/share", post(routes::share_session))
+        .route("/api/sessions/{id}/unshare", post(routes::unshare_session))
+        .route("/api/sessions/{id}/revert", post(routes::revert_session))
+        .route(
+            "/api/sessions/{id}/unrevert",
+            post(routes::unrevert_session),
+        )
+        .route("/api/sessions/{id}/messages", get(routes::list_messages))
         .route("/api/config", get(routes::get_config))
         .route("/api/mcp", get(routes::list_mcp_servers))
         .route("/api/event", get(routes::sse_handler))
         .route(
-            "/api/question/:session_id",
+            "/api/question/{session_id}",
             get(routes::get_pending_questions).post(routes::submit_question),
         )
         .route(
-            "/api/permission/:session_id",
+            "/api/permission/{session_id}",
             get(routes::get_pending_permissions),
         )
         .route(
-            "/api/permission/:session_id/submit",
+            "/api/permission/{session_id}/submit",
             post(routes::submit_permission),
         )
         .route("/api/providers", get(routes::list_providers))
@@ -303,9 +309,9 @@ pub async fn run_server(
         )
         .route("/api/project/list", get(routes::list_projects))
         .route("/api/projects", get(routes::list_projects))
-        .route("/api/projects/:id", get(routes::get_project_by_id))
-        .route("/api/projects/:id/archive", post(routes::archive_project))
-        .route("/api/projects/:id/restore", post(routes::restore_project))
+        .route("/api/projects/{id}", get(routes::get_project_by_id))
+        .route("/api/projects/{id}/archive", post(routes::archive_project))
+        .route("/api/projects/{id}/restore", post(routes::restore_project))
         .route(
             "/api/workspace",
             get(routes::get_workspace).post(routes::create_workspace),
@@ -337,10 +343,11 @@ pub async fn run_server(
         .layer(cors)
         .layer(compression)
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .merge(routes::task_trigger::task_trigger_router(state, 100, 60))
         .nest("/api", api_router);
 
     let addr = format!("{}:{}", host, port);
@@ -359,9 +366,18 @@ pub async fn run_server(
 
     info!("Server listening on {}", addr);
 
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
+    // The IP-keyed `rate_limit_middleware` extracts `ConnectInfo`, which
+    // `axum::serve` only supplies through
+    // `into_make_service_with_connect_info` (a bare `Router` discards the
+    // accept-side address and every request would 500). Serve the
+    // connected service so per-IP rate limiting actually observes the
+    // peer address.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
 
     Ok(())
 }

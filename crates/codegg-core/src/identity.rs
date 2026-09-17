@@ -312,6 +312,19 @@ typed_identity!(
     SequenceLaneId,
     "sequence_lane_id"
 );
+typed_identity!(
+    /// Stable public locator for one narrowly scoped external task
+    /// trigger.
+    ///
+    /// Project Work Orders M005 owns the trigger capability contract. A
+    /// `TaskTriggerId` names the trigger row (and the bearer locator
+    /// segment `cggtr_<id>.<secret>`) but never authenticates alone: the
+    /// high-entropy secret segment is verified against the stored
+    /// verifier before any gate latches. Distinct from principal token
+    /// ids by type and prefix.
+    TaskTriggerId,
+    "task_trigger_id"
+);
 
 /// Project/repository relation. The repository is optional at the enclosing
 /// [`ProjectBinding`] level while a project is being created or resolved.
@@ -456,6 +469,7 @@ mod tests {
             WorkOrderId => "work-order-fixture",
             WorkOrderOccurrenceId => "work-order-occurrence-fixture",
             SequenceLaneId => "sequence-lane-fixture",
+            TaskTriggerId => "task-trigger-fixture",
             AuditEventId => "audit-event-fixture",
             WorkspaceId => "workspace-fixture",
         );

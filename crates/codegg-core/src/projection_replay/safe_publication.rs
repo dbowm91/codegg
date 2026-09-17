@@ -109,6 +109,9 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // Work Orders M002: occurrence hints carry identity, change kind,
         // and state only (never prompt bodies, secrets, or reasoning).
         CoreEvent::WorkOrderOccurrenceChanged { .. } => SafePublicationClass::Safe,
+        // Work Orders M005: trigger hints carry trigger identity, change
+        // kind, and effective status only (never secrets or verifiers).
+        CoreEvent::WorkOrderTriggerChanged { .. } => SafePublicationClass::Safe,
     }
 }
 

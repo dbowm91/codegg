@@ -8,6 +8,7 @@ pub mod project;
 pub mod provider;
 pub mod question;
 pub mod session;
+pub mod task_trigger;
 pub mod tool;
 pub mod workspace;
 
@@ -21,5 +22,6 @@ pub use project::*;
 pub use provider::*;
 pub use question::*;
 pub use session::*;
+pub use task_trigger::*;
 pub use tool::*;
 pub use workspace::*;

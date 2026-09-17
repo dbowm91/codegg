@@ -113,7 +113,7 @@ terminal states never transition out. Edits to execution-shaping
 fields (prompt, model, gates, repeat) are rejected once any occurrence
 that depends on those values has been claimed.
 
-## Storage (migrations v60–v62)
+## Storage (migrations v60–v63)
 
 Additive tables, safe on existing databases (existing databases gain
 empty work-order tables; no `schedule` row is ever backfilled):
@@ -132,13 +132,16 @@ empty work-order tables; no `schedule` row is ever backfilled):
   position)` ordering with `UNIQUE(lane_id, position)`.
 
 Indexes cover project/state/updated listings, occurrence lookup,
-lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 62
+lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 63
 (`storage/mod.rs:39`); `session/schema.rs` wires `migrate_v60` (domain
 tables), `migrate_v61` (admits the `work_order` origin-attribution
 scope in the v53 table's kind CHECK via a row-preserving rebuild;
-legacy attribution rows survive verbatim), and `migrate_v62` (nullable
+legacy attribution rows survive verbatim), `migrate_v62` (nullable
 Task-composer model columns on `runtime_preferences`; existing rows
-keep their session preference, approval, and sandbox untouched).
+keep their session preference, approval, and sandbox untouched), and
+`migrate_v63` (verifier-only `task_trigger` credentials plus the
+`task_trigger_receipt` idempotency ledger; no trigger plaintext is
+ever a column).
 
 ## Store/service operations
 
@@ -158,7 +161,8 @@ operations with `work_order_unavailable`):
 - lane create/get/list, CAS reorder (exact-set replacement),
   CAS attach (append/insert), and atomic before/after moves;
 - owning-project resolution for every opaque id
-  (`work_order_project`: work-order, occurrence, and lane tables);
+  (`work_order_project`: work-order, occurrence, and lane tables;
+  `task_trigger_project` for trigger locators);
 - bounded per-project summary counts.
 
 Transaction failure creates no partial batch or lane positions.
@@ -399,13 +403,82 @@ One bounded daemon-owned aggregate for every authorized project
   `OpenWorkspaceDashboard` action (`Ctrl+O`, vim `W`) open the same
   view; collision audit and help entries cover both.
 
+## External task triggers (M005)
+
+A task trigger lets shell scripts, CI glue, cron wrappers, and other
+automation satisfy one declared `ExternalTrigger` gate on one
+`WorkOrder` occurrence without receiving a general CodeGG principal
+token or broader project authority
+(`crates/codegg-core/src/work_order/trigger.rs`,
+`src/server/routes/task_trigger.rs`,
+`src/core/daemon_work_orders.rs::fire_work_order_trigger`):
+
+- Bearer shape `cggtr_<trigger-id>.<secret>` (32 CSPRNG bytes,
+  base64url-no-pad). The public locator finds the row without
+  scanning hashes; the secret verifies constant-time against a
+  SHA-256 verifier — the same primitive posture as the
+  personal-token digest store, without sharing its table or granting
+  principal authority. Only the verifier persists; the plaintext is
+  returned exactly once at creation (revoke + create to rotate).
+- Trigger state is `active | revoked` durably; `expired`/`exhausted`
+  derive from `expires_at_ms`/`max_fires`/`fire_count` at read/fire
+  time, so expiry and exhaustion fail closed with no background
+  sweeper and survive restart trivially.
+- Management travels the ordinary authenticated project protocol:
+  `WorkOrderTriggerCreate` (requires `session.create`; binds a work
+  order's `ExternalTrigger` gate by explicit `trigger_ref`, or
+  implicitly when the work order declares exactly one),
+  `WorkOrderTriggerList/Get` (`session.read`, metadata only — never
+  secret or verifier), `WorkOrderTriggerRevoke` (`session.create`,
+  monotonic and idempotent). Creation supports idempotency keys;
+  converged retries return the row with no second secret.
+- Firing is not a Core operation: `POST
+  /api/v1/task-triggers/{trigger_id}/fire` with
+  `Authorization: Bearer cggtr_<id>.<secret>` and an empty body is
+  the only fire path (see [server.md](server.md)). The bearer never
+  enters principal resolution and grants no other access.
+- The fire transaction verifies the capability, latches the bound
+  gate on exactly the earliest waiting/ready occurrence, increments
+  the fire count only for the latch winner, records the idempotency
+  receipt, and wakes the M002 coordinator after commit. Duplicate,
+  replayed, and concurrent fires converge on the latch CAS: one
+  winner per occurrence, no duplicate execution, no pre-arming of
+  future repeats. After an occurrence is terminal and a repeat
+  occurrence is created, the same active trigger may fire the next
+  occurrence until `max_fires`, expiry, or revocation.
+- Failures are privacy-safe: unknown locators, wrong secrets, and
+  revoked/expired/exhausted triggers share one generic `401`
+  (`trigger_invalid`) carrying no locator, project, secret, or
+  verifier content. `GET` is inert (`405`); query-string secrets are
+  ignored; principal-shaped bearers are rejected without principal
+  verification; revocation/expiry races resolve inside the
+  transaction with one deterministic winner.
+- Observability is secret-free: `WorkOrderTriggerChanged`
+  (`created`/`revoked`/`fired`/`replay`) events and
+  `work_order_lifecycle` audit rows carry identity/state/counts
+  only. `scripts/check_task_trigger_boundaries.py` pins the prefix
+  separation, verifier-only storage, POST-only routing, log hygiene,
+  non-Core fire shape, and migration wiring.
+
+M005 also repaired a latent server defect found by its HTTP
+qualification: `run_server` served a bare `Router`, which discards
+the accept-side address, so the IP-keyed rate limiter's
+`ConnectInfo` extraction failed and every HTTP request 500'd. The
+server now serves
+`into_make_service_with_connect_info::<SocketAddr>()`, matching the
+long-standing WebSocket test harness pattern.
+
 ## Related docs
 
 - [authorization.md](authorization.md) — project-scoped capability
-  mapping and denial privacy for all `work_order_*` operations.
+  mapping and denial privacy for all `work_order_*` operations,
+  including the four `work_order_trigger_*` management operations
+  (firing is not a Core operation).
 - [audit.md](audit.md) — `work_order_lifecycle` action, coverage, and
   structural metadata keys.
-- [storage.md](storage.md) — v60–v62 migration context.
+- [server.md](server.md) — the narrow `POST
+  /api/v1/task-triggers/{trigger_id}/fire` endpoint contract.
+- [storage.md](storage.md) — v60–v63 migration context.
 - [jobs.md](jobs.md) — scheduler/job ownership that work orders
   consume but never duplicate.
 - `plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`

@@ -219,7 +219,7 @@ tar.workspace = true
 # Server (feature-gated)
 axum = { version = "0.8", features = ["ws"], optional = true }
 http = { workspace = true, optional = true }
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-br", "compression-gzip", "set-header"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-br", "compression-gzip", "set-header", "limit"], optional = true }
 tokio-tungstenite = { version = "0.26", optional = true }
 subtle.workspace = true
 

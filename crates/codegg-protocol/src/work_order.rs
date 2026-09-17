@@ -312,6 +312,79 @@ pub struct WorkOrderCapabilitiesDto {
     pub max_lane_members: usize,
 }
 
+// ── External task triggers (M005) ────────────────────────────────────
+//
+// A task trigger is a narrow capability bearer (`cggtr_<id>.<secret>`)
+// that satisfies one declared `ExternalTrigger` gate. Management (create
+// / list-metadata / revoke) travels the ordinary authenticated project
+// protocol; firing travels a narrow unauthenticated-except-bearer HTTP
+// POST route. Listing returns metadata only — never the secret or its
+// verifier. The creation response carries the secret exactly once.
+
+/// Wire shape of one task trigger's verifier-free metadata. Never
+/// carries the secret or its verifier: authorized list/get responses
+/// and audit-adjacent surfaces use only this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskTriggerMetadataDto {
+    pub trigger_id: String,
+    pub project_id: String,
+    pub work_order_id: String,
+    pub trigger_ref: String,
+    /// Effective status: `active`, `revoked`, `expired`, or `exhausted`.
+    pub status: String,
+    pub created_by: String,
+    pub created_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fires: Option<u32>,
+    pub fire_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_fired_at_ms: Option<i64>,
+    pub revision: u64,
+}
+
+/// Bounded task-trigger creation request. `project_id` scopes the
+/// operation directly; `work_order_id` must name a work order in that
+/// project declaring an `ExternalTrigger` gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskTriggerCreateRequest {
+    pub project_id: String,
+    pub work_order_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fires: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// Bounded task-trigger listing request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskTriggerListRequest {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_order_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// Narrow fire result for the unaffiliated trigger caller: a stable
+/// status word plus an opaque receipt. Carries no project, work-order,
+/// occurrence, session, model, or gate detail.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskTriggerFireResultDto {
+    /// `accepted` (newly latched) or `already_fired` (idempotent
+    /// replay or inert: already latched/running, or no fireable
+    /// occurrence — deliberately undisclosed which).
+    pub status: String,
+    pub receipt_id: String,
+    #[serde(default)]
+    pub duplicate: bool,
+}
+
 // ── Global Workspace dashboard projection (M004) ─────────────────────
 //
 // One bounded daemon-owned aggregate row per authorized project. The
@@ -519,5 +592,44 @@ mod tests {
         let back: WorkOrderOccurrenceDto = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.session_id, None);
         assert_eq!(back.job_id, None);
+    }
+
+    #[test]
+    fn trigger_metadata_dto_carries_no_secret_material() {
+        let dto = TaskTriggerMetadataDto {
+            trigger_id: "trigger-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            work_order_id: "wo-1".to_owned(),
+            trigger_ref: "hook-1".to_owned(),
+            status: "active".to_owned(),
+            created_by: "local-owner".to_owned(),
+            created_at_ms: 1,
+            expires_at_ms: None,
+            max_fires: Some(3),
+            fire_count: 0,
+            last_fired_at_ms: None,
+            revision: 1,
+        };
+        let json = serde_json::to_string(&dto).expect("serialize");
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("verifier"));
+        assert!(!json.contains("reasoning"));
+        let back: TaskTriggerMetadataDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, dto);
+    }
+
+    #[test]
+    fn trigger_fire_result_vocabulary_is_narrow() {
+        let result = TaskTriggerFireResultDto {
+            status: "already_fired".to_owned(),
+            receipt_id: "receipt-1".to_owned(),
+            duplicate: true,
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(!json.contains("secret"));
+        assert!(!json.contains("project"));
+        assert!(!json.contains("session"));
+        let back: TaskTriggerFireResultDto = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, result);
     }
 }

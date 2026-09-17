@@ -670,7 +670,7 @@ async fn daemon_remigration_is_additive_and_empty_by_default() {
         assert_eq!(count.0, 0, "{table} starts empty");
     }
     // Re-running the full chain over a downgraded version marker
-    // re-applies v60/v61 additively without duplicating or losing rows.
+    // re-applies v60/v61/v63 additively without duplicating or losing rows.
     let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
     let team = TeamStore::new(pool.clone());
     let project = ProjectId::new();
@@ -706,7 +706,7 @@ async fn daemon_remigration_is_additive_and_empty_by_default() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version.0, 62);
+    assert_eq!(version.0, 63);
     // Legacy rows survive the rebuild verbatim.
     let legacy: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM origin_attribution WHERE scope_kind = 'session' AND scope_id = 'legacy-session'",

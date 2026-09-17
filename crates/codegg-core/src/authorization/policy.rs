@@ -989,6 +989,35 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::SessionRead),
         ),
+        // ── Project Work Orders M005: external task triggers ─────────
+        //
+        // Trigger *management* is ordinary principal-authorized project
+        // mutation/reads: creation requires the authority sufficient to
+        // modify/schedule the work order (`session.create`); metadata
+        // reads use `session.read`; revocation is monotonic. The *fire*
+        // operation is deliberately NOT a Core operation: the bearer
+        // fires through the narrow HTTP POST route only and can never
+        // authorize general Core APIs.
+        R::WorkOrderTriggerCreate { .. } => OperationDescriptor::new(
+            "work_order_trigger_create",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderTriggerList { .. } => OperationDescriptor::new(
+            "work_order_trigger_list",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderTriggerGet { .. } => OperationDescriptor::new(
+            "work_order_trigger_get",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderTriggerRevoke { .. } => OperationDescriptor::new(
+            "work_order_trigger_revoke",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
     }
 }
 
@@ -1760,6 +1789,29 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::WorkOrderSummary {
             project_id: String::new(),
+        },
+        R::WorkOrderTriggerCreate {
+            request: codegg_protocol::work_order::TaskTriggerCreateRequest {
+                project_id: String::new(),
+                work_order_id: String::new(),
+                trigger_ref: None,
+                expires_at_ms: None,
+                max_fires: None,
+                idempotency_key: None,
+            },
+        },
+        R::WorkOrderTriggerList {
+            request: codegg_protocol::work_order::TaskTriggerListRequest {
+                project_id: String::new(),
+                work_order_id: None,
+                limit: None,
+            },
+        },
+        R::WorkOrderTriggerGet {
+            trigger_id: String::new(),
+        },
+        R::WorkOrderTriggerRevoke {
+            trigger_id: String::new(),
         },
     ]
 }

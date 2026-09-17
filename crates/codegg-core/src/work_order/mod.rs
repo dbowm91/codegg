@@ -43,6 +43,7 @@
 pub mod coordinator;
 pub mod model;
 pub mod store;
+pub mod trigger;
 
 pub use coordinator::{
     delay_deadline_for_occurrence, evaluate_occurrence_gates, is_pre_claim, is_repeat_exhausted,
@@ -66,7 +67,18 @@ pub use model::{
     MAX_WORK_ORDER_TITLE_CHARS,
 };
 pub use store::{
-    ensure_work_order_tables, work_order_project, BatchOutcome, CreateOutcome, OccurrenceListPage,
-    RepeatOutcome, WorkOrderConfig, WorkOrderListPage, WorkOrderService,
+    ensure_work_order_tables, task_trigger_project, work_order_project, BatchOutcome,
+    CreateOutcome, OccurrenceListPage, RepeatOutcome, TaskTriggerListPage, TriggerCreateOutcome,
+    WorkOrderConfig, WorkOrderListPage, WorkOrderService, TASK_TRIGGER_SCHEMA_STATEMENTS,
     WORK_ORDER_SCHEMA_STATEMENTS,
+};
+pub use trigger::{
+    audit_metadata_for_task_trigger, generate_task_trigger, is_task_trigger_presentation,
+    redact_presented_trigger, split_presented_trigger, task_trigger_digest_hex,
+    validate_trigger_expires_at, validate_trigger_idempotency_key, validate_trigger_list_limit,
+    validate_trigger_max_fires, verify_trigger_secret, FireOutcome, NewTaskTrigger, TaskTrigger,
+    TaskTriggerMetadata, TaskTriggerState, TaskTriggerStatus, DEFAULT_TRIGGER_LIST_LIMIT,
+    MAX_PRESENTED_TRIGGER_LEN, MAX_TRIGGERS_PER_WORK_ORDER, MAX_TRIGGER_FIRE_BODY_BYTES,
+    MAX_TRIGGER_IDEMPOTENCY_KEY_LEN, MAX_TRIGGER_LIST_LIMIT, MAX_TRIGGER_MAX_FIRES,
+    TASK_TRIGGER_PREFIX, TASK_TRIGGER_SECRET_BYTES, TASK_TRIGGER_VERIFIER_VERSION,
 };

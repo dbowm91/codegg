@@ -208,6 +208,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 62 {
         migrate_and_record(pool, 62).await?;
     }
+    if current_version < 63 {
+        migrate_and_record(pool, 63).await?;
+    }
 
     Ok(())
 }
@@ -282,6 +285,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             60 => migrate_v60(&mut tx).await?,
             61 => migrate_v61(&mut tx).await?,
             62 => migrate_v62(&mut tx).await?,
+            63 => migrate_v63(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2619,6 +2623,23 @@ async fn migrate_v61(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 async fn migrate_v62(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::approval::RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS {
         add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
+    }
+    Ok(())
+}
+/// Project Work Orders M005: external task-trigger capability.
+///
+/// Adds verifier-only `task_trigger` credentials plus the
+/// `task_trigger_receipt` idempotency ledger. Additive and
+/// restart-safe: existing work orders, occurrences, and lanes are
+/// untouched; fresh databases receive the shape directly through the
+/// shared `TASK_TRIGGER_SCHEMA_STATEMENTS`. No trigger plaintext is
+/// ever a column; only the SHA-256 verifier persists.
+async fn migrate_v63(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::work_order::TASK_TRIGGER_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
     Ok(())
 }

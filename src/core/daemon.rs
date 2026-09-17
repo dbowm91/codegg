@@ -616,6 +616,8 @@ impl CoreDaemon {
             CoreRequest::WorkOrderCreate { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderBatchCreate { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderLaneCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::WorkOrderTriggerCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::WorkOrderTriggerList { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderList { project_id, .. }
             | CoreRequest::WorkOrderLaneList { project_id, .. }
             | CoreRequest::WorkOrderSummary { project_id } => Some(project_id.as_str()),
@@ -716,6 +718,8 @@ impl CoreDaemon {
             CoreRequest::WorkOrderLaneAttach { request } => Some(request.lane_id.as_str()),
             CoreRequest::WorkOrderOccurrenceGet { occurrence_id } => Some(occurrence_id),
             CoreRequest::WorkOrderOccurrenceList { work_order_id, .. } => Some(work_order_id),
+            CoreRequest::WorkOrderTriggerGet { trigger_id }
+            | CoreRequest::WorkOrderTriggerRevoke { trigger_id } => Some(trigger_id),
             _ => None,
         }
     }

@@ -24,11 +24,19 @@ use super::model::{
     GateJoin, GateKind, GateSpec, LaneFailurePolicy, NewSequenceLane, NewWorkOrder,
     OccurrenceState, ReleaseGateSet, SandboxRequest, SequenceLane, WorkOrder, WorkOrderError,
     WorkOrderOccurrence, WorkOrderPatch, WorkOrderState, WorkOrderSummary, WorkspacePolicy,
-    MAX_IDEMPOTENCY_KEY_LEN, MAX_LANES_PER_PROJECT, MAX_LANE_MEMBERS, MAX_WORK_ORDER_BATCH_ITEMS,
-    MAX_WORK_ORDER_LIST_LIMIT,
+    MAX_IDEMPOTENCY_KEY_LEN, MAX_LANES_PER_PROJECT, MAX_LANE_MEMBERS, MAX_TRIGGER_REF_CHARS,
+    MAX_WORK_ORDER_BATCH_ITEMS, MAX_WORK_ORDER_LIST_LIMIT,
+};
+use super::trigger::{
+    generate_task_trigger, split_presented_trigger, validate_trigger_expires_at,
+    validate_trigger_idempotency_key, validate_trigger_list_limit, validate_trigger_max_fires,
+    verify_trigger_secret, FireOutcome, NewTaskTrigger, TaskTrigger, TaskTriggerState,
+    TaskTriggerStatus, MAX_TRIGGERS_PER_WORK_ORDER, TASK_TRIGGER_VERIFIER_VERSION,
 };
 use crate::error::StorageError;
-use crate::identity::{PrincipalId, ProjectId, SequenceLaneId, WorkOrderId, WorkOrderOccurrenceId};
+use crate::identity::{
+    PrincipalId, ProjectId, SequenceLaneId, TaskTriggerId, WorkOrderId, WorkOrderOccurrenceId,
+};
 
 // ── Schema ───────────────────────────────────────────────────────────────
 
@@ -130,9 +138,65 @@ pub const WORK_ORDER_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_lane_member_work_order ON sequence_lane_member(work_order_id)",
 ];
 
+/// Additive M005 schema: narrow external task-trigger capability.
+///
+/// `task_trigger` stores verifier-only credentials (SHA-256 hex over the
+/// high-entropy secret segment) plus the occurrence-gate binding and
+/// fire bounds. The plaintext secret is never a column: it exists only
+/// in the creation response. `task_trigger_receipt` converges caller
+/// retries under `(trigger_id, idempotency_key)`; receipts are
+/// retry-convergence hints only — the occurrence gate-latch CAS is the
+/// exactly-once guard, so receipt eviction can never duplicate
+/// execution. Safe on existing databases via `IF NOT EXISTS`.
+pub const TASK_TRIGGER_SCHEMA_STATEMENTS: &[&str] = &[
+    r#"
+    CREATE TABLE IF NOT EXISTS task_trigger (
+        trigger_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        project_id TEXT NOT NULL CHECK (length(project_id) > 0 AND length(project_id) <= 128),
+        work_order_id TEXT NOT NULL REFERENCES work_order(id) ON DELETE CASCADE,
+        trigger_ref TEXT NOT NULL CHECK (length(trigger_ref) > 0 AND length(trigger_ref) <= 128),
+        secret_verifier TEXT NOT NULL CHECK (length(secret_verifier) = 64),
+        verifier_version TEXT NOT NULL CHECK (length(verifier_version) > 0 AND length(verifier_version) <= 32),
+        state TEXT NOT NULL CHECK (state IN ('active','revoked')),
+        created_by TEXT NOT NULL CHECK (length(created_by) > 0 AND length(created_by) <= 128),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        max_fires INTEGER CHECK (max_fires IS NULL OR (max_fires >= 1 AND max_fires <= 1000000)),
+        fire_count INTEGER NOT NULL DEFAULT 0 CHECK (fire_count >= 0),
+        last_fired_at INTEGER,
+        creation_key TEXT CHECK (creation_key IS NULL OR (length(creation_key) > 0 AND length(creation_key) <= 128)),
+        UNIQUE(project_id, creation_key)
+    )
+    "#,
+    r#"
+    CREATE TABLE IF NOT EXISTS task_trigger_receipt (
+        trigger_id TEXT NOT NULL REFERENCES task_trigger(trigger_id) ON DELETE CASCADE,
+        idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) > 0 AND length(idempotency_key) <= 128),
+        receipt_id TEXT NOT NULL CHECK (length(receipt_id) > 0 AND length(receipt_id) <= 128),
+        occurrence_id TEXT,
+        latched INTEGER NOT NULL CHECK (latched IN (0,1)),
+        fired_at INTEGER NOT NULL,
+        PRIMARY KEY(trigger_id, idempotency_key)
+    )
+    "#,
+    "CREATE INDEX IF NOT EXISTS idx_task_trigger_project_work_order ON task_trigger(project_id, work_order_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_task_trigger_receipt_trigger ON task_trigger_receipt(trigger_id, fired_at DESC)",
+];
+
+/// Maximum fire receipts retained per trigger. Retry keys are
+/// short-lived caller tokens; beyond this bound the oldest hints are
+/// evicted. Eviction can never duplicate execution: a replayed key
+/// after eviction re-enters the gate-latch CAS, which converges on the
+/// already-latched gate (inert, fresh receipt).
+pub const MAX_TRIGGER_RECEIPTS_PER_TRIGGER: i64 = 4096;
+
 /// Ensure the work-order tables exist. Idempotent.
 pub async fn ensure_work_order_tables(pool: &SqlitePool) -> Result<(), WorkOrderError> {
-    for statement in WORK_ORDER_SCHEMA_STATEMENTS {
+    for statement in WORK_ORDER_SCHEMA_STATEMENTS
+        .iter()
+        .chain(TASK_TRIGGER_SCHEMA_STATEMENTS.iter())
+    {
         sqlx::query(statement)
             .execute(pool)
             .await
@@ -159,7 +223,25 @@ pub async fn work_order_project(pool: &SqlitePool, raw_id: &str) -> Option<Proje
             return ProjectId::parse(&project_raw).ok();
         }
     }
-    None
+    task_trigger_project(pool, raw_id).await
+}
+
+/// Owning project of one task-trigger locator, if the row exists.
+///
+/// Used by the daemon authorization resolver so ID-only trigger
+/// management requests map to a project scope. Unknown ids return
+/// `None` so team principals fail closed without an existence oracle.
+pub async fn task_trigger_project(pool: &SqlitePool, raw_id: &str) -> Option<ProjectId> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT project_id FROM task_trigger WHERE trigger_id = ?")
+            .bind(raw_id)
+            .fetch_optional(pool)
+            .await
+            .ok()?;
+    match row {
+        Some((project_raw,)) => ProjectId::parse(&project_raw).ok(),
+        None => None,
+    }
 }
 
 // ── Row mapping ──────────────────────────────────────────────────────────
@@ -221,6 +303,30 @@ struct LaneRow {
     failure_policy: String,
     created_at: i64,
     updated_at: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct TaskTriggerRow {
+    trigger_id: String,
+    revision: i64,
+    project_id: String,
+    work_order_id: String,
+    trigger_ref: String,
+    secret_verifier: String,
+    verifier_version: String,
+    state: String,
+    created_by: String,
+    created_at: i64,
+    expires_at: Option<i64>,
+    max_fires: Option<i64>,
+    fire_count: i64,
+    last_fired_at: Option<i64>,
+}
+
+#[derive(sqlx::FromRow)]
+struct TaskTriggerReceiptRow {
+    receipt_id: String,
+    latched: i64,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -360,6 +466,29 @@ fn row_to_occurrence(row: OccurrenceRow) -> Result<WorkOrderOccurrence, WorkOrde
     })
 }
 
+fn row_to_task_trigger(row: TaskTriggerRow) -> Result<TaskTrigger, WorkOrderError> {
+    let bad = |field: &'static str| WorkOrderError::invalid(field, "stored row failed to parse");
+    Ok(TaskTrigger {
+        id: TaskTriggerId::parse(&row.trigger_id).map_err(|_| bad("trigger_id"))?,
+        revision: u64::try_from(row.revision).map_err(|_| bad("revision"))?,
+        project_id: ProjectId::parse(&row.project_id).map_err(|_| bad("project_id"))?,
+        work_order_id: WorkOrderId::parse(&row.work_order_id).map_err(|_| bad("work_order_id"))?,
+        trigger_ref: row.trigger_ref,
+        secret_verifier_hex: row.secret_verifier,
+        verifier_version: row.verifier_version,
+        state: TaskTriggerState::parse(&row.state).ok_or_else(|| bad("state"))?,
+        created_by: PrincipalId::parse(&row.created_by).map_err(|_| bad("created_by"))?,
+        created_at_ms: row.created_at,
+        expires_at_ms: row.expires_at,
+        max_fires: row
+            .max_fires
+            .map(|max| u32::try_from(max).map_err(|_| bad("max_fires")))
+            .transpose()?,
+        fire_count: u64::try_from(row.fire_count).map_err(|_| bad("fire_count"))?,
+        last_fired_at_ms: row.last_fired_at,
+    })
+}
+
 // ── Config and service ───────────────────────────────────────────────────
 
 /// Bounds for the durable work-order tables.
@@ -439,6 +568,24 @@ pub struct WorkOrderListPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OccurrenceListPage {
     pub occurrences: Vec<WorkOrderOccurrence>,
+    pub truncated: bool,
+}
+
+/// Outcome of a trigger creation: the durable trigger plus the one-time
+/// plaintext bearer (present only for a fresh creation, never for a
+/// converged retry) and whether a retry converged on an existing row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerCreateOutcome {
+    pub trigger: TaskTrigger,
+    pub plaintext_secret: Option<String>,
+    pub duplicate: bool,
+}
+
+/// Bounded trigger listing page (verifier-bearing rows; callers project
+/// to [`super::trigger::TaskTriggerMetadata`] before responding).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskTriggerListPage {
+    pub triggers: Vec<TaskTrigger>,
     pub truncated: bool,
 }
 
@@ -2532,6 +2679,634 @@ impl WorkOrderService {
         .fetch_optional(&pool)
         .await?;
         row.map(row_to_occurrence).transpose()
+    }
+}
+
+// ── Task triggers (M005) ─────────────────────────────────────────────
+
+/// Privacy-safe trigger failure: identical for unknown locators, wrong
+/// secrets, and inactive triggers so the public fire endpoint never
+/// oracles trigger existence, project membership, or lifecycle state.
+/// Carries no locator, project, secret, or verifier content.
+fn trigger_inactive() -> WorkOrderError {
+    WorkOrderError::NotFound("task trigger not found or inactive".to_owned())
+}
+
+/// Validate one opaque trigger binding locator with the same lexical
+/// contract as gate `trigger_ref`s: non-empty, bounded, never a path.
+fn validate_trigger_ref(value: &str) -> Result<String, WorkOrderError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > MAX_TRIGGER_REF_CHARS {
+        return Err(WorkOrderError::invalid(
+            "trigger_ref",
+            format!("trigger reference must be 1..={MAX_TRIGGER_REF_CHARS} characters"),
+        ));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains('\0') {
+        return Err(WorkOrderError::invalid(
+            "trigger_ref",
+            "trigger reference must be an opaque locator, not a path",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// `true` when a storage error is transient SQLite lock contention that
+/// a bounded retry may resolve (concurrent fires serializing on one
+/// row). Everything else propagates immediately.
+fn is_transient_busy(error: &WorkOrderError) -> bool {
+    match error {
+        WorkOrderError::Storage(StorageError::Database(message)) => {
+            let lower = message.to_lowercase();
+            lower.contains("database is locked") || lower.contains("database is busy")
+        }
+        _ => false,
+    }
+}
+
+impl WorkOrderService {
+    /// Create one task trigger bound to a work order's `ExternalTrigger`
+    /// gate. Returns the one-time plaintext bearer alongside the durable
+    /// row; converged idempotent retries return the row with
+    /// `plaintext_secret: None` (the secret is shown once and cannot be
+    /// re-displayed).
+    ///
+    /// Creation requires the bound work order to exist in `project`, to
+    /// be non-terminal, and to declare an `ExternalTrigger` gate. With
+    /// `input.trigger_ref: None` the work order must declare exactly one
+    /// such gate; otherwise the caller must name one explicitly.
+    pub async fn create_task_trigger(
+        &self,
+        project: &ProjectId,
+        work_order_id: &WorkOrderId,
+        creator: &PrincipalId,
+        input: NewTaskTrigger,
+        now_ms: i64,
+    ) -> Result<TriggerCreateOutcome, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let expires_at_ms = validate_trigger_expires_at(input.expires_at_ms, now_ms)?;
+        let max_fires = validate_trigger_max_fires(input.max_fires)?;
+        let creation_key = validate_idempotency_key(input.idempotency_key.as_deref())?;
+        let requested_ref = input
+            .trigger_ref
+            .as_deref()
+            .map(validate_trigger_ref)
+            .transpose()?;
+
+        let Some(work_order) = self.get_work_order(project, work_order_id).await? else {
+            return Err(WorkOrderError::NotFound(work_order_id.as_str().to_owned()));
+        };
+        if work_order.state.is_terminal() {
+            return Err(WorkOrderError::invalid(
+                "work_order_id",
+                "task triggers cannot bind a terminal work order",
+            ));
+        }
+        let external_refs: Vec<&str> = work_order
+            .gates
+            .gates
+            .iter()
+            .filter(|gate| gate.kind == GateKind::ExternalTrigger)
+            .filter_map(|gate| gate.trigger_ref.as_deref())
+            .collect();
+        let trigger_ref = match requested_ref {
+            Some(named) => {
+                if !external_refs.contains(&named.as_str()) {
+                    return Err(WorkOrderError::invalid(
+                        "trigger_ref",
+                        "no external_trigger gate binds this reference",
+                    ));
+                }
+                named
+            }
+            None => match external_refs.as_slice() {
+                [single] => (*single).to_owned(),
+                [] => {
+                    return Err(WorkOrderError::invalid(
+                        "trigger_ref",
+                        "work order declares no external_trigger gate",
+                    ));
+                }
+                _ => {
+                    return Err(WorkOrderError::invalid(
+                        "trigger_ref",
+                        "work order declares several external_trigger gates; name one",
+                    ));
+                }
+            },
+        };
+
+        // Converged retry: same creation key returns the stored row
+        // without re-issuing a secret. A reused key with a different
+        // binding is an explicit mismatch conflict.
+        if let Some(ref key) = creation_key {
+            let existing: Option<TaskTriggerRow> = sqlx::query_as(
+                "SELECT * FROM task_trigger WHERE project_id = ? AND creation_key = ?",
+            )
+            .bind(project.as_str())
+            .bind(key)
+            .fetch_optional(&pool)
+            .await?;
+            if let Some(row) = existing {
+                let trigger = row_to_task_trigger(row)?;
+                if trigger.work_order_id != *work_order_id
+                    || trigger.trigger_ref != trigger_ref
+                    || trigger.expires_at_ms != expires_at_ms
+                    || trigger.max_fires != max_fires
+                {
+                    return Err(WorkOrderError::IdempotencyConflict(format!(
+                        "creation key {key} already binds a different trigger"
+                    )));
+                }
+                return Ok(TriggerCreateOutcome {
+                    trigger,
+                    plaintext_secret: None,
+                    duplicate: true,
+                });
+            }
+        }
+
+        let existing_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM task_trigger WHERE project_id = ? AND work_order_id = ?",
+        )
+        .bind(project.as_str())
+        .bind(work_order_id.as_str())
+        .fetch_one(&pool)
+        .await?;
+        if existing_count.0 >= MAX_TRIGGERS_PER_WORK_ORDER as i64 {
+            return Err(WorkOrderError::Capacity(format!(
+                "work order already has {MAX_TRIGGERS_PER_WORK_ORDER} triggers"
+            )));
+        }
+
+        let (trigger_id, plaintext, verifier_hex) = generate_task_trigger();
+        let insert = sqlx::query(
+            "INSERT INTO task_trigger (trigger_id, revision, project_id, work_order_id, \
+             trigger_ref, secret_verifier, verifier_version, state, created_by, created_at, \
+             expires_at, max_fires, fire_count, last_fired_at, creation_key) \
+             VALUES (?, 1, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 0, NULL, ?)",
+        )
+        .bind(trigger_id.as_str())
+        .bind(project.as_str())
+        .bind(work_order_id.as_str())
+        .bind(&trigger_ref)
+        .bind(&verifier_hex)
+        .bind(TASK_TRIGGER_VERIFIER_VERSION)
+        .bind(creator.as_str())
+        .bind(now_ms)
+        .bind(expires_at_ms)
+        .bind(max_fires.map(i64::from))
+        .bind(creation_key.clone())
+        .execute(&pool)
+        .await;
+        if let Err(error) = insert {
+            let mapped = map_unique_violation(error);
+            // A concurrent creation won the same creation key: converge
+            // on its row rather than reporting a spurious conflict.
+            if matches!(mapped, WorkOrderError::IdempotencyConflict(_)) {
+                if let Some(ref key) = creation_key {
+                    let row: Option<TaskTriggerRow> = sqlx::query_as(
+                        "SELECT * FROM task_trigger WHERE project_id = ? AND creation_key = ?",
+                    )
+                    .bind(project.as_str())
+                    .bind(key)
+                    .fetch_optional(&pool)
+                    .await?;
+                    if let Some(row) = row {
+                        return Ok(TriggerCreateOutcome {
+                            trigger: row_to_task_trigger(row)?,
+                            plaintext_secret: None,
+                            duplicate: true,
+                        });
+                    }
+                }
+            }
+            return Err(mapped);
+        }
+        let Some(trigger) = self.get_task_trigger(project, &trigger_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "trigger row lost".to_owned(),
+            )));
+        };
+        Ok(TriggerCreateOutcome {
+            trigger,
+            plaintext_secret: Some(plaintext),
+            duplicate: false,
+        })
+    }
+
+    /// Fetch one trigger row by locator within its project scope.
+    /// Returns the verifier-bearing row for service use; callers project
+    /// to metadata before responding.
+    pub async fn get_task_trigger(
+        &self,
+        project: &ProjectId,
+        id: &TaskTriggerId,
+    ) -> Result<Option<TaskTrigger>, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let row: Option<TaskTriggerRow> =
+            sqlx::query_as("SELECT * FROM task_trigger WHERE trigger_id = ? AND project_id = ?")
+                .bind(id.as_str())
+                .bind(project.as_str())
+                .fetch_optional(&pool)
+                .await?;
+        row.map(row_to_task_trigger).transpose()
+    }
+
+    /// Bounded trigger listing for one project, optionally restricted to
+    /// one work order. Newest first. Rows carry verifiers for service
+    /// use; callers project to metadata before responding.
+    pub async fn list_task_triggers(
+        &self,
+        project: &ProjectId,
+        work_order_id: Option<&WorkOrderId>,
+        limit: Option<u32>,
+    ) -> Result<TaskTriggerListPage, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let bound = validate_trigger_list_limit(limit);
+        let rows: Vec<TaskTriggerRow> = if let Some(work_order_id) = work_order_id {
+            sqlx::query_as(
+                "SELECT * FROM task_trigger WHERE project_id = ? AND work_order_id = ? \
+                 ORDER BY created_at DESC, trigger_id DESC LIMIT ?",
+            )
+            .bind(project.as_str())
+            .bind(work_order_id.as_str())
+            .bind(i64::from(bound) + 1)
+            .fetch_all(&pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT * FROM task_trigger WHERE project_id = ? \
+                 ORDER BY created_at DESC, trigger_id DESC LIMIT ?",
+            )
+            .bind(project.as_str())
+            .bind(i64::from(bound) + 1)
+            .fetch_all(&pool)
+            .await?
+        };
+        let truncated = rows.len() > bound as usize;
+        let mut triggers = Vec::with_capacity(rows.len().min(bound as usize));
+        for row in rows.into_iter().take(bound as usize) {
+            triggers.push(row_to_task_trigger(row)?);
+        }
+        Ok(TaskTriggerListPage {
+            triggers,
+            truncated,
+        })
+    }
+
+    /// Revoke one trigger. Monotonic and idempotent: revoking an
+    /// already-revoked trigger returns its row, and no path reactivates
+    /// a revoked trigger.
+    pub async fn revoke_task_trigger(
+        &self,
+        project: &ProjectId,
+        id: &TaskTriggerId,
+        _now_ms: i64,
+    ) -> Result<TaskTrigger, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        sqlx::query(
+            "UPDATE task_trigger SET state = 'revoked', revision = revision + 1 \
+             WHERE trigger_id = ? AND project_id = ? AND state = 'active'",
+        )
+        .bind(id.as_str())
+        .bind(project.as_str())
+        .execute(&pool)
+        .await?;
+        let Some(trigger) = self.get_task_trigger(project, id).await? else {
+            return Err(WorkOrderError::NotFound(id.as_str().to_owned()));
+        };
+        Ok(trigger)
+    }
+
+    /// Fire one trigger bearer: verify the capability, latch the bound
+    /// gate on the current fireable occurrence, account the fire, and
+    /// record the idempotency receipt.
+    ///
+    /// Exactly-once under duplicate/replayed/concurrent delivery: the
+    /// occurrence gate-latch CAS admits exactly one winner per
+    /// occurrence; losers converge on the already-latched gate without
+    /// consuming fire budget or pre-arming a future repeat. The fire
+    /// count increments only on a newly latched gate, guarded by the
+    /// durable `max_fires` bound.
+    ///
+    /// Privacy: unknown locators, wrong secrets, revoked/expired/
+    /// exhausted triggers, unbound gates, terminal work orders, and
+    /// absent fireable occurrences all surface as the same generic
+    /// [`trigger_inactive`] shape. The error carries no locator,
+    /// project, secret, or verifier content.
+    pub async fn fire_task_trigger(
+        &self,
+        presented: &str,
+        idempotency_key: Option<&str>,
+        now_ms: i64,
+    ) -> Result<FireOutcome, WorkOrderError> {
+        let key = validate_trigger_idempotency_key(idempotency_key)?;
+        // Bounded retries ride out transient SQLite writer contention
+        // under concurrent fires; every attempt is idempotent by
+        // construction (latch CAS + receipt convergence).
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self
+                .fire_task_trigger_once(presented, key.clone(), now_ms)
+                .await
+            {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) if is_transient_busy(&error) && attempt < 5 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(attempt as u64)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn fire_task_trigger_once(
+        &self,
+        presented: &str,
+        idempotency_key: Option<String>,
+        now_ms: i64,
+    ) -> Result<FireOutcome, WorkOrderError> {
+        let pool = self.durable_pool().map_err(|_| trigger_inactive())?;
+        let (locator, secret) = split_presented_trigger(presented).ok_or_else(trigger_inactive)?;
+        let row: Option<TaskTriggerRow> =
+            sqlx::query_as("SELECT * FROM task_trigger WHERE trigger_id = ?")
+                .bind(&locator)
+                .fetch_optional(&pool)
+                .await?;
+        let Some(row) = row else {
+            return Err(trigger_inactive());
+        };
+        let trigger = row_to_task_trigger(row)?;
+        if !verify_trigger_secret(&secret, &trigger.secret_verifier_hex) {
+            return Err(trigger_inactive());
+        }
+        if trigger.status_at(now_ms) != TaskTriggerStatus::Active {
+            return Err(trigger_inactive());
+        }
+        // Stable retry semantics: a stored receipt wins over re-firing.
+        if let Some(ref key) = idempotency_key {
+            let receipt: Option<TaskTriggerReceiptRow> = sqlx::query_as(
+                "SELECT receipt_id, latched FROM task_trigger_receipt \
+                 WHERE trigger_id = ? AND idempotency_key = ?",
+            )
+            .bind(trigger.id.as_str())
+            .bind(key)
+            .fetch_optional(&pool)
+            .await?;
+            if let Some(receipt) = receipt {
+                return Ok(FireOutcome {
+                    latched: receipt.latched != 0,
+                    receipt_id: receipt.receipt_id,
+                    duplicate: true,
+                });
+            }
+        }
+        // Resolve the bound work order through the durable row: the
+        // trigger never names authority beyond its own binding.
+        let project = trigger.project_id.clone();
+        let Some(work_order) = self
+            .get_work_order(&project, &trigger.work_order_id)
+            .await?
+        else {
+            return Err(trigger_inactive());
+        };
+        if work_order.state.is_terminal() {
+            return self
+                .record_inert_receipt(&pool, &trigger, idempotency_key, None, now_ms)
+                .await;
+        }
+        let bound = work_order.gates.gates.iter().any(|gate| {
+            gate.kind == GateKind::ExternalTrigger
+                && gate.trigger_ref.as_deref() == Some(trigger.trigger_ref.as_str())
+        });
+        if !bound {
+            return Err(trigger_inactive());
+        }
+        // Repeat/re-arm semantics: exactly the earliest waiting/ready
+        // occurrence is fireable. A fire arriving while it is already
+        // latched/running is inert for that occurrence and never
+        // pre-latches a future repeat. Later repeats become fireable
+        // only after the coordinator creates their occurrence rows.
+        let current: Option<OccurrenceRow> = sqlx::query_as(
+            "SELECT * FROM work_order_occurrence WHERE work_order_id = ? AND project_id = ? \
+             AND state IN ('waiting','ready') ORDER BY occurrence_index ASC LIMIT 1",
+        )
+        .bind(work_order.id.as_str())
+        .bind(project.as_str())
+        .fetch_optional(&pool)
+        .await?;
+        let Some(current) = current else {
+            return self
+                .record_inert_receipt(&pool, &trigger, idempotency_key, None, now_ms)
+                .await;
+        };
+        let mut occurrence = row_to_occurrence(current)?;
+        if occurrence.gate_latches.contains(&GateKind::ExternalTrigger) {
+            return self
+                .record_inert_receipt(
+                    &pool,
+                    &trigger,
+                    idempotency_key,
+                    Some(&occurrence.id),
+                    now_ms,
+                )
+                .await;
+        }
+        // Latch CAS: exactly one concurrent fire wins per occurrence.
+        // A concurrent coordinator latch of another gate changes the
+        // expected JSON; retry the CAS against the fresh row a bounded
+        // number of times before surfacing contention.
+        let mut latched_json: Option<String> = None;
+        for _ in 0..4 {
+            let mut merged = occurrence.gate_latches.clone();
+            merged.push(GateKind::ExternalTrigger);
+            merged.sort();
+            merged.dedup();
+            let expected_json = serde_json::to_string(
+                &occurrence
+                    .gate_latches
+                    .iter()
+                    .map(|kind| kind.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_else(|_| "[]".to_owned());
+            let candidate_json = serde_json::to_string(
+                &merged
+                    .iter()
+                    .map(|kind| kind.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_else(|_| "[]".to_owned());
+            let affected = sqlx::query(
+                "UPDATE work_order_occurrence SET gate_latches_json = ?, updated_at = ? \
+                 WHERE id = ? AND project_id = ? AND gate_latches_json = ?",
+            )
+            .bind(&candidate_json)
+            .bind(now_ms)
+            .bind(occurrence.id.as_str())
+            .bind(project.as_str())
+            .bind(&expected_json)
+            .execute(&pool)
+            .await?
+            .rows_affected();
+            if affected == 1 {
+                latched_json = Some(candidate_json);
+                break;
+            }
+            let Some(fresh) = self.get_occurrence(&project, &occurrence.id).await? else {
+                return Err(WorkOrderError::Storage(StorageError::Database(
+                    "occurrence row lost".to_owned(),
+                )));
+            };
+            if !matches!(
+                fresh.state,
+                OccurrenceState::Waiting | OccurrenceState::Ready
+            ) || fresh.gate_latches.contains(&GateKind::ExternalTrigger)
+            {
+                return self
+                    .record_inert_receipt(&pool, &trigger, idempotency_key, Some(&fresh.id), now_ms)
+                    .await;
+            }
+            occurrence = fresh;
+        }
+        if latched_json.is_none() {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "trigger latch contention".to_owned(),
+            )));
+        }
+        // Fire budget: increment only for the latch winner, guarded by
+        // the durable bound and active state. A lost race here means
+        // revocation/expiry/exhaustion landed first; the latch stands
+        // and the coordinator still wakes, while the caller sees the
+        // generic inactive shape.
+        let counted = sqlx::query(
+            "UPDATE task_trigger SET fire_count = fire_count + 1, last_fired_at = ?, \
+             revision = revision + 1 WHERE trigger_id = ? AND fire_count = ? \
+             AND state = 'active' AND (max_fires IS NULL OR fire_count < max_fires)",
+        )
+        .bind(now_ms)
+        .bind(trigger.id.as_str())
+        .bind(trigger.fire_count as i64)
+        .execute(&pool)
+        .await?
+        .rows_affected();
+        if counted == 0 {
+            return Err(trigger_inactive());
+        }
+        let receipt_id = uuid::Uuid::new_v4().to_string();
+        if let Some(ref key) = idempotency_key {
+            let inserted = sqlx::query(
+                "INSERT OR IGNORE INTO task_trigger_receipt \
+                 (trigger_id, idempotency_key, receipt_id, occurrence_id, latched, fired_at) \
+                 VALUES (?, ?, ?, ?, 1, ?)",
+            )
+            .bind(trigger.id.as_str())
+            .bind(key)
+            .bind(&receipt_id)
+            .bind(occurrence.id.as_str())
+            .bind(now_ms)
+            .execute(&pool)
+            .await?
+            .rows_affected();
+            if inserted == 0 {
+                // A same-key concurrent fire committed first: converge
+                // on its receipt so one key means one result.
+                let receipt: Option<TaskTriggerReceiptRow> = sqlx::query_as(
+                    "SELECT receipt_id, latched FROM task_trigger_receipt \
+                     WHERE trigger_id = ? AND idempotency_key = ?",
+                )
+                .bind(trigger.id.as_str())
+                .bind(key)
+                .fetch_optional(&pool)
+                .await?;
+                if let Some(receipt) = receipt {
+                    return Ok(FireOutcome {
+                        latched: receipt.latched != 0,
+                        receipt_id: receipt.receipt_id,
+                        duplicate: true,
+                    });
+                }
+            }
+            self.evict_old_receipts(&pool, &trigger).await?;
+        }
+        Ok(FireOutcome {
+            latched: true,
+            receipt_id,
+            duplicate: false,
+        })
+    }
+
+    /// Record an inert (already-latched / no-fireable-occurrence)
+    /// outcome for a keyed fire so retries converge. Keyless inert
+    /// fires receive a fresh receipt with no stored row.
+    async fn record_inert_receipt(
+        &self,
+        pool: &sqlx::SqlitePool,
+        trigger: &TaskTrigger,
+        idempotency_key: Option<String>,
+        occurrence_id: Option<&WorkOrderOccurrenceId>,
+        now_ms: i64,
+    ) -> Result<FireOutcome, WorkOrderError> {
+        let receipt_id = uuid::Uuid::new_v4().to_string();
+        if let Some(key) = idempotency_key {
+            let inserted = sqlx::query(
+                "INSERT OR IGNORE INTO task_trigger_receipt \
+                 (trigger_id, idempotency_key, receipt_id, occurrence_id, latched, fired_at) \
+                 VALUES (?, ?, ?, ?, 0, ?)",
+            )
+            .bind(trigger.id.as_str())
+            .bind(&key)
+            .bind(&receipt_id)
+            .bind(occurrence_id.map(|id| id.as_str()))
+            .bind(now_ms)
+            .execute(pool)
+            .await?
+            .rows_affected();
+            if inserted == 0 {
+                let receipt: Option<TaskTriggerReceiptRow> = sqlx::query_as(
+                    "SELECT receipt_id, latched FROM task_trigger_receipt \
+                     WHERE trigger_id = ? AND idempotency_key = ?",
+                )
+                .bind(trigger.id.as_str())
+                .bind(&key)
+                .fetch_optional(pool)
+                .await?;
+                if let Some(receipt) = receipt {
+                    return Ok(FireOutcome {
+                        latched: receipt.latched != 0,
+                        receipt_id: receipt.receipt_id,
+                        duplicate: true,
+                    });
+                }
+            }
+            self.evict_old_receipts(pool, trigger).await?;
+        }
+        Ok(FireOutcome {
+            latched: false,
+            receipt_id,
+            duplicate: false,
+        })
+    }
+
+    /// Bound receipt retention per trigger (oldest hints evicted).
+    /// Best-effort: eviction failure never fails a fire.
+    async fn evict_old_receipts(
+        &self,
+        pool: &sqlx::SqlitePool,
+        trigger: &TaskTrigger,
+    ) -> Result<(), WorkOrderError> {
+        let _ = sqlx::query(
+            "DELETE FROM task_trigger_receipt WHERE trigger_id = ? AND idempotency_key NOT IN \
+             (SELECT idempotency_key FROM task_trigger_receipt WHERE trigger_id = ? \
+              ORDER BY fired_at DESC, idempotency_key DESC LIMIT ?)",
+        )
+        .bind(trigger.id.as_str())
+        .bind(trigger.id.as_str())
+        .bind(MAX_TRIGGER_RECEIPTS_PER_TRIGGER)
+        .execute(pool)
+        .await;
+        Ok(())
     }
 }
 
