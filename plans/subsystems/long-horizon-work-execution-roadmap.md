@@ -254,7 +254,7 @@ Class: infrastructure/capability
 
 Plan: `plans/implementation/long-horizon-work-execution/004-context-epoch-reset-and-handoff-integration.md`
 
-Status: ready for handoff (unblocked by M003 closure; context-continuity foundation already closed).
+Status: closed (`plans/closure/long-horizon-work-execution/004-status.md`, implementation `e3bfc565`).
 
 Extend continuation checkpoints with WorkPlan identity/revision projection and add an optional model-profile/policy-aware fresh context epoch path using the existing context/rollover owners.
 
@@ -266,7 +266,7 @@ Class: invariant/closure
 
 Plan: `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md`
 
-Status: blocked on M004 (M001+M002+M003 closed).
+Status: ready for handoff (unblocked by M004 closure; M001-M004 closed).
 
 Exercise large plans across compaction, epoch reset, restart, waits, failures, subagent/test evidence, and premature-finish attempts using deterministic/scripted harnesses.
 
@@ -356,5 +356,5 @@ This roadmap closes only when:
 | M001 | closed | `plans/implementation/long-horizon-work-execution/001-goal-progress-and-continuation-correctness.md` | `plans/closure/long-horizon-work-execution/001-status.md` | — |
 | M002 | closed | `plans/implementation/long-horizon-work-execution/002-durable-work-plan-foundation.md` | `plans/closure/long-horizon-work-execution/002-status.md` | — |
 | M003 | closed | `plans/implementation/long-horizon-work-execution/003-work-plan-projection-and-completion-arbiter.md` | `plans/closure/long-horizon-work-execution/003-status.md` | — |
-| M004 | ready | `plans/implementation/long-horizon-work-execution/004-context-epoch-reset-and-handoff-integration.md` | — | — |
-| M005 | blocked | `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md` | — | M004 closure (M001+M002+M003 closed) |
+| M004 | closed | `plans/implementation/long-horizon-work-execution/004-context-epoch-reset-and-handoff-integration.md` | `plans/closure/long-horizon-work-execution/004-status.md` | — |
+| M005 | ready | `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md` | — | — |

@@ -1,6 +1,6 @@
 # Long-Horizon Work Execution M004 — Context-Epoch Reset and Structured Handoff Integration
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
