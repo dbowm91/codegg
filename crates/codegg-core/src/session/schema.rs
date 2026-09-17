@@ -205,6 +205,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 61 {
         migrate_and_record(pool, 61).await?;
     }
+    if current_version < 62 {
+        migrate_and_record(pool, 62).await?;
+    }
 
     Ok(())
 }
@@ -278,6 +281,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             59 => migrate_v59(&mut tx).await?,
             60 => migrate_v60(&mut tx).await?,
             61 => migrate_v61(&mut tx).await?,
+            62 => migrate_v62(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2601,6 +2605,20 @@ async fn migrate_v61(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Project Work Orders M003: Task-composer model preference scope.
+///
+/// Adds nullable `last_task_provider_connection_id`/`last_task_model_id`
+/// columns to `runtime_preferences`. Additive and restart-safe: existing
+/// rows keep their ordinary session preference, approval mode, and
+/// sandbox profile; the new columns default to `NULL` ("no Task
+/// preference"). Bounds are enforced in Rust
+/// (`validate_identity_field` on write, `sanitize_identity` on read).
+async fn migrate_v62(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::approval::RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS {
+        add_column_ignore_duplicate(&mut *tx, (*statement).to_string()).await?;
     }
     Ok(())
 }

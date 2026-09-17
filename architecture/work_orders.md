@@ -113,7 +113,7 @@ terminal states never transition out. Edits to execution-shaping
 fields (prompt, model, gates, repeat) are rejected once any occurrence
 that depends on those values has been claimed.
 
-## Storage (migrations v60–v61)
+## Storage (migrations v60–v62)
 
 Additive tables, safe on existing databases (existing databases gain
 empty work-order tables; no `schedule` row is ever backfilled):
@@ -132,11 +132,13 @@ empty work-order tables; no `schedule` row is ever backfilled):
   position)` ordering with `UNIQUE(lane_id, position)`.
 
 Indexes cover project/state/updated listings, occurrence lookup,
-lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 61
+lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 62
 (`storage/mod.rs:39`); `session/schema.rs` wires `migrate_v60` (domain
-tables) and `migrate_v61` (admits the `work_order` origin-attribution
+tables), `migrate_v61` (admits the `work_order` origin-attribution
 scope in the v53 table's kind CHECK via a row-preserving rebuild;
-legacy attribution rows survive verbatim).
+legacy attribution rows survive verbatim), and `migrate_v62` (nullable
+Task-composer model columns on `runtime_preferences`; existing rows
+keep their session preference, approval, and sandbox untouched).
 
 ## Store/service operations
 
@@ -273,6 +275,9 @@ cargo test -p codegg-protocol -- work_order
 cargo test -p codegg --lib -- work_order_coordinator
 cargo test --test work_orders_m002_materialization
 python3 scripts/check_work_order_coordinator.py
+cargo test -p codegg --lib -- tui::commands::work_orders
+cargo test -p codegg --lib -- tui::app::state::work_orders
+cargo test -p codegg --lib -- tui::components::dialogs::task
 ```
 
 Integration (`tests/work_orders_m001_foundation.rs`): daemon-level
@@ -282,13 +287,72 @@ migration from a pre-M001 database, and authorization/privacy
 negatives (unauthorized filtering, opaque-id privacy, cross-project
 rejection, immutable origin attribution, bounded secret-free DTOs).
 
+## Task composer, scheduling sheet, and Task view (M003)
+
+User-facing project Task mode for the reference TUI
+(`src/tui/commands/work_orders.rs`,
+`src/tui/app/state/work_orders.rs`,
+`src/tui/components/dialogs/task_schedule.rs`,
+`src/tui/components/dialogs/task_view.rs`):
+
+- `ComposerMode::Session | Task` is frontend submission state owned by
+  prompt UI state, distinct from `InputMode::Insert | Normal` (which
+  stays a text-editing/Vim concern). `Ctrl+G` (`ToggleComposerMode`,
+  configurable like every action) toggles it; bare Tab stays
+  `SwitchAgent` and Shift+Tab stays permission-mode cycling, so there
+  is no keybinding collision (audit test in
+  `tui::commands::work_orders::tests`). The header shows
+  `composer:task` next to agent/model context in Task mode only.
+- Enter in Task mode opens the scheduling sheet instead of submitting
+  a turn. Defaults are immediate/zero delay, one occurrence, no
+  external trigger. The sheet validates bounded delay forms, RFC 3339
+  not-before with explicit offset (naive input fails, never guesses),
+  finite repeat, lane/order, All/Any join, model, and the effective
+  policy/workspace summary; the external-trigger row is a disabled
+  placeholder until M005 owns the capability. Confirm sends exactly
+  one `CoreRequest::WorkOrderCreate` — the TUI never creates
+  sessions/jobs directly.
+- The prompt is never moved to a transcript before confirmation
+  succeeds; failures restore it exactly once (stash-then-restore, same
+  rule as the session-create continuation). Late create successes may
+  have committed daemon state and are never deleted to "undo".
+- Last Task-model preference is a separately-scoped daemon-owned
+  `runtime_preferences` column pair (`migrate_v62`,
+  `STORAGE_LAYOUT_VERSION` 61 → 62) with its own
+  `RuntimePreferenceStore::set_task_model_preference` and
+  `CoreRequest::TaskModelPreferenceSet` (Global, principal from
+  transport authority). Ordinary session preference writes never touch
+  it and vice versa; policy writes preserve both. The composer falls
+  back to the current/default model with a visible notice when the
+  remembered model is gone; created WorkOrders snapshot the model and
+  never change silently.
+- The project Task view (`Dialog::TaskView`) shows
+  RUNNING / FUTURE-WAITING / NEEDS-ATTENTION / RECENT from one bounded
+  `WorkOrderList` (+ summary/lanes); occurrence detail is lazy per
+  selected row, never N+1. `j`/`k`/arrows navigate, Shift+J/K reorder
+  waiting lane members under CAS (conflicts refresh with "queue
+  changed; retry"; the pinned running head never moves; lane order
+  never edits Job dependencies). Enter opens a materialized session
+  through canonical project-tab/session routing; future rows fetch
+  detail instead of a fake session. Running rows delegate
+  stop/cancel/steer to session/job control. Attention (permissions,
+  model/policy/workspace, predecessor holds, worktree conflicts)
+  renders in place without focus theft. Close/switch never cancels
+  daemon-owned work; every completion carries route + request/
+  generation identity and stale ones drop.
+- `/tasks` (and `/task`) opens the Task view when the WorkOrder
+  capability is available, else the legacy schedule list with an
+  explicit diagnostic; `/schedules` keeps direct low-level
+  `Schedule*` access and the protocol is preserved. No legacy
+  `Task*` protocol returns.
+
 ## Related docs
 
 - [authorization.md](authorization.md) — project-scoped capability
   mapping and denial privacy for all `work_order_*` operations.
 - [audit.md](audit.md) — `work_order_lifecycle` action, coverage, and
   structural metadata keys.
-- [storage.md](storage.md) — v60 migration context.
+- [storage.md](storage.md) — v60–v62 migration context.
 - [jobs.md](jobs.md) — scheduler/job ownership that work orders
   consume but never duplicate.
 - `plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`

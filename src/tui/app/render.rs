@@ -339,6 +339,20 @@ impl App {
                     format!("agent:{agent_name}  model:{model_short}"),
                     Style::default().fg(self.ui_state.theme.muted),
                 ),
+                // Project Work Orders M003: composer submission mode in
+                // the same semantic area as agent/model context. Session
+                // mode (the default) shows nothing extra; Task mode is
+                // explicit so a scheduled submit is never a surprise.
+                if self.prompt_state.composer_mode.is_task() {
+                    Span::styled(
+                        "  composer:task",
+                        Style::default()
+                            .fg(self.ui_state.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw("")
+                },
                 if presence_summary.is_empty() {
                     Span::raw("")
                 } else {
@@ -582,6 +596,8 @@ impl App {
         let prompt_text = self.prompt_state.prompt.get_text();
         let placeholder = if prompt_text.starts_with('!') {
             "shell: run locally; not included in model context".to_string()
+        } else if self.prompt_state.composer_mode.is_task() {
+            "Describe the task to schedule… (Enter opens sheet, Ctrl+G for session)".to_string()
         } else {
             "Ask anything…".to_string()
         };

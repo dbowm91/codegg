@@ -1111,6 +1111,143 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, route, prompt, session, error,
             );
         }
+        TuiCommand::TaskSheetPrefetched {
+            request_id,
+            route,
+            project_id,
+            data,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_sheet_prefetched(
+                app, request_id, route, project_id, data, error,
+            );
+        }
+        TuiCommand::WorkOrderCreated {
+            request_id,
+            route,
+            project_id,
+            prompt,
+            work_order,
+            duplicate,
+            schedule_summary,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_work_order_created(
+                app,
+                request_id,
+                route,
+                project_id,
+                prompt,
+                work_order,
+                duplicate,
+                schedule_summary,
+                error,
+            );
+        }
+        TuiCommand::TaskViewRefreshed {
+            request_id,
+            route,
+            generation,
+            project_id,
+            work_orders,
+            summary,
+            lanes,
+            capabilities_supported,
+            truncated,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_view_refreshed(
+                app,
+                request_id,
+                route,
+                generation,
+                project_id,
+                work_orders,
+                summary,
+                lanes,
+                capabilities_supported,
+                truncated,
+                error,
+            );
+        }
+        TuiCommand::TaskOccurrenceLoaded {
+            request_id,
+            route,
+            generation,
+            work_order_id,
+            occurrence,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_occurrence_loaded(
+                app,
+                request_id,
+                route,
+                generation,
+                work_order_id,
+                occurrence,
+                error,
+            );
+        }
+        TuiCommand::LaneReordered {
+            request_id,
+            route,
+            generation,
+            lane_id,
+            revision,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_lane_reordered(
+                app, request_id, route, generation, lane_id, revision, error,
+            );
+        }
+        TuiCommand::TaskMutationFinished {
+            request_id,
+            route,
+            generation,
+            op,
+            work_order_id,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_mutation_finished(
+                app,
+                request_id,
+                route,
+                generation,
+                op,
+                work_order_id,
+                error,
+            );
+        }
+        TuiCommand::TaskSessionFocus {
+            request_id,
+            route,
+            generation,
+            project_id,
+            session_id,
+            sessions,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_session_focus(
+                app, request_id, route, generation, project_id, session_id, sessions, error,
+            );
+        }
+        TuiCommand::TaskModelPrefetched {
+            request_id,
+            route,
+            connection,
+            model,
+            revision,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_task_model_prefetched(
+                app, request_id, route, connection, model, revision, error,
+            );
+        }
+        TuiCommand::TaskModelPrefSaved { request_id, error } => {
+            super::super::commands::work_orders::apply_task_model_pref_saved(
+                app, request_id, error,
+            );
+        }
         TuiCommand::NotificationSent { error } => {
             apply_notification_sent(app, error);
         }

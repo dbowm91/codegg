@@ -83,16 +83,16 @@ fn compacted_event(session_id: &str, checkpoint_seq_hint: &str) -> ContextCompac
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn migration_is_additive_and_layout_tracks_v61() {
+async fn migration_is_additive_and_layout_tracks_v62() {
     let pool = isolated_pool().await;
-    assert_eq!(STORAGE_LAYOUT_VERSION, 61);
+    assert_eq!(STORAGE_LAYOUT_VERSION, 62);
     let version: i64 = sqlx::query_scalar(
         "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(version, 61);
+    assert_eq!(version, 62);
 
     for table in [
         "continuation_checkpoint",
@@ -131,7 +131,7 @@ async fn migration_is_additive_and_layout_tracks_v61() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(rerun, 61);
+    assert_eq!(rerun, 62);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -20,6 +20,7 @@ pub mod session;
 pub mod snapshot;
 pub mod ui;
 pub mod view_switch;
+pub mod work_orders;
 
 pub use agent::AgentState;
 pub use async_request::AsyncUiRequestState;
@@ -63,3 +64,11 @@ pub use routing::{
 pub use session::SessionState;
 pub use ui::{AppMode, UiState};
 pub use view_switch::ViewSwitchCoordinator;
+pub use work_orders::{
+    attention_label, build_work_order_create, describe_schedule, flat_navigation_order,
+    format_delay_secs, group_task_rows, parse_delay_duration, parse_not_before_ms,
+    parse_repeat_count, prompt_preview, validate_draft, ComposerMode, GateJoin, PendingTaskCreate,
+    TaskModelChoice, TaskScheduleDraft, TaskSheetField, TaskViewRow, TaskViewSection,
+    TaskViewState, ValidatedSchedule, MAX_DELAY_SECS, MAX_REPEAT_COUNT, MAX_SECTION_ROWS,
+    MAX_TASK_VIEW_ROWS,
+};

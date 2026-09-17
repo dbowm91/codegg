@@ -1,3 +1,4 @@
+use crate::tui::app::state::{ComposerMode, PendingTaskCreate, TaskModelChoice};
 use crate::tui::app::state::{ProjectExecutionContext, UiRouteToken};
 use crate::tui::components::completion_overlay::CompletionItem;
 
@@ -35,6 +36,22 @@ pub struct PromptState {
     /// A failed session creation already has a visible user message.  The
     /// next explicit retry should not insert that same message a second time.
     pub retry_without_message: Option<String>,
+    /// Project Work Orders M003: composer submission mode. Distinct from
+    /// `InputMode` (text editing/Vim); owned by project/session UI state.
+    pub composer_mode: ComposerMode,
+    /// Captured Task prompt and route while `WorkOrderCreate` is in
+    /// flight. The editable prompt widget is never consulted by the
+    /// async continuation; a failed create restores the prompt exactly
+    /// once for explicit retry (same pattern as `pending_session_submit`).
+    pub pending_task_create: Option<PendingTaskCreate>,
+    /// Reentrancy guard mirroring `session_submit_started` for the Task
+    /// create continuation.
+    pub task_submit_started: bool,
+    /// Project Work Orders M003: resolved Task-composer model choice
+    /// (last valid Task model when available, else the normal
+    /// current/default selection). Convenience default only; ordinary
+    /// session preference behavior is unchanged.
+    pub task_model_choice: Option<TaskModelChoice>,
 }
 
 impl PromptState {
@@ -102,5 +119,23 @@ impl PromptState {
             self.retry_without_message = None;
             false
         }
+    }
+
+    /// Toggle the composer between Session and Task submission modes.
+    /// `InputMode` is untouched; the editable prompt text is preserved.
+    pub fn toggle_composer_mode(&mut self) -> ComposerMode {
+        self.composer_mode = self.composer_mode.toggle();
+        self.composer_mode
+    }
+
+    /// Invalidate an in-flight Task create on tab close/switch,
+    /// reconnect, or shutdown. The daemon WorkOrder, if already
+    /// committed, is never deleted to "undo" a stale UI completion;
+    /// the projection refreshes when next foregrounded.
+    pub fn cancel_task_submit(&mut self) -> Option<PendingTaskCreate> {
+        let pending = self.pending_task_create.take();
+        self.task_submit_started = false;
+        self.prompt.set_waiting(false);
+        pending
     }
 }

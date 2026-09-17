@@ -27,6 +27,7 @@ pub(super) mod sessions;
 pub(super) mod shell;
 pub(super) mod tasks;
 pub(super) mod test;
+pub(super) mod work_orders;
 
 #[cfg(test)]
 pub(crate) use tasks::{resolve_schedule_id, schedule_display_id, schedule_label};

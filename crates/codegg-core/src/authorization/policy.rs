@@ -876,6 +876,9 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::RuntimePolicySet { .. } => {
             OperationDescriptor::new("runtime_policy_set", ScopeKind::Global, None)
         }
+        R::TaskModelPreferenceSet { .. } => {
+            OperationDescriptor::new("task_model_preference_set", ScopeKind::Global, None)
+        }
         R::ExecutionPolicyGet { .. } => {
             OperationDescriptor::new("execution_policy_get", ScopeKind::Global, None)
         }
@@ -1631,6 +1634,11 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::RuntimePolicySet {
             approval_mode: None,
             sandbox_profile: None,
+            expected_revision: None,
+        },
+        R::TaskModelPreferenceSet {
+            connection_id: None,
+            model_id: None,
             expected_revision: None,
         },
         R::ExecutionPolicyGet { session_id: None },

@@ -1019,6 +1019,107 @@ pub enum TuiCommand {
         snapshot: Option<crate::protocol::core::ExecutionPolicySnapshotDto>,
         error: Option<String>,
     },
+    /// Project Work Orders M003: scheduling-sheet prefetch completion
+    /// (lanes, summary, capabilities, Task-model preference). Stale
+    /// completions (newer prefetch, tab switch, rebind, reconnect) are
+    /// dropped at apply time; the prompt text is never moved by this
+    /// completion.
+    TaskSheetPrefetched {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        project_id: String,
+        data: Option<crate::tui::commands::work_orders::SheetPrefetchData>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: `WorkOrderCreate` completion. A late
+    /// success may have committed daemon state even if the frontend
+    /// route is stale: the WorkOrder is never deleted to "undo", and
+    /// the projection refreshes when next foregrounded.
+    WorkOrderCreated {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        project_id: String,
+        prompt: String,
+        work_order: Option<crate::protocol::work_order::WorkOrderDto>,
+        duplicate: bool,
+        schedule_summary: String,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: Task view list refresh completion.
+    /// `generation` invalidates completions from superseded refreshes,
+    /// reorders, and mutations.
+    TaskViewRefreshed {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        generation: u64,
+        project_id: String,
+        work_orders: Vec<crate::protocol::work_order::WorkOrderDto>,
+        summary: Option<crate::protocol::work_order::WorkOrderSummaryDto>,
+        lanes: Vec<crate::protocol::work_order::SequenceLaneDto>,
+        capabilities_supported: bool,
+        truncated: bool,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: lazy single-row occurrence detail.
+    /// Never issued N+1 per row — only for the selected row.
+    TaskOccurrenceLoaded {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        generation: u64,
+        work_order_id: String,
+        occurrence: Option<crate::protocol::work_order::WorkOrderOccurrenceDto>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: CAS lane reorder completion. Conflicts
+    /// refresh the lane and display "queue changed; retry" instead of
+    /// applying local speculative order.
+    LaneReordered {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        generation: u64,
+        lane_id: String,
+        revision: u64,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: cancel/resume mutation completion for
+    /// waiting tasks only. Running sessions use session/job control.
+    TaskMutationFinished {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        generation: u64,
+        op: String,
+        work_order_id: String,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: materialized-session focus lookup
+    /// completion. The session opens through canonical project-tab /
+    /// session-loading machinery with stale-completion guards.
+    TaskSessionFocus {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        generation: u64,
+        project_id: String,
+        session_id: String,
+        sessions: Vec<crate::protocol::dto::Session>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: Task-model preference prefetch
+    /// completion (principal-scoped convenience default).
+    TaskModelPrefetched {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        connection: Option<String>,
+        model: Option<String>,
+        revision: u64,
+        error: Option<String>,
+    },
+    /// Project Work Orders M003: best-effort Task-model persist after a
+    /// successful create. Failures warn only; the WorkOrder already
+    /// snapshotted its model.
+    TaskModelPrefSaved {
+        request_id: u64,
+        error: Option<String>,
+    },
 }
 
 /// Send a command on the bounded TUI effect channel.

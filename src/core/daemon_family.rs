@@ -185,6 +185,7 @@ impl DaemonRequestFamily {
             CoreRequest::ApprovalModeSet { .. } => Self::Ops,
             CoreRequest::SandboxProfileSet { .. } => Self::Ops,
             CoreRequest::RuntimePolicySet { .. } => Self::Ops,
+            CoreRequest::TaskModelPreferenceSet { .. } => Self::Ops,
             CoreRequest::ExecutionPolicyGet { .. } => Self::Ops,
             CoreRequest::MemoryForget { .. } => Self::Ops,
             CoreRequest::MemoryList { .. } => Self::Ops,

@@ -88,16 +88,16 @@ fn item_input(description: &str) -> NewWorkItem {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn migration_is_additive_and_layout_tracks_v61() {
+async fn migration_is_additive_and_layout_tracks_v62() {
     let pool = isolated_pool().await;
-    assert_eq!(STORAGE_LAYOUT_VERSION, 61);
+    assert_eq!(STORAGE_LAYOUT_VERSION, 62);
     let version: i64 = sqlx::query_scalar(
         "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(version, 61);
+    assert_eq!(version, 62);
     for table in ["work_plan", "work_item", "goal", "session"] {
         let exists: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -116,7 +116,7 @@ async fn migration_is_additive_and_layout_tracks_v61() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(rerun, 61);
+    assert_eq!(rerun, 62);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -156,7 +156,7 @@ async fn pre_migration_database_gains_empty_tables_without_touching_goals() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 61);
+    assert_eq!(version, 62);
     let plans: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM work_plan")
         .fetch_one(&pool)
         .await

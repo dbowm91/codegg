@@ -607,6 +607,18 @@ pub struct RuntimePreferenceDto {
     /// `None` decodes from pre-M007 payloads and means "no preference".
     #[serde(default)]
     pub last_model_id: Option<String>,
+    /// Project Work Orders M003: last Task-composer provider connection
+    /// identity from the separately-scoped daemon preference. `None`
+    /// decodes from pre-M003 payloads and means "no Task preference".
+    /// Convenience default only; WorkOrder creation snapshots it and an
+    /// already-created WorkOrder never silently changes model.
+    #[serde(default)]
+    pub last_task_provider_connection_id: Option<String>,
+    /// Project Work Orders M003: last Task-composer model identity from
+    /// the separately-scoped daemon preference. `None` decodes from
+    /// pre-M003 payloads and means "no Task preference".
+    #[serde(default)]
+    pub last_task_model_id: Option<String>,
 }
 
 /// Obtained filesystem enforcement projection (M005).
@@ -2269,6 +2281,21 @@ pub enum CoreRequest {
         approval_mode: Option<String>,
         #[serde(default)]
         sandbox_profile: Option<String>,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// Project Work Orders M003: persist the caller's Task-composer
+    /// last-used connection/model identity in its own daemon-owned scope.
+    /// Each dimension is optional (`None` clears that dimension to "no
+    /// Task preference"); the ordinary session preference
+    /// (`last_provider_connection_id`/`last_model_id`) is never touched
+    /// by this operation (and vice versa). CAS via `expected_revision`:
+    /// stale writes fail with `preference_conflict` for reload.
+    TaskModelPreferenceSet {
+        #[serde(default)]
+        connection_id: Option<String>,
+        #[serde(default)]
+        model_id: Option<String>,
         #[serde(default)]
         expected_revision: Option<u64>,
     },

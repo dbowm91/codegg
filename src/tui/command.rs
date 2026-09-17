@@ -381,8 +381,17 @@ impl CommandRegistry {
                 .with_description("Toggle text-to-speech"),
             Command::new("/loop", CommandCategory::Agent, None)
                 .with_description("Schedule periodic task (e.g. /loop 5m \"check status\")"),
-            Command::new("/tasks", CommandCategory::Agent, None)
-                .with_description("List background tasks"),
+            Command::new("/tasks", CommandCategory::Agent, Some(Dialog::TaskView))
+                .with_description(
+                    "Project tasks: running, waiting, attention, and recent WorkOrders (/task, /schedules for low-level schedules)",
+                ),
+            Command::new("/task", CommandCategory::Agent, Some(Dialog::TaskView))
+                .with_aliases(&["/task-view"])
+                .with_description("Open the project Task view (WorkOrders)"),
+            Command::new("/schedules", CommandCategory::Agent, None)
+                .with_description(
+                    "Low-level schedule diagnostics (recurring Subagent templates; project tasks live in /tasks)",
+                ),
             Command::new("/task-del", CommandCategory::Agent, None)
                 .with_description("Delete background task"),
             Command::new("/memory", CommandCategory::Session, None)
@@ -855,7 +864,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 142);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 144);
     }
 
     #[test]

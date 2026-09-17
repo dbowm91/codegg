@@ -23,6 +23,8 @@ pub mod security_review;
 pub mod session;
 pub mod share;
 pub mod source_preview;
+pub mod task_schedule;
+pub mod task_view;
 pub mod template;
 pub mod theme;
 pub mod tree;

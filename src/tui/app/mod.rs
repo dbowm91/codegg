@@ -645,6 +645,10 @@ impl App {
                 pending_session_submit: None,
                 session_submit_started: false,
                 retry_without_message: None,
+                composer_mode: crate::tui::app::state::ComposerMode::default(),
+                pending_task_create: None,
+                task_submit_started: false,
+                task_model_choice: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -691,6 +695,15 @@ impl App {
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_sheet_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_reorder_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_model_pref_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_schedule_draft: None,
+                task_view: crate::tui::app::state::TaskViewState::default(),
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1122,6 +1135,10 @@ impl App {
                 pending_session_submit: None,
                 session_submit_started: false,
                 retry_without_message: None,
+                composer_mode: crate::tui::app::state::ComposerMode::default(),
+                pending_task_create: None,
+                task_submit_started: false,
+                task_model_choice: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1168,6 +1185,15 @@ impl App {
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_sheet_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_reorder_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_model_pref_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                task_schedule_draft: None,
+                task_view: crate::tui::app::state::TaskViewState::default(),
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -2194,6 +2220,9 @@ impl App {
             }
             Some(InputAction::CloseProjectTab) => {
                 self.process_msg(TuiMsg::CloseProjectTab);
+            }
+            Some(InputAction::ToggleComposerMode) => {
+                self.process_msg(TuiMsg::ToggleComposerMode);
             }
             Some(InputAction::Command) => {
                 self.ui_state.command_mode = true;
@@ -4093,6 +4122,18 @@ impl App {
                 }
             }
             "/tasks" => {
+                // Project Work Orders M003: `/tasks` opens the WorkOrder
+                // Task view when the capability is available, falling
+                // back to the low-level schedule list with an explicit
+                // diagnostic on older servers. `/schedules` keeps
+                // direct low-level access; the `Schedule*` protocol is
+                // preserved.
+                crate::tui::commands::work_orders::start_tasks_command(self);
+            }
+            "/task" => {
+                crate::tui::commands::work_orders::open_task_view(self);
+            }
+            "/schedules" => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::ListTasks);
                 } else {
@@ -7057,6 +7098,28 @@ impl App {
                 self.dialog_state.terminal_detail_handle = None;
             }
             Dialog::RunDetail => {}
+            Dialog::TaskSchedule => {
+                // Sheet cancel: the editable prompt text was never
+                // moved, so nothing restores. In-flight prefetch is
+                // dropped; an in-flight create (spawned only by
+                // confirm) is untouched.
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.task_sheet_request.cancel();
+                self.dialog_state.task_schedule_draft = None;
+            }
+            Dialog::TaskView => {
+                // View close never cancels daemon-owned work: only the
+                // frontend refresh/reorder/detail requests are dropped.
+                // The generation bump makes late completions stale.
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                self.dialog_state.work_order_list_request.cancel();
+                self.dialog_state.work_order_reorder_request.cancel();
+                self.dialog_state.work_order_occurrence_request.cancel();
+                self.dialog_state.work_order_mutation_request.cancel();
+                self.dialog_state.task_view.generation =
+                    self.dialog_state.task_view.generation.wrapping_add(1);
+                self.dialog_state.task_view.loading = false;
+            }
             _ => {}
         }
 

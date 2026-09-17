@@ -67,6 +67,32 @@ pub struct DialogState {
     pub task_list_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for task delete operations.
     pub task_delete_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: scheduling-sheet prefetch (lanes,
+    /// summary, capabilities, Task-model preference) before the sheet
+    /// opens. Stale completions are dropped at apply time.
+    pub task_sheet_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: `WorkOrderCreate` continuation. A late
+    /// success may have committed daemon state; it is never undone —
+    /// the projection refreshes when next foregrounded.
+    pub work_order_create_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: Task view list refresh.
+    pub work_order_list_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: CAS lane reorder.
+    pub work_order_reorder_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: cancel/resume/update mutations.
+    pub work_order_mutation_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: lazy single-row occurrence detail.
+    pub work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: Task-model preference read/persist.
+    pub task_model_pref_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Project Work Orders M003: open scheduling-sheet draft (`None`
+    /// = sheet closed). The editable prompt text stays in the prompt
+    /// widget until `WorkOrderCreate` succeeds; failure restores it
+    /// exactly once.
+    pub task_schedule_draft: Option<crate::tui::app::state::TaskScheduleDraft>,
+    /// Project Work Orders M003: cached project Task view projection.
+    /// Daemon-owned truth; this is a bounded display cache only.
+    pub task_view: crate::tui::app::state::TaskViewState,
     /// Async request state for worktree list operations.
     pub worktree_list_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for template creation operations.

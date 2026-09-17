@@ -310,20 +310,24 @@ Methods: `create`, `get`, `list_by_message`, `list_by_session`,
 
 Methods: `get`, `upsert`, `delete`
 
-### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58)
+### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58 + v62)
 
 Daemon-owned principal-scoped durable preference for approval mode,
-sandbox profile, and last-used provider/model identity (M003 foundation,
-M004 convergence). Methods: `get`, `set_approval_mode`,
-`set_sandbox_profile`, `set_model_preference`. Revision-gated CAS (stale
-writes get `Conflict`, never last-write-wins), bounded lengths,
-secret-free, additive/empty on upgrade. Restart reloads the last
-preference; explicit turn overrides win, then project ceiling, then
-persisted, then `Interactive`/`WorkspaceWrite` defaults. Frontend
-manifests stay display hints, never authority. Protocol:
+sandbox profile, last-used provider/model identity (M003 foundation,
+M004 convergence), and the separately-scoped last Task-composer
+provider/model identity (project Work Orders M003, `migrate_v62`).
+Methods: `get`, `set_approval_mode`, `set_sandbox_profile`,
+`set_model_preference`, `set_task_model_preference`.
+Revision-gated CAS (stale writes get `Conflict`, never
+last-write-wins), bounded lengths, secret-free, additive/empty on
+upgrade. The Task scope never touches the ordinary session preference
+(and vice versa); policy writes preserve both. Restart reloads the
+last preference; explicit turn overrides win, then project ceiling,
+then persisted, then `Interactive`/`WorkspaceWrite` defaults.
+Frontend manifests stay display hints, never authority. Protocol:
 `ApprovalPreferenceGet`, `ApprovalModeSet`, `SandboxProfileSet`,
-`ExecutionPolicyGet` -> `ApprovalPreference` / `ExecutionPolicy`
-(principal derived server-side).
+`TaskModelPreferenceSet`, `ExecutionPolicyGet` -> `ApprovalPreference`
+/ `ExecutionPolicy` (principal derived server-side).
 
 ### Selection/preference convergence (M004)
 

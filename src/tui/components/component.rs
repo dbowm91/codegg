@@ -59,6 +59,8 @@ pub enum DialogType {
     Collaborators,
     ProjectChat,
     ProjectPicker,
+    TaskSchedule,
+    TaskView,
     None,
 }
 
@@ -110,6 +112,8 @@ impl From<DialogType> for Dialog {
             DialogType::ProjectPicker => Dialog::ProjectPicker,
             DialogType::Collaborators => Dialog::Collaborators,
             DialogType::ProjectChat => Dialog::ProjectChat,
+            DialogType::TaskSchedule => Dialog::TaskSchedule,
+            DialogType::TaskView => Dialog::TaskView,
             DialogType::None => Dialog::None,
         }
     }
@@ -158,6 +162,8 @@ impl From<Dialog> for DialogType {
             Dialog::ProjectPicker => DialogType::ProjectPicker,
             Dialog::Collaborators => DialogType::Collaborators,
             Dialog::ProjectChat => DialogType::ProjectChat,
+            Dialog::TaskSchedule => DialogType::TaskSchedule,
+            Dialog::TaskView => DialogType::TaskView,
         }
     }
 }

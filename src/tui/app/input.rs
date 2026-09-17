@@ -597,6 +597,53 @@ impl App {
             TuiMsg::SelectProjectTabByIndex { index } => {
                 self.select_project_tab_by_visible_index(index);
             }
+            TuiMsg::ToggleComposerMode => {
+                crate::tui::commands::work_orders::toggle_composer_mode(self);
+            }
+            TuiMsg::TaskScheduleConfirm {
+                delay_text,
+                not_before_text,
+                repeat_text,
+                sequential,
+                lane_id,
+                gate_join_all,
+                model,
+            } => {
+                crate::tui::commands::work_orders::confirm_task_schedule(
+                    self,
+                    delay_text,
+                    not_before_text,
+                    repeat_text,
+                    sequential,
+                    lane_id,
+                    gate_join_all,
+                    model,
+                );
+            }
+            TuiMsg::TaskScheduleMove { delta } => {
+                crate::tui::commands::work_orders::move_sheet_selection(self, delta);
+            }
+            TuiMsg::TaskViewMove { delta } => {
+                crate::tui::commands::work_orders::move_task_view_selection(self, delta);
+            }
+            TuiMsg::TaskViewReorder { delta } => {
+                crate::tui::commands::work_orders::start_lane_reorder(self, delta);
+            }
+            TuiMsg::TaskViewOpen => {
+                crate::tui::commands::work_orders::open_selected_task(self);
+            }
+            TuiMsg::TaskViewRefresh => {
+                crate::tui::commands::work_orders::refresh_task_view(self);
+            }
+            TuiMsg::TaskViewCancel => {
+                crate::tui::commands::work_orders::cancel_selected_task(self);
+            }
+            TuiMsg::TaskViewResume => {
+                crate::tui::commands::work_orders::resume_selected_task(self);
+            }
+            TuiMsg::TaskViewDetail => {
+                crate::tui::commands::work_orders::fetch_selected_task_detail(self);
+            }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {
                     if let Some(ref tx) = self.tui_cmd_tx {

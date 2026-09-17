@@ -147,6 +147,12 @@ pub enum InputAction {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
+    /// Project Work Orders M003: toggle the prompt composer between
+    /// Session and Task submission modes. Deliberately *not* Tab:
+    /// Tab stays `SwitchAgent` and Shift+Tab stays permission-mode
+    /// cycling, so Task-mode selection never collides with the existing
+    /// agent selector.
+    ToggleComposerMode,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -199,6 +205,7 @@ pub enum ActionKey {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
+    ToggleComposerMode,
 }
 
 /// Declarative metadata shared by the keybinding editor and discovery/help
@@ -262,6 +269,7 @@ impl ActionKey {
             Self::NextProjectTab,
             Self::PreviousProjectTab,
             Self::CloseProjectTab,
+            Self::ToggleComposerMode,
         ]
     }
 
@@ -314,6 +322,7 @@ impl ActionKey {
             Self::NextProjectTab => InputAction::NextProjectTab,
             Self::PreviousProjectTab => InputAction::PreviousProjectTab,
             Self::CloseProjectTab => InputAction::CloseProjectTab,
+            Self::ToggleComposerMode => InputAction::ToggleComposerMode,
         }
     }
 
@@ -366,6 +375,7 @@ impl ActionKey {
             Self::NextProjectTab => "Next project tab",
             Self::PreviousProjectTab => "Previous project tab",
             Self::CloseProjectTab => "Close project tab",
+            Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
         }
     }
 
@@ -566,6 +576,13 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::ALT, KeyCode::Char('w')),
         InputAction::CloseProjectTab,
     );
+    // Ctrl+G toggles the Task composer. Deliberately not Tab:
+    // bare Tab stays SwitchAgent and Shift+Tab stays permission-mode
+    // cycling (M003 keybinding audit: no silent collision).
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('g')),
+        InputAction::ToggleComposerMode,
+    );
     map
 }
 
@@ -724,6 +741,12 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::ALT, KeyCode::Char('w')),
         InputAction::CloseProjectTab,
     );
+    // Ctrl+G toggles the Task composer (same as insert mode; Tab stays
+    // SwitchAgent in both modes).
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('g')),
+        InputAction::ToggleComposerMode,
+    );
 
     map
 }
@@ -873,6 +896,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
+            key: "Ctrl+G",
+            action: "Toggle composer mode (Session/Task)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
             key: "PgUp/PgDn",
             action: "Scroll viewport",
             condition: None,
@@ -1014,6 +1043,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "Alt+W",
             action: "Close project tab",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+G",
+            action: "Toggle composer mode (Session/Task)",
             condition: None,
         },
         HelpEntry {

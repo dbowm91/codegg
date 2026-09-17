@@ -557,9 +557,17 @@ The command palette remains prompt-completion state rather than a modal.
 
 Async request states: `import_request`, `research_request`,
 `session_reload_request`, `task_list_request`, `task_delete_request`,
-`worktree_list_request`, `template_create_request`,
-`session_mutation_request`, `session_messages_request`,
-`test_run_request`, `terminal_request`.
+`task_sheet_request`, `work_order_create_request`,
+`work_order_list_request`, `work_order_reorder_request`,
+`work_order_mutation_request`, `work_order_occurrence_request`,
+`task_model_pref_request`, `worktree_list_request`,
+`template_create_request`, `session_mutation_request`,
+`session_messages_request`, `test_run_request`, `terminal_request`.
+
+`DialogState` also holds the M003 Task sheet draft
+(`task_schedule_draft`, `None` = closed) and the bounded project Task
+view cache (`task_view`: rows/summary/lanes/selection/generation —
+display only, daemon owns truth).
 
 Pending fields: `permission_perm_id`, `question_session_id`,
 `pending_delete_session`, `pending_archive_session`,
@@ -582,6 +590,7 @@ pub enum Dialog {
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
+    TaskSchedule, TaskView,
 }
 ```
 
@@ -604,9 +613,24 @@ pub enum DialogType {
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, Collaborators, ProjectChat,
-    ProjectPicker, None,
+    ProjectPicker, TaskSchedule, TaskView, None,
 }
 ```
+
+`TaskSchedule` is the WorkOrder scheduling sheet
+(`components/dialogs/task_schedule.rs`): seeded buffers for
+delay/not-before/repeat, sequential + lane cycling, All/Any join,
+catalog-bounded model cycling, policy/workspace/queue summaries, and a
+disabled external-trigger row. Tab/Shift+Tab move sheet focus (consumed
+by the modal, never the agent selector); `j`/`k` stay unbound. Enter on
+Confirm emits `TuiMsg::TaskScheduleConfirm` for App-side validation.
+
+`TaskView` is the project Task view
+(`components/dialogs/task_view.rs`): renders the `TaskViewSnapshot`
+synced from `DialogState.task_view` (RUNNING / FUTURE-WAITING /
+NEEDS-ATTENTION / RECENT). `j`/`k`/arrows navigate, Shift+J/K reorder
+waiting lane members, Enter opens materialized sessions (future rows
+fetch detail), `r`/`d`/`x`/`u` refresh/detail/cancel/resume.
 
 `Dialog` and `DialogType` have exhaustive compatibility conversions. The
 canonical lifecycle identity is the live component's `DialogType`; the
@@ -655,7 +679,10 @@ Internal messages from TUI to App. Key variants: `SubmitPrompt`,
 `SelectModel`, `SelectAgent`, `SelectSession(Box<Session>)`,
 `OpenDiffDialog`, `OpenShareDialog`, `OpenThemeDialog`,
 `ExternalEditor`, `UndoDelete`, `ConfirmResult`, `ReviewOpenDiff`,
-`ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`.
+`ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`,
+`ToggleComposerMode`, `TaskScheduleConfirm`, `TaskScheduleMove`,
+`TaskViewMove`, `TaskViewReorder`, `TaskViewOpen`, `TaskViewRefresh`,
+`TaskViewCancel`, `TaskViewResume`, `TaskViewDetail`.
 
 ### TuiCommand (`src/tui/app/types.rs`)
 
@@ -672,6 +699,17 @@ terminal operations (M003) follow the same pattern:
 `TerminalResumeFinished`, and `TerminalOpFinished`
 (input/resize/detach/terminate/remove) completions, all guarded by
 `DialogState::terminal_request` so stale completions are dropped.
+
+Project Work Orders M003 completions follow the same pattern through
+`src/tui/commands/work_orders.rs`: `TaskSheetPrefetched`,
+`WorkOrderCreated`, `TaskViewRefreshed`, `TaskOccurrenceLoaded`,
+`LaneReordered`, `TaskMutationFinished`, `TaskSessionFocus`,
+`TaskModelPrefetched`, `TaskModelPrefSaved`. Every completion carries
+its captured `UiRouteToken` plus request/generation identity; stale
+ones (tab switch/close, rebind, reconnect, superseding refresh) drop
+at apply time. Slash surface: `/tasks` and `/task` open the WorkOrder
+Task view (capability-gated, legacy fallback with diagnostic),
+`/schedules` keeps low-level schedule diagnostics.
 
 ### Routes (`src/tui/route.rs`)
 
@@ -691,13 +729,19 @@ pub enum InputMode {
 }
 ```
 
+`InputMode` stays a text-editing/Vim concern. The M003 prompt
+submission mode is the separate `ComposerMode::Session | Task`
+(`src/tui/app/state/work_orders.rs`), toggled by `Ctrl+G`
+(`ToggleComposerMode`, configurable). Bare Tab stays `SwitchAgent`
+and Shift+Tab stays permission-mode cycling in both keymaps.
+
 ### InputAction
 
 Key events mapped to: `Send`, `Newline`, `Cancel`, `NavigateUp`/`Down`,
 `SwitchAgent`, `SelectModel`, `ClearSession`, `NewSession`,
 `FocusPrompt`, `StashPrompt`, `RestorePrompt`, `Char`, `Backspace`,
 `Delete`, `CursorLeft`/`Right`/`Home`/`End`, `PageUp`, `PageDown`,
-`Search`, `GoToTop`, `GoToBottom`.
+`Search`, `GoToTop`, `GoToBottom`, `ToggleComposerMode`.
 
 ## Directory Structure
 

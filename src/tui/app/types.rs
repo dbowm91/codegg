@@ -40,6 +40,12 @@ pub enum Dialog {
     ProjectPicker,
     Collaborators,
     ProjectChat,
+    /// Project Work Orders M003: Task scheduling sheet (confirm/cancel
+    /// a WorkOrder create). FocusManager-owned; see `task_schedule.rs`.
+    TaskSchedule,
+    /// Project Work Orders M003: project Task view (running/waiting/
+    /// attention/recent). FocusManager-owned; see `task_view.rs`.
+    TaskView,
 }
 
 impl Dialog {
@@ -85,6 +91,8 @@ impl Dialog {
                 | Self::ProjectPicker
                 | Self::Collaborators
                 | Self::ProjectChat
+                | Self::TaskSchedule
+                | Self::TaskView
         )
     }
 }
@@ -319,6 +327,52 @@ pub enum TuiMsg {
     SelectProjectTabByIndex {
         index: usize,
     },
+    /// Project Work Orders M003: toggle the prompt composer between
+    /// Session and Task submission modes. `InputMode` is untouched.
+    ToggleComposerMode,
+    /// Project Work Orders M003: the scheduling sheet confirmed with
+    /// edited values. Validation runs in `App` (prompt preserved on
+    /// error); success spawns the `WorkOrderCreate` continuation.
+    TaskScheduleConfirm {
+        delay_text: String,
+        not_before_text: String,
+        repeat_text: String,
+        sequential: bool,
+        lane_id: Option<String>,
+        gate_join_all: bool,
+        model: Option<String>,
+    },
+    /// Project Work Orders M003: move the sheet selection (`delta`
+    /// rows). Component-local navigation also exists; this covers
+    /// App-driven sync paths.
+    TaskScheduleMove {
+        delta: isize,
+    },
+    /// Project Work Orders M003: move the Task-view selection.
+    TaskViewMove {
+        delta: isize,
+    },
+    /// Project Work Orders M003: reorder the selected waiting task
+    /// within its lane (`delta` positions). CAS-guarded; conflicts
+    /// refresh with "queue changed; retry".
+    TaskViewReorder {
+        delta: isize,
+    },
+    /// Project Work Orders M003: open the selected row — materialized
+    /// session via canonical routing, or detail refresh for future
+    /// tasks (never a fake session).
+    TaskViewOpen,
+    /// Project Work Orders M003: refresh the Task view projection.
+    TaskViewRefresh,
+    /// Project Work Orders M003: cancel the selected waiting task
+    /// (`WorkOrderCancel`; running sessions use session/job control).
+    TaskViewCancel,
+    /// Project Work Orders M003: resume the selected paused task
+    /// (`WorkOrderResume`).
+    TaskViewResume,
+    /// Project Work Orders M003: fetch occurrence detail for the
+    /// selected row (lazy single-row fetch, never N+1).
+    TaskViewDetail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

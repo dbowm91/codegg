@@ -111,6 +111,19 @@ impl App {
             crate::shell::types::PromptSubmissionKind::Chat(_) => {}
         }
 
+        // Project Work Orders M003: Task composer mode opens the
+        // scheduling sheet instead of submitting a turn. The prompt
+        // text stays editable until `WorkOrderCreate` succeeds; slash
+        // commands and human-shell input were handled above and keep
+        // their normal meaning in Task mode.
+        if self.prompt_state.composer_mode.is_task() {
+            crate::tui::commands::work_orders::open_task_sheet_for_prompt(
+                self,
+                trimmed_text.clone(),
+            );
+            return;
+        }
+
         // Capture the project/workspace route before mutating the visible
         // message state.  A no-session prompt must never fall back to the tab
         // that happens to be active when SessionCreate completes.

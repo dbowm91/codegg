@@ -389,6 +389,15 @@ impl App {
             }
             Dialog::SourcePreview => {}
             Dialog::RunDetail => {}
+            Dialog::TaskSchedule => {
+                // Mounted directly by the sheet-prefetch completion with
+                // a seeded snapshot; reopening here without a draft
+                // would show a stale sheet, so this arm stays a no-op.
+            }
+            Dialog::TaskView => {
+                // Mounted directly by `open_task_view`/`refresh_task_view`
+                // with the live projection; see `work_orders.rs`.
+            }
             Dialog::ConnectionSelection => {
                 if let Some(ref dialog) = self.dialog_state.connection_selection_dialog {
                     self.focus_manager.push(Box::new(dialog.clone()));

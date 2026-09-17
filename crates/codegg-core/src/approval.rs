@@ -556,6 +556,16 @@ pub struct RuntimePreference {
     pub last_provider_connection_id: Option<String>,
     /// Reserved for M004: last-used model identity.
     pub last_model_id: Option<String>,
+    /// Project Work Orders M003: last Task-composer provider connection
+    /// identity. Separately scoped from the ordinary session
+    /// (`last_provider_connection_id`/`last_model_id`) convenience
+    /// preference: Task-mode selection reads/writes only these fields and
+    /// ordinary session selection never touches them.
+    pub last_task_provider_connection_id: Option<String>,
+    /// Project Work Orders M003: last Task-composer model identity. A
+    /// convenience default snapshotted into `WorkOrderCreateRequest` at
+    /// creation time; never execution authority.
+    pub last_task_model_id: Option<String>,
     pub revision: u64,
     pub updated_at_ms: i64,
 }
@@ -580,6 +590,26 @@ impl RuntimePreference {
             .unwrap_or(false)
             && self
                 .last_model_id
+                .as_deref()
+                .map(|v| !v.trim().is_empty())
+                .unwrap_or(false)
+    }
+
+    /// Project Work Orders M003: `true` when a Task-composer model
+    /// preference is present. Scoped independently of
+    /// [`Self::has_model_preference`]: writing the ordinary session
+    /// preference never sets this, and writing the Task preference never
+    /// sets the ordinary one. A remembered Task model that no longer
+    /// exists falls back to the normal current/default selection before
+    /// creation (with a visible notice); an already-created WorkOrder
+    /// never silently changes model.
+    pub fn has_task_model_preference(&self) -> bool {
+        self.last_task_provider_connection_id
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+            && self
+                .last_task_model_id
                 .as_deref()
                 .map(|v| !v.trim().is_empty())
                 .unwrap_or(false)
@@ -710,6 +740,7 @@ impl RuntimePreferenceStore {
             r#"
             SELECT principal_id, approval_mode, sandbox_profile,
                    last_provider_connection_id, last_model_id,
+                   last_task_provider_connection_id, last_task_model_id,
                    revision, updated_at
             FROM runtime_preferences WHERE principal_id = ?1
             "#,
@@ -809,12 +840,22 @@ impl RuntimePreferenceStore {
             ),
             None => (None, None),
         };
+        // M003 Task-composer preference survives policy writes untouched.
+        let (task_connection_id, task_model_id) = match current.as_ref() {
+            Some(p) => (
+                p.last_task_provider_connection_id.clone(),
+                p.last_task_model_id.clone(),
+            ),
+            None => (None, None),
+        };
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile,
-                 last_provider_connection_id, last_model_id, revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 last_provider_connection_id, last_model_id,
+                 last_task_provider_connection_id, last_task_model_id,
+                 revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(principal_id) DO UPDATE SET
                 approval_mode = excluded.approval_mode,
                 sandbox_profile = excluded.sandbox_profile,
@@ -827,6 +868,8 @@ impl RuntimePreferenceStore {
         .bind(sandbox_profile)
         .bind(connection_id)
         .bind(model_id)
+        .bind(task_connection_id)
+        .bind(task_model_id)
         .bind(next_revision as i64)
         .bind(now)
         .execute(&self.pool)
@@ -876,12 +919,22 @@ impl RuntimePreferenceStore {
         let sandbox_profile = current_row
             .as_ref()
             .and_then(|p| p.sandbox_profile.map(|s| s.as_str().to_owned()));
+        // M003 Task-composer preference survives ordinary model writes.
+        let (task_connection_id, task_model_id) = match current_row.as_ref() {
+            Some(p) => (
+                p.last_task_provider_connection_id.clone(),
+                p.last_task_model_id.clone(),
+            ),
+            None => (None, None),
+        };
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile,
-                 last_provider_connection_id, last_model_id, revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 last_provider_connection_id, last_model_id,
+                 last_task_provider_connection_id, last_task_model_id,
+                 revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(principal_id) DO UPDATE SET
                 last_provider_connection_id = excluded.last_provider_connection_id,
                 last_model_id = excluded.last_model_id,
@@ -892,6 +945,90 @@ impl RuntimePreferenceStore {
         .bind(principal_id)
         .bind(approval_mode)
         .bind(sandbox_profile)
+        .bind(connection_id)
+        .bind(model_id)
+        .bind(task_connection_id)
+        .bind(task_model_id)
+        .bind(next_revision as i64)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| PreferenceError::Storage(e.to_string()))?;
+        self.get(principal_id)
+            .await?
+            .ok_or_else(|| PreferenceError::Storage("preference write lost".into()))
+    }
+
+    /// Project Work Orders M003: persist the Task-composer last-used
+    /// connection/model identity in its own scope.
+    ///
+    /// Re-resolved against the provider catalog on use; a stale identity
+    /// never authorizes a silent provider/model switch (that check lives in
+    /// the composer, not here). Writing the Task preference never touches
+    /// the ordinary session preference (and vice versa); approval/sandbox
+    /// dimensions are preserved untouched.
+    pub async fn set_task_model_preference(
+        &self,
+        principal_id: &str,
+        connection_id: Option<&str>,
+        model_id: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> Result<RuntimePreference, PreferenceError> {
+        validate_principal_id(principal_id)?;
+        if let Some(v) = connection_id {
+            validate_identity_field("last_task_provider_connection_id", v)?;
+        }
+        if let Some(v) = model_id {
+            validate_identity_field("last_task_model_id", v)?;
+        }
+        let current = self.get(principal_id).await?;
+        let (current_revision, current_row) = match current {
+            Some(p) => (p.revision, Some(p)),
+            None => (0, None),
+        };
+        if let Some(expected) = expected_revision {
+            if expected != current_revision {
+                return Err(PreferenceError::Conflict {
+                    expected,
+                    current: current_revision,
+                });
+            }
+        }
+        let next_revision = current_revision.saturating_add(1).max(1);
+        let now = now_millis();
+        let approval_mode = current_row
+            .as_ref()
+            .and_then(|p| p.approval_mode.map(|m| m.as_str().to_owned()));
+        let sandbox_profile = current_row
+            .as_ref()
+            .and_then(|p| p.sandbox_profile.map(|s| s.as_str().to_owned()));
+        let (session_connection_id, session_model_id) = match current_row.as_ref() {
+            Some(p) => (
+                p.last_provider_connection_id.clone(),
+                p.last_model_id.clone(),
+            ),
+            None => (None, None),
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO runtime_preferences
+                (principal_id, approval_mode, sandbox_profile,
+                 last_provider_connection_id, last_model_id,
+                 last_task_provider_connection_id, last_task_model_id,
+                 revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(principal_id) DO UPDATE SET
+                last_task_provider_connection_id = excluded.last_task_provider_connection_id,
+                last_task_model_id = excluded.last_task_model_id,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(principal_id)
+        .bind(approval_mode)
+        .bind(sandbox_profile)
+        .bind(session_connection_id)
+        .bind(session_model_id)
         .bind(connection_id)
         .bind(model_id)
         .bind(next_revision as i64)
@@ -942,12 +1079,22 @@ impl RuntimePreferenceStore {
             ),
             None => (None, None),
         };
+        // M003 Task-composer preference survives single-field writes.
+        let (task_connection_id, task_model_id) = match current.as_ref() {
+            Some(p) => (
+                p.last_task_provider_connection_id.clone(),
+                p.last_task_model_id.clone(),
+            ),
+            None => (None, None),
+        };
         sqlx::query(
             r#"
             INSERT INTO runtime_preferences
                 (principal_id, approval_mode, sandbox_profile,
-                 last_provider_connection_id, last_model_id, revision, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 last_provider_connection_id, last_model_id,
+                 last_task_provider_connection_id, last_task_model_id,
+                 revision, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(principal_id) DO UPDATE SET
                 approval_mode = excluded.approval_mode,
                 sandbox_profile = excluded.sandbox_profile,
@@ -960,6 +1107,8 @@ impl RuntimePreferenceStore {
         .bind(sandbox_profile)
         .bind(connection_id)
         .bind(model_id)
+        .bind(task_connection_id)
+        .bind(task_model_id)
         .bind(next_revision as i64)
         .bind(now)
         .execute(&self.pool)
@@ -978,6 +1127,8 @@ struct RuntimePreferenceRow {
     sandbox_profile: Option<String>,
     last_provider_connection_id: Option<String>,
     last_model_id: Option<String>,
+    last_task_provider_connection_id: Option<String>,
+    last_task_model_id: Option<String>,
     revision: i64,
     updated_at: i64,
 }
@@ -993,6 +1144,10 @@ impl RuntimePreferenceRow {
                 .and_then(SandboxProfile::parse),
             last_provider_connection_id: sanitize_identity(self.last_provider_connection_id),
             last_model_id: sanitize_identity(self.last_model_id),
+            last_task_provider_connection_id: sanitize_identity(
+                self.last_task_provider_connection_id,
+            ),
+            last_task_model_id: sanitize_identity(self.last_task_model_id),
             revision: self.revision.max(0) as u64,
             updated_at_ms: self.updated_at,
         }
@@ -1038,7 +1193,8 @@ fn now_millis() -> i64 {
 }
 
 /// Additive M003 schema for `runtime_preferences`. Safe on existing
-/// databases via `IF NOT EXISTS`.
+/// databases via `IF NOT EXISTS`. Fresh databases include the M003
+/// Task-composer columns; pre-M003 databases gain them via `migrate_v62`.
 pub const RUNTIME_PREFERENCE_SCHEMA_STATEMENTS: &[&str] = &[
     r#"
     CREATE TABLE IF NOT EXISTS runtime_preferences (
@@ -1047,11 +1203,26 @@ pub const RUNTIME_PREFERENCE_SCHEMA_STATEMENTS: &[&str] = &[
         sandbox_profile TEXT CHECK (sandbox_profile IS NULL OR sandbox_profile IN ('read_only','workspace_write','full_host')),
         last_provider_connection_id TEXT CHECK (last_provider_connection_id IS NULL OR length(last_provider_connection_id) <= 512),
         last_model_id TEXT CHECK (last_model_id IS NULL OR length(last_model_id) <= 512),
+        last_task_provider_connection_id TEXT CHECK (last_task_provider_connection_id IS NULL OR length(last_task_provider_connection_id) <= 512),
+        last_task_model_id TEXT CHECK (last_task_model_id IS NULL OR length(last_task_model_id) <= 512),
         revision INTEGER NOT NULL CHECK (revision >= 0),
         updated_at INTEGER NOT NULL
     )
     "#,
     "CREATE INDEX IF NOT EXISTS idx_runtime_preferences_updated ON runtime_preferences(updated_at DESC)",
+];
+
+/// Additive M003 Work Orders migration statements for `runtime_preferences`.
+///
+/// Applied by `migrate_v62` on pre-M003 databases. Plain `ADD COLUMN`
+/// keeps every existing row (ordinary session preference, approval,
+/// sandbox untouched); new columns default to `NULL` ("no Task
+/// preference"). Bounds are enforced in Rust (`validate_identity_field`
+/// on write, `sanitize_identity` on read), matching the existing
+/// nullable-identity convention.
+pub const RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS: &[&str] = &[
+    "ALTER TABLE runtime_preferences ADD COLUMN last_task_provider_connection_id TEXT",
+    "ALTER TABLE runtime_preferences ADD COLUMN last_task_model_id TEXT",
 ];
 
 #[cfg(test)]
@@ -1255,6 +1426,67 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn task_model_migration_preserves_existing_rows() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+        // Simulate a pre-M003 database: v58-shape table without the Task
+        // columns, holding an ordinary session preference row.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        sqlx::query(
+            r#"
+            CREATE TABLE runtime_preferences (
+                principal_id TEXT PRIMARY KEY,
+                approval_mode TEXT,
+                sandbox_profile TEXT,
+                last_provider_connection_id TEXT,
+                last_model_id TEXT,
+                revision INTEGER NOT NULL CHECK (revision >= 0),
+                updated_at INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO runtime_preferences
+             (principal_id, approval_mode, sandbox_profile,
+              last_provider_connection_id, last_model_id, revision, updated_at)
+             VALUES ('erin', 'yolo', 'workspace_write', 'conn-s', 'model-s', 3, 7)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for statement in RUNTIME_PREFERENCE_TASK_MODEL_MIGRATION_STATEMENTS {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        // Re-running is idempotent via the caller's duplicate-tolerant
+        // helper; here the statements themselves must at least apply once.
+        let store = RuntimePreferenceStore::new(pool);
+        let pref = store.get("erin").await.unwrap().unwrap();
+        assert_eq!(pref.revision, 3);
+        assert_eq!(pref.last_provider_connection_id.as_deref(), Some("conn-s"));
+        assert_eq!(pref.last_model_id.as_deref(), Some("model-s"));
+        assert_eq!(pref.last_task_provider_connection_id, None);
+        assert_eq!(pref.last_task_model_id, None);
+        assert!(pref.has_model_preference());
+        assert!(!pref.has_task_model_preference());
+        // Task write after migration preserves the carried row.
+        let pref = store
+            .set_task_model_preference("erin", Some("conn-t"), Some("model-t"), Some(3))
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 4);
+        assert_eq!(pref.last_provider_connection_id.as_deref(), Some("conn-s"));
+        assert_eq!(pref.last_task_model_id.as_deref(), Some("model-t"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn runtime_preference_bounds_reject_oversize_principal() {
         let store = RuntimePreferenceStore::new(temp_pool().await);
         let big = "p".repeat(300);
@@ -1271,6 +1503,86 @@ mod tests {
             .unwrap();
         assert_eq!(pref.last_provider_connection_id.as_deref(), Some("conn-1"));
         assert_eq!(pref.last_model_id.as_deref(), Some("model-1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn task_model_preference_is_scoped_apart_from_session_preference() {
+        let store = RuntimePreferenceStore::new(temp_pool().await);
+        // Ordinary session preference first.
+        let pref = store
+            .set_model_preference("bob", Some("conn-session"), Some("model-session"), None)
+            .await
+            .unwrap();
+        assert!(pref.has_model_preference());
+        assert!(!pref.has_task_model_preference());
+
+        // Task preference write leaves the session preference untouched.
+        let pref = store
+            .set_task_model_preference("bob", Some("conn-task"), Some("model-task"), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 2);
+        assert_eq!(
+            pref.last_provider_connection_id.as_deref(),
+            Some("conn-session")
+        );
+        assert_eq!(pref.last_model_id.as_deref(), Some("model-session"));
+        assert_eq!(
+            pref.last_task_provider_connection_id.as_deref(),
+            Some("conn-task")
+        );
+        assert_eq!(pref.last_task_model_id.as_deref(), Some("model-task"));
+        assert!(pref.has_model_preference());
+        assert!(pref.has_task_model_preference());
+
+        // Ordinary session write leaves the Task preference untouched.
+        let pref = store
+            .set_model_preference("bob", Some("conn-session-2"), Some("model-s2"), Some(2))
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 3);
+        assert_eq!(
+            pref.last_task_provider_connection_id.as_deref(),
+            Some("conn-task")
+        );
+        assert_eq!(pref.last_task_model_id.as_deref(), Some("model-task"));
+
+        // Approval/sandbox writes preserve both model scopes.
+        let pref = store
+            .set_policy(
+                "bob",
+                Some(ApprovalMode::Yolo),
+                Some(SandboxProfile::ReadOnly),
+                Some(3),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pref.revision, 4);
+        assert_eq!(
+            pref.last_provider_connection_id.as_deref(),
+            Some("conn-session-2")
+        );
+        assert_eq!(
+            pref.last_task_provider_connection_id.as_deref(),
+            Some("conn-task")
+        );
+
+        // Stale CAS on the Task scope conflicts without touching the row.
+        let err = store
+            .set_task_model_preference("bob", Some("conn-x"), Some("model-x"), Some(2))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PreferenceError::Conflict { .. }));
+        let current = store.get("bob").await.unwrap().unwrap();
+        assert_eq!(current.revision, 4);
+
+        // Oversize Task identities fail closed.
+        let big = "m".repeat(600);
+        let err = store
+            .set_task_model_preference("bob", Some(&big), Some("model-x"), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PreferenceError::Validation(_)));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1342,12 +1654,21 @@ mod tests {
             sandbox_profile: None,
             last_provider_connection_id: Some("conn-1".into()),
             last_model_id: Some("model-1".into()),
+            last_task_provider_connection_id: None,
+            last_task_model_id: None,
             revision: 1,
             updated_at_ms: 0,
         };
         assert!(pref.has_model_preference());
+        assert!(!pref.has_task_model_preference());
         pref.last_model_id = None;
         assert!(!pref.has_model_preference());
+        // Task scope is independent: setting it does not imply a session
+        // preference and vice versa.
+        pref.last_task_provider_connection_id = Some("conn-t".into());
+        pref.last_task_model_id = Some("model-t".into());
+        assert!(!pref.has_model_preference());
+        assert!(pref.has_task_model_preference());
     }
 
     #[test]
@@ -1440,6 +1761,8 @@ mod tests {
             sandbox_profile: Some(SandboxProfile::WorkspaceWrite),
             last_provider_connection_id: Some("conn-1".into()),
             last_model_id: Some("model-1".into()),
+            last_task_provider_connection_id: Some("conn-t".into()),
+            last_task_model_id: Some("model-t".into()),
             revision: 1,
             updated_at_ms: 0,
         };
@@ -1455,6 +1778,8 @@ mod tests {
                         | "sandbox_profile"
                         | "last_provider_connection_id"
                         | "last_model_id"
+                        | "last_task_provider_connection_id"
+                        | "last_task_model_id"
                         | "revision"
                         | "updated_at_ms"
                 ),

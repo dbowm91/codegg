@@ -342,6 +342,8 @@ impl CoreDaemon {
                             updated_at_ms: chrono::Utc::now().timestamp_millis(),
                             last_provider_connection_id: None,
                             last_model_id: None,
+                            last_task_provider_connection_id: None,
+                            last_task_model_id: None,
                         },
                     }),
                     Some(pool) => {
@@ -361,6 +363,8 @@ impl CoreDaemon {
                                     updated_at_ms: chrono::Utc::now().timestamp_millis(),
                                     last_provider_connection_id: None,
                                     last_model_id: None,
+                                    last_task_provider_connection_id: None,
+                                    last_task_model_id: None,
                                 },
                             }),
                             Err(error) => Ok(CoreResponse::Error {
@@ -519,6 +523,52 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::TaskModelPreferenceSet {
+                connection_id,
+                model_id,
+                expected_revision,
+            } => {
+                // Project Work Orders M003: Task-composer model preference
+                // in its own daemon-owned scope. The principal is derived
+                // from transport authority; payloads carry no identity.
+                // This never touches the ordinary session preference and
+                // never overrides explicit session selection: it is a
+                // convenience default snapshotted at WorkOrder creation.
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "preference_unavailable".to_string(),
+                        message: "task model preference requires a daemon SQLite catalog"
+                            .to_string(),
+                    });
+                };
+                let principal_id = authority.principal_id().as_str().to_owned();
+                let store = codegg_core::approval::RuntimePreferenceStore::new(pool);
+                match store
+                    .set_task_model_preference(
+                        &principal_id,
+                        connection_id.as_deref(),
+                        model_id.as_deref(),
+                        expected_revision,
+                    )
+                    .await
+                {
+                    Ok(pref) => Ok(CoreResponse::ApprovalPreference {
+                        preference: approval_preference_to_dto(&pref),
+                    }),
+                    Err(codegg_core::approval::PreferenceError::Conflict { expected, current }) => {
+                        Ok(CoreResponse::Error {
+                            code: "preference_conflict".to_string(),
+                            message: format!(
+                                "stale preference revision: expected {expected}, current {current}"
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "preference_write_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
             CoreRequest::ExecutionPolicyGet { session_id } => {
                 let principal_id = authority.principal_id().as_str().to_owned();
                 let (mode, profile, revision) = match self.pool.clone() {
@@ -605,6 +655,8 @@ fn approval_preference_to_dto(
         updated_at_ms: pref.updated_at_ms,
         last_provider_connection_id: pref.last_provider_connection_id.clone(),
         last_model_id: pref.last_model_id.clone(),
+        last_task_provider_connection_id: pref.last_task_provider_connection_id.clone(),
+        last_task_model_id: pref.last_task_model_id.clone(),
     }
 }
 
