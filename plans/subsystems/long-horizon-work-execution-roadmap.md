@@ -1,6 +1,6 @@
 # Long-Horizon Work Execution Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `18365458f881f6ac4524c9ea05224b69923faa4f`
 
@@ -266,7 +266,7 @@ Class: invariant/closure
 
 Plan: `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md`
 
-Status: ready for handoff (unblocked by M004 closure; M001-M004 closed).
+Status: closed (`plans/closure/long-horizon-work-execution/005-status.md`).
 
 Exercise large plans across compaction, epoch reset, restart, waits, failures, subagent/test evidence, and premature-finish attempts using deterministic/scripted harnesses.
 
@@ -357,4 +357,4 @@ This roadmap closes only when:
 | M002 | closed | `plans/implementation/long-horizon-work-execution/002-durable-work-plan-foundation.md` | `plans/closure/long-horizon-work-execution/002-status.md` | — |
 | M003 | closed | `plans/implementation/long-horizon-work-execution/003-work-plan-projection-and-completion-arbiter.md` | `plans/closure/long-horizon-work-execution/003-status.md` | — |
 | M004 | closed | `plans/implementation/long-horizon-work-execution/004-context-epoch-reset-and-handoff-integration.md` | `plans/closure/long-horizon-work-execution/004-status.md` | — |
-| M005 | ready | `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md` | — | — |
+| M005 | closed | `plans/implementation/long-horizon-work-execution/005-long-horizon-trajectory-and-recovery-qualification.md` | `plans/closure/long-horizon-work-execution/005-status.md` | — |
