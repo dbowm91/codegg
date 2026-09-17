@@ -30,6 +30,7 @@ Canonical direction remains in:
 | Context continuity and multi-compaction coherence | closed | `plans/subsystems/context-continuity-compaction-roadmap.md` | M001+M002+M003+M004 closed | `plans/closure/context-continuity-compaction/004-status.md` |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | HTTP client consolidation and Eggfetch adoption | closed | `plans/subsystems/http-client-consolidation-roadmap.md` | M001-M003 closed | `plans/closure/http-client-consolidation/003-status.md` |
+| HTTP client maintenance consolidation | active | `plans/subsystems/http-client-maintenance-consolidation-roadmap.md` | M001 ready | Original HTTP consolidation M001-M003 is closed; Rust 1.89 baseline is satisfied; implementation must verify the published crates.io `eggfetch-core 0.1.5` package surface before editing. |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md` | M009 closed | `plans/closure/tool-surface-upstream-compatibility/009-status.md` |
 | Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
@@ -65,6 +66,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| HTTP client maintenance consolidation | M001 Eggfetch 0.1.5 policy and body ownership consolidation | ready | `plans/implementation/http-client-maintenance-consolidation/001-eggfetch-0.1.5-policy-and-body-ownership.md` | Original HTTP consolidation is closed and Rust 1.89 is satisfied; verify the packaged crates.io 0.1.5 surface at handoff start. |
 | Long-horizon work execution | M001 Goal progress and continuation correctness | closed | `plans/implementation/long-horizon-work-execution/001-goal-progress-and-continuation-correctness.md` | Closure accepted at `plans/closure/long-horizon-work-execution/001-status.md`; implementation `5d79bd9d`. |
 | Long-horizon work execution | M002 durable WorkPlan foundation | closed | `plans/implementation/long-horizon-work-execution/002-durable-work-plan-foundation.md` | Closure accepted at `plans/closure/long-horizon-work-execution/002-status.md`; implementation `0aceb37d`. |
 | Long-horizon work execution | M003 WorkPlan projection and completion arbiter | closed | `plans/implementation/long-horizon-work-execution/003-work-plan-projection-and-completion-arbiter.md` | Closure accepted at `plans/closure/long-horizon-work-execution/003-status.md`; implementation `2ff09bef`. |
@@ -97,7 +99,8 @@ Canonical direction remains in:
 5. Dependency-security M001-M004 remain closed with accepted closure evidence. M001 delivered Ratatui/LRU security convergence, DashMap 6 convergence and SQLx feature contraction; M002 established workspace version/default-policy ownership; M003 narrowed the optional image graph; M004 qualified reusable crate boundaries without speculative extraction.
 6. Dependency-security M005 remains independently blocked on the generalized external updater contract. CodeGG must not copy Gregg's updater implementation or depend on greggd while that interface is absent. Its curl/shell execution-path hardening remains landed at `plans/closure/dependency-security-workspace-consolidation/005-status.md`.
 7. HTTP client consolidation M001-M003 remain closed with accepted closure evidence. CodeGG's direct HTTP ownership is on published `eggfetch-core 0.1.4`; dependency-security M006 preserves its HTTP/1 + Rustls/WebPKI feature/trust profile.
-8. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
+8. HTTP client maintenance consolidation M001 is ready for handoff. It is a bounded follow-on to move the supported Eggfetch floor to 0.1.5, transfer generic bounded-response enforcement to Eggfetch where equivalent, and reduce repeated ordinary-client construction policy without introducing a second HTTP abstraction or retry owner.
+9. Upstream compatibility M009 remains closed with Rust 1.89 MSRV and eggsact 1.2.5 baseline adoption.
 
 Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. The new workstreams do not authorize a new daemon, scheduler, workflow engine, context-history service, authorization engine, sandbox framework, verification framework, release automation, or silent provider failover.
 
@@ -119,6 +122,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Execution reliability, approval, and autonomy | closed; M001+M002+M003+M004+M005+M006+M007+M008 closed | `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`; `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md`; eight plans under `plans/implementation/execution-reliability-approval-autonomy/`; `plans/closure/execution-reliability-approval-autonomy/001-status.md`; `plans/closure/execution-reliability-approval-autonomy/002-status.md`; `plans/closure/execution-reliability-approval-autonomy/003-status.md`; `plans/closure/execution-reliability-approval-autonomy/004-status.md`; `plans/closure/execution-reliability-approval-autonomy/005-status.md`; `plans/closure/execution-reliability-approval-autonomy/006-status.md`; `plans/closure/execution-reliability-approval-autonomy/007-status.md`; `plans/closure/execution-reliability-approval-autonomy/008-status.md`; current provider/permission/security/sandbox/session-selection architecture |
 | Context continuity and multi-compaction coherence | M001+M002+M003+M004 closed | `plans/subsystems/context-continuity-compaction-roadmap.md`; four implementation plans under `plans/implementation/context-continuity-compaction/`; `plans/closure/context-continuity-compaction/001-status.md`; `plans/closure/context-continuity-compaction/002-status.md`; `plans/closure/context-continuity-compaction/003-status.md`; `plans/closure/context-continuity-compaction/004-status.md`; current compaction/goal/session/artifact architecture |
 | Dependency security and workspace consolidation | M006 closed; M005 blocked | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md`; `plans/implementation/dependency-security-workspace-consolidation/006-rustls-advisory-remediation-and-planning-reconciliation.md`; M001-M006 closure records; current `Cargo.toml`/`Cargo.lock` |
+| HTTP client maintenance consolidation | M001 ready | `plans/subsystems/http-client-maintenance-consolidation-roadmap.md`; `plans/implementation/http-client-maintenance-consolidation/001-eggfetch-0.1.5-policy-and-body-ownership.md`; closed original HTTP-client consolidation M001-M003 as predecessor evidence |
 | Upstream tool-surface compatibility corrective | closed | `plans/subsystems/tool-surface-upstream-compatibility-corrective-addendum.md`; M008 and M009 closure records |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
@@ -188,45 +192,3 @@ Verification remains deliberately light. Newly registered milestones may add foc
 The long-horizon work roadmap may add deterministic WorkPlan/Goal/Todo/context-transition/restart scenarios and force small context limits with scripted providers. It MUST NOT add live-provider CI, a second history/compaction store, a generic workflow engine, or an unbounded plan dump/benchmark gate.
 
 The execution-reliability/approval roadmap may add deterministic provider fault streams, retry/side-effect fixtures, permission/reviewer/sandbox matrices, preference restart tests, and the existing supported-Linux sandbox fixture. It MUST NOT add live-provider CI, a permanent chaos service, a new authorization engine, a second scheduler, a new cross-platform sandbox framework, or network-containment claims without an actual backend.
-
-The dependency security/workspace roadmap may use `cargo audit`, `cargo tree -d`, reverse dependency trees, feature trees, package dry-runs, and `cargo bloat` as temporary local/closure evidence. It MUST NOT turn advisory status, duplicate counts, package counts, or artifact size into new continuous CI gates. M001 may update an existing explicit audit ignore only when reachability/applicability evidence changes. M002 must prove feature equivalence rather than centralizing maximal feature unions. M004 may run `cargo package` dry-runs but MUST NOT publish automatically. M005 remains blocked until its external package interface exists. M006 may perform only targeted Rustls/required-companion updates and focused Eggfetch/provider/TLS-consumer verification; it MUST NOT add an advisory ignore, broad lockfile update, TLS framework, or public-network CI test.
-
-The HTTP client consolidation roadmap may use deterministic loopback HTTP/TLS/SSE fixtures plus temporary `rg`/`cargo tree` dependency censuses for closure evidence. It MUST NOT add network-dependent CI, a permanent dependency scanner, a binary-size threshold, or a generic HTTP abstraction solely for verification.
-
-The upstream tool-surface corrective may use deterministic modern/legacy MCP fixtures and one optional local real-binary smoke for closure evidence. It MUST NOT add a permanent compatibility matrix, scheduled upstream smoke, network-dependent CI check, duplicate search cache, or duplicate progressive-discovery framework.
-
-Repository-surface M001 may repair the existing project-catalog guard and use temporary census commands for documentation review, but it MUST NOT introduce a permanent docs-lint framework or network-dependent CI check.
-
-The context-continuity roadmap may add focused deterministic checkpoint-store, compaction, restart, cancellation, and repeated-trajectory tests. Its closure may force small effective context limits with local fake providers, but MUST NOT add live-provider/network CI, a new benchmark gate, a vector-history service, or another permanent verification framework.
-
-Normal broad local posture remains:
-
-```text
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-scripts/verify.sh quick
-```
-
-Hosted `CI / verify` is closure evidence only where the existing closure convention or an exact operational condition requires it.
-
-## Deferred unregistered product work
-
-These remain outside active handoff unless concrete product priority/evidence makes them dependency-ready:
-
-- distribution expansion beyond the closed Linux/macOS binary+installer slice, including Homebrew/deb/rpm/Nix, Windows installer support, signing/notarization, SBOM/provenance and package-manager automation;
-- expanding Windows from opportunistic compatibility to a guaranteed support tier;
-- full web/desktop/mobile frontends;
-- arbitrary LSP `workspace/executeCommand` support;
-- binary topology split or separate daemon/TUI packaging without measured deployment need;
-- replacing RustPython with a custom Tool Program parser;
-- production hosted Tool Program transport;
-- seccomp, namespace, container, or remote-execution sandbox expansion;
-- persistent search indexing;
-- deletion of the explicitly configured legacy search fallback absent new compatibility evidence;
-- automatic dependency-update bots or continuous binary-size/audit gates;
-- OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now closed;
-- generalized OAuth/provider credential-store unification absent a token-set abstraction justified by multiple consumers;
-- remote workspace/node/distributed execution phases until identity/audit dependencies make them ready;
-- release automation or a fixed release cadence;
-- upstreaming the validated-destination/SSRF policy into Eggfetch or creating a generic network-policy crate before a second independent consumer justifies that boundary;
-- replacing Axum/Tower with Eggserve or adding Eggress/greggd solely for Eggstack component uniformity.
