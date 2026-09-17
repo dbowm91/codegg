@@ -333,7 +333,7 @@ Class: capability / security
 
 Plan: `plans/implementation/project-work-orders-task-view/005-external-task-trigger-endpoint.md`
 
-Status: ready (M002 closed; M004 closed — ordering gate satisfied).
+Status: closed (`plans/closure/project-work-orders-task-view/005-status.md`; implementation `f22c9d8d`).
 
 Add high-entropy one-purpose task-trigger secrets, verifier-only storage, authenticated/idempotent POST endpoint, expiry/max-fire/revocation, audit, occurrence gate latching, and replay/race protection.
 
@@ -345,7 +345,7 @@ Class: capability / security
 
 Plan: `plans/implementation/project-work-orders-task-view/006-agent-work-order-tool-and-batches.md`
 
-Status: blocked on M002 closure; scheduled after M005.
+Status: ready (M002 closed; M005 closed — ordering gate satisfied).
 
 Add a distinct model-facing WorkOrder tool/service (not delegated `TaskTool`) supporting bounded single/batch creation, atomic lane ordering, parent lineage, authority inheritance/narrowing, and fan-out/repeat/depth limits.
 

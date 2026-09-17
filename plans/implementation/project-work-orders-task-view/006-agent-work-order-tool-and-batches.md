@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M006 — Agent WorkOrder Tool and Atomic Sequential Batches
 
-Status: blocked
+Status: ready
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
