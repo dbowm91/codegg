@@ -922,6 +922,15 @@ pub enum CoreResponse {
         max_list_items: usize,
         max_workspaces_per_project: usize,
     },
+    /// Project Work Orders M004: bounded global Workspace dashboard.
+    /// One aggregate row per authorized project; the TUI must use this
+    /// instead of per-project `WorkOrderList`/`SessionList` fan-out.
+    WorkspaceDashboard {
+        rows: Vec<crate::work_order::ProjectActivitySummaryDto>,
+        #[serde(default)]
+        next_cursor: Option<String>,
+        truncated: bool,
+    },
     /// Phase 3: run summaries returned from `RunList`.
     RunList {
         workspace_id: String,
@@ -1753,6 +1762,21 @@ pub enum CoreRequest {
         workspace_id: String,
     },
     ProjectCatalogCapabilities,
+    /// Project Work Orders M004: bounded global Workspace dashboard.
+    /// Enumeration-style: returns only projects visible to the bound
+    /// principal (`project.read`). Per-row counts additionally require
+    /// `session.read`; rows without it carry `counts_visible == false`
+    /// with zeroed counts. `cursor` is the last `project_id` of the
+    /// previous page; `limit` clamps to
+    /// `work_order::MAX_WORKSPACE_DASHBOARD_LIMIT`.
+    WorkspaceDashboard {
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        include_archived: bool,
+    },
     /// Phase 3: list runs visible from the workspace's RunStore. The
     /// run query parameters mirror `RunStore::list_runs`.
     RunList {

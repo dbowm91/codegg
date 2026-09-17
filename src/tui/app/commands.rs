@@ -1120,6 +1120,29 @@ pub enum TuiCommand {
         request_id: u64,
         error: Option<String>,
     },
+    /// Project Work Orders M004: global dashboard page completion. One
+    /// bounded aggregate replaces the whole cache when `generation`
+    /// and `reconnect_epoch` are current; stale completions drop.
+    /// Revoked projects vanish via whole-page replacement.
+    WorkspaceDashboardLoaded {
+        request_id: u64,
+        generation: u64,
+        reconnect_epoch: u64,
+        rows: Vec<crate::protocol::work_order::ProjectActivitySummaryDto>,
+        truncated: bool,
+        next_cursor: Option<String>,
+        error: Option<String>,
+    },
+    /// Project Work Orders M004: lazy inline expansion for the
+    /// selected project (one bounded `WorkOrderList`, never N+1).
+    WorkspaceDashboardExpanded {
+        request_id: u64,
+        generation: u64,
+        reconnect_epoch: u64,
+        project_id: String,
+        tasks: Vec<crate::protocol::work_order::WorkOrderDto>,
+        error: Option<String>,
+    },
 }
 
 /// Send a command on the bounded TUI effect channel.

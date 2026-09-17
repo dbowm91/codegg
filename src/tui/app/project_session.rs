@@ -177,6 +177,11 @@ impl App {
         if let Some(project_id) = self.active_project_id().map(str::to_string) {
             crate::tui::commands::chat::start_chat_history(self, project_id);
         }
+        // Project Work Orders M004: reconnect rebuilds the open
+        // dashboard from the daemon projection (fresh generation, one
+        // bounded request); stale cached counts never survive an
+        // epoch change and revocation clears via whole-page replace.
+        crate::tui::commands::workspace_dashboard::resync_dashboard_after_reconnect(self);
     }
 
     /// Presence M002: route a daemon `PresenceUpdated { project_id }`

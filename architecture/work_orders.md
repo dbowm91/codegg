@@ -346,6 +346,59 @@ User-facing project Task mode for the reference TUI
   `Schedule*` access and the protocol is preserved. No legacy
   `Task*` protocol returns.
 
+## Global Workspace dashboard (M004)
+
+One bounded daemon-owned aggregate for every authorized project
+(`src/core/daemon_workspace_dashboard.rs`,
+`crates/codegg-protocol/src/work_order.rs`
+`ProjectActivitySummaryDto`,
+`CoreRequest::WorkspaceDashboard` /
+`CoreResponse::WorkspaceDashboard`):
+
+- Rows carry coarse counts only — running/waiting/future/attention
+  WorkOrders, running sessions, pending permission/question counts —
+  plus a closed status code (`permission`, `question`, `attention`,
+  `failed`, `running`, `waiting`, `idle`, `archived`) and
+  `last_activity_at`. No prompt, path, secret, diff, or reasoning.
+  `waiting` counts release-pending occurrence instances while
+  `future` counts durable active/paused templates (M001 creates no
+  occurrence rows before release, so a delayed template is future
+  work, not a waiting instance).
+- Ordering is deterministic (attention, running activity, recency,
+  name, id) with cursor pagination; pages clamp to
+  `MAX_WORKSPACE_DASHBOARD_LIMIT` (128, the catalog bound).
+- Authorization is enumeration-style (`workspace_dashboard`,
+  `Enumeration` + `project.read`, same preamble as `project_list`):
+  rows are privacy-filtered to visible projects and per-row counts
+  additionally require `session.read`. Callers with `project.read`
+  but without `session.read` keep project presence with
+  `counts_visible == false` and zeroed counts (explicit Viewer
+  decision: the current role matrix grants Viewers `session.read`,
+  so Viewers see counts; the zeroed branch is reserved for future
+  least-privilege grants and is unit-pinned).
+- No eager activation by construction: the handler touches only the
+  probe-free catalog listing, indexed `COUNT(*)`/`MAX(updated_at)`
+  aggregates, the in-memory session registry, and the team store —
+  never LSP, Git, provider, build, or workspace services (static
+  assertion in `daemon_workspace_dashboard::tests`). No storage
+  migration: the projection derives from canonical stores on
+  request; caches are rebuildable and never authoritative.
+- TUI (`src/tui/commands/workspace_dashboard.rs`,
+  `src/tui/app/state/workspace_dashboard.rs`,
+  `src/tui/components/dialogs/workspace_dashboard.rs`): one
+  aggregate request per refresh (no N+1 fan-out, fake-client counted
+  in tests); `Dialog::WorkspaceDashboard` overlay preserves the
+  active tab/session and `Esc` pops back without reloads; `j`/`k`,
+  arrows, `g`/`G`, type-to-filter, `Tab` expand (one bounded
+  `WorkOrderList` for the selected project only), `Ctrl+R` refresh;
+  `Enter` focuses/opens the project tab and opens its Task view
+  through existing machinery (no second tab model, no fabricated
+  sessions). Event hints mark rows dirty without focus theft;
+  reconnect resyncs from the daemon; revocation clears via
+  whole-page replacement. `/workspace` and the configurable
+  `OpenWorkspaceDashboard` action (`Ctrl+O`, vim `W`) open the same
+  view; collision audit and help entries cover both.
+
 ## Related docs
 
 - [authorization.md](authorization.md) — project-scoped capability

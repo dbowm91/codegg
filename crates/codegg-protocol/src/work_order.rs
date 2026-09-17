@@ -312,6 +312,91 @@ pub struct WorkOrderCapabilitiesDto {
     pub max_lane_members: usize,
 }
 
+// ── Global Workspace dashboard projection (M004) ─────────────────────
+//
+// One bounded daemon-owned aggregate row per authorized project. The
+// TUI MUST use `CoreRequest::WorkspaceDashboard` (one request) instead
+// of fanning out per-project `WorkOrderList`/`SessionList` calls (N+1).
+//
+// Privacy: rows carry coarse counts and a closed-set status code only.
+// No prompt, command argument, filesystem path, trigger secret,
+// provider secret, diff body, or hidden reasoning belongs here.
+// `counts_visible == false` means the caller holds `project.read` (so
+// the project row itself is already visible via `ProjectList`) but
+// lacks `session.read` on that project: counts are zeroed rather than
+// omitted so row presence reveals nothing beyond `ProjectList`.
+
+/// Maximum projects returned by one `WorkspaceDashboard` page.
+/// Matches the catalog bound so the dashboard never exceeds the
+/// catalog's cheap/probe-free listing budget.
+pub const MAX_WORKSPACE_DASHBOARD_LIMIT: u32 = 128;
+
+/// Default page size when the caller passes no limit.
+pub const DEFAULT_WORKSPACE_DASHBOARD_LIMIT: u32 = 64;
+
+/// Closed coarse status vocabulary for dashboard rows. Labels are
+/// coarse on purpose (`permission`, not the underlying request).
+pub const WORKSPACE_DASHBOARD_STATUS_CODES: &[&str] = &[
+    "permission",
+    "question",
+    "attention",
+    "failed",
+    "running",
+    "waiting",
+    "idle",
+    "archived",
+];
+
+/// One bounded global-dashboard row for a single authorized project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectActivitySummaryDto {
+    pub project_id: String,
+    pub display_name: String,
+    /// Coarse lifecycle string from the catalog (`active`, `archived`,
+    /// ...). Never probed: the dashboard does not initialize LSP, Git,
+    /// provider, build, or workspace services.
+    pub lifecycle: String,
+    /// Live sessions in the daemon's in-memory runtime registry for
+    /// this project with an active turn or `Running` status.
+    pub running_session_count: u64,
+    /// Occurrences in `claiming`/`running`.
+    pub running_work_order_count: u64,
+    /// Occurrences in `waiting`/`ready`.
+    pub waiting_work_order_count: u64,
+    /// Durable future templates (`active` + `paused` work orders).
+    pub future_work_order_count: u64,
+    /// Occurrences in `needs_attention` plus `failed` (both demand
+    /// human attention; the distinction is visible in the Task view).
+    pub needs_attention_count: u64,
+    /// Pending human permission requests (count only, never content).
+    pub pending_permission_count: u64,
+    /// Pending structured questions (count only, never content).
+    pub pending_question_count: u64,
+    /// Max durable activity timestamp observed (`work_order.updated_at`
+    /// / occurrence `updated_at`, else catalog `updated_at`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<i64>,
+    /// One of [`WORKSPACE_DASHBOARD_STATUS_CODES`].
+    pub coarse_status_code: String,
+    /// `false` when the caller sees project presence (`project.read`)
+    /// but lacks `session.read`: counts above are zeroed.
+    #[serde(default = "default_counts_visible")]
+    pub counts_visible: bool,
+}
+
+fn default_counts_visible() -> bool {
+    true
+}
+
+impl ProjectActivitySummaryDto {
+    /// `true` when the row carries no sensitive content beyond coarse
+    /// counts and closed-set labels.
+    pub fn is_redacted(&self) -> bool {
+        !(self.display_name.contains("secret") || self.coarse_status_code.contains("secret"))
+            && WORKSPACE_DASHBOARD_STATUS_CODES.contains(&self.coarse_status_code.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -711,6 +711,7 @@ impl App {
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
+                workspace_dashboard: None,
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -1201,6 +1202,7 @@ impl App {
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
+                workspace_dashboard: None,
             },
             agent_state: AgentState {
                 snapshot: None,
@@ -2224,6 +2226,9 @@ impl App {
             Some(InputAction::ToggleComposerMode) => {
                 self.process_msg(TuiMsg::ToggleComposerMode);
             }
+            Some(InputAction::OpenWorkspaceDashboard) => {
+                self.process_msg(TuiMsg::OpenWorkspaceDashboard);
+            }
             Some(InputAction::Command) => {
                 self.ui_state.command_mode = true;
                 self.prompt_state.prompt.insert_char(':');
@@ -2269,6 +2274,12 @@ impl App {
         match self.focus_manager.active_dialog_type() {
             DialogType::ProjectPicker => {
                 self.handle_project_picker_key(key);
+                return;
+            }
+            DialogType::WorkspaceDashboard => {
+                crate::tui::commands::workspace_dashboard::handle_workspace_dashboard_key(
+                    self, key,
+                );
                 return;
             }
             DialogType::Keybind => {
@@ -4132,6 +4143,12 @@ impl App {
             }
             "/task" => {
                 crate::tui::commands::work_orders::open_task_view(self);
+            }
+            "/workspace" => {
+                // Project Work Orders M004: `/workspace` opens the same
+                // global bounded dashboard as the `OpenWorkspaceDashboard`
+                // hotkey (Ctrl+O / W).
+                crate::tui::commands::workspace_dashboard::open_workspace_dashboard(self);
             }
             "/schedules" => {
                 if let Some(ref tx) = self.tui_cmd_tx {
@@ -7119,6 +7136,20 @@ impl App {
                 self.dialog_state.task_view.generation =
                     self.dialog_state.task_view.generation.wrapping_add(1);
                 self.dialog_state.task_view.loading = false;
+            }
+            Dialog::WorkspaceDashboard => {
+                // Dashboard close never cancels daemon-owned work: only
+                // frontend dashboard requests are dropped. The
+                // generation bump makes late completions stale. The
+                // return tab stays alive underneath; Esc simply pops
+                // back to the exact prior project/session view.
+                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                    dashboard.generation = dashboard.generation.wrapping_add(1);
+                    dashboard.loading = false;
+                    dashboard.request.cancel();
+                }
+                self.dialog_state.workspace_dashboard = None;
             }
             _ => {}
         }

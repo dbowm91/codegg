@@ -388,6 +388,10 @@ impl CommandRegistry {
             Command::new("/task", CommandCategory::Agent, Some(Dialog::TaskView))
                 .with_aliases(&["/task-view"])
                 .with_description("Open the project Task view (WorkOrders)"),
+            Command::new("/workspace", CommandCategory::System, Some(Dialog::WorkspaceDashboard))
+                .with_description(
+                    "Global Workspace dashboard: every authorized project with running, future, and attention state (hotkey Ctrl+O / W)",
+                ),
             Command::new("/schedules", CommandCategory::Agent, None)
                 .with_description(
                     "Low-level schedule diagnostics (recurring Subagent templates; project tasks live in /tasks)",
@@ -864,7 +868,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 144);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 145);
     }
 
     #[test]

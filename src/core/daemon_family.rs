@@ -138,6 +138,7 @@ impl DaemonRequestFamily {
             CoreRequest::ProjectGet { .. } => Self::Projects,
             CoreRequest::ProjectHealth { .. } => Self::Projects,
             CoreRequest::ProjectList { .. } => Self::Projects,
+            CoreRequest::WorkspaceDashboard { .. } => Self::Projects,
             CoreRequest::ProjectRegister { .. } => Self::Projects,
             CoreRequest::ProjectRestore { .. } => Self::Projects,
             CoreRequest::SnapshotDaemon => Self::Projects,

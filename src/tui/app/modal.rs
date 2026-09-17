@@ -398,6 +398,10 @@ impl App {
                 // Mounted directly by `open_task_view`/`refresh_task_view`
                 // with the live projection; see `work_orders.rs`.
             }
+            Dialog::WorkspaceDashboard => {
+                // Mounted directly by `open_workspace_dashboard` with a
+                // fresh generation; see `workspace_dashboard.rs`.
+            }
             Dialog::ConnectionSelection => {
                 if let Some(ref dialog) = self.dialog_state.connection_selection_dialog {
                     self.focus_manager.push(Box::new(dialog.clone()));

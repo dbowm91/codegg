@@ -644,6 +644,21 @@ impl App {
             TuiMsg::TaskViewDetail => {
                 crate::tui::commands::work_orders::fetch_selected_task_detail(self);
             }
+            TuiMsg::OpenWorkspaceDashboard => {
+                crate::tui::commands::workspace_dashboard::open_workspace_dashboard(self);
+            }
+            TuiMsg::WorkspaceDashboardMove { delta } => {
+                crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, delta);
+            }
+            TuiMsg::WorkspaceDashboardOpen => {
+                crate::tui::commands::workspace_dashboard::open_selected_dashboard_project(self);
+            }
+            TuiMsg::WorkspaceDashboardRefresh => {
+                crate::tui::commands::workspace_dashboard::refresh_workspace_dashboard(self);
+            }
+            TuiMsg::WorkspaceDashboardToggleExpand => {
+                crate::tui::commands::workspace_dashboard::toggle_dashboard_expand(self);
+            }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {
                     if let Some(ref tx) = self.tui_cmd_tx {

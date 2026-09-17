@@ -46,6 +46,10 @@ pub enum Dialog {
     /// Project Work Orders M003: project Task view (running/waiting/
     /// attention/recent). FocusManager-owned; see `task_view.rs`.
     TaskView,
+    /// Project Work Orders M004: global Workspace dashboard (bounded
+    /// per-project activity rows). FocusManager-owned; see
+    /// `workspace_dashboard.rs`. Not a durable Workspace object.
+    WorkspaceDashboard,
 }
 
 impl Dialog {
@@ -93,6 +97,7 @@ impl Dialog {
                 | Self::ProjectChat
                 | Self::TaskSchedule
                 | Self::TaskView
+                | Self::WorkspaceDashboard
         )
     }
 }
@@ -373,6 +378,23 @@ pub enum TuiMsg {
     /// Project Work Orders M003: fetch occurrence detail for the
     /// selected row (lazy single-row fetch, never N+1).
     TaskViewDetail,
+    /// Open the global Workspace dashboard (M004).
+    OpenWorkspaceDashboard,
+    /// Project Work Orders M004: move the dashboard selection.
+    WorkspaceDashboardMove {
+        delta: isize,
+    },
+    /// Project Work Orders M004: descend from the dashboard — focus
+    /// the selected project tab and open its Task view (Enter on an
+    /// expanded project with running work goes through the same Task
+    /// view path; the dashboard never fabricates a session).
+    WorkspaceDashboardOpen,
+    /// Project Work Orders M004: bounded dashboard refresh (one
+    /// aggregate request, never N+1).
+    WorkspaceDashboardRefresh,
+    /// Project Work Orders M004: expand/collapse the selected
+    /// project's inline running-task detail (one bounded lazy fetch).
+    WorkspaceDashboardToggleExpand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

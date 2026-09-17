@@ -185,6 +185,22 @@ impl CoreDaemon {
                     max_workspaces_per_project: crate::protocol::dto::MAX_PROJECT_WORKSPACES,
                 })
             }
+            CoreRequest::WorkspaceDashboard {
+                cursor,
+                limit,
+                include_archived,
+            } => {
+                // M004: bounded global aggregate over the catalog plus
+                // cheap durable/in-memory counts. No project activation,
+                // no service probing (see `daemon_workspace_dashboard`).
+                self.handle_workspace_dashboard_request(
+                    cursor,
+                    limit,
+                    include_archived,
+                    trusted_client_id,
+                )
+                .await
+            }
             CoreRequest::ProjectList {
                 include_archived,
                 limit,

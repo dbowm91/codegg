@@ -29,3 +29,4 @@ pub mod template;
 pub mod theme;
 pub mod tree;
 pub mod ui_node;
+pub mod workspace_dashboard;

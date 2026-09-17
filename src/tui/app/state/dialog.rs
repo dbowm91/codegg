@@ -111,4 +111,9 @@ pub struct DialogState {
     pub terminal_request: crate::tui::app::state::AsyncUiRequestState,
     /// Project picker dialog state (Milestone 2).
     pub project_picker: Option<crate::tui::app::state::ProjectPickerState>,
+    /// Project Work Orders M004: cached global Workspace dashboard
+    /// projection (`None` = dashboard closed). Daemon-owned truth;
+    /// this is a bounded display cache only. Entering/leaving never
+    /// cancels daemon work.
+    pub workspace_dashboard: Option<crate::tui::app::state::WorkspaceDashboardState>,
 }

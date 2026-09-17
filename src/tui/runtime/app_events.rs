@@ -26,6 +26,18 @@ pub(crate) fn handle_app_event_batch(app: &mut App, events: Vec<AppEvent>) -> bo
 fn handle_routed_event(app: &mut App, event: AppEvent) -> bool {
     let active_tab_id = app.project_tabs.active_tab_id().cloned();
     let active_view_epoch = app.view_switch.active_view_epoch;
+    // Project Work Orders M004: event-hint → bounded dashboard refresh.
+    // The dashboard marks the affected row (or the whole view) dirty
+    // without stealing focus; a count/badge is enough until the user
+    // refreshes or descends. Inactive permission/question events only
+    // increment the badge — no global modal ever auto-opens.
+    if app.dialog_state.workspace_dashboard.is_some() {
+        if let Some(project) =
+            crate::tui::commands::workspace_dashboard::dashboard_hint_project(app, &event)
+        {
+            crate::tui::commands::workspace_dashboard::note_dashboard_hint(app, project.as_deref());
+        }
+    }
     let decision = classify_event(
         &event,
         &app.routing_registry,

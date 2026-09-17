@@ -555,7 +555,9 @@ impl CoreDaemon {
             });
         };
         let service = AuthorizationService::new(codegg_core::team::TeamStore::new(pool.clone()));
-        if descriptor.scope_kind == ScopeKind::Enumeration && descriptor.operation == "project_list"
+        if descriptor.scope_kind == ScopeKind::Enumeration
+            && (descriptor.operation == "project_list"
+                || descriptor.operation == "workspace_dashboard")
         {
             return service
                 .authorize_enumeration(authority.principal(), descriptor.operation, &correlation)

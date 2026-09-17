@@ -446,6 +446,19 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::ProjectCatalogCapabilities => {
             OperationDescriptor::new("project_catalog_capabilities", ScopeKind::Global, None)
         }
+        // ── Project Work Orders M004: Global Workspace Dashboard ──
+        //
+        // Enumeration-style like `project_list`: the daemon returns only
+        // projects where the caller holds `project.read`. Per-row
+        // task/session counts additionally require `session.read` on
+        // that project (checked per row in the handler); rows without
+        // it carry `counts_visible == false` with zeroed counts so row
+        // presence reveals nothing beyond `ProjectList`.
+        R::WorkspaceDashboard { .. } => OperationDescriptor::new(
+            "workspace_dashboard",
+            ScopeKind::Enumeration,
+            Some(Capability::ProjectRead),
+        ),
         R::RunList { .. } => {
             OperationDescriptor::new("run_list", ScopeKind::Opaque, Some(Capability::SessionRead))
         }
@@ -1281,6 +1294,11 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             workspace_id: String::new(),
         },
         R::ProjectCatalogCapabilities,
+        R::WorkspaceDashboard {
+            cursor: None,
+            limit: None,
+            include_archived: false,
+        },
         R::RunList {
             workspace_id: String::new(),
             query: dummy_run_query(),

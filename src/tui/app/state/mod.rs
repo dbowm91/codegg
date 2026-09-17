@@ -21,6 +21,7 @@ pub mod snapshot;
 pub mod ui;
 pub mod view_switch;
 pub mod work_orders;
+pub mod workspace_dashboard;
 
 pub use agent::AgentState;
 pub use async_request::AsyncUiRequestState;
@@ -71,4 +72,9 @@ pub use work_orders::{
     TaskModelChoice, TaskScheduleDraft, TaskSheetField, TaskViewRow, TaskViewSection,
     TaskViewState, ValidatedSchedule, MAX_DELAY_SECS, MAX_REPEAT_COUNT, MAX_SECTION_ROWS,
     MAX_TASK_VIEW_ROWS,
+};
+pub use workspace_dashboard::{
+    dashboard_row_badge, WorkspaceDashboardRow, WorkspaceDashboardState,
+    MAX_DASHBOARD_EXPANDED_TASKS, MAX_DASHBOARD_FILTER_LEN, MAX_DASHBOARD_ROWS,
+    MAX_DASHBOARD_VISIBLE_ROWS,
 };

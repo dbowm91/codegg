@@ -1248,6 +1248,44 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, error,
             );
         }
+        TuiCommand::WorkspaceDashboardLoaded {
+            request_id,
+            generation,
+            reconnect_epoch,
+            rows,
+            truncated,
+            next_cursor,
+            error,
+        } => {
+            super::super::commands::workspace_dashboard::apply_dashboard_loaded(
+                app,
+                request_id,
+                generation,
+                reconnect_epoch,
+                rows,
+                truncated,
+                next_cursor,
+                error,
+            );
+        }
+        TuiCommand::WorkspaceDashboardExpanded {
+            request_id,
+            generation,
+            reconnect_epoch,
+            project_id,
+            tasks,
+            error,
+        } => {
+            super::super::commands::workspace_dashboard::apply_dashboard_expanded(
+                app,
+                request_id,
+                generation,
+                reconnect_epoch,
+                project_id,
+                tasks,
+                error,
+            );
+        }
         TuiCommand::NotificationSent { error } => {
             apply_notification_sent(app, error);
         }

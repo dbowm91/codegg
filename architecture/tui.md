@@ -565,9 +565,12 @@ Async request states: `import_request`, `research_request`,
 `session_messages_request`, `test_run_request`, `terminal_request`.
 
 `DialogState` also holds the M003 Task sheet draft
-(`task_schedule_draft`, `None` = closed) and the bounded project Task
+(`task_schedule_draft`, `None` = closed), the bounded project Task
 view cache (`task_view`: rows/summary/lanes/selection/generation —
-display only, daemon owns truth).
+display only, daemon owns truth), and the M004 global dashboard cache
+(`workspace_dashboard: Option<WorkspaceDashboardState>` — rows,
+filter/selection, generation, return tab, one inline expansion;
+`None` = closed, display only, daemon owns truth).
 
 Pending fields: `permission_perm_id`, `question_session_id`,
 `pending_delete_session`, `pending_archive_session`,
@@ -590,7 +593,7 @@ pub enum Dialog {
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
-    TaskSchedule, TaskView,
+    TaskSchedule, TaskView, WorkspaceDashboard,
 }
 ```
 
@@ -613,7 +616,7 @@ pub enum DialogType {
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, Collaborators, ProjectChat,
-    ProjectPicker, TaskSchedule, TaskView, None,
+    ProjectPicker, TaskSchedule, TaskView, WorkspaceDashboard, None,
 }
 ```
 
@@ -631,6 +634,21 @@ synced from `DialogState.task_view` (RUNNING / FUTURE-WAITING /
 NEEDS-ATTENTION / RECENT). `j`/`k`/arrows navigate, Shift+J/K reorder
 waiting lane members, Enter opens materialized sessions (future rows
 fetch detail), `r`/`d`/`x`/`u` refresh/detail/cancel/resume.
+
+`WorkspaceDashboard` is the M004 global dashboard
+(`components/dialogs/workspace_dashboard.rs`,
+`commands/workspace_dashboard.rs`, `app/state/workspace_dashboard.rs`):
+renders the `WorkspaceDashboardSnapshot` synced from
+`DialogState.workspace_dashboard` (one coarse row per authorized
+project). One `WorkspaceDashboard` aggregate per refresh (never N+1);
+`j`/`k`/arrows/`g`/`G` navigate, bare text filters (picker
+convention), `Tab` expands one project's running tasks (single bounded
+`WorkOrderList`), `Ctrl+R` refreshes, `Enter` focuses the project tab
+and opens its Task view, `Esc` pops back with the tab/session alive.
+Event hints mark rows dirty without focus theft; reconnect resyncs;
+revocation clears via whole-page replacement. Opened by `/workspace`
+and the configurable `OpenWorkspaceDashboard` action (`Ctrl+O`, vim
+`W`).
 
 `Dialog` and `DialogType` have exhaustive compatibility conversions. The
 canonical lifecycle identity is the live component's `DialogType`; the

@@ -153,6 +153,11 @@ pub enum InputAction {
     /// cycling, so Task-mode selection never collides with the existing
     /// agent selector.
     ToggleComposerMode,
+    /// Project Work Orders M004: open the global Workspace dashboard
+    /// (bounded per-project activity rows). The dashboard is an
+    /// overlay: entering preserves the active session/tab and `Esc`
+    /// returns without reloading unrelated state.
+    OpenWorkspaceDashboard,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -206,6 +211,7 @@ pub enum ActionKey {
     PreviousProjectTab,
     CloseProjectTab,
     ToggleComposerMode,
+    OpenWorkspaceDashboard,
 }
 
 /// Declarative metadata shared by the keybinding editor and discovery/help
@@ -270,6 +276,7 @@ impl ActionKey {
             Self::PreviousProjectTab,
             Self::CloseProjectTab,
             Self::ToggleComposerMode,
+            Self::OpenWorkspaceDashboard,
         ]
     }
 
@@ -323,6 +330,7 @@ impl ActionKey {
             Self::PreviousProjectTab => InputAction::PreviousProjectTab,
             Self::CloseProjectTab => InputAction::CloseProjectTab,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
+            Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
         }
     }
 
@@ -376,6 +384,7 @@ impl ActionKey {
             Self::PreviousProjectTab => "Previous project tab",
             Self::CloseProjectTab => "Close project tab",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
+            Self::OpenWorkspaceDashboard => "Open workspace dashboard",
         }
     }
 
@@ -583,6 +592,13 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('g')),
         InputAction::ToggleComposerMode,
     );
+    // Ctrl+O opens the global Workspace dashboard (M004). Unbound
+    // before: no default used Ctrl+O (the keybind-audit test pins
+    // this), so the dashboard hotkey collides with nothing.
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('o')),
+        InputAction::OpenWorkspaceDashboard,
+    );
     map
 }
 
@@ -747,6 +763,17 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::CONTROL, KeyCode::Char('g')),
         InputAction::ToggleComposerMode,
     );
+    // W opens the global Workspace dashboard in vim normal mode
+    // (mnemonic: Workspace; Q stays close-tab, q stays quit). Ctrl+O
+    // matches insert mode for consistency.
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Char('W')),
+        InputAction::OpenWorkspaceDashboard,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('o')),
+        InputAction::OpenWorkspaceDashboard,
+    );
 
     map
 }
@@ -902,6 +929,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
+            key: "Ctrl+O",
+            action: "Open workspace dashboard",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
             key: "PgUp/PgDn",
             action: "Scroll viewport",
             condition: None,
@@ -1050,6 +1083,18 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             key: "Ctrl+G",
             action: "Toggle composer mode (Session/Task)",
             condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+O",
+            action: "Open workspace dashboard",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "W",
+            action: "Open workspace dashboard",
+            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,

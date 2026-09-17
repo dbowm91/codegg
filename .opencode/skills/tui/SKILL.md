@@ -29,8 +29,9 @@ root and lifecycle modules.
 | `src/tui/app/prompt_turn.rs` | Prompt submission and route-safe turn start |
 | `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
-| `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope, `async_request.rs` holds the finish/fail guard, and `work_orders.rs` owns Task composer/sheet/view pure state (mode, validation, grouping, reorder math) |
+| `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope, `async_request.rs` holds the finish/fail guard, `work_orders.rs` owns Task composer/sheet/view pure state (mode, validation, grouping, reorder math), and `workspace_dashboard.rs` owns global dashboard pure state (filter/nav/generation/dirty/revocation) |
 | `src/tui/commands/work_orders.rs` | Project Task flows: composer toggle, sheet prefetch/confirm, `WorkOrderCreate`, Task view refresh/reorder/mutate/open, `/tasks` migration — all spawn-and-complete with route+generation stale guards |
+| `src/tui/commands/workspace_dashboard.rs` | Global dashboard flows: open/refresh (one `WorkspaceDashboard` aggregate), expand (one bounded `WorkOrderList`), descend via project tabs + Task view, `/workspace` — generation+epoch stale guards, hint-dirty without focus theft |
 | `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
 | `src/tui/commands/` | command-handler submodules (see `mod.rs` for the current set) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |

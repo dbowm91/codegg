@@ -61,6 +61,7 @@ pub enum DialogType {
     ProjectPicker,
     TaskSchedule,
     TaskView,
+    WorkspaceDashboard,
     None,
 }
 
@@ -114,6 +115,7 @@ impl From<DialogType> for Dialog {
             DialogType::ProjectChat => Dialog::ProjectChat,
             DialogType::TaskSchedule => Dialog::TaskSchedule,
             DialogType::TaskView => Dialog::TaskView,
+            DialogType::WorkspaceDashboard => Dialog::WorkspaceDashboard,
             DialogType::None => Dialog::None,
         }
     }
@@ -164,6 +166,7 @@ impl From<Dialog> for DialogType {
             Dialog::ProjectChat => DialogType::ProjectChat,
             Dialog::TaskSchedule => DialogType::TaskSchedule,
             Dialog::TaskView => DialogType::TaskView,
+            Dialog::WorkspaceDashboard => DialogType::WorkspaceDashboard,
         }
     }
 }
@@ -262,6 +265,9 @@ mod tests {
             (DialogType::Collaborators, Dialog::Collaborators),
             (DialogType::ProjectChat, Dialog::ProjectChat),
             (DialogType::ProjectPicker, Dialog::ProjectPicker),
+            (DialogType::TaskSchedule, Dialog::TaskSchedule),
+            (DialogType::TaskView, Dialog::TaskView),
+            (DialogType::WorkspaceDashboard, Dialog::WorkspaceDashboard),
             (DialogType::None, Dialog::None),
         ];
 
