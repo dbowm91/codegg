@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M003 — Project Task Composer, Scheduling Sheet, and Task View
 
-Status: blocked
+Status: ready
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 

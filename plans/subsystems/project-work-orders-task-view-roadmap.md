@@ -297,7 +297,7 @@ Class: capability / invariant
 
 Plan: `plans/implementation/project-work-orders-task-view/002-release-coordinator-session-materialization.md`
 
-Status: ready (M001 closed).
+Status: closed (`plans/closure/project-work-orders-task-view/002-status.md`; implementation `c54656e5`).
 
 Implement release gates, finite repeat, sequence progression, atomic occurrence claim, model/policy re-resolution, managed-worktree allocation, canonical session creation, initial AgentTurn submission, cancellation/attention propagation, and restart reconciliation through the existing scheduler boundary.
 
@@ -309,7 +309,7 @@ Class: capability
 
 Plan: `plans/implementation/project-work-orders-task-view/003-project-task-composer-and-view.md`
 
-Status: blocked on M002 closure.
+Status: ready (M002 closed).
 
 Add composer-level Task mode, scheduling dialog, last-task-model preference, ordered project Task view, Vim-like navigation/reorder, migration from thin Schedule `/tasks` presentation, and normal-session focus/steer/cancel behavior after materialization.
 
