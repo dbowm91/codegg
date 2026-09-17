@@ -1,6 +1,6 @@
 # Project Work Orders and Task View Roadmap
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
@@ -285,7 +285,7 @@ Class: infrastructure / invariant
 
 Plan: `plans/implementation/project-work-orders-task-view/001-work-order-domain-storage-protocol.md`
 
-Status: ready.
+Status: closed (`plans/closure/project-work-orders-task-view/001-status.md`; implementation `a856f2e0`).
 
 Add typed WorkOrder/Occurrence/SequenceLane IDs and bounded domain validation, additive durable storage, CAS ordering/update semantics, project-scoped protocol/authorization/audit operations, and bounded projections. Amend canonical terminology/spec relationships to include WorkOrder without redefining existing concepts.
 
@@ -297,7 +297,7 @@ Class: capability / invariant
 
 Plan: `plans/implementation/project-work-orders-task-view/002-release-coordinator-session-materialization.md`
 
-Status: blocked on M001 closure.
+Status: ready (M001 closed).
 
 Implement release gates, finite repeat, sequence progression, atomic occurrence claim, model/policy re-resolution, managed-worktree allocation, canonical session creation, initial AgentTurn submission, cancellation/attention propagation, and restart reconciliation through the existing scheduler boundary.
 

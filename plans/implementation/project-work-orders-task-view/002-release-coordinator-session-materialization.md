@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M002 — Release Coordinator, Session Materialization, and Workspace Isolation
 
-Status: blocked
+Status: ready
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
