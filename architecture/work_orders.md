@@ -468,6 +468,65 @@ server now serves
 `into_make_service_with_connect_info::<SocketAddr>()`, matching the
 long-standing WebSocket test harness pattern.
 
+## Agent WorkOrder tool and atomic batches (M006)
+
+Dedicated model-facing `work_order` tool (`src/tool/work_order.rs`,
+registered in `src/tool/factory.rs` when pool + project scope exist).
+Distinct from delegated `task`/TaskTool: WorkOrders enqueue durable
+future sessions through the canonical M001 `WorkOrderService`, never
+live child runs.
+
+- Actions: `create`, `create_batch`, `list`, `get`. Schemas are bounded
+  and descriptive; unknown actions/fields fail closed. `list`/`get`
+  return `{id, state, short_title}` plus previews, never full prompts.
+- Single `create` derives gates host-side (immediate / delay /
+  not-before / sequence_ready). Batch `create_batch` takes 1..=16
+  ordered `{prompt, title?, repeat_count?}` items plus one optional
+  lane (`new_lane_label` | `existing_lane_id`) and `start_first_now`.
+  First member immediate + rest sequence-ready when requested; otherwise
+  all sequence-ready (lane) or all immediate (lane-free). Lane creation
+  is idempotent on the invocation namespace; batch commit is the M001
+  all-or-none transaction plus idempotent occurrence backfill.
+- `start_first_now` never bypasses `WorkOrderCoordinator`: release still
+  requires gate evaluation (`evaluate_due_for_project`). Tests pin that
+  only the first immediate member becomes ready.
+- Lineage is structural: bound project/session/turn plus durable
+  session->occurrence lookup for `parent_work_order_id`. Model-supplied
+  parent/project/gate/trigger fields are rejected as host-owned.
+- Authority narrowing per call from `ToolExecutionContext`
+  (`permission_mode`, `sandbox_profile`): broader approval/sandbox
+  rejected, never silently narrowed. Default model is the creating
+  session effective model (bound `parent_model`), never the human
+  Task-mode preference. Optional allowlist enforces model scope in
+  tests; production defers unknown models to claim-time
+  `model_unavailable` attention. External-trigger gates are never
+  created and trigger secrets never cross the tool.
+- Host bounds (durable, restart-safe): batch 16, batch total 64 KiB,
+  per-item prompt 32 KiB, agent repeat 8 (human 256), depth 4, per-turn
+  32, pending per project 100, descendants per root 32. The reviewer
+  (`caller_class approval-reviewer`) cannot invoke the tool.
+- Idempotency: `aw:{invocation}[:{explicit}]` (+ `:single`/`:batch`/
+  `:item#{i}` suffixes) truncated/hashed to 128 bytes as the M001
+  submission/batch key. Retries converge; conflicting payloads surface
+  `idempotency conflict`; distinct calls never dedupe on text alone.
+- Results are bounded (`created`, `lane`, `items[{id, position, state,
+  short_title}]`, `first_release`). No scheduler/`AgentLoop`/session/
+  job/worktree/provider construction from the tool
+  (`check_work_order_coordinator.py` still green; no new
+  execution-ownership site needed).
+
+```bash
+cargo test -p codegg --lib -- tool::work_order
+cargo test --test work_orders_m006_agent_tool
+```
+
+Integration (`tests/work_orders_m006_agent_tool.rs`): factory separation,
+single lineage, session-model default, ordered batch + lane + gate
+shape, coordinator first-only release, abort/no-partial, lane-conflict
+abort, exact bounds, invocation retry/conflict/distinct, ceiling and
+allowlist negatives, secret-free outputs, turn-budget restart, depth
+chain, plan-file queue trajectory, bounded list/get.
+
 ## Related docs
 
 - [authorization.md](authorization.md) — project-scoped capability

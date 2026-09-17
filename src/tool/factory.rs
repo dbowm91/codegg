@@ -168,7 +168,7 @@ pub fn build_session_tool_registry(
             Some(session_id.to_string()),
             Vec::new(),
         )
-        .with_parent_model(parent_model)
+        .with_parent_model(parent_model.clone())
         .with_orchestration_config(config.orchestration.clone())
         .with_workspace_locks(workspace_locks)
         .with_turn_owner(session_id.to_string(), turn_id.clone().unwrap_or_default())
@@ -186,11 +186,27 @@ pub fn build_session_tool_registry(
                 .with_run_control_opt(run_control.clone())
                 .with_run_group_service(run_group_service.clone())
                 .with_convergence_store(convergence_store.clone())
-                .with_project_context(project_id.clone(), repository_id.clone(), turn_id)
+                .with_project_context(project_id.clone(), repository_id.clone(), turn_id.clone())
         } else {
             task_tool
         };
         tool_registry.register(task_tool);
+    }
+
+    // Register the agent WorkOrder tool (M006) when durability + project
+    // scope are available. Distinct from TaskTool delegation: this creates
+    // durable future sessions through the canonical WorkOrderService, never
+    // live child runs. The bound project/session/turn/effective-model are
+    // daemon-resolved; per-call ceilings come from ToolExecutionContext.
+    if let (Some(pool_for_work_order), Some(work_order_project)) =
+        (pool.clone(), project_id.clone())
+    {
+        let work_order_tool =
+            crate::tool::work_order::WorkOrderTool::new(Some(pool_for_work_order))
+                .with_project(Some(work_order_project))
+                .with_turn_owner(session_id.to_string(), turn_id.clone().unwrap_or_default())
+                .with_effective_model(parent_model.clone());
+        tool_registry.register(work_order_tool);
     }
 
     // Register goal tools.

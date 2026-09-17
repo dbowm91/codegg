@@ -68,6 +68,7 @@ pub mod tool_search;
 pub mod util;
 pub mod webfetch;
 pub mod websearch;
+pub mod work_order;
 pub mod work_plan;
 pub mod write;
 
