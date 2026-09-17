@@ -269,6 +269,36 @@ backfill. Legacy sessions simply have no active plan.
   versioned handoff block, preserves steering/handles, publishes bounded
   `context_epoch:started`. Normal compaction remains default.
 
+## M005 trajectory and recovery qualification
+
+M005 qualified the M001–M004 contracts with no production delta. The
+representative harness is `tests/long_horizon_trajectory_qualification.rs`
+(22 scenarios): a 9-item/3-phase plan with dependency chains, a delegated
+child (`owner_run_id` + `DelegatedRun` evidence), live-then-completing
+Test/Subagent jobs, and user steering after an early phase is driven across
+eight context transitions (repeated `compact_context` + checkpoint
+prepare/install with WorkPlan provenance, plus one policy-gated fresh epoch
+at a verified phase boundary). Per-transition assertions cover objective,
+phase/current item, remaining required work (9→0), next action, steering
+visibility, and stable canonical evidence identity.
+
+Focused scenarios additionally cover Goal-bound trajectories (bound plan
+gates Goal completion; verifier `Met` only after host completion),
+premature-final continuation, verified waits naming the identical handle,
+no-progress nudge → replan → `AwaitingUser` below the emergency cap,
+passing/failed/forged evidence, file-backed reopen (plan mutation, live
+job, post-completion race, prepared/installed boundary), steering/stale
+contention, cancellation (unfinished stays unfinished; close fails closed),
+child-vs-parent races, security negatives (no forged completion, no hidden
+content in diagnostics, epoch preserves execution policy), legacy
+migration paths, bounded projections/diagnostics, missing-artifact
+degradation, and the no-second-compaction/workflow static guard.
+
+Standing results: completed work keeps exactly one attempt per item across
+all resets; canonical job counts never grow due to a reset; complete plans
+terminate with a single turn-end close. Full evidence matrix:
+`plans/closure/long-horizon-work-execution/005-status.md`.
+
 ## Testing
 
 ```bash
@@ -276,6 +306,7 @@ cargo test -p codegg-core --lib -- work_plan
 cargo test -p codegg-core --test work_plan_foundation
 cargo test -p codegg-core --test work_plan_projection_arbiter
 cargo test --test work_plan_projection_arbiter
+cargo test --test long_horizon_trajectory_qualification
 cargo test -p codegg-core -- migration
 ```
 
