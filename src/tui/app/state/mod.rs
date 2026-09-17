@@ -66,12 +66,15 @@ pub use session::SessionState;
 pub use ui::{AppMode, UiState};
 pub use view_switch::ViewSwitchCoordinator;
 pub use work_orders::{
-    attention_label, build_work_order_create, describe_schedule, flat_navigation_order,
-    format_delay_secs, group_task_rows, parse_delay_duration, parse_not_before_ms,
-    parse_repeat_count, prompt_preview, validate_draft, ComposerMode, GateJoin, PendingTaskCreate,
+    attention_label, build_work_order_create, clamp_queue_insert_position, describe_schedule,
+    describe_schedule_full, flat_navigation_order, format_delay_secs, group_task_rows,
+    move_queue_insert_position, parse_delay_duration, parse_not_before_ms, parse_repeat_count,
+    prompt_preview, queue_insert_bounds, trigger_creation_key, trigger_rotation_key,
+    validate_draft, ComposerMode, GateJoin, OneTimeBearer, OneTimeTriggerSecret, PendingTaskCreate,
     TaskModelChoice, TaskScheduleDraft, TaskSheetField, TaskViewRow, TaskViewSection,
-    TaskViewState, ValidatedSchedule, MAX_DELAY_SECS, MAX_REPEAT_COUNT, MAX_SECTION_ROWS,
-    MAX_TASK_VIEW_ROWS,
+    TaskViewState, TriggerSetupStatus, ValidatedSchedule, HUMAN_TRIGGER_REF, MAX_DELAY_SECS,
+    MAX_REPEAT_COUNT, MAX_SECTION_ROWS, MAX_TASK_VIEW_ROWS, MAX_TRIGGER_BEARER_CHARS,
+    MAX_TRIGGER_ID_CHARS,
 };
 pub use workspace_dashboard::{
     dashboard_row_badge, WorkspaceDashboardRow, WorkspaceDashboardState,

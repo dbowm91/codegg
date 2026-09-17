@@ -722,12 +722,14 @@ Project Work Orders M003 completions follow the same pattern through
 `src/tui/commands/work_orders.rs`: `TaskSheetPrefetched`,
 `WorkOrderCreated`, `TaskViewRefreshed`, `TaskOccurrenceLoaded`,
 `LaneReordered`, `TaskMutationFinished`, `TaskSessionFocus`,
-`TaskModelPrefetched`, `TaskModelPrefSaved`. Every completion carries
-its captured `UiRouteToken` plus request/generation identity; stale
-ones (tab switch/close, rebind, reconnect, superseding refresh) drop
-at apply time. Slash surface: `/tasks` and `/task` open the WorkOrder
-Task view (capability-gated, legacy fallback with diagnostic),
-`/schedules` keeps low-level schedule diagnostics.
+`TaskModelPrefetched`, `TaskModelPrefSaved`, plus C001 trigger
+completions `WorkOrderTriggerCreated`, `WorkOrderTriggersListed`, and
+`WorkOrderTriggerRevoked`. Every completion carries its captured
+`UiRouteToken` plus request/generation identity; stale ones (tab
+switch/close, rebind, reconnect, superseding refresh) drop at apply
+time. Slash surface: `/tasks` and `/task` open the WorkOrder Task view
+(capability-gated, legacy fallback with diagnostic), `/schedules`
+keeps low-level schedule diagnostics.
 
 ### Routes (`src/tui/route.rs`)
 
@@ -749,9 +751,12 @@ pub enum InputMode {
 
 `InputMode` stays a text-editing/Vim concern. The M003 prompt
 submission mode is the separate `ComposerMode::Session | Task`
-(`src/tui/app/state/work_orders.rs`), toggled by `Ctrl+G`
-(`ToggleComposerMode`, configurable). Bare Tab stays `SwitchAgent`
-and Shift+Tab stays permission-mode cycling in both keymaps.
+(`src/tui/app/state/work_orders.rs`). C001 owns bare Tab at root
+prompt focus for `Session <-> Task` in both keymaps; `SwitchAgent`
+migrates to `Ctrl+A` (configurable/discoverable, with `Ctrl+G` as a
+backward-compatible composer alias) and Shift+Tab stays
+permission-mode cycling. Modal-local Tab focus consumes Tab before
+root routing.
 
 ### InputAction
 

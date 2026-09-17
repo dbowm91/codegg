@@ -597,7 +597,7 @@ impl App {
         let placeholder = if prompt_text.starts_with('!') {
             "shell: run locally; not included in model context".to_string()
         } else if self.prompt_state.composer_mode.is_task() {
-            "Describe the task to schedule… (Enter opens sheet, Ctrl+G for session)".to_string()
+            "Describe the task to schedule… (Enter opens sheet, Tab for session)".to_string()
         } else {
             "Ask anything…".to_string()
         };

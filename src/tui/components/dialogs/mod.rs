@@ -28,5 +28,6 @@ pub mod task_view;
 pub mod template;
 pub mod theme;
 pub mod tree;
+pub mod trigger_secret;
 pub mod ui_node;
 pub mod workspace_dashboard;

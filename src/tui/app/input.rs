@@ -606,6 +606,9 @@ impl App {
                 repeat_text,
                 sequential,
                 lane_id,
+                queue_insert_position,
+                queue_expected_revision,
+                external_trigger,
                 gate_join_all,
                 model,
             } => {
@@ -616,6 +619,9 @@ impl App {
                     repeat_text,
                     sequential,
                     lane_id,
+                    queue_insert_position,
+                    queue_expected_revision,
+                    external_trigger,
                     gate_join_all,
                     model,
                 );
@@ -643,6 +649,21 @@ impl App {
             }
             TuiMsg::TaskViewDetail => {
                 crate::tui::commands::work_orders::fetch_selected_task_detail(self);
+            }
+            TuiMsg::TriggerSecretClose => {
+                crate::tui::commands::work_orders::close_trigger_secret(self);
+            }
+            TuiMsg::TaskTriggerSetup => {
+                crate::tui::commands::work_orders::setup_trigger_for_selected(self);
+            }
+            TuiMsg::TaskTriggerRevoke => {
+                crate::tui::commands::work_orders::revoke_trigger_for_selected(self);
+            }
+            TuiMsg::TaskTriggerRotate => {
+                crate::tui::commands::work_orders::rotate_trigger_for_selected(self);
+            }
+            TuiMsg::TaskTriggerRefresh => {
+                crate::tui::commands::work_orders::refresh_trigger_for_selected(self);
             }
             TuiMsg::OpenWorkspaceDashboard => {
                 crate::tui::commands::workspace_dashboard::open_workspace_dashboard(self);

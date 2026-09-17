@@ -17,7 +17,8 @@
 //! | Shift+Enter | Newline |
 //! | Esc, Ctrl+C | Cancel |
 //! | ↑/↓ | NavigateUp, NavigateDown |
-//! | Tab | SwitchAgent |
+//! | Tab | ToggleComposerMode (Session/Task) |
+//! | Ctrl+A | SwitchAgent |
 //! | Shift+Tab | TogglePermissionMode |
 //! | Ctrl+L | SelectModel |
 //! | Ctrl+K | ClearSession |
@@ -147,11 +148,13 @@ pub enum InputAction {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
-    /// Project Work Orders M003: toggle the prompt composer between
-    /// Session and Task submission modes. Deliberately *not* Tab:
-    /// Tab stays `SwitchAgent` and Shift+Tab stays permission-mode
-    /// cycling, so Task-mode selection never collides with the existing
-    /// agent selector.
+    /// Project Work Orders M003 + C001: toggle the prompt composer between
+    /// Session and Task submission modes. C001 owns bare Tab at root
+    /// prompt focus (`Session <-> Task`); `SwitchAgent` lives on `Ctrl+A`
+    /// (portable, distinct from Tab/0x09) and remains configurable.
+    /// `Ctrl+G` stays a backward-compatible alias. Modal-local Tab focus
+    /// consumes Tab before root routing, so sheets/dialogs never toggle
+    /// the composer underneath.
     ToggleComposerMode,
     /// Project Work Orders M004: open the global Workspace dashboard
     /// (bounded per-project activity rows). The dashboard is an
@@ -438,7 +441,10 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::NONE, KeyCode::Char('k')),
         InputAction::NavigateUp,
     );
-    map.insert((KeyModifiers::NONE, KeyCode::Tab), InputAction::SwitchAgent);
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Tab),
+        InputAction::ToggleComposerMode,
+    );
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Tab),
         InputAction::TogglePermissionMode,
@@ -468,6 +474,10 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('w')),
         InputAction::CloseSession,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('a')),
+        InputAction::SwitchAgent,
     );
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('/')),
@@ -585,12 +595,21 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::ALT, KeyCode::Char('w')),
         InputAction::CloseProjectTab,
     );
-    // Ctrl+G toggles the Task composer. Deliberately not Tab:
-    // bare Tab stays SwitchAgent and Shift+Tab stays permission-mode
-    // cycling (M003 keybinding audit: no silent collision).
+    // C001 root composer ownership: bare Tab cycles Session<->Task at
+    // root prompt focus in both Insert and Normal maps. `SwitchAgent`
+    // migrates to Ctrl+A (0x01, portable and distinct from Tab/0x09).
+    // Terminal-encoding audit: Ctrl+I (0x09 == Tab), Ctrl+H (0x08 ==
+    // Backspace), Ctrl+M (0x0D == Enter), and Ctrl+J (0x0A) are all
+    // normalized to Tab/Enter/Backspace on common terminals and are
+    // never used as the replacement. Ctrl+G (0x07) stays a
+    // backward-compatible alias for ToggleComposerMode.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('g')),
         InputAction::ToggleComposerMode,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('a')),
+        InputAction::SwitchAgent,
     );
     // Ctrl+O opens the global Workspace dashboard (M004). Unbound
     // before: no default used Ctrl+O (the keybind-audit test pins
@@ -669,7 +688,14 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
         InputAction::ToggleSidebar,
     );
-    map.insert((KeyModifiers::NONE, KeyCode::Tab), InputAction::SwitchAgent);
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Tab),
+        InputAction::ToggleComposerMode,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('a')),
+        InputAction::SwitchAgent,
+    );
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Tab),
         InputAction::TogglePermissionMode,
@@ -757,8 +783,8 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::ALT, KeyCode::Char('w')),
         InputAction::CloseProjectTab,
     );
-    // Ctrl+G toggles the Task composer (same as insert mode; Tab stays
-    // SwitchAgent in both modes).
+    // Ctrl+G toggles the Task composer (same as insert mode; bare Tab
+    // owns the composer in both modes, Ctrl+A owns SwitchAgent).
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('g')),
         InputAction::ToggleComposerMode,
@@ -840,6 +866,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Tab",
+            action: "Toggle composer mode (Session/Task)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+A",
             action: "Switch agent",
             condition: None,
         },
@@ -924,7 +956,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Ctrl+G",
-            action: "Toggle composer mode (Session/Task)",
+            action: "Toggle composer mode (Session/Task, alias)",
             condition: None,
         },
         HelpEntry {
@@ -1081,7 +1113,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Ctrl+G",
-            action: "Toggle composer mode (Session/Task)",
+            action: "Toggle composer mode (Session/Task, alias)",
             condition: None,
         },
         HelpEntry {
@@ -1117,6 +1149,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Tab",
+            action: "Toggle composer mode (Session/Task)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+A",
             action: "Switch agent",
             condition: None,
         },
@@ -1603,6 +1641,58 @@ mod tests {
 
     fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn c001_bare_tab_owns_composer_cycle_in_both_modes() {
+        // Root prompt focus: bare Tab toggles Session<->Task in both
+        // Insert and Normal maps without touching InputMode.
+        let tab = make_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            handle_key_with_bindings(tab, None, InputMode::Insert),
+            Some(InputAction::ToggleComposerMode)
+        );
+        assert_eq!(
+            handle_key_with_bindings(tab, None, InputMode::Normal),
+            Some(InputAction::ToggleComposerMode)
+        );
+        // Ctrl+G alias produces the identical action.
+        let ctrl_g = make_key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key_with_bindings(ctrl_g, None, InputMode::Insert),
+            Some(InputAction::ToggleComposerMode)
+        );
+        assert_eq!(
+            handle_key_with_bindings(ctrl_g, None, InputMode::Normal),
+            Some(InputAction::ToggleComposerMode)
+        );
+        // SwitchAgent remains reachable on its migrated binding.
+        let ctrl_a = make_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key_with_bindings(ctrl_a, None, InputMode::Insert),
+            Some(InputAction::SwitchAgent)
+        );
+        assert_eq!(
+            handle_key_with_bindings(ctrl_a, None, InputMode::Normal),
+            Some(InputAction::SwitchAgent)
+        );
+        // No duplicate bare-Tab owner after normalization.
+        for bindings in [default_bindings(), vim_bindings()] {
+            let tab_actions: Vec<_> = bindings
+                .iter()
+                .filter(|((mods, code), _)| *mods == KeyModifiers::NONE && *code == KeyCode::Tab)
+                .map(|(_, action)| action.clone())
+                .collect();
+            assert_eq!(tab_actions, vec![InputAction::ToggleComposerMode]);
+            // Replacement is never a Tab-normalized control (Ctrl+I/H/M/J).
+            for forbidden in ['i', 'h', 'm', 'j'] {
+                assert_ne!(
+                    bindings.get(&(KeyModifiers::CONTROL, KeyCode::Char(forbidden))),
+                    Some(&InputAction::SwitchAgent),
+                    "SwitchAgent must not use terminal-ambiguous Ctrl+{forbidden}"
+                );
+            }
+        }
     }
 
     #[test]

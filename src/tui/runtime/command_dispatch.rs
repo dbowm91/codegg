@@ -1248,6 +1248,70 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, error,
             );
         }
+        TuiCommand::WorkOrderTriggerCreated {
+            request_id,
+            route,
+            project_id,
+            work_order_id,
+            trigger,
+            secret,
+            duplicate,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_trigger_created(
+                app,
+                request_id,
+                route,
+                project_id,
+                work_order_id,
+                trigger,
+                secret,
+                duplicate,
+                error,
+            );
+        }
+        TuiCommand::WorkOrderTriggersListed {
+            request_id,
+            route,
+            generation,
+            project_id,
+            work_order_id,
+            triggers,
+            truncated,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_triggers_listed(
+                app,
+                request_id,
+                route,
+                generation,
+                project_id,
+                work_order_id,
+                triggers,
+                truncated,
+                error,
+            );
+        }
+        TuiCommand::WorkOrderTriggerRevoked {
+            request_id,
+            route,
+            project_id,
+            work_order_id,
+            trigger_id,
+            trigger,
+            error,
+        } => {
+            super::super::commands::work_orders::apply_trigger_revoked(
+                app,
+                request_id,
+                route,
+                project_id,
+                work_order_id,
+                trigger_id,
+                trigger,
+                error,
+            );
+        }
         TuiCommand::WorkspaceDashboardLoaded {
             request_id,
             generation,

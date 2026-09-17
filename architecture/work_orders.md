@@ -301,21 +301,33 @@ User-facing project Task mode for the reference TUI
 
 - `ComposerMode::Session | Task` is frontend submission state owned by
   prompt UI state, distinct from `InputMode::Insert | Normal` (which
-  stays a text-editing/Vim concern). `Ctrl+G` (`ToggleComposerMode`,
-  configurable like every action) toggles it; bare Tab stays
-  `SwitchAgent` and Shift+Tab stays permission-mode cycling, so there
-  is no keybinding collision (audit test in
-  `tui::commands::work_orders::tests`). The header shows
-  `composer:task` next to agent/model context in Task mode only.
+  stays a text-editing/Vim concern). C001 owns bare Tab at root prompt
+  focus for `Session <-> Task` in both Insert and Normal maps;
+  `SwitchAgent` migrates to `Ctrl+A` (0x01, portable and distinct from
+  Tab/0x09; `Ctrl+I/H/M/J` are terminal-normalized to Tab/Backspace/
+  Enter and are never used) and stays configurable/discoverable, with
+  `Ctrl+G` as a backward-compatible alias for `ToggleComposerMode`.
+  Modal-local Tab focus consumes Tab before root routing, so sheets and
+  dialogs never toggle the composer underneath (audit tests in
+  `tui::commands::work_orders::tests` + `tui::input::tests`). The header
+  shows `composer:task` next to agent/model context in Task mode only.
 - Enter in Task mode opens the scheduling sheet instead of submitting
-  a turn. Defaults are immediate/zero delay, one occurrence, no
-  external trigger. The sheet validates bounded delay forms, RFC 3339
-  not-before with explicit offset (naive input fails, never guesses),
-  finite repeat, lane/order, All/Any join, model, and the effective
-  policy/workspace summary; the external-trigger row is a disabled
-  placeholder until M005 owns the capability. Confirm sends exactly
-  one `CoreRequest::WorkOrderCreate` — the TUI never creates
-  sessions/jobs directly.
+  a turn. Defaults are immediate/zero delay, one occurrence. The sheet
+  validates bounded delay forms, RFC 3339 not-before with explicit
+  offset (naive input fails, never guesses), finite repeat, lane/order,
+  All/Any join, model, and the effective policy/workspace summary.
+  C001 makes the external-trigger row capability-aware (enabled on
+  current daemons via the existing WorkOrder capability; visibly
+  disabled with an M005 compatibility explanation on older servers) and
+  builds a normal nontrivial `ExternalTrigger` gate (`trigger_ref:
+  "external"`) participating in All/Any. Confirm sends exactly one
+  `CoreRequest::WorkOrderCreate` — the TUI never creates sessions/jobs
+  directly. When sequential placement is on, the focused queue editor
+  moves the insertion marker directly with `j/k`/Up/Down (Shift+J/K
+  alias); the pinned running/claimed head cannot be crossed and the
+  eventual placement uses the lane CAS revision/position contract
+  without fabricating a WorkOrder. Human summaries never expose raw
+  gate JSON (e.g. `Run after previous task AND external trigger`).
 - The prompt is never moved to a transcript before confirmation
   succeeds; failures restore it exactly once (stash-then-restore, same
   rule as the session-create continuation). Late create successes may
@@ -336,19 +348,57 @@ User-facing project Task mode for the reference TUI
   selected row, never N+1. `j`/`k`/arrows navigate, Shift+J/K reorder
   waiting lane members under CAS (conflicts refresh with "queue
   changed; retry"; the pinned running head never moves; lane order
-  never edits Job dependencies). Enter opens a materialized session
-  through canonical project-tab/session routing; future rows fetch
-  detail instead of a fake session. Running rows delegate
-  stop/cancel/steer to session/job control. Attention (permissions,
-  model/policy/workspace, predecessor holds, worktree conflicts)
-  renders in place without focus theft. Close/switch never cancels
-  daemon-owned work; every completion carries route + request/
-  generation identity and stale ones drop.
+  never edits Job dependencies). C001 adds Task-view trigger
+  management (`t` setup/retry, `T` rotate, `X` revoke, `e` refresh;
+  metadata only, never a secret-read): status not configured/active/
+  revoked/expired/exhausted, public ID, expiry/max-fire/fire-count, and
+  truthful setup-incomplete recovery without deleting the WorkOrder.
+  Enter opens a materialized session through canonical project-tab/
+  session routing; future rows fetch detail instead of a fake session.
+  Running rows delegate stop/cancel/steer to session/job control.
+  Attention (permissions, model/policy/workspace, predecessor holds,
+  worktree conflicts) renders in place without focus theft.
+  Close/switch never cancels daemon-owned work; every completion
+  carries route + request/generation identity and stale ones drop.
 - `/tasks` (and `/task`) opens the Task view when the WorkOrder
   capability is available, else the legacy schedule list with an
   explicit diagnostic; `/schedules` keeps direct low-level
   `Schedule*` access and the protocol is preserved. No legacy
   `Task*` protocol returns.
+
+## Human external-trigger setup and one-time secret (C001)
+
+C001 completes the deferred M005 human surface without redesigning the
+trigger backend (`src/tui/commands/work_orders.rs`,
+`src/tui/components/dialogs/trigger_secret.rs`,
+`src/tui/app/state/work_orders.rs` `OneTimeBearer` /
+`OneTimeTriggerSecret`):
+
+- The scheduling continuation is `WorkOrderCreate` then, when the draft
+  requested an external gate, exactly one project-authorized
+  `WorkOrderTriggerCreate` bound to the new WorkOrder's single external
+  gate, with a bounded deterministic idempotency key (frontend request
+  + WorkOrder identity) so retry converges. WorkOrder failure performs
+  zero trigger creates; trigger failure retains the WorkOrder and
+  surfaces setup-incomplete with an idempotent retry path.
+- The creation response bearer is shown exactly once in a transient
+  secret-safe dialog (public ID, bearer, `POST
+  /api/v1/task-triggers/<id>/fire`, bounded curl with
+  `Authorization: Bearer` + `Idempotency-Key`, loss warning). The bearer
+  lives only in the opaque `OneTimeBearer` (redacted `Debug`, no
+  `Serialize`) and is cleared on dialog close, project/tab switch,
+  reconnect, authority loss, and shutdown. It never enters prompt,
+  history, transcript, notifications, audit/events, WorkOrder/dashboard
+  DTOs, SQLite, or model/tool context. Full base URLs are never guessed
+  (`${CODEGG_BASE_URL}` template + path).
+- Stale/lost/ambiguous completions reconcile via trigger metadata
+  (list/get) before any new credential: setup pends and lists first;
+  active-but-unavailable requires explicit revoke-then-create rotation
+  (human choice; never auto-revoke another bearer's credential).
+  Revocation/capability loss fails closed with opaque-project privacy.
+  External `POST` fire still latches only its gate and materializes
+  through `WorkOrderCoordinator`/`JobSubmissionService`; no protocol or
+  migration change was needed (existing capability flag reused).
 
 ## Global Workspace dashboard (M004)
 

@@ -1143,6 +1143,43 @@ pub enum TuiCommand {
         tasks: Vec<crate::protocol::work_order::WorkOrderDto>,
         error: Option<String>,
     },
+    /// C001: `WorkOrderTriggerCreate` completion. `secret` carries the
+    /// one-time bearer only on a fresh creation; converged retries and
+    /// all other paths set it to `None`. Stale routes drop foreground
+    /// display without logging the secret; metadata drives recovery.
+    WorkOrderTriggerCreated {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        project_id: String,
+        work_order_id: String,
+        trigger: Option<crate::protocol::work_order::TaskTriggerMetadataDto>,
+        secret: Option<String>,
+        duplicate: bool,
+        error: Option<String>,
+    },
+    /// C001: trigger metadata listing for one WorkOrder (never secrets).
+    /// Used for ambiguous-timeout reconciliation and Task-view status.
+    WorkOrderTriggersListed {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        generation: u64,
+        project_id: String,
+        work_order_id: String,
+        triggers: Vec<crate::protocol::work_order::TaskTriggerMetadataDto>,
+        truncated: bool,
+        error: Option<String>,
+    },
+    /// C001: `WorkOrderTriggerRevoke` completion (monotonic). Rotation
+    /// chains revoke then create; the revoke half never displays a secret.
+    WorkOrderTriggerRevoked {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        project_id: String,
+        work_order_id: String,
+        trigger_id: String,
+        trigger: Option<crate::protocol::work_order::TaskTriggerMetadataDto>,
+        error: Option<String>,
+    },
 }
 
 /// Send a command on the bounded TUI effect channel.

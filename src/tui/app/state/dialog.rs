@@ -85,6 +85,25 @@ pub struct DialogState {
     pub work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState,
     /// Project Work Orders M003: Task-model preference read/persist.
     pub task_model_pref_request: crate::tui::app::state::AsyncUiRequestState,
+    /// C001: one-time trigger bearer display (transient, never persisted
+    /// or logged; cleared on close/switch/reconnect/authority loss).
+    pub trigger_secret: Option<crate::tui::app::state::OneTimeTriggerSecret>,
+    /// C001: `WorkOrderTriggerCreate` continuation (WorkOrder+trigger
+    /// chain, retry, and rotation creates).
+    pub trigger_create_request: crate::tui::app::state::AsyncUiRequestState,
+    /// C001: trigger metadata/revoke continuations (list/get/revoke).
+    pub trigger_manage_request: crate::tui::app::state::AsyncUiRequestState,
+    /// C001: last-known trigger metadata per WorkOrder (M005 DTOs only,
+    /// never secrets). Drives Task-view status/retry/revoke/rotate.
+    pub trigger_metadata:
+        std::collections::HashMap<String, Vec<crate::protocol::work_order::TaskTriggerMetadataDto>>,
+    /// C001: setup-incomplete diagnostics per WorkOrder (retry path
+    /// without deleting the WorkOrder).
+    pub trigger_setup_error: std::collections::HashMap<String, String>,
+    /// C001: user-requested trigger setups awaiting metadata
+    /// reconciliation (ambiguous-timeout safe: list first, create only
+    /// when no active trigger exists).
+    pub trigger_setup_pending: std::collections::HashSet<String>,
     /// Project Work Orders M003: open scheduling-sheet draft (`None`
     /// = sheet closed). The editable prompt text stays in the prompt
     /// widget until `WorkOrderCreate` succeeds; failure restores it

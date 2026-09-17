@@ -702,6 +702,12 @@ impl App {
                 work_order_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_model_pref_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                trigger_secret: None,
+                trigger_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                trigger_manage_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                trigger_metadata: std::collections::HashMap::new(),
+                trigger_setup_error: std::collections::HashMap::new(),
+                trigger_setup_pending: std::collections::HashSet::new(),
                 task_schedule_draft: None,
                 task_view: crate::tui::app::state::TaskViewState::default(),
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1193,6 +1199,12 @@ impl App {
                 work_order_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_model_pref_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                trigger_secret: None,
+                trigger_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                trigger_manage_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                trigger_metadata: std::collections::HashMap::new(),
+                trigger_setup_error: std::collections::HashMap::new(),
+                trigger_setup_pending: std::collections::HashSet::new(),
                 task_schedule_draft: None,
                 task_view: crate::tui::app::state::TaskViewState::default(),
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -7136,6 +7148,13 @@ impl App {
                 self.dialog_state.task_view.generation =
                     self.dialog_state.task_view.generation.wrapping_add(1);
                 self.dialog_state.task_view.loading = false;
+            }
+            Dialog::TriggerSecret => {
+                // One-time bearer is forgotten on close; metadata stays
+                // listable but the secret is never re-readable.
+                // Dropping here zeroes the transient plaintext.
+                self.dialog_state.trigger_secret = None;
+                self.dialog_state.trigger_create_request.cancel();
             }
             Dialog::WorkspaceDashboard => {
                 // Dashboard close never cancels daemon-owned work: only

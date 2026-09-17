@@ -68,10 +68,29 @@ pub struct TaskScheduleDraft {
     pub lane_label: Option<String>,
     /// `all` or `any` when more than one nontrivial gate is enabled.
     pub gate_join: GateJoin,
-    /// External-trigger placeholder. M005 owns the server capability, so
-    /// the TUI always renders this disabled and confirm fails closed if
-    /// it is somehow enabled.
+    /// External-trigger request (C001). Enabled only when the server
+    /// advertises WorkOrder capability (which includes the landed M005
+    /// trigger management on current daemons); otherwise the sheet
+    /// renders it disabled with a compatibility explanation and confirm
+    /// fails closed. When enabled it participates as a normal nontrivial
+    /// `ExternalTrigger` gate in `ReleaseGateSet`.
     pub external_trigger: bool,
+    /// Whether the current server supports M005 trigger management.
+    /// Seeded from the sheet prefetch (`WorkOrderCapabilities.supported`
+    /// on current daemons); older servers leave this `false` and the
+    /// external-trigger row stays disabled. Frontend hint only — the
+    /// daemon re-authorizes every trigger mutation.
+    pub external_trigger_capable: bool,
+    /// Focused queue-editor insertion position for a not-yet-created
+    /// WorkOrder (C001). `None` = append at end. When `sequential` is on
+    /// and a lane preview exists, `j/k`/Up/Down on the focused queue
+    /// control moves this marker; the eventual creation/placement uses
+    /// `queue_expected_revision` + position (never a fake WorkOrder).
+    pub queue_insert_position: Option<usize>,
+    /// Expected lane revision captured with the queue preview. Carried
+    /// into the post-create placement reorder; stale revisions surface
+    /// `queue changed; retry` and reload canonical lane state.
+    pub queue_expected_revision: Option<u64>,
     /// Composer model snapshot selected for this Task (stable identity).
     /// Defaults to the last valid Task model when available, else the
     /// normal current/default selection. Never execution authority.
@@ -122,6 +141,9 @@ impl Default for TaskScheduleDraft {
             lane_label: None,
             gate_join: GateJoin::All,
             external_trigger: false,
+            external_trigger_capable: false,
+            queue_insert_position: None,
+            queue_expected_revision: None,
             model: None,
             model_from_task_preference: false,
             requested_approval: None,
@@ -260,7 +282,7 @@ pub fn parse_repeat_count(raw: &str) -> Result<u32, String> {
 /// (with an actionable message) on ambiguous time input, unsupported
 /// gates, or out-of-range repeats — never guesses.
 pub fn validate_draft(draft: &TaskScheduleDraft) -> Result<ValidatedSchedule, String> {
-    if draft.external_trigger {
+    if draft.external_trigger && !draft.external_trigger_capable {
         return Err(
             "External trigger is unavailable: the task-trigger capability (M005) is not enabled on this server"
                 .to_string(),
@@ -284,6 +306,11 @@ pub fn validate_draft(draft: &TaskScheduleDraft) -> Result<ValidatedSchedule, St
         repeat_count: parse_repeat_count(&draft.repeat_text)?,
     })
 }
+
+/// Opaque same-project trigger reference for human-scheduled external
+/// gates (C001). Bounded, non-path, and stable so a WorkOrder with one
+/// external gate binds unambiguously with `trigger_ref: None` on create.
+pub const HUMAN_TRIGGER_REF: &str = "external";
 
 /// Human duration for summaries (`20m`, `1h30m`, `0`).
 pub fn format_delay_secs(secs: i64) -> String {
@@ -318,24 +345,69 @@ pub fn describe_schedule(
     lane_preview: Option<&str>,
     model: Option<&str>,
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    describe_schedule_full(validated, lane_preview, model, false, GateJoin::All)
+}
+
+/// Full schedule summary including the external-trigger gate (C001).
+/// Human language only, e.g. `Run after previous task AND external
+/// trigger · model foo/bar` or `Run at/after 2026-09-18 09:00 -04:00 OR
+/// external trigger`. The join word (AND/OR) follows `gate_join` when
+/// more than one nontrivial gate is present.
+pub fn describe_schedule_full(
+    validated: &ValidatedSchedule,
+    lane_preview: Option<&str>,
+    model: Option<&str>,
+    external_trigger: bool,
+    gate_join: GateJoin,
+) -> String {
+    let mut head: Vec<String> = Vec::new();
+    let mut tails: Vec<String> = Vec::new();
     if let Some(lane) = lane_preview {
         let short: String = lane.chars().take(12).collect();
-        parts.push(format!("Run after task {short}"));
+        head.push(format!("Run after task {short}"));
     }
-    let mut wait_bits: Vec<String> = Vec::new();
     if validated.delay_secs > 0 {
-        wait_bits.push(format!("wait {}", format_delay_secs(validated.delay_secs)));
+        tails.push(format!("wait {}", format_delay_secs(validated.delay_secs)));
     }
     if validated.not_before_ms.is_some() {
-        wait_bits.push("not-before set".to_string());
+        // Keep the summary bounded; the exact timestamp stays in the
+        // draft/WorkOrder gates, never guessed here.
+        tails.push("not-before set".to_string());
     }
-    if parts.is_empty() && wait_bits.is_empty() {
-        parts.push("Run now".to_string());
+    if external_trigger {
+        tails.push("external trigger".to_string());
+    }
+    let join_word = match gate_join {
+        GateJoin::All => " AND ",
+        GateJoin::Any => " OR ",
+    };
+    let mut summary = if head.is_empty() && tails.is_empty() {
+        "Run now".to_string()
+    } else if head.is_empty() {
+        tails.join(join_word)
+    } else if tails.is_empty() {
+        head.join(" AND ")
+    } else if tails.len() == 1 && validated.delay_secs == 0 && validated.not_before_ms.is_none() {
+        // Single gate plus lane prefix keeps legacy AND rendering
+        // unless an explicit Any join with trigger demands OR.
+        if external_trigger && matches!(gate_join, GateJoin::Any) {
+            format!(
+                "{}{}{}",
+                head.join(" AND "),
+                join_word,
+                tails.join(join_word)
+            )
+        } else {
+            format!("{} AND {}", head.join(" AND "), tails.join(" AND "))
+        }
     } else {
-        parts.extend(wait_bits);
-    }
-    let mut summary = parts.join(" AND ");
+        format!(
+            "{}{}{}",
+            head.join(" AND "),
+            join_word,
+            tails.join(join_word)
+        )
+    };
     if validated.repeat_count > 1 {
         summary.push_str(&format!(" · repeat {}x", validated.repeat_count));
     }
@@ -384,6 +456,15 @@ pub fn build_work_order_create(
             not_before_ms: Some(not_before_ms),
             lane_id: None,
             trigger_ref: None,
+        });
+    }
+    if draft.external_trigger {
+        gates.push(WorkOrderGateDto {
+            kind: "external_trigger".to_string(),
+            delay_secs: None,
+            not_before_ms: None,
+            lane_id: None,
+            trigger_ref: Some(HUMAN_TRIGGER_REF.to_string()),
         });
     }
     if gates.is_empty() {
@@ -451,6 +532,21 @@ pub struct PendingTaskCreate {
     pub project_id: String,
     pub route: crate::tui::app::state::UiRouteToken,
     pub context: crate::tui::app::state::ProjectExecutionContext,
+    /// Whether the confirmed draft requested an external-trigger gate.
+    /// When true the WorkOrder continuation chains one
+    /// `WorkOrderTriggerCreate` bound to the new WorkOrder (C001 §6.4).
+    pub external_trigger: bool,
+    /// Deterministic idempotency-key prefix for the chained trigger
+    /// create (frontend request identity). The full key also binds the
+    /// durable WorkOrder identity once it exists, so retry cannot mint
+    /// two credentials.
+    pub trigger_key_prefix: Option<String>,
+    /// Sequential placement captured from the focused queue editor
+    /// (C001 §6.2): desired insertion index + expected lane revision +
+    /// lane id. `None` position = append at end.
+    pub queue_lane_id: Option<String>,
+    pub queue_insert_position: Option<usize>,
+    pub queue_expected_revision: Option<u64>,
 }
 
 // ── Project Task view ────────────────────────────────────────────────
@@ -715,6 +811,8 @@ pub enum TaskSheetField {
     NotBefore,
     Repeat,
     Sequential,
+    Queue,
+    ExternalTrigger,
     GateJoin,
     Model,
     Confirm,
@@ -726,6 +824,8 @@ impl TaskSheetField {
         Self::NotBefore,
         Self::Repeat,
         Self::Sequential,
+        Self::Queue,
+        Self::ExternalTrigger,
         Self::GateJoin,
         Self::Model,
         Self::Confirm,
@@ -739,6 +839,188 @@ impl TaskSheetField {
     pub fn retreat(self) -> Self {
         let pos = Self::ORDER.iter().position(|&f| f == self).unwrap_or(0);
         Self::ORDER[(pos + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+
+    /// Whether the field consumes `j/k`/arrows as direct queue movement
+    /// (C001 §6.2) rather than focus navigation.
+    pub const fn is_queue(self) -> bool {
+        matches!(self, Self::Queue)
+    }
+}
+
+// ── Focused queue placement (C001 §6.2) ─────────────────────────────
+
+/// Bounds for the scheduling-sheet insertion marker: positions
+/// `0..=order_len`, except position 0 is forbidden when the first lane
+/// member is the pinned running/claimed head.
+pub fn queue_insert_bounds(order_len: usize, pinned_head_at_zero: bool) -> (usize, usize) {
+    let min = usize::from(pinned_head_at_zero);
+    (min, order_len)
+}
+
+/// Clamp a desired insertion position into the legal range.
+pub fn clamp_queue_insert_position(
+    desired: usize,
+    order_len: usize,
+    pinned_head_at_zero: bool,
+) -> usize {
+    let (min, max) = queue_insert_bounds(order_len, pinned_head_at_zero);
+    desired.clamp(min, max)
+}
+
+/// Move the insertion marker by `delta`, clamped to the legal range.
+/// Returns the new position (no-op at the boundary keeps selection
+/// stable, per C001 queue tests).
+pub fn move_queue_insert_position(
+    current: usize,
+    delta: isize,
+    order_len: usize,
+    pinned_head_at_zero: bool,
+) -> usize {
+    let (min, max) = queue_insert_bounds(order_len, pinned_head_at_zero);
+    (current as isize + delta).clamp(min as isize, max as isize) as usize
+}
+
+// ── One-time trigger secret (C001 §6.5) ─────────────────────────────
+
+/// Maximum bearer length accepted into transient display state (bounds
+/// the immediate response path; daemon bearers are far shorter).
+pub const MAX_TRIGGER_BEARER_CHARS: usize = 512;
+/// Maximum trigger-id length for display state.
+pub const MAX_TRIGGER_ID_CHARS: usize = 128;
+
+/// TUI-local opaque bearer wrapper. `Debug` is redacted so ordinary
+/// state dumps, logs, and `#[derive(Debug)]` parents never print the
+/// plaintext. No `Serialize`, no `Clone` of the inner string beyond the
+/// explicit display path, and the holder is dropped on dialog close,
+/// project/tab switch, reconnect, authority loss, and shutdown.
+pub struct OneTimeBearer {
+    inner: String,
+}
+
+impl OneTimeBearer {
+    pub fn new(bearer: String) -> Result<Self, String> {
+        let trimmed = bearer.trim().to_string();
+        if trimmed.is_empty() {
+            return Err("Trigger response carried no bearer".to_string());
+        }
+        if trimmed.len() > MAX_TRIGGER_BEARER_CHARS {
+            return Err("Trigger bearer exceeds transient display bound".to_string());
+        }
+        Ok(Self { inner: trimmed })
+    }
+
+    /// Explicit display accessor for the one-time dialog render path.
+    pub fn expose(&self) -> &str {
+        &self.inner
+    }
+
+    pub fn curl_example(&self, trigger_id: &str) -> String {
+        format!(
+            "curl -X POST ${{CODEGG_BASE_URL}}/api/v1/task-triggers/{trigger_id}/fire \\\n  -H \"Authorization: Bearer {}\" \\\n  -H \"Idempotency-Key: <unique-key>\"",
+            self.inner
+        )
+    }
+}
+
+impl std::fmt::Debug for OneTimeBearer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OneTimeBearer(REDACTED)")
+    }
+}
+
+impl Drop for OneTimeBearer {
+    fn drop(&mut self) {
+        // Best-effort redaction of the transient plaintext. `clear`
+        // drops the bytes from the live string; the allocator may retain
+        // them until reuse, which is acceptable for a TUI-local transient
+        // (no persistence, no logs, no cross-scope moves).
+        self.inner.clear();
+    }
+}
+
+/// Transient one-time secret display payload (never persisted,
+/// never logged, never placed in prompt/transcript/notification/audit
+/// state). The bearer lives only here until the dialog closes.
+pub struct OneTimeTriggerSecret {
+    pub project_id: String,
+    pub work_order_id: String,
+    pub trigger_id: String,
+    pub bearer: OneTimeBearer,
+    pub route: crate::tui::app::state::UiRouteToken,
+}
+
+impl std::fmt::Debug for OneTimeTriggerSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneTimeTriggerSecret")
+            .field("project_id", &self.project_id)
+            .field("work_order_id", &self.work_order_id)
+            .field("trigger_id", &self.trigger_id)
+            .field("bearer", &self.bearer)
+            .field("route", &self.route)
+            .finish()
+    }
+}
+
+impl OneTimeTriggerSecret {
+    pub fn endpoint_path(&self) -> String {
+        format!("/api/v1/task-triggers/{}/fire", self.trigger_id)
+    }
+}
+
+/// Bounded deterministic trigger idempotency key: frontend request
+/// identity + durable WorkOrder identity (C001 §6.4). Retry with the
+/// same key converges to one trigger; rotation uses a fresh key.
+pub fn trigger_creation_key(request_id: u64, work_order_id: &str) -> String {
+    let short: String = work_order_id.chars().take(24).collect();
+    let mut key = format!("tui-trigger-{request_id}-{short}");
+    if key.len() > 128 {
+        key.truncate(128);
+    }
+    key
+}
+
+/// Fresh rotation key (revoke-then-create): binds the rotation request
+/// identity so a retried rotation cannot mint two replacements.
+pub fn trigger_rotation_key(request_id: u64, work_order_id: &str) -> String {
+    let short: String = work_order_id.chars().take(20).collect();
+    let mut key = format!("tui-rotate-{request_id}-{short}");
+    if key.len() > 128 {
+        key.truncate(128);
+    }
+    key
+}
+
+/// Trigger management status for the Task view (C001 §7), derived from
+/// existing M005 metadata only. No secret-read path exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerSetupStatus {
+    NotConfigured,
+    Active,
+    Revoked,
+    Expired,
+    Exhausted,
+}
+
+impl TriggerSetupStatus {
+    pub fn from_metadata_status(raw: &str) -> Self {
+        match raw {
+            "active" => Self::Active,
+            "revoked" => Self::Revoked,
+            "expired" => Self::Expired,
+            "exhausted" => Self::Exhausted,
+            _ => Self::NotConfigured,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not configured",
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+            Self::Exhausted => "exhausted",
+        }
     }
 }
 
@@ -872,16 +1154,104 @@ mod tests {
 
     #[test]
     fn unsupported_gates_fail_visibly() {
+        // Incapable server: external trigger fails closed with an
+        // actionable compatibility explanation.
         let draft = TaskScheduleDraft {
             external_trigger: true,
             ..TaskScheduleDraft::default()
         };
-        assert!(validate_draft(&draft).is_err());
+        let err = validate_draft(&draft).unwrap_err();
+        assert!(err.contains("M005"));
         let draft = TaskScheduleDraft {
             sequential: true,
             ..TaskScheduleDraft::default()
         };
         assert!(validate_draft(&draft).is_err());
+    }
+
+    #[test]
+    fn capable_external_trigger_builds_gate_and_join() {
+        let mut draft = draft_with("20m", "", "1");
+        draft.external_trigger = true;
+        draft.external_trigger_capable = true;
+        draft.gate_join = GateJoin::All;
+        let validated = validate_draft(&draft).unwrap();
+        let request = build_work_order_create(
+            "project-1",
+            "do the gated thing",
+            None,
+            &draft,
+            &validated,
+            Some("key-1"),
+        );
+        assert!(request
+            .gates
+            .iter()
+            .any(|g| g.kind == "external_trigger" && g.trigger_ref.as_deref() == Some("external")));
+        assert!(request.gates.iter().any(|g| g.kind == "delay"));
+        // Two nontrivial gates → explicit join preserved.
+        assert_eq!(request.gate_join.as_deref(), Some("all"));
+        let summary_all =
+            describe_schedule_full(&validated, None, Some("foo/bar"), true, GateJoin::All);
+        assert!(summary_all.contains("external trigger"));
+        assert!(summary_all.contains("AND"));
+        let summary_any =
+            describe_schedule_full(&validated, None, Some("foo/bar"), true, GateJoin::Any);
+        assert!(summary_any.contains("OR"));
+        // Legacy helper stays compatible (no trigger).
+        let legacy = describe_schedule(&validated, None, Some("foo/bar"));
+        assert!(!legacy.contains("external trigger"));
+    }
+
+    #[test]
+    fn queue_insert_bounds_respect_pinned_head() {
+        assert_eq!(queue_insert_bounds(3, false), (0, 3));
+        assert_eq!(queue_insert_bounds(3, true), (1, 3));
+        assert_eq!(clamp_queue_insert_position(0, 3, true), 1);
+        assert_eq!(clamp_queue_insert_position(5, 3, false), 3);
+        assert_eq!(move_queue_insert_position(2, 1, 3, false), 3);
+        assert_eq!(move_queue_insert_position(3, 1, 3, false), 3);
+        assert_eq!(move_queue_insert_position(1, -1, 3, true), 1);
+        assert_eq!(move_queue_insert_position(2, -5, 2, false), 0);
+    }
+
+    #[test]
+    fn trigger_keys_are_bounded_and_stable() {
+        let key = trigger_creation_key(7, "wo-123");
+        assert!(key.starts_with("tui-trigger-7-wo-123"));
+        assert!(key.len() <= 128);
+        let long_wo = "w".repeat(200);
+        assert!(trigger_creation_key(1, &long_wo).len() <= 128);
+        let rotate = trigger_rotation_key(9, "wo-123");
+        assert!(rotate.starts_with("tui-rotate-9-"));
+        assert_ne!(key, rotate);
+    }
+
+    #[test]
+    fn one_time_bearer_is_redacted_and_bounded() {
+        let bearer = OneTimeBearer::new("cggtr_id.secret".to_string()).unwrap();
+        assert_eq!(bearer.expose(), "cggtr_id.secret");
+        assert!(!format!("{bearer:?}").contains("cggtr_"));
+        assert!(OneTimeBearer::new("   ".to_string()).is_err());
+        assert!(OneTimeBearer::new("x".repeat(600)).is_err());
+        let curl = bearer.curl_example("trigger-1");
+        assert!(curl.contains("/api/v1/task-triggers/trigger-1/fire"));
+        assert!(curl.contains("Authorization: Bearer"));
+        assert!(curl.contains("Idempotency-Key"));
+        assert!(!curl.contains("localhost"));
+    }
+
+    #[test]
+    fn trigger_setup_status_labels_are_closed() {
+        assert_eq!(
+            TriggerSetupStatus::from_metadata_status("active"),
+            TriggerSetupStatus::Active
+        );
+        assert_eq!(
+            TriggerSetupStatus::from_metadata_status("bogus"),
+            TriggerSetupStatus::NotConfigured
+        );
+        assert_eq!(TriggerSetupStatus::Active.label(), "active");
     }
 
     #[test]

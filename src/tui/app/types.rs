@@ -46,6 +46,9 @@ pub enum Dialog {
     /// Project Work Orders M003: project Task view (running/waiting/
     /// attention/recent). FocusManager-owned; see `task_view.rs`.
     TaskView,
+    /// C001: one-time external-trigger bearer display (transient,
+    /// secret-safe; see `trigger_secret.rs`). FocusManager-owned.
+    TriggerSecret,
     /// Project Work Orders M004: global Workspace dashboard (bounded
     /// per-project activity rows). FocusManager-owned; see
     /// `workspace_dashboard.rs`. Not a durable Workspace object.
@@ -97,6 +100,7 @@ impl Dialog {
                 | Self::ProjectChat
                 | Self::TaskSchedule
                 | Self::TaskView
+                | Self::TriggerSecret
                 | Self::WorkspaceDashboard
         )
     }
@@ -338,12 +342,17 @@ pub enum TuiMsg {
     /// Project Work Orders M003: the scheduling sheet confirmed with
     /// edited values. Validation runs in `App` (prompt preserved on
     /// error); success spawns the `WorkOrderCreate` continuation.
+    /// C001 adds the focused queue insertion position/revision and the
+    /// external-trigger toggle.
     TaskScheduleConfirm {
         delay_text: String,
         not_before_text: String,
         repeat_text: String,
         sequential: bool,
         lane_id: Option<String>,
+        queue_insert_position: Option<usize>,
+        queue_expected_revision: Option<u64>,
+        external_trigger: bool,
         gate_join_all: bool,
         model: Option<String>,
     },
@@ -378,6 +387,25 @@ pub enum TuiMsg {
     /// Project Work Orders M003: fetch occurrence detail for the
     /// selected row (lazy single-row fetch, never N+1).
     TaskViewDetail,
+    /// C001: close the one-time trigger secret dialog and forget the
+    /// bearer. Metadata stays listable; the secret is never re-readable.
+    TriggerSecretClose,
+    /// C001: create/retry the external trigger for the selected Task
+    /// row (or the setup-incomplete WorkOrder). Idempotent via the
+    /// deterministic creation key; ambiguous timeouts reconcile via
+    /// metadata before minting a new credential.
+    TaskTriggerSetup,
+    /// C001: revoke the active trigger for the selected row
+    /// (monotonic; rotation is revoke + create and needs explicit
+    /// user choice).
+    TaskTriggerRevoke,
+    /// C001: explicit rotation for the selected row (revoke old then
+    /// create replacement, showing only the new bearer). The human must
+    /// choose it; lost responses never auto-revoke.
+    TaskTriggerRotate,
+    /// C001: refresh trigger metadata for the selected row (list/get,
+    /// never secrets).
+    TaskTriggerRefresh,
     /// Open the global Workspace dashboard (M004).
     OpenWorkspaceDashboard,
     /// Project Work Orders M004: move the dashboard selection.

@@ -40,6 +40,15 @@ pub struct TaskScheduleSeed {
     pub workspace_summary: String,
     pub queue_summary: String,
     pub capabilities_supported: bool,
+    /// C001: per-lane queue preview for the focused queue editor.
+    /// Parallel to `lanes`: member order, revision, and pinned head.
+    pub queue_orders: Vec<Vec<String>>,
+    pub queue_revisions: Vec<u64>,
+    pub queue_pinned_heads: Vec<Option<String>>,
+    /// C001: whether the server supports M005 trigger management.
+    /// Current daemons advertise this via WorkOrder capability; older
+    /// servers leave the external-trigger row disabled.
+    pub trigger_capable: bool,
 }
 
 #[derive(Clone)]
@@ -50,12 +59,20 @@ pub struct TaskScheduleDialog {
     not_before_text: String,
     repeat_text: String,
     sequential: bool,
+    external_trigger: bool,
+    queue_insert_position: usize,
     gate_join_all: bool,
     error: Option<String>,
 }
 
 impl TaskScheduleDialog {
     pub fn new(seed: TaskScheduleSeed, draft: &TaskScheduleDraft) -> Self {
+        let queue_insert_position = draft.queue_insert_position.unwrap_or_else(|| {
+            seed.queue_orders
+                .get(seed.lane_index)
+                .map(Vec::len)
+                .unwrap_or(0)
+        });
         Self {
             seed,
             focus: TaskSheetField::Delay,
@@ -63,9 +80,72 @@ impl TaskScheduleDialog {
             not_before_text: draft.not_before_text.clone(),
             repeat_text: draft.repeat_text.clone(),
             sequential: draft.sequential,
+            external_trigger: draft.external_trigger,
+            queue_insert_position,
             gate_join_all: matches!(draft.gate_join, crate::tui::app::state::GateJoin::All),
             error: None,
         }
+    }
+
+    pub fn focus(&self) -> TaskSheetField {
+        self.focus
+    }
+
+    pub fn queue_insert_position(&self) -> usize {
+        self.queue_insert_position
+    }
+
+    pub fn external_trigger(&self) -> bool {
+        self.external_trigger
+    }
+
+    fn current_queue_order(&self) -> &[String] {
+        self.seed
+            .queue_orders
+            .get(self.seed.lane_index)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn current_queue_revision(&self) -> u64 {
+        self.seed
+            .queue_revisions
+            .get(self.seed.lane_index)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn current_queue_pinned(&self) -> Option<&str> {
+        self.seed
+            .queue_pinned_heads
+            .get(self.seed.lane_index)
+            .and_then(|opt| opt.as_deref())
+    }
+
+    fn clamp_queue_position(&mut self) {
+        let len = self.current_queue_order().len();
+        let pinned_at_zero = self.current_queue_order().first().map(String::as_str)
+            == self.current_queue_pinned()
+            && self.current_queue_pinned().is_some();
+        self.queue_insert_position = crate::tui::app::state::clamp_queue_insert_position(
+            self.queue_insert_position,
+            len,
+            pinned_at_zero,
+        );
+    }
+
+    fn move_queue(&mut self, delta: isize) {
+        let len = self.current_queue_order().len();
+        let pinned_at_zero = self.current_queue_order().first().map(String::as_str)
+            == self.current_queue_pinned()
+            && self.current_queue_pinned().is_some();
+        self.queue_insert_position = crate::tui::app::state::move_queue_insert_position(
+            self.queue_insert_position,
+            delta,
+            len,
+            pinned_at_zero,
+        );
+        self.clear_error();
     }
 
     pub fn move_focus(&mut self, delta: isize) {
@@ -109,6 +189,11 @@ impl TaskScheduleDialog {
         let len = self.seed.lanes.len() as isize;
         let next = (self.seed.lane_index as isize + delta).rem_euclid(len) as usize;
         self.seed.lane_index = next;
+        // Reset the insertion marker to the end of the newly selected
+        // lane's preview; the user then moves it directly with j/k.
+        let order_len = self.current_queue_order().len();
+        self.queue_insert_position = order_len;
+        self.clamp_queue_position();
     }
 
     fn cycle_model(&mut self, delta: isize) {
@@ -127,6 +212,17 @@ impl TaskScheduleDialog {
             repeat_text: self.repeat_text.clone(),
             sequential: self.sequential,
             lane_id: self.selected_lane_id(),
+            queue_insert_position: if self.sequential {
+                Some(self.queue_insert_position)
+            } else {
+                None
+            },
+            queue_expected_revision: if self.sequential {
+                Some(self.current_queue_revision())
+            } else {
+                None
+            },
+            external_trigger: self.external_trigger,
             gate_join_all: self.gate_join_all,
             model: self.selected_model(),
         }
@@ -161,6 +257,38 @@ impl Component for TaskScheduleDialog {
         // Ctrl+Enter confirms from any field.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Enter {
             return Some(self.confirm_msg());
+        }
+        // C001 §6.2: when the queue editor owns focus, j/k and Up/Down
+        // directly move the insertion marker for eligible future work.
+        // Pinned running/claimed heads cannot be crossed; the move is a
+        // local insertion intention until the post-create CAS placement.
+        if self.focus == TaskSheetField::Queue
+            && key.modifiers == KeyModifiers::NONE
+            && matches!(
+                key.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('k')
+            )
+        {
+            let delta = match key.code {
+                KeyCode::Up | KeyCode::Char('k') => -1,
+                KeyCode::Down | KeyCode::Char('j') => 1,
+                _ => 0,
+            };
+            self.move_queue(delta);
+            return None;
+        }
+        // Shift+J/K also moves the queue marker (power-user alias; the
+        // Task view keeps Shift+J/K as its reorder shortcut).
+        if self.focus == TaskSheetField::Queue
+            && key.modifiers == KeyModifiers::SHIFT
+            && matches!(key.code, KeyCode::Char('J') | KeyCode::Char('K'))
+        {
+            let delta = match key.code {
+                KeyCode::Char('K') => -1,
+                _ => 1,
+            };
+            self.move_queue(delta);
+            return None;
         }
         match key.code {
             KeyCode::Esc => Some(TuiMsg::CloseDialog),
@@ -213,6 +341,22 @@ impl Component for TaskScheduleDialog {
                     TaskSheetField::Sequential => {
                         self.sequential = !self.sequential;
                         self.clear_error();
+                    }
+                    TaskSheetField::Queue => {
+                        // Space on the queue editor is a no-op (movement
+                        // is j/k/Up/Down); keep focus stable.
+                        self.clear_error();
+                    }
+                    TaskSheetField::ExternalTrigger => {
+                        if self.seed.trigger_capable {
+                            self.external_trigger = !self.external_trigger;
+                            self.clear_error();
+                        } else {
+                            self.set_error(
+                                "External trigger is unavailable: the task-trigger capability (M005) is not enabled on this server"
+                                    .to_string(),
+                            );
+                        }
                     }
                     TaskSheetField::GateJoin => {
                         self.gate_join_all = !self.gate_join_all;
@@ -291,6 +435,9 @@ impl Component for TaskScheduleDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        // Clamp the marker before render so lane cycling never leaves a
+        // stale out-of-range insertion index on screen.
+        self.clamp_queue_position();
         render_sheet(
             frame,
             area,
@@ -301,6 +448,8 @@ impl Component for TaskScheduleDialog {
             &self.not_before_text,
             &self.repeat_text,
             self.sequential,
+            self.external_trigger,
+            self.queue_insert_position,
             self.gate_join_all,
             self.error.as_deref(),
         );
@@ -309,6 +458,116 @@ impl Component for TaskScheduleDialog {
     fn dialog_type(&self) -> DialogType {
         DialogType::TaskSchedule
     }
+}
+
+fn queue_line(
+    seed: &TaskScheduleSeed,
+    focus: TaskSheetField,
+    sequential: bool,
+    queue_insert_position: usize,
+    width: usize,
+    theme: &Arc<Theme>,
+) -> Line<'static> {
+    let marker = if focus == TaskSheetField::Queue {
+        "▸ "
+    } else {
+        "  "
+    };
+    if !sequential {
+        return Line::from(vec![
+            Span::raw(marker),
+            Span::styled(
+                truncate_to_width(
+                    "Queue [j/k move insertion when focused]: off (sequential off)",
+                    width,
+                ),
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+    }
+    let order = seed
+        .queue_orders
+        .get(seed.lane_index)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let pinned = seed
+        .queue_pinned_heads
+        .get(seed.lane_index)
+        .and_then(|opt| opt.as_deref());
+    let pinned_at_zero = order.first().map(String::as_str) == pinned && pinned.is_some();
+    let pos = crate::tui::app::state::clamp_queue_insert_position(
+        queue_insert_position,
+        order.len(),
+        pinned_at_zero,
+    );
+    // Render a compact preview: pinned head marked, insertion marker as
+    // `▸new`. Example: `[pinned wo-a | wo-b | ▸new | wo-c]`.
+    let mut bits: Vec<String> = Vec::new();
+    for (idx, id) in order.iter().enumerate() {
+        if idx == pos {
+            bits.push("▸new".to_string());
+        }
+        let short: String = id.chars().take(6).collect();
+        if Some(id.as_str()) == pinned {
+            bits.push(format!("pinned {short}"));
+        } else {
+            bits.push(short);
+        }
+    }
+    if pos >= order.len() {
+        bits.push("▸new".to_string());
+    }
+    let preview = if bits.is_empty() {
+        "▸new (empty lane)".to_string()
+    } else {
+        bits.join(" | ")
+    };
+    Line::from(vec![
+        Span::styled(
+            marker,
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(
+            "Queue [j/k·↑/↓ move]: {}",
+            truncate_to_width(&preview, width.saturating_sub(24))
+        )),
+    ])
+}
+
+fn external_trigger_line(
+    seed: &TaskScheduleSeed,
+    focus: TaskSheetField,
+    external_trigger: bool,
+    theme: &Arc<Theme>,
+) -> Line<'static> {
+    let marker = if focus == TaskSheetField::ExternalTrigger {
+        "▸ "
+    } else {
+        "  "
+    };
+    if !seed.trigger_capable {
+        return Line::from(vec![
+            Span::raw(marker),
+            Span::styled(
+                "External trigger [Space]: unavailable (server capability M005 not enabled)",
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+    }
+    Line::from(vec![
+        Span::styled(
+            marker,
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(
+            "External trigger [Space]: {}",
+            if external_trigger { "on" } else { "off" }
+        )),
+    ])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -322,6 +581,8 @@ fn render_sheet(
     not_before_text: &str,
     repeat_text: &str,
     sequential: bool,
+    external_trigger: bool,
+    queue_insert_position: usize,
     gate_join_all: bool,
     error: Option<&str>,
 ) {
@@ -412,6 +673,8 @@ fn render_sheet(
                 if sequential { "on" } else { "off" }
             )),
         ]),
+        queue_line(seed, focus, sequential, queue_insert_position, width, theme),
+        external_trigger_line(seed, focus, external_trigger, theme),
         Line::from(vec![
             marker(TaskSheetField::GateJoin),
             Span::raw(format!(
@@ -439,10 +702,6 @@ fn render_sheet(
         )),
         Line::from(Span::styled(
             truncate_to_width(&format!("Queue: {}", seed.queue_summary), width),
-            Style::default().fg(theme.muted),
-        )),
-        Line::from(Span::styled(
-            "External trigger: unavailable (server capability M005 not enabled)",
             Style::default().fg(theme.muted),
         )),
     ];
@@ -481,6 +740,32 @@ mod tests {
             workspace_summary: "auto (isolated worktree for Git mutation)".to_string(),
             queue_summary: "0 running · 2 waiting".to_string(),
             capabilities_supported: true,
+            queue_orders: vec![vec![
+                "wo-run".to_string(),
+                "wo-a".to_string(),
+                "wo-b".to_string(),
+            ]],
+            queue_revisions: vec![7],
+            queue_pinned_heads: vec![Some("wo-run".to_string())],
+            trigger_capable: true,
+        }
+    }
+
+    fn seed_no_pinned() -> TaskScheduleSeed {
+        TaskScheduleSeed {
+            prompt_preview: "do the thing".to_string(),
+            lanes: vec![("lane-1".to_string(), Some("main".to_string()))],
+            lane_index: 0,
+            models: vec!["conn-a/model-1".to_string()],
+            model_index: 0,
+            policy_summary: "policy".to_string(),
+            workspace_summary: "workspace".to_string(),
+            queue_summary: "queue".to_string(),
+            capabilities_supported: true,
+            queue_orders: vec![vec!["wo-a".to_string(), "wo-b".to_string()]],
+            queue_revisions: vec![3],
+            queue_pinned_heads: vec![None],
+            trigger_capable: true,
         }
     }
 
@@ -520,6 +805,75 @@ mod tests {
         dialog.focus = TaskSheetField::GateJoin;
         dialog.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(!dialog.gate_join_all);
+    }
+
+    #[test]
+    fn focused_queue_jk_moves_insertion_with_pinned_head() {
+        let mut dialog = TaskScheduleDialog::new(seed_no_pinned(), &TaskScheduleDraft::default());
+        dialog.sequential = true;
+        dialog.focus = TaskSheetField::Queue;
+        // Starts at end (2) for a 2-member lane.
+        assert_eq!(dialog.queue_insert_position, 2);
+        let k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(dialog.handle_key(k), None);
+        assert_eq!(dialog.queue_insert_position, 1);
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(dialog.handle_key(up), None);
+        assert_eq!(dialog.queue_insert_position, 0);
+        // Boundary is a stable no-op.
+        assert_eq!(dialog.handle_key(up), None);
+        assert_eq!(dialog.queue_insert_position, 0);
+        let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(dialog.handle_key(j), None);
+        assert_eq!(dialog.queue_insert_position, 1);
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(dialog.handle_key(down), None);
+        assert_eq!(dialog.queue_insert_position, 2);
+    }
+
+    #[test]
+    fn queue_marker_never_crosses_pinned_head() {
+        let mut dialog = TaskScheduleDialog::new(seed(), &TaskScheduleDraft::default());
+        dialog.sequential = true;
+        dialog.focus = TaskSheetField::Queue;
+        dialog.queue_insert_position = 1;
+        let k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(dialog.handle_key(k), None);
+        // Pinned wo-run at index 0 forbids position 0.
+        assert_eq!(dialog.queue_insert_position, 1);
+        let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(dialog.handle_key(j), None);
+        assert_eq!(dialog.queue_insert_position, 2);
+    }
+
+    #[test]
+    fn queue_movement_does_not_change_focus_or_emit_agent_msgs() {
+        let mut dialog = TaskScheduleDialog::new(seed_no_pinned(), &TaskScheduleDraft::default());
+        dialog.focus = TaskSheetField::Queue;
+        for key in [
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        ] {
+            assert_eq!(dialog.handle_key(key), None);
+            assert_eq!(dialog.focus, TaskSheetField::Queue);
+        }
+    }
+
+    #[test]
+    fn external_trigger_toggle_respects_capability() {
+        let mut capable = TaskScheduleDialog::new(seed(), &TaskScheduleDraft::default());
+        capable.focus = TaskSheetField::ExternalTrigger;
+        capable.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(capable.external_trigger);
+        let mut legacy_seed = seed();
+        legacy_seed.trigger_capable = false;
+        let mut legacy = TaskScheduleDialog::new(legacy_seed, &TaskScheduleDraft::default());
+        legacy.focus = TaskSheetField::ExternalTrigger;
+        legacy.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(!legacy.external_trigger);
+        assert!(legacy.error.as_deref().unwrap().contains("M005"));
     }
 
     fn render_to_text(dialog: &mut TaskScheduleDialog, width: u16, height: u16) -> String {

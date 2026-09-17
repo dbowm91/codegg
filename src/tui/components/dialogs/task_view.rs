@@ -44,6 +44,11 @@ pub struct TaskViewSnapshot {
     pub loading: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// C001 trigger status lines per WorkOrder (`work_order_id ->
+    /// human status`, e.g. `trigger active · hook-1 · 2/5 fires` or
+    /// `trigger setup incomplete — press t to retry`). Metadata only,
+    /// never secrets.
+    pub trigger_labels: std::collections::HashMap<String, String>,
 }
 
 impl TaskViewSnapshot {
@@ -101,7 +106,17 @@ impl TaskViewSnapshot {
             loading: state.loading,
             error: state.error.clone(),
             notice: state.notice.clone(),
+            trigger_labels: std::collections::HashMap::new(),
         }
+    }
+
+    /// Attach C001 trigger status lines (metadata only, never secrets).
+    pub fn with_trigger_labels(
+        mut self,
+        labels: std::collections::HashMap<String, String>,
+    ) -> Self {
+        self.trigger_labels = labels;
+        self
     }
 }
 
@@ -176,6 +191,11 @@ impl Component for TaskViewDialog {
             KeyCode::Char('d') => Some(TuiMsg::TaskViewDetail),
             KeyCode::Char('x') => Some(TuiMsg::TaskViewCancel),
             KeyCode::Char('u') => Some(TuiMsg::TaskViewResume),
+            // C001 trigger management (metadata only; no secret-read path).
+            KeyCode::Char('t') => Some(TuiMsg::TaskTriggerSetup),
+            KeyCode::Char('T') => Some(TuiMsg::TaskTriggerRotate),
+            KeyCode::Char('X') => Some(TuiMsg::TaskTriggerRevoke),
+            KeyCode::Char('e') => Some(TuiMsg::TaskTriggerRefresh),
             _ => None,
         }
     }
@@ -272,6 +292,15 @@ fn render_view(
                     ),
                 ]));
             }
+            if let Some(trigger_label) = snapshot.trigger_labels.get(&row.id) {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        truncate(trigger_label, width.saturating_sub(4)),
+                        Style::default().fg(theme.secondary),
+                    ),
+                ]));
+            }
         }
     }
     if let Some(error) = snapshot.error.as_deref() {
@@ -287,7 +316,7 @@ fn render_view(
         )));
     }
     lines.push(Line::from(Span::styled(
-        "j/k move · J/K reorder · Enter open · d detail · r refresh · x cancel · u resume · Esc close",
+        "j/k move · J/K reorder · Enter open · d detail · r refresh · x cancel · u resume · t trigger setup · T rotate · X revoke · e trigger refresh · Esc close",
         Style::default().fg(theme.muted),
     )));
     let paragraph = Paragraph::new(lines).style(Style::default().fg(theme.foreground));
@@ -337,8 +366,25 @@ mod tests {
             dialog.handle_key(key(KeyCode::Enter)),
             Some(TuiMsg::TaskViewOpen)
         );
-        // Tab is consumed (None) — never leaks to SwitchAgent.
+        // Tab is consumed (None) — never leaks to composer toggle.
         assert_eq!(dialog.handle_key(key(KeyCode::Tab)), None);
+        // C001 trigger management keys (metadata only, no secret-read).
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Char('t'))),
+            Some(TuiMsg::TaskTriggerSetup)
+        );
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Char('T'))),
+            Some(TuiMsg::TaskTriggerRotate)
+        );
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Char('X'))),
+            Some(TuiMsg::TaskTriggerRevoke)
+        );
+        assert_eq!(
+            dialog.handle_key(key(KeyCode::Char('e'))),
+            Some(TuiMsg::TaskTriggerRefresh)
+        );
     }
 
     #[test]
@@ -454,6 +500,7 @@ mod tests {
             loading: false,
             error: None,
             notice: None,
+            trigger_labels: std::collections::HashMap::new(),
         });
         let normal = render_to_text(&mut dialog, 80, 24);
         assert!(normal.contains("Project Tasks"));

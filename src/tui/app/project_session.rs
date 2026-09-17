@@ -112,6 +112,10 @@ impl App {
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
         let switched = self.project_tabs.set_active(tab_id);
         if switched {
+            // C001: dropping the transient trigger bearer on scope loss.
+            // Metadata stays cached; the secret is never carried across
+            // projects/tabs.
+            crate::tui::commands::work_orders::clear_trigger_secret_on_scope_loss(self);
             let project_scope = self.active_project_id().map(str::to_string);
             self.sidebar.set_project_scope(project_scope.as_deref());
             self.invalidate_pending_session_submit(false);
@@ -148,6 +152,9 @@ impl App {
     /// the process still lives.
     pub fn on_projection_reconnect(&mut self) {
         self.invalidate_pending_session_submit(true);
+        // C001: reconnect drops the transient bearer without logging it;
+        // later metadata shows configuration and offers rotation.
+        crate::tui::commands::work_orders::clear_trigger_secret_on_scope_loss(self);
         self.projection_client.on_reconnect();
         self.interactive_terminals.note_transport_disconnect();
         // Presence M002: lag/resync replaces stale presentation from the
