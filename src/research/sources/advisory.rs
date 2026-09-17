@@ -11,11 +11,9 @@ pub struct AdvisorySource {
 
 impl AdvisorySource {
     pub fn try_new() -> Result<Self> {
-        let client = eggfetch_core::Client::builder()
-            .timeout(eggfetch_core::Timeout::from_secs(10))
-            .follow_redirects(true)
-            .max_redirects(10)
-            .build();
+        let client =
+            crate::http_client::ordinary_http_client_builder(eggfetch_core::Timeout::from_secs(10))
+                .build();
         Ok(Self { client })
     }
 

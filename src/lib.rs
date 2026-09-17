@@ -38,6 +38,7 @@ pub mod git_service;
 pub mod goal_continuation;
 pub mod goal_verification;
 pub mod hooks;
+pub mod http_client;
 pub mod ide;
 pub mod interactive_process;
 pub mod interactive_process_attach;

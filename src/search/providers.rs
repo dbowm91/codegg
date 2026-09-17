@@ -25,10 +25,7 @@ use crate::security::ssrf::{revalidate_dns, validate_host_ip};
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
 fn build_client() -> Client {
-    Client::builder()
-        .timeout(Timeout::from_secs(20))
-        .follow_redirects(true)
-        .max_redirects(10)
+    crate::http_client::ordinary_http_client_builder(Timeout::from_secs(20))
         .user_agent("codegg-websearch/1.0 (+https://github.com/dbowm91/codegg)")
         .build()
 }

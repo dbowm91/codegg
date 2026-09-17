@@ -15,12 +15,11 @@ pub struct DocsRsSource {
 
 impl DocsRsSource {
     pub fn try_new() -> Result<Self> {
-        let client = eggfetch_core::Client::builder()
-            .timeout(eggfetch_core::Timeout::from_secs(API_TIMEOUT.as_secs()))
-            .follow_redirects(true)
-            .max_redirects(10)
-            .user_agent("codegg-research")
-            .build();
+        let client = crate::http_client::ordinary_http_client_builder(
+            eggfetch_core::Timeout::from_secs(API_TIMEOUT.as_secs()),
+        )
+        .user_agent("codegg-research")
+        .build();
         Ok(Self { client })
     }
 

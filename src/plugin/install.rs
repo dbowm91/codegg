@@ -217,11 +217,9 @@ pub async fn install_from_path_into(
 }
 
 pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError> {
-    let client = eggfetch_core::Client::builder()
-        .timeout(eggfetch_core::Timeout::from_secs(30))
-        .follow_redirects(true)
-        .max_redirects(10)
-        .build();
+    let client =
+        crate::http_client::ordinary_http_client_builder(eggfetch_core::Timeout::from_secs(30))
+            .build();
     let mut resp = client
         .get(url)
         .map_err(|e| InstallError::DownloadFailed(e.to_string()))?

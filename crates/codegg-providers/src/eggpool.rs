@@ -4,7 +4,6 @@
 //! types.  It is the providers-side seam used by those layers to validate an
 //! endpoint and obtain a small, deterministic model catalog.
 
-use futures_util::StreamExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -322,7 +321,8 @@ impl EggpoolProbe {
         let mut request = self
             .client
             .get(&url)
-            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?;
+            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?
+            .max_decoded_body_size(self.options.response_byte_limit);
         if !self.api_key.0.is_empty() {
             let value = format!("Bearer {}", self.api_key.0);
             request = request
@@ -330,7 +330,7 @@ impl EggpoolProbe {
                 .header("accept", "application/json");
         }
 
-        let response = select_cancel(cancellation, request.send()).await?;
+        let mut response = select_cancel(cancellation, request.send()).await?;
 
         if cancellation.is_cancelled() {
             return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled));
@@ -357,8 +357,7 @@ impl EggpoolProbe {
             return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Oversized));
         }
 
-        let body =
-            read_body_bounded(response, self.options.response_byte_limit, cancellation).await?;
+        let body = collect_body_cancellable(&mut response, cancellation).await?;
         parse_summary(&body, &self.options)
     }
 }
@@ -408,24 +407,16 @@ where
     }
 }
 
-async fn read_body_bounded(
-    mut response: eggfetch_core::Response,
-    limit: usize,
+async fn collect_body_cancellable(
+    response: &mut eggfetch_core::Response,
     cancellation: &EggpoolCancellationToken,
 ) -> Result<Vec<u8>, EggpoolProbeError> {
-    let mut body = Vec::with_capacity(limit.min(16 * 1024));
-    let mut stream = response.bytes_stream().map_err(classify_body_error)?;
-    while let Some(chunk) = tokio::select! {
-        _ = cancellation.cancelled() => return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled)),
-        chunk = stream.next() => chunk,
-    } {
-        let chunk = chunk.map_err(classify_body_error)?;
-        if body.len().saturating_add(chunk.len()) > limit {
-            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Oversized));
-        }
-        body.extend_from_slice(&chunk);
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled)),
+        result = response.bytes() => result
+            .map(|bytes| bytes.to_vec())
+            .map_err(classify_body_error),
     }
-    Ok(body)
 }
 
 fn classify_request_error(error: eggfetch_core::Error) -> EggpoolProbeError {
@@ -439,6 +430,9 @@ fn classify_request_error(error: eggfetch_core::Error) -> EggpoolProbeError {
 }
 
 fn classify_body_error(error: eggfetch_core::Error) -> EggpoolProbeError {
+    if matches!(error, eggfetch_core::Error::DecodedBodyTooLarge) {
+        return EggpoolProbeError::new(EggpoolProbeReasonCode::Oversized);
+    }
     classify_request_error(error)
 }
 
@@ -777,5 +771,104 @@ mod tests {
         );
         let error = EggpoolProbeError::new(EggpoolProbeReasonCode::Redirect);
         assert!(!error.to_string().contains("Location"));
+    }
+
+    async fn chunked_probe_server(chunks: Vec<Vec<u8>>) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind chunked probe server");
+        let addr = listener.local_addr().expect("chunked probe address");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept probe request");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write chunked headers");
+            for chunk in chunks {
+                socket
+                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                    .await
+                    .expect("write chunk size");
+                socket.write_all(&chunk).await.expect("write chunk");
+                socket.write_all(b"\r\n").await.expect("write chunk end");
+            }
+            socket
+                .write_all(b"0\r\n\r\n")
+                .await
+                .expect("write chunk terminator");
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn oversized_chunked_body_maps_to_oversized_without_content_length() {
+        let _lock = fake_server_test_lock().await;
+        // No Content-Length is sent; the Eggfetch request limit must still
+        // fail closed and map to the stable Oversized reason.
+        let body = br#"{"data":[{"id":"chunked-oversized-model"}]}"#.to_vec();
+        assert!(body.len() > 16);
+        let (url, server) =
+            chunked_probe_server(vec![body[..16].to_vec(), body[16..].to_vec()]).await;
+        let options = EggpoolProbeOptions {
+            response_byte_limit: 16,
+            ..EggpoolProbeOptions::default()
+        };
+        let error = EggpoolProbe::new(&url, "key", options)
+            .expect("valid probe")
+            .probe(&EggpoolCancellationToken::new())
+            .await
+            .expect_err("chunked over-limit must fail closed");
+        assert_eq!(error.reason_code(), EggpoolProbeReasonCode::Oversized);
+        server.await.expect("chunked server joins");
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_body_collection_wins_promptly() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _lock = fake_server_test_lock().await;
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind stalled probe server");
+        let addr = listener.local_addr().expect("stalled probe address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept stalled request");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            // Claim a large body but stall after a small prefix so the
+            // client must remain in body collection when cancelled.
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n{\"data\":[",
+                )
+                .await
+                .expect("write stalled prefix");
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+
+        let url = format!("http://{addr}");
+        let probe =
+            EggpoolProbe::new(&url, "key", EggpoolProbeOptions::default()).expect("valid probe");
+        let token = EggpoolCancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            canceller.cancel();
+        });
+        let result = tokio::time::timeout(Duration::from_secs(5), probe.probe(&token)).await;
+        match result {
+            Ok(Err(error)) => assert_eq!(error.reason_code(), EggpoolProbeReasonCode::Cancelled),
+            Ok(Ok(_)) => panic!("stalled body should not succeed"),
+            Err(_) => panic!("cancellation during body collection was not prompt"),
+        }
+        server.abort();
     }
 }

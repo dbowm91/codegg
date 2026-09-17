@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crate::error::ToolError;
 use crate::search_backend;
 use crate::security::ssrf::validate_url_target;
-use crate::security::untrusted_http::read_body_bounded;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5MB
@@ -200,6 +199,7 @@ pub async fn execute_builtin(
         .get(url)
         .map_err(|e| ToolError::Execution(format!("invalid URL: {e}")))?
         .resolved_addresses(target.addresses().iter().copied())
+        .max_decoded_body_size(MAX_RESPONSE_SIZE)
         .header(
             "User-Agent",
             "Mozilla/5.0 (compatible; Codegg/1.0; +https://codegg.ai)",
@@ -224,6 +224,7 @@ pub async fn execute_builtin(
             .get(url)
             .map_err(|e| ToolError::Execution(format!("invalid URL: {e}")))?
             .resolved_addresses(retry_target.addresses().iter().copied())
+            .max_decoded_body_size(MAX_RESPONSE_SIZE)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
             .header("Accept-Language", "en-US,en;q=0.5")
@@ -250,7 +251,7 @@ pub async fn execute_builtin(
 impl WebFetchTool {
     async fn process_response(
         &self,
-        response: eggfetch_core::Response,
+        mut response: eggfetch_core::Response,
         content_type: &str,
         max_length: usize,
     ) -> Result<String, ToolError> {
@@ -259,18 +260,14 @@ impl WebFetchTool {
             .any(|ct| content_type.starts_with(ct));
 
         if is_image {
-            let bytes = read_body_bounded(response, MAX_RESPONSE_SIZE)
-                .await
-                .map_err(|e| ToolError::Execution(e.to_string()))?;
+            let bytes = collect_bounded_body(&mut response).await?;
 
             let encoded =
                 base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             return Ok(format!("[{content_type} base64 attachment]\n{encoded}"));
         }
 
-        let bytes = read_body_bounded(response, MAX_RESPONSE_SIZE)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let bytes = collect_bounded_body(&mut response).await?;
 
         let result = if content_type.contains("html") {
             from_read(&bytes[..], 80)
@@ -290,6 +287,29 @@ impl WebFetchTool {
 
 fn effective_output_limit(requested: usize, framework: usize) -> usize {
     requested.min(framework)
+}
+
+/// Collect a response body through Eggfetch's request-scoped decoded-body
+/// limit. The bound is configured on the request before send (see
+/// `execute_builtin`); this helper only maps the transport outcome into the
+/// owner-domain error without exposing secret-bearing transport text.
+async fn collect_bounded_body(
+    response: &mut eggfetch_core::Response,
+) -> Result<Vec<u8>, ToolError> {
+    match response.bytes().await {
+        Ok(bytes) => Ok(bytes.to_vec()),
+        Err(e) => Err(map_bounded_body_error(e)),
+    }
+}
+
+fn map_bounded_body_error(e: eggfetch_core::Error) -> ToolError {
+    if matches!(e, eggfetch_core::Error::DecodedBodyTooLarge) {
+        ToolError::Execution(format!(
+            "response body exceeds {MAX_RESPONSE_SIZE} byte limit"
+        ))
+    } else {
+        ToolError::Execution(e.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +343,166 @@ mod tests {
         let output = "é🙂z";
         let safe = crate::search_backend::framing::truncate_utf8_boundary(output, 5);
         assert_eq!(safe, "é");
+    }
+
+    async fn bounded_fixture(body: &[u8], headers: &str, limit: usize) -> eggfetch_core::Response {
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = Arc::new(body.to_vec());
+        let headers = headers.to_string();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let response = format!("HTTP/1.1 200 OK\r\nConnection: close\r\n{headers}\r\n");
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+
+        let client = eggfetch_core::Client::builder()
+            .follow_redirects(false)
+            .build();
+        client
+            .get(&format!("http://{addr}/fixture"))
+            .unwrap()
+            .max_decoded_body_size(limit)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    async fn bounded_chunked_fixture(chunks: &[&[u8]], limit: usize) -> eggfetch_core::Response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let chunks: Vec<Vec<u8>> = chunks.iter().map(|chunk| chunk.to_vec()).collect();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            for chunk in chunks {
+                socket
+                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                    .await
+                    .unwrap();
+                socket.write_all(&chunk).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+
+        let client = eggfetch_core::Client::builder()
+            .follow_redirects(false)
+            .build();
+        client
+            .get(&format!("http://{addr}/fixture"))
+            .unwrap()
+            .max_decoded_body_size(limit)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eggfetch_limit_accepts_body_exactly_at_limit() {
+        let mut response = bounded_fixture(b"12345", "Content-Length: 5\r\n", 5).await;
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"12345");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eggfetch_limit_accepts_body_under_limit() {
+        let mut response = bounded_fixture(b"1234", "Content-Length: 4\r\n", 5).await;
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"1234");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eggfetch_limit_rejects_declared_body_over_limit() {
+        let mut response = bounded_fixture(b"123456", "Content-Length: 6\r\n", 5).await;
+        let error = response
+            .bytes()
+            .await
+            .expect_err("over-limit must fail closed");
+        assert!(matches!(error, eggfetch_core::Error::DecodedBodyTooLarge));
+        // Owner-domain projection preserves the body-limit category without
+        // leaking transport internals.
+        let mapped = map_bounded_body_error(error);
+        assert!(mapped.to_string().contains("byte limit"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eggfetch_limit_rejects_chunked_body_crossing_limit() {
+        let mut response = bounded_chunked_fixture(&[b"123", b"456"], 5).await;
+        let error = response
+            .bytes()
+            .await
+            .expect_err("chunked over-limit must fail closed");
+        assert!(matches!(error, eggfetch_core::Error::DecodedBodyTooLarge));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn eggfetch_limit_accepts_chunked_body_under_limit() {
+        let mut response = bounded_chunked_fixture(&[b"12", b"345"], 5).await;
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"12345");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pinned_address_ignores_later_dns_and_preserves_host_header() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let host = "post-validation-change.invalid";
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 256];
+            loop {
+                let read = socket.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") || read == 0 {
+                    break;
+                }
+            }
+            let _ = request_tx.send(request);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+
+        let client = eggfetch_core::Client::builder()
+            .follow_redirects(false)
+            .build();
+        let mut response = client
+            .get(&format!("http://{host}:{}/fixture", addr.port()))
+            .unwrap()
+            // Same mechanism used with the production validated address set.
+            // The .invalid name has no fallback DNS answer, so a second
+            // resolver pass would fail instead of reaching the fixture.
+            .resolved_addresses([addr])
+            .max_decoded_body_size(MAX_RESPONSE_SIZE)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "ok");
+        let request = String::from_utf8(request_rx.await.unwrap())
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(request.contains(&format!("host: {host}:{}", addr.port())));
     }
 }

@@ -20,10 +20,7 @@ pub struct OpenAlexProvider {
 impl OpenAlexProvider {
     pub fn new() -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Timeout::from_secs(20))
-                .follow_redirects(true)
-                .max_redirects(10)
+            client: crate::http_client::ordinary_http_client_builder(Timeout::from_secs(20))
                 .user_agent("codegg-websearch/1.0 (mailto:codegg-research@example.invalid)")
                 .build(),
         }

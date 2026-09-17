@@ -9,7 +9,6 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::security::ssrf::validate_url_target;
-use crate::security::untrusted_http::read_body_bounded;
 
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
@@ -35,10 +34,11 @@ impl UrlSource {
             .follow_redirects(false)
             .build();
 
-        let response = client
+        let mut response = client
             .get(url)
             .map_err(|e| ResearchError::UrlFetch(format!("invalid URL: {e}")))?
             .resolved_addresses(target.addresses().iter().copied())
+            .max_decoded_body_size(MAX_RESPONSE_BYTES)
             .send()
             .await
             .map_err(|e| ResearchError::UrlFetch(format!("request failed: {e}")))?;
@@ -55,9 +55,15 @@ impl UrlSource {
             .unwrap_or("")
             .to_string();
 
-        let bytes = read_body_bounded(response, MAX_RESPONSE_BYTES)
-            .await
-            .map_err(|e| ResearchError::UrlFetch(e.to_string()))?;
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(eggfetch_core::Error::DecodedBodyTooLarge) => {
+                return Err(ResearchError::UrlFetch(format!(
+                    "response body exceeds {MAX_RESPONSE_BYTES} byte limit"
+                )));
+            }
+            Err(e) => return Err(ResearchError::UrlFetch(e.to_string())),
+        };
         let truncated = &bytes;
 
         let content_hash = format!("{:x}", Sha256::digest(truncated));

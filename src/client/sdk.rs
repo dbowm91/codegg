@@ -9,10 +9,7 @@ pub struct RemoteClient {
 
 impl RemoteClient {
     pub fn new(base_url: &str, token: Option<&str>) -> Result<Self, ClientError> {
-        let mut builder = Client::builder()
-            .timeout(Timeout::from_secs(10))
-            .follow_redirects(true)
-            .max_redirects(10);
+        let mut builder = crate::http_client::ordinary_http_client_builder(Timeout::from_secs(10));
         if let Some(t) = token {
             builder = builder
                 .default_header("authorization", &format!("Bearer {t}"))

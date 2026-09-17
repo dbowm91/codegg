@@ -65,11 +65,7 @@ fn token_store_error(message: &str) -> McpError {
 }
 
 fn oauth_client() -> eggfetch_core::Client {
-    eggfetch_core::Client::builder()
-        .timeout(eggfetch_core::Timeout::from_secs(30))
-        .follow_redirects(true)
-        .max_redirects(10)
-        .build()
+    crate::http_client::ordinary_http_client_builder(eggfetch_core::Timeout::from_secs(30)).build()
 }
 
 fn form_body(params: &[(&str, &str)]) -> String {

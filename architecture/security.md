@@ -22,7 +22,6 @@ review that never mutates files.
 | Security review workflow (diff parsing, evidence synthesis) | `src/security/workflow/` |
 | Security review runtime (`prepare_security_review`, `validate_report`) | `src/security/runtime.rs` |
 | LSP security context executor adapter | `src/security/lsp_executor.rs` |
-| Bounded HTTP body reader | `src/security/untrusted_http.rs` |
 | Sensitive path matching | `src/security/mod.rs` (`matches_sensitive_path`) |
 | Re-exports of eggsentry types for backward compat | `src/security/mod.rs` |
 | Deterministic security scanning (secrets, commands, deps) | `crates/eggsentry/src/` |
@@ -237,18 +236,27 @@ pub fn matches_sensitive_path<'a>(
 Matches file paths against configured glob patterns with
 canonicalization.
 
-### Untrusted HTTP (`untrusted_http.rs`)
+### Untrusted HTTP body limits (Eggfetch-owned)
 
 ```rust
-pub(crate) async fn read_body_bounded(
-    response: eggfetch_core::Response,
-    max_bytes: usize,
-) -> Result<Vec<u8>, BoundedBodyError>
+client
+    .get(url)?
+    .resolved_addresses(validated_addresses)
+    .max_decoded_body_size(limit)
+    .send()
+    .await?
+    .bytes()
+    .await
 ```
 
-Enforces response body limits on both `Content-Length` and streamed
-chunks. Prevents unbounded memory allocation from untrusted HTTP
-responses.
+Generic response-size enforcement is owned by Eggfetch's request-scoped
+decoded-body limit (`Error::DecodedBodyTooLarge`), which applies to
+identity bodies with absent, misleading, chunked, or exact-boundary
+`Content-Length`. CodeGG owns SSRF validation, the accepted address
+snapshot attached via `resolved_addresses()`, no-follow redirect policy
+on security-sensitive routes, and secret-safe mapping of
+`DecodedBodyTooLarge` into the owner-domain body-limit error. No
+CodeGG-owned generic chunk accumulator remains.
 
 ## Key Types & APIs
 
@@ -355,8 +363,10 @@ fallback_to_native = true  # only for mcp backend
    alone produce review prompts, never findings. Same-file scoping only.
 4. **DNS rebinding protection.** `revalidate_dns` re-resolves and
    compares; IPv4-mapped IPv6 equivalence is handled.
-5. **Bounded HTTP body.** `read_body_bounded` checks both
-   Content-Length and streamed chunks against the limit.
+5. **Bounded HTTP body.** Eggfetch's request-scoped decoded-body limit
+   fails closed on declared-length, chunked/unknown-length, and
+   exact-boundary bodies; CodeGG maps `DecodedBodyTooLarge` to the
+   owner-domain body-limit error.
 6. **eggsentry is deterministic.** No network calls, no file mutations.
    Regex-based scanning with `LazyLock` compiled patterns.
 7. **Landlock ABI V1 minimum.** The helper requires `FullyEnforced` +
@@ -386,8 +396,8 @@ cargo test -p codegg --lib security::runtime
 # eggsentry tests (scanner, command classification, profiles)
 cargo test -p eggsentry
 
-# Untrusted HTTP tests
-cargo test -p codegg --lib security::untrusted_http
+# WebFetch bounded-body and static-routing tests
+cargo test -p codegg --lib tool::webfetch
 ```
 
 ## Approval-vs-security boundary (M003, ADR-0004)

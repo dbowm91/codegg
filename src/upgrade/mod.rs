@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
-use eggfetch_core::{Client, Timeout};
+use eggfetch_core::Timeout;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -62,11 +62,7 @@ pub fn installer_invocation(target: &str) -> (&'static str, Vec<(&'static str, S
 }
 
 pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
-    let client = Client::builder()
-        .timeout(Timeout::from_secs(10))
-        .follow_redirects(true)
-        .max_redirects(10)
-        .build();
+    let client = crate::http_client::ordinary_http_client_builder(Timeout::from_secs(10)).build();
 
     let mut resp = client
         .get("https://api.github.com/repos/dbowm91/codegg/releases/latest")
