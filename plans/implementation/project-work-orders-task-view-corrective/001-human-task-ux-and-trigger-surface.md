@@ -1,6 +1,6 @@
 # Project Work Orders and Task View Corrective C001 — Human Task UX and Trigger Surface
 
-Status: ready
+Status: closed
 
 Repository baseline: `e013acd282afd63e7ca2211190a1342f76ae3e5d`
 
