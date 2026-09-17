@@ -527,6 +527,88 @@ abort, exact bounds, invocation retry/conflict/distinct, ceiling and
 allowlist negatives, secret-free outputs, turn-budget restart, depth
 chain, plan-file queue trajectory, bounded list/get.
 
+## End-to-end trajectory, recovery, and contention qualification (M007)
+
+Harness-only closure milestone: no production delta, no migration, no
+protocol change. `tests/work_orders_m007_trajectory.rs` (14 tests)
+composes the landed M001-M006 substrate and proves the qualification
+matrix from
+`plans/implementation/project-work-orders-task-view/007-work-order-trajectory-and-recovery-qualification.md`:
+
+- A: default immediate Task composer input claims exactly once, links
+  one deterministic session id and one `AgentTurn` submission key, and
+  converges on restart without duplicate session/job rows.
+- B: a 15-member lane keeps stable order/revision across reopen;
+  future-row reorder commits under CAS, stale revisions mutate nothing,
+  the claimed head pins lane order, successor success releases only the
+  next item, and `HoldLane` failure/attention holds downstream with an
+  explicit attention -> waiting retry path.
+- C: Immediate/Delay/NotBefore/SequenceReady gates release at their
+  boundaries; `All`/`Any` joins combine; latches persist per occurrence
+  and duplicate evaluations converge; not-before instants serialize
+  exactly (explicit ms timestamps, no timezone guessing); restart
+  before/after satisfaction is stable; invalid gate sets fail closed.
+- D: repeat 1 runs once with no successor; repeat 2 mints one distinct
+  successor (session/job keys differ) and duplicate wakes converge;
+  `MAX_REPEAT_COUNT` (256) is accepted and 257 rejected; chains survive
+  reopen; repeat delays anchor to the prior terminal timestamp.
+- E: all eight materialization fault windows (pre-claim, post-claim,
+  post-workspace-link, post-reservation, post-session-create,
+  post-session-link, post-job-submit, post-acknowledgement, plus
+  shutdown-while-running) converge forward on durable
+  identities/idempotency keys with exactly one session and one job.
+- F: three concurrent Git mutation work orders receive distinct managed
+  worktrees under the managed root with no shared write path; only
+  `Clean` health is cleanup-safe; non-Git mutation reports
+  `isolation_unavailable` attention or truthful serialized sharing.
+- G: removed models resolve to `model_unavailable` attention (never
+  silent fallback); approval/sandbox snapshots narrow against ceilings
+  and never widen; post-claim execution payloads are immutable; creator
+  attribution survives drift.
+- H: materialized sessions are ordinary session rows; interactive
+  permission waits use the sync `PermissionRegistry` (responder
+  registered before Pending; cross-session answers rejected);
+  steering/cancel route through normal session/job control; attention
+  predecessors hold the lane.
+- I: trigger fire latches exactly one occurrence; duplicate
+  `Idempotency-Key` deliveries converge on the stored receipt;
+  concurrent distinct keys cannot double-release; wrong secrets/ids
+  share one generic failure with no project/secret content; metadata
+  carries no secret/verifier; expiry/revocation/max-fire fail closed;
+  the bearer grants no principal authority.
+- J: agent batch bounds (`MAX_AGENT_WORK_ORDER_BATCH` 16 <= human 32,
+  agent repeat 8 <= human 256, depth 4) hold; batches commit atomically
+  with deterministic order; exact retries converge; invalid item N
+  leaves zero partial rows; cross-project lanes are rejected; rows
+  survive reopen.
+- K: concurrent lane reorder admits one winner + one revision conflict;
+  edit-vs-claim is `StateConflict`; cancel-after-terminal is idempotent;
+  foreign-project lookups return not-found (no existence leak).
+- L: Task view generations invalidate late completions; project
+  switches are project-scoped; `moved_lane_order` never moves the
+  pinned head; dashboard stale generations/moved-on expansions drop and
+  revoked projects clear immediately.
+- §7 trajectory: 15 work orders (immediate, delayed, not-before +
+  sequence, external-trigger, repeat, two parallel independents,
+  permission wait, failure/attention with retry, daemon restart while
+  running, restart with future work remaining, agent batch segment)
+  reach their designed terminal/attention states in order with distinct
+  session/job identities and no duplicates.
+- §9 ownership: one scheduler/admission owner (`JobSubmissionService`
+  only; `check_work_order_coordinator.py` green), one core persistence
+  owner (pool-less daemons fail closed), typed non-path identities, and
+  `task` vs `work_order` tool separation.
+
+```bash
+cargo test --test work_orders_m007_trajectory
+```
+
+Related existing suites re-verified with no regressions: M001 (12),
+M002 (10), M004 (8), M005 incl. server HTTP (22), M006 (21),
+`codegg --lib work_order` (37), `codegg-core --lib work_order` (43),
+`codegg-protocol` (185), `identity_m003` (9), `storage_migrations`
+(4), `tui_project_tabs` (20), `tui_project_picker` (22).
+
 ## Related docs
 
 - [authorization.md](authorization.md) — project-scoped capability
