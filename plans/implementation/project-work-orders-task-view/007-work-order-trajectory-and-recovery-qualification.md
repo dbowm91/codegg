@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M007 — End-to-End Trajectory, Recovery, Contention, and Security Qualification
 
-Status: ready
+Status: implemented (closure: `plans/closure/project-work-orders-task-view/007-status.md`)
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 

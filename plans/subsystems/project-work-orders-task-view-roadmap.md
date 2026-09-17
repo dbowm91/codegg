@@ -1,6 +1,6 @@
 # Project Work Orders and Task View Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
@@ -357,7 +357,7 @@ Class: invariant / capability closure
 
 Plan: `plans/implementation/project-work-orders-task-view/007-work-order-trajectory-and-recovery-qualification.md`
 
-Status: ready (M001-M006 closed — M001 `a856f2e0`, M002 `c54656e5`, M003 `79a00460`, M004 `8c6e8190`, M005 `f22c9d8d`, M006 `38e533a8`).
+Status: closed (`plans/closure/project-work-orders-task-view/007-status.md`; harness-only qualification `0216e814`, no production delta).
 
 Run fault-injection and representative long trajectories across restart boundaries, concurrent clients, duplicate triggers, removed models, policy narrowing, permission waits, worktree conflicts, cancellation, reorder races, sequence failure, repeat exhaustion, team privacy, and agent batch creation. Add only corrective production changes needed for closure.
 
