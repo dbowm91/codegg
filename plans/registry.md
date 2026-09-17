@@ -192,3 +192,45 @@ Verification remains deliberately light. Newly registered milestones may add foc
 The long-horizon work roadmap may add deterministic WorkPlan/Goal/Todo/context-transition/restart scenarios and force small context limits with scripted providers. It MUST NOT add live-provider CI, a second history/compaction store, a generic workflow engine, or an unbounded plan dump/benchmark gate.
 
 The execution-reliability/approval roadmap may add deterministic provider fault streams, retry/side-effect fixtures, permission/reviewer/sandbox matrices, preference restart tests, and the existing supported-Linux sandbox fixture. It MUST NOT add live-provider CI, a permanent chaos service, a new authorization engine, a second scheduler, a new cross-platform sandbox framework, or network-containment claims without an actual backend.
+
+The dependency security/workspace roadmap may use `cargo audit`, `cargo tree -d`, reverse dependency trees, feature trees, package dry-runs, and `cargo bloat` as temporary local/closure evidence. It MUST NOT turn advisory status, duplicate counts, package counts, or artifact size into new continuous CI gates. M001 may update an existing explicit audit ignore only when reachability/applicability evidence changes. M002 must prove feature equivalence rather than centralizing maximal feature unions. M004 may run `cargo package` dry-runs but MUST NOT publish automatically. M005 remains blocked until its external package interface exists. M006 may perform only targeted Rustls/required-companion updates and focused Eggfetch/provider/TLS-consumer verification; it MUST NOT add an advisory ignore, broad lockfile update, TLS framework, or public-network CI test.
+
+The HTTP client consolidation roadmap may use deterministic loopback HTTP/TLS/SSE fixtures plus temporary `rg`/`cargo tree` dependency censuses for closure evidence. It MUST NOT add network-dependent CI, a permanent dependency scanner, a binary-size threshold, or a generic HTTP abstraction solely for verification.
+
+The upstream tool-surface corrective may use deterministic modern/legacy MCP fixtures and one optional local real-binary smoke for closure evidence. It MUST NOT add a permanent compatibility matrix, scheduled upstream smoke, network-dependent CI check, duplicate search cache, or duplicate progressive-discovery framework.
+
+Repository-surface M001 may repair the existing project-catalog guard and use temporary census commands for documentation review, but it MUST NOT introduce a permanent docs-lint framework or network-dependent CI check.
+
+The context-continuity roadmap may add focused deterministic checkpoint-store, compaction, restart, cancellation, and repeated-trajectory tests. Its closure may force small effective context limits with local fake providers, but MUST NOT add live-provider/network CI, a new benchmark gate, a vector-history service, or another permanent verification framework.
+
+Normal broad local posture remains:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+scripts/verify.sh quick
+```
+
+Hosted `CI / verify` is closure evidence only where the existing closure convention or an exact operational condition requires it.
+
+## Deferred unregistered product work
+
+These remain outside active handoff unless concrete product priority/evidence makes them dependency-ready:
+
+- distribution expansion beyond the closed Linux/macOS binary+installer slice, including Homebrew/deb/rpm/Nix, Windows installer support, signing/notarization, SBOM/provenance and package-manager automation;
+- expanding Windows from opportunistic compatibility to a guaranteed support tier;
+- full web/desktop/mobile frontends;
+- arbitrary LSP `workspace/executeCommand` support;
+- binary topology split or separate daemon/TUI packaging without measured deployment need;
+- replacing RustPython with a custom Tool Program parser;
+- production hosted Tool Program transport;
+- seccomp, namespace, container, or remote-execution sandbox expansion;
+- persistent search indexing;
+- deletion of the explicitly configured legacy search fallback absent new compatibility evidence;
+- automatic dependency-update bots or continuous binary-size/audit gates;
+- OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now closed;
+- generalized OAuth/provider credential-store unification absent a token-set abstraction justified by multiple consumers;
+- remote workspace/node/distributed execution phases until identity/audit dependencies make them ready;
+- release automation or a fixed release cadence;
+- upstreaming the validated-destination/SSRF policy into Eggfetch or creating a generic network-policy crate before a second independent consumer justifies that boundary;
+- replacing Axum/Tower with Eggserve or adding Eggress/greggd solely for Eggstack component uniformity.
