@@ -3,10 +3,11 @@
 //! `CoreDaemon` remains the single daemon composition/lifecycle authority.
 //! [`DaemonRequestFamily::of`] is the only request-to-owner routing table:
 //! the thin dispatcher in `super::daemon` routes each envelope to exactly
-//! one family handler operating on the same daemon-owned state. Chat and
-//! interactive-process requests are classified here for documentation but are
-//! served before the router by their existing boxed/spawned paths, preserving
-//! their stack/cancellation semantics exactly.
+//! one family handler operating on the same daemon-owned state. Chat,
+//! interactive-process, and work-order requests are classified here for
+//! documentation but are served before the router by their existing
+//! boxed/spawned paths, preserving their stack/cancellation semantics
+//! exactly.
 //!
 //! | Family | Owner module | Responsibility |
 //! |---|---|---|---|
@@ -21,6 +22,7 @@
 //! | `ops` | `daemon_ops.rs` | audit query/export, memory, and notification routing over daemon-owned stores |
 //! | `chat` | `daemon.rs::handle_chat_request` (pre-router, boxed) | durable project chat channels/messages/actions |
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
+//! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
 
 use crate::protocol::core::CoreRequest;
 
@@ -38,6 +40,7 @@ pub enum DaemonRequestFamily {
     Ops,
     Chat,
     Interactive,
+    WorkOrders,
 }
 
 impl DaemonRequestFamily {
@@ -204,6 +207,23 @@ impl DaemonRequestFamily {
             CoreRequest::ChatRedact { .. } => Self::Chat,
             CoreRequest::ChatSend { .. } => Self::Chat,
             CoreRequest::ChatSync { .. } => Self::Chat,
+            CoreRequest::WorkOrderBatchCreate { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderCancel { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderCapabilities => Self::WorkOrders,
+            CoreRequest::WorkOrderCreate { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderGet { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderLaneAttach { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderLaneCreate { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderLaneGet { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderLaneList { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderLaneReorder { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderList { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderOccurrenceGet { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderOccurrenceList { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderPause { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderResume { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderSummary { .. } => Self::WorkOrders,
+            CoreRequest::WorkOrderUpdate { .. } => Self::WorkOrders,
             CoreRequest::InteractiveProcessAttach { .. } => Self::Interactive,
             CoreRequest::InteractiveProcessCapabilities => Self::Interactive,
             CoreRequest::InteractiveProcessCreate { .. } => Self::Interactive,
@@ -232,6 +252,7 @@ impl DaemonRequestFamily {
             Self::Ops => "src/core/daemon_ops.rs",
             Self::Chat => "src/core/daemon.rs::handle_chat_request",
             Self::Interactive => "src/core/daemon.rs::run_interactive_request",
+            Self::WorkOrders => "src/core/daemon_work_orders.rs::handle_work_order_request",
         }
     }
 }

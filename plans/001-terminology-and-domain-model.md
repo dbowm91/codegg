@@ -22,6 +22,9 @@ Deployment
 |-- Projects
 |   |-- Repositories
 |   |   `-- Workspaces / Worktrees
+|   |-- WorkOrders
+|   |   `-- WorkOrderOccurrences
+|   |-- SequenceLanes
 |   |-- Sessions
 |   |   `-- Turns
 |   |       `-- AgentRun trees
@@ -415,6 +418,37 @@ A durable rule that creates or activates jobs in the future.
 
 Suggested identifier: `ScheduleId`.
 
+### Work order
+
+A durable project-scoped description of intended future work: when a
+normal session may be born, under which release conditions, in which
+sequence lane, and with which requested model/policy snapshot. A work
+order is project intent, not scheduler execution authority, not a
+schedule rule, not delegated child intent (`AgentTask`), not
+within-session completion state (`WorkPlan`), and not a conversation
+(`Session`). Waiting work orders exist without session rows.
+
+Suggested identifiers: `WorkOrderId` for the intent;
+`WorkOrderOccurrenceId` for one execution instance (explicit 0-based
+occurrence index; finite repeat counts only).
+
+### Work-order occurrence
+
+One materialization/execution of a work order. When an occurrence
+becomes ready, the daemon coordinator claims it exactly once, creates
+one normal canonical session, and submits its initial turn through the
+existing scheduler submission boundary. Occurrence/session/job
+correlation survives restart.
+
+### Sequence lane
+
+A revisioned project-level ordering for waiting work orders.
+Reordering is CAS-guarded by the lane revision, never
+last-writer-wins. Sequential order is owned here, not by mutable
+scheduler job dependencies.
+
+Suggested identifier: `SequenceLaneId`.
+
 ### Run
 
 A structured record of one command, script, test, or tool execution, including output and artifacts.
@@ -723,6 +757,10 @@ The following phrases SHOULD be removed from new design documents unless qualifi
 - "worker" when execution node, scheduler executor, or agent worker is intended;
 - "session" when turn, client connection, terminal, or process is intended;
 - "run" when job, attempt, agent run, or command run is intended;
+- "task" when the intended object is a project work order, a delegated
+  agent task, a Todo item, a work-plan item, or a scheduler job. The TUI
+  may label work orders as "Tasks", but protocol, storage, and
+  architecture use `WorkOrder` to avoid collision;
 - "reload config" when the operation specifically refreshes runtime assets;
 - "shared workspace" when isolated worktrees are intended.
 

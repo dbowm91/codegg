@@ -74,6 +74,12 @@ pub struct CoreDaemon {
     /// cleared on restart. Pool-less daemons serve composing state only
     /// and fail durable operations with `chat_unavailable`.
     pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
+    /// Project Work Orders M001: daemon-owned project work-order
+    /// service. Durable work orders/occurrences/lanes live in the
+    /// catalog pool (when present); pool-less daemons fail durable
+    /// operations with `work_order_unavailable`. M001 persists and
+    /// projects waiting work only; no work order executes yet.
+    pub work_orders: Arc<codegg_core::work_order::WorkOrderService>,
     /// Projection replay publication seam. Present only for SQLite-backed
     /// daemons; legacy in-memory daemons retain `None`.
     pub projection_seam:
@@ -487,13 +493,18 @@ impl CoreDaemon {
                 | CoreRequest::ChatActionGet { .. }
                 | CoreRequest::ChatActionList { .. }
         );
+        // Work Orders M001: every work-order read/write denies as
+        // not-found so unauthorized callers cannot infer project
+        // existence, membership, or waiting-work activity from an opaque
+        // work-order, occurrence, or lane id.
         if (matches!(
             request,
             CoreRequest::ProjectGet { .. }
                 | CoreRequest::PresenceSnapshotGet { .. }
                 | CoreRequest::PresenceHeartbeat { .. }
         ) || observe_private
-            || chat_private)
+            || chat_private
+            || Self::is_work_order_request(request))
             && error.is_denial()
         {
             let (code, message) = codegg_core::authorization::denial_as_not_found();
@@ -600,10 +611,23 @@ impl CoreDaemon {
             CoreRequest::PresenceSnapshotGet { project_id } => Some(project_id.as_str()),
             CoreRequest::ChatChannelEnsure { project_id, .. }
             | CoreRequest::ChatChannelList { project_id, .. } => Some(project_id.as_str()),
+            CoreRequest::WorkOrderCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::WorkOrderBatchCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::WorkOrderLaneCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::WorkOrderList { project_id, .. }
+            | CoreRequest::WorkOrderLaneList { project_id, .. }
+            | CoreRequest::WorkOrderSummary { project_id } => Some(project_id.as_str()),
             _ => None,
         };
         if let Some(raw) = direct {
             return ProjectId::parse(raw).ok();
+        }
+        // Work Orders M001: ID-only locators resolve server-side through
+        // the durable work-order/occurrence/lane row. Unknown ids yield
+        // `None` so team principals fail closed.
+        if let Some(raw) = Self::work_order_id_for_request(request) {
+            let pool = self.pool.clone()?;
+            return Box::pin(codegg_core::work_order::work_order_project(&pool, raw)).await;
         }
         // Collaboration M001: channel-scoped requests carry only the
         // channel locator; the owning project resolves server-side
@@ -670,6 +694,26 @@ impl CoreDaemon {
             | CoreRequest::ChatActionSubmit { channel_id, .. }
             | CoreRequest::ChatActionGet { channel_id, .. }
             | CoreRequest::ChatActionList { channel_id, .. } => Some(channel_id),
+            _ => None,
+        }
+    }
+
+    /// Work Orders M001: opaque locator carried by one ID-scoped
+    /// work-order request, if any. Creation and project listing carry a
+    /// direct `project_id` instead; every other operation resolves its
+    /// owning project server-side through the durable row.
+    fn work_order_id_for_request(request: &CoreRequest) -> Option<&str> {
+        match request {
+            CoreRequest::WorkOrderGet { work_order_id } => Some(work_order_id),
+            CoreRequest::WorkOrderUpdate { request } => Some(request.work_order_id.as_str()),
+            CoreRequest::WorkOrderCancel { work_order_id }
+            | CoreRequest::WorkOrderPause { work_order_id }
+            | CoreRequest::WorkOrderResume { work_order_id } => Some(work_order_id),
+            CoreRequest::WorkOrderLaneGet { lane_id } => Some(lane_id),
+            CoreRequest::WorkOrderLaneReorder { request } => Some(request.lane_id.as_str()),
+            CoreRequest::WorkOrderLaneAttach { request } => Some(request.lane_id.as_str()),
+            CoreRequest::WorkOrderOccurrenceGet { occurrence_id } => Some(occurrence_id),
+            CoreRequest::WorkOrderOccurrenceList { work_order_id, .. } => Some(work_order_id),
             _ => None,
         }
     }
@@ -2259,6 +2303,12 @@ impl CoreDaemon {
             | CoreRequest::ChatActionSubmit { .. }
             | CoreRequest::AuditQuery { .. }
             | CoreRequest::AuditExport { .. } => return,
+            // Work Orders M001: creation and mutation operations mint or
+            // change durable identity in the handler, so they skip the
+            // pre-side-effect emit and are recorded post-mutation with
+            // their durable ids and revisions (see
+            // `handle_work_order_request`).
+            _ if Self::is_work_order_mutation(request) => return,
             _ => {}
         }
         let provenance = codegg_core::authorization::audit_provenance(decision);
@@ -2506,6 +2556,27 @@ impl CoreDaemon {
                     "authorized",
                 )
             }
+            // Work Orders M001: all mapped mutations skip the
+            // pre-side-effect emit above and are recorded post-mutation
+            // with durable ids/revisions. This arm is defense-in-depth
+            // for a future mapped operation that reaches the generic
+            // path: it records the request locator without fabricating
+            // a revision.
+            codegg_core::audit::AuditAction::WorkOrderLifecycle => {
+                let locator = Self::work_order_id_for_request(request)
+                    .unwrap_or(request_id)
+                    .to_owned();
+                instr::work_order_lifecycle_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &locator,
+                    0,
+                    &decision.operation,
+                    "",
+                    "allow",
+                )
+            }
             _ => return,
         };
         self.append_audit_event(builder).await;
@@ -2641,6 +2712,22 @@ impl CoreDaemon {
             ))
             .await;
         }
+        // Work Orders M001: work-order arms run in a dedicated handler
+        // so the main dispatch future stays small (same rationale as the
+        // boxed chat preamble above). The M003 gate has already enforced
+        // the project-scoped capability; the handler only records/reads
+        // the caller's project-scoped work-order state and never starts
+        // execution.
+        if Self::is_work_order_request(&request.payload) {
+            return Box::pin(self.handle_work_order_request(
+                &request.request_id,
+                request.payload,
+                trusted_client_id,
+                &authority,
+                &authz_decision,
+            ))
+            .await;
+        }
         // Interactive Process Sessions M002: the attach/resume family runs
         // on a fresh task (boxed at the call site). The dispatch match
         // below is already near its stack limit: nesting the PTY handler
@@ -2763,11 +2850,13 @@ impl CoreDaemon {
                 .await
             }
             super::daemon_family::DaemonRequestFamily::Chat
-            | super::daemon_family::DaemonRequestFamily::Interactive => {
-                // Unreachable: chat and interactive-process envelopes return
-                // through their boxed/spawned pre-router paths above, which
-                // preserve their stack and cancellation semantics. Keep the
-                // historical unimplemented contract as defense in depth.
+            | super::daemon_family::DaemonRequestFamily::Interactive
+            | super::daemon_family::DaemonRequestFamily::WorkOrders => {
+                // Unreachable: chat, interactive-process, and work-order
+                // envelopes return through their boxed pre-router paths
+                // above, which preserve their stack and cancellation
+                // semantics. Keep the historical unimplemented contract
+                // as defense in depth.
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {
                     code: "unimplemented".to_string(),

@@ -260,6 +260,10 @@ Key storage-layout migrations:
 - **v55**: project chat — `chat_channel`, `chat_message` (live retention window, per-channel `seq`, idempotency keys), append-only `chat_revision` history (survives retention pruning), `chat_read_marker` (collaboration M001; composing stays ephemeral in memory)
 - **v56**: structured chat actions — `chat_action` reference/status projection (`action_id`, channel/message/project locators, actor, kind, title, job, status, `(channel, idempotency_key)` unique retry backstop; collaboration M003, jobs stay canonical in scheduler/job stores)
 - **v57**: durable continuation checkpoints — `continuation_checkpoint` candidates (`prepared | installed | aborted`, per-session sequence with `UNIQUE(session_id, sequence)`, explicit installed-parent lineage, SHA-256 payload digest, 128 KiB payload bound, latest/installed/lineage indexes; context-continuity M001, atomic install + `ContextCompacted` commit marker)
+- **v58**: daemon-owned principal runtime preferences — approval mode, sandbox profile, reserved provider/model identity (execution-reliability M003; additive, secret-free)
+- **v59**: durable revisioned WorkPlan/WorkItem foundation — `work_plan`, `work_item` with CAS revision, bounded objective/description/evidence JSON (long-horizon M002; no Goal/Todo/session backfill)
+- **v60**: project work orders — `work_order` (revisioned intent, bounded prompt/gates/repeat, `(project, submission_key)` idempotency, spec digests), `work_order_occurrence` (`UNIQUE(work_order_id, occurrence_index)`, explicit 0-based indexing), `work_order_batch` retry ledger, `sequence_lane` + normalized `sequence_lane_member` ordering (project Work Orders M001; empty by default, no schedule backfill, no session rows)
+- **v61**: `origin_attribution` scope rebuild admitting `work_order` — row-preserving table rebuild extending the v53 scope-kind `CHECK`; legacy attribution rows survive verbatim (project Work Orders M001)
 
 ## Testing
 

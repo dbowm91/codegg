@@ -153,6 +153,12 @@ Session
   -> descendant AgentRuns
   -> Jobs / Runs / Artifacts
 
+Project
+  -> WorkOrders
+      -> WorkOrderOccurrences
+          -> Session / Job / Workspace / Worktree (at materialization)
+  -> SequenceLanes (ordered waiting work)
+
 Workspace
   -> optional Worktree
   -> canonical root on one Node
@@ -392,6 +398,13 @@ Normal-mode `Space f` SHOULD open a project picker following Helix conventions. 
 
 A project tab SHOULD contain project summary, workspace/worktree state, selected session, session list, activity projection, agent tree, Git status, project jobs, collaborator presence, and project chat.
 
+Project task composition and the global Workspace dashboard are
+projections over durable project work orders, sessions, and scheduler
+jobs. They do not redefine canonical `Workspace` identity (a concrete
+checkout) and do not own execution: a materialized task session is an
+ordinary canonical session, and running work remains scheduler-owned.
+See ADR-0005.
+
 Opening a project or session MUST trigger the asset-refresh semantics defined above before constructing a new turn runtime.
 
 ## 14. Presence and real-time team awareness
@@ -445,6 +458,14 @@ A generic execution backend SHOULD support local process, SSH, linked leaf node,
 External execution remains a normal CodeGG job and attempt. The scheduler decides when and where to submit, records external identifiers, observes progress, propagates cancellation, collects artifacts, and maintains attribution.
 
 Per-project and per-principal fairness MUST complement machine-resource admission. A single agent tree or developer MUST NOT monopolize a shared deployment unless policy explicitly permits it.
+
+Project work orders queue durable task intent one level above
+sessions: a work order decides when a normal session may be born, and
+the daemon coordinator materializes ready occurrences into ordinary
+sessions whose initial turns submit through this scheduler boundary.
+Work orders never become a second scheduler, admission queue, or retry
+owner, and never grow into a general distributed workflow engine
+(retained non-goal, `#3`). See ADR-0005.
 
 ## 18. Remote projects and execution targets
 

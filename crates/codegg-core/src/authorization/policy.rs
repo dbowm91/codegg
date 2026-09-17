@@ -879,6 +879,100 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::ExecutionPolicyGet { .. } => {
             OperationDescriptor::new("execution_policy_get", ScopeKind::Global, None)
         }
+        // ── Project Work Orders M001: Domain, Storage, and Protocol ──
+        //
+        // Every work-order operation is project-scoped from its first
+        // version. `project_id` requests resolve directly; ID-only
+        // requests resolve the owning project server-side through the
+        // durable work-order/occurrence/lane row (unknown ids fail
+        // closed), so no broad local-owner-only opaque operation is the
+        // primary team-facing surface. Creation requires the authority
+        // sufficient to create the future session (`session.create`);
+        // reads use `session.read`; cancel/update/reorder use the
+        // explicit `session.create` mutation semantic.
+        R::WorkOrderCapabilities => {
+            OperationDescriptor::new("work_order_capabilities", ScopeKind::Global, None)
+        }
+        R::WorkOrderCreate { .. } => OperationDescriptor::new(
+            "work_order_create",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderBatchCreate { .. } => OperationDescriptor::new(
+            "work_order_batch_create",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderList { .. } => OperationDescriptor::new(
+            "work_order_list",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderGet { .. } => OperationDescriptor::new(
+            "work_order_get",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderUpdate { .. } => OperationDescriptor::new(
+            "work_order_update",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderCancel { .. } => OperationDescriptor::new(
+            "work_order_cancel",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderPause { .. } => OperationDescriptor::new(
+            "work_order_pause",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderResume { .. } => OperationDescriptor::new(
+            "work_order_resume",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderLaneCreate { .. } => OperationDescriptor::new(
+            "work_order_lane_create",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderLaneGet { .. } => OperationDescriptor::new(
+            "work_order_lane_get",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderLaneList { .. } => OperationDescriptor::new(
+            "work_order_lane_list",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderLaneReorder { .. } => OperationDescriptor::new(
+            "work_order_lane_reorder",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderLaneAttach { .. } => OperationDescriptor::new(
+            "work_order_lane_attach",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkOrderOccurrenceGet { .. } => OperationDescriptor::new(
+            "work_order_occurrence_get",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderOccurrenceList { .. } => OperationDescriptor::new(
+            "work_order_occurrence_list",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderSummary { .. } => OperationDescriptor::new(
+            "work_order_summary",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
     }
 }
 
@@ -1540,6 +1634,107 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             expected_revision: None,
         },
         R::ExecutionPolicyGet { session_id: None },
+        R::WorkOrderCapabilities,
+        R::WorkOrderCreate {
+            request: codegg_protocol::work_order::WorkOrderCreateRequest {
+                project_id: String::new(),
+                title: None,
+                prompt: String::new(),
+                requested_model: None,
+                requested_approval: None,
+                requested_sandbox: None,
+                workspace_policy: None,
+                gates: Vec::new(),
+                gate_join: None,
+                repeat_count: None,
+                sequence_lane_id: None,
+                parent_session_id: None,
+                parent_turn_id: None,
+                parent_work_order_id: None,
+                idempotency_key: None,
+            },
+        },
+        R::WorkOrderBatchCreate {
+            request: codegg_protocol::work_order::WorkOrderBatchCreateRequest {
+                project_id: String::new(),
+                items: Vec::new(),
+                sequence_lane_id: None,
+                batch_key: None,
+            },
+        },
+        R::WorkOrderList {
+            project_id: String::new(),
+            state_filter: None,
+            cursor: None,
+            limit: None,
+        },
+        R::WorkOrderGet {
+            work_order_id: String::new(),
+        },
+        R::WorkOrderUpdate {
+            request: codegg_protocol::work_order::WorkOrderUpdateRequest {
+                work_order_id: String::new(),
+                expected_revision: 0,
+                title: None,
+                prompt: None,
+                requested_model: None,
+                requested_approval: None,
+                requested_sandbox: None,
+                workspace_policy: None,
+                gates: None,
+                gate_join: None,
+                repeat_count: None,
+            },
+        },
+        R::WorkOrderCancel {
+            work_order_id: String::new(),
+        },
+        R::WorkOrderPause {
+            work_order_id: String::new(),
+        },
+        R::WorkOrderResume {
+            work_order_id: String::new(),
+        },
+        R::WorkOrderLaneCreate {
+            request: codegg_protocol::work_order::WorkOrderLaneCreateRequest {
+                project_id: String::new(),
+                label: None,
+                failure_policy: None,
+                idempotency_key: None,
+            },
+        },
+        R::WorkOrderLaneGet {
+            lane_id: String::new(),
+        },
+        R::WorkOrderLaneList {
+            project_id: String::new(),
+            limit: None,
+        },
+        R::WorkOrderLaneReorder {
+            request: codegg_protocol::work_order::WorkOrderLaneReorderRequest {
+                lane_id: String::new(),
+                expected_revision: 0,
+                ordered_work_order_ids: Vec::new(),
+            },
+        },
+        R::WorkOrderLaneAttach {
+            request: codegg_protocol::work_order::WorkOrderLaneAttachRequest {
+                lane_id: String::new(),
+                expected_revision: 0,
+                work_order_id: String::new(),
+                position: None,
+            },
+        },
+        R::WorkOrderOccurrenceGet {
+            occurrence_id: String::new(),
+        },
+        R::WorkOrderOccurrenceList {
+            work_order_id: String::new(),
+            limit: None,
+        },
+        R::WorkOrderSummary {
+            project_id: String::new(),
+        },
     ]
 }
 

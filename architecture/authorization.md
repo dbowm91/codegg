@@ -151,6 +151,28 @@ tasks/reviews, `job.submit` for job submits, `session.read` for job
 references) before creating anything. See
 `architecture/collaboration.md`.
 
+### Project work orders (M001)
+
+Every `work_order_*` operation except `work_order_capabilities` is
+project-scoped from its first version. Creation
+(`work_order_create`, `work_order_batch_create`) requires
+`session.create` — the authority sufficient to create the future
+session; reads (`work_order_get/list`, `work_order_lane_get/list`,
+`work_order_occurrence_get/list`, `work_order_summary`) use
+`session.read`; cancel/update/pause/resume/lane
+create/reorder/attach use `session.create`. ID-only requests
+(`work_order_get/update/cancel/pause/resume`,
+`work_order_lane_get/reorder/attach`, `work_order_occurrence_get`,
+`work_order_occurrence_list` via its work order) resolve the owning
+project server-side through the durable work-order/occurrence/lane
+row, so no broad local-owner-only opaque operation is the primary
+team-facing surface. All work-order denials use `project_not_found`,
+indistinguishable from absent — unauthorized callers cannot enumerate
+waiting work or infer project existence from an opaque id. Creator
+origin attribution is captured immutably on creation
+(`OriginAttributionStore` scope `work_order`, first-write-wins). See
+`architecture/work_orders.md`.
+
 ## Failure, restart, contention
 
 - Denied requests have zero side effect (gate precedes dispatch).
@@ -170,11 +192,12 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (138 native operations; M004 adds `audit_capabilities`,
+rendering (188 native operations; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
 audit store contract; collaboration M001 adds fourteen `chat_*`
 operations below, all `project.chat`; M003 adds three `chat_action_*`
-rows on the same gate):
+rows on the same gate; work orders M001 adds seventeen `work_order_*`
+rows below, all project-scoped on `session.create`/`session.read`):
 
 | Operation | Scope | Capability |
 |---|---|---|
@@ -327,6 +350,23 @@ rows on the same gate):
 | `turn_cancel` | via_session | `agent.invoke` |
 | `turn_steer` | via_session | `agent.invoke` |
 | `turn_submit` | via_session | `agent.invoke` |
+| `work_order_batch_create` | direct_project | `session.create` |
+| `work_order_cancel` | direct_project | `session.create` |
+| `work_order_capabilities` | global | `none` |
+| `work_order_create` | direct_project | `session.create` |
+| `work_order_get` | direct_project | `session.read` |
+| `work_order_lane_attach` | direct_project | `session.create` |
+| `work_order_lane_create` | direct_project | `session.create` |
+| `work_order_lane_get` | direct_project | `session.read` |
+| `work_order_lane_list` | direct_project | `session.read` |
+| `work_order_lane_reorder` | direct_project | `session.create` |
+| `work_order_list` | direct_project | `session.read` |
+| `work_order_occurrence_get` | direct_project | `session.read` |
+| `work_order_occurrence_list` | direct_project | `session.read` |
+| `work_order_pause` | direct_project | `session.create` |
+| `work_order_resume` | direct_project | `session.create` |
+| `work_order_summary` | direct_project | `session.read` |
+| `work_order_update` | direct_project | `session.create` |
 | `workspace_archive` | opaque | `project.configure` |
 | `workspace_config_reload` | opaque | `project.configure` |
 | `workspace_list` | global | `none` |

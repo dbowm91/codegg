@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M001 — WorkOrder Domain, Storage, Authorization, and Protocol
 
-Status: ready
+Status: implemented
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 

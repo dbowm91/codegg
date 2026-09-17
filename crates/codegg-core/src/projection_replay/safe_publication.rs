@@ -100,6 +100,12 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // projection (ids/kind/title/status only) to project
         // subscribers; prompts stay in the canonical job store.
         CoreEvent::ChatActionUpdated { .. } => SafePublicationClass::Safe,
+        // Work Orders M001: change hints carry identity, change kind,
+        // and revision only. Receivers re-fetch through the authorized
+        // get/list path; the event itself never carries prompt bodies,
+        // secrets, or reasoning.
+        CoreEvent::WorkOrderChanged { .. } => SafePublicationClass::Safe,
+        CoreEvent::WorkOrderLaneChanged { .. } => SafePublicationClass::Safe,
     }
 }
 

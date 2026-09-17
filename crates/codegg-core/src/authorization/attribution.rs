@@ -86,7 +86,8 @@ impl OriginAttribution {
 /// One row per attributed scope `(scope_kind, scope_id)`. The first
 /// attribution wins (`INSERT ... ON CONFLICT DO NOTHING`): origin is
 /// immutable, and a concurrent second writer cannot rewrite it. Scopes
-/// name sessions, turns, runs, jobs, worktrees, and provider selections.
+/// name sessions, turns, runs, jobs, worktrees, provider selections,
+/// and project work orders.
 #[derive(Clone)]
 pub struct OriginAttributionStore {
     pool: SqlitePool,
@@ -161,7 +162,15 @@ impl OriginAttributionStore {
 }
 
 fn validate_attribution_scope(scope_kind: &str, scope_id: &str) -> Result<(), StorageError> {
-    const ALLOWED_KINDS: [&str; 6] = ["session", "turn", "run", "job", "worktree", "provider"];
+    const ALLOWED_KINDS: [&str; 7] = [
+        "session",
+        "turn",
+        "run",
+        "job",
+        "worktree",
+        "provider",
+        "work_order",
+    ];
     if !ALLOWED_KINDS.contains(&scope_kind) {
         return Err(StorageError::Database(format!(
             "unknown attribution scope kind {scope_kind:?}"

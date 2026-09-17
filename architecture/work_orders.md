@@ -1,0 +1,228 @@
+# Project Work Orders
+
+Daemon-owned durable project-level task intent (Project Work Orders
+M001). A `WorkOrder` records that some future work should happen in a
+project, under which release conditions, in which sequence lane, and
+with which requested model/policy snapshot. Waiting work orders are
+projected as future work but are never session rows, scheduler jobs,
+schedule rules, delegated agent tasks, or within-session work plans.
+
+Long-term references: `plans/000-long-term-specification.md`
+(`#4`, `#6`, `#13`, `#17`, `#22`, `#24`, `#26`, `#29`).
+Governing decision:
+`plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`.
+Roadmap: `plans/subsystems/project-work-orders-task-view-roadmap.md`.
+
+## Ownership
+
+`codegg-core::work_order` owns the domain types, validation, and the
+durable store (`WorkOrderService`). It is UI-, server-, plugin-, and
+auth-free: it takes already-resolved `ProjectId` scopes, performs no
+authorization itself, and never executes work (no session creation, no
+job submission, no worktree allocation, no model calls). The daemon
+boundary (`src/core/daemon_work_orders.rs`) owns project resolution,
+capability gating, origin attribution, audit emission, and event
+publication. Wire DTOs live in `codegg-protocol::work_order`; the core
+`CoreRequest`/`CoreResponse`/`CoreEvent` variants live in
+`codegg-protocol::core`.
+
+Canonical ownership across layers:
+
+```text
+WorkOrder decides when a normal session may be born (M002 coordinator).
+Session owns human/agent interaction once materialized.
+Job/Scheduler owns admission and execution lifecycle.
+Worktree/Workspace owns filesystem isolation and execution root.
+WorkPlan owns detailed within-session completion state.
+AgentTask owns delegated child intent below an AgentRun.
+```
+
+No layer may become a second owner of another layer's state machine.
+In particular M001 introduces no second scheduler, admission queue,
+background loop, or retry owner.
+
+## Identity
+
+Three distinct typed identities (`crates/codegg-core/src/identity.rs`):
+
+- `WorkOrderId` — one durable project work order (project intent).
+- `WorkOrderOccurrenceId` — one execution instance of a work order.
+  Indexing is explicit and 0-based: occurrence 0 is the first
+  execution; a `repeat_count` of N covers indices `0..N`.
+- `SequenceLaneId` — one revisioned project sequence lane.
+
+All three satisfy the shared identity lexical contract (opaque,
+bounded, never path-derived) and are unrelated by type to `AgentTaskId`,
+scheduler `JobId`, `ScheduleId`, and session identity.
+
+## Records
+
+`WorkOrder` carries revision, project, creator principal, optional
+parent session/turn/work-order lineage, optional title, prompt (bounded
+intent text), requested model/approval/sandbox/workspace-policy
+snapshots, release-gate set, finite repeat count, lane membership
+(resolved from lane rows, not stored on the work-order row), lifecycle
+state, and timestamps. The original prompt/provenance is immutable once
+an occurrence that depends on it has been claimed.
+
+`WorkOrderOccurrence` carries occurrence index, state, gate latches,
+scheduling hints, materialization references (absent until the M002
+coordinator claims the occurrence), attention code plus bounded
+diagnostic, and claim/start/terminal timestamps.
+
+`SequenceLane` carries project, CAS revision, optional label, failure
+policy (`hold_lane` default: failed/attention predecessors hold
+downstream work), and the deterministic member order. Ordering authority
+lives in the lane row plus the normalized `sequence_lane_member`
+table — never in scheduler job dependencies.
+
+## Release gates (description only in M001)
+
+The closed gate set is `immediate`, `delay`, `not_before`,
+`sequence_ready`, and `external_trigger`, combined by one explicit
+`all`/`any` join. M001 persists and validates gate sets; evaluation
+arrives in M002. Validation rejects empty/invalid combinations,
+duplicate kinds, `immediate` combined with other gates, negative or
+overlong delays, out-of-bounds timestamps, lane references outside the
+owning project, and path-like trigger references (the M001 trigger
+reference is an opaque same-project locator; M005 binds it to a stored
+verifier). Unknown gate kinds fail closed. There is no expression
+language, and indefinite repetition has no representation
+(`repeat_count` is `1..=256`, where 1 means run once).
+
+## Lifecycle
+
+Work-order (template) states: `active | paused | completed |
+cancelled | archived`. `active`/`paused` are the only editable states;
+terminal transitions are one-way (`completed | cancelled -> archived`).
+
+Occurrence states: `waiting | ready | claiming | running |
+needs_attention | completed | failed | cancelled`. M001 creates
+`waiting` records only; the matrix is validated now so M002 can claim
+against it. `needs_attention` resumes explicitly to `waiting`;
+terminal states never transition out. Edits to execution-shaping
+fields (prompt, model, gates, repeat) are rejected once any occurrence
+that depends on those values has been claimed.
+
+## Storage (migrations v60–v61)
+
+Additive tables, safe on existing databases (existing databases gain
+empty work-order tables; no `schedule` row is ever backfilled):
+
+- `work_order` — one row per work order, `revision >= 1`, bounded
+  lifecycle/status values, `(project_id, submission_key)` idempotency
+  uniqueness, per-item spec digest for mismatch detection.
+- `work_order_occurrence` — one row per occurrence,
+  `UNIQUE(work_order_id, occurrence_index)`, project-denormalized for
+  scoped queries.
+- `work_order_batch` — `(project_id, batch_key)` retry ledger mapping
+  a batch key to its member ids plus the batch spec digest.
+- `sequence_lane` — one row per lane, `revision >= 1`, per-project
+  idempotency uniqueness.
+- `sequence_lane_member` — normalized `(lane_id, work_order_id,
+  position)` ordering with `UNIQUE(lane_id, position)`.
+
+Indexes cover project/state/updated listings, occurrence lookup,
+lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 61
+(`storage/mod.rs:39`); `session/schema.rs` wires `migrate_v60` (domain
+tables) and `migrate_v61` (admits the `work_order` origin-attribution
+scope in the v53 table's kind CHECK via a row-preserving rebuild;
+legacy attribution rows survive verbatim).
+
+## Store/service operations
+
+`WorkOrderService` (pool-backed; pool-less daemons fail durable
+operations with `work_order_unavailable`):
+
+- create with idempotency key (duplicate keys converge; reused keys
+  with different payloads conflict explicitly);
+- atomic bounded batch create with optional lane placement, committed
+  in one transaction with deterministic positions;
+- get by id and bounded project/state/cursor listing;
+- update with expected revision (CAS; zero mutation on stale writes);
+- cancel/pause/resume along the lifecycle matrix (repeating the
+  current state is idempotent);
+- occurrence create/get/list (explicit M001 primitive; M002 owns
+  claims);
+- lane create/get/list, CAS reorder (exact-set replacement),
+  CAS attach (append/insert), and atomic before/after moves;
+- owning-project resolution for every opaque id
+  (`work_order_project`: work-order, occurrence, and lane tables);
+- bounded per-project summary counts.
+
+Transaction failure creates no partial batch or lane positions.
+Concurrent reorder writers serialize on the lane revision. Reopen
+preserves exact identities and revisions.
+
+## Protocol and authorization
+
+Bounded `CoreRequest`/`CoreResponse` DTOs plus capability negotiation
+(`work_order_capabilities`). `project_id` requests resolve directly;
+ID-only requests resolve the owning project server-side before
+capability evaluation. Capability mapping is conservative: creation
+requires `session.create` (authority sufficient to create the future
+session); reads use `session.read`; cancel/update/reorder use
+`session.create`. No broad local-owner-only opaque operation is the
+primary surface. All denials use the privacy-preserving not-found
+shape, indistinguishable from absent rows.
+
+Creator origin attribution is captured on creation (immutable,
+first-write-wins via `OriginAttributionStore` scope `work_order`);
+actor mutations emit structural `work_order_lifecycle` audit events
+with decision ids and durable revisions (never prompt bodies, secrets,
+or reasoning). Structural `WorkOrderChanged`/`WorkOrderLaneChanged`
+events (identity, change kind, revision only) notify project
+subscribers; receivers re-fetch through the authorized get/list path.
+
+## Failure, restart, contention
+
+- Duplicate submission/batch keys return the stored canonical
+  object(s) or an explicit mismatch conflict — never a second commit.
+- Stale work-order/lane revisions make zero mutation
+  (`work_order_revision_conflict`).
+- Reorder is serialized by lane revision and committed atomically
+  (delete + re-insert in one transaction).
+- Reopen preserves exact identities/revisions; no session rows exist
+  for waiting work, so restart cannot duplicate or lose execution
+  (there is none yet).
+- Cross-project parent/lane/gate references fail closed
+  (`work_order_project_mismatch`).
+- Unknown enum values follow forward-compatibility policy: they fail
+  closed and never become executable by default.
+- Cancellation before execution marks future eligibility inert; M002
+  defines in-flight propagation.
+
+## Non-execution boundary (M001)
+
+M001 starts nothing: no release-gate evaluation, no session/job
+creation, no worktree allocation, no trigger endpoint, no model-visible
+tool, no TUI task surface. The store API cannot reach the scheduler,
+session store, worktree service, or any provider. M002 (release
+coordinator and materialization) is the first milestone allowed to
+cross that boundary, through `JobSubmissionService` only.
+
+## Testing
+
+```bash
+cargo test -p codegg-core -- work_order
+cargo test -p codegg-protocol -- work_order
+```
+
+Integration (`tests/work_orders_m001_foundation.rs`): daemon-level
+create/list/get/update/cancel, project-filtered pagination, concurrent
+reorder writers, duplicate submission keys, file-backed reopen,
+migration from a pre-M001 database, and authorization/privacy
+negatives (unauthorized filtering, opaque-id privacy, cross-project
+rejection, immutable origin attribution, bounded secret-free DTOs).
+
+## Related docs
+
+- [authorization.md](authorization.md) — project-scoped capability
+  mapping and denial privacy for all `work_order_*` operations.
+- [audit.md](audit.md) — `work_order_lifecycle` action, coverage, and
+  structural metadata keys.
+- [storage.md](storage.md) — v60 migration context.
+- [jobs.md](jobs.md) — scheduler/job ownership that work orders
+  consume but never duplicate.
+- `plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`
+  — governing decision.

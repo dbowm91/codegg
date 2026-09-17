@@ -1337,6 +1337,54 @@ pub enum CoreResponse {
     ExecutionPolicy {
         snapshot: ExecutionPolicySnapshotDto,
     },
+    // ── Project Work Orders M001: Domain, Storage, and Protocol ──────
+    /// Work-order capability negotiation response.
+    WorkOrderCapabilities {
+        capabilities: crate::work_order::WorkOrderCapabilitiesDto,
+    },
+    /// One durable work order. `duplicate` is true when a retry
+    /// converged on an already-stored idempotency key.
+    WorkOrder {
+        work_order: crate::work_order::WorkOrderDto,
+        #[serde(default)]
+        duplicate: bool,
+    },
+    /// Atomically created batch. `duplicate` is true when a retry
+    /// converged on an already-stored batch key (no second commit).
+    WorkOrderBatch {
+        work_orders: Vec<crate::work_order::WorkOrderDto>,
+        #[serde(default)]
+        duplicate: bool,
+    },
+    /// Bounded work-order listing for one project.
+    WorkOrderList {
+        work_orders: Vec<crate::work_order::WorkOrderDto>,
+        #[serde(default)]
+        next_cursor: Option<String>,
+        truncated: bool,
+    },
+    /// One sequence lane with its deterministic member order.
+    WorkOrderLane {
+        lane: crate::work_order::SequenceLaneDto,
+    },
+    /// Bounded lane listing for one project.
+    WorkOrderLaneList {
+        lanes: Vec<crate::work_order::SequenceLaneDto>,
+        truncated: bool,
+    },
+    /// One work-order occurrence record.
+    WorkOrderOccurrence {
+        occurrence: crate::work_order::WorkOrderOccurrenceDto,
+    },
+    /// Bounded occurrence listing for one work order.
+    WorkOrderOccurrenceList {
+        occurrences: Vec<crate::work_order::WorkOrderOccurrenceDto>,
+        truncated: bool,
+    },
+    /// Bounded per-project summary counts.
+    WorkOrderSummary {
+        summary: crate::work_order::WorkOrderSummaryDto,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2231,6 +2279,99 @@ pub enum CoreRequest {
         #[serde(default)]
         session_id: Option<String>,
     },
+    // ── Project Work Orders M001: Domain, Storage, and Protocol ──────
+    //
+    // Durable project-level task intent. Waiting work orders are not
+    // sessions, jobs, schedules, agent tasks, or work plans: they
+    // describe when a normal session may be born. M001 persists,
+    // validates, and projects waiting work; no work order executes yet
+    // (release evaluation and materialization arrive in M002).
+    //
+    // Every operation is project-scoped from its first version.
+    // `project_id` requests carry the scope directly; ID-only requests
+    // carry an opaque locator whose owning project the daemon resolves
+    // server-side before capability evaluation. Principals come from
+    // transport authority, never from the payload.
+    /// Query daemon work-order capabilities and bounds.
+    WorkOrderCapabilities,
+    /// Create one durable waiting work order (idempotent under
+    /// `(project_id, idempotency_key)`).
+    WorkOrderCreate {
+        request: crate::work_order::WorkOrderCreateRequest,
+    },
+    /// Atomically create a bounded ordered batch of work orders.
+    /// Either every item (and the lane ordering) commits or none does.
+    WorkOrderBatchCreate {
+        request: crate::work_order::WorkOrderBatchCreateRequest,
+    },
+    /// Bounded work-order listing for one project.
+    WorkOrderList {
+        project_id: String,
+        #[serde(default)]
+        state_filter: Option<String>,
+        #[serde(default)]
+        cursor: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Fetch one work order by opaque id (owning project resolved
+    /// server-side; denials are indistinguishable from absent rows).
+    WorkOrderGet {
+        work_order_id: String,
+    },
+    /// Update one waiting work order with CAS revision protection.
+    WorkOrderUpdate {
+        request: crate::work_order::WorkOrderUpdateRequest,
+    },
+    /// Mark one work order cancelled (future eligibility inert).
+    WorkOrderCancel {
+        work_order_id: String,
+    },
+    /// Pause one active work order (edits still allowed, M002 release held).
+    WorkOrderPause {
+        work_order_id: String,
+    },
+    /// Resume one paused work order to active.
+    WorkOrderResume {
+        work_order_id: String,
+    },
+    /// Create one revisioned sequence lane for a project.
+    WorkOrderLaneCreate {
+        request: crate::work_order::WorkOrderLaneCreateRequest,
+    },
+    /// Fetch one lane with its deterministic member order.
+    WorkOrderLaneGet {
+        lane_id: String,
+    },
+    /// Bounded lane listing for one project.
+    WorkOrderLaneList {
+        project_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Replace one lane's member order under CAS revision protection.
+    WorkOrderLaneReorder {
+        request: crate::work_order::WorkOrderLaneReorderRequest,
+    },
+    /// Attach one existing waiting work order to a lane under CAS
+    /// revision protection.
+    WorkOrderLaneAttach {
+        request: crate::work_order::WorkOrderLaneAttachRequest,
+    },
+    /// Fetch one occurrence record by opaque id.
+    WorkOrderOccurrenceGet {
+        occurrence_id: String,
+    },
+    /// Bounded occurrence listing for one work order.
+    WorkOrderOccurrenceList {
+        work_order_id: String,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Bounded per-project summary counts for dashboard projections.
+    WorkOrderSummary {
+        project_id: String,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -2719,6 +2860,26 @@ pub enum CoreEvent {
         channel_id: String,
         message_id: String,
         action: ChatActionDto,
+    },
+    // ── Project Work Orders M001: structural liveness hints ──────────
+    //
+    // Structural hints only: receivers re-fetch through the authorized
+    // get/list path on doubt. `change` names the mutation
+    // (`created`, `updated`, `cancelled`, `paused`, `resumed`,
+    // `reordered`); payloads carry identity and revision only, never
+    // prompt bodies, secrets, or reasoning.
+    /// A work order was created or mutated.
+    WorkOrderChanged {
+        project_id: String,
+        work_order_id: String,
+        change: String,
+        revision: u64,
+    },
+    /// A sequence lane was created or reordered.
+    WorkOrderLaneChanged {
+        project_id: String,
+        lane_id: String,
+        revision: u64,
     },
 }
 

@@ -57,7 +57,7 @@ best-effort emission, redaction, backpressure, and operator reads).
 
 ## Action and visibility taxonomy
 
-Known actions (`AuditAction::ALL`, 25): `authentication`,
+Known actions (`AuditAction::ALL`, 26): `authentication`,
 `authorization_decision`, `membership_change`, `node_enrollment`,
 `session_create`, `session_attach`, `prompt_submit`,
 `provider_select`, `model_select`, `agent_delegate`,
@@ -65,7 +65,7 @@ Known actions (`AuditAction::ALL`, 25): `authentication`,
 `file_mutate`, `git_operation`, `worktree_lifecycle`, `job_submit`,
 `job_cancel`, `job_complete`, `remote_execute`,
 `chat_triggered_action`, `config_change`, `asset_refresh`,
-`audit_export`, `audit_query`.
+`audit_export`, `audit_query`, `work_order_lifecycle`.
 
 Writers use strict parsing (unknown actions fail closed at build
 time). Readers use lenient parsing: unknown stored actions degrade to
@@ -241,6 +241,15 @@ emission by design):
 Live in M003: `chat_triggered_action` is emitted by the daemon
 collaboration owner for every authorized structured chat action
 (message -> decision -> action -> job; structural locators only).
+
+Live in work orders M001: `work_order_lifecycle` is emitted by the
+daemon work-order owner for every authorized work-order and lane
+mutation (project -> work order; decision id plus durable revision;
+identity and state only — never prompt bodies, secrets, or
+reasoning). Creation and mutation operations that mint or change
+durable identity skip the pre-side-effect emit and are recorded
+post-mutation with their durable ids; retried (duplicate) submissions
+emit nothing new.
 
 ## Verification
 

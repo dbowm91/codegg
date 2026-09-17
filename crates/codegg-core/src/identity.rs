@@ -284,6 +284,34 @@ typed_identity!(
     ChatMessageId,
     "chat_message_id"
 );
+typed_identity!(
+    /// Stable identity for one durable project-level work order.
+    ///
+    /// Project Work Orders M001 owns the work-order contract. A
+    /// `WorkOrder` is project intent (when a normal session may be
+    /// born), never scheduler execution authority and never a
+    /// speculative session row. Distinct from `AgentTaskId` (delegated
+    /// child intent), scheduler `JobId`, and `ScheduleId` by type.
+    WorkOrderId,
+    "work_order_id"
+);
+typed_identity!(
+    /// Stable identity for one materialization/execution of a work order.
+    ///
+    /// Occurrence 0 is the first execution; later occurrences come from
+    /// the finite repeat policy. Distinct from the owning `WorkOrderId`
+    /// by type.
+    WorkOrderOccurrenceId,
+    "work_order_occurrence_id"
+);
+typed_identity!(
+    /// Stable identity for one revisioned project sequence lane.
+    ///
+    /// A lane owns the stable order of its waiting work orders. Reorder
+    /// is CAS-guarded by the lane revision, never last-writer-wins.
+    SequenceLaneId,
+    "sequence_lane_id"
+);
 
 /// Project/repository relation. The repository is optional at the enclosing
 /// [`ProjectBinding`] level while a project is being created or resolved.
@@ -425,6 +453,9 @@ mod tests {
             ProviderConnectionId => "provider-connection-fixture",
             ChannelId => "channel-fixture",
             ChatMessageId => "chat-message-fixture",
+            WorkOrderId => "work-order-fixture",
+            WorkOrderOccurrenceId => "work-order-occurrence-fixture",
+            SequenceLaneId => "sequence-lane-fixture",
             AuditEventId => "audit-event-fixture",
             WorkspaceId => "workspace-fixture",
         );

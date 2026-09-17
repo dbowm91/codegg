@@ -430,6 +430,25 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         visibility: AuditVisibility::Project,
         live_mapped: true,
     },
+    AuditCoverageEntry {
+        action: "work_order_lifecycle",
+        owner: "daemon:work_order",
+        actor: "transport-bound principal",
+        scope: "direct_project",
+        decision: "work_order_create",
+        metadata: &[
+            "project.id",
+            "work_order.id",
+            "work_order.revision",
+            "work_order.op",
+            "work_order.state",
+            "decision.id",
+            "decision.outcome",
+        ],
+        causation: "project -> work order; later occurrence/session/job events link by work_order.id",
+        visibility: AuditVisibility::Project,
+        live_mapped: true,
+    },
 ];
 
 /// Look up the coverage row for one [`AuditAction`](crate::audit::AuditAction).
@@ -510,6 +529,15 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("connection_purge", "provider_select"),
     ("provider_connection_use", "provider_select"),
     ("chat_action_submit", "chat_triggered_action"),
+    ("work_order_create", "work_order_lifecycle"),
+    ("work_order_batch_create", "work_order_lifecycle"),
+    ("work_order_update", "work_order_lifecycle"),
+    ("work_order_cancel", "work_order_lifecycle"),
+    ("work_order_pause", "work_order_lifecycle"),
+    ("work_order_resume", "work_order_lifecycle"),
+    ("work_order_lane_create", "work_order_lifecycle"),
+    ("work_order_lane_reorder", "work_order_lifecycle"),
+    ("work_order_lane_attach", "work_order_lifecycle"),
 ];
 
 /// Explicitly uninstrumented operations.
@@ -597,6 +625,14 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "worktree_list",
     "chat_action_get",
     "chat_action_list",
+    "work_order_capabilities",
+    "work_order_list",
+    "work_order_get",
+    "work_order_lane_get",
+    "work_order_lane_list",
+    "work_order_occurrence_get",
+    "work_order_occurrence_list",
+    "work_order_summary",
 ];
 
 /// Map one daemon operation name to its structural audit action.
@@ -688,7 +724,14 @@ pub fn deterministic_event_id(
     AuditEventId::parse(short).expect("hex digest satisfies identity contract")
 }
 
-fn apply_chain(
+/// Apply one causal chain to an audit builder: correlation, causation
+/// parent, event id, project (falling back to the provenance project),
+/// and session/turn/run/job/worktree/provider locators.
+///
+/// Daemon seams use this when they emit an action whose typed builder
+/// does not cover their locator shape (e.g. lane-scoped work-order
+/// events under the shared `work_order_lifecycle` action).
+pub fn apply_chain(
     mut builder: AuditEventBuilder,
     chain: &AuditChainContext,
     provenance_project: Option<&ProjectId>,
@@ -1097,6 +1140,32 @@ pub fn chat_triggered_action_event(
     if let Some(job) = job_id {
         builder = builder.with_metadata("job.id", truncate_label(job, 128));
     }
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// Work-order lifecycle structural event. Identity, revision, operation,
+/// and state only: prompt bodies, secrets, and reasoning are never
+/// recorded. Creation operations that mint their identity in the handler
+/// emit post-creation with their durable ids (see the daemon seam).
+#[allow(clippy::too_many_arguments)]
+pub fn work_order_lifecycle_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    work_order_id: &str,
+    revision: u64,
+    operation: &str,
+    state: &str,
+    outcome: &str,
+) -> AuditEventBuilder {
+    let builder = AuditEventBuilder::new(AuditAction::WorkOrderLifecycle, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("work_order.id", truncate_label(work_order_id, 128))
+        .with_metadata("work_order.revision", revision.to_string())
+        .with_metadata("work_order.op", truncate_label(operation, 64))
+        .with_metadata("work_order.state", truncate_label(state, 64))
+        .with_metadata("decision.id", truncate_label(provenance.decision_id(), 128))
+        .with_metadata("decision.outcome", truncate_label(outcome, 64));
     apply_chain(builder, chain, provenance.project())
 }
 

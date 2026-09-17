@@ -199,6 +199,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 59 {
         migrate_and_record(pool, 59).await?;
     }
+    if current_version < 60 {
+        migrate_and_record(pool, 60).await?;
+    }
+    if current_version < 61 {
+        migrate_and_record(pool, 61).await?;
+    }
 
     Ok(())
 }
@@ -270,6 +276,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             57 => migrate_v57(&mut tx).await?,
             58 => migrate_v58(&mut tx).await?,
             59 => migrate_v59(&mut tx).await?,
+            60 => migrate_v60(&mut tx).await?,
+            61 => migrate_v61(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2500,6 +2508,95 @@ async fn migrate_v58(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// are backfilled. No model-visible behavior changes.
 async fn migrate_v59(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::work_plan::WORK_PLAN_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Project Work Orders M001: durable WorkOrder/Occurrence/SequenceLane
+/// foundation.
+///
+/// Additive `IF NOT EXISTS`, safe on existing databases. Pre-WorkOrder
+/// databases gain empty tables; readers treat absence as no waiting
+/// work. No `schedule` row is backfilled into work orders and no session
+/// row is created. No execution behavior changes.
+async fn migrate_v60(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::work_order::WORK_ORDER_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Project Work Orders M001: admit the `work_order` origin-attribution
+/// scope.
+///
+/// The v53 `origin_attribution` table pins its scope kinds in a SQL
+/// `CHECK` that predates work orders, so the store rebuilds the table
+/// with the extended kind set. Every existing row is copied verbatim
+/// (same columns, same primary key); fresh databases receive the new
+/// shape directly. The Rust-side scope allow-list already admits
+/// `work_order`; this migration aligns the durable backstop so creator
+/// origin capture on work-order creation persists instead of failing
+/// closed.
+async fn migrate_v61(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    const NEW_SCHEMA: &str = r#"
+        CREATE TABLE IF NOT EXISTS origin_attribution_new (
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('session','turn','run','job','worktree','provider','work_order')),
+            scope_id TEXT NOT NULL,
+            origin_principal TEXT NOT NULL,
+            origin_kind TEXT NOT NULL,
+            auth_method TEXT NOT NULL,
+            transport_class TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            membership_revision INTEGER,
+            decision_id TEXT NOT NULL,
+            correlation_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            attribution_json TEXT NOT NULL,
+            PRIMARY KEY (scope_kind, scope_id)
+        )
+        "#;
+    sqlx::query(NEW_SCHEMA)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    let legacy_exists: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_attribution'",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    if legacy_exists.0 > 0 {
+        for statement in [
+            "INSERT OR IGNORE INTO origin_attribution_new \
+             (scope_kind, scope_id, origin_principal, origin_kind, auth_method, transport_class, \
+              policy, membership_revision, decision_id, correlation_id, time_created, \
+              attribution_json) \
+             SELECT scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+              transport_class, policy, membership_revision, decision_id, correlation_id, \
+              time_created, attribution_json FROM origin_attribution",
+            "DROP TABLE origin_attribution",
+            "ALTER TABLE origin_attribution_new RENAME TO origin_attribution",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| StorageError::Migration(e.to_string()))?;
+        }
+    } else {
+        sqlx::query("ALTER TABLE origin_attribution_new RENAME TO origin_attribution")
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    for statement in [
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_principal ON origin_attribution(origin_principal)",
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_decision ON origin_attribution(decision_id)",
+    ] {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

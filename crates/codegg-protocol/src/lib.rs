@@ -2,7 +2,7 @@
 //!
 //! This crate contains only data contracts: request/response/event DTOs for
 //! core, provider, projection, TUI, plugin, LSP, runtime-asset, interactive
-//! process, and UI surfaces. It owns no runtime services, no I/O, no daemon
+//! process, work-order, and UI surfaces. It owns no runtime services, no I/O, no daemon
 //! or scheduler authority, and no frontend rendering.
 //!
 //! The package is intentionally CodeGG-specific, but it is independently
@@ -36,3 +36,4 @@ pub mod provider;
 pub mod runtime_assets;
 pub mod tui;
 pub mod ui;
+pub mod work_order;
