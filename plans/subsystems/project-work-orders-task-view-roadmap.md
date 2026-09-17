@@ -345,7 +345,7 @@ Class: capability / security
 
 Plan: `plans/implementation/project-work-orders-task-view/006-agent-work-order-tool-and-batches.md`
 
-Status: ready (M002 closed; M005 closed — ordering gate satisfied).
+Status: closed (`plans/closure/project-work-orders-task-view/006-status.md`; implementation `38e533a8`).
 
 Add a distinct model-facing WorkOrder tool/service (not delegated `TaskTool`) supporting bounded single/batch creation, atomic lane ordering, parent lineage, authority inheritance/narrowing, and fan-out/repeat/depth limits.
 
@@ -357,7 +357,7 @@ Class: invariant / capability closure
 
 Plan: `plans/implementation/project-work-orders-task-view/007-work-order-trajectory-and-recovery-qualification.md`
 
-Status: blocked on M001-M006 closure.
+Status: ready (M001-M006 closed — M001 `a856f2e0`, M002 `c54656e5`, M003 `79a00460`, M004 `8c6e8190`, M005 `f22c9d8d`, M006 `38e533a8`).
 
 Run fault-injection and representative long trajectories across restart boundaries, concurrent clients, duplicate triggers, removed models, policy narrowing, permission waits, worktree conflicts, cancellation, reorder races, sequence failure, repeat exhaustion, team privacy, and agent batch creation. Add only corrective production changes needed for closure.
 
