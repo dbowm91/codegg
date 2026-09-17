@@ -1,6 +1,6 @@
 # HTTP Client Maintenance Consolidation M001 — Eggfetch 0.1.5 Policy and Body Ownership
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline reviewed: `0349cb2cdcc638958b034cc6187eb73c39f55b6f`
 

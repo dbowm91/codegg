@@ -1,6 +1,6 @@
 # HTTP Client Maintenance Consolidation Roadmap
 
-Status: active; M001 ready for handoff
+Status: closed; M001 is closed with accepted closure
 
 Canonical long-term references:
 
@@ -258,4 +258,4 @@ This roadmap closes when M001 has an accepted closure record showing that CodeGG
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 Eggfetch 0.1.5 policy and body ownership consolidation | ready | `plans/implementation/http-client-maintenance-consolidation/001-eggfetch-0.1.5-policy-and-body-ownership.md` | — | Verify packaged crates.io 0.1.5 surface at implementation start |
+| M001 Eggfetch 0.1.5 policy and body ownership consolidation | closed | `plans/implementation/http-client-maintenance-consolidation/001-eggfetch-0.1.5-policy-and-body-ownership.md` | `plans/closure/http-client-maintenance-consolidation/001-status.md` | — |
