@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M005 — External Task-Trigger Capability and Endpoint
 
-Status: blocked
+Status: ready
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 

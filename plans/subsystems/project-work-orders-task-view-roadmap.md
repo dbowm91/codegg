@@ -321,7 +321,7 @@ Class: capability
 
 Plan: `plans/implementation/project-work-orders-task-view/004-global-workspace-dashboard.md`
 
-Status: ready (M003 closed).
+Status: closed (`plans/closure/project-work-orders-task-view/004-status.md`; implementation `8c6e8190`).
 
 Evolve/reuse the project picker into a global Workspace dashboard with bounded authorized project/task/session/attention summaries, lazy detail loading, hotkey and `/workspace`, team privacy behavior, and project-correct navigation.
 
@@ -333,7 +333,7 @@ Class: capability / security
 
 Plan: `plans/implementation/project-work-orders-task-view/005-external-task-trigger-endpoint.md`
 
-Status: blocked on M002 closure; scheduled after M004 for handoff clarity.
+Status: ready (M002 closed; M004 closed — ordering gate satisfied).
 
 Add high-entropy one-purpose task-trigger secrets, verifier-only storage, authenticated/idempotent POST endpoint, expiry/max-fire/revocation, audit, occurrence gate latching, and replay/race protection.
 
