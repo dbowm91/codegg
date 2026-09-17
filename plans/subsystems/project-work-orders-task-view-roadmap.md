@@ -309,7 +309,7 @@ Class: capability
 
 Plan: `plans/implementation/project-work-orders-task-view/003-project-task-composer-and-view.md`
 
-Status: ready (M002 closed).
+Status: closed (`plans/closure/project-work-orders-task-view/003-status.md`; implementation `79a00460`).
 
 Add composer-level Task mode, scheduling dialog, last-task-model preference, ordered project Task view, Vim-like navigation/reorder, migration from thin Schedule `/tasks` presentation, and normal-session focus/steer/cancel behavior after materialization.
 
@@ -321,7 +321,7 @@ Class: capability
 
 Plan: `plans/implementation/project-work-orders-task-view/004-global-workspace-dashboard.md`
 
-Status: blocked on M003 closure.
+Status: ready (M003 closed).
 
 Evolve/reuse the project picker into a global Workspace dashboard with bounded authorized project/task/session/attention summaries, lazy detail loading, hotkey and `/workspace`, team privacy behavior, and project-correct navigation.
 

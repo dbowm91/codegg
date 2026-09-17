@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M004 — Global Workspace Dashboard and Team-Aware Task Projection
 
-Status: blocked
+Status: ready
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
