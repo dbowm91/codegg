@@ -223,7 +223,7 @@ pub const fn can_transition_occurrence(from: OccurrenceState, to: OccurrenceStat
 
 /// One closed release-gate kind. M001 persists and validates the closed
 /// set; evaluation arrives in M002. There is no expression language.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateKind {
     Immediate,

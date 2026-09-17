@@ -1,11 +1,13 @@
 # Project Work Orders
 
 Daemon-owned durable project-level task intent (Project Work Orders
-M001). A `WorkOrder` records that some future work should happen in a
-project, under which release conditions, in which sequence lane, and
-with which requested model/policy snapshot. Waiting work orders are
-projected as future work but are never session rows, scheduler jobs,
-schedule rules, delegated agent tasks, or within-session work plans.
+M001+M002). A `WorkOrder` records that some future work should happen in a
+project, under which release conditions, in which sequence lane, and with
+which requested model/policy snapshot. Waiting work orders are projected
+as future work but are never scheduler jobs, schedule rules, delegated
+agent tasks, or within-session work plans. M002 materializes ready
+occurrences into ordinary canonical sessions exactly once through the
+existing global scheduler boundary.
 
 Long-term references: `plans/000-long-term-specification.md`
 (`#4`, `#6`, `#13`, `#17`, `#22`, `#24`, `#26`, `#29`).
@@ -15,16 +17,23 @@ Roadmap: `plans/subsystems/project-work-orders-task-view-roadmap.md`.
 
 ## Ownership
 
-`codegg-core::work_order` owns the domain types, validation, and the
-durable store (`WorkOrderService`). It is UI-, server-, plugin-, and
-auth-free: it takes already-resolved `ProjectId` scopes, performs no
-authorization itself, and never executes work (no session creation, no
-job submission, no worktree allocation, no model calls). The daemon
-boundary (`src/core/daemon_work_orders.rs`) owns project resolution,
-capability gating, origin attribution, audit emission, and event
-publication. Wire DTOs live in `codegg-protocol::work_order`; the core
-`CoreRequest`/`CoreResponse`/`CoreEvent` variants live in
-`codegg-protocol::core`.
+`codegg-core::work_order` owns the domain types, validation, release-gate
+evaluation policy (`coordinator.rs`: deterministic latches, delay
+deadlines, sequence-hold rules, workspace-policy resolution,
+model/policy narrowing, idempotency keys), and the durable store
+(`WorkOrderService`, including M002 claim/linkage/repeat primitives). It
+is UI-, server-, plugin-, and auth-free: it takes already-resolved
+`ProjectId` scopes, performs no authorization itself, never executes work
+(no session creation, no job submission, no worktree allocation, no model
+calls), and never references `AgentLoop`, `JobScheduler`,
+`JobSubmissionService`, `SessionStore`, `WorktreeService`, or provider
+registries (`scripts/check_work_order_coordinator.py` enforces this). The
+daemon boundary (`src/core/daemon_work_orders.rs` for the M001 request
+family; `src/core/work_order_coordinator.rs` for the M002
+`WorkOrderCoordinator`) owns project resolution, capability gating,
+origin attribution, audit emission, and event publication. Wire DTOs live
+in `codegg-protocol::work_order`; the core `CoreRequest`/`CoreResponse`/
+`CoreEvent` variants live in `codegg-protocol::core`.
 
 Canonical ownership across layers:
 
@@ -201,11 +210,69 @@ session store, worktree service, or any provider. M002 (release
 coordinator and materialization) is the first milestone allowed to
 cross that boundary, through `JobSubmissionService` only.
 
+## Release coordinator and materialization (M002)
+
+`WorkOrderCoordinator` (`src/core/work_order_coordinator.rs`, daemon-owned)
+is a readiness/materialization coordinator, not a scheduler or executor.
+Every initial turn enters `JobSubmissionService` and the existing global
+scheduler as `JobKind::AgentTurn`; the scheduler-owned `AgentTurnExecutor`
+(`src/scheduler/executors.rs`) records admission without constructing an
+`AgentLoop` here. Daemon `TurnSubmit` remains the ordinary-session turn
+path; coordinator admission completing means "session is an ordinary
+session drivable via `TurnSubmit`", and the occurrence stays `Running`
+until the canonical session/job terminal state is projected back (job
+completion alone never completes an occurrence).
+
+Release semantics:
+
+- Immediate satisfies at once; delay anchors first occurrences to
+  creation/activation and repeats to the prior terminal/release timestamp,
+  with the calculated deadline persisted (`not_before`) so restart never
+  recalculates a new clock origin; not-before latches (backward clocks
+  never un-satisfy); sequence-ready consults lane order + predecessor
+  terminal state (failed/cancelled/needs-attention predecessors hold by
+  default under `HoldLane`); external-trigger latches only through the
+  internal service method until M005 owns the endpoint; `All`/`Any` joins
+  combine enabled gates; latches are per occurrence and post-claim gate
+  changes cannot create another execution.
+- The coordinator maintains a bounded due set (`next_check_at` query +
+  explicit wakes) and never polls every work order on a scheduler tick.
+- Claim is an atomic `waiting/ready → claiming` CAS: duplicate wakes and
+  concurrent coordinators admit exactly one winner; losers reconcile.
+- Durable intent + idempotent reconciliation surrounds every side effect:
+  workspace link → session link (persisted before any job submission, with
+  a deterministic occurrence-derived session id) → job link (deterministic
+  submission key, reconciled by key after restart) → running. Restart
+  recovery queries canonical stores before creating anything new.
+- Workspace policy: `AutoIsolated` (default) takes a managed worktree for
+  Git mutation (lazy at claim/start); read-only work shares safely;
+  `Serialized`/shared mutation contends through scheduler exclusivity
+  (one writer); non-Git mutation never claims worktree isolation (attention
+  with `isolation_unavailable`, or serialized sharing).
+- Model/policy: the requested stable identity is re-resolved at claim
+  (removed models → `NeedsAttention(model_unavailable)`, never silent
+  fallback); approval/sandbox snapshots narrow against current ceilings
+  and never widen; revoked authority fails closed before new execution.
+- Cancellation is state-aware (pre-claim creates nothing; running routes
+  through canonical job/session control, then records terminal state;
+  terminal cancels are idempotent; completion-vs-cancel races resolve
+  deterministically toward the recorded terminal).
+- Repeats are finite occurrence creation with distinct ids; only the
+  latest terminal occurrence spawns its successor, so duplicate wakes
+  converge instead of forking a second chain.
+- Structural `WorkOrderOccurrenceChanged` events (identity/state only)
+  cover ready/claimed/running/attention/terminal/repeat; actor mutations
+  keep the structural `work_order_lifecycle` audit shape (never prompt
+  bodies, secrets, or reasoning).
+
 ## Testing
 
 ```bash
 cargo test -p codegg-core -- work_order
 cargo test -p codegg-protocol -- work_order
+cargo test -p codegg --lib -- work_order_coordinator
+cargo test --test work_orders_m002_materialization
+python3 scripts/check_work_order_coordinator.py
 ```
 
 Integration (`tests/work_orders_m001_foundation.rs`): daemon-level

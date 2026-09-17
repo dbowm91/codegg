@@ -77,6 +77,7 @@ pub enum ExecutorKind {
     BashDispatch,
     Python,
     ToolProgram,
+    AgentTurn,
     Synthetic,
 }
 
@@ -89,6 +90,7 @@ impl ExecutorKind {
             ExecutorKind::BashDispatch => "bash_dispatch",
             ExecutorKind::Python => "python",
             ExecutorKind::ToolProgram => "tool_program",
+            ExecutorKind::AgentTurn => "agent_turn",
             ExecutorKind::Synthetic => "synthetic",
         }
     }
@@ -319,6 +321,7 @@ pub enum ExecutorRegistryError {
 pub fn executor_kind_for_job(job: &JobRecord) -> Option<ExecutorKind> {
     match (job.kind, executor_variant(&job.payload)) {
         (JobKind::Test, _) => Some(ExecutorKind::Test),
+        (JobKind::AgentTurn, _) => Some(ExecutorKind::AgentTurn),
         (JobKind::Build, _) | (JobKind::Lint, _) | (JobKind::Format, _) => {
             Some(ExecutorKind::ManagedArgv)
         }

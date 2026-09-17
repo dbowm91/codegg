@@ -387,7 +387,7 @@ impl JobScheduler {
         worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
     ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
         use crate::scheduler::executors::{
-            ManagedArgvExecutor, SubagentJobExecutor, TestJobExecutor,
+            AgentTurnExecutor, ManagedArgvExecutor, SubagentJobExecutor, TestJobExecutor,
         };
         let mut registry = crate::scheduler::executor::ExecutorRegistry::new();
         registry.register(Arc::new(TestJobExecutor::new(
@@ -398,6 +398,10 @@ impl JobScheduler {
         // three instances under the same ExecutorKind silently discarded
         // the latter two in the old construction path.
         registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
+        // M002: scheduler-owned admission for WorkOrder initial turns.
+        // The coordinator submits through JobSubmissionService; this
+        // executor records admission without constructing an AgentLoop.
+        registry.register(Arc::new(AgentTurnExecutor))?;
         if let Some(pool) = subagent_pool {
             let executor = match agent_runs {
                 Some(store) => match worktree_service {

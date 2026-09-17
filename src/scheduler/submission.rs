@@ -408,6 +408,7 @@ fn payload_matches_submission_key(payload: &JobPayload, key: &str) -> bool {
     match payload {
         JobPayload::ToolProgram { submission_key, .. } => submission_key == key,
         JobPayload::SubagentRun { delegation_key, .. } => delegation_key == key,
+        JobPayload::AgentTurn { submission_key, .. } => submission_key.as_deref() == Some(key),
         JobPayload::Python {
             source_hash: Some(hash),
             ..
@@ -423,6 +424,9 @@ fn validate_payload(kind: JobKind, payload: &JobPayload) -> Result<(), JobSubmis
             JobKind::Build | JobKind::Lint | JobKind::Format,
             JobPayload::ManagedArgv { argv, .. },
         ) => !argv.is_empty(),
+        (JobKind::AgentTurn, JobPayload::AgentTurn { prompt, agent, .. }) => {
+            !prompt.is_empty() && !agent.is_empty()
+        }
         (JobKind::Subagent, JobPayload::Subagent { .. })
         | (JobKind::Subagent, JobPayload::SubagentRun { .. })
         | (JobKind::Shell, JobPayload::Shell { .. })

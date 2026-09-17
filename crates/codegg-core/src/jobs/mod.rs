@@ -949,6 +949,12 @@ pub enum JobPayload {
         prompt: String,
         agent: String,
         model: Option<String>,
+        /// Deterministic WorkOrder occurrence retry identity (M002).
+        /// Additive: legacy payloads decode as `None` and fail closed at
+        /// coordinator reconciliation (which also checks the occurrence
+        /// linkage before submitting).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        submission_key: Option<String>,
     },
     Subagent {
         prompt: String,
@@ -1741,6 +1747,7 @@ mod tests {
             prompt: "hi".to_string(),
             agent: "build".to_string(),
             model: None,
+            submission_key: None,
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["kind"], "agent_turn");

@@ -18,13 +18,14 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
 use super::model::{
-    can_transition_work_order, validate_diagnostic, validate_gate_set, validate_idempotency_key,
-    validate_lane_label, validate_model, validate_parent_ref, validate_prompt,
-    validate_repeat_count, validate_title, ApprovalRequest, AttentionCode, GateJoin, GateKind,
-    GateSpec, LaneFailurePolicy, NewSequenceLane, NewWorkOrder, OccurrenceState, ReleaseGateSet,
-    SandboxRequest, SequenceLane, WorkOrder, WorkOrderError, WorkOrderOccurrence, WorkOrderPatch,
-    WorkOrderState, WorkOrderSummary, WorkspacePolicy, MAX_IDEMPOTENCY_KEY_LEN,
-    MAX_LANES_PER_PROJECT, MAX_LANE_MEMBERS, MAX_WORK_ORDER_BATCH_ITEMS, MAX_WORK_ORDER_LIST_LIMIT,
+    can_transition_occurrence, can_transition_work_order, validate_diagnostic, validate_gate_set,
+    validate_idempotency_key, validate_lane_label, validate_model, validate_parent_ref,
+    validate_prompt, validate_repeat_count, validate_title, ApprovalRequest, AttentionCode,
+    GateJoin, GateKind, GateSpec, LaneFailurePolicy, NewSequenceLane, NewWorkOrder,
+    OccurrenceState, ReleaseGateSet, SandboxRequest, SequenceLane, WorkOrder, WorkOrderError,
+    WorkOrderOccurrence, WorkOrderPatch, WorkOrderState, WorkOrderSummary, WorkspacePolicy,
+    MAX_IDEMPOTENCY_KEY_LEN, MAX_LANES_PER_PROJECT, MAX_LANE_MEMBERS, MAX_WORK_ORDER_BATCH_ITEMS,
+    MAX_WORK_ORDER_LIST_LIMIT,
 };
 use crate::error::StorageError;
 use crate::identity::{PrincipalId, ProjectId, SequenceLaneId, WorkOrderId, WorkOrderOccurrenceId};
@@ -1896,6 +1897,644 @@ impl WorkOrderService {
     }
 }
 
+// ── M002 release coordinator / materialization primitives ──────────────
+
+/// Outcome of creating the next finite-repeat occurrence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepeatOutcome {
+    pub occurrence: WorkOrderOccurrence,
+    pub duplicate: bool,
+}
+
+impl WorkOrderService {
+    /// Bounded due-set query for the release coordinator.
+    ///
+    /// Returns waiting/ready occurrences whose `next_check_at` is absent
+    /// (immediate work) or due, oldest first. The coordinator maintains an
+    /// explicit wake per returned row and never polls every work order on
+    /// every scheduler tick.
+    pub async fn list_due_occurrences(
+        &self,
+        project: &ProjectId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<WorkOrderOccurrence>, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let bound = limit.clamp(1, 256) as i64;
+        let rows: Vec<OccurrenceRow> = sqlx::query_as(
+            "SELECT * FROM work_order_occurrence WHERE project_id = ? \
+             AND state IN ('waiting','ready') \
+             AND (next_check_at IS NULL OR next_check_at <= ?) \
+             ORDER BY COALESCE(next_check_at, updated_at) ASC, id ASC LIMIT ?",
+        )
+        .bind(project.as_str())
+        .bind(now_ms)
+        .bind(bound)
+        .fetch_all(&pool)
+        .await?;
+        rows.into_iter().map(row_to_occurrence).collect()
+    }
+
+    /// Global bounded due-set scan across projects (restart reconciliation
+    /// and timer wakes). Bounded by `limit`; ordered oldest-first.
+    pub async fn list_due_occurrences_global(
+        &self,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<WorkOrderOccurrence>, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let bound = limit.clamp(1, 512) as i64;
+        let rows: Vec<OccurrenceRow> = sqlx::query_as(
+            "SELECT * FROM work_order_occurrence WHERE state IN ('waiting','ready') \
+             AND (next_check_at IS NULL OR next_check_at <= ?) \
+             ORDER BY COALESCE(next_check_at, updated_at) ASC, id ASC LIMIT ?",
+        )
+        .bind(now_ms)
+        .bind(bound)
+        .fetch_all(&pool)
+        .await?;
+        rows.into_iter().map(row_to_occurrence).collect()
+    }
+
+    /// Persist gate latches plus the next timer wake for one pre-claim
+    /// occurrence. When `mark_ready` is set and the occurrence is still
+    /// waiting, it advances to ready along the validated matrix.
+    ///
+    /// Post-claim occurrences ignore further latches (later gate changes
+    /// cannot create another execution): the stored row is returned
+    /// unchanged.
+    pub async fn persist_gate_evaluation(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        latches: Vec<GateKind>,
+        next_check_at_ms: Option<i64>,
+        mark_ready: bool,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+        };
+        if !matches!(
+            current.state,
+            OccurrenceState::Waiting | OccurrenceState::Ready
+        ) {
+            return Ok(current);
+        }
+        let mut merged = current.gate_latches.clone();
+        for kind in &latches {
+            if !merged.contains(kind) {
+                merged.push(*kind);
+            }
+        }
+        let latches_json = serde_json::to_string(
+            &merged
+                .iter()
+                .map(|kind| kind.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_owned());
+        let target_state = if mark_ready && current.state == OccurrenceState::Waiting {
+            OccurrenceState::Ready.as_str()
+        } else {
+            current.state.as_str()
+        };
+        sqlx::query(
+            "UPDATE work_order_occurrence SET gate_latches_json = ?, next_check_at = ?, \
+             state = ?, updated_at = ? WHERE id = ? AND project_id = ?",
+        )
+        .bind(latches_json)
+        .bind(next_check_at_ms)
+        .bind(target_state)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .execute(&pool)
+        .await?;
+        // Persist a delay deadline that was just calculated: the first
+        // evaluation leaves `not_before_ms` empty and reports the deadline
+        // via `next_check_at`; record it so restart reuses the same origin.
+        if current.not_before_ms.is_none() && next_check_at_ms.is_some() {
+            sqlx::query(
+                "UPDATE work_order_occurrence SET not_before = COALESCE(not_before, ?) \
+                 WHERE id = ? AND not_before IS NULL",
+            )
+            .bind(next_check_at_ms)
+            .bind(occurrence_id.as_str())
+            .execute(&pool)
+            .await?;
+        }
+        let Some(updated) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(updated)
+    }
+
+    /// Latch an external trigger gate through the internal service method
+    /// (M005 owns the network endpoint). Idempotent: duplicate fires for
+    /// the same occurrence/gate converge without a second execution.
+    pub async fn latch_external_trigger(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        trigger_ref: &str,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let Some(occurrence) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+        };
+        let Some(work_order) = self
+            .get_work_order(project, &occurrence.work_order_id)
+            .await?
+        else {
+            return Err(WorkOrderError::NotFound(
+                occurrence.work_order_id.as_str().to_owned(),
+            ));
+        };
+        let expected = work_order.gates.gates.iter().any(|gate| {
+            gate.kind == GateKind::ExternalTrigger
+                && gate.trigger_ref.as_deref() == Some(trigger_ref)
+        });
+        if !expected {
+            return Err(WorkOrderError::invalid(
+                "trigger_ref",
+                "no external_trigger gate binds this reference",
+            ));
+        }
+        if !matches!(
+            occurrence.state,
+            OccurrenceState::Waiting | OccurrenceState::Ready
+        ) {
+            return Ok(occurrence);
+        }
+        if occurrence.gate_latches.contains(&GateKind::ExternalTrigger) {
+            return Ok(occurrence);
+        }
+        let mut merged = occurrence.gate_latches.clone();
+        merged.push(GateKind::ExternalTrigger);
+        let latches_json = serde_json::to_string(
+            &merged
+                .iter()
+                .map(|kind| kind.as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_owned());
+        sqlx::query(
+            "UPDATE work_order_occurrence SET gate_latches_json = ?, updated_at = ? \
+             WHERE id = ? AND project_id = ?",
+        )
+        .bind(latches_json)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .execute(&pool)
+        .await?;
+        let Some(updated) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(updated)
+    }
+
+    /// Atomically claim one waiting/ready occurrence for materialization.
+    ///
+    /// Exactly-once under duplicate wakes: the `UPDATE ... WHERE state IN`
+    /// CAS admits exactly one winner; losers receive an explicit state
+    /// conflict and must reconcile (query the canonical row) instead of
+    /// creating a second session/job.
+    pub async fn claim_occurrence(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let affected = sqlx::query(
+            "UPDATE work_order_occurrence SET state = 'claiming', claimed_at = ?, updated_at = ? \
+             WHERE id = ? AND project_id = ? AND state IN ('waiting','ready')",
+        )
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .execute(&pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+                return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+            };
+            return Err(WorkOrderError::StateConflict(format!(
+                "occurrence {} is {} and cannot be claimed",
+                occurrence_id.as_str(),
+                current.state.as_str()
+            )));
+        }
+        let Some(claimed) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(claimed)
+    }
+
+    /// Idempotently persist the workspace/worktree linkage for a claimed
+    /// occurrence. Recovery reuses the stored canonical ID instead of
+    /// allocating a second worktree.
+    pub async fn persist_workspace_link(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        workspace_id: &str,
+        worktree_id: Option<&str>,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let affected = sqlx::query(
+            "UPDATE work_order_occurrence SET workspace_id = ?, worktree_id = ?, updated_at = ? \
+             WHERE id = ? AND project_id = ? \
+             AND (workspace_id IS NULL OR workspace_id = ?)",
+        )
+        .bind(workspace_id)
+        .bind(worktree_id)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .bind(workspace_id)
+        .execute(&pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+                return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+            };
+            if current.workspace_id.as_deref() != Some(workspace_id) {
+                return Err(WorkOrderError::StateConflict(format!(
+                    "occurrence {} already links workspace {}",
+                    occurrence_id.as_str(),
+                    current.workspace_id.as_deref().unwrap_or("<absent>")
+                )));
+            }
+            return Ok(current);
+        }
+        let Some(updated) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(updated)
+    }
+
+    /// Idempotently persist the canonical session linkage. Must be stored
+    /// before submitting the initial turn so crash recovery finds the
+    /// existing session instead of creating a second one.
+    pub async fn persist_session_link(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let affected = sqlx::query(
+            "UPDATE work_order_occurrence SET session_id = ?, started_at = COALESCE(started_at, ?), \
+             updated_at = ? WHERE id = ? AND project_id = ? \
+             AND (session_id IS NULL OR session_id = ?)",
+        )
+        .bind(session_id)
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .bind(session_id)
+        .execute(&pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+                return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+            };
+            if current.session_id.as_deref() != Some(session_id) {
+                return Err(WorkOrderError::StateConflict(format!(
+                    "occurrence {} already links session {}",
+                    occurrence_id.as_str(),
+                    current.session_id.as_deref().unwrap_or("<absent>")
+                )));
+            }
+            return Ok(current);
+        }
+        let Some(updated) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(updated)
+    }
+
+    /// Idempotently persist the initial-turn job linkage after a durable
+    /// `JobSubmissionService` acknowledgement. Recovery reconciles by the
+    /// deterministic submission key before creating new work.
+    pub async fn persist_job_link(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        job_id: &str,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let affected = sqlx::query(
+            "UPDATE work_order_occurrence SET job_id = ?, updated_at = ? \
+             WHERE id = ? AND project_id = ? AND (job_id IS NULL OR job_id = ?)",
+        )
+        .bind(job_id)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .bind(job_id)
+        .execute(&pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+                return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+            };
+            if current.job_id.as_deref() != Some(job_id) {
+                return Err(WorkOrderError::StateConflict(format!(
+                    "occurrence {} already links job {}",
+                    occurrence_id.as_str(),
+                    current.job_id.as_deref().unwrap_or("<absent>")
+                )));
+            }
+            return Ok(current);
+        }
+        let Some(updated) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(updated)
+    }
+
+    /// Move one occurrence along the validated matrix with bounded
+    /// attention metadata. Terminal transitions stamp `terminal_at`;
+    /// `NeedsAttention` carries a closed code plus a bounded diagnostic
+    /// (never secrets or reasoning).
+    pub async fn transition_occurrence(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        target: OccurrenceState,
+        attention_code: Option<AttentionCode>,
+        diagnostic: Option<&str>,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+        };
+        if current.state == target {
+            return Ok(current);
+        }
+        if !can_transition_occurrence(current.state, target) {
+            return Err(WorkOrderError::StateConflict(format!(
+                "occurrence {} cannot move from {} to {}",
+                occurrence_id.as_str(),
+                current.state.as_str(),
+                target.as_str()
+            )));
+        }
+        let diagnostic = validate_diagnostic(diagnostic)?;
+        let terminal_at = if target.is_terminal() {
+            Some(now_ms)
+        } else {
+            current.terminal_at_ms
+        };
+        sqlx::query(
+            "UPDATE work_order_occurrence SET state = ?, attention_code = ?, diagnostic = ?, \
+             terminal_at = COALESCE(terminal_at, ?), updated_at = ? \
+             WHERE id = ? AND project_id = ?",
+        )
+        .bind(target.as_str())
+        .bind(attention_code.map(|code| code.as_str().to_owned()))
+        .bind(diagnostic)
+        .bind(terminal_at)
+        .bind(now_ms)
+        .bind(occurrence_id.as_str())
+        .bind(project.as_str())
+        .execute(&pool)
+        .await?;
+        let Some(updated) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(updated)
+    }
+
+    /// Cancel one occurrence with deterministic precedence: already-terminal
+    /// rows report success without mutation; otherwise the matrix decides.
+    /// Running cancellation must route through the canonical job/session
+    /// control first — this store step only records the durable outcome.
+    pub async fn cancel_occurrence(
+        &self,
+        project: &ProjectId,
+        occurrence_id: &WorkOrderOccurrenceId,
+        now_ms: i64,
+    ) -> Result<WorkOrderOccurrence, WorkOrderError> {
+        let Some(current) = self.get_occurrence(project, occurrence_id).await? else {
+            return Err(WorkOrderError::NotFound(occurrence_id.as_str().to_owned()));
+        };
+        if current.state.is_terminal() {
+            return Ok(current);
+        }
+        self.transition_occurrence(
+            project,
+            occurrence_id,
+            OccurrenceState::Cancelled,
+            None,
+            None,
+            now_ms,
+        )
+        .await
+    }
+
+    /// Create the next finite-repeat occurrence exactly once.
+    ///
+    /// Only the latest terminal occurrence may spawn its successor; duplicate
+    /// wakes after the successor exists converge on the stored row instead of
+    /// creating a second index. Gate deadlines reset/re-arm per policy (the
+    /// new row starts unlatchd with no persisted deadline).
+    pub async fn create_next_repeat_occurrence(
+        &self,
+        project: &ProjectId,
+        work_order_id: &WorkOrderId,
+        prior_occurrence_id: &WorkOrderOccurrenceId,
+        now_ms: i64,
+    ) -> Result<RepeatOutcome, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let Some(work_order) = self.get_work_order(project, work_order_id).await? else {
+            return Err(WorkOrderError::NotFound(work_order_id.as_str().to_owned()));
+        };
+        let page = self.list_occurrences(project, work_order_id, None).await?;
+        let Some(prior) = page
+            .occurrences
+            .iter()
+            .find(|occ| &occ.id == prior_occurrence_id)
+        else {
+            return Err(WorkOrderError::NotFound(
+                prior_occurrence_id.as_str().to_owned(),
+            ));
+        };
+        if !prior.state.is_terminal() {
+            return Err(WorkOrderError::StateConflict(format!(
+                "occurrence {} is {} and cannot spawn a repeat",
+                prior_occurrence_id.as_str(),
+                prior.state.as_str()
+            )));
+        }
+        let latest_index = page
+            .occurrences
+            .iter()
+            .map(|occ| occ.occurrence_index)
+            .max()
+            .unwrap_or(0);
+        if prior.occurrence_index != latest_index {
+            // A successor already exists; converge on it instead of forking
+            // a second repeat chain.
+            let Some(next) = page
+                .occurrences
+                .iter()
+                .find(|occ| occ.occurrence_index == prior.occurrence_index + 1)
+            else {
+                return Err(WorkOrderError::Storage(StorageError::Database(
+                    "repeat chain is not contiguous".to_owned(),
+                )));
+            };
+            return Ok(RepeatOutcome {
+                occurrence: next.clone(),
+                duplicate: true,
+            });
+        }
+        let existing = page.occurrences.len() as u64;
+        if existing >= u64::from(work_order.repeat_count) {
+            return Err(WorkOrderError::StateConflict(format!(
+                "work order {} exhausted its repeat budget ({})",
+                work_order_id.as_str(),
+                work_order.repeat_count
+            )));
+        }
+        let next_index = latest_index + 1;
+        let id = WorkOrderOccurrenceId::new();
+        let insert = sqlx::query(
+            "INSERT INTO work_order_occurrence (id, work_order_id, project_id, occurrence_index, \
+             state, gate_latches_json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, 'waiting', '[]', ?, ?)",
+        )
+        .bind(id.as_str())
+        .bind(work_order_id.as_str())
+        .bind(project.as_str())
+        .bind(next_index as i64)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&pool)
+        .await;
+        match insert {
+            Ok(_) => {}
+            Err(error)
+                if error
+                    .as_database_error()
+                    .is_some_and(|db| db.is_unique_violation()) =>
+            {
+                // A concurrent coordinator won the same index; converge on
+                // the stored successor.
+                let page = self.list_occurrences(project, work_order_id, None).await?;
+                let Some(next) = page
+                    .occurrences
+                    .iter()
+                    .find(|occ| occ.occurrence_index == next_index)
+                else {
+                    return Err(WorkOrderError::Storage(StorageError::Database(
+                        "repeat successor lost".to_owned(),
+                    )));
+                };
+                return Ok(RepeatOutcome {
+                    occurrence: next.clone(),
+                    duplicate: true,
+                });
+            }
+            Err(error) => return Err(map_unique_violation(error)),
+        }
+        let Some(next) = self.get_occurrence(project, &id).await? else {
+            return Err(WorkOrderError::Storage(StorageError::Database(
+                "occurrence row lost".to_owned(),
+            )));
+        };
+        Ok(RepeatOutcome {
+            occurrence: next,
+            duplicate: false,
+        })
+    }
+
+    /// Restart reconciliation: bounded listing of partially materialized
+    /// occurrences (claiming/running with or without session/job links).
+    pub async fn list_incomplete_occurrences(
+        &self,
+        project: &ProjectId,
+        limit: usize,
+    ) -> Result<Vec<WorkOrderOccurrence>, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let bound = limit.clamp(1, 256) as i64;
+        let rows: Vec<OccurrenceRow> = sqlx::query_as(
+            "SELECT * FROM work_order_occurrence WHERE project_id = ? \
+             AND state IN ('claiming','running') ORDER BY updated_at ASC, id ASC LIMIT ?",
+        )
+        .bind(project.as_str())
+        .bind(bound)
+        .fetch_all(&pool)
+        .await?;
+        rows.into_iter().map(row_to_occurrence).collect()
+    }
+
+    /// Find the occurrence already linked to one canonical session id, if any.
+    pub async fn occurrence_for_session(
+        &self,
+        project: &ProjectId,
+        session_id: &str,
+    ) -> Result<Option<WorkOrderOccurrence>, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let row: Option<OccurrenceRow> = sqlx::query_as(
+            "SELECT * FROM work_order_occurrence WHERE project_id = ? AND session_id = ?",
+        )
+        .bind(project.as_str())
+        .bind(session_id)
+        .fetch_optional(&pool)
+        .await?;
+        row.map(row_to_occurrence).transpose()
+    }
+
+    /// Find the occurrence already linked to one initial-turn job id, if any.
+    pub async fn occurrence_for_job(
+        &self,
+        project: &ProjectId,
+        job_id: &str,
+    ) -> Result<Option<WorkOrderOccurrence>, WorkOrderError> {
+        let pool = self.durable_pool()?;
+        let row: Option<OccurrenceRow> = sqlx::query_as(
+            "SELECT * FROM work_order_occurrence WHERE project_id = ? AND job_id = ?",
+        )
+        .bind(project.as_str())
+        .bind(job_id)
+        .fetch_optional(&pool)
+        .await?;
+        row.map(row_to_occurrence).transpose()
+    }
+}
+
 // ── Spec digests ─────────────────────────────────────────────────────────
 
 /// Validated and normalized work-order creation input plus its durable
@@ -2505,5 +3144,242 @@ mod tests {
             .expect("row");
         assert_eq!(lane.revision, revision + 1);
         assert_eq!(lane.ordered_work_order_ids.len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claim_is_exactly_once_under_duplicate_wakes() {
+        use super::super::model::OccurrenceState;
+        let pool = temp_pool().await;
+        let service = WorkOrderService::with_defaults(Some(pool));
+        let outcome = service
+            .create_work_order(&project(), &creator(), input("claimable"), 1_000)
+            .await
+            .expect("create");
+        let occurrence = service
+            .create_occurrence(&project(), &outcome.work_order.id, None, 1_001)
+            .await
+            .expect("occurrence");
+        let claimed = service
+            .claim_occurrence(&project(), &occurrence.id, 1_002)
+            .await
+            .expect("claim");
+        assert_eq!(claimed.state, OccurrenceState::Claiming);
+        // Duplicate wake cannot claim again.
+        let duplicate = service
+            .claim_occurrence(&project(), &occurrence.id, 1_003)
+            .await
+            .expect_err("duplicate claim must conflict");
+        assert!(matches!(duplicate, WorkOrderError::StateConflict(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialization_links_reconcile_idempotently() {
+        use super::super::model::OccurrenceState;
+        let pool = temp_pool().await;
+        let service = WorkOrderService::with_defaults(Some(pool));
+        let outcome = service
+            .create_work_order(&project(), &creator(), input("linkable"), 1_000)
+            .await
+            .expect("create");
+        let occurrence = service
+            .create_occurrence(&project(), &outcome.work_order.id, None, 1_001)
+            .await
+            .expect("occurrence");
+        service
+            .claim_occurrence(&project(), &occurrence.id, 1_002)
+            .await
+            .expect("claim");
+        // Workspace, session, and job links persist idempotently; recovery
+        // reuses the stored canonical IDs instead of allocating seconds.
+        for _ in 0..2 {
+            service
+                .persist_workspace_link(&project(), &occurrence.id, "ws-1", Some("wt-1"), 1_003)
+                .await
+                .expect("workspace link");
+            service
+                .persist_session_link(&project(), &occurrence.id, "session-1", 1_004)
+                .await
+                .expect("session link");
+            service
+                .persist_job_link(&project(), &occurrence.id, "job-1", 1_005)
+                .await
+                .expect("job link");
+        }
+        let linked = service
+            .get_occurrence(&project(), &occurrence.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(linked.workspace_id.as_deref(), Some("ws-1"));
+        assert_eq!(linked.worktree_id.as_deref(), Some("wt-1"));
+        assert_eq!(linked.session_id.as_deref(), Some("session-1"));
+        assert_eq!(linked.job_id.as_deref(), Some("job-1"));
+        // Conflicting links fail closed rather than overwriting.
+        let clash = service
+            .persist_session_link(&project(), &occurrence.id, "session-2", 1_006)
+            .await
+            .expect_err("session mismatch");
+        assert!(matches!(clash, WorkOrderError::StateConflict(_)));
+        let running = service
+            .transition_occurrence(
+                &project(),
+                &occurrence.id,
+                OccurrenceState::Running,
+                None,
+                None,
+                1_007,
+            )
+            .await
+            .expect("running");
+        assert_eq!(running.state, OccurrenceState::Running);
+        // Reverse lookup finds the canonical side effects for recovery.
+        assert_eq!(
+            service
+                .occurrence_for_session(&project(), "session-1")
+                .await
+                .expect("lookup")
+                .map(|occ| occ.id),
+            Some(occurrence.id.clone())
+        );
+        assert_eq!(
+            service
+                .occurrence_for_job(&project(), "job-1")
+                .await
+                .expect("lookup")
+                .map(|occ| occ.id),
+            Some(occurrence.id.clone())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_trigger_latch_is_idempotent() {
+        use super::super::model::{GateJoin, GateKind, GateSpec, ReleaseGateSet};
+        let pool = temp_pool().await;
+        let service = WorkOrderService::with_defaults(Some(pool));
+        let mut gated = input("triggered");
+        gated.gates = ReleaseGateSet {
+            join: GateJoin::All,
+            gates: vec![GateSpec {
+                kind: GateKind::ExternalTrigger,
+                delay_secs: None,
+                not_before_ms: None,
+                lane_id: None,
+                trigger_ref: Some("hook-1".to_owned()),
+            }],
+        };
+        let outcome = service
+            .create_work_order(&project(), &creator(), gated, 1_000)
+            .await
+            .expect("create");
+        let occurrence = service
+            .create_occurrence(&project(), &outcome.work_order.id, None, 1_001)
+            .await
+            .expect("occurrence");
+        for _ in 0..2 {
+            let latched = service
+                .latch_external_trigger(&project(), &occurrence.id, "hook-1", 1_002)
+                .await
+                .expect("latch");
+            assert!(latched.gate_latches.contains(&GateKind::ExternalTrigger));
+        }
+        let wrong = service
+            .latch_external_trigger(&project(), &occurrence.id, "hook-2", 1_003)
+            .await
+            .expect_err("unknown trigger ref");
+        assert!(matches!(wrong, WorkOrderError::Invalid { .. }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finite_repeat_creates_distinct_occurrences_and_exhausts() {
+        use super::super::model::OccurrenceState;
+        let pool = temp_pool().await;
+        let service = WorkOrderService::with_defaults(Some(pool));
+        let mut repeatable = input("repeatable");
+        repeatable.repeat_count = 3;
+        let outcome = service
+            .create_work_order(&project(), &creator(), repeatable, 1_000)
+            .await
+            .expect("create");
+        let first = service
+            .create_occurrence(&project(), &outcome.work_order.id, None, 1_001)
+            .await
+            .expect("first");
+        assert_eq!(first.occurrence_index, 0);
+        // Terminal prior spawns exactly one successor; duplicate wakes
+        // converge on the stored row.
+        for state in [
+            OccurrenceState::Ready,
+            OccurrenceState::Claiming,
+            OccurrenceState::Running,
+        ] {
+            service
+                .transition_occurrence(&project(), &first.id, state, None, None, 1_002)
+                .await
+                .expect("advance");
+        }
+        service
+            .transition_occurrence(
+                &project(),
+                &first.id,
+                OccurrenceState::Completed,
+                None,
+                None,
+                1_003,
+            )
+            .await
+            .expect("terminal");
+        let next = service
+            .create_next_repeat_occurrence(&project(), &outcome.work_order.id, &first.id, 1_004)
+            .await
+            .expect("repeat");
+        assert!(!next.duplicate);
+        assert_eq!(next.occurrence.occurrence_index, 1);
+        let replay = service
+            .create_next_repeat_occurrence(&project(), &outcome.work_order.id, &first.id, 1_005)
+            .await
+            .expect("replay");
+        assert!(replay.duplicate);
+        assert_eq!(replay.occurrence.id, next.occurrence.id);
+        let page = service
+            .list_occurrences(&project(), &outcome.work_order.id, None)
+            .await
+            .expect("list");
+        assert_eq!(page.occurrences.len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn due_set_and_cancellation_follow_the_matrix() {
+        use super::super::model::OccurrenceState;
+        let pool = temp_pool().await;
+        let service = WorkOrderService::with_defaults(Some(pool));
+        let outcome = service
+            .create_work_order(&project(), &creator(), input("due"), 1_000)
+            .await
+            .expect("create");
+        let occurrence = service
+            .create_occurrence(&project(), &outcome.work_order.id, None, 1_001)
+            .await
+            .expect("occurrence");
+        let due = service
+            .list_due_occurrences(&project(), 2_000, 16)
+            .await
+            .expect("due");
+        assert_eq!(due.len(), 1);
+        let cancelled = service
+            .cancel_occurrence(&project(), &occurrence.id, 2_001)
+            .await
+            .expect("cancel");
+        assert_eq!(cancelled.state, OccurrenceState::Cancelled);
+        // Terminal cancellation is idempotent.
+        let again = service
+            .cancel_occurrence(&project(), &occurrence.id, 2_002)
+            .await
+            .expect("idempotent cancel");
+        assert_eq!(again.state, OccurrenceState::Cancelled);
+        let due = service
+            .list_due_occurrences(&project(), 3_000, 16)
+            .await
+            .expect("due");
+        assert!(due.is_empty());
     }
 }

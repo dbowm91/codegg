@@ -154,8 +154,17 @@ from starving unrelated work.
 #### ExecutorRegistry (`executor.rs`)
 
 Keyed by `ExecutorKind` (`Test`, `ManagedArgv`, `Subagent`,
-`BashDispatch`, `Python`, `ToolProgram`, `Synthetic`). Duplicate kinds
-are rejected. `for_job(&JobRecord)` resolves the best executor.
+`BashDispatch`, `Python`, `ToolProgram`, `AgentTurn`, `Synthetic`).
+Duplicate kinds are rejected. `for_job(&JobRecord)` resolves the best
+executor.
+
+`AgentTurnExecutor` (Project Work Orders M002) is the scheduler-owned
+admission recorder for WorkOrder initial turns: it validates the durable
+`AgentTurn` payload, holds the admission permit for the dispatch window,
+and completes with an "initial turn admitted" summary. It never
+constructs an `AgentLoop`; the materialized session remains an ordinary
+session drivable via `TurnSubmit`, and the occurrence stays `Running`
+until the canonical session/job terminal state is projected back.
 
 #### Execution Context (`executor.rs`)
 

@@ -2881,6 +2881,21 @@ pub enum CoreEvent {
         lane_id: String,
         revision: u64,
     },
+    /// A work-order occurrence changed materialization state (M002).
+    ///
+    /// Structural hint only: receivers re-fetch through the authorized
+    /// occurrence get/list path on doubt. `change` names the transition
+    /// (`ready`, `claimed`, `running`, `attention`, `completed`, `failed`,
+    /// `cancelled`, `repeat`); `state` is the durable occurrence state.
+    /// Payloads carry identity and state only, never prompt bodies,
+    /// secrets, or reasoning.
+    WorkOrderOccurrenceChanged {
+        project_id: String,
+        work_order_id: String,
+        occurrence_id: String,
+        change: String,
+        state: String,
+    },
 }
 
 #[cfg(test)]

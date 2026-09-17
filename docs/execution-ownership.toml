@@ -103,6 +103,12 @@ owner = "scheduler"
 reason = "Specialized research evidence children use the existing bounded SubAgentPool admission path"
 entrypoint = "SubAgentSpawner::send_and_wait"
 
+[[site]]
+path = "src/core/work_order_coordinator.rs"
+owner = "scheduler"
+reason = "WorkOrder release coordinator submits the single initial AgentTurn through JobSubmissionService; scheduler-owned AgentTurnExecutor records admission without constructing an AgentLoop"
+entrypoint = "JobSubmissionService::submit"
+
 # ---------------------------------------------------------------------
 # Scheduler subsystem (definition)
 # ---------------------------------------------------------------------

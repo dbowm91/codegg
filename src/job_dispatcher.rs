@@ -174,6 +174,7 @@ mod tests {
                 prompt: "hi".to_string(),
                 agent: "build".to_string(),
                 model: None,
+                submission_key: None,
             },
             resource_request: codegg_core::jobs::ResourceRequest::default(),
             timeout: None,

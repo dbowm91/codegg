@@ -40,9 +40,17 @@
 //! audit store; [`audit_metadata_for_work_order`] exposes only structural
 //! locators (never bodies) for audit linkage.
 
+pub mod coordinator;
 pub mod model;
 pub mod store;
 
+pub use coordinator::{
+    delay_deadline_for_occurrence, evaluate_occurrence_gates, is_pre_claim, is_repeat_exhausted,
+    merge_latches, narrow_approval, narrow_sandbox, next_occurrence_index, resolve_model,
+    resolve_workspace_action, sequence_holds, sequence_predecessors_terminal,
+    session_id_for_occurrence, submission_key_for_occurrence, waiting_diagnostic, GateEvaluation,
+    WorkspaceAction,
+};
 pub use model::{
     audit_metadata_for_work_order, can_edit_execution_fields, can_transition_occurrence,
     can_transition_work_order, validate_diagnostic, validate_gate_set, validate_idempotency_key,
@@ -59,5 +67,6 @@ pub use model::{
 };
 pub use store::{
     ensure_work_order_tables, work_order_project, BatchOutcome, CreateOutcome, OccurrenceListPage,
-    WorkOrderConfig, WorkOrderListPage, WorkOrderService, WORK_ORDER_SCHEMA_STATEMENTS,
+    RepeatOutcome, WorkOrderConfig, WorkOrderListPage, WorkOrderService,
+    WORK_ORDER_SCHEMA_STATEMENTS,
 };

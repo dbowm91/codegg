@@ -1438,6 +1438,93 @@ impl JobExecutor for PythonJobExecutor {
     }
 }
 
+/// Scheduler executor for `JobKind::AgentTurn` (Project Work Orders M002).
+///
+/// The coordinator never executes agent work directly and never constructs
+/// an `AgentLoop` itself (stop condition). Admission still flows through the
+/// existing global scheduler: this scheduler-owned executor validates the
+/// durable payload, holds the admission permit for the dispatch window, and
+/// records admission so the materialized ordinary session becomes drivable
+/// through the existing `TurnSubmit` runtime.
+///
+/// Completion here means "initial turn admitted; session <id> is an ordinary
+/// session" — not "the agent responded". The occurrence stays `Running`
+/// until the canonical session/job terminal state is projected back by the
+/// coordinator; job completion alone never completes an occurrence.
+pub struct AgentTurnExecutor;
+
+#[async_trait]
+impl JobExecutor for AgentTurnExecutor {
+    fn kind(&self) -> ExecutorKind {
+        ExecutorKind::AgentTurn
+    }
+
+    fn supports(&self, kind: JobKind) -> bool {
+        matches!(kind, JobKind::AgentTurn)
+    }
+
+    fn validate(&self, job: &JobRecord) -> Result<(), ExecutorValidationError> {
+        match &job.payload {
+            JobPayload::AgentTurn { prompt, agent, .. } => {
+                if prompt.is_empty() {
+                    return Err(ExecutorValidationError::MissingField("prompt".into()));
+                }
+                if agent.is_empty() {
+                    return Err(ExecutorValidationError::MissingField("agent".into()));
+                }
+                Ok(())
+            }
+            _ => Err(ExecutorValidationError::UnsupportedKind {
+                executor: self.kind().as_str().into(),
+                kind: job.kind.as_str().to_string(),
+            }),
+        }
+    }
+
+    fn health(&self) -> ExecutorHealth {
+        ExecutorHealth::Healthy
+    }
+
+    async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        let started = std::time::Instant::now();
+        if let Err(error) = ctx.validate_runtime() {
+            return failure_completion(started, ExecutorStatus::Failed, error.to_string());
+        }
+        if ctx.cancellation.is_cancelled() {
+            return failure_completion(
+                started,
+                ExecutorStatus::Cancelled,
+                "agent turn cancelled before admission".to_string(),
+            );
+        }
+        let (prompt_len, session) = match &ctx.job.payload {
+            JobPayload::AgentTurn { prompt, .. } => (prompt.len(), ctx.job.session_id.clone()),
+            _ => {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "unsupported payload kind".into(),
+                );
+            }
+        };
+        let session_hint = session.as_deref().unwrap_or("<unlinked>");
+        ExecutorCompletion {
+            status: ExecutorStatus::Completed,
+            summary: format!(
+                "work-order initial turn admitted for session {session_hint} \
+                 ({prompt_len} prompt bytes); session remains an ordinary session \
+                 drivable via TurnSubmit"
+            ),
+            run_id: None,
+            metrics: ExecutorMetrics {
+                cpu_time_ms: None,
+                peak_memory_mb: None,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            },
+        }
+    }
+}
+
 /// Convenience constructor: register the standard executor set
 /// against a registry.
 pub fn register_default_executors(
@@ -1448,6 +1535,7 @@ pub fn register_default_executors(
 ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
     registry.register(Arc::new(TestJobExecutor::new(run_store.clone(), sink)))?;
     registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
+    registry.register(Arc::new(AgentTurnExecutor))?;
     if let Some(pool) = subagent_pool {
         registry.register(Arc::new(SubagentJobExecutor::new(pool)))?;
     }
