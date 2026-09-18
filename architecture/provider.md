@@ -102,7 +102,7 @@ transport. Resolution order:
 1. Explicit `auth.env` env var
 2. Conventional `{PROVIDER}_API_KEY`
 3. Inline `auth.value`
-4. Decrypted `auth.encrypted_value` (requires `CODEGG_MASTER_KEY`)
+4. Decrypted `auth.encrypted_value` (requires a resolvable master key: an explicit environment key or the existing CodeGG-managed key)
 5. User-level `CredentialStore` lookup (by `account_id`)
 6. Legacy `api_key` / `encrypted_api_key` fields
 
