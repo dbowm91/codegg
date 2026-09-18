@@ -1,7 +1,8 @@
 # Team Collaboration Corrective M002 — Project/Channel Chat Access Policy
 
-Status: ready (unblocked by M001 closure at
-plans/closure/team-collaboration-corrective/001-status.md)
+Status: implemented (closure at
+plans/closure/team-collaboration-corrective/002-status.md;
+implementation `2f4bec32`)
 
 Repository baseline: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 
