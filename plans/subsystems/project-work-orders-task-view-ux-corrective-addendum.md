@@ -2,6 +2,10 @@
 
 Status: closed
 
+Closure record: `plans/closure/project-work-orders-task-view-corrective/001-status.md`
+
+Implementation commit: `1bd77c6d`
+
 Repository audit baseline: `e013acd282afd63e7ca2211190a1342f76ae3e5d`
 
 Related closed work:

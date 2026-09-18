@@ -2,6 +2,8 @@
 
 Status: closed
 
+Final capability lineage: M001-M007 closed under this roadmap, and the post-closure UX-fidelity corrective C001 is also closed (`plans/closure/project-work-orders-task-view-corrective/001-status.md`; implementation `1bd77c6d`). Where original milestone text or closure evidence differs from current human-facing behavior, C001 is the controlling later correction. Historical M001-M007 closure records remain unchanged.
+
 Repository baseline reviewed: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
 Long-term references:
@@ -309,7 +311,7 @@ Class: capability
 
 Plan: `plans/implementation/project-work-orders-task-view/003-project-task-composer-and-view.md`
 
-Status: closed (`plans/closure/project-work-orders-task-view/003-status.md`; implementation `79a00460`).
+Status: closed (`plans/closure/project-work-orders-task-view/003-status.md`; implementation `79a00460`). Final human-facing composer/queue behavior was corrected later by C001 (`plans/closure/project-work-orders-task-view-corrective/001-status.md`).
 
 Add composer-level Task mode, scheduling dialog, last-task-model preference, ordered project Task view, Vim-like navigation/reorder, migration from thin Schedule `/tasks` presentation, and normal-session focus/steer/cancel behavior after materialization.
 
@@ -333,7 +335,7 @@ Class: capability / security
 
 Plan: `plans/implementation/project-work-orders-task-view/005-external-task-trigger-endpoint.md`
 
-Status: closed (`plans/closure/project-work-orders-task-view/005-status.md`; implementation `f22c9d8d`).
+Status: closed (`plans/closure/project-work-orders-task-view/005-status.md`; implementation `f22c9d8d`). The deferred human trigger setup/display/rotation surface was completed later by C001 (`plans/closure/project-work-orders-task-view-corrective/001-status.md`).
 
 Add high-entropy one-purpose task-trigger secrets, verifier-only storage, authenticated/idempotent POST endpoint, expiry/max-fire/revocation, audit, occurrence gate latching, and replay/race protection.
 
@@ -357,7 +359,7 @@ Class: invariant / capability closure
 
 Plan: `plans/implementation/project-work-orders-task-view/007-work-order-trajectory-and-recovery-qualification.md`
 
-Status: closed (`plans/closure/project-work-orders-task-view/007-status.md`; harness-only qualification `0216e814`, no production delta).
+Status: closed (`plans/closure/project-work-orders-task-view/007-status.md`; harness-only qualification `0216e814`, no production delta). C001 subsequently corrected the identified UX-fidelity gaps and reran the relevant M005/M007 regression suites before its own closure.
 
 Run fault-injection and representative long trajectories across restart boundaries, concurrent clients, duplicate triggers, removed models, policy narrowing, permission waits, worktree conflicts, cancellation, reorder races, sequence failure, repeat exhaustion, team privacy, and agent batch creation. Add only corrective production changes needed for closure.
 

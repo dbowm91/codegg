@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M003 — Project Task Composer, Scheduling Sheet, and Task View
 
-Status: implemented
+Status: implemented (original closure: `plans/closure/project-work-orders-task-view/003-status.md`; post-closure UX correction: `plans/closure/project-work-orders-task-view-corrective/001-status.md`)
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
@@ -16,6 +16,10 @@ Applicable ADRs:
 Primary class: capability
 
 Hard dependency: M002 closure.
+
+## Post-closure correction note
+
+This file remains the historical M003 implementation handoff. Its baseline statements and implementation choices must not be read as the current final UX where C001 later corrected them. C001 made bare `Tab` at root prompt focus own `Session <-> Task`, moved `SwitchAgent` to `Ctrl+A` while retaining `Ctrl+G` as a composer alias, added direct focused scheduling-queue `j/k`/Up/Down movement under the existing lane CAS contract, and enabled the capability-aware external-trigger row as part of the completed human trigger workflow. Use the C001 closure for current behavior; the original M003 closure remains unchanged as point-in-time evidence.
 
 ## 1. Objective
 

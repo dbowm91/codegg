@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M007 — End-to-End Trajectory, Recovery, Contention, and Security Qualification
 
-Status: implemented (closure: `plans/closure/project-work-orders-task-view/007-status.md`)
+Status: implemented (original closure: `plans/closure/project-work-orders-task-view/007-status.md`; final UX-fidelity regression closure: `plans/closure/project-work-orders-task-view-corrective/001-status.md`)
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
@@ -17,6 +17,10 @@ Applicable ADRs:
 Primary class: invariant / capability closure
 
 Hard dependency: M001-M006 closure.
+
+## Post-closure correction note
+
+M007 remains valid point-in-time qualification of the durable WorkOrder architecture and composed backend behavior. A later product-level review found three human-surface fidelity gaps that M007's milestone-local qualification did not reject: bare-Tab composer selection, direct focused scheduling-queue reorder, and human external-trigger setup/recovery. Corrective C001 fixed those gaps and reran the relevant trigger, trajectory, TUI routing, authorization, ownership, formatting, Clippy, and quick-verification suites. Current final capability evidence is therefore M007 plus the closed C001 corrective, not M007 alone.
 
 ## 1. Objective
 

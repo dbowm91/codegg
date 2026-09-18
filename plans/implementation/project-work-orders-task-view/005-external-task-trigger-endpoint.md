@@ -1,6 +1,6 @@
 # Project Work Orders and Task View M005 — External Task-Trigger Capability and Endpoint
 
-Status: implemented
+Status: implemented (original closure: `plans/closure/project-work-orders-task-view/005-status.md`; post-closure human-surface correction: `plans/closure/project-work-orders-task-view-corrective/001-status.md`)
 
 Repository baseline: `3ed785618bfac5a85f504813bdb7fc3a923e8679`
 
@@ -15,6 +15,10 @@ Applicable ADR:
 Primary class: capability / security
 
 Hard dependency: M002 closure. Scheduled after M004 for handoff clarity; M004 is not a semantic dependency on the trigger service.
+
+## Post-closure correction note
+
+M005 correctly closed the durable trigger capability, management protocol, verifier-only persistence, and narrow POST fire endpoint, but its closure explicitly allowed the human TUI/CLI trigger surface to remain deferred. Corrective C001 later completed that product surface without changing M005 backend ownership: the Task scheduling sheet can select an external gate, successful WorkOrder creation chains one authorized trigger creation, the bearer is displayed exactly once in transient redacted TUI state, and Task view supports metadata refresh, retry, revoke, and explicit rotation. The M005 closure remains historical evidence for the backend milestone; C001 is the controlling later record for the human trigger workflow.
 
 ## 1. Objective
 
