@@ -328,3 +328,8 @@ reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interac
 path = "src/interactive_process_attach.rs"
 owner = "interactive"
 reason = "M002 bounded attach/resume protocol over the M001 PTY engine; delegates all lifecycle to InteractiveProcessService, shares the scheduler admission controller, owns no direct-spawn site and no per-attachment tasks"
+
+[[site]]
+path = "src/install.rs"
+owner = "standalone_compat"
+reason = "Bounded installation diagnostics only: --version identity probe of the managed codegg-eggsearch sibling for doctor/install reports; not scheduler work, never spawns per-turn"

@@ -7,9 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum SandboxMode {
     #[default]
@@ -437,51 +434,19 @@ pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, Strin
 /// Return the private helper executable from the installation-owned sibling
 /// location. Inherited environment, PATH, and cwd are deliberately not part
 /// of this resolution rule.
+///
+/// The strict trust rule lives in [`crate::install`]; this wrapper preserves
+/// the historical `trusted sandbox helper` error wording while sharing the
+/// canonical installation-directory and sibling validation.
 pub fn sandbox_helper_path() -> Result<PathBuf, String> {
-    let current = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
-    resolve_trusted_helper(&current)
+    crate::install::trusted_sandbox_helper_path()
+        .map_err(|e| e.replace("installation-owned", "trusted sandbox helper"))
 }
 
-fn resolve_trusted_helper(current: &Path) -> Result<PathBuf, String> {
-    let current = current
-        .canonicalize()
-        .map_err(|error| format!("CodeGG executable could not be resolved: {error}"))?;
-    let install_root = current
-        .parent()
-        .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
-        .canonicalize()
-        .map_err(|error| format!("CodeGG installation directory could not be resolved: {error}"))?;
-    // Cargo places unit-test executables in `target/debug/deps`, while the
-    // sibling helper is built in `target/debug`. This adjustment is compiled
-    // only into test builds; installed production binaries retain the strict
-    // same-directory trust rule above.
-    #[cfg(test)]
-    let install_root = if install_root.file_name().is_some_and(|name| name == "deps") {
-        install_root
-            .parent()
-            .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
-            .canonicalize()
-            .map_err(|error| format!("Cargo target directory could not be resolved: {error}"))?
-    } else {
-        install_root
-    };
-    let candidate = install_root.join("codegg-sandbox-helper");
-    let helper = candidate
-        .canonicalize()
-        .map_err(|error| format!("trusted sandbox helper could not be resolved: {error}"))?;
-    if helper.parent() != Some(install_root.as_path()) {
-        return Err("trusted sandbox helper escaped the installation directory".to_string());
-    }
-    let metadata = std::fs::metadata(&helper)
-        .map_err(|error| format!("trusted sandbox helper metadata unavailable: {error}"))?;
-    if !metadata.file_type().is_file() {
-        return Err("trusted sandbox helper is not a regular file".to_string());
-    }
-    #[cfg(unix)]
-    if metadata.permissions().mode() & 0o111 == 0 {
-        return Err("trusted sandbox helper is not executable".to_string());
-    }
-    Ok(helper)
+#[allow(dead_code)]
+pub(crate) fn resolve_trusted_helper(current: &Path) -> Result<PathBuf, String> {
+    crate::install::trusted_sandbox_helper_path_for(current)
+        .map_err(|e| e.replace("installation-owned", "trusted sandbox helper"))
 }
 
 fn resolve_executable(path: &Path) -> Option<PathBuf> {

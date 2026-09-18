@@ -274,7 +274,8 @@ CodeGG-owned generic chunk accumulator remains.
 - `SandboxConfig::enforce()` — refuses to restrict parent (:76)
 - `SandboxConfig::launch_spec(target, args, cwd)` — builds child
   launch description (:89)
-- `sandbox_helper_path()` — resolves trusted helper binary (:290)
+- `sandbox_helper_path()` — resolves trusted helper binary via the shared
+  `crate::install` sibling rule (canonical exe dir, no PATH/cwd/env; :290)
 - `validate_path_safety(path, allowed_paths)` — symlink check +
   canonicalization (:509)
 - `probe_landlock()` — checks Landlock ABI availability (:350)

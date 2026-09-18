@@ -30,6 +30,23 @@ pub const EGGSEARCH_RECOMMENDED_TOOLS: &[&str] = &[
     "research_search",
     "build_evidence_bundle",
 ];
+/// Complete ten-tool upstream surface for the pinned 0.3.9 bundle
+/// (required + recommended + the diagnostic `provider_status` helper).
+/// Closure for the self-contained-installation milestone expects this
+/// surface from the bundled sidecar; MCP initialize/tool discovery
+/// remains the executable compatibility authority.
+pub const EGGSEARCH_BUNDLED_COMPLETE_SURFACE: &[&str] = &[
+    "web_search",
+    "web_fetch",
+    "batch_fetch",
+    "repo_search",
+    "repo_fetch",
+    "repo_map",
+    "security_search",
+    "research_search",
+    "build_evidence_bundle",
+    "provider_status",
+];
 
 /// Connect eggsearch from config and install shared state. Returns
 /// the `Arc<RwLock<McpService>>` that the agent loop should use, or
@@ -143,15 +160,31 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     report.server_name = Some(server_name.clone());
 
     // Step 2: build the McpService and connect.
+    // Resolution contract (M002):
+    // 1. explicit [mcp.eggsearch] remains authoritative (handled below);
+    // 2. explicit [search.eggsearch].command remains an advanced override;
+    // 3. otherwise the installation-owned codegg-eggsearch sibling wins;
+    // 4. legacy PATH `eggsearch` is source-build compatibility only.
     let mut mcp_service = McpService::new();
     connect_explicit_if_present(config, &mut mcp_service, &server_name, &mut report).await;
 
+    // Record managed-sidecar presence/version regardless of which path is
+    // used, so doctor can report installation health even when an explicit
+    // override is active. This probe is best-effort and never fails startup.
+    probe_managed_sidecar(&mut report);
+
+    if report.already_connected {
+        report.resolution_source = Some("explicit-mcp".to_string());
+    }
+
     if !report.already_connected {
-        let command = egg_cfg.command().to_string();
+        let resolution = crate::install::resolve_eggsearch_command(&egg_cfg);
+        report.resolution_source = Some(resolution.source_label().to_string());
+        let command = resolution.command();
         let args = egg_cfg.args();
         let env = egg_cfg.env();
         let timeout = egg_cfg.timeout_ms();
-        report.command = Some(egg_cfg.command().to_string());
+        report.command = Some(command.clone());
 
         match mcp_service
             .connect_stdio(&server_name, &command, &args, env.clone(), timeout)
@@ -163,6 +196,8 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
             }
             Err(e) => {
                 report.connection_error = Some(format!("{e}"));
+                report.installation_hint =
+                    Some(installation_hint_for(&resolution, &report, &format!("{e}")));
             }
         }
     }
@@ -220,9 +255,101 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
                 .required_tool_coverage
                 .push((tool.to_string(), discovered.iter().any(|t| t == tool)));
         }
+        // Ten-tool bundled-surface check (includes provider_status).
+        let discovered_set: HashSet<&str> = report.tools.iter().map(String::as_str).collect();
+        report.bundled_surface_complete = Some(
+            EGGSEARCH_BUNDLED_COMPLETE_SURFACE
+                .iter()
+                .all(|t| discovered_set.contains(*t)),
+        );
+    } else if !report.connected && report.installation_hint.is_none() {
+        // Unconnected without an explicit spawn error (e.g. explicit MCP
+        // block failed before stdio): still surface the managed hint when
+        // the sidecar itself is missing/corrupt so doctor stays actionable.
+        if (!report.managed_sidecar_present || report.managed_sidecar_version.is_none())
+            && report.connection_error.is_some()
+        {
+            let err = report.connection_error.clone().unwrap_or_default();
+            // Only for non-explicit sources; explicit MCP overrides own
+            // their diagnostics.
+            if report.resolution_source.as_deref() != Some("explicit-mcp") {
+                let fallback = crate::install::EggsearchResolution::LegacyPath {
+                    command: "eggsearch".to_string(),
+                };
+                report.installation_hint = Some(installation_hint_for(&fallback, &report, &err));
+            }
+        }
     }
 
     report
+}
+
+/// Best-effort managed-sidecar presence/version probe. Never fails startup.
+fn probe_managed_sidecar(report: &mut BootstrapReport) {
+    match crate::install::managed_eggsearch_path() {
+        Ok(path) => {
+            report.managed_sidecar_present = true;
+            report.managed_sidecar_path = Some(path.to_string_lossy().into_owned());
+            match crate::install::probe_eggsearch_version(&path) {
+                Ok(raw) => match crate::install::check_eggsearch_version_output(&raw) {
+                    Ok(checked) => {
+                        report.managed_sidecar_version = Some(checked);
+                    }
+                    Err(e) => {
+                        report.managed_sidecar_version = Some(raw);
+                        // Version drift is installation-relevant but not
+                        // fatal here; doctor surfaces it via the hint when
+                        // the managed path is actually used.
+                        let _ = e;
+                    }
+                },
+                Err(_) => {
+                    // Probe spawn failed (e.g. transient); presence stays true,
+                    // version stays None. MCP discovery remains authoritative.
+                }
+            }
+        }
+        Err(_) => {
+            report.managed_sidecar_present = false;
+        }
+    }
+}
+
+/// Installation-specific hint for a failed spawn. The managed reinstall is
+/// the primary remedy; a bare "install eggsearch" is never the lead.
+fn installation_hint_for(
+    resolution: &crate::install::EggsearchResolution,
+    report: &BootstrapReport,
+    err: &str,
+) -> String {
+    match resolution {
+        crate::install::EggsearchResolution::ExplicitCommand { command } => {
+            format!(
+                "explicit [search.eggsearch].command {command:?} failed ({err}); fix the override or remove it to use the managed sidecar"
+            )
+        }
+        crate::install::EggsearchResolution::ManagedSibling { path } => {
+            format!(
+                "managed sidecar at {} failed ({err}); reinstall the prebuilt CodeGG bundle (codegg, codegg-sandbox-helper, codegg-eggsearch); advanced override remains via [search.eggsearch].command or [mcp.eggsearch]",
+                path.display()
+            )
+        }
+        crate::install::EggsearchResolution::LegacyPath { .. } => {
+            if !report.managed_sidecar_present {
+                format!(
+                    "managed codegg-eggsearch sidecar missing ({err}); reinstall the prebuilt CodeGG bundle instead of installing eggsearch separately; advanced override remains via [search.eggsearch].command or [mcp.eggsearch]"
+                )
+            } else if let Some(path) = &report.managed_sidecar_path {
+                format!(
+                    "managed sidecar present at {path} but legacy PATH eggsearch was used ({err}); reinstall the bundle if the sidecar is corrupt; advanced override remains via [search.eggsearch].command"
+                )
+            } else {
+                format!(
+                    "eggsearch spawn failed ({err}); managed sidecar status unknown — reinstall the prebuilt bundle if this is a packaged install"
+                )
+            }
+        }
+    }
 }
 
 async fn connect_explicit_if_present(
@@ -338,6 +465,20 @@ pub struct BootstrapReport {
     /// List of required upstream tools (web_search, web_fetch) and whether
     /// they were discovered on the server.
     pub required_tool_coverage: Vec<(String, bool)>,
+    /// How the spawn command was resolved: `explicit-mcp`,
+    /// `explicit-command`, `managed-sidecar`, or `legacy-path`.
+    pub resolution_source: Option<String>,
+    /// Whether the installation-owned `codegg-eggsearch` sibling is present.
+    pub managed_sidecar_present: bool,
+    /// Canonical managed sidecar path, when present.
+    pub managed_sidecar_path: Option<String>,
+    /// Managed sidecar `--version` output (checked against the pin), when probed.
+    pub managed_sidecar_version: Option<String>,
+    /// Installation-specific actionable hint (reinstall bundle), never a bare
+    /// "install eggsearch" primary remedy.
+    pub installation_hint: Option<String>,
+    /// Ten-tool bundled-surface completeness (None when not connected).
+    pub bundled_surface_complete: Option<bool>,
 }
 
 impl BootstrapReport {
@@ -389,17 +530,44 @@ impl BootstrapReport {
             .collect()
     }
 
+    /// Names missing from the ten-tool bundled surface.
+    pub fn missing_bundled_tools(&self) -> Vec<&str> {
+        let discovered: HashSet<&str> = self.tools.iter().map(|s| s.as_str()).collect();
+        EGGSEARCH_BUNDLED_COMPLETE_SURFACE
+            .iter()
+            .filter(|t| !discovered.contains(*t))
+            .copied()
+            .collect()
+    }
+
     pub fn summary_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         lines.push(format!(
             "Search backend: {}",
             self.search_backend.as_deref().unwrap_or("?")
         ));
+        if let Some(source) = &self.resolution_source {
+            lines.push(format!("Resolution: {source}"));
+        }
         if let Some(cmd) = &self.command {
             lines.push(format!("Command: {cmd}"));
         }
         if let Some(name) = &self.server_name {
             lines.push(format!("Server name: {name}"));
+        }
+        // Managed sidecar presence/version (installation health, independent
+        // of which command was actually spawned).
+        if self.managed_sidecar_present {
+            if let Some(path) = &self.managed_sidecar_path {
+                lines.push(format!("Managed sidecar: present at {path}"));
+            } else {
+                lines.push("Managed sidecar: present".to_string());
+            }
+            if let Some(version) = &self.managed_sidecar_version {
+                lines.push(format!("Managed sidecar version: {version}"));
+            }
+        } else {
+            lines.push("Managed sidecar: missing".to_string());
         }
         lines.push(format!(
             "Eggsearch MCP: {}",
@@ -434,6 +602,19 @@ impl BootstrapReport {
                 let missing = self.missing_required_tools();
                 if !missing.is_empty() {
                     lines.push(format!("  Missing required: {}", missing.join(", ")));
+                }
+            }
+            // Ten-tool bundled surface (M002 closure expectation for the
+            // pinned sidecar). MCP discovery stays authoritative.
+            if let Some(complete) = self.bundled_surface_complete {
+                if complete {
+                    lines.push("Bundled surface (10-tool): complete".to_string());
+                } else {
+                    let missing = self.missing_bundled_tools();
+                    lines.push(format!(
+                        "Bundled surface (10-tool): incomplete (missing: {})",
+                        missing.join(", ")
+                    ));
                 }
             }
         }
@@ -480,6 +661,9 @@ impl BootstrapReport {
             }
         } else if let Some(detail) = &self.provider_status_summary {
             lines.push(format!("Provider status: {detail}"));
+        }
+        if let Some(hint) = &self.installation_hint {
+            lines.push(format!("Installation hint: {hint}"));
         }
         if let Some(note) = &self.note {
             lines.push(format!("Note: {note}"));

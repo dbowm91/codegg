@@ -16,10 +16,27 @@ The project is currently at `0.1.0` and under active development. The README des
 
 ## Requirements
 
-- Rust `1.89` or newer.
-- Git for source installation and Git-backed agent operations.
-- Credentials for at least one configured LLM provider.
-- Any external programs required by integrations you enable, such as language servers or local MCP servers.
+- Credentials for at least one configured LLM provider, plus network
+  connectivity to that provider, for hosted-provider operation.
+- Source installation additionally needs Rust `1.89` or newer and Git to
+  fetch the checkout (`cargo install --locked --path .`).
+
+The supported prebuilt installation is self-contained for the normal
+terminal workflow: launching `codegg`, connecting a provider, and using
+the packaged core requires no separately installed Rust/Cargo,
+eggsearch, eggsact, sandbox-helper package, Python runtime, or manual
+`CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` / `OPENCODE_ENCRYPTION_KEY`
+environment variable. The installer places `codegg`,
+`codegg-sandbox-helper`, and `codegg-eggsearch` (pinned 0.3.9) together;
+CodeGG resolves the sidecars relative to its own executable.
+
+Git is required only for Git-backed repository operations that need it;
+language servers are required only for language-server features. Neither
+is a prerequisite for launching CodeGG and connecting to a provider.
+
+Downloading the installer itself needs an ordinary OS downloader/shell
+(`curl`/`sh` as shown below); that is an installation-time requirement,
+distinct from the runtime dependencies above.
 
 Linux and macOS are the primary Unix runtime targets represented in the current daemon, sandbox, and path handling. Platform-specific behavior is documented in the architecture guides where relevant.
 

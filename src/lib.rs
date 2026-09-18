@@ -40,6 +40,7 @@ pub mod goal_verification;
 pub mod hooks;
 pub mod http_client;
 pub mod ide;
+pub mod install;
 pub mod interactive_process;
 pub mod interactive_process_attach;
 pub mod job_dispatcher;

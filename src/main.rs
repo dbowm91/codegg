@@ -483,6 +483,8 @@ pub enum DoctorSubsystem {
     Providers,
     /// User-level credential store (metadata only, never secrets).
     Credentials,
+    /// Installation-owned runfiles (codegg siblings, versions, kernel probe).
+    Installation,
 }
 
 /// Resolve the `doctor` subsystem from the positional argument and the
@@ -749,6 +751,7 @@ mod cli_surface_tests {
                 "all",
                 "credentials",
                 "deterministic-tools",
+                "installation",
                 "lsp",
                 "mcp",
                 "providers",
@@ -1670,10 +1673,12 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
     println!("config: loaded");
 
     // Single-dispatch per subsystem; `All` runs every section below.
-    // Each arm has a real implementation — subsystems without one
-    // (notably installation/runfile data, owned by the blocked
-    // self-contained-installation M002) are deliberately absent from
-    // `DoctorSubsystem` rather than advertised empty.
+    if matches!(subsystem, DoctorSubsystem::Installation) {
+        println!("\n== Installation ==");
+        print_installation_report();
+        return Ok(());
+    }
+
     if matches!(subsystem, DoctorSubsystem::Providers) {
         println!("\n== Providers ==");
         print_providers_report(&config);
@@ -1710,6 +1715,14 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
         for line in report.summary_lines() {
             println!("{line}");
         }
+    }
+
+    if matches!(
+        subsystem,
+        DoctorSubsystem::All | DoctorSubsystem::Installation
+    ) {
+        println!("\n== Installation ==");
+        print_installation_report();
     }
 
     if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Mcp) {
@@ -1957,6 +1970,22 @@ fn print_deterministic_tools_report(config: &Config) {
     } else {
         println!("\npreflight: not configured");
     }
+}
+
+/// Secret-free installation/runfile report (self-contained-installation M002).
+///
+/// Covers the CodeGG executable location/version, expected sibling names
+/// and present/missing/invalid state, managed eggsearch version probe,
+/// sandbox helper resolvability plus the Landlock kernel probe, and the
+/// in-process eggsact contract line. Tool coverage itself stays in
+/// `doctor search`; this section owns the runfile data. Never prints
+/// credentials, keys, auth headers, or secret-bearing config.
+fn print_installation_report() {
+    let report = codegg::install::InstallationReport::describe();
+    for line in report.summary_lines() {
+        println!("{line}");
+    }
+    println!("Tool coverage: see `codegg doctor search` (MCP discovery is authoritative)");
 }
 
 fn cmd_completions(shell: Shell, output_dir: Option<&str>) -> Result<(), AppError> {

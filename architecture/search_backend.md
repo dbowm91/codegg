@@ -110,11 +110,21 @@ and `core/daemon.rs` paths. It:
    - Installs it into the state slot.
    - Skips MCP setup unless `backend = "eggsearch"`.
    - If an explicit `[mcp.eggsearch]` block exists, uses
-     `connect_from_config` to honor it.
-   - Otherwise spawns `eggsearch` via `McpService::connect_stdio`.
+     `connect_from_config` to honor it (authoritative).
+   - Otherwise resolves the spawn command via `crate::install`:
+     explicit `[search.eggsearch].command` wins when set (advanced
+     override, distinguished via `has_explicit_command()`); else the
+     installation-owned `codegg-eggsearch` sibling wins; else legacy
+     PATH `eggsearch` remains as source-build compatibility only.
+     `cwd` and helper-specific env vars are never authoritative.
+   - Probes managed-sidecar presence/version (best-effort, never fatal)
+     and records `resolution_source` plus an installation-specific hint
+     (reinstall the bundle, never bare "install eggsearch" as the lead).
    - Lists advertised tools and classifies coverage.
 3. Calls `provider_status` (best-effort, never breaks startup).
-4. Records required/recommended tool coverage.
+4. Records required/recommended tool coverage plus the ten-tool bundled
+   surface (`EGGSEARCH_BUNDLED_COMPLETE_SURFACE`, including
+   `provider_status`); MCP discovery stays authoritative.
 
 Returns `(Option<Arc<RwLock<McpService>>>, BootstrapReport)`.
 
@@ -306,7 +316,10 @@ BRAVE_SEARCH_API_KEY = "$BRAVE_SEARCH_API_KEY"
 ```
 
 Defaults: `backend = "eggsearch"`, `server_name = "eggsearch"`,
-`command = "eggsearch"`, `args = ["mcp", "stdio"]`.
+`args = ["mcp", "stdio"]`. An absent `[search.eggsearch].command` resolves
+the installation-owned `codegg-eggsearch` sibling (see `src/install.rs`);
+only an explicit `command` overrides it. Legacy PATH `eggsearch` is
+source-build compatibility, never required for a prebuilt install.
 
 ## Invariants & Gotchas
 
@@ -344,14 +357,20 @@ Defaults: `backend = "eggsearch"`, `server_name = "eggsearch"`,
 
 ```bash
 codegg doctor search
+codegg doctor installation
 ```
 
-Output is `BootstrapReport::summary_lines()` covering: backend, server
-name, command, MCP connection status, advertised tools, tool coverage
-classification (complete/partial/incompatible with missing tool lists),
-required/recommended coverage, default timeout, provider status,
-`expose_raw_mcp_tools`, `fallback_to_builtin`, and all per-domain
-output caps.
+Output is `BootstrapReport::summary_lines()` covering: backend,
+resolution source (`explicit-mcp`/`explicit-command`/`managed-sidecar`/
+`legacy-path`), server name, command, managed-sidecar presence/version,
+MCP connection status, advertised tools, tool coverage classification
+(complete/partial/incompatible with missing tool lists), ten-tool bundled
+surface, required/recommended coverage, default timeout, provider status,
+installation hint (bundle reinstall, never bare "install eggsearch"),
+`expose_raw_mcp_tools`, `fallback_to_builtin`, and all per-domain output
+caps. `doctor installation` prints `InstallationReport` (executable,
+directory, sibling states, helper/kernel probe, in-process eggsact line)
+and points to `doctor search` for tool coverage.
 
 ## Where to Add New Providers
 

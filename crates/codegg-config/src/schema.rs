@@ -662,6 +662,27 @@ impl EggsearchConfig {
         self.command.as_deref().unwrap_or("eggsearch")
     }
 
+    /// `true` only when `[search.eggsearch].command` was explicitly set.
+    ///
+    /// The runtime uses this to distinguish an advanced user override from
+    /// the managed default. `command()` alone cannot make that distinction
+    /// because it returns the legacy `"eggsearch"` fallback when the field
+    /// is absent; callers that need the managed `codegg-eggsearch` sibling
+    /// must check this first.
+    pub fn has_explicit_command(&self) -> bool {
+        self.command.as_ref().is_some_and(|c| !c.trim().is_empty())
+    }
+
+    /// Explicit override command, if any. Returns `None` when the field is
+    /// absent or blank so blank values fall through to managed resolution
+    /// rather than spawning an empty command.
+    pub fn explicit_command(&self) -> Option<&str> {
+        self.command
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+    }
+
     pub fn args(&self) -> Vec<String> {
         self.args
             .clone()
