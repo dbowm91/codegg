@@ -1,8 +1,14 @@
-use axum::{extract::Path, Json};
+use axum::{
+    extract::{Extension, Path, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 
+use super::super::authz;
+use super::super::state::ServerState;
 use crate::bus::QuestionRegistry;
 use crate::error::{AppError, AxumAppError, StorageError};
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 #[derive(Deserialize)]
 pub struct SubmitQuestionRequest {
@@ -17,14 +23,23 @@ pub struct QuestionResponse {
 }
 
 pub async fn submit_question(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
     Path(session_id): Path<String>,
     Json(req): Json<SubmitQuestionRequest>,
 ) -> Result<Json<QuestionResponse>, AxumAppError> {
     if req.session_id != session_id {
-        return Err(
-            AppError::Storage(StorageError::NotFound("session id mismatch".to_string())).into(),
-        );
+        return Err(authz::denial_not_found());
     }
+
+    // Resolve the pending items to the canonical owning session before
+    // mutating. Unknown sessions fail closed with the privacy-safe shape
+    // so cross-project IDs never leak.
+    if QuestionRegistry::get_pending_for_session(&session_id).is_empty() {
+        return Err(authz::denial_not_found());
+    }
+    authz::authorize_control_response(&state.pool, &principal, &session_id, "question_respond")
+        .await?;
 
     // Normalize answers to consistent JSON string format
     // Accepts both Vec<String> and object mapping question IDs to answers
@@ -52,10 +67,7 @@ pub async fn submit_question(
     }
 
     if !answered_any {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "no pending question for this session".to_string(),
-        ))
-        .into());
+        return Err(authz::denial_not_found());
     }
 
     Ok(Json(QuestionResponse {
@@ -65,8 +77,18 @@ pub async fn submit_question(
 }
 
 pub async fn get_pending_questions(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AxumAppError> {
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &session_id,
+        codegg_core::authorization::Capability::SessionRead,
+        "question_list",
+    )
+    .await?;
     Ok(Json(get_pending_questions_for_session(&session_id)))
 }
 

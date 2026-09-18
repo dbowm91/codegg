@@ -13,6 +13,7 @@ use axum::{
 /// The root crate owns this wrapper so it can implement the external `IntoResponse`
 /// trait, which would violate orphan rules if applied directly to `codegg_core::error::AppError`.
 #[cfg(feature = "server")]
+#[derive(Debug)]
 pub struct AxumAppError(pub AppError);
 
 #[cfg(feature = "server")]

@@ -1,14 +1,18 @@
 # Daemon Authorization and Originating-Principal Attribution
 
-Identity, authorization, and audit M003. The daemon enforces
-project/resource semantic capabilities at the operation boundary using
-transport-bound principals, and propagates immutable originating-principal
-attribution into sessions, turns, jobs, and provider selections.
+Identity, authorization, and audit M003, plus team-collaboration M001 HTTP
+convergence. The daemon enforces project/resource semantic capabilities at
+the operation boundary using transport-bound principals, and propagates
+immutable originating-principal attribution into sessions, turns, jobs, and
+provider selections. Every network REST/SSE compatibility route converges
+on the same service — there is no second authorization framework.
 
 `codegg-core::authorization::AuthorizationService` is the single authority
 that evaluates capabilities at request time. Handler code asks for semantic
 capabilities through `operation_descriptor`; role expansion stays in
-`codegg-core::team` and never appears at call sites.
+`codegg-core::team` and never appears at call sites. HTTP handlers ask
+through `src/server/authz.rs` with the same capabilities as their Core
+equivalents.
 
 ## Decision flow
 
@@ -185,6 +189,31 @@ Trigger *firing* is deliberately not a Core operation — no
 can never authorize general Core APIs. The bearer verifies against
 the stored verifier inside the narrow HTTP POST route only and never
 enters principal resolution. See `architecture/work_orders.md`.
+
+### HTTP compatibility convergence (team-collaboration M001)
+
+`src/server/authz.rs` is the single server-side adapter. It accepts the
+transport-bound `AuthenticatedPrincipal` plus canonical operation/scope
+information and delegates to the same `AuthorizationService` and canonical
+scope resolvers — never a duplicated role expansion:
+
+- Project/session/workspace/file routes use the same capabilities as their
+  Core equivalents; project enumeration filters by `visible_projects`
+  before building rows.
+- File routes require explicit canonical project/workspace context and
+  `file.read` / `file.modify`; ambiguous or scope-free team requests fail
+  closed.
+- Permission/question lists require `session.read` on the owning session;
+  responses require `session.create` via `authorize_control_response`,
+  which M004 will narrow to the controller lease without another bypass.
+- Config/provider/tool/MCP and global SSE are LocalOwner-only
+  compatibility (no safe project scope); legacy `/ws` is LocalOwner-only
+  with no projection authority. Team denials are privacy-safe 404s
+  (`project_not_found` or equivalent) with zero side effects.
+- The executable route-disposition matrix
+  (`route_disposition_table()`) classifies every authenticated route;
+  `scripts/check_http_route_disposition.py` enforces coverage so new
+  routes cannot be mounted without a disposition.
 
 ## Failure, restart, contention
 

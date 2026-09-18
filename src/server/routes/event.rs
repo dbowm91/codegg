@@ -1,4 +1,7 @@
-use axum::response::sse::{Event, Sse};
+use axum::{
+    extract::{Extension, State},
+    response::sse::{Event, Sse},
+};
 use futures_util::stream::Stream;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -6,7 +9,24 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
-pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+use super::super::authz;
+use super::super::state::ServerState;
+use crate::error::AxumAppError;
+use codegg_core::transport_auth::AuthenticatedPrincipal;
+
+/// Global SSE compatibility stream.
+///
+/// The global `GlobalEventBus` carries unfiltered cross-project events, so
+/// it is LocalOwner-only compatibility. Team principals fail closed with a
+/// privacy-safe 404 and never receive a stream; LocalOwner broad policy
+/// passes through the canonical authorization service. A future milestone
+/// may adapt this to the authorized projection/subscription machinery with
+/// explicit scope instead of the global bus.
+pub async fn sse_handler(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AxumAppError> {
+    authz::require_local_owner(&state.pool, &principal, "event_subscribe").await?;
     let rx = crate::bus::global::GlobalEventBus::subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
@@ -29,6 +49,6 @@ pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>>
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(15)))
             .map(|_| Ok(Event::default().comment("heartbeat")));
 
-    Sse::new(stream.merge(heartbeat))
-        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
+    Ok(Sse::new(stream.merge(heartbeat))
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15))))
 }

@@ -77,23 +77,72 @@ core that defeats the singleton invariant.
 /health (GET)              — no auth, no rate limit
 /api
   ├── /sessions            — CRUD, fork, share, unshare, revert
-  ├── /config              — config (API keys redacted)
-  ├── /mcp                 — MCP server listing
-  ├── /event               — SSE stream from GlobalEventBus
-  ├── /question/:sid       — pending questions
-  ├── /permission/:sid     — pending permissions
-  ├── /providers           — provider listing
-  ├── /tools               — tool listing
-  ├── /file/{read,list,write,delete}  — file ops
-  ├── /project, /projects  — project management
-  └── /workspace           — workspace management
+  ├── /config              — LocalOwner-only (daemon-global config)
+  ├── /mcp                 — LocalOwner-only (daemon-global status)
+  ├── /event               — LocalOwner-only SSE (unfiltered bus)
+  ├── /question/:sid       — pending questions (session-scoped authz)
+  ├── /permission/:sid     — pending permissions (session-scoped authz)
+  ├── /providers           — LocalOwner-only (credential-adjacent)
+  ├── /tools               — LocalOwner-only (daemon-global catalog)
+  ├── /file/{read,list,write,delete}  — file ops (project-scoped authz)
+  ├── /project, /projects  — project management (project-scoped authz)
+  └── /workspace           — workspace management (project-scoped authz)
 /api/v1/task-triggers/{id}/fire (POST) — narrow external trigger fire
   (M005; bearer-only capability, outside the principal auth layer —
   see below)
-/ws                        — deprecated JSON-RPC WebSocket
-/tui                       — TuiMessage protocol WebSocket
-/core                      — CoreFrame protocol WebSocket
+/ws                        — deprecated JSON-RPC, LocalOwner-only compat
+/tui                       — TuiMessage protocol WebSocket (CoreAdapter)
+/core                      — CoreFrame protocol WebSocket (CoreAdapter)
 ```
+
+### HTTP authorization convergence (team-collaboration M001)
+
+Every authenticated HTTP compatibility route converges on the canonical
+authorization service via `src/server/authz.rs` — there is no second
+authorization framework and no handler hand-rolls role expansion:
+
+- `auth_middleware` resolves network credentials to canonical
+  `AuthenticatedPrincipal` request extensions. Handlers consume that
+  extension (`Extension<AuthenticatedPrincipal>`); body/query
+  `principal`, `role`, or capability fields are never introduced or
+  trusted.
+- `route_disposition_table()` is the executable route-disposition matrix:
+  `SharedAuthz` (same capability as the Core equivalent),
+  `LocalOwnerOnly` (no safe project scope; team fails closed with a
+  privacy-safe 404), `CoreAdapter` (`/tui`, `/core` — the daemon gate
+  remains authoritative), and `TriggerCapability` (the narrow
+  `cggtr_...` fire endpoint, deliberately outside principal auth).
+  `scripts/check_http_route_disposition.py` fails CI when a mounted route
+  lacks a disposition.
+- Project/session/workspace reads and mutations use the same capabilities
+  as their Core equivalents (`project.read` / `project.configure`,
+  `session.read` / `session.create`, `project.configure` for share).
+  Project enumeration filters by `visible_projects` before building rows.
+- File routes require explicit canonical project/workspace context and
+  `file.read` / `file.modify`; ambiguous or scope-free team requests fail
+  closed with `project_not_found`. Authorization precedes any filesystem
+  mutation, so denied writes have zero side effects.
+- Permission/question lists require `session.read` on the owning session;
+  responses require mutation authority (`session.create`) via the
+  `authorize_control_response` hook, which M004 will narrow to the
+  controller lease without another bypass. Pending IDs never leak across
+  projects (denials are 404).
+- `/api/event` is LocalOwner-only compatibility: the global event bus is
+  unfiltered, so team principals receive 404 rather than a cross-project
+  stream. A future milestone may adapt it to authorized
+  projection/subscription machinery with explicit scope.
+- Config/provider/tool/MCP surfaces are LocalOwner-only compatibility
+  (no safe project scope; Core connection operations are opaque and fail
+  closed for team principals).
+- Legacy `/ws` JSON-RPC is LocalOwner-only compatibility with no
+  projection authority; team clients must use `/core`. `/core` behavior
+  and protocol remain authoritative; REST is an adapter surface.
+- No HTTP handler infers project identity from cwd; scope always arrives
+  explicitly (`project_id` + `workspace_id` or a unique directory locator
+  resolved server-side) and is authorized before use.
+- Task-trigger fire remains its separately authenticated `cggtr_...`
+  capability and is never converted into a principal credential;
+  principal bearers presented there are rejected without verification.
 
 ### WebSocket Endpoints
 

@@ -1,15 +1,18 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
+use super::super::authz;
 use super::super::scope::{context_error, require_explicit_project, resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use super::file::sanitize_path_from_root;
 use crate::error::{AppError, AxumAppError};
+use codegg_core::authorization::Capability;
 use codegg_core::project_catalog::ProjectCatalog;
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 #[derive(Serialize)]
 pub struct WorkspaceInfo {
@@ -33,10 +36,21 @@ pub struct CreateWorkspaceRequest {
 }
 
 pub async fn get_workspace(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
 ) -> Result<Json<WorkspaceInfo>, AxumAppError> {
-    let context = resolve_context(&state.pool, &scope, None).await?;
+    let context = resolve_context(&state.pool, &scope, None)
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::ProjectRead,
+        "workspace_snapshot_request",
+    )
+    .await?;
     let name = context.workspace_display_name.clone();
     let path = context.workspace_root.to_string_lossy().into_owned();
     let is_wt = crate::worktree::is_git_file(&context.workspace_root.join(".git"));
@@ -50,22 +64,33 @@ pub async fn get_workspace(
 }
 
 pub async fn list_workspaces(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
 ) -> Result<Json<WorkspaceListResponse>, AxumAppError> {
     let project_id = if scope.project_id.is_some() {
-        require_explicit_project(&scope)?.to_string()
+        require_explicit_project(&scope)
+            .map_err(|_| authz::denial_not_found())?
+            .to_string()
     } else {
         resolve_context(&state.pool, &scope, None)
-            .await?
+            .await
+            .map_err(|_| authz::denial_not_found())?
             .project_id
             .to_string()
     };
+    let project = codegg_core::identity::ProjectId::parse(&project_id)
+        .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &project,
+        Capability::ProjectRead,
+        "workspace_list",
+    )
+    .await?;
     let summaries = ProjectCatalog::new(state.pool.clone())
-        .list_workspaces_for_project(
-            &codegg_core::identity::ProjectId::parse(&project_id)
-                .map_err(|e| context_error("invalid_project_context", e.to_string()))?,
-        )
+        .list_workspaces_for_project(&project)
         .await
         .map_err(|e| context_error("project_context_unavailable", e.to_string()))?;
     let workspaces = summaries
@@ -81,6 +106,7 @@ pub async fn list_workspaces(
 }
 
 pub async fn create_workspace(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<WorkspaceInfo>), AxumAppError> {
@@ -89,7 +115,20 @@ pub async fn create_workspace(
         workspace_id: req.workspace_id.clone(),
         directory: None,
     };
-    let context = resolve_context(&state.pool, &scope, None).await?;
+    let context = resolve_context(&state.pool, &scope, None)
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    // Workspace creation is a project mutation: same `project.configure`
+    // gate as the Core workspace-archive family. No cwd inference; the
+    // canonical project/workspace context is explicit.
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::ProjectConfigure,
+        "workspace_register",
+    )
+    .await?;
     let validated = sanitize_path_from_root(&context.workspace_root, &req.path)?;
 
     if !validated.exists() {

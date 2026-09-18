@@ -1,8 +1,14 @@
-use axum::Json;
+use axum::{
+    extract::{Extension, State},
+    Json,
+};
 use serde::Serialize;
 
+use super::super::authz;
+use super::super::state::ServerState;
 use crate::error::AxumAppError;
 use crate::provider::ProviderRegistry;
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 #[derive(Serialize)]
 pub struct ProviderInfo {
@@ -15,7 +21,15 @@ pub struct ProviderListResponse {
     pub providers: Vec<ProviderInfo>,
 }
 
-pub async fn list_providers() -> Result<Json<ProviderListResponse>, AxumAppError> {
+/// Provider catalog compatibility surface. Connection details are
+/// credential-adjacent with no safe project scope, so this remains
+/// LocalOwner-only (Core connection operations are opaque and fail closed
+/// for team principals). Team principals fail closed with a 404.
+pub async fn list_providers(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
+) -> Result<Json<ProviderListResponse>, AxumAppError> {
+    authz::require_local_owner(&state.pool, &principal, "provider_list").await?;
     let mut registry = ProviderRegistry::new();
     crate::provider::register_builtin(&mut registry);
 

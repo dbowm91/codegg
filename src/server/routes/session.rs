@@ -1,15 +1,18 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
+use super::super::authz;
 use super::super::scope::{context_error, resolve_context, ScopeQuery};
 use super::super::state::ServerState;
-use crate::error::{AppError, AxumAppError, StorageError};
+use crate::error::{AppError, AxumAppError};
 use crate::session::{CreateSession, Session, SessionStore};
+use codegg_core::authorization::Capability;
 use codegg_core::project_storage::ProjectStorage;
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 #[derive(Deserialize)]
 pub struct RevertToMessageRequest {
@@ -68,11 +71,37 @@ async fn create_context(
     }
 }
 
+async fn load_session_scoped(
+    state: &ServerState,
+    scope: &ScopeQuery,
+    id: &str,
+) -> Result<Session, AxumAppError> {
+    let store = SessionStore::new(state.pool.clone());
+    let session = store.get(id).await?.ok_or_else(authz::denial_not_found)?;
+    // Canonical scope check first (binding mismatch fails closed), then the
+    // capability gate below resolves the owning project server-side.
+    resolve_context(&state.pool, scope, Some(&session.id))
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    Ok(session)
+}
+
 pub async fn list_sessions(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
 ) -> Result<Json<SessionListResponse>, AxumAppError> {
-    let context = resolve_context(&state.pool, &scope, None).await?;
+    let context = resolve_context(&state.pool, &scope, None)
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::SessionRead,
+        "session_list",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
     let sessions = store
         .list_by_canonical_project(context.project_id.as_str(), Some(50))
@@ -85,25 +114,42 @@ pub async fn list_sessions(
 }
 
 pub async fn get_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, AxumAppError> {
-    let store = SessionStore::new(state.pool.clone());
-    let session = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    resolve_context(&state.pool, &scope, Some(&id)).await?;
+    let session = load_session_scoped(&state, &scope, &id).await?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &session.id,
+        Capability::SessionRead,
+        "session_load",
+    )
+    .await?;
     Ok(Json(session))
 }
 
 pub async fn create_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<Session>), AxumAppError> {
+    let context = create_context(&state, &req)
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    // Authorize before any store mutation: same `session.create` gate as
+    // Core `session_create`. Denials produce zero side effects.
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::SessionCreate,
+        "session_create",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let context = create_context(&state, &req).await?;
     let directory = context.workspace_root.to_string_lossy().into_owned();
     let input = CreateSession {
         project_id: context.project_id.as_str().to_string(),
@@ -132,31 +178,44 @@ pub async fn create_session(
 }
 
 pub async fn archive_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AxumAppError> {
+    let session = load_session_scoped(&state, &scope, &id).await?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &session.id,
+        Capability::SessionCreate,
+        "session_archive",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let session = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    resolve_context(&state.pool, &scope, Some(&session.id)).await?;
     store.archive(&session.id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn fork_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Session>), AxumAppError> {
+    let existing = load_session_scoped(&state, &scope, &id).await?;
+    let context = resolve_context(&state.pool, &scope, Some(&existing.id))
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &existing.id,
+        Capability::SessionRead,
+        "session_fork",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let existing = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    let context = resolve_context(&state.pool, &scope, Some(&existing.id)).await?;
     let forked = store.fork(&id).await?;
     if let Err(error) = ProjectStorage::new(state.pool.clone())
         .bind_session(
@@ -174,62 +233,82 @@ pub async fn fork_session(
 }
 
 pub async fn share_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, AxumAppError> {
+    let existing = load_session_scoped(&state, &scope, &id).await?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &existing.id,
+        Capability::ProjectConfigure,
+        "session_share",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let existing = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    resolve_context(&state.pool, &scope, Some(&existing.id)).await?;
     let session = store.share_session(&id).await?;
     Ok(Json(session))
 }
 
 pub async fn unshare_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, AxumAppError> {
+    let existing = load_session_scoped(&state, &scope, &id).await?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &existing.id,
+        Capability::ProjectConfigure,
+        "session_unshare",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let existing = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    resolve_context(&state.pool, &scope, Some(&existing.id)).await?;
     let session = store.unshare_session(&id).await?;
     Ok(Json(session))
 }
 
 pub async fn revert_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
     Json(req): Json<RevertToMessageRequest>,
 ) -> Result<Json<Session>, AxumAppError> {
+    let existing = load_session_scoped(&state, &scope, &id).await?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &existing.id,
+        Capability::SessionCreate,
+        "session_revert",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let existing = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    resolve_context(&state.pool, &scope, Some(&existing.id)).await?;
     let session = store.revert_to_message(&id, &req.message_id).await?;
     Ok(Json(session))
 }
 
 pub async fn unrevert_session(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, AxumAppError> {
+    let existing = load_session_scoped(&state, &scope, &id).await?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &existing.id,
+        Capability::SessionCreate,
+        "session_unrevert",
+    )
+    .await?;
     let store = SessionStore::new(state.pool.clone());
-    let existing = store
-        .get(&id)
-        .await?
-        .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
-    resolve_context(&state.pool, &scope, Some(&existing.id)).await?;
     let session = store.unrevert_session(&id).await?;
     Ok(Json(session))
 }

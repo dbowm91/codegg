@@ -1454,7 +1454,7 @@ async fn upgrade_ws(
             connection_id.clone(),
             "websocket".to_string(),
             None,
-            principal,
+            principal.clone(),
         );
     }
     let (ws_tx, ws_rx) = socket.split();
@@ -1488,6 +1488,7 @@ async fn upgrade_ws(
     let rate_limiter = state.ws_rate_limiter.clone();
     let recv_cancel = writer_cancel.clone();
     let state_for_recv = state.clone();
+    let principal_for_recv = principal.clone();
 
     let mut recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
@@ -1510,7 +1511,7 @@ async fn upgrade_ws(
                     break;
                 }
                 if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
-                    let resp = handle_rpc_request(&req, &state_for_recv).await;
+                    let resp = handle_rpc_request(&req, &state_for_recv, &principal_for_recv).await;
                     if critical_send(&out_tx, &resp, &recv_cancel).await.is_err() {
                         break;
                     }
@@ -1539,11 +1540,25 @@ async fn upgrade_ws(
 
 /// Legacy JSON-RPC handler for /ws endpoint.
 /// Delegates to CoreDaemon when available, falls back to direct DB access.
+///
+/// M001 convergence: `/ws` is LocalOwner-only compatibility. It carries no
+/// projection authority and has no per-project scope, so team principals
+/// fail closed here and must use `/core` (which enforces the canonical
+/// daemon gate). LocalOwner broad policy still passes through the
+/// canonical authorization service.
 async fn handle_rpc_request(
     req: &RpcRequest,
     state: &crate::server::state::ServerState,
+    principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
 ) -> RpcResponse {
     tracing::warn!("Legacy /ws RPC endpoint used - consider migrating to /core CoreFrame protocol");
+    if !codegg_core::authorization::is_local_owner_broad(principal) {
+        return rpc_error(
+            req,
+            -32001,
+            "forbidden: legacy /ws is LocalOwner-only compatibility; use /core",
+        );
+    }
 
     // Delegate to CoreDaemon when available
     if let Some(ref daemon) = state.daemon {
@@ -1597,7 +1612,7 @@ async fn handle_rpc_request(
             }
             "providers.list" | "tools.list" => {
                 // These don't map to CoreRequest; handle directly via daemon's DB pool
-                return handle_rpc_direct(req, state).await;
+                return handle_rpc_direct(req, state, principal).await;
             }
             _ => {
                 return rpc_error(req, -32601, format!("Method not found: {}", req.method));
@@ -1667,16 +1682,26 @@ async fn handle_rpc_request(
         }
     } else {
         // Legacy direct DB access (deprecated)
-        handle_rpc_direct(req, state).await
+        handle_rpc_direct(req, state, principal).await
     }
 }
 
 /// Legacy direct DB access handler. Used as fallback when no CoreDaemon is available,
 /// or for methods not yet routed through CoreDaemon (providers.list, tools.list).
+///
+/// Same LocalOwner-only disposition as `handle_rpc_request`.
 async fn handle_rpc_direct(
     req: &RpcRequest,
     state: &crate::server::state::ServerState,
+    principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
 ) -> RpcResponse {
+    if !codegg_core::authorization::is_local_owner_broad(principal) {
+        return rpc_error(
+            req,
+            -32001,
+            "forbidden: legacy /ws is LocalOwner-only compatibility; use /core",
+        );
+    }
     match req.method.as_str() {
         "sessions.list" => {
             let context = match rpc_context(state, &req.params, None).await {

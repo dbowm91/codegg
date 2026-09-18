@@ -1,16 +1,19 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
+use super::super::authz;
 use super::super::scope::{context_error, resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::error::{AppError, AxumAppError};
 use codegg_core::context::ProjectContext;
 use codegg_core::identity::ProjectId;
 use codegg_core::project_catalog::{ProjectCatalog, ProjectCatalogRecord, RegisterLocalProject};
+use codegg_core::team::{ProjectRole, TeamStore};
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 use codegg_core::workspace::{SqliteWorkspaceStore, WorkspaceRegistry};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,6 +84,7 @@ fn project_info(project: ProjectCatalogRecord, path: PathBuf, session_count: usi
 }
 
 pub async fn get_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(scope): Query<ScopeQuery>,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
@@ -90,6 +94,23 @@ pub async fn get_project(
             "workspace_id requires its project_id",
         ));
     }
+    // Resolve the canonical project first so the capability check below
+    // runs against server-side identity, never a caller-supplied grant.
+    let target: ProjectId = if let Some(raw) = scope.project_id.as_deref() {
+        ProjectId::parse(raw).map_err(|_| authz::denial_not_found())?
+    } else {
+        let locator = Path::new(scope.directory.as_deref().unwrap_or_default());
+        let context = context_for_locator(&state.pool, locator).await?;
+        context.project_id.clone()
+    };
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &target,
+        codegg_core::authorization::Capability::ProjectRead,
+        "project_get",
+    )
+    .await?;
     let (project, path) = if scope.project_id.is_some() {
         let project_id = ProjectId::parse(scope.project_id.as_deref().unwrap_or_default())
             .map_err(|e| context_error("invalid_project_context", e.to_string()))?;
@@ -126,9 +147,13 @@ pub async fn get_project(
 }
 
 pub async fn list_projects(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(query): Query<ProjectListQuery>,
 ) -> Result<Json<ProjectListResponse>, AxumAppError> {
+    // Enumeration gate first: unknown/disabled principals fail closed
+    // before any catalog read is projected.
+    authz::authorize_enumeration(&state.pool, &principal, "project_list").await?;
     let limit = if query.limit == 0 {
         crate::protocol::dto::MAX_PROJECT_LIST_ITEMS
     } else {
@@ -141,8 +166,16 @@ pub async fn list_projects(
         .list_projects(query.include_archived)
         .await
         .map_err(|e| context_error("project_catalog_unavailable", e.to_string()))?;
+    // Privacy filter before building response rows: team principals observe
+    // exactly their `project.read` grants; enumeration races may omit newly
+    // granted rows but never include a denied row.
+    let candidate_ids: Vec<ProjectId> = projects.iter().map(|p| p.project_id.clone()).collect();
+    let visible = authz::filter_visible_projects(&state.pool, &principal, &candidate_ids).await;
     let mut result = Vec::with_capacity(projects.len().min(limit));
     for project in projects.into_iter().take(limit) {
+        if !visible.contains(&project.project_id) {
+            continue;
+        }
         let workspaces = catalog
             .list_workspaces_for_project(&project.project_id)
             .await
@@ -161,6 +194,7 @@ pub async fn list_projects(
 }
 
 pub async fn get_project_by_id(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(mut scope): Query<ScopeQuery>,
@@ -172,16 +206,32 @@ pub async fn get_project_by_id(
         ));
     }
     scope.project_id = Some(id);
-    get_project(State(state), Query(scope)).await
+    get_project(Extension(principal), State(state), Query(scope)).await
 }
 
 async fn project_lifecycle(
+    principal: AuthenticatedPrincipal,
     state: ServerState,
     id: String,
     restore: bool,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
-    let project_id = ProjectId::parse(&id)
-        .map_err(|e| context_error("invalid_project_context", e.to_string()))?;
+    let project_id = ProjectId::parse(&id).map_err(|_| authz::denial_not_found())?;
+    // Authorize before any mutation: `project.configure`, same as the Core
+    // `project_archive` / `project_restore` equivalents. Denials are
+    // privacy-safe and produce zero side effects.
+    let operation = if restore {
+        "project_restore"
+    } else {
+        "project_archive"
+    };
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &project_id,
+        codegg_core::authorization::Capability::ProjectConfigure,
+        operation,
+    )
+    .await?;
     let catalog = ProjectCatalog::new(state.pool.clone());
     let project = if restore {
         catalog
@@ -209,23 +259,32 @@ async fn project_lifecycle(
 }
 
 pub async fn archive_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
-    project_lifecycle(state, id, false).await
+    project_lifecycle(principal, state, id, false).await
 }
 
 pub async fn restore_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
-    project_lifecycle(state, id, true).await
+    project_lifecycle(principal, state, id, true).await
 }
 
 pub async fn create_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<(StatusCode, Json<ProjectInfo>), AxumAppError> {
+    // Project registration is the team bootstrap (Core `project_register`
+    // is global): any active principal may create. The gate runs before
+    // any filesystem/catalog mutation; the creator receives Owner so the
+    // new project is immediately usable through the canonical authority.
+    // No body/query principal, role, or capability field is trusted.
+    authz::authorize_enumeration(&state.pool, &principal, "project_register").await?;
     let requested = Path::new(&req.path);
     if !requested.is_absolute() {
         return Err(context_error(
@@ -270,6 +329,19 @@ pub async fn create_project(
         )
         .await
         .map_err(|e| context_error("project_registration_failed", e.to_string()))?;
+    // Grant the creator Owner through the canonical team authority so the
+    // bootstrap project is immediately visible to them. LocalOwner needs no
+    // row; failure to grant never fails the registration itself.
+    if !codegg_core::authorization::is_local_owner_broad(&principal) {
+        let team = TeamStore::new(state.pool.clone());
+        let _ = team
+            .create_membership(
+                &project.project_id,
+                principal.principal_id(),
+                ProjectRole::Owner,
+            )
+            .await;
+    }
     Ok((
         StatusCode::CREATED,
         Json(project_info(project, canonical, 0)),

@@ -1,10 +1,12 @@
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Extension, State},
+    Json,
+};
 use serde::Serialize;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
+use super::super::authz;
 use crate::error::AxumAppError;
-use crate::mcp::McpService;
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 #[derive(Serialize)]
 pub struct McpServerStatusResponse {
@@ -14,10 +16,15 @@ pub struct McpServerStatusResponse {
     pub tool_count: usize,
 }
 
+/// MCP status compatibility surface. Server status is daemon-global with
+/// no project scope, so it remains LocalOwner-only. Team principals fail
+/// closed with a privacy-safe 404.
 pub async fn list_mcp_servers(
-    State(mcp_service): State<Arc<RwLock<McpService>>>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<crate::server::state::ServerState>,
 ) -> Result<Json<Vec<McpServerStatusResponse>>, AxumAppError> {
-    let service = mcp_service.read().await;
+    authz::require_local_owner(&state.pool, &principal, "mcp_list").await?;
+    let service = state.mcp_service.read().await;
     let statuses: Vec<McpServerStatusResponse> = service
         .server_status()
         .iter()

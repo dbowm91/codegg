@@ -1,3 +1,4 @@
+pub mod authz;
 mod http;
 mod mdns;
 pub mod middleware;

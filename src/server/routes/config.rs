@@ -1,15 +1,17 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     Json,
 };
 use serde::Serialize;
 use tracing::warn;
 
+use super::super::authz;
 use super::super::scope::{resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::config::schema::Config;
 use crate::error::{AppError, AxumAppError};
 use crate::session::{message::MessageData, redact_for_export, MessageStore, SessionStore};
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 fn jsonify_message(data: &MessageData) -> serde_json::Value {
     match serde_json::to_value(data) {
@@ -75,9 +77,14 @@ pub struct ConfigResponse {
     pub config: serde_json::Value,
 }
 
+/// Daemon-wide config compatibility surface. There is no safe project
+/// scope (it exposes daemon-global configuration), so it is
+/// LocalOwner-only. Team principals fail closed with a privacy-safe 404.
 pub async fn get_config(
-    State(_state): State<ServerState>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
 ) -> Result<Json<ConfigResponse>, AxumAppError> {
+    authz::require_local_owner(&state.pool, &principal, "config_read").await?;
     let config = Config::load().map_err(|e| {
         tracing::error!("get_config failed: {e}");
         AppError::Config(e.into())
@@ -99,17 +106,24 @@ pub struct MessageListResponse {
 }
 
 pub async fn list_messages(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     axum::extract::Query(scope): axum::extract::Query<ScopeQuery>,
     Path(id): Path<String>,
 ) -> Result<Json<MessageListResponse>, AxumAppError> {
     let store = SessionStore::new(state.pool.clone());
-    let _session = store.get(&id).await?.ok_or_else(|| {
-        AppError::Storage(crate::error::StorageError::NotFound(
-            "session not found".to_string(),
-        ))
-    })?;
-    resolve_context(&state.pool, &scope, Some(&id)).await?;
+    let session = store.get(&id).await?.ok_or_else(authz::denial_not_found)?;
+    resolve_context(&state.pool, &scope, Some(&session.id))
+        .await
+        .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_session(
+        &state.pool,
+        &principal,
+        &session.id,
+        codegg_core::authorization::Capability::SessionRead,
+        "session_messages_load",
+    )
+    .await?;
 
     let msg_store = MessageStore::new(state.pool);
     let messages = msg_store.list(&id).await?;

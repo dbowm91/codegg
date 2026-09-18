@@ -1,15 +1,18 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path as StdPath, PathBuf};
 
+use super::super::authz;
 use super::super::scope::{resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::error::{AppError, AxumAppError, StorageError};
 use crate::tool::util::check_path_for_symlinks;
+use codegg_core::authorization::Capability;
+use codegg_core::transport_auth::AuthenticatedPrincipal;
 
 pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
     let root = StdPath::new(root);
@@ -132,13 +135,26 @@ fn scope(
 }
 
 pub async fn read_file(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(query): Query<ReadFileQuery>,
 ) -> Result<Json<FileReadResponse>, AxumAppError> {
+    // Explicit canonical project/workspace context required. Ambiguous or
+    // context-free requests fail closed with the privacy-safe shape; the
+    // file capability is checked before any filesystem read.
     let context = resolve_context(
         &state.pool,
         &scope(query.project_id, query.workspace_id, query.directory),
         None,
+    )
+    .await
+    .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::FileRead,
+        "file_read",
     )
     .await?;
     let full = sanitize_path_from_root(&context.workspace_root, &query.path)?;
@@ -154,6 +170,7 @@ pub async fn read_file(
 }
 
 pub async fn list_files(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Query(query): Query<ReadFileQuery>,
 ) -> Result<Json<FileListResponse>, AxumAppError> {
@@ -161,6 +178,15 @@ pub async fn list_files(
         &state.pool,
         &scope(query.project_id, query.workspace_id, query.directory),
         None,
+    )
+    .await
+    .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::FileRead,
+        "file_read",
     )
     .await?;
     let dir = sanitize_path_from_root(&context.workspace_root, &query.path)?;
@@ -182,6 +208,7 @@ pub async fn list_files(
 }
 
 pub async fn write_file(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Json(req): Json<WriteFileRequest>,
 ) -> Result<Json<FileInfo>, AxumAppError> {
@@ -189,6 +216,17 @@ pub async fn write_file(
         &state.pool,
         &scope(req.project_id, req.workspace_id, req.directory),
         None,
+    )
+    .await
+    .map_err(|_| authz::denial_not_found())?;
+    // Authorize before any filesystem mutation so denied writes have zero
+    // side effects.
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::FileModify,
+        "file_modify",
     )
     .await?;
     let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;
@@ -215,6 +253,7 @@ pub async fn write_file(
 }
 
 pub async fn delete_file(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     State(state): State<ServerState>,
     Json(req): Json<DeleteFileRequest>,
 ) -> Result<StatusCode, AxumAppError> {
@@ -222,6 +261,15 @@ pub async fn delete_file(
         &state.pool,
         &scope(req.project_id, req.workspace_id, req.directory),
         None,
+    )
+    .await
+    .map_err(|_| authz::denial_not_found())?;
+    authz::authorize_project(
+        &state.pool,
+        &principal,
+        &context.project_id,
+        Capability::FileModify,
+        "file_modify",
     )
     .await?;
     let full = sanitize_path_from_root(&context.workspace_root, &req.path)?;

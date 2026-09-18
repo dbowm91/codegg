@@ -348,7 +348,11 @@ pub async fn run_server(
     let app = Router::new()
         .route("/health", get(health_check))
         .merge(routes::task_trigger::task_trigger_router(state, 100, 60))
-        .nest("/api", api_router);
+        // `api_router` already carries its full paths (`/api/...`, `/ws`,
+        // `/tui`, `/core`). Merge so the documented paths are served;
+        // nesting under `/api` would double-prefix to `/api/api/...` and
+        // hide the compatibility surface behind unintended paths.
+        .merge(api_router);
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr)
