@@ -503,6 +503,7 @@ mod tests {
         old_master: Option<String>,
         old_encryption: Option<String>,
         old_opencode: Option<String>,
+        old_key_file: Option<String>,
     }
 
     impl EnvGuard {
@@ -511,14 +512,29 @@ mod tests {
             let old_master = std::env::var("CODEGG_MASTER_KEY").ok();
             let old_encryption = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
             let old_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+            let old_key_file = std::env::var("CODEGG_MASTER_KEY_FILE").ok();
             std::env::remove_var("CODEGG_MASTER_KEY");
             std::env::remove_var("CODEGG_ENCRYPTION_KEY");
             std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+            // Isolate the managed-key file so reads never observe the real
+            // user key and writes never create it.
+            std::env::set_var(
+                "CODEGG_MASTER_KEY_FILE",
+                std::env::temp_dir()
+                    .join(format!(
+                        "codegg-test-master-{}-{}.key",
+                        std::process::id(),
+                        uuid::Uuid::new_v4()
+                    ))
+                    .to_string_lossy()
+                    .to_string(),
+            );
             Self {
                 _guard: guard,
                 old_master,
                 old_encryption,
                 old_opencode,
+                old_key_file,
             }
         }
     }
@@ -528,6 +544,7 @@ mod tests {
             restore_env("CODEGG_MASTER_KEY", self.old_master.take());
             restore_env("CODEGG_ENCRYPTION_KEY", self.old_encryption.take());
             restore_env("OPENCODE_ENCRYPTION_KEY", self.old_opencode.take());
+            restore_env("CODEGG_MASTER_KEY_FILE", self.old_key_file.take());
         }
     }
 

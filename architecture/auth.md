@@ -33,7 +33,9 @@ retains a decrypt-only reader for historical `CODEGG_ENC_v1` files.
 | OAuth scaffolding (disabled) | `src/auth/oauth.rs` |
 | Test support (`env_lock`, `lock_env`) | `src/auth/mod.rs` (test_support) and `crates/codegg-providers/src/auth_types.rs` (test_support) |
 | Crypto primitives | `crates/codegg-providers/src/crypto.rs` |
-| Master key retrieval | `codegg_config::encryption::get_master_key()` |
+| Master key retrieval | `codegg_config::encryption::get_master_key()` (read-only) |
+| First-run key bootstrap | `codegg_config::encryption::get_or_create_master_key*` (writes only) |
+| Resolver-bypass guard | `scripts/check_master_key_resolver.py` |
 
 > **Note:** Core auth types now live in `codegg-providers`. Root
 > `src/auth/mod.rs` re-exports them from
@@ -135,14 +137,23 @@ config-aware path registers zero providers.
 - **Never log secret prefix/suffix.** `mask_secret()` returns a fixed
   16-bullet mask (`••••••••••••••••`) regardless of input length.
   Empty secrets return empty string.
-- **Master key required to store.** `CredentialStore::put` and
-  `AuthResolver` decryption both return `MasterKeyMissing` if no key
-  is configured.
-- **MCP token-store key lifecycle.** New MCP OAuth token writes require the
-  canonical master-key lookup (`CODEGG_MASTER_KEY`, then the existing
-  compatibility aliases). `CODEGG_TOKEN_KEY` is deprecated and only reads
+- **Master key required to store.** `CredentialStore::put` uses the
+  canonical create-on-write resolver: an explicit environment key wins,
+  an existing managed key (`<config_dir>/codegg/master.key`, `0o600` on
+  Unix) is reused, and a genuinely fresh store atomically bootstraps one
+  (concurrent first writes converge). `AuthResolver` decryption still
+  returns `MasterKeyMissing` if no key is available. A store that already
+  holds encrypted material without a usable key keeps `MasterKeyMissing`
+  with recovery guidance — no replacement key is generated over existing
+  ciphertext. Reads never create a key.
+- **MCP token-store key lifecycle.** New MCP OAuth token writes use the
+  same managed-key lifecycle as provider credentials (explicit env key,
+  else existing managed key, else bootstrap for a fresh token store).
+  The canonical master-key lookup (`CODEGG_MASTER_KEY`, then the existing
+  compatibility aliases) remains the read path. `CODEGG_TOKEN_KEY` is deprecated and only reads
   historical MCP v1 stores during safe migration; it is never used for new
-  ciphertext.
+  ciphertext. Legacy migration itself never bootstraps: it requires an
+  already-resolvable key, so load/startup paths stay side-effect free.
 - **Resolver `tracing::debug!` lines** use `source.as_str()` (a stable
   label like `"env(explicit)"`, `"config(inline)"`) and never the
   secret.

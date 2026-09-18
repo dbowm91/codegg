@@ -114,16 +114,43 @@ fn derive_key_legacy(password: &str, salt: &[u8]) -> [u8; 32] {
 
 ## Configuration Surface
 
-The master key is retrieved from environment variables (checked in
-order):
+The master key is resolved by `codegg_config::encryption` (read path,
+side-effect free, checked in order):
+
 1. `CODEGG_MASTER_KEY`
 2. `CODEGG_ENCRYPTION_KEY`
 3. `OPENCODE_ENCRYPTION_KEY`
+4. the CodeGG-managed user-local key at `<config_dir>/codegg/master.key`
+   (`~/.config/codegg/master.key` on Linux,
+   `~/Library/Application Support/codegg/master.key` on macOS,
+   `%APPDATA%\codegg\master.key` on Windows) when one exists.
+   `CODEGG_MASTER_KEY_FILE` overrides the path (test/isolation support).
 
 ```bash
-# Set the master key for encryption/decryption
+# Explicit deployment-managed key (retains precedence; never auto-created)
 export CODEGG_MASTER_KEY="your-master-key-here"
+# Fresh personal installs need no variable: the first protected
+# credential/MCP-token write atomically creates the managed key above.
 ```
+
+Managed-key file contract: 32 CSPRNG bytes (256-bit entropy),
+hex-encoded; Unix parent created `0o700` when new and key file created
+atomically with `O_EXCL` at `0o600` plus `fsync`; reads reject symlinks,
+non-regular files, and any group/other permission bits, failing closed
+instead of repairing an attacker-controlled path. On Windows the file is
+created once inside the user profile and inherits its user-private ACL
+(no external command on any platform). The key value is never logged,
+serialized into normal config, or included in diagnostics
+(`ManagedMasterKey` has a redacted `Debug`).
+
+Secret-store writes use the create-on-write resolver
+(`get_or_create_master_key` / `get_or_create_master_key_for_store`):
+explicit env key wins, an existing managed key is reused, and a fresh
+store bootstraps one (concurrent first writes converge via `O_EXCL`).
+When encrypted credential/OAuth material already exists without a usable
+key, writes keep `MasterKeyMissing` with recovery guidance instead of
+generating a replacement key that would orphan the old ciphertext.
+Reads stay side-effect free; no key is created at process startup.
 
 ## Invariants & Gotchas
 
@@ -138,9 +165,12 @@ export CODEGG_MASTER_KEY="your-master-key-here"
    `encrypt_provider_keys()` is called during config save. Previously
    encrypted data remains in legacy format until explicitly
    re-encrypted.
-5. **Master key required to store.** `CredentialStore::put` and
-   `AuthResolver` decryption of `encrypted_value` return
-   `AuthError::MasterKeyMissing` if no master key is configured.
+5. **Master key bootstrap.** The first protected write on a fresh
+   local profile creates the managed key automatically
+   (`CredentialStore::put`, MCP OAuth token writes, Eggpool
+   provisioning). `AuthError::MasterKeyMissing` now only means a store
+   already holds encrypted material without a usable key — restore the
+   historical environment key rather than expecting a new one.
    Reading plaintext from the store without a master key returns
    `Ok(None)`.
 6. **Auth logging never reveals secrets.** `mask_secret()` returns a

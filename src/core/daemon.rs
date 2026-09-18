@@ -3267,7 +3267,7 @@ pub(crate) fn eggpool_error_message(error: &crate::core::eggpool::EggpoolError) 
             "Protected credential store is unavailable"
         }
         crate::core::eggpool::EggpoolError::MasterKeyMissing => {
-            "Configure the credential-store master key before connecting"
+            "Credential-store key unavailable; restore the CODEGG_MASTER_KEY that encrypted it"
         }
         crate::core::eggpool::EggpoolError::Conflict => {
             "An equivalent connection or provisioning operation already exists"

@@ -189,7 +189,7 @@ impl AuthCli {
 fn auth_error_to_app_error(e: AuthError) -> AppError {
     match e {
         AuthError::MasterKeyMissing => AppError::Config(crate::error::ConfigError::Invalid(
-            "no master key configured; set CODEGG_MASTER_KEY to store new credentials".to_string(),
+            "no usable master key for new credential material; fresh installs bootstrap a managed key automatically, otherwise restore the historical CODEGG_MASTER_KEY that encrypted the existing store".to_string(),
         )),
         other => AppError::Config(crate::error::ConfigError::Invalid(format!(
             "credential store error: {other}"
@@ -248,20 +248,85 @@ mod tests {
     }
 
     #[test]
-    fn set_key_without_master_key_returns_error() {
+    fn set_key_without_master_key_bootstraps_fresh_store() {
+        // First-run path (M001): a fresh store with no key env bootstraps
+        // a managed key automatically instead of failing.
         let _guard = crate::auth::test_support::lock_env();
         let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
         let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
         let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+        let prev_file = std::env::var("CODEGG_MASTER_KEY_FILE").ok();
         std::env::remove_var("CODEGG_MASTER_KEY");
         std::env::remove_var("CODEGG_ENCRYPTION_KEY");
         std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
-        let (_tmp, cli) = make_cli();
-        let err = cli.set_key("openai", None, "sk-secret").unwrap_err();
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let managed = tmp.path().join("master.key");
+        std::env::set_var("CODEGG_MASTER_KEY_FILE", &managed);
+        let cli = AuthCli::new().with_store_path(tmp.path().join("credentials.json"));
+        cli.set_key("openai", None, "sk-fresh-bootstrap")
+            .expect("fresh store bootstraps managed key");
+        assert!(managed.exists(), "bootstrap must create the managed key");
+        let store = cli.open_store().expect("open");
+        assert_eq!(store.list().len(), 1);
+        // Restart resolves through the managed key with no env set.
+        let reopened =
+            codegg_providers::CredentialStore::at_path(tmp.path().join("credentials.json"))
+                .expect("reopen");
+        let credential = reopened
+            .get_credential("openai", None)
+            .expect("decrypt")
+            .expect("some");
+        assert_eq!(credential.secret, "sk-fresh-bootstrap");
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        }
+        if let Some(v) = prev_enc {
+            std::env::set_var("CODEGG_ENCRYPTION_KEY", v);
+        }
+        if let Some(v) = prev_opencode {
+            std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
+        }
+        if let Some(v) = prev_file {
+            std::env::set_var("CODEGG_MASTER_KEY_FILE", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY_FILE");
+        }
+    }
+
+    #[test]
+    fn set_key_with_orphaned_material_refuses_new_key() {
+        // Populated store + missing historical key: no new key is
+        // generated and the error stays actionable.
+        let _guard = crate::auth::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
+        let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+        let prev_file = std::env::var("CODEGG_MASTER_KEY_FILE").ok();
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let store_path = tmp.path().join("credentials.json");
+        let managed = tmp.path().join("isolated-master.key");
+        std::env::set_var("CODEGG_MASTER_KEY_FILE", &managed);
+        std::env::set_var("CODEGG_MASTER_KEY", "cli-orphan-historical-master");
+        std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+        std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+        let cli = AuthCli::new().with_store_path(store_path.clone());
+        cli.set_key("openai", None, "sk-historical").expect("seed");
+        // Simulate losing the historical key with no managed fallback:
+        // the seed used the env key, so no managed file was created.
+        std::env::remove_var("CODEGG_MASTER_KEY");
+        assert!(
+            !managed.exists(),
+            "seed used the env key; no managed file should exist yet"
+        );
+        let err = cli.set_key("openai", None, "sk-replacement").unwrap_err();
         let msg = format!("{err}");
         assert!(
-            msg.contains("master key") || msg.contains("MasterKey"),
-            "expected master-key error, got: {msg}"
+            msg.contains("master key"),
+            "expected actionable master-key error, got: {msg}"
+        );
+        assert!(
+            !managed.exists(),
+            "orphaned material must never trigger key replacement"
         );
         if let Some(v) = prev_master {
             std::env::set_var("CODEGG_MASTER_KEY", v);
@@ -271,6 +336,11 @@ mod tests {
         }
         if let Some(v) = prev_opencode {
             std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
+        }
+        if let Some(v) = prev_file {
+            std::env::set_var("CODEGG_MASTER_KEY_FILE", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY_FILE");
         }
     }
 

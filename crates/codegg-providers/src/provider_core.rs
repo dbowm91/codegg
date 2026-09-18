@@ -603,7 +603,7 @@ pub(crate) fn resolve_provider_credential(
             },
             None => {
                 tracing::warn!(
-                        "resolve_provider_credential: encrypted_api_key present for provider '{}' but CODEGG_MASTER_KEY is not set; ignoring",
+                        "resolve_provider_credential: encrypted_api_key present for provider '{}' but no usable master key (environment or managed master.key) is available; ignoring",
                         provider_id
                     );
                 None

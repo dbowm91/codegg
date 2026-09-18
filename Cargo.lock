@@ -893,8 +893,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
+ "hex",
  "json5",
  "notify",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "serde_norway",

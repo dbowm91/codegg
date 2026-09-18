@@ -19,7 +19,9 @@ pub enum AuthError {
     #[error("credential expired for provider '{0}'")]
     Expired(String),
 
-    #[error("no master key configured; set CODEGG_MASTER_KEY to store new credentials")]
+    #[error(
+        "no usable master key for new credential material; fresh installs bootstrap a managed key automatically, otherwise restore the historical CODEGG_MASTER_KEY (CODEGG_ENCRYPTION_KEY / OPENCODE_ENCRYPTION_KEY aliases) that encrypted the existing store; refusing to generate a replacement key over existing ciphertext"
+    )]
     MasterKeyMissing,
 
     #[error("crypto error: {0}")]
@@ -44,6 +46,20 @@ pub enum AuthError {
 impl From<crate::crypto::CryptoError> for AuthError {
     fn from(value: crate::crypto::CryptoError) -> Self {
         AuthError::Crypto(value.to_string())
+    }
+}
+
+impl From<codegg_config::encryption::MasterKeyError> for AuthError {
+    fn from(value: codegg_config::encryption::MasterKeyError) -> Self {
+        match &value {
+            codegg_config::encryption::MasterKeyError::MissingWithExistingCiphertext { .. } => {
+                AuthError::MasterKeyMissing
+            }
+            codegg_config::encryption::MasterKeyError::Io(e) => {
+                AuthError::Io(std::io::Error::new(e.kind(), value.to_string()))
+            }
+            _ => AuthError::Crypto(value.to_string()),
+        }
     }
 }
 
@@ -575,9 +591,13 @@ impl CredentialStore {
         expires_at: Option<DateTime<Utc>>,
         scopes: Vec<String>,
     ) -> Result<(), AuthError> {
-        let master =
-            codegg_config::encryption::get_master_key().ok_or(AuthError::MasterKeyMissing)?;
-        let encrypted = crate::crypto::encrypt_to_string(secret, &master)?;
+        // Create-on-write resolver (M001 first-run bootstrap): an explicit
+        // environment key wins, an existing managed key is reused, and a
+        // fresh store atomically creates one. A store that already holds
+        // encrypted material without a usable key fails with
+        // `MasterKeyMissing` instead of orphaning that ciphertext.
+        let master = self.resolve_write_key()?;
+        let encrypted = crate::crypto::encrypt_to_string(secret, master.expose())?;
         let now = Utc::now();
         let mut records = self
             .records
@@ -605,6 +625,36 @@ impl CredentialStore {
             });
         }
         write_to_disk(&self.path, &records)
+    }
+
+    /// Canonical create-on-write key resolver for this store. Reads stay on
+    /// [`codegg_config::encryption::get_master_key`]; only this write path
+    /// may bootstrap a managed key, and only when the store is genuinely
+    /// fresh (no in-memory records and no persisted encrypted material).
+    fn resolve_write_key(&self) -> Result<codegg_config::encryption::ManagedMasterKey, AuthError> {
+        // Fast path: an explicit environment key or an existing managed key
+        // resolves without creating anything. `get_or_create` returns it
+        // directly; the `true` freshness bit is only consulted when no key
+        // exists, which cannot happen on this path.
+        if codegg_config::encryption::master_key_with_source().is_some() {
+            return codegg_config::encryption::get_or_create_master_key_for_store(true)
+                .map_err(AuthError::from);
+        }
+        let is_default = codegg_config::encryption::default_credential_path()
+            .is_some_and(|default| default == self.path);
+        if is_default {
+            // Default location: the canonical bootstrap also guards the
+            // sibling MCP token store against cross-store orphaning.
+            return codegg_config::encryption::get_or_create_master_key().map_err(AuthError::from);
+        }
+        let fresh = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+            && !codegg_config::encryption::credential_file_has_encrypted_material(&self.path);
+        codegg_config::encryption::get_or_create_master_key_for_store(fresh)
+            .map_err(AuthError::from)
     }
 
     pub fn remove(&self, provider_id: &str, account_id: Option<&str>) -> Result<bool, AuthError> {
@@ -819,6 +869,7 @@ mod tests {
         prev_master: Option<String>,
         prev_enc: Option<String>,
         prev_opencode: Option<String>,
+        prev_key_file: Option<String>,
         _env: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -828,6 +879,7 @@ mod tests {
             let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
             let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
             let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+            let prev_key_file = std::env::var("CODEGG_MASTER_KEY_FILE").ok();
             std::env::set_var("CODEGG_MASTER_KEY", master);
             std::env::remove_var("CODEGG_ENCRYPTION_KEY");
             std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
@@ -835,6 +887,7 @@ mod tests {
                 prev_master,
                 prev_enc,
                 prev_opencode,
+                prev_key_file,
                 _env: env,
             }
         }
@@ -856,6 +909,11 @@ mod tests {
                 std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
             } else {
                 std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+            }
+            if let Some(v) = self.prev_key_file.take() {
+                std::env::set_var("CODEGG_MASTER_KEY_FILE", v);
+            } else {
+                std::env::remove_var("CODEGG_MASTER_KEY_FILE");
             }
         }
     }
@@ -1226,5 +1284,214 @@ mod tests {
             CredentialCapability::default(),
             CredentialCapability::ApiKeyOnly
         );
+    }
+
+    // ---- M001: first-run managed-key bootstrap ----
+
+    struct BootstrapEnv {
+        prev_master: Option<String>,
+        prev_enc: Option<String>,
+        prev_opencode: Option<String>,
+        prev_file: Option<String>,
+        _env: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl BootstrapEnv {
+        /// Clears every master-key env var and points the managed-key file
+        /// at `key_path` (isolated HOME/XDG/config root).
+        fn clean_with_key_file(key_path: &Path) -> Self {
+            let env = test_support::lock_env();
+            let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+            let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
+            let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+            let prev_file = std::env::var("CODEGG_MASTER_KEY_FILE").ok();
+            std::env::remove_var("CODEGG_MASTER_KEY");
+            std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+            std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+            std::env::set_var("CODEGG_MASTER_KEY_FILE", key_path);
+            Self {
+                prev_master,
+                prev_enc,
+                prev_opencode,
+                prev_file,
+                _env: env,
+            }
+        }
+    }
+
+    impl Drop for BootstrapEnv {
+        fn drop(&mut self) {
+            for (name, value) in [
+                ("CODEGG_MASTER_KEY", self.prev_master.take()),
+                ("CODEGG_ENCRYPTION_KEY", self.prev_enc.take()),
+                ("OPENCODE_ENCRYPTION_KEY", self.prev_opencode.take()),
+                ("CODEGG_MASTER_KEY_FILE", self.prev_file.take()),
+            ] {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_store_put_bootstraps_managed_key_and_restart_decrypts() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let key_path = dir.path().join("master.key");
+        let store_path = dir.path().join("credentials.json");
+        let _env = BootstrapEnv::clean_with_key_file(&key_path);
+
+        let store = CredentialStore::at_path(store_path.clone()).expect("store");
+        store
+            .put(
+                "bootstrap_provider",
+                None,
+                CredentialKind::ApiKey,
+                "bootstrap-sentinel",
+                None,
+                vec![],
+            )
+            .expect("first write bootstraps managed key");
+        assert!(key_path.exists(), "one managed key must be created");
+
+        // Restart with no key env decrypts through the managed key.
+        drop(store);
+        let reopened = CredentialStore::at_path(store_path).expect("reopen");
+        let credential = reopened
+            .get_credential("bootstrap_provider", None)
+            .expect("decrypt")
+            .expect("some");
+        assert_eq!(credential.secret, "bootstrap-sentinel");
+    }
+
+    #[test]
+    fn explicit_env_key_writes_without_creating_managed_file() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let key_path = dir.path().join("master.key");
+        let _env = BootstrapEnv::clean_with_key_file(&key_path);
+        std::env::set_var("CODEGG_MASTER_KEY", "m001-explicit-env-master");
+
+        let (_store_dir, store) = temp_store();
+        store
+            .put(
+                "env_provider",
+                None,
+                CredentialKind::ApiKey,
+                "env-sentinel",
+                None,
+                vec![],
+            )
+            .expect("put with explicit key");
+        assert!(
+            !key_path.exists(),
+            "explicit environment keys must not create a managed key"
+        );
+    }
+
+    #[test]
+    fn orphaned_store_refuses_replacement_key() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let key_path = dir.path().join("master.key");
+        let store_path = dir.path().join("credentials.json");
+        let _env = BootstrapEnv::clean_with_key_file(&key_path);
+        std::env::set_var("CODEGG_MASTER_KEY", "m001-historical-master");
+
+        let store = CredentialStore::at_path(store_path.clone()).expect("store");
+        store
+            .put(
+                "orphan_provider",
+                None,
+                CredentialKind::ApiKey,
+                "historical-sentinel",
+                None,
+                vec![],
+            )
+            .expect("seed with historical key");
+        // Lose the historical key with no managed fallback in place.
+        std::env::remove_var("CODEGG_MASTER_KEY");
+        assert!(!key_path.exists());
+
+        let err = store
+            .put(
+                "orphan_provider",
+                None,
+                CredentialKind::ApiKey,
+                "replacement-sentinel",
+                None,
+                vec![],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AuthError::MasterKeyMissing),
+            "orphaned material must keep MasterKeyMissing, got {err:?}"
+        );
+        assert!(
+            !key_path.exists(),
+            "no new key may be generated over existing ciphertext"
+        );
+        let rendered = format!("{err}");
+        assert!(rendered.contains("master key"));
+        assert!(!rendered.contains("historical-sentinel"));
+        assert!(!rendered.contains("replacement-sentinel"));
+    }
+
+    #[test]
+    fn concurrent_first_puts_converge_on_one_key() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let key_path = dir.path().join("master.key");
+        let store_path = dir.path().join("credentials.json");
+        let _env = BootstrapEnv::clean_with_key_file(&key_path);
+
+        let store = Arc::new(CredentialStore::at_path(store_path).expect("store"));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    store
+                        .put(
+                            &format!("concurrent_provider_{i}"),
+                            None,
+                            CredentialKind::ApiKey,
+                            &format!("concurrent-sentinel-{i}"),
+                            None,
+                            vec![],
+                        )
+                        .expect("concurrent first put");
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("join");
+        }
+        assert!(key_path.exists());
+        for i in 0..8 {
+            let credential = store
+                .get_credential(&format!("concurrent_provider_{i}"), None)
+                .expect("decrypt")
+                .expect("some");
+            assert_eq!(credential.secret, format!("concurrent-sentinel-{i}"));
+        }
+    }
+
+    #[test]
+    fn bootstrap_errors_and_key_types_are_secret_free() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let key_path = dir.path().join("master.key");
+        let _env = BootstrapEnv::clean_with_key_file(&key_path);
+
+        let resolved =
+            codegg_config::encryption::get_or_create_master_key_for_store(true).expect("bootstrap");
+        assert!(!format!("{resolved:?}").contains(resolved.expose()));
+        assert!(format!("{resolved:?}").contains("[redacted]"));
+
+        let err = codegg_config::encryption::get_or_create_master_key_at(
+            &dir.path().join("other.key"),
+            false,
+        )
+        .unwrap_err();
+        assert!(!format!("{err:?}").contains(resolved.expose()));
+        assert!(!format!("{err}").contains(resolved.expose()));
     }
 }

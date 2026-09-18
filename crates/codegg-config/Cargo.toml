@@ -17,6 +17,8 @@ json5 = "0.4"
 thiserror.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
+rand.workspace = true
+hex.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 notify = "7"
 tracing.workspace = true

@@ -43,7 +43,9 @@ pub enum EggpoolError {
     InvalidScope(String),
     #[error("credential store unavailable")]
     CredentialStore,
-    #[error("master key is not configured")]
+    #[error(
+        "no usable master key for existing encrypted material; restore the historical CODEGG_MASTER_KEY"
+    )]
     MasterKeyMissing,
     #[error("connection provisioning conflict")]
     Conflict,
@@ -375,25 +377,24 @@ impl EggpoolProvisioner {
             .credential_store
             .clone()
             .ok_or(EggpoolError::CredentialStore)?;
-        if codegg_config::encryption::get_master_key().is_none() {
+        // Credential write uses the canonical create-on-write resolver: a
+        // fresh local store bootstraps the managed key, while pre-existing
+        // encrypted material without a usable key fails closed with
+        // `MasterKeyMissing` (never a silent replacement key).
+        if let Err(error) = store.put(
+            "eggpool",
+            Some(account_id),
+            codegg_providers::CredentialKind::ApiKey,
+            request.api_key.expose(),
+            None,
+            Vec::new(),
+        ) {
             self.fail(operation_id, ProbeReason::AuthenticationFailed.code())
                 .await;
-            return Err(EggpoolError::MasterKeyMissing);
-        }
-        if store
-            .put(
-                "eggpool",
-                Some(account_id),
-                codegg_providers::CredentialKind::ApiKey,
-                request.api_key.expose(),
-                None,
-                Vec::new(),
-            )
-            .is_err()
-        {
-            self.fail(operation_id, "credential_store_unavailable")
-                .await;
-            return Err(EggpoolError::CredentialStore);
+            return Err(match error {
+                codegg_providers::AuthError::MasterKeyMissing => EggpoolError::MasterKeyMissing,
+                _ => EggpoolError::CredentialStore,
+            });
         }
 
         if cancel.is_cancelled() {
@@ -1742,7 +1743,7 @@ mod tests {
     use tempfile::tempdir;
 
     struct MasterKeyGuard {
-        previous: [Option<String>; 3],
+        previous: [Option<String>; 4],
         _env_lock: std::sync::MutexGuard<'static, ()>,
     }
 
@@ -1753,6 +1754,7 @@ mod tests {
                 "CODEGG_MASTER_KEY",
                 "CODEGG_ENCRYPTION_KEY",
                 "OPENCODE_ENCRYPTION_KEY",
+                "CODEGG_MASTER_KEY_FILE",
             ];
             let previous = names.map(|name| {
                 let previous = std::env::var(name).ok();
@@ -1773,6 +1775,7 @@ mod tests {
                 "CODEGG_MASTER_KEY",
                 "CODEGG_ENCRYPTION_KEY",
                 "OPENCODE_ENCRYPTION_KEY",
+                "CODEGG_MASTER_KEY_FILE",
             ]
             .into_iter()
             .zip(self.previous.iter_mut())
@@ -2042,6 +2045,90 @@ mod tests {
             .await
             .expect_err("equivalent connection must conflict");
         assert!(matches!(duplicate, EggpoolError::Conflict));
+    }
+
+    struct CleanProfileGuard {
+        previous: [Option<String>; 4],
+        _env_lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl CleanProfileGuard {
+        fn new() -> Self {
+            let env_lock = crate::auth::test_support::lock_env();
+            let names = [
+                "CODEGG_MASTER_KEY",
+                "CODEGG_ENCRYPTION_KEY",
+                "OPENCODE_ENCRYPTION_KEY",
+                "CODEGG_MASTER_KEY_FILE",
+            ];
+            let previous = names.map(|name| {
+                let previous = std::env::var(name).ok();
+                std::env::remove_var(name);
+                previous
+            });
+            Self {
+                previous,
+                _env_lock: env_lock,
+            }
+        }
+    }
+
+    impl Drop for CleanProfileGuard {
+        fn drop(&mut self) {
+            for (name, value) in [
+                "CODEGG_MASTER_KEY",
+                "CODEGG_ENCRYPTION_KEY",
+                "OPENCODE_ENCRYPTION_KEY",
+                "CODEGG_MASTER_KEY_FILE",
+            ]
+            .into_iter()
+            .zip(self.previous.iter_mut())
+            {
+                if let Some(value) = value.take() {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clean_profile_provision_bootstraps_managed_key_without_env() {
+        // M001 regression fixture: the M002 suite always used a synthetic
+        // master-key guard, so it never exercised a clean environment. A
+        // fresh local profile with all three legacy master-key variables
+        // absent must provision through the fake server by bootstrapping
+        // one managed key.
+        let _clean = CleanProfileGuard::new();
+        let directory = tempdir().expect("credential tempdir");
+        std::env::set_var(
+            "CODEGG_MASTER_KEY_FILE",
+            directory.path().join("master.key"),
+        );
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("clean-profile provision bootstraps managed key");
+        server.join().expect("fake server joins");
+
+        assert_eq!(result.connection.endpoint, format!("{host}/v1"));
+        assert_eq!(result.models.len(), 1);
+        assert!(directory.path().join("master.key").exists());
+        // Restart-equivalent: the stored credential decrypts with no env.
+        let account = credential_store.list()[0].account_id.clone();
+        let credential = credential_store
+            .get_credential("eggpool", account.as_deref())
+            .expect("decrypt");
+        assert!(credential.is_some());
     }
 
     #[tokio::test(flavor = "current_thread")]

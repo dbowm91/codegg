@@ -793,13 +793,17 @@ impl OAuthManager {
     }
 
     fn serialize_v2_tokens(&self) -> Result<String, McpError> {
-        let master_key = codegg_config::encryption::get_master_key().ok_or_else(|| {
-            token_store_error(
-                "cannot save MCP OAuth tokens: canonical master key is not configured; set CODEGG_MASTER_KEY",
-            )
-        })?;
+        // Same managed-key lifecycle as provider credentials: an explicit
+        // environment key wins, an existing managed key is reused, and a
+        // genuinely fresh token store bootstraps one. A store that already
+        // holds v2/legacy encrypted material without a usable key fails
+        // closed instead of orphaning that ciphertext. Legacy migration
+        // itself stays read-only (see `load_tokens_sync`): it requires an
+        // already-resolvable key and never bootstraps, so startup/load
+        // paths remain side-effect free.
+        let master_key = resolve_token_write_key(&self.token_store)?;
         let tokens: Vec<ServerTokens> = self.servers.values().cloned().collect();
-        encode_v2_token_store(&tokens, &master_key)
+        encode_v2_token_store(&tokens, master_key.expose())
     }
 }
 
@@ -818,7 +822,7 @@ fn decode_token_store(content: &str) -> Result<DecodedTokenStore, McpError> {
     if let Some(ciphertext) = content.strip_prefix(V2_MAGIC) {
         let master_key = codegg_config::encryption::get_master_key().ok_or_else(|| {
             token_store_error(
-                "cannot load MCP OAuth tokens: canonical master key is not configured; set CODEGG_MASTER_KEY",
+                "cannot load MCP OAuth tokens: no usable master key (CODEGG_MASTER_KEY or managed master.key); restore the historical key",
             )
         })?;
         let plaintext = decrypt_from_string(ciphertext, &master_key)
@@ -855,6 +859,29 @@ fn encode_v2_token_store(tokens: &[ServerTokens], master_key: &str) -> Result<St
     let ciphertext = encrypt_to_string(&plaintext, master_key)
         .map_err(|_| token_store_error("failed to encrypt MCP OAuth token store"))?;
     Ok(format!("{V2_MAGIC}{ciphertext}"))
+}
+
+/// Canonical create-on-write key resolver for MCP OAuth token writes.
+/// Reads (load/migration) stay on `get_master_key`; only this write path
+/// may bootstrap a managed key, and only for a genuinely fresh token
+/// store. Existing v2/legacy material without a usable key maps to a
+/// secret-free "master key" error.
+fn resolve_token_write_key(
+    token_store: &Path,
+) -> Result<codegg_config::encryption::ManagedMasterKey, McpError> {
+    if codegg_config::encryption::master_key_with_source().is_some() {
+        return codegg_config::encryption::get_or_create_master_key_for_store(true)
+            .map_err(|e| token_store_error(&e.to_string()));
+    }
+    let is_default = codegg_config::encryption::default_mcp_token_path()
+        .is_some_and(|default| default == token_store);
+    if is_default {
+        return codegg_config::encryption::get_or_create_master_key()
+            .map_err(|e| token_store_error(&e.to_string()));
+    }
+    let fresh = !codegg_config::encryption::mcp_token_file_has_encrypted_material(token_store);
+    codegg_config::encryption::get_or_create_master_key_for_store(fresh)
+        .map_err(|e| token_store_error(&e.to_string()))
 }
 
 fn token_sets_equal(left: &[ServerTokens], right: &[ServerTokens]) -> bool {
@@ -1070,6 +1097,7 @@ mod tests {
                 "CODEGG_MASTER_KEY",
                 "CODEGG_ENCRYPTION_KEY",
                 "OPENCODE_ENCRYPTION_KEY",
+                "CODEGG_MASTER_KEY_FILE",
             ];
             let previous = names
                 .into_iter()
@@ -1079,6 +1107,20 @@ mod tests {
                     (name, value)
                 })
                 .collect();
+            // Isolate the managed-key file so tests never read or create
+            // the real user key and stay deterministic on machines with an
+            // existing `master.key`.
+            std::env::set_var(
+                "CODEGG_MASTER_KEY_FILE",
+                std::env::temp_dir()
+                    .join(format!(
+                        "codegg-test-master-{}-{}.key",
+                        std::process::id(),
+                        uuid::Uuid::new_v4()
+                    ))
+                    .to_string_lossy()
+                    .to_string(),
+            );
             Self {
                 previous,
                 _lock: lock,
@@ -1233,6 +1275,71 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fresh_token_store_bootstraps_managed_key_and_restarts() {
+        // M001: clean profile with no key env writes tokens by
+        // bootstrapping one managed key; restart decrypts with no env.
+        let environment = EnvironmentGuard::new();
+        let _ = environment;
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let token_store = directory.path().join("mcp_tokens.json");
+        let used_codes_store = directory.path().join("mcp_used_codes.json");
+        let managed = directory.path().join("master.key");
+        std::env::set_var("CODEGG_MASTER_KEY_FILE", &managed);
+        let mut manager = manager_at(token_store.clone(), used_codes_store.clone());
+        let entry = sample_tokens().remove(0);
+
+        manager
+            .store_tokens_async(&entry.server_url, entry.tokens.clone())
+            .await
+            .expect("fresh token store bootstraps managed key");
+        assert!(managed.exists(), "bootstrap must create the managed key");
+        let content = fs::read_to_string(&token_store).expect("read token store");
+        assert!(content.starts_with(V2_MAGIC));
+        assert!(!content.contains("synthetic-"));
+
+        let mut restarted = manager_at(token_store, used_codes_store);
+        restarted
+            .load_tokens_sync()
+            .expect("restart from bootstrapped token store");
+        assert_eq!(restarted.get_tokens(&entry.server_url), Some(&entry.tokens));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn populated_token_store_without_key_refuses_replacement_key() {
+        // M001 orphan guard: existing v2 material + no usable key must not
+        // generate a new managed key.
+        let environment = EnvironmentGuard::new();
+        environment.set("CODEGG_MASTER_KEY", "synthetic-historical-master");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let token_store = directory.path().join("mcp_tokens.json");
+        let used_codes_store = directory.path().join("mcp_used_codes.json");
+        let managed = directory.path().join("isolated-master.key");
+        std::env::set_var("CODEGG_MASTER_KEY_FILE", &managed);
+        let entry = sample_tokens().remove(0);
+        let mut manager = manager_at(token_store.clone(), used_codes_store.clone());
+        manager
+            .store_tokens_async(&entry.server_url, entry.tokens)
+            .await
+            .expect("seed with historical key");
+        assert!(!managed.exists(), "env key wins; no managed file yet");
+
+        std::env::remove_var("CODEGG_MASTER_KEY");
+        let mut orphaned = manager_at(token_store.clone(), used_codes_store);
+        let error = orphaned
+            .store_tokens_async(
+                "https://other.example.test",
+                sample_tokens().remove(0).tokens,
+            )
+            .await
+            .unwrap_err();
+        assert!(format!("{error}").contains("master key"));
+        assert!(
+            !managed.exists(),
+            "orphaned token material must never trigger key replacement"
+        );
     }
 
     #[test]
