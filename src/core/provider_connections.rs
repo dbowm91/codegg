@@ -351,12 +351,12 @@ fn descriptor_for(connection: &ProviderConnection) -> Result<ProviderConnectionD
         CoreProviderKind::Anthropic => ProviderKind::Anthropic,
         CoreProviderKind::Google => ProviderKind::Google,
         CoreProviderKind::AzureOpenAi => ProviderKind::AzureOpenAi,
-        unsupported => {
-            return Err(format!(
-                "provider kind '{}' has no compatibility factory",
-                unsupported.as_str()
-            ))
-        }
+        // `other:{id}` rows preserve the exact catalog implementation
+        // identity (specialized or compatible builders dispatch on the ID in
+        // the setup catalog) instead of being coerced to generic transport.
+        CoreProviderKind::Other(provider_id) => ProviderKind::OpenAiCompatible {
+            provider_id: provider_id.clone(),
+        },
     };
 
     let binding = connection
@@ -538,5 +538,179 @@ mod tests {
         assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
         manager.invalidate_revision(&id, 1);
         assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Existing durable rows (Eggpool and legacy compatible) plus every new
+    /// catalog storage kind must resolve through the canonical durable
+    /// factory with their implementation identity intact — specialized
+    /// builders are used, never a generic coercion.
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_and_catalog_kinds_resolve_through_durable_factory() {
+        use codegg_providers::{CredentialKind, CredentialStore};
+
+        let env_lock = crate::auth::test_support::lock_env();
+        let saved = [
+            "CODEGG_MASTER_KEY",
+            "CODEGG_ENCRYPTION_KEY",
+            "OPENCODE_ENCRYPTION_KEY",
+            "CODEGG_MASTER_KEY_FILE",
+        ]
+        .map(|name| (name, std::env::var(name).ok()));
+        for (name, _) in &saved {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("CODEGG_MASTER_KEY", "descriptor-compat-master");
+
+        let result = (|| -> Result<(), String> {
+            let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+            let store = Arc::new(
+                CredentialStore::at_path(directory.path().join("credentials.json"))
+                    .map_err(|e| e.to_string())?,
+            );
+            let factory = codegg_providers::ProviderConnectionFactory::from_store(store.clone());
+            let cases: &[(CoreProviderKind, &str, &str, CredentialKind, &str)] = &[
+                (
+                    CoreProviderKind::Eggpool,
+                    "https://eggpool.example/v1",
+                    "eggpool",
+                    CredentialKind::ApiKey,
+                    "eggpool",
+                ),
+                (
+                    CoreProviderKind::OpenAi,
+                    codegg_providers::setup_catalog::OPENAI_BASE_URL,
+                    "openai",
+                    CredentialKind::ApiKey,
+                    "openai",
+                ),
+                (
+                    CoreProviderKind::Anthropic,
+                    codegg_providers::setup_catalog::ANTHROPIC_BASE_URL,
+                    "anthropic",
+                    CredentialKind::ApiKey,
+                    "anthropic",
+                ),
+                (
+                    CoreProviderKind::Google,
+                    codegg_providers::setup_catalog::GOOGLE_ENDPOINT,
+                    "google",
+                    CredentialKind::ApiKey,
+                    "google",
+                ),
+                (
+                    CoreProviderKind::AzureOpenAi,
+                    "https://azure.example",
+                    "azure",
+                    CredentialKind::ApiKey,
+                    "azure",
+                ),
+                (
+                    CoreProviderKind::OpenAiCompatible,
+                    "https://gateway.example/v1",
+                    "gateway",
+                    CredentialKind::BearerToken,
+                    "openai_compatible",
+                ),
+                (
+                    CoreProviderKind::Other("mistral".to_string()),
+                    codegg_providers::setup_catalog::MISTRAL_BASE_URL,
+                    "mistral",
+                    CredentialKind::ApiKey,
+                    "mistral",
+                ),
+                (
+                    CoreProviderKind::Other("openrouter".to_string()),
+                    codegg_providers::setup_catalog::OPENROUTER_ENDPOINT,
+                    "openrouter",
+                    CredentialKind::ApiKey,
+                    "openrouter",
+                ),
+                (
+                    CoreProviderKind::Other("opencode_zen".to_string()),
+                    codegg_providers::setup_catalog::OPENCODE_ZEN_BASE_URL,
+                    "opencode_zen",
+                    CredentialKind::ApiKey,
+                    "opencode_zen",
+                ),
+                (
+                    CoreProviderKind::Other("minimax".to_string()),
+                    codegg_providers::setup_catalog::MINIMAX_BASE_URL,
+                    "minimax",
+                    CredentialKind::ApiKey,
+                    "minimax",
+                ),
+                (
+                    CoreProviderKind::Other("xai".to_string()),
+                    codegg_providers::setup_catalog::XAI_BASE_URL,
+                    "xai",
+                    CredentialKind::BearerToken,
+                    "xai",
+                ),
+                (
+                    CoreProviderKind::Other("opencode_go".to_string()),
+                    codegg_providers::setup_catalog::OPENCODE_GO_BASE_URL,
+                    "opencode_go",
+                    CredentialKind::BearerToken,
+                    "opencode_go",
+                ),
+                (
+                    CoreProviderKind::Other("custom".to_string()),
+                    "https://custom.example/v1",
+                    "custom",
+                    CredentialKind::BearerToken,
+                    "custom",
+                ),
+            ];
+            for (index, &(ref kind, endpoint, provider_ref, credential_kind, expected_id)) in
+                cases.iter().enumerate()
+            {
+                let account = format!("compat-{index}");
+                store
+                    .put(
+                        provider_ref,
+                        Some(&account),
+                        credential_kind,
+                        "compat-secret",
+                        None,
+                        Vec::new(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let id = ProviderConnectionId::new();
+                let connection = ProviderConnection {
+                    id: id.clone(),
+                    provider_kind: kind.clone(),
+                    display_name: "Compat".to_string(),
+                    endpoint: Endpoint::new(endpoint, TlsPolicy::Required)
+                        .map_err(|e| e.to_string())?,
+                    tls_policy: TlsPolicy::Required,
+                    scope: ProviderScope::deployment("deployment").map_err(|e| e.to_string())?,
+                    secret_binding: Some(
+                        SecretBindingLocator::new(CoreSecretRef::new(), provider_ref, &account)
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    state: ProviderConnectionState::Active,
+                    revision: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                };
+                let descriptor =
+                    descriptor_for(&connection).map_err(|e| format!("{expected_id}: {e}"))?;
+                let provider = factory
+                    .build(&descriptor)
+                    .map_err(|e| format!("{expected_id}: {e:?}"))?;
+                assert_eq!(provider.id(), expected_id, "kind {kind:?}");
+            }
+            Ok(())
+        })();
+
+        for (name, value) in saved {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+        drop(env_lock);
+        result.expect("all stored kinds resolve through the durable factory");
     }
 }

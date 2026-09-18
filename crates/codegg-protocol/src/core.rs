@@ -10,7 +10,8 @@ use crate::dto::{
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
     ConnectionRotateChange, ConnectionRotateStatusDto, CreateEggpoolConnectionRequest,
-    CreateEggpoolConnectionResult, ProviderConnectionSummaryDto, ProviderModelDto, PurgeOutcome,
+    CreateEggpoolConnectionResult, CreateProviderConnectionRequest, CreateProviderConnectionResult,
+    ProviderConnectionSummaryDto, ProviderModelDto, ProviderSetupEntryDto, PurgeOutcome,
     SecretInput, SecretInputRef, SessionLifecycleProjection, SessionSelectionDto,
     UpdateSessionSelectionRequest,
 };
@@ -795,6 +796,12 @@ pub enum CoreResponse {
     EggpoolConnectionCreated {
         result: CreateEggpoolConnectionResult,
     },
+    ProviderConnectionCreated {
+        result: CreateProviderConnectionResult,
+    },
+    ProviderSetupList {
+        providers: Vec<ProviderSetupEntryDto>,
+    },
     EggpoolConnectionStatus {
         status: ConnectionProvisioningStatusDto,
     },
@@ -1468,6 +1475,15 @@ pub enum CoreRequest {
     EggpoolConnectionCreate {
         request: CreateEggpoolConnectionRequest,
     },
+    /// Provider-neutral secret-bearing create request. New production
+    /// callers must use this variant; `EggpoolConnectionCreate` remains only
+    /// as a temporary compatibility adapter over the same generic service.
+    ProviderConnectionCreate {
+        request: CreateProviderConnectionRequest,
+    },
+    /// Secret-free daemon-owned provider setup catalog for selection
+    /// surfaces. Carries no secrets and is safe for remote transport.
+    ProviderSetupList,
     EggpoolConnectionCancel {
         operation_id: String,
     },
@@ -2466,6 +2482,26 @@ pub enum CoreRequest {
     },
 }
 
+impl CoreRequest {
+    /// Whether this request carries secret material and therefore must be
+    /// denied on the remote WebSocket transport.
+    ///
+    /// The guard is defined by secret-bearing semantics, not by provider
+    /// names: any future secret-bearing create/rotate variant must be added
+    /// to the `true` arm, and the `secret_bearing_variants_are_denied`
+    /// test pins the current set. The remote transport denies with
+    /// `secret_operation_remote_denied`.
+    pub fn is_secret_bearing(&self) -> bool {
+        matches!(
+            self,
+            Self::EggpoolConnectionCreate { .. }
+                | Self::ProviderConnectionCreate { .. }
+                | Self::ConnectionRotateSecretStage { .. }
+                | Self::ConnectionRotateBegin { .. }
+        )
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -3006,11 +3042,127 @@ pub enum CoreEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{
+        CreateProviderConnectionRequest, EggpoolConnectionScope, EggpoolTlsPolicy,
+        ProviderConnectionScope, ProviderCredentialKind, ProviderSetupEntryDto, ProviderTlsPolicy,
+    };
     use crate::ui::UiEffect;
 
     #[test]
     fn protocol_version_is_set() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn secret_bearing_variants_are_denied() {
+        // Guard pins the secret-bearing set behind `is_secret_bearing`.
+        // Any future secret-bearing create/rotate variant must be added to
+        // the `true` arm (and denied by the remote transport); this test
+        // fails until it is.
+        let secret = || SecretInput::new("test-secret").unwrap();
+        let secret_ref = || SecretInputRef::new("test-handle").unwrap();
+        let scope = || ProviderConnectionScope::Personal {
+            owner_id: "owner".to_string(),
+        };
+        let generic = || CoreRequest::ProviderConnectionCreate {
+            request: CreateProviderConnectionRequest {
+                provider_id: "openai".to_string(),
+                endpoint: None,
+                port: None,
+                tls_policy: None,
+                credential: secret(),
+                credential_kind: ProviderCredentialKind::ApiKey,
+                display_name: None,
+                scope: scope(),
+                operation_id: None,
+            },
+        };
+        let eggpool = || CoreRequest::EggpoolConnectionCreate {
+            request: CreateEggpoolConnectionRequest {
+                host: "127.0.0.1".to_string(),
+                port: None,
+                tls_policy: EggpoolTlsPolicy::Disabled,
+                api_key: secret(),
+                display_name: None,
+                scope: EggpoolConnectionScope::Personal {
+                    owner_id: "owner".to_string(),
+                },
+                operation_id: None,
+            },
+        };
+        assert!(generic().is_secret_bearing());
+        assert!(eggpool().is_secret_bearing());
+        assert!(CoreRequest::ConnectionRotateSecretStage {
+            request_id: "req".to_string(),
+            secret: secret(),
+        }
+        .is_secret_bearing());
+        assert!(CoreRequest::ConnectionRotateBegin {
+            request_id: "req".to_string(),
+            connection_id: "conn".to_string(),
+            expected_revision: 1,
+            change: ConnectionRotateChange::CredentialOnly,
+            secret: secret_ref(),
+        }
+        .is_secret_bearing());
+        // Secret-free neighbors must stay admissible remotely.
+        assert!(!CoreRequest::ProviderConnectionList.is_secret_bearing());
+        assert!(!CoreRequest::ProviderSetupList.is_secret_bearing());
+        assert!(!CoreRequest::ConnectionRotateStatus {
+            request_id: "req".to_string(),
+        }
+        .is_secret_bearing());
+    }
+
+    #[test]
+    fn generic_create_request_is_secret_free_in_debug_and_snapshot() {
+        let request = CreateProviderConnectionRequest {
+            provider_id: "openai".to_string(),
+            endpoint: None,
+            port: None,
+            tls_policy: Some(ProviderTlsPolicy::Required),
+            credential: SecretInput::new("super-secret-credential").unwrap(),
+            credential_kind: ProviderCredentialKind::ApiKey,
+            display_name: Some("Work".to_string()),
+            scope: ProviderConnectionScope::Personal {
+                owner_id: "owner".to_string(),
+            },
+            operation_id: Some("op-1".to_string()),
+        };
+        assert!(!format!("{request:?}").contains("super-secret-credential"));
+        let envelope = CoreRequest::ProviderConnectionCreate {
+            request: request.clone(),
+        };
+        assert!(!format!("{envelope:?}").contains("super-secret-credential"));
+        let json = serde_json::to_string(&request).unwrap();
+        let round_tripped: CreateProviderConnectionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, request);
+    }
+
+    #[test]
+    fn provider_setup_list_round_trips_without_secrets() {
+        let response = CoreResponse::ProviderSetupList {
+            providers: vec![ProviderSetupEntryDto {
+                id: "openai".to_string(),
+                display_name: "OpenAI".to_string(),
+                description: "OpenAI API".to_string(),
+                connectable: true,
+                credential_kinds: vec!["api_key".to_string()],
+                endpoint_policy: "optional_override".to_string(),
+                default_endpoint: Some("https://api.openai.com/v1".to_string()),
+                requires_endpoint: false,
+                env_var: Some("OPENAI_API_KEY".to_string()),
+            }],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("provider_setup_list"));
+        assert!(!json.contains("super-secret"));
+        let round_tripped: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            round_tripped,
+            serde_json::to_value(&response).unwrap(),
+            "setup list must round-trip without loss"
+        );
     }
 
     #[test]

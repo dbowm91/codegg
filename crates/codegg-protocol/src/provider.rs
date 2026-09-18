@@ -265,6 +265,185 @@ pub struct ConnectionProvisioningStatusDto {
     pub reason_code: Option<String>,
 }
 
+// ── Provider-neutral provisioning (M002) ─────────────────────────────
+// The Eggpool-named request above remains only as a temporary compatibility
+// adapter. New production callers must use `CreateProviderConnectionRequest`
+// through `CoreRequest::ProviderConnectionCreate`.
+
+/// TLS policy for a provider-neutral create request.
+///
+/// Wire-compatible with [`EggpoolTlsPolicy`]; conversions keep the
+/// Eggpool-named request working as a thin adapter over the generic service.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTlsPolicy {
+    Required,
+    Optional,
+    Disabled,
+}
+
+impl From<EggpoolTlsPolicy> for ProviderTlsPolicy {
+    fn from(policy: EggpoolTlsPolicy) -> Self {
+        match policy {
+            EggpoolTlsPolicy::Required => Self::Required,
+            EggpoolTlsPolicy::Optional => Self::Optional,
+            EggpoolTlsPolicy::Disabled => Self::Disabled,
+        }
+    }
+}
+
+impl From<ProviderTlsPolicy> for EggpoolTlsPolicy {
+    fn from(policy: ProviderTlsPolicy) -> Self {
+        match policy {
+            ProviderTlsPolicy::Required => Self::Required,
+            ProviderTlsPolicy::Optional => Self::Optional,
+            ProviderTlsPolicy::Disabled => Self::Disabled,
+        }
+    }
+}
+
+/// Scope metadata for a provider-neutral create request. Scope never grants
+/// authorization; it is daemon-owned context like the Eggpool variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ProviderConnectionScope {
+    Personal { owner_id: String },
+    Project { project_id: String },
+    Deployment { deployment_id: String },
+}
+
+impl From<EggpoolConnectionScope> for ProviderConnectionScope {
+    fn from(scope: EggpoolConnectionScope) -> Self {
+        match scope {
+            EggpoolConnectionScope::Personal { owner_id } => Self::Personal { owner_id },
+            EggpoolConnectionScope::Project { project_id } => Self::Project { project_id },
+            EggpoolConnectionScope::Deployment { deployment_id } => {
+                Self::Deployment { deployment_id }
+            }
+        }
+    }
+}
+
+impl From<ProviderConnectionScope> for EggpoolConnectionScope {
+    fn from(scope: ProviderConnectionScope) -> Self {
+        match scope {
+            ProviderConnectionScope::Personal { owner_id } => Self::Personal { owner_id },
+            ProviderConnectionScope::Project { project_id } => Self::Project { project_id },
+            ProviderConnectionScope::Deployment { deployment_id } => {
+                Self::Deployment { deployment_id }
+            }
+        }
+    }
+}
+
+/// Credential kind carried by a provider-neutral create request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCredentialKind {
+    #[default]
+    ApiKey,
+    Bearer,
+}
+
+/// Provider-neutral secret-bearing create request.
+///
+/// The secret field is only accepted over the daemon's local authenticated
+/// IPC boundary; remote WebSocket transport denies every secret-bearing
+/// request (see `CoreRequest::is_secret_bearing`).
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateProviderConnectionRequest {
+    /// Stable setup-catalog provider ID (`openai`, `mistral`, `eggpool`,
+    /// `custom`, …).
+    pub provider_id: String,
+    /// Endpoint input. Semantics depend on the catalog endpoint policy:
+    /// Eggpool-preset host, full base URL for endpoint-requiring providers,
+    /// or an optional override. Absent for fixed-endpoint providers.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Optional explicit port for host-style presets (Eggpool).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// TLS policy for endpoint-capable providers. `None` infers the policy
+    /// from the endpoint scheme.
+    #[serde(default)]
+    pub tls_policy: Option<ProviderTlsPolicy>,
+    /// The credential secret. Never logged, never stored in SQLite.
+    pub credential: SecretInput,
+    /// Which credential kind `credential` carries.
+    #[serde(default)]
+    pub credential_kind: ProviderCredentialKind,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    pub scope: ProviderConnectionScope,
+    #[serde(default)]
+    pub operation_id: Option<String>,
+}
+
+impl fmt::Debug for CreateProviderConnectionRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateProviderConnectionRequest")
+            .field("provider_id", &self.provider_id)
+            .field("endpoint", &self.endpoint)
+            .field("port", &self.port)
+            .field("tls_policy", &self.tls_policy)
+            .field("credential", &self.credential)
+            .field("credential_kind", &self.credential_kind)
+            .field("display_name", &self.display_name)
+            .field("scope", &self.scope)
+            .field("operation_id", &self.operation_id)
+            .finish()
+    }
+}
+
+impl From<CreateEggpoolConnectionRequest> for CreateProviderConnectionRequest {
+    /// Compatibility adapter: the legacy Eggpool-named request becomes the
+    /// generic request with the Eggpool preset ID. Eggpool credentials are
+    /// API keys.
+    fn from(request: CreateEggpoolConnectionRequest) -> Self {
+        Self {
+            provider_id: "eggpool".to_string(),
+            endpoint: Some(request.host),
+            port: request.port,
+            tls_policy: Some(request.tls_policy.into()),
+            credential: request.api_key,
+            credential_kind: ProviderCredentialKind::ApiKey,
+            display_name: request.display_name,
+            scope: request.scope.into(),
+            operation_id: request.operation_id,
+        }
+    }
+}
+
+/// Provider-neutral create result. Same shape as the Eggpool result: the
+/// connection summary, bounded model catalog, and catalog revision carry no
+/// secrets.
+pub type CreateProviderConnectionResult = CreateEggpoolConnectionResult;
+
+/// One secret-free setup-catalog entry for provider-selection surfaces.
+///
+/// This is presentation metadata only: stable ID, display name,
+/// connectability, accepted credential kinds, endpoint requirements, and
+/// non-secret defaults. It never grants authorization and never carries
+/// secrets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderSetupEntryDto {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    pub connectable: bool,
+    /// Accepted credential kinds, e.g. `["api_key"]` or `["api_key", "bearer"]`.
+    pub credential_kinds: Vec<String>,
+    /// Endpoint policy: `fixed`, `optional_override`, `required`, or
+    /// `proxy_preset`.
+    pub endpoint_policy: String,
+    /// Non-secret default endpoint/origin when the catalog pins one.
+    #[serde(default)]
+    pub default_endpoint: Option<String>,
+    pub requires_endpoint: bool,
+    #[serde(default)]
+    pub env_var: Option<String>,
+}
+
 // ── Provider Connections Milestone 3: session selection ────────────────
 
 /// Wire-level model descriptor returned alongside a session's selected

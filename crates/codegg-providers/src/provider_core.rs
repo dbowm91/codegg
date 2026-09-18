@@ -512,9 +512,11 @@ pub fn register_builtin(registry: &mut ProviderRegistry) {
 
 /// Executable provider × credential capability matrix.
 ///
-/// Every built-in registration branch in `register_builtin_with_config` must
-/// appear here. New providers must choose a capability deliberately instead
-/// of silently inheriting bearer support.
+/// The setup catalog in [`crate::setup_catalog`] is the single source of
+/// truth: every built-in registration branch in `register_builtin_with_config`
+/// must have a definition there, and this function reports that definition's
+/// capability. Unknown or future providers default to the conservative
+/// contract: explicit rejection rather than silent bearer reinterpretation.
 ///
 /// - `ApiKeyOrBearer`: full-`Credential` OpenAI-compatible paths that
 ///   preserve `CredentialKind` through `OpenAiCompatibleProvider` and send
@@ -527,20 +529,9 @@ pub fn register_builtin(registry: &mut ProviderRegistry) {
 ///   API-key string for this milestone; bearer lifecycle (expiry/short-lived
 ///   tokens) is not claimed for those paths.
 pub fn credential_capability_for(provider_id: &str) -> CredentialCapability {
-    match provider_id {
-        // Full-credential OpenAI-compatible family.
-        "mistral" | "groq" | "deepinfra" | "cerebras" | "cohere" | "together" | "perplexity"
-        | "xai" | "venice" | "opencode_go" | "generalcompute" => {
-            CredentialCapability::ApiKeyOrBearer
-        }
-        // Config/base-URL-aware family (String contract).
-        "anthropic" | "openai" | "google" | "openrouter" => CredentialCapability::ApiKeyOnly,
-        // API-key-string family.
-        "opencode_zen" | "minimax" => CredentialCapability::ApiKeyOnly,
-        // Unknown or future providers default to the conservative contract:
-        // explicit rejection rather than silent bearer reinterpretation.
-        _ => CredentialCapability::ApiKeyOnly,
-    }
+    crate::setup_catalog::setup_definition(provider_id)
+        .map(|definition| definition.credential_capability)
+        .unwrap_or(CredentialCapability::ApiKeyOnly)
 }
 
 /// All provider ids registered by `register_builtin_with_config`, in

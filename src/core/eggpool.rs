@@ -1,9 +1,16 @@
-//! Daemon-owned Eggpool connection provisioning.
+//! Daemon-owned provider-connection provisioning.
 //!
 //! This module is intentionally a narrow vertical slice over the existing
 //! encrypted credential store and provider-connection metadata. It owns the
 //! cross-store sequence, bounded probe, cancellation registry, and redacted
 //! protocol projections. Session/model selection remains elsewhere.
+//!
+//! The canonical service is the provider-neutral
+//! [`ProviderConnectionProvisioner`] driven by
+//! [`CreateProviderConnectionRequest`]: one pre-credential setup-catalog
+//! definition selects the endpoint policy, credential contract, and probe
+//! strategy, while Eggpool remains a named compatible-proxy preset.
+//! [`EggpoolProvisioner`] is a compatibility alias over the same service.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,11 +33,15 @@ use codegg_core::provider_connections::{
 use codegg_protocol::provider::{
     ConnectionHealthDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
     ConnectionRotateChange, ConnectionRotateStatusDto, CreateEggpoolConnectionRequest,
-    CreateEggpoolConnectionResult, EggpoolConnectionScope, EggpoolTlsPolicy,
-    ProviderConnectionSummaryDto, ProviderModelDto, SecretInputRef,
+    CreateEggpoolConnectionResult, CreateProviderConnectionRequest, EggpoolConnectionScope,
+    EggpoolTlsPolicy, ProviderConnectionScope, ProviderConnectionSummaryDto,
+    ProviderCredentialKind, ProviderModelDto, ProviderTlsPolicy, SecretInputRef,
+};
+use codegg_providers::setup_catalog::{
+    self, SetupEndpointPolicy, SetupProbeStrategy, AZURE_ID, CUSTOM_COMPATIBLE_ID,
+    EGGPOOL_PRESET_ID,
 };
 
-const DEFAULT_PORT: u16 = 11_300;
 const WORKFLOW_TIMEOUT: Duration = Duration::from_secs(20);
 type RefreshCell = tokio::sync::OnceCell<Result<ConnectionRefreshStatusDto, RefreshError>>;
 type RefreshFlights = DashMap<ProviderConnectionId, Arc<RefreshCell>>;
@@ -41,6 +52,10 @@ pub enum EggpoolError {
     InvalidEndpoint(String),
     #[error("invalid connection scope: {0}")]
     InvalidScope(String),
+    #[error("unsupported provider '{0}'")]
+    UnsupportedProvider(String),
+    #[error("credential kind is not supported by this provider")]
+    UnsupportedCredentialKind,
     #[error("credential store unavailable")]
     CredentialStore,
     #[error(
@@ -142,10 +157,14 @@ impl ProbeReason {
 
 #[derive(Debug, Clone)]
 struct NormalizedSpec {
+    provider_id: String,
+    provider_storage_key: String,
     endpoint: Endpoint,
     tls_policy: TlsPolicy,
     scope: ProviderScope,
     display_name: String,
+    credential_kind: codegg_providers::CredentialKind,
+    probe_strategy: SetupProbeStrategy,
 }
 
 #[derive(Debug, Clone)]
@@ -173,8 +192,13 @@ struct RotationSecret {
 /// Crash-consistency: per-connection maps are ephemeral caches; the SQL
 /// store is authoritative. Multi-map updates are not atomic — a crash
 /// between them only drops cached status, which is rebuilt on demand.
+///
+/// This is the canonical provider-neutral provisioning service. The
+/// `EggpoolProvisioner` alias below keeps historical call sites compiling;
+/// new code must use this name and the generic
+/// [`CreateProviderConnectionRequest`].
 #[derive(Clone)]
-pub struct EggpoolProvisioner {
+pub struct ProviderConnectionProvisioner {
     pool: sqlx::SqlitePool,
     credential_store: Option<Arc<codegg_providers::CredentialStore>>,
     operations: Arc<DashMap<String, CancellationToken>>,
@@ -189,7 +213,13 @@ pub struct EggpoolProvisioner {
     reconciled: Arc<AtomicBool>,
 }
 
-impl EggpoolProvisioner {
+/// Compatibility alias for the historical Eggpool-specific service name.
+/// New code must use [`ProviderConnectionProvisioner`].
+pub type EggpoolProvisioner = ProviderConnectionProvisioner;
+/// Provider-neutral name for the provisioning failure type.
+pub type ProviderProvisionError = EggpoolError;
+
+impl ProviderConnectionProvisioner {
     pub fn new(pool: sqlx::SqlitePool) -> Self {
         let credential_store = codegg_providers::CredentialStore::at_default_location()
             .ok()
@@ -260,12 +290,33 @@ impl EggpoolProvisioner {
         });
     }
 
+    /// Compatibility adapter: the legacy Eggpool-named request runs through
+    /// the same generic provisioning service as every other provider.
     pub async fn create(
         &self,
         request: CreateEggpoolConnectionRequest,
     ) -> Result<CreateEggpoolConnectionResult, EggpoolError> {
+        self.create_connection(CreateProviderConnectionRequest::from(request))
+            .await
+    }
+
+    /// Provision one durable provider connection for any setup-catalog
+    /// provider through the shared sequence:
+    ///
+    /// validate/normalize → staged journal → operation-owned protected
+    /// credential write → bounded probe/model discovery → one final
+    /// transaction publishing connection, health, catalog, and committed
+    /// provisioning state.
+    ///
+    /// No network I/O happens inside the final SQLite transaction. Failures
+    /// map to redacted stable codes; secrets never reach SQLite, logs, or
+    /// protocol responses.
+    pub async fn create_connection(
+        &self,
+        request: CreateProviderConnectionRequest,
+    ) -> Result<CreateEggpoolConnectionResult, EggpoolError> {
         self.reconcile_once().await;
-        let spec = normalize(&request)?;
+        let spec = normalize_generic(&request)?;
         let operation_id = request
             .operation_id
             .clone()
@@ -274,13 +325,13 @@ impl EggpoolProvisioner {
         let connection_id = ProviderConnectionId::new();
         let account_id = connection_id.as_str().to_owned();
         let secret_ref = SecretRef::new();
-        let provider_ref = "eggpool";
-        let idempotency_key = idempotency_key(&spec, &request.scope);
+        let idempotency_key = idempotency_key(&spec);
         let scope_parts = storage_scope(&spec.scope);
 
         if sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM provider_connections WHERE provider_kind = 'eggpool' AND endpoint = ? AND tls_policy = ? AND scope_kind = ? AND scope_ref = ? AND state = 'active'",
+            "SELECT COUNT(*) FROM provider_connections WHERE provider_kind = ? AND endpoint = ? AND tls_policy = ? AND scope_kind = ? AND scope_ref = ? AND state = 'active'",
         )
+        .bind(&spec.provider_storage_key)
         .bind(spec.endpoint.as_str())
         .bind(tls_key(spec.tls_policy))
         .bind(scope_parts.0)
@@ -307,18 +358,19 @@ impl EggpoolProvisioner {
 
         let now = now_millis();
         sqlx::query(
-            "INSERT INTO provider_provisioning (operation_id, connection_id, idempotency_key, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, time_created, time_updated) VALUES (?, ?, ?, 'eggpool', ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?)",
+            "INSERT INTO provider_provisioning (operation_id, connection_id, idempotency_key, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?)",
         )
         .bind(&operation_id)
         .bind(connection_id.as_str())
         .bind(&idempotency_key)
+        .bind(&spec.provider_storage_key)
         .bind(&spec.display_name)
         .bind(spec.endpoint.as_str())
         .bind(tls_key(spec.tls_policy))
         .bind(scope_parts.0)
         .bind(scope_parts.1)
         .bind(secret_ref.as_str())
-        .bind(provider_ref)
+        .bind(&spec.provider_id)
         .bind(&account_id)
         .bind(now)
         .bind(now)
@@ -340,7 +392,7 @@ impl EggpoolProvisioner {
         self.operations.insert(operation_id.clone(), cancel.clone());
         let result = self
             .create_inner(
-                &request,
+                request.credential.expose(),
                 &spec,
                 &operation_id,
                 &connection_id,
@@ -365,7 +417,7 @@ impl EggpoolProvisioner {
 
     async fn create_inner(
         &self,
-        request: &CreateEggpoolConnectionRequest,
+        secret: &str,
         spec: &NormalizedSpec,
         operation_id: &str,
         connection_id: &ProviderConnectionId,
@@ -380,12 +432,13 @@ impl EggpoolProvisioner {
         // Credential write uses the canonical create-on-write resolver: a
         // fresh local store bootstraps the managed key, while pre-existing
         // encrypted material without a usable key fails closed with
-        // `MasterKeyMissing` (never a silent replacement key).
+        // `MasterKeyMissing` (never a silent replacement key). The write is
+        // operation-owned: compensation below removes exactly this binding.
         if let Err(error) = store.put(
-            "eggpool",
+            &spec.provider_id,
             Some(account_id),
-            codegg_providers::CredentialKind::ApiKey,
-            request.api_key.expose(),
+            spec.credential_kind,
+            secret,
             None,
             Vec::new(),
         ) {
@@ -398,7 +451,7 @@ impl EggpoolProvisioner {
         }
 
         if cancel.is_cancelled() {
-            self.compensate(operation_id, account_id, &store, None)
+            self.compensate(operation_id, &spec.provider_id, account_id, &store, None)
                 .await;
             return Err(EggpoolError::Cancelled);
         }
@@ -413,6 +466,7 @@ impl EggpoolProvisioner {
         {
             self.compensate(
                 operation_id,
+                &spec.provider_id,
                 account_id,
                 &store,
                 Some("connection_storage_error"),
@@ -421,33 +475,42 @@ impl EggpoolProvisioner {
             return Err(EggpoolError::Storage);
         }
 
-        let probe = tokio::time::timeout(
-            WORKFLOW_TIMEOUT,
-            probe(
-                spec.endpoint.as_str(),
-                request.api_key.expose(),
-                cancel.clone(),
-            ),
-        )
-        .await
-        .map_err(|_| EggpoolError::Probe(ProbeReason::Timeout))?
-        .map_err(EggpoolError::Probe);
+        // Bounded validation/model discovery selected by the provider
+        // definition. Both strategies run outside the final transaction.
+        let probe = match spec.probe_strategy {
+            SetupProbeStrategy::CompatibleProbe => tokio::time::timeout(
+                WORKFLOW_TIMEOUT,
+                probe(spec.endpoint.as_str(), secret, cancel.clone()),
+            )
+            .await
+            .map_err(|_| EggpoolError::Probe(ProbeReason::Timeout))?
+            .map_err(EggpoolError::Probe),
+            SetupProbeStrategy::DirectModels => probe_direct_models(spec, secret, cancel.clone())
+                .await
+                .map_err(EggpoolError::Probe),
+        };
         let probe = match probe {
             Ok(value) => value,
             Err(EggpoolError::Probe(ProbeReason::Cancelled)) => {
-                self.compensate(operation_id, account_id, &store, None)
+                self.compensate(operation_id, &spec.provider_id, account_id, &store, None)
                     .await;
                 return Err(EggpoolError::Cancelled);
             }
             Err(error) => {
-                self.compensate(operation_id, account_id, &store, Some(error_code(&error)))
-                    .await;
+                self.compensate(
+                    operation_id,
+                    &spec.provider_id,
+                    account_id,
+                    &store,
+                    Some(error_code(&error)),
+                )
+                .await;
                 return Err(error);
             }
         };
 
         if cancel.is_cancelled() {
-            self.compensate(operation_id, account_id, &store, None)
+            self.compensate(operation_id, &spec.provider_id, account_id, &store, None)
                 .await;
             return Err(EggpoolError::Cancelled);
         }
@@ -465,6 +528,7 @@ impl EggpoolProvisioner {
         if result.is_err() {
             self.compensate(
                 operation_id,
+                &spec.provider_id,
                 account_id,
                 &store,
                 Some("connection_storage_error"),
@@ -486,15 +550,17 @@ impl EggpoolProvisioner {
         let mut tx = self.pool.begin().await.map_err(|_| EggpoolError::Storage)?;
         let (scope_kind, scope_ref) = storage_scope(&spec.scope);
         sqlx::query(
-            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) VALUES (?, 'eggpool', ?, ?, ?, ?, ?, ?, 'eggpool', ?, 'active', 1, ?, ?)",
+            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)",
         )
         .bind(connection_id.as_str())
+        .bind(&spec.provider_storage_key)
         .bind(&spec.display_name)
         .bind(spec.endpoint.as_str())
         .bind(tls_key(spec.tls_policy))
         .bind(scope_kind)
         .bind(scope_ref)
         .bind(secret_ref.as_str())
+        .bind(&spec.provider_id)
         .bind(account_id)
         .bind(now_millis())
         .bind(now_millis())
@@ -549,11 +615,12 @@ impl EggpoolProvisioner {
     async fn compensate(
         &self,
         operation_id: &str,
+        provider_ref: &str,
         account_id: &str,
         store: &codegg_providers::CredentialStore,
         failure_code: Option<&str>,
     ) {
-        if let Err(error) = store.remove("eggpool", Some(account_id)) {
+        if let Err(error) = store.remove(provider_ref, Some(account_id)) {
             tracing::warn!(?error, %operation_id, "eggpool compensate credential removal failed");
         }
         let (state, code) =
@@ -1441,7 +1508,255 @@ impl EggpoolProvisioner {
     }
 }
 
-fn normalize(request: &CreateEggpoolConnectionRequest) -> Result<NormalizedSpec, EggpoolError> {
+/// Provider-neutral normalization driven by the setup catalog.
+///
+/// Fixed-endpoint providers resolve to their catalog URL and reject
+/// caller-supplied endpoint material; endpoint-requiring providers validate a
+/// full user URL without imposing the Eggpool preset's default port or `/v1`
+/// path; proxy presets reuse the Eggpool host/port/TLS normalization with
+/// their own default port.
+fn normalize_generic(
+    request: &CreateProviderConnectionRequest,
+) -> Result<NormalizedSpec, EggpoolError> {
+    let provider_id = request.provider_id.trim();
+    if provider_id.is_empty() || provider_id.chars().any(char::is_control) {
+        return Err(EggpoolError::UnsupportedProvider(
+            request.provider_id.clone(),
+        ));
+    }
+    let definition = setup_catalog::setup_definition(provider_id)
+        .ok_or_else(|| EggpoolError::UnsupportedProvider(provider_id.to_string()))?;
+    if !definition.connectable {
+        return Err(EggpoolError::UnsupportedProvider(provider_id.to_string()));
+    }
+    let credential_kind = match request.credential_kind {
+        ProviderCredentialKind::ApiKey => codegg_providers::CredentialKind::ApiKey,
+        ProviderCredentialKind::Bearer => codegg_providers::CredentialKind::BearerToken,
+    };
+    if !definition.credential_capability.accepts(credential_kind) {
+        return Err(EggpoolError::UnsupportedCredentialKind);
+    }
+    let mut display_name =
+        display_name_for(request.display_name.as_deref(), definition.display_name)?;
+    let mut scope = scope_from_generic(&request.scope)?;
+    let (endpoint, tls_policy) = match definition.endpoint_policy {
+        SetupEndpointPolicy::Fixed { base_url } => {
+            if request
+                .endpoint
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+                || request.port.is_some()
+                || request.tls_policy.is_some()
+            {
+                return Err(EggpoolError::InvalidEndpoint(
+                    "endpoint is managed by the provider definition".into(),
+                ));
+            }
+            let endpoint = Endpoint::new(base_url, TlsPolicy::Required)
+                .map_err(|error| EggpoolError::InvalidEndpoint(error.to_string()))?;
+            (endpoint, TlsPolicy::Required)
+        }
+        SetupEndpointPolicy::OptionalOverride { default_base_url } => {
+            if request.port.is_some() {
+                return Err(EggpoolError::InvalidEndpoint(
+                    "explicit ports are only supported by proxy presets".into(),
+                ));
+            }
+            match request
+                .endpoint
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                Some(raw) => endpoint_from_user_url(raw, request.tls_policy)?,
+                None => {
+                    let base_url = default_base_url.ok_or_else(|| {
+                        EggpoolError::InvalidEndpoint("provider has no default endpoint".into())
+                    })?;
+                    let endpoint = Endpoint::new(base_url, TlsPolicy::Required)
+                        .map_err(|error| EggpoolError::InvalidEndpoint(error.to_string()))?;
+                    (endpoint, TlsPolicy::Required)
+                }
+            }
+        }
+        SetupEndpointPolicy::RequiredEndpoint => {
+            if request.port.is_some() {
+                return Err(EggpoolError::InvalidEndpoint(
+                    "explicit ports are only supported by proxy presets".into(),
+                ));
+            }
+            let raw = request
+                .endpoint
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| EggpoolError::InvalidEndpoint("endpoint is required".into()))?;
+            endpoint_from_user_url(raw, request.tls_policy)?
+        }
+        SetupEndpointPolicy::ProxyPreset { default_port } => {
+            let compat = CreateEggpoolConnectionRequest {
+                host: request.endpoint.clone().unwrap_or_default(),
+                port: request.port,
+                tls_policy: request
+                    .tls_policy
+                    .unwrap_or(ProviderTlsPolicy::Required)
+                    .into(),
+                api_key: request.credential.clone(),
+                display_name: Some(display_name.clone()),
+                scope: request.scope.clone().into(),
+                operation_id: request.operation_id.clone(),
+            };
+            let normalized = normalize_endpoint(&compat, default_port, definition.display_name)?;
+            // Adopt the preset path's scope/display so the host form and the
+            // generic form agree exactly (same inputs, same validation).
+            display_name = normalized.display_name;
+            scope = normalized.scope;
+            (normalized.endpoint, normalized.tls_policy)
+        }
+    };
+    Ok(NormalizedSpec {
+        provider_id: provider_id.to_string(),
+        provider_storage_key: storage_provider_kind(provider_id)?,
+        endpoint,
+        tls_policy,
+        scope,
+        display_name,
+        credential_kind,
+        probe_strategy: definition.probe_strategy,
+    })
+}
+
+/// Storage `provider_kind` for one setup-catalog provider ID.
+///
+/// Native transports keep their first-class storage keys; every other
+/// catalog provider (specialized or compatible) is stored as
+/// `other:{id}` so durable rows preserve the exact implementation identity
+/// instead of being coerced to a generic compatible row. Unknown IDs are
+/// rejected before any write.
+fn storage_provider_kind(provider_id: &str) -> Result<String, EggpoolError> {
+    match provider_id {
+        EGGPOOL_PRESET_ID => Ok(EGGPOOL_PRESET_ID.to_string()),
+        "openai" => Ok("openai".to_string()),
+        "anthropic" => Ok("anthropic".to_string()),
+        "google" => Ok("google".to_string()),
+        AZURE_ID => Ok("azure_openai".to_string()),
+        CUSTOM_COMPATIBLE_ID => Ok("openai_compatible".to_string()),
+        _ if setup_catalog::setup_definition(provider_id).is_some() => {
+            Ok(format!("other:{provider_id}"))
+        }
+        _ => Err(EggpoolError::UnsupportedProvider(provider_id.to_string())),
+    }
+}
+
+fn display_name_for(requested: Option<&str>, default: &str) -> Result<String, EggpoolError> {
+    let display_name = requested.unwrap_or(default).trim();
+    if display_name.is_empty()
+        || display_name.len() > 200
+        || display_name.chars().any(char::is_control)
+    {
+        return Err(EggpoolError::InvalidEndpoint(
+            "display name is invalid".into(),
+        ));
+    }
+    Ok(display_name.to_owned())
+}
+
+fn scope_from_generic(scope: &ProviderConnectionScope) -> Result<ProviderScope, EggpoolError> {
+    let scope = match scope {
+        ProviderConnectionScope::Personal { owner_id } => ProviderScope::personal(
+            PrincipalId::parse(owner_id)
+                .map_err(|_| EggpoolError::InvalidScope("owner id is invalid".into()))?,
+        ),
+        ProviderConnectionScope::Project { project_id } => ProviderScope::project(
+            ProjectId::parse(project_id)
+                .map_err(|_| EggpoolError::InvalidScope("project id is invalid".into()))?,
+        ),
+        ProviderConnectionScope::Deployment { deployment_id } => {
+            ProviderScope::deployment(deployment_id.clone())
+                .map_err(|_| EggpoolError::InvalidScope("deployment id is invalid".into()))?
+        }
+    };
+    Ok(scope)
+}
+
+/// Validate a caller-supplied full base URL for endpoint-requiring or
+/// override-capable providers. Unlike the proxy-preset normalization this
+/// imposes no default port and preserves the caller path; userinfo, query
+/// strings, fragments, control characters, and path traversal are rejected
+/// before any network request is possible.
+fn validate_user_endpoint(raw: &str) -> Result<String, EggpoolError> {
+    let invalid = |message: &str| EggpoolError::InvalidEndpoint(message.into());
+    let value = raw.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(invalid("endpoint must be a non-empty URL"));
+    }
+    if has_path_traversal(value) {
+        return Err(invalid("path traversal is not permitted"));
+    }
+    let parsed = url::Url::parse(value).map_err(|_| invalid("endpoint must be a valid URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(invalid("only HTTP(S) endpoints are supported"));
+    }
+    if parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(invalid("userinfo, query, and fragment are not permitted"));
+    }
+    if parsed.port() == Some(0) {
+        return Err(invalid("port must be in range 1..=65535"));
+    }
+    if parsed
+        .path_segments()
+        .map(|mut segments| segments.any(|segment| segment == ".."))
+        .unwrap_or(false)
+    {
+        return Err(invalid("path traversal is not permitted"));
+    }
+    Ok(value.trim_end_matches('/').to_owned())
+}
+
+fn has_path_traversal(value: &str) -> bool {
+    let path = value.split(['?', '#']).next().unwrap_or_default();
+    path.split('/').any(|segment| {
+        segment == ".."
+            || segment.eq_ignore_ascii_case("%2e%2e")
+            || segment.eq_ignore_ascii_case("%2e.%2e")
+            || segment.eq_ignore_ascii_case(".%2e")
+    })
+}
+
+fn endpoint_from_user_url(
+    raw: &str,
+    tls_policy: Option<ProviderTlsPolicy>,
+) -> Result<(Endpoint, TlsPolicy), EggpoolError> {
+    let url = validate_user_endpoint(raw)?;
+    let policy = match tls_policy {
+        Some(ProviderTlsPolicy::Required) => TlsPolicy::Required,
+        Some(ProviderTlsPolicy::Optional) => TlsPolicy::Optional,
+        Some(ProviderTlsPolicy::Disabled) => TlsPolicy::Disabled,
+        None if url.starts_with("https://") => TlsPolicy::Required,
+        None => TlsPolicy::Disabled,
+    };
+    let endpoint = Endpoint::new(&url, policy)
+        .map_err(|error| EggpoolError::InvalidEndpoint(error.to_string()))?;
+    Ok((endpoint, policy))
+}
+
+struct NormalizedEndpoint {
+    endpoint: Endpoint,
+    tls_policy: TlsPolicy,
+    scope: ProviderScope,
+    display_name: String,
+}
+
+/// Shared host/port/TLS/path normalization for proxy presets. The Eggpool
+/// form keeps calling this with the Eggpool default port; generic presets
+/// pass their own catalog default port.
+fn normalize_endpoint(
+    request: &CreateEggpoolConnectionRequest,
+    default_port: u16,
+    default_display: &str,
+) -> Result<NormalizedEndpoint, EggpoolError> {
     if request.host.chars().any(char::is_control) || request.host.trim().is_empty() {
         return Err(EggpoolError::InvalidEndpoint(
             "host is empty or contains control characters".into(),
@@ -1491,7 +1806,7 @@ fn normalize(request: &CreateEggpoolConnectionRequest) -> Result<NormalizedSpec,
             "explicit port conflicts with host port".into(),
         ));
     }
-    let port = request.port.or(parsed.port()).unwrap_or(DEFAULT_PORT);
+    let port = request.port.or(parsed.port()).unwrap_or(default_port);
     if port == 0 {
         return Err(EggpoolError::InvalidEndpoint(
             "port must be in range 1..=65535".into(),
@@ -1521,7 +1836,11 @@ fn normalize(request: &CreateEggpoolConnectionRequest) -> Result<NormalizedSpec,
     origin.set_path(&path);
     let endpoint = Endpoint::new(origin.as_str(), policy)
         .map_err(|e| EggpoolError::InvalidEndpoint(e.to_string()))?;
-    let display_name = request.display_name.as_deref().unwrap_or("Eggpool").trim();
+    let display_name = request
+        .display_name
+        .as_deref()
+        .unwrap_or(default_display)
+        .trim();
     if display_name.is_empty()
         || display_name.len() > 200
         || display_name.chars().any(char::is_control)
@@ -1544,7 +1863,7 @@ fn normalize(request: &CreateEggpoolConnectionRequest) -> Result<NormalizedSpec,
                 .map_err(|_| EggpoolError::InvalidScope("deployment id is invalid".into()))?
         }
     };
-    Ok(NormalizedSpec {
+    Ok(NormalizedEndpoint {
         endpoint,
         tls_policy: policy,
         scope,
@@ -1621,6 +1940,104 @@ fn map_probe_reason(reason: codegg_providers::EggpoolProbeReasonCode) -> ProbeRe
     }
 }
 
+/// Direct-provider validation for ordinary catalog providers: construct the
+/// provider through the canonical definition builder and call
+/// `Provider::models()` behind the operation cancellation and overall
+/// timeout boundary, normalizing the result into the bounded connection
+/// catalog. Provider-specific failures map into the generic provisioning
+/// reason taxonomy without response bodies, credentials, or transport detail.
+async fn probe_direct_models(
+    spec: &NormalizedSpec,
+    secret: &str,
+    cancel: CancellationToken,
+) -> Result<ProbeResult, ProbeReason> {
+    use codegg_providers::Provider as _;
+
+    const MODEL_COUNT_LIMIT: usize = 256;
+    const MODEL_STRING_LIMIT: usize = 256;
+
+    let started = Instant::now();
+    let credential = match spec.credential_kind {
+        codegg_providers::CredentialKind::ApiKey => {
+            codegg_providers::Credential::api_key(secret.to_owned())
+        }
+        codegg_providers::CredentialKind::BearerToken => {
+            codegg_providers::Credential::bearer(secret.to_owned(), None)
+        }
+    };
+    let provider = setup_catalog::build_durable_provider(
+        &spec.provider_id,
+        credential,
+        Some(spec.endpoint.as_str()),
+        &spec.display_name,
+    )
+    .map_err(|_| ProbeReason::UnsupportedApi)?;
+    if cancel.is_cancelled() {
+        return Err(ProbeReason::Cancelled);
+    }
+    let models = tokio::select! {
+        _ = cancel.cancelled() => return Err(ProbeReason::Cancelled),
+        result = tokio::time::timeout(WORKFLOW_TIMEOUT, provider.models()) => match result {
+            Err(_) => return Err(ProbeReason::Timeout),
+            Ok(Err(error)) => return Err(map_provider_error_reason(&error)),
+            Ok(Ok(models)) => models,
+        }
+    };
+    if models.len() > MODEL_COUNT_LIMIT {
+        return Err(ProbeReason::CatalogOversized);
+    }
+    let mut probed = Vec::with_capacity(models.len());
+    for model in &models {
+        if model.id.trim().is_empty() {
+            continue;
+        }
+        if model.id.chars().count() > MODEL_STRING_LIMIT
+            || model.name.chars().count() > MODEL_STRING_LIMIT
+        {
+            return Err(ProbeReason::CatalogOversized);
+        }
+        probed.push(ProbedModel {
+            id: model.id.clone(),
+            name: if model.name.is_empty() {
+                model.id.clone()
+            } else {
+                model.name.clone()
+            },
+            context_window: u64::try_from(model.context_window).unwrap_or(u64::MAX),
+            max_output_tokens: model
+                .max_output_tokens
+                .map(|value| u64::try_from(value).unwrap_or(u64::MAX)),
+            supports_tools: model.supports_tools,
+            supports_vision: model.supports_vision,
+        });
+    }
+    if probed.is_empty() {
+        return Err(ProbeReason::EmptyCatalog);
+    }
+    let catalog_revision = codegg_providers::eggpool::digest_models(
+        &probed
+            .iter()
+            .map(|model| codegg_providers::EggpoolModelSummary {
+                id: model.id.clone(),
+                name: model.name.clone(),
+            })
+            .collect::<Vec<_>>(),
+    );
+    Ok(ProbeResult {
+        models: probed,
+        catalog_revision,
+        duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    })
+}
+
+fn map_provider_error_reason(error: &codegg_providers::ProviderError) -> ProbeReason {
+    match error {
+        codegg_providers::ProviderError::Auth(_) => ProbeReason::AuthenticationFailed,
+        codegg_providers::ProviderError::Timeout(_) => ProbeReason::Timeout,
+        _ => ProbeReason::UnsupportedApi,
+    }
+}
+
 fn error_code(error: &EggpoolError) -> &'static str {
     match error {
         EggpoolError::Probe(reason) => reason.code(),
@@ -1629,6 +2046,8 @@ fn error_code(error: &EggpoolError) -> &'static str {
         EggpoolError::MasterKeyMissing => "master_key_missing",
         EggpoolError::InvalidEndpoint(_) => "invalid_endpoint",
         EggpoolError::InvalidScope(_) => "invalid_scope",
+        EggpoolError::UnsupportedProvider(_) => "unsupported_provider",
+        EggpoolError::UnsupportedCredentialKind => "unsupported_credential_kind",
         EggpoolError::Conflict => "connection_conflict",
         EggpoolError::Storage => "connection_storage_error",
         EggpoolError::Rotation(_) => "connection_rotation_failed",
@@ -1646,11 +2065,13 @@ fn model_dto(model: &ProbedModel) -> ProviderModelDto {
         supports_vision: model.supports_vision,
     }
 }
-fn idempotency_key(spec: &NormalizedSpec, scope: &EggpoolConnectionScope) -> String {
+fn idempotency_key(spec: &NormalizedSpec) -> String {
     let mut h = Sha256::new();
+    h.update(spec.provider_id.as_bytes());
+    h.update([0]);
     h.update(spec.endpoint.as_str().as_bytes());
     h.update([0]);
-    h.update(format!("{scope:?}").as_bytes());
+    h.update(format!("{:?}", spec.scope).as_bytes());
     format!("sha256:{}", hex::encode(h.finalize()))
 }
 fn storage_scope(scope: &ProviderScope) -> (&'static str, &str) {
@@ -1856,6 +2277,16 @@ mod tests {
         pool
     }
 
+    fn normalize_preset(
+        request: &CreateEggpoolConnectionRequest,
+    ) -> Result<NormalizedEndpoint, EggpoolError> {
+        normalize_endpoint(
+            request,
+            codegg_providers::setup_catalog::EGGPOOL_PRESET_DEFAULT_PORT,
+            "Eggpool",
+        )
+    }
+
     fn request(host: &str) -> CreateEggpoolConnectionRequest {
         CreateEggpoolConnectionRequest {
             host: host.into(),
@@ -1870,9 +2301,140 @@ mod tests {
         }
     }
 
+    fn generic_request(provider_id: &str) -> CreateProviderConnectionRequest {
+        CreateProviderConnectionRequest {
+            provider_id: provider_id.into(),
+            endpoint: None,
+            port: None,
+            tls_policy: None,
+            credential: SecretInput::new("generic-test-key").unwrap(),
+            credential_kind: ProviderCredentialKind::ApiKey,
+            display_name: None,
+            scope: ProviderConnectionScope::Personal {
+                owner_id: "local-user".into(),
+            },
+            operation_id: None,
+        }
+    }
+
+    /// Single-request fake endpoint with a configurable status/body. Mirrors
+    /// `fake_eggpool` so error-shape cases (auth, oversized) run against the
+    /// same generic service without live providers.
+    fn fake_status_server(
+        status: u16,
+        body: String,
+        delay: Duration,
+    ) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake status server");
+        listener
+            .set_nonblocking(true)
+            .expect("configure fake status listener");
+        let address = listener.local_addr().expect("fake status address");
+        let join = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok((stream, _address)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("configure fake status stream");
+                        break (stream, address);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return "no-request".to_string();
+                        }
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("accept fake status request: {error}"),
+                }
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read fake request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+            let reason = if status == 200 { "OK" } else { "ERROR" };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        (format!("http://{address}"), join)
+    }
+
+    fn closed_port_url() -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind closed-port probe");
+        let address = listener.local_addr().expect("closed-port address");
+        drop(listener);
+        format!("http://{address}")
+    }
+
+    fn oversized_catalog_body() -> String {
+        let mut body = String::from(r#"{"data":["#);
+        for index in 0..300 {
+            if index > 0 {
+                body.push(',');
+            }
+            body.push_str(&format!(r#"{{"id":"oversized-model-{index:03}"}}"#));
+        }
+        body.push_str("]}");
+        body
+    }
+
+    async fn storage_rows_contain(pool: &sqlx::SqlitePool, needle: &str) -> bool {
+        let tables = [
+            "provider_connections",
+            "provider_provisioning",
+            "provider_connection_health",
+            "provider_connection_models",
+        ];
+        for table in tables {
+            let count: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM {table} WHERE {}",
+                match table {
+                    "provider_connections" => {
+                        "id LIKE '%' || ? || '%' OR display_name LIKE '%' || ? || '%' OR endpoint LIKE '%' || ? || '%'"
+                    }
+                    "provider_provisioning" => {
+                        "operation_id LIKE '%' || ? || '%' OR display_name LIKE '%' || ? || '%' OR endpoint LIKE '%' || ? || '%'"
+                    }
+                    "provider_connection_health" => {
+                        "connection_id LIKE '%' || ? || '%' OR status LIKE '%' || ? || '%' OR reason_code LIKE '%' || ? || '%'"
+                    }
+                    _ => {
+                        "connection_id LIKE '%' || ? || '%' OR model_id LIKE '%' || ? || '%' OR model_name LIKE '%' || ? || '%'"
+                    }
+                }
+            ))
+            .bind(needle)
+            .bind(needle)
+            .bind(needle)
+            .fetch_one(pool)
+            .await
+            .expect("secret scan");
+            if count > 0 {
+                return true;
+            }
+        }
+        false
+    }
+
     #[test]
     fn omitted_port_uses_eggpool_default_and_v1_path() {
-        let spec = normalize(&request("127.0.0.1")).unwrap();
+        let spec = normalize_preset(&request("127.0.0.1")).unwrap();
         assert_eq!(spec.endpoint.as_str(), "http://127.0.0.1:11300/v1");
     }
 
@@ -1881,7 +2443,7 @@ mod tests {
         let mut req = request("http://127.0.0.1:9000");
         req.port = Some(9001);
         assert!(matches!(
-            normalize(&req),
+            normalize_preset(&req),
             Err(EggpoolError::InvalidEndpoint(_))
         ));
     }
@@ -1892,27 +2454,27 @@ mod tests {
         req.port = Some(9443);
         req.tls_policy = EggpoolTlsPolicy::Required;
         assert_eq!(
-            normalize(&req).unwrap().endpoint.as_str(),
+            normalize_preset(&req).unwrap().endpoint.as_str(),
             "https://eggpool.example:9443/v1"
         );
 
         let mut optional = request("eggpool.example");
         optional.tls_policy = EggpoolTlsPolicy::Optional;
         assert_eq!(
-            normalize(&optional).unwrap().endpoint.as_str(),
+            normalize_preset(&optional).unwrap().endpoint.as_str(),
             "https://eggpool.example:11300/v1"
         );
 
         let mut required_http = request("http://eggpool.example");
         required_http.tls_policy = EggpoolTlsPolicy::Required;
         assert!(matches!(
-            normalize(&required_http),
+            normalize_preset(&required_http),
             Err(EggpoolError::InvalidEndpoint(_))
         ));
 
         let disabled_https = request("https://eggpool.example");
         assert!(matches!(
-            normalize(&disabled_https),
+            normalize_preset(&disabled_https),
             Err(EggpoolError::InvalidEndpoint(_))
         ));
     }
@@ -1926,7 +2488,7 @@ mod tests {
             "https://eggpool.example/#secret",
         ] {
             assert!(matches!(
-                normalize(&request(host)),
+                normalize_preset(&request(host)),
                 Err(EggpoolError::InvalidEndpoint(_))
             ));
         }
@@ -2324,5 +2886,375 @@ mod tests {
                 .expect("active count");
         assert_eq!(active, 0);
         assert!(credential_store.list().is_empty());
+    }
+
+    // ── M002 generic provisioning ────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_direct_provider_provision_succeeds_without_network() {
+        let _master = MasterKeyGuard::new("generic-direct-provision-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        let request = generic_request("openai");
+        assert!(!format!("{request:?}").contains("generic-test-key"));
+        let result = provisioner
+            .create_connection(request)
+            .await
+            .expect("ordinary direct provision succeeds");
+
+        assert_eq!(result.connection.provider_kind, "openai");
+        assert_eq!(
+            result.connection.endpoint,
+            codegg_providers::setup_catalog::OPENAI_BASE_URL
+        );
+        assert_eq!(result.models.len(), 3);
+        assert_eq!(result.connection.model_count, 3);
+        assert!(!result.catalog_revision.is_empty());
+        // The credential is encrypted at rest and the secret never reaches
+        // SQLite rows or protocol snapshots.
+        assert_eq!(credential_store.list().len(), 1);
+        assert_ne!(
+            credential_store.list()[0].encrypted_secret,
+            "generic-test-key"
+        );
+        assert!(!storage_rows_contain(&pool, "generic-test-key").await);
+        let snapshot = serde_json::to_value(&result).expect("result serializes");
+        assert!(!snapshot.to_string().contains("generic-test-key"));
+
+        // Equivalent resubmission conflicts on the durable connection.
+        let duplicate = provisioner
+            .create_connection(generic_request("openai"))
+            .await
+            .expect_err("equivalent ordinary connection must conflict");
+        assert!(matches!(duplicate, EggpoolError::Conflict));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_eggpool_preset_provision_succeeds_through_generic_service() {
+        let _master = MasterKeyGuard::new("generic-eggpool-provision-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        let mut create_request = generic_request("eggpool");
+        create_request.endpoint = Some(host.clone());
+        create_request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        create_request.operation_id = Some("prov-generic-eggpool".to_string());
+        let result = provisioner
+            .create_connection(create_request)
+            .await
+            .expect("eggpool preset provision succeeds");
+        let raw_request = server.join().expect("fake server joins");
+
+        assert_eq!(result.connection.provider_kind, "eggpool");
+        assert_eq!(result.connection.endpoint, format!("{host}/v1"));
+        assert_eq!(result.models.len(), 1);
+        assert!(raw_request.contains("/v1/models"));
+        assert!(raw_request.contains("authorization: Bearer generic-test-key"));
+        assert!(!storage_rows_contain(&pool, "generic-test-key").await);
+
+        // Same host through the legacy compat adapter reaches the same row
+        // shape (duplicate), proving one shared service.
+        let mut compat = request(&host);
+        compat.operation_id = Some("prov-compat-eggpool".to_string());
+        let duplicate = provisioner
+            .create(compat)
+            .await
+            .expect_err("compat adapter must observe the generic row");
+        assert!(matches!(duplicate, EggpoolError::Conflict));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_custom_compatible_provision_succeeds() {
+        let _master = MasterKeyGuard::new("generic-custom-provision-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let body = r#"{"data":[{"id":"custom-model","name":"Custom Model"}]}"#.to_string();
+        let (host, server) = fake_status_server(200, body, Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        let mut request = generic_request("custom");
+        request.endpoint = Some(host.clone());
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        request.credential_kind = ProviderCredentialKind::Bearer;
+        let result = provisioner
+            .create_connection(request)
+            .await
+            .expect("custom compatible provision succeeds");
+        server.join().expect("fake server joins");
+
+        assert_eq!(result.connection.provider_kind, "openai_compatible");
+        assert_eq!(result.connection.endpoint, format!("{host}/"));
+        assert_eq!(result.models.len(), 1);
+        assert_eq!(result.models[0].id, "custom-model");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_invalid_credential_maps_to_bounded_reason() {
+        let _master = MasterKeyGuard::new("generic-invalid-credential-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_status_server(
+            401,
+            r#"{"error":"bad-key-must-not-leak"}"#.to_string(),
+            Duration::ZERO,
+        );
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        let mut request = generic_request("eggpool");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        let error = provisioner
+            .create_connection(request)
+            .await
+            .expect_err("invalid credential must fail");
+        server.join().expect("fake server joins");
+
+        assert!(matches!(
+            error,
+            EggpoolError::Probe(ProbeReason::AuthenticationFailed)
+        ));
+        assert_eq!(error_code(&error), "authentication_failed");
+        assert!(!error.to_string().contains("bad-key-must-not-leak"));
+        // Ownership-aware compensation removed the staged credential and left
+        // no durable connection.
+        assert!(credential_store.list().is_empty());
+        let active: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM provider_connections WHERE state = 'active'")
+                .fetch_one(&pool)
+                .await
+                .expect("active count");
+        assert_eq!(active, 0);
+        let failed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_provisioning WHERE state = 'failed' AND failure_code = 'authentication_failed'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("failed count");
+        assert_eq!(failed, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_unavailable_endpoint_maps_to_unreachable() {
+        let _master = MasterKeyGuard::new("generic-unreachable-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        let mut request = generic_request("eggpool");
+        request.endpoint = Some(closed_port_url());
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        let error = provisioner
+            .create_connection(request)
+            .await
+            .expect_err("unreachable endpoint must fail");
+        assert!(matches!(
+            error,
+            EggpoolError::Probe(ProbeReason::Unreachable)
+        ));
+        assert!(credential_store.list().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_oversized_catalog_is_rejected() {
+        let _master = MasterKeyGuard::new("generic-oversized-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_status_server(200, oversized_catalog_body(), Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        let mut request = generic_request("eggpool");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        let error = provisioner
+            .create_connection(request)
+            .await
+            .expect_err("oversized catalog must fail");
+        server.join().expect("fake server joins");
+        assert!(matches!(
+            error,
+            EggpoolError::Probe(ProbeReason::CatalogOversized)
+        ));
+        assert!(credential_store.list().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn generic_cancellation_compensates_operation_owned_credential() {
+        let _master = MasterKeyGuard::new("generic-cancel-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_status_server(
+            200,
+            r#"{"data":[{"id":"slow-model"}]}"#.to_string(),
+            Duration::from_millis(250),
+        );
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let mut request = generic_request("eggpool");
+        request.endpoint = Some(host.clone());
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        request.operation_id = Some("prov-generic-cancel".to_string());
+        let running = provisioner.clone();
+        let task = tokio::spawn(async move { running.create_connection(request).await });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let mut cancelled = false;
+        for _ in 0..100 {
+            if provisioner.cancel("prov-generic-cancel") {
+                cancelled = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(cancelled, "provisioning operation was not registered");
+        let result = task.await.expect("provision task joins");
+        assert!(matches!(result, Err(EggpoolError::Cancelled)));
+        let wake_address = host.strip_prefix("http://").unwrap_or(&host);
+        let _ = std::net::TcpStream::connect(wake_address);
+        let _ = server.join();
+        assert!(credential_store.list().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generic_restart_reconciliation_fails_staged_and_cleans_credential() {
+        let _master = MasterKeyGuard::new("generic-reconcile-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        // Simulate a crash between the staged journal write and the final
+        // transaction: a staged row plus its operation-owned credential.
+        credential_store
+            .put(
+                "openai",
+                Some("stale-account"),
+                codegg_providers::CredentialKind::ApiKey,
+                "stale-secret",
+                None,
+                Vec::new(),
+            )
+            .expect("stage stale credential");
+        sqlx::query(
+            "INSERT INTO provider_provisioning (operation_id, connection_id, idempotency_key, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, time_created, time_updated) VALUES ('op-stale', 'conn-stale', 'key-stale', 'openai', 'Stale', 'https://api.openai.com/v1', 'required', 'personal', 'local-user', 'secret-ref', 'openai', 'stale-account', 'staged', 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("stage stale row");
+
+        // A fresh provisioner (restart equivalent) reconciles before its own
+        // create: the staged row fails closed and its credential is removed,
+        // while the new ordinary provision succeeds.
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create_connection(generic_request("openai"))
+            .await
+            .expect("post-restart provision succeeds");
+        assert_eq!(result.connection.provider_kind, "openai");
+
+        let (state, code): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, failure_code FROM provider_provisioning WHERE operation_id = 'op-stale'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("stale row");
+        assert_eq!(state, "failed");
+        assert_eq!(code.as_deref(), Some("daemon_restarted"));
+        assert!(
+            credential_store
+                .list()
+                .iter()
+                .all(|record| record.account_id.as_deref() != Some("stale-account")),
+            "stale operation-owned credential must be cleaned"
+        );
+    }
+
+    #[test]
+    fn generic_unsupported_provider_and_credential_kind_are_typed() {
+        let unknown = normalize_generic(&generic_request("no_such_provider"))
+            .expect_err("unknown provider must be rejected");
+        assert!(matches!(unknown, EggpoolError::UnsupportedProvider(_)));
+
+        let mut bearer_for_api_key_only = generic_request("openai");
+        bearer_for_api_key_only.credential_kind = ProviderCredentialKind::Bearer;
+        let kind_error = normalize_generic(&bearer_for_api_key_only)
+            .expect_err("bearer must be rejected for an API-key-only provider");
+        assert!(matches!(
+            kind_error,
+            EggpoolError::UnsupportedCredentialKind
+        ));
+
+        let mut endpoint_for_fixed = generic_request("mistral");
+        endpoint_for_fixed.endpoint = Some("https://mistral.example/v1".to_string());
+        assert!(matches!(
+            normalize_generic(&endpoint_for_fixed),
+            Err(EggpoolError::InvalidEndpoint(_))
+        ));
+
+        let mut missing_endpoint = generic_request("custom");
+        missing_endpoint.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        assert!(matches!(
+            normalize_generic(&missing_endpoint),
+            Err(EggpoolError::InvalidEndpoint(_))
+        ));
+
+        let secret_leak = normalize_generic(&generic_request("azure"))
+            .expect_err("azure without an endpoint must fail");
+        assert!(!format!("{secret_leak:?}").contains("generic-test-key"));
+    }
+
+    #[test]
+    fn direct_probe_error_mapping_is_bounded() {
+        use codegg_providers::ProviderError;
+        assert_eq!(
+            map_provider_error_reason(&ProviderError::Auth("x".to_string())),
+            ProbeReason::AuthenticationFailed
+        );
+        assert_eq!(
+            map_provider_error_reason(&ProviderError::Timeout("x".to_string())),
+            ProbeReason::Timeout
+        );
+        assert_eq!(
+            map_provider_error_reason(&ProviderError::RateLimit),
+            ProbeReason::UnsupportedApi
+        );
     }
 }

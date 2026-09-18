@@ -4296,12 +4296,7 @@ async fn handle_core_frame(
     match frame {
         CoreFrame::Request(envelope) => {
             let request_id = envelope.request_id.clone();
-            if matches!(
-                &envelope.payload,
-                crate::protocol::core::CoreRequest::EggpoolConnectionCreate { .. }
-                    | crate::protocol::core::CoreRequest::ConnectionRotateSecretStage { .. }
-                    | crate::protocol::core::CoreRequest::ConnectionRotateBegin { .. }
-            ) {
+            if envelope.payload.is_secret_bearing() {
                 responses.push(CoreFrame::Response {
                     request_id,
                     response: Box::new(crate::protocol::core::CoreResponse::Error {

@@ -29,6 +29,7 @@ pub mod opencode_zen;
 pub mod openrouter;
 pub mod responses_api;
 pub mod retry;
+pub mod setup_catalog;
 pub mod sse_parser;
 pub mod text_tool_parser;
 pub mod vertex;
@@ -73,6 +74,15 @@ pub use retry::{
     AckState, ReconciliationOutcome, RetryChainId, RetryContext, RetryContextDto,
     UncertainSideEffect, UnifiedRetryDisposition, MAX_CHAIN_ATTEMPTS, MAX_CHAIN_DURATION,
     MAX_UNCERTAIN_DETAIL_CHARS,
+};
+pub use setup_catalog::{
+    build_durable_provider, fixed_base_url, provider_setup_catalog, setup_definition,
+    ProviderDefinition, SetupConstruction, SetupEndpointPolicy, SetupProbeStrategy,
+    ANTHROPIC_BASE_URL, AZURE_ID, CEREBRAS_BASE_URL, COHERE_BASE_URL, CUSTOM_COMPATIBLE_ID,
+    DEEPINFRA_BASE_URL, EGGPOOL_PRESET_DEFAULT_PORT, EGGPOOL_PRESET_ID, GENERALCOMPUTE_BASE_URL,
+    GOOGLE_ENDPOINT, GROQ_BASE_URL, MINIMAX_BASE_URL, MISTRAL_BASE_URL, OPENAI_BASE_URL,
+    OPENCODE_GO_BASE_URL, OPENCODE_ZEN_BASE_URL, OPENROUTER_ENDPOINT, PERPLEXITY_BASE_URL,
+    TOGETHER_BASE_URL, VENICE_BASE_URL, XAI_BASE_URL,
 };
 
 // The core provider types and registration logic

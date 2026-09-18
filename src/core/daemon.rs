@@ -3248,6 +3248,10 @@ pub(crate) fn eggpool_error_code(error: &crate::core::eggpool::EggpoolError) -> 
     match error {
         crate::core::eggpool::EggpoolError::InvalidEndpoint(_) => "invalid_endpoint",
         crate::core::eggpool::EggpoolError::InvalidScope(_) => "invalid_scope",
+        crate::core::eggpool::EggpoolError::UnsupportedProvider(_) => "unsupported_provider",
+        crate::core::eggpool::EggpoolError::UnsupportedCredentialKind => {
+            "unsupported_credential_kind"
+        }
         crate::core::eggpool::EggpoolError::CredentialStore => "credential_store_unavailable",
         crate::core::eggpool::EggpoolError::MasterKeyMissing => "master_key_missing",
         crate::core::eggpool::EggpoolError::Conflict => "connection_conflict",
@@ -3294,6 +3298,12 @@ pub(crate) fn eggpool_error_message(error: &crate::core::eggpool::EggpoolError) 
             crate::core::eggpool::ProbeReason::Cancelled => "Eggpool probe was cancelled",
         },
         crate::core::eggpool::EggpoolError::Storage => "Provider connection storage is unavailable",
+        crate::core::eggpool::EggpoolError::UnsupportedProvider(_) => {
+            "Provider is not supported for durable connections"
+        }
+        crate::core::eggpool::EggpoolError::UnsupportedCredentialKind => {
+            "Credential kind is not supported by this provider"
+        }
         crate::core::eggpool::EggpoolError::Rotation(_) => "Provider connection rotation failed",
         crate::core::eggpool::EggpoolError::Refresh(_) => "Provider connection refresh failed",
     }

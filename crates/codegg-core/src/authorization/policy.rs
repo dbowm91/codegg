@@ -120,6 +120,14 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::ProjectConfigure),
         ),
+        R::ProviderConnectionCreate { .. } => OperationDescriptor::new(
+            "provider_connection_create",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::ProviderSetupList => {
+            OperationDescriptor::new("provider_setup_list", ScopeKind::Enumeration, None)
+        }
         R::EggpoolConnectionCancel { .. } => OperationDescriptor::new(
             "eggpool_connection_cancel",
             ScopeKind::Opaque,

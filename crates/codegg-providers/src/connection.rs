@@ -6,12 +6,9 @@
 //! own environment/config compatibility; this module is the daemon-facing
 //! seam for persisted connections.
 
-use crate::anthropic::AnthropicProvider;
 use crate::auth_types::{
     Credential, CredentialCapability, CredentialKind, CredentialStore, StoredCredentialRecord,
 };
-use crate::openai::{OpenAiConfig, OpenAiProvider};
-use crate::openai_compatible::OpenAiCompatibleProvider;
 use crate::Provider;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -86,12 +83,20 @@ impl ProviderKind {
 /// registration matrix in `crate::provider_core::credential_capability_for`.
 ///
 /// Native `OpenAi`/`Anthropic`/`Google`/`AzureOpenAi` connections keep the
-/// static API-key contract (`ApiKeyOnly`); `OpenAiCompatible` connections
-/// accept either kind (`ApiKeyOrBearer`) and preserve it through
-/// `OpenAiCompatibleProvider::simple_with_credential`.
+/// static API-key contract (`ApiKeyOnly`). `OpenAiCompatible` connections
+/// report the setup-catalog capability for their provider ID so specialized
+/// durable builders (MiniMax, OpenRouter, Zen) stay `ApiKeyOnly` while
+/// ordinary compatible transports accept either kind (`ApiKeyOrBearer`) and
+/// preserve it through `OpenAiCompatibleProvider::simple_with_credential`.
+/// Unknown preset IDs keep the historical `ApiKeyOrBearer` compatible
+/// default so ad-hoc gateways remain buildable.
 pub fn capability_for_provider_kind(kind: &ProviderKind) -> CredentialCapability {
     match kind {
-        ProviderKind::OpenAiCompatible { .. } => CredentialCapability::ApiKeyOrBearer,
+        ProviderKind::OpenAiCompatible { provider_id } => {
+            crate::setup_catalog::setup_definition(provider_id)
+                .map(|definition| definition.credential_capability)
+                .unwrap_or(CredentialCapability::ApiKeyOrBearer)
+        }
         ProviderKind::OpenAi
         | ProviderKind::Anthropic
         | ProviderKind::Google
@@ -420,71 +425,17 @@ impl ProviderFactory for ProviderConnectionFactory {
             .as_deref()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| descriptor.provider.default_name());
-
-        match &descriptor.provider {
-            ProviderKind::OpenAi => {
-                require_api_key(&provider_id, &credential)?;
-                let mut config = OpenAiConfig::default_with_key(credential.secret);
-                if let Some(base_url) = descriptor.base_url.clone() {
-                    config.base_url = base_url;
-                }
-                config.provider_id = provider_id;
-                config.provider_name = name.to_string();
-                Ok(Box::new(OpenAiProvider::new(config)))
-            }
-            ProviderKind::Anthropic => {
-                require_api_key(&provider_id, &credential)?;
-                let mut provider = AnthropicProvider::new(credential.secret)
-                    .with_id(provider_id)
-                    .with_name(name.to_string());
-                if let Some(base_url) = descriptor.base_url.clone() {
-                    provider = provider.with_base_url(base_url);
-                }
-                Ok(Box::new(provider))
-            }
-            ProviderKind::Google => {
-                require_api_key(&provider_id, &credential)?;
-                Ok(Box::new(crate::google::GoogleProvider::new(
-                    credential.secret,
-                )))
-            }
-            ProviderKind::AzureOpenAi => {
-                require_api_key(&provider_id, &credential)?;
-                let endpoint = descriptor.base_url.as_deref().ok_or_else(|| {
-                    ConnectionError::InvalidDescriptor(
-                        "azure connections require base_url".to_string(),
-                    )
-                })?;
-                Ok(Box::new(crate::azure::AzureProvider::new(
-                    credential.secret,
-                    endpoint.to_string(),
-                )))
-            }
-            ProviderKind::OpenAiCompatible { .. } => {
-                let base_url = descriptor.base_url.as_deref().ok_or_else(|| {
-                    ConnectionError::InvalidDescriptor(
-                        "openai-compatible connections require base_url".to_string(),
-                    )
-                })?;
-                Ok(Box::new(OpenAiCompatibleProvider::simple_with_credential(
-                    &provider_id,
-                    name,
-                    credential,
-                    base_url,
-                )))
-            }
-        }
+        // The setup catalog owns durable construction policy: native,
+        // specialized (custom headers/requests), and generic compatible
+        // builders all dispatch from one place so startup registration and
+        // durable connections cannot drift.
+        crate::setup_catalog::build_durable_provider(
+            &provider_id,
+            credential,
+            descriptor.base_url.as_deref(),
+            name,
+        )
     }
-}
-
-fn require_api_key(provider_id: &str, credential: &Credential) -> Result<(), ConnectionError> {
-    if credential.kind != CredentialKind::ApiKey {
-        return Err(ConnectionError::UnsupportedCredentialKind {
-            provider_id: provider_id.to_string(),
-            kind: credential.kind,
-        });
-    }
-    Ok(())
 }
 
 fn matches_secret_ref(record: &StoredCredentialRecord, secret_ref: &SecretRef) -> bool {

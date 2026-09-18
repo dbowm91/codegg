@@ -1,6 +1,11 @@
 use crate::anthropic::AnthropicProvider;
 use crate::auth_types::Credential;
 use crate::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider, ToolChoice};
+use crate::setup_catalog::{
+    CEREBRAS_BASE_URL, COHERE_BASE_URL, DEEPINFRA_BASE_URL, GENERALCOMPUTE_BASE_URL, GROQ_BASE_URL,
+    MISTRAL_BASE_URL, OPENCODE_GO_BASE_URL, PERPLEXITY_BASE_URL, TOGETHER_BASE_URL,
+    VENICE_BASE_URL, XAI_BASE_URL,
+};
 use crate::{ModelInfo, Provider};
 
 /// xAI models exposed by the OpenAI-compatible endpoint.
@@ -23,7 +28,7 @@ pub fn create_xai(credential: Credential) -> impl Provider {
         "xAI",
         OpenAiCompatibleConfig {
             credential,
-            base_url: "https://api.x.ai/v1".to_string(),
+            base_url: XAI_BASE_URL.to_string(),
             auth_header: "Authorization".to_string(),
             extra_headers: Vec::new(),
             models: xai_models(),
@@ -37,17 +42,12 @@ pub fn create_mistral(credential: Credential) -> impl Provider {
         "mistral",
         "Mistral",
         credential,
-        "https://api.mistral.ai/v1",
+        MISTRAL_BASE_URL,
     )
 }
 
 pub fn create_groq(credential: Credential) -> impl Provider {
-    OpenAiCompatibleProvider::simple_with_credential(
-        "groq",
-        "Groq",
-        credential,
-        "https://api.groq.com/openai/v1",
-    )
+    OpenAiCompatibleProvider::simple_with_credential("groq", "Groq", credential, GROQ_BASE_URL)
 }
 
 pub fn create_deepinfra(credential: Credential) -> impl Provider {
@@ -55,7 +55,7 @@ pub fn create_deepinfra(credential: Credential) -> impl Provider {
         "deepinfra",
         "DeepInfra",
         credential,
-        "https://api.deepinfra.com/v1/openai",
+        DEEPINFRA_BASE_URL,
     )
 }
 
@@ -64,7 +64,7 @@ pub fn create_cerebras(credential: Credential) -> impl Provider {
         "cerebras",
         "Cerebras",
         credential,
-        "https://api.cerebras.ai/v1",
+        CEREBRAS_BASE_URL,
     )
 }
 
@@ -73,7 +73,7 @@ pub fn create_cohere(credential: Credential) -> impl Provider {
         "cohere",
         "Cohere",
         credential,
-        "https://api.cohere.ai/compatibility/v1",
+        COHERE_BASE_URL,
     )
 }
 
@@ -82,7 +82,7 @@ pub fn create_together(credential: Credential) -> impl Provider {
         "together",
         "Together AI",
         credential,
-        "https://api.together.xyz/v1",
+        TOGETHER_BASE_URL,
     )
 }
 
@@ -91,7 +91,7 @@ pub fn create_perplexity(credential: Credential) -> impl Provider {
         "perplexity",
         "Perplexity",
         credential,
-        "https://api.perplexity.ai",
+        PERPLEXITY_BASE_URL,
     )
 }
 
@@ -100,7 +100,7 @@ pub fn create_venice(credential: Credential) -> impl Provider {
         "venice",
         "Venice",
         credential,
-        "https://api.venice.ai/api/v1",
+        VENICE_BASE_URL,
     )
 }
 
@@ -109,7 +109,7 @@ pub fn create_generalcompute(credential: Credential) -> impl Provider {
         "generalcompute",
         "GeneralCompute",
         credential,
-        "https://api.generalcompute.com/v1",
+        GENERALCOMPUTE_BASE_URL,
     )
 }
 
@@ -212,7 +212,7 @@ pub fn create_opencode_go(credential: Credential) -> impl Provider {
         "opencode_go",
         "OpenCode Go",
         credential,
-        "https://opencode.ai/go/v1",
+        OPENCODE_GO_BASE_URL,
     )
     .with_session_affinity_header("x-opencode-session")
     .expect("built-in OpenCode Go session header name is valid")

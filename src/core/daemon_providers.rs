@@ -39,6 +39,24 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::ProviderConnectionCreate { request } => {
+                let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                match provisioner.create_connection(request).await {
+                    Ok(result) => Ok(CoreResponse::ProviderConnectionCreated { result }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: eggpool_error_code(&error).to_string(),
+                        message: eggpool_error_message(&error).to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ProviderSetupList => Ok(CoreResponse::ProviderSetupList {
+                providers: provider_setup_catalog_dtos(),
+            }),
             CoreRequest::EggpoolConnectionCancel { operation_id } => {
                 let Some(provisioner) = self.eggpool_provisioner.as_ref() else {
                     return Ok(CoreResponse::Error {
@@ -469,4 +487,46 @@ impl CoreDaemon {
             }
         }
     }
+}
+
+/// Secret-free daemon-owned setup catalog projection for selection surfaces.
+///
+/// Sourced from the canonical pre-credential definitions in
+/// `codegg-providers`; carries no secrets and grants no authorization.
+fn provider_setup_catalog_dtos() -> Vec<codegg_protocol::provider::ProviderSetupEntryDto> {
+    use codegg_providers::{setup_catalog::SetupEndpointPolicy, CredentialCapability};
+
+    codegg_providers::provider_setup_catalog()
+        .iter()
+        .map(|definition| {
+            let credential_kinds = match definition.credential_capability {
+                CredentialCapability::ApiKeyOnly => vec!["api_key".to_string()],
+                CredentialCapability::ApiKeyOrBearer => {
+                    vec!["api_key".to_string(), "bearer".to_string()]
+                }
+            };
+            let (endpoint_policy, default_endpoint) = match definition.endpoint_policy {
+                SetupEndpointPolicy::Fixed { base_url } => {
+                    ("fixed".to_string(), Some(base_url.to_string()))
+                }
+                SetupEndpointPolicy::OptionalOverride { default_base_url } => (
+                    "optional_override".to_string(),
+                    default_base_url.map(str::to_string),
+                ),
+                SetupEndpointPolicy::RequiredEndpoint => ("required".to_string(), None),
+                SetupEndpointPolicy::ProxyPreset { .. } => ("proxy_preset".to_string(), None),
+            };
+            codegg_protocol::provider::ProviderSetupEntryDto {
+                id: definition.id.to_string(),
+                display_name: definition.display_name.to_string(),
+                description: definition.description.to_string(),
+                connectable: definition.connectable,
+                credential_kinds,
+                endpoint_policy,
+                default_endpoint,
+                requires_endpoint: definition.requires_endpoint(),
+                env_var: definition.env_var.map(str::to_string),
+            }
+        })
+        .collect()
 }

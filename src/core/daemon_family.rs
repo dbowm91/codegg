@@ -67,6 +67,8 @@ impl DaemonRequestFamily {
             CoreRequest::EggpoolConnectionCancel { .. } => Self::Providers,
             CoreRequest::EggpoolConnectionCreate { .. } => Self::Providers,
             CoreRequest::EggpoolConnectionStatus { .. } => Self::Providers,
+            CoreRequest::ProviderConnectionCreate { .. } => Self::Providers,
+            CoreRequest::ProviderSetupList => Self::Providers,
             CoreRequest::ProviderConnectionList => Self::Providers,
             CoreRequest::ProviderConnectionModels { .. } => Self::Providers,
             CoreRequest::SessionArchive { .. } => Self::Sessions,

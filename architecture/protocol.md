@@ -100,7 +100,9 @@ Tagged enum with ~166 variants. Major groups:
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
 
-**Connection Lifecycle (~18)**: `EggpoolConnectionCreate`,
+**Connection Lifecycle (~18)**: `EggpoolConnectionCreate` (temporary
+compatibility adapter), `ProviderConnectionCreate` (canonical
+provider-neutral create), `ProviderSetupList` (secret-free setup catalog),
 `EggpoolConnectionCancel`, `EggpoolConnectionStatus`,
 `ProviderConnectionList`, `ProviderConnectionModels`,
 `ConnectionRotateBegin`, `ConnectionRotateSecretStage`,
@@ -178,7 +180,9 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 
 Tagged enum with ~110 variants. Major groups:
 
-**Connection Responses**: `EggpoolConnectionCreated`,
+**Connection Responses**: `EggpoolConnectionCreated` (shared result shape,
+also aliased as `CreateProviderConnectionResult`),
+`ProviderConnectionCreated`, `ProviderSetupList`,
 `EggpoolConnectionStatus`, `EggpoolConnectionCancelled`,
 `ProviderConnections`, `ProviderConnectionModels`, `ConnectionDetail`,
 `ConnectionDetails`, `ConnectionRotateStatus`,
@@ -391,9 +395,14 @@ resolve through deterministic lookup of an existing unique locator.
   filtered to subscribed clients.
 - **Durable surfaces**: Panels and status items survive reconnect.
   Dialogs and toasts are transient.
-- **Secret-bearing requests rejected by remote WebSocket**:
-  `EggpoolConnectionCreate` and `ConnectionRotateSecretStage` are
-  local-only. The remote core WebSocket rejects them.
+- **Secret-bearing requests rejected by remote WebSocket**: denial is
+  defined by secret-bearing semantics (`CoreRequest::is_secret_bearing`),
+  not by provider names — `EggpoolConnectionCreate`,
+  `ProviderConnectionCreate`, `ConnectionRotateSecretStage`, and
+  `ConnectionRotateBegin` are local-only. The remote core WebSocket
+  rejects them with `secret_operation_remote_denied`, and the
+  `secret_bearing_variants_are_denied` protocol test pins the set so a
+  future secret-bearing variant fails until it is added to the guard.
 - **Projection is additive**: Unknown optional variants are tolerated
   within the declared version range.
 - **Presence is ephemeral and non-authoritative** (M001):

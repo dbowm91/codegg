@@ -3,6 +3,14 @@
 //! This module is intentionally independent of connection storage and protocol
 //! types.  It is the providers-side seam used by those layers to validate an
 //! endpoint and obtain a small, deterministic model catalog.
+//!
+//! The probe machinery is protocol-generic (strict OpenAI-compatible
+//! `/models` validation with redirect/body/model-count bounds); only the
+//! default port and preset normalization stay Eggpool-specific. The
+//! `Compatible*` aliases below are the provider-neutral names new code must
+//! use. Only [`normalize_eggpool_base_url`] keeps Eggpool semantics (it
+//! applies the preset default port); arbitrary compatible endpoints must use
+//! their own validation without a preset port.
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,6 +29,18 @@ const DEFAULT_MODEL_STRING_LIMIT: usize = 256;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub use EggpoolApiKey as CompatibleApiKey;
+pub use EggpoolCancellationToken as CompatibleCancellationToken;
+pub use EggpoolModelSummary as CompatibleModelSummary;
+/// Provider-neutral aliases for the strict compatible `/models` probe.
+/// New code must use these names; the `Eggpool*` names remain for
+/// compatibility.
+pub use EggpoolProbe as CompatibleModelsProbe;
+pub use EggpoolProbeError as CompatibleProbeError;
+pub use EggpoolProbeOptions as CompatibleProbeOptions;
+pub use EggpoolProbeReasonCode as CompatibleProbeReasonCode;
+pub use EggpoolProbeSummary as CompatibleProbeSummary;
 
 /// Stable, redacted categories for probe failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

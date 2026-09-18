@@ -69,6 +69,16 @@ executable contract; `capability_matrix_covers_every_registration_branch`
 fails if a branch is unclassified. Unknown provider ids default to
 `ApiKeyOnly`.
 
+The setup catalog (`crates/codegg-providers/src/setup_catalog.rs`) is the
+single source of truth behind that matrix: `credential_capability_for`
+reports the catalog definition's capability, the fixed base-URL constants
+are shared with the `additional` constructors, and
+`catalog_covers_builtin_registration_order_with_explicit_disposition` fails
+when a built-in lands without a setup disposition. `ProviderRegistry`
+holds live instances only; the setup catalog describes providers before
+credentials exist and drives `/connect` selection plus durable
+provisioning.
+
 If the registry is still empty after config-based registration, falls back
 to `register_builtin()` for env-var-only registration. This means:
 **adding any provider via config does NOT disable others**. Each provider
@@ -108,9 +118,37 @@ Durable connections use states: `active`, `disabled`,
 purge succeeds with no references.
 
 Rotation stages a new credential binding, validates the endpoint, runs
-the bounded Eggpool model probe, and commits metadata in one SQLite
+the bounded compatible model probe, and commits metadata in one SQLite
 transaction. Connection refresh is explicit, single-flight, and bounded
 by provider probe limits.
+
+### Provider-Neutral Provisioning (M002)
+
+`ProviderConnectionProvisioner` (`src/core/eggpool.rs`; historical alias
+`EggpoolProvisioner`) provisions every catalog provider through one
+sequence: validate/normalize → staged journal → operation-owned protected
+credential write → bounded probe/model discovery → one final transaction
+publishing connection, health, catalog, and committed provisioning state.
+No network I/O happens inside the final transaction.
+
+- The setup definition selects the endpoint policy (`Fixed`,
+  `OptionalOverride`, `RequiredEndpoint`, `ProxyPreset`), the credential
+  contract, and the probe strategy. Eggpool is a `ProxyPreset` (default
+  port 11300) using the same compatible transport as any local proxy;
+  `custom` is the endpoint-requiring generic OpenAI-compatible entry.
+- `CompatibleProbe` reuses the strict `/models` probe (redirect, body,
+  and model-count bounds) via its provider-neutral `Compatible*` aliases.
+- `DirectModels` constructs the provider through the canonical catalog
+  builder (`build_durable_provider`, also used by
+  `ProviderConnectionFactory`) and calls `Provider::models()` behind the
+  operation cancellation/timeout boundary, normalizing into the bounded
+  catalog. Specialized implementations (xAI custom config, OpenCode Go
+  session affinity, MiniMax/OpenRouter/Zen native transports) keep their
+  own builders instead of being coerced to generic transport.
+- Durable rows preserve implementation identity: native transports keep
+  first-class storage keys, everything else stores `other:{id}`, and
+  pre-existing `eggpool`/`openai_compatible` rows resolve through the same
+  factory.
 
 Operator flow: connect -> select -> rotate -> refresh -> disable -> delete
 (tombstone) -> restore -> purge.

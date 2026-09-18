@@ -21,6 +21,7 @@ to violate.
 | Layer | Location | Role |
 |-------|----------|------|
 | Trait + registry | `crates/codegg-providers/src/provider_core.rs` | `Provider` trait, `ProviderRegistry`, `register_builtin`, `register_builtin_with_config`, `CredentialCapability`; derive current provider totals from the registry rather than pinning them here |
+| Setup catalog + durable builders | `crates/codegg-providers/src/setup_catalog.rs` | Pre-credential `ProviderDefinition` catalog (endpoint policy, capability, construction/probe strategy); `build_durable_provider` shared by `ProviderConnectionFactory` and the generic provisioner; Eggpool is a `ProxyPreset`, `custom` the generic compatible entry |
 | Backends | `anthropic.rs`, `openai.rs`, `google.rs`, `openrouter.rs`, `opencode_zen.rs`, `additional.rs`, `openai_compatible.rs`, `azure.rs`, `vertex.rs`, `bedrock.rs`, `copilot.rs`, `cloudflare.rs`, `gitlab.rs`, `eggpool.rs` | Per-provider request/stream/models mapping |
 | Auth types | `crates/codegg-providers/src/auth_types.rs` | `AuthConfig`, `Credential`, `CredentialKind`, `CredentialStore`, `AuthResolver`, `AuthError`; `ExternalCommand` unsupported |
 | Auth CLI | `src/auth/cli.rs`, `src/auth/mod.rs` | `codegg auth set-key/status/logout`; `src/auth` re-exports providers types |
@@ -43,6 +44,11 @@ to violate.
 4. **Single credential resolution path.** Env → config inline → encrypted
    config → user store → legacy fields via `AuthResolver`. No parallel
    lookup chains.
+4b. **Setup catalog owns onboarding metadata.** New built-in providers need
+   a `setup_catalog` definition (explicit connectable disposition) plus a
+   durable-builder arm — never a second name list, and never a fake
+   API-key coercion for OAuth/signing/multi-field auth. The
+   `catalog_covers_builtin_registration_order` test enforces this.
 5. **MCP OAuth stays separate from `CredentialStore`.** A `TokenSet` is a
    server-scoped multi-field lifecycle (access/refresh/expiry/type/scope)
    with its own versioned whole-store envelope; it reuses only the
