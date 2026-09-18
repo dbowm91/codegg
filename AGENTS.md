@@ -30,10 +30,12 @@ are allowed in tests (`clippy.toml`).
   builds the `codegg-lsp-test-server` binary behind `lsp-test-support`.
 - Workspace ownership: root `Cargo.toml` `[workspace.package]`/`[workspace.dependencies]`
   own shared versions/default policy; members use `*.workspace = true` plus only their
-  local features (`sqlx`/`eggfetch-core` baselines carry no union features; `uuid` baseline
-  is `v4`, serde stays local). Single-consumer deps stay local. `[workspace.lints]`
-  `unsafe_code = deny` is inherited only by `codegg-core`; root stays outside because
-  `src/bin/codegg-sandbox-helper.rs` has deliberate reviewed `unsafe`.
+  local features (minimal baseline — member manifests add only what they need;
+  `serde` keeps no workspace features). Single-consumer deps stay local.
+  `[workspace.lints] unsafe_code = "deny"` is inherited via `[lints] workspace = true`
+  (e.g. `codegg-core`); the root package intentionally does NOT inherit it because
+  `src/bin/codegg-sandbox-helper.rs` has deliberate reviewed `unsafe` — the lib
+  enforces `#![deny(unsafe_code)]` in `src/lib.rs` instead.
 - Aliases (`.cargo/config.toml`): `cargo ck` (workspace check),
   `ckroot ckcore ckprotocol ckconfig ckproviders ckgit cksplit`.
 - Features: `server` (axum HTTP/WS), `plugins` (wasmtime), `image`,
@@ -65,7 +67,8 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1  # capped
 
 `verify.sh quick` runs the routine subset. CI (`.github/workflows/ci.yml`) is one bounded
 `verify` job: agent schema, core-boundary, sandbox, execution-ownership, tui-authority,
-fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/check_*`):
+fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/check_*`
+for the full list):
 
 - `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`
 - Process spawning / execution surfaces → `python3 scripts/check_execution_ownership.py`
@@ -101,48 +104,22 @@ fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/c
 - New web-search providers belong in the external `eggsearch` project, not `src/search/`
   (legacy fallback). New deterministic validators go in the `eggsact` crate first. New
   LSP servers go in `crates/egglsp/src/server.rs` + config.
-- Semantic model routing is opt-in through exact `virtual:<name>` aliases.
-  `codegg-core::model_routing` adapts and compiles the shared EggPool policy;
-  `src/agent/semantic_router.rs` executes bounded selector calls. It never
-  changes durable session/provider-connection selection or the already-selected
-  per-turn provider object. It validates the resolved route against that
-  connection, and concrete models bypass it. `sticky`/`affinity_ttl_s` remain
-  shared policy fields only; Codegg has no local affinity cache. The EggPool
-  `/models` probe remains provider discovery.
+- Semantic model routing is opt-in through exact `virtual:<name>` aliases only; concrete
+  models bypass it. It never changes durable session/provider-connection selection, only
+  picks a compatible model through the already-selected connection. No local affinity
+  cache (`sticky`/`affinity_ttl_s` are shared policy fields only). See README +
+  `architecture/config.md` for the full contract.
 
 ## Pointers
 
 - `architecture/overview.md` is the module map; one doc per module under `architecture/`.
 - `plans/registry.md` is the authoritative milestone/roadmap status — check it before
   assuming any roadmap state.
-- `.opencode/skills/*/SKILL.md` are on-demand module guides (load via the skill tool).
-  Canonical location is `.opencode/skills/`; `.skills` and `.agents/skills` are symlinks
-  to it. When a module contract changes, update the skill and its `architecture/` doc together.
+- `.opencode/skills/*/SKILL.md` are on-demand module guides (load via the skill tool;
+  `ls .opencode/skills/` for the list). Canonical location is `.opencode/skills/`;
+  `.skills` and `.agents/skills` are symlinks to it. When a module contract changes,
+  update the skill and its `architecture/` doc together.
 - `docs/`: `execution-ownership.md` (+ `.toml` manifest), `security-semantics.md`,
   `LSP.md`/`MCP.md`/`PLUGINS.md` (user integration notes; `architecture/` is authoritative),
   `TROUBLESHOOTING.md`, `dependency-maintenance.md`, `themes.md`,
   `validation/` (historical closure records).
-
-## Skills Index
-
-| Skill | Covers | Primary doc |
-|---|---|---|
-| `agent` | Agent loop, request prep, provider turn, compaction seam, delegated runs, built-in generation | `architecture/agent.md` |
-| `architecture-review` | Verifying `architecture/` against code (counts, paths, batches for all 77 docs) | `architecture/overview.md` (Verified Counts) |
-| `bus-projection` | `GlobalEventBus` (53 `AppEvent`), sync registries, canonical reducer (46 `ProjectionEvent`), replay, chat/presence | `architecture/bus.md`, `architecture/projection.md` |
-| `context` | Artifact storage, projection, `context_read`, packer, tool-palette policy, volatile-tail, `compaction.rs` owner | `architecture/context-compaction-ownership.md` |
-| `core` | Core facade, daemon families/lifecycle, transports, workspace registry | `architecture/core.md` |
-| `git` | Typed ops (54) + risk (11), guarded mutations/network/recovery, forbidden-pattern guard | `architecture/git.md` |
-| `human-shell` | `!`/`!!` promotion model, safety policy, bounded output store | `architecture/human_shell.md` |
-| `jobs` | Durable jobs/schedules/recovery/idempotency (`codegg-core`) | `architecture/jobs.md` |
-| `mcp-plugin` | MCP stdio/remote client + OAuth, eggsearch wiring, process/WASM/built-in plugin runtime | `architecture/mcp.md`, `architecture/plugin.md` |
-| `planning` | `plans/` lifecycle: roadmaps, handoff plans, closure, registry, ADRs, archive | `plans/003-planning-process.md`, `plans/README.md` |
-| `provider-auth` | 15 env-var + 17 config-aware providers, `AuthResolver`, encrypted store, circuit/fallback | `architecture/provider.md`, `architecture/auth.md` |
-| `scheduler` | Admission control, fair queue, executors, `JobSubmissionService` | `architecture/scheduler.md` |
-| `server` | Axum HTTP/WS server, routes, `/tui` protocol, auth/rate limits | `architecture/server.md` |
-| `session-storage` | Session stores, 71-table schema (layout 56), catalog, identity, run store | `architecture/session.md`, `architecture/storage.md` |
-| `skills` | Skill discovery/precedence, portable schema, proposal/publication boundary | `architecture/skills.md` |
-| `tool-program-harness` | Tool Program scenario/chaos/resource evaluation across harness modes | `architecture/tool_programs.md` |
-| `tui` | TUI commands, sync dispatch, async spawn-and-complete, dialogs, project scope, `route.rs`/`ui_builders/` | `architecture/tui.md` |
-| `upgrade` | Self-upgrade check (`codegg upgrade` is check-only; pin via `CODEGG_VERSION`) | `architecture/upgrade.md` |
-| `util` | Clipboard, fuzzy, truncate, metrics, interner, pricing | `architecture/util.md` |
