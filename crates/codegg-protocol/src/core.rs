@@ -426,6 +426,93 @@ pub struct ChatComposingDto {
     pub expires_at_ms: i64,
 }
 
+// ── Team Collaboration Corrective M002: Project/Channel Chat Access Policy ──
+//
+// Role defaults stay the compatibility baseline (Contributor+ allowed,
+// Viewer denied). A daemon-owned revisioned overlay adds project principal
+// overrides plus per-channel mode (`inherit_project` | `restricted`) and
+// channel principal overrides. Active membership is always required first;
+// a chat grant never implies execution authority. DTOs carry structural
+// ids/revisions only — never message content or secrets — so the same
+// shapes serve TUI administration and selected-project chat rendering.
+
+/// One principal override inside a chat policy: explicit allow or deny.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatPolicyDecisionDto {
+    Allow,
+    Deny,
+}
+
+impl ChatPolicyDecisionDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "allow" => Some(Self::Allow),
+            "deny" => Some(Self::Deny),
+            _ => None,
+        }
+    }
+}
+
+/// Per-channel default when no principal override matches.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatChannelModeDto {
+    InheritProject,
+    Restricted,
+}
+
+impl ChatChannelModeDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InheritProject => "inherit_project",
+            Self::Restricted => "restricted",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "inherit_project" => Some(Self::InheritProject),
+            "restricted" => Some(Self::Restricted),
+            _ => None,
+        }
+    }
+}
+
+/// One principal allow/deny row inside a project or channel policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatPolicyOverrideDto {
+    pub principal_id: String,
+    pub decision: ChatPolicyDecisionDto,
+}
+
+/// Durable project-scoped chat policy: revision plus principal overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatProjectPolicyDto {
+    pub project_id: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub overrides: Vec<ChatPolicyOverrideDto>,
+}
+
+/// Durable channel-scoped chat policy: mode plus principal overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatChannelPolicyDto {
+    pub channel_id: String,
+    pub project_id: String,
+    pub mode: ChatChannelModeDto,
+    pub revision: u64,
+    #[serde(default)]
+    pub overrides: Vec<ChatPolicyOverrideDto>,
+}
+
 // ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
 //
 // Free text never executes: bodies stay inert bounded text (M001). A
@@ -1351,6 +1438,18 @@ pub enum CoreResponse {
     ChatActionList {
         channel_id: String,
         actions: Vec<ChatActionDto>,
+    },
+    // ── Team Collaboration Corrective M002: Chat Access Policy Views ──
+    /// Project policy plus one channel policy (when requested).
+    ChatPolicy {
+        project: ChatProjectPolicyDto,
+        #[serde(default)]
+        channel: Option<ChatChannelPolicyDto>,
+    },
+    /// Project policy plus every channel policy in the project.
+    ChatPolicyList {
+        project: ChatProjectPolicyDto,
+        channels: Vec<ChatChannelPolicyDto>,
     },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     /// Daemon-owned principal preference (approval + sandbox + revision).
@@ -2303,6 +2402,52 @@ pub enum CoreRequest {
         #[serde(default)]
         limit: Option<u32>,
     },
+    // ── Team Collaboration Corrective M002: Chat Access Policy Admin ──
+    //
+    // Owner-only (`member.manage`) inspection/mutation of the revisioned
+    // chat access overlay from ADR-0006. Project operations carry a direct
+    // `project_id`; channel operations carry only the channel locator and
+    // the daemon resolves the owning project server-side (unknown
+    // channels fail closed). `decision: None` clears an override;
+    // `expected_revision: Some` enforces optimistic concurrency (stale
+    // writes fail with `chat_policy_conflict` and change nothing).
+    // Principals come from transport authority, never from the payload
+    // except the explicit `principal_id` target of an override row.
+    /// Inspect project policy plus one channel policy (when given).
+    ChatPolicyGet {
+        project_id: String,
+        #[serde(default)]
+        channel_id: Option<String>,
+    },
+    /// Bounded listing of every channel policy in one project.
+    ChatPolicyList {
+        project_id: String,
+    },
+    /// Set or clear one project principal override. `decision: None`
+    /// clears the override row.
+    ChatProjectPolicySet {
+        project_id: String,
+        principal_id: String,
+        #[serde(default)]
+        decision: Option<ChatPolicyDecisionDto>,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    /// Set channel mode and/or one channel principal override.
+    /// `mode: None` leaves the mode unchanged; `principal_id: None`
+    /// leaves overrides unchanged; `decision: None` with a
+    /// `principal_id` clears that override row.
+    ChatChannelPolicySet {
+        channel_id: String,
+        #[serde(default)]
+        mode: Option<ChatChannelModeDto>,
+        #[serde(default)]
+        principal_id: Option<String>,
+        #[serde(default)]
+        decision: Option<ChatPolicyDecisionDto>,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     //
     // Principal-scoped, daemon-owned. Payloads carry no identity field;
@@ -2988,6 +3133,19 @@ pub enum CoreEvent {
         channel_id: String,
         message_id: String,
         action: ChatActionDto,
+    },
+    // ── Team Collaboration Corrective M002: Chat Policy Liveness ──
+    //
+    // Structural hint only. Carries project/channel ids and the new
+    // revision; receivers re-fetch through the authorized policy
+    // get/list path on doubt. Never carries override content beyond
+    // ids/revisions.
+    /// A chat access policy changed for a project or channel.
+    ChatPolicyChanged {
+        project_id: String,
+        #[serde(default)]
+        channel_id: Option<String>,
+        revision: u64,
     },
     // ── Project Work Orders M001: structural liveness hints ──────────
     //

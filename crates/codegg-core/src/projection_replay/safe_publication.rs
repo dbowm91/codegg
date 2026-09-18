@@ -100,6 +100,11 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // projection (ids/kind/title/status only) to project
         // subscribers; prompts stay in the canonical job store.
         CoreEvent::ChatActionUpdated { .. } => SafePublicationClass::Safe,
+        // Team collaboration corrective M002: policy hint carries
+        // project/channel ids and the new revision only. Receivers
+        // re-fetch through the authorized policy get/list path; the
+        // event itself never carries override content.
+        CoreEvent::ChatPolicyChanged { .. } => SafePublicationClass::Safe,
         // Work Orders M001: change hints carry identity, change kind,
         // and revision only. Receivers re-fetch through the authorized
         // get/list path; the event itself never carries prompt bodies,

@@ -877,6 +877,34 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectChat),
         ),
+        // ── Team Collaboration Corrective M002: Chat Access Policy Admin ──
+        //
+        // Policy inspection/mutation is membership/collaboration
+        // administration, not ordinary message sending. Reads and
+        // writes both require `member.manage` on the owning project
+        // (Owner only in the current role model). Channel-scoped
+        // policy requests resolve the project server-side; unknown or
+        // foreign channels fail closed before any policy row is read.
+        R::ChatPolicyGet { .. } => OperationDescriptor::new(
+            "chat_policy_get",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::ChatPolicyList { .. } => OperationDescriptor::new(
+            "chat_policy_list",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::ChatProjectPolicySet { .. } => OperationDescriptor::new(
+            "chat_project_policy_set",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::ChatChannelPolicySet { .. } => OperationDescriptor::new(
+            "chat_channel_policy_set",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
         // ── Execution Reliability M003: Approval / Sandbox / Policy ──
         //
         // Principal-scoped daemon-owned preferences. Transport-level scope
@@ -1676,6 +1704,26 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             channel_id: String::new(),
             message_id: None,
             limit: None,
+        },
+        R::ChatPolicyGet {
+            project_id: String::new(),
+            channel_id: None,
+        },
+        R::ChatPolicyList {
+            project_id: String::new(),
+        },
+        R::ChatProjectPolicySet {
+            project_id: String::new(),
+            principal_id: String::new(),
+            decision: None,
+            expected_revision: None,
+        },
+        R::ChatChannelPolicySet {
+            channel_id: String::new(),
+            mode: None,
+            principal_id: None,
+            decision: None,
+            expected_revision: None,
         },
         R::ApprovalPreferenceGet,
         R::ApprovalModeSet {

@@ -1,4 +1,4 @@
-# Project Collaboration — Channels, Messages, Synchronization (M001), TUI Chat (M002), Structured Actions (M003)
+# Project Collaboration — Channels, Messages, Synchronization (M001), TUI Chat (M002), Structured Actions (M003), Chat Access Policy (Team M002)
 
 ## Purpose
 
@@ -130,16 +130,51 @@ external provenance without replacing CodeGG message IDs.
 
 ### Authorization and daemon boundary
 
-All project-scoped chat operations are `DirectProject` +
-`project.chat` (`Contributor` and above; `Viewer` is denied).
-Channel-scoped requests carry only the channel locator; both the gate
-(`resolve_authorization_project` via `channel_project`) and dispatch
-(`resolve_chat_channel`) resolve the owning project server-side, and
-unknown channels fail closed. Denials use `project_not_found`,
-indistinguishable from absent — including for members probing unknown
-channel ids. Principals always derive from transport authority.
-Failed sends publish no event; duplicate retries publish no second
-event.
+`project.chat` is the role baseline/compatibility capability
+(`Contributor` and above allow, `Viewer` denies). Team-collaboration
+M002 (ADR-0006) adds the revisioned access overlay evaluated after
+active membership: project principal overrides, channel mode
+(`inherit_project` | `restricted`), channel principal overrides
+(`codegg-core::collaboration::policy::effective_chat_access` and
+`effective_chat_access_for`). Channel-scoped requests carry only the
+channel locator; both the gate (`authorize_chat_request` via
+`channel_project`) and dispatch (`resolve_chat_channel` plus
+`chat_access_allows` rechecks) resolve the owning project
+server-side, and unknown or foreign channels fail closed. Channel
+listing filters through the same resolver. Gate denials use
+`project_not_found` and handler denials use `chat_channel_not_found`,
+both indistinguishable from absent — including for members probing
+unknown channel ids. Principals always derive from transport
+authority. Failed sends publish no event; duplicate retries publish
+no second event.
+
+### Chat access policy (team-collaboration M002, ADR-0006)
+
+Durable revisioned overlay in `migrate_v64` (storage layout 64):
+`chat_project_policy` + `chat_project_chat_override` (project
+revision bumps on set/clear) and `chat_channel_policy` +
+`chat_channel_chat_override` (channel revision bumps on mode or
+override change). Absence preserves role defaults exactly. Precedence:
+active membership required; role baseline; project override;
+`restricted` resets the channel default to deny; channel override is
+final. Revocation always wins; storage failures fail closed rather
+than falling back to role defaults. Administration is Owner-only
+(`member.manage`): `ChatPolicyGet/List`, `ChatProjectPolicySet`
+(clear via `decision: None`), `ChatChannelPolicySet` (mode and/or
+one override per call), all with optimistic `expected_revision`
+(`chat_policy_conflict` on stale, duplicate identical writes
+converge). Events (`ChatPolicyChanged`) carry project/channel ids
+and revision only. DTOs (`ChatProjectPolicyDto`,
+`ChatChannelPolicyDto`) are TUI-compatible structural shapes for the
+M003 `/team` surface and M005 selected-project rendering.
+
+```bash
+cargo test -p codegg-core --lib collaboration  # resolver truth table + domain
+cargo test --test collaboration_m002_chat_policy # 13 policy boundary tests
+cargo test --test collaboration_m001_chat       # 12 default-behavior tests
+cargo test --test collaboration_m003_chat_actions  # 10 non-escalation tests
+python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops
+```
 
 ### Audit separation
 

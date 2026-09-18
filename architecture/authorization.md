@@ -138,21 +138,31 @@ project subscribe plus artifact list/read gate denials use
 `project_not_found`, indistinguishable from absent (same convention
 as `ProjectGet` and presence reads).
 
-### Project chat (collaboration M001) and structured actions (M003)
+### Project chat (collaboration M001), access policy (team-collaboration M002), actions (M003)
 
-Every `chat_*` operation except `chat_capabilities` requires
-`project.chat` on the owning project (`Contributor` and above;
-`Viewer` holds no chat grant). Channel-scoped requests carry only the
-channel locator; the daemon resolves the owning project server-side
-through the durable channel row, so unknown channels fail closed for
-team principals. All fourteen project-scoped chat denials use
-`project_not_found`, indistinguishable from absent — unauthorized
-callers cannot enumerate channels, read messages, or infer project,
-membership, or activity existence. M003 `chat_action_submit/get/list`
-share this gate; the submit path additionally checks the ordinary
-semantic capability for the kind (`agent.delegate` for agent
-tasks/reviews, `job.submit` for job submits, `session.read` for job
-references) before creating anything. See
+`project.chat` remains the role baseline/compatibility capability
+(`Contributor` and above allow, `Viewer` denies), but it is no longer
+the only gate. Team-collaboration M002 (ADR-0006) adds a revisioned
+daemon-owned overlay after active membership is established:
+project principal overrides, per-channel mode
+(`inherit_project` | `restricted`), and channel principal overrides
+(`codegg-core::collaboration::policy::effective_chat_access`).
+Channel-scoped requests carry only the channel locator; the daemon
+resolves the owning project server-side through the durable channel
+row, so unknown or foreign channels fail closed for team principals.
+Channel listing filters rows through the same resolver, so restricted
+or denied channels are not enumerable or distinguishable. All
+project-scoped chat denials use `project_not_found` at the gate and
+`chat_channel_not_found` in the handler, both indistinguishable from
+absent. Policy administration (`chat_policy_get/list`,
+`chat_project_policy_set`, `chat_channel_policy_set`) requires
+`member.manage` (Owner only) with optimistic revision checks; stale
+writes fail with `chat_policy_conflict` and change nothing. M003
+`chat_action_submit/get/list` share the chat-access gate; the submit
+path additionally checks the ordinary semantic capability for the
+kind (`agent.delegate` for agent tasks/reviews, `job.submit` for job
+submits, `session.read` for job references) before creating anything,
+so a chat grant alone never authorizes execution. See
 `architecture/collaboration.md`.
 
 ### Project work orders (M001)

@@ -59,8 +59,16 @@ use thiserror::Error;
 use crate::error::StorageError;
 use crate::identity::{ChannelId, ChatMessageId, PrincipalId, ProjectId};
 
+pub mod policy;
 mod store;
 mod validation;
+pub use policy::{
+    audit_metadata_for_policy_change, effective_chat_access, effective_chat_access_for,
+    ensure_chat_policy_tables, get_channel_policy, get_project_policy, list_channel_policies,
+    set_channel_policy, set_project_override, ChatChannelMode, ChatChannelPolicy,
+    ChatPolicyDecision, ChatPolicyError, ChatPolicyOverride, ChatProjectPolicy,
+    CHAT_POLICY_SCHEMA_STATEMENTS,
+};
 pub use store::{
     channel_project, ensure_collaboration_tables, CHAT_ACTION_SCHEMA_STATEMENTS,
     CHAT_SCHEMA_STATEMENTS,

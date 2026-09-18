@@ -111,6 +111,7 @@ pub async fn ensure_collaboration_tables(pool: &SqlitePool) -> Result<(), Collab
     for statement in CHAT_SCHEMA_STATEMENTS
         .iter()
         .chain(CHAT_ACTION_SCHEMA_STATEMENTS.iter())
+        .chain(super::policy::CHAT_POLICY_SCHEMA_STATEMENTS.iter())
     {
         sqlx::query(statement)
             .execute(pool)

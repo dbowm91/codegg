@@ -492,6 +492,10 @@ impl CoreDaemon {
                 | CoreRequest::ChatActionSubmit { .. }
                 | CoreRequest::ChatActionGet { .. }
                 | CoreRequest::ChatActionList { .. }
+                | CoreRequest::ChatPolicyGet { .. }
+                | CoreRequest::ChatPolicyList { .. }
+                | CoreRequest::ChatProjectPolicySet { .. }
+                | CoreRequest::ChatChannelPolicySet { .. }
         );
         // Work Orders M001: every work-order read/write denies as
         // not-found so unauthorized callers cannot infer project
@@ -563,6 +567,31 @@ impl CoreDaemon {
                 .authorize_enumeration(authority.principal(), descriptor.operation, &correlation)
                 .await;
         }
+        // Team collaboration corrective M002 (ADR-0006): chat data
+        // operations evaluate the revisioned chat access overlay after
+        // active membership is established. `project.chat` remains the
+        // role baseline/compatibility capability, not the only gate: a
+        // Viewer with an explicit grant passes while a Contributor with
+        // an explicit deny fails. Policy administration operations
+        // (`member.manage`) skip the overlay and use the canonical
+        // service directly.
+        if Self::is_chat_data_request(request)
+            && !codegg_core::authorization::is_local_owner_broad(authority.principal())
+        {
+            if let Some(decision) = Box::pin(self.authorize_chat_request(
+                &pool,
+                authority,
+                request_id,
+                request,
+                &correlation,
+            ))
+            .await
+            {
+                return decision;
+            }
+            // `None` means no durable chat gate applied (e.g. global
+            // `ChatCapabilities`); fall through to the canonical service.
+        }
         let project = Box::pin(self.resolve_authorization_project(&pool, request)).await;
         let authz_request = AuthorizationRequest::new(
             authority.principal().clone(),
@@ -571,6 +600,220 @@ impl CoreDaemon {
             correlation,
         );
         service.authorize(&authz_request).await
+    }
+
+    /// Team collaboration corrective M002: chat data gate.
+    ///
+    /// Returns `Some` when this request carries a chat data gate
+    /// (`project.chat` baseline plus the ADR-0006 overlay); returns
+    /// `None` for non-data chat requests (capability probe, policy
+    /// administration) so the caller falls through to the canonical
+    /// authorization service.
+    async fn authorize_chat_request(
+        &self,
+        pool: &sqlx::SqlitePool,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        request_id: &str,
+        request: &CoreRequest,
+        correlation: &str,
+    ) -> Option<
+        Result<
+            codegg_core::authorization::AuthorizationDecision,
+            codegg_core::authorization::AuthorizationError,
+        >,
+    > {
+        use codegg_core::authorization::{AuthorizationDecision, PolicyKind};
+        let operation: &'static str = match request {
+            CoreRequest::ChatChannelEnsure { .. } => "chat_channel_ensure",
+            CoreRequest::ChatChannelList { .. } => "chat_channel_list",
+            CoreRequest::ChatHistory { .. } => "chat_history",
+            CoreRequest::ChatSend { .. } => "chat_send",
+            CoreRequest::ChatEdit { .. } => "chat_edit",
+            CoreRequest::ChatRedact { .. } => "chat_redact",
+            CoreRequest::ChatReadSet { .. } => "chat_read_set",
+            CoreRequest::ChatReadGet { .. } => "chat_read_get",
+            CoreRequest::ChatComposingSet { .. } => "chat_composing_set",
+            CoreRequest::ChatComposingList { .. } => "chat_composing_list",
+            CoreRequest::ChatSync { .. } => "chat_sync",
+            CoreRequest::ChatActionSubmit { .. } => "chat_action_submit",
+            CoreRequest::ChatActionGet { .. } => "chat_action_get",
+            CoreRequest::ChatActionList { .. } => "chat_action_list",
+            _ => return None,
+        };
+        let denied = || {
+            Err(codegg_core::authorization::AuthorizationError::Denied {
+                operation,
+                capability: "project.chat",
+            })
+        };
+        let allow = |project: Option<codegg_core::identity::ProjectId>, revision: Option<u64>| {
+            AuthorizationDecision {
+                principal_id: authority.principal_id().clone(),
+                operation: operation.to_owned(),
+                capability: Some("project.chat".to_owned()),
+                project_id: project,
+                membership_revision: revision,
+                policy: PolicyKind::TeamMembership,
+                decision_id: uuid::Uuid::new_v4().to_string(),
+                correlation_id: correlation.to_owned(),
+                reason: "chat access policy grant".to_owned(),
+                decided_at_ms: chrono::Utc::now().timestamp_millis(),
+            }
+        };
+        let team = codegg_core::team::TeamStore::new(pool.clone());
+        // Active principal required before any policy row is consulted.
+        let principal_record = match team.get_principal(authority.principal_id()).await {
+            Ok(Some(record)) => record,
+            _ => {
+                return Some(Err(
+                    codegg_core::authorization::AuthorizationError::PrincipalNotActive,
+                ));
+            }
+        };
+        if principal_record.status != codegg_core::team::PrincipalStatus::Active {
+            return Some(Err(
+                codegg_core::authorization::AuthorizationError::DisabledPrincipal,
+            ));
+        }
+        // Resolve the owning project: direct `project_id` for ensure/list,
+        // durable channel row for channel-scoped requests. Unknown
+        // channels fail closed (MissingScope maps to not-found).
+        let project = Box::pin(self.resolve_authorization_project(pool, request)).await;
+        let Some(project) = project else {
+            return Some(Err(
+                codegg_core::authorization::AuthorizationError::MissingScope { operation },
+            ));
+        };
+        // Active membership required before policy evaluation; override
+        // rows never resurrect revoked/suspended membership.
+        let membership = match team
+            .get_membership(&project, authority.principal_id())
+            .await
+        {
+            Ok(membership) => membership,
+            Err(_) => return Some(denied()),
+        };
+        let Some(membership) = membership else {
+            return Some(denied());
+        };
+        if membership.state != codegg_core::team::MembershipState::Active {
+            return Some(denied());
+        }
+        let revision = Some(membership.revision);
+        // `ChatChannelList` filters per-channel in the handler: the gate
+        // allows when the caller holds project-level access OR at least
+        // one visible channel, so a Viewer with a single-channel grant
+        // can still enumerate exactly that channel.
+        if matches!(request, CoreRequest::ChatChannelList { .. }) {
+            let project_allowed = match codegg_core::collaboration::effective_chat_access_for(
+                pool,
+                &team,
+                &project,
+                None,
+                authority.principal_id(),
+            )
+            .await
+            {
+                Ok(allowed) => allowed,
+                Err(_) => return Some(denied()),
+            };
+            if project_allowed {
+                return Some(Ok(allow(Some(project), revision)));
+            }
+            // Fall back to per-channel visibility: list the project's
+            // channels and allow the gate when at least one passes the
+            // same resolver the handler will filter with.
+            let channels = match self.collaboration.list_channels(&project, None).await {
+                Ok((channels, _)) => channels,
+                Err(_) => return Some(denied()),
+            };
+            for channel in &channels {
+                match codegg_core::collaboration::effective_chat_access_for(
+                    pool,
+                    &team,
+                    &project,
+                    Some(&channel.id),
+                    authority.principal_id(),
+                )
+                .await
+                {
+                    Ok(true) => return Some(Ok(allow(Some(project.clone()), revision))),
+                    Ok(false) => continue,
+                    Err(_) => return Some(denied()),
+                }
+            }
+            return Some(denied());
+        }
+        // `ChatChannelEnsure` is project-scoped creation: it requires
+        // project-level access (a single-channel grant does not confer
+        // creation rights).
+        if matches!(request, CoreRequest::ChatChannelEnsure { .. }) {
+            match codegg_core::collaboration::effective_chat_access_for(
+                pool,
+                &team,
+                &project,
+                None,
+                authority.principal_id(),
+            )
+            .await
+            {
+                Ok(true) => return Some(Ok(allow(Some(project), revision))),
+                Ok(false) => return Some(denied()),
+                Err(_) => return Some(denied()),
+            }
+        }
+        // Channel-scoped operations evaluate the channel overlay. The
+        // channel id parses lexically; unparsable ids fail closed here
+        // (the handler reports `chat_invalid_input` for the same input,
+        // but team principals never reach it past this denial).
+        let channel_raw = Self::chat_channel_id_for_request(request);
+        let Some(channel_raw) = channel_raw else {
+            return Some(denied());
+        };
+        let Ok(channel_id) = codegg_core::identity::ChannelId::parse(channel_raw) else {
+            return Some(denied());
+        };
+        // Suppress the unused-request_id warning: the correlation string
+        // already binds the request id for attribution.
+        let _ = request_id;
+        match codegg_core::collaboration::effective_chat_access_for(
+            pool,
+            &team,
+            &project,
+            Some(&channel_id),
+            authority.principal_id(),
+        )
+        .await
+        {
+            Ok(true) => Some(Ok(allow(Some(project), revision))),
+            Ok(false) => Some(denied()),
+            // Policy storage unavailable for a team principal fails
+            // closed rather than falling back to role defaults.
+            Err(_) => Some(denied()),
+        }
+    }
+
+    /// `true` for chat data operations governed by the M002 access
+    /// overlay. Excludes the global capability probe and the
+    /// `member.manage` policy administration operations.
+    fn is_chat_data_request(request: &CoreRequest) -> bool {
+        matches!(
+            request,
+            CoreRequest::ChatChannelEnsure { .. }
+                | CoreRequest::ChatChannelList { .. }
+                | CoreRequest::ChatHistory { .. }
+                | CoreRequest::ChatSend { .. }
+                | CoreRequest::ChatEdit { .. }
+                | CoreRequest::ChatRedact { .. }
+                | CoreRequest::ChatReadSet { .. }
+                | CoreRequest::ChatReadGet { .. }
+                | CoreRequest::ChatComposingSet { .. }
+                | CoreRequest::ChatComposingList { .. }
+                | CoreRequest::ChatSync { .. }
+                | CoreRequest::ChatActionSubmit { .. }
+                | CoreRequest::ChatActionGet { .. }
+                | CoreRequest::ChatActionList { .. }
+        )
     }
 
     /// M003: resolve one request to its project scope, if any.
@@ -612,7 +855,10 @@ impl CoreDaemon {
             CoreRequest::PresenceHeartbeat { request } => Some(request.project_id.as_str()),
             CoreRequest::PresenceSnapshotGet { project_id } => Some(project_id.as_str()),
             CoreRequest::ChatChannelEnsure { project_id, .. }
-            | CoreRequest::ChatChannelList { project_id, .. } => Some(project_id.as_str()),
+            | CoreRequest::ChatChannelList { project_id, .. }
+            | CoreRequest::ChatPolicyGet { project_id, .. }
+            | CoreRequest::ChatPolicyList { project_id, .. }
+            | CoreRequest::ChatProjectPolicySet { project_id, .. } => Some(project_id.as_str()),
             CoreRequest::WorkOrderCreate { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderBatchCreate { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderLaneCreate { request } => Some(request.project_id.as_str()),
@@ -697,7 +943,8 @@ impl CoreDaemon {
             | CoreRequest::ChatSync { channel_id, .. }
             | CoreRequest::ChatActionSubmit { channel_id, .. }
             | CoreRequest::ChatActionGet { channel_id, .. }
-            | CoreRequest::ChatActionList { channel_id, .. } => Some(channel_id),
+            | CoreRequest::ChatActionList { channel_id, .. }
+            | CoreRequest::ChatChannelPolicySet { channel_id, .. } => Some(channel_id),
             _ => None,
         }
     }
@@ -744,6 +991,10 @@ impl CoreDaemon {
                 | CoreRequest::ChatActionSubmit { .. }
                 | CoreRequest::ChatActionGet { .. }
                 | CoreRequest::ChatActionList { .. }
+                | CoreRequest::ChatPolicyGet { .. }
+                | CoreRequest::ChatPolicyList { .. }
+                | CoreRequest::ChatProjectPolicySet { .. }
+                | CoreRequest::ChatChannelPolicySet { .. }
         )
     }
     /// Collaboration M001: resolve one channel locator to its
@@ -785,9 +1036,51 @@ impl CoreDaemon {
         }
     }
 
+    /// Team collaboration corrective M002: request-time chat access
+    /// recheck (defense in depth behind the authorization gate).
+    ///
+    /// Returns `true` when `principal` currently holds chat access for
+    /// `project`/`channel` under ADR-0006. Pool-less daemons return
+    /// `true` (local-only, no team state); LocalOwner broad policy
+    /// returns `true`; storage failures return `false` (fail closed
+    /// rather than falling back to role defaults).
+    async fn chat_access_allows(
+        &self,
+        project: &codegg_core::identity::ProjectId,
+        channel: Option<&codegg_core::identity::ChannelId>,
+        principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
+    ) -> bool {
+        use codegg_core::authorization::is_local_owner_broad;
+        if is_local_owner_broad(principal) {
+            return true;
+        }
+        let Some(pool) = self.pool.clone() else {
+            return true;
+        };
+        let team = codegg_core::team::TeamStore::new(pool.clone());
+        codegg_core::collaboration::effective_chat_access_for(
+            &pool,
+            &team,
+            project,
+            channel,
+            principal.principal_id(),
+        )
+        .await
+        .unwrap_or_default()
+    }
+
+    fn chat_policy_denied() -> CoreResponse {
+        CoreResponse::Error {
+            code: "chat_channel_not_found".to_owned(),
+            message: "chat channel not found".to_owned(),
+        }
+    }
+
     /// Collaboration M001: dedicated chat request handler.
     ///
-    /// The M003 gate enforced `project.chat` before this runs. Bodies
+    /// The M002 gate enforced the chat access overlay before this runs;
+    /// every arm below rechecks the same resolver so a policy change or
+    /// revocation between gate and dispatch still denies. Bodies
     /// are inert text: this handler never parses commands, mentions, or
     /// references into execution. Principals come from transport
     /// authority, never from the payload. M003 structured actions are
@@ -821,8 +1114,16 @@ impl CoreDaemon {
                         });
                     }
                 };
-                let authority = self.request_authority_for_client(trusted_client_id);
-                let principal = authority.principal().principal_id().clone();
+                // M002: project-level recheck so a revocation or deny
+                // between gate and dispatch still fails closed.
+                if !self
+                    .chat_access_allows(&project, None, authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
+                let request_authority = self.request_authority_for_client(trusted_client_id);
+                let principal = request_authority.principal().principal_id().clone();
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let outcome = if let Some(name) = name.as_deref() {
                     self.collaboration
@@ -851,10 +1152,31 @@ impl CoreDaemon {
                     }
                 };
                 match self.collaboration.list_channels(&project, limit).await {
-                    Ok((channels, truncated)) => Ok(CoreResponse::ChatChannelList {
-                        channels: channels.iter().map(|c| c.to_dto()).collect(),
-                        truncated,
-                    }),
+                    Ok((channels, _)) => {
+                        // M002: filter rows through the same effective
+                        // policy so restricted/denied channels are not
+                        // enumerable or distinguishable to denied members.
+                        let mut visible = Vec::new();
+                        for channel in channels {
+                            if self
+                                .chat_access_allows(
+                                    &project,
+                                    Some(&channel.id),
+                                    authority.principal(),
+                                )
+                                .await
+                            {
+                                visible.push(channel.to_dto());
+                            }
+                        }
+                        // Preserve the caller's bound semantics: the
+                        // `truncated` probe queried bound+1 rows, so
+                        // filtering can only shrink the page, never leak.
+                        Ok(CoreResponse::ChatChannelList {
+                            channels: visible,
+                            truncated: false,
+                        })
+                    }
                     Err(error) => Ok(chat_error(error)),
                 }
             }
@@ -868,6 +1190,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 match self
                     .collaboration
                     .history(&project, &channel, from_seq, limit)
@@ -897,6 +1225,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 let parse_message_id = |raw: &str| {
                     codegg_core::identity::ChatMessageId::parse(raw).map_err(|error| {
                         Box::new(CoreResponse::Error {
@@ -972,6 +1306,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 let message_id =
                     match codegg_core::identity::ChatMessageId::parse(message_id.as_str()) {
                         Ok(id) => id,
@@ -1030,6 +1370,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 let message_id =
                     match codegg_core::identity::ChatMessageId::parse(message_id.as_str()) {
                         Ok(id) => id,
@@ -1086,6 +1432,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 let authority = self.request_authority_for_client(trusted_client_id);
                 let principal = authority.principal().principal_id().clone();
                 let now_ms = chrono::Utc::now().timestamp_millis();
@@ -1108,6 +1460,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 let authority = self.request_authority_for_client(trusted_client_id);
                 let principal = authority.principal().principal_id().clone();
                 match self
@@ -1148,19 +1506,23 @@ impl CoreDaemon {
                 // Composing still requires project membership: resolve the
                 // owning project and deny unknown channels without
                 // leaking existence. Pool-less daemons skip the check
-                // (local-only, no team state).
-                if self.pool.is_some()
-                    && codegg_core::collaboration::channel_project(
-                        self.pool.as_ref().expect("pool checked"),
-                        channel.as_str(),
-                    )
-                    .await
-                    .is_none()
-                {
-                    return Ok(CoreResponse::Error {
-                        code: "chat_channel_not_found".to_owned(),
-                        message: "chat channel not found".to_owned(),
-                    });
+                // (local-only, no team state). M002 additionally
+                // enforces the chat access overlay on the same path.
+                if let Some(pool) = self.pool.clone() {
+                    let Some(project) =
+                        codegg_core::collaboration::channel_project(&pool, channel.as_str()).await
+                    else {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_channel_not_found".to_owned(),
+                            message: "chat channel not found".to_owned(),
+                        });
+                    };
+                    if !self
+                        .chat_access_allows(&project, Some(&channel), authority.principal())
+                        .await
+                    {
+                        return Ok(Self::chat_policy_denied());
+                    }
                 }
                 let now = std::time::Instant::now();
                 let now_ms = chrono::Utc::now().timestamp_millis();
@@ -1209,18 +1571,21 @@ impl CoreDaemon {
                         });
                     }
                 };
-                if self.pool.is_some()
-                    && codegg_core::collaboration::channel_project(
-                        self.pool.as_ref().expect("pool checked"),
-                        channel.as_str(),
-                    )
-                    .await
-                    .is_none()
-                {
-                    return Ok(CoreResponse::Error {
-                        code: "chat_channel_not_found".to_owned(),
-                        message: "chat channel not found".to_owned(),
-                    });
+                if let Some(pool) = self.pool.clone() {
+                    let Some(project) =
+                        codegg_core::collaboration::channel_project(&pool, channel.as_str()).await
+                    else {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_channel_not_found".to_owned(),
+                            message: "chat channel not found".to_owned(),
+                        });
+                    };
+                    if !self
+                        .chat_access_allows(&project, Some(&channel), authority.principal())
+                        .await
+                    {
+                        return Ok(Self::chat_policy_denied());
+                    }
                 }
                 let entries = self
                     .collaboration
@@ -1240,6 +1605,12 @@ impl CoreDaemon {
                     Ok(pair) => pair,
                     Err(response) => return Ok(*response),
                 };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
                 match self
                     .collaboration
                     .sync(&project, &channel, from_seq, limit)
@@ -1261,6 +1632,9 @@ impl CoreDaemon {
                 action,
                 idempotency_key,
             } => {
+                // M002: chat access is rechecked inside the action
+                // dispatcher together with the semantic capability, so a
+                // chat grant alone never authorizes execution.
                 // Boxed so the chat dispatch future stays small; the
                 // action path submits durable jobs and emits audit.
                 // execution-ownership: scheduler
@@ -1281,6 +1655,12 @@ impl CoreDaemon {
                 action_id,
             } => match self.resolve_chat_channel(channel_id.as_str()).await {
                 Ok((channel, project)) => {
+                    if !self
+                        .chat_access_allows(&project, Some(&channel), authority.principal())
+                        .await
+                    {
+                        return Ok(Self::chat_policy_denied());
+                    }
                     match self
                         .collaboration
                         .get_action(&project, &channel, action_id.as_str())
@@ -1301,6 +1681,12 @@ impl CoreDaemon {
                 limit,
             } => match self.resolve_chat_channel(channel_id.as_str()).await {
                 Ok((channel, project)) => {
+                    if !self
+                        .chat_access_allows(&project, Some(&channel), authority.principal())
+                        .await
+                    {
+                        return Ok(Self::chat_policy_denied());
+                    }
                     let message = match message_id
                         .as_deref()
                         .map(codegg_core::identity::ChatMessageId::parse)
@@ -1328,6 +1714,294 @@ impl CoreDaemon {
                 }
                 Err(response) => Ok(*response),
             },
+            CoreRequest::ChatPolicyGet {
+                project_id,
+                channel_id,
+            } => {
+                // Gate enforced `member.manage`; unknown projects fail
+                // closed through the same privacy-safe shape.
+                let project = match codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_unavailable".to_owned(),
+                        message: "project chat requires a durable database pool".to_owned(),
+                    });
+                };
+                let project_policy =
+                    match codegg_core::collaboration::get_project_policy(&pool, &project).await {
+                        Ok(policy) => policy,
+                        Err(error) => {
+                            let mapped: codegg_core::collaboration::CollaborationError =
+                                error.into();
+                            return Ok(chat_error(mapped));
+                        }
+                    };
+                let channel_policy = match channel_id.as_deref() {
+                    None => None,
+                    Some(raw) => {
+                        let channel = match codegg_core::identity::ChannelId::parse(raw) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                return Ok(CoreResponse::Error {
+                                    code: "chat_invalid_input".to_owned(),
+                                    message: error.to_string(),
+                                });
+                            }
+                        };
+                        // Foreign/unknown channels fail closed without
+                        // leaking which channels exist.
+                        let owner =
+                            codegg_core::collaboration::channel_project(&pool, channel.as_str())
+                                .await;
+                        let Some(owner) = owner else {
+                            return Ok(Self::chat_policy_denied());
+                        };
+                        if owner != project {
+                            return Ok(Self::chat_policy_denied());
+                        }
+                        match codegg_core::collaboration::get_channel_policy(
+                            &pool, &project, &channel,
+                        )
+                        .await
+                        {
+                            Ok(Some(policy)) => Some(policy.to_dto()),
+                            Ok(None) => Some(
+                                codegg_core::collaboration::ChatChannelPolicy {
+                                    channel_id: channel.clone(),
+                                    project_id: project.clone(),
+                                    mode:
+                                        codegg_core::collaboration::ChatChannelMode::InheritProject,
+                                    revision: 0,
+                                    overrides: Vec::new(),
+                                }
+                                .to_dto(),
+                            ),
+                            Err(error) => {
+                                let mapped: codegg_core::collaboration::CollaborationError =
+                                    error.into();
+                                return Ok(chat_error(mapped));
+                            }
+                        }
+                    }
+                };
+                Ok(CoreResponse::ChatPolicy {
+                    project: project_policy.to_dto(),
+                    channel: channel_policy,
+                })
+            }
+            CoreRequest::ChatPolicyList { project_id } => {
+                let project = match codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_unavailable".to_owned(),
+                        message: "project chat requires a durable database pool".to_owned(),
+                    });
+                };
+                let project_policy =
+                    match codegg_core::collaboration::get_project_policy(&pool, &project).await {
+                        Ok(policy) => policy,
+                        Err(error) => {
+                            let mapped: codegg_core::collaboration::CollaborationError =
+                                error.into();
+                            return Ok(chat_error(mapped));
+                        }
+                    };
+                match codegg_core::collaboration::list_channel_policies(&pool, &project).await {
+                    Ok(channels) => Ok(CoreResponse::ChatPolicyList {
+                        project: project_policy.to_dto(),
+                        channels: channels.iter().map(|c| c.to_dto()).collect(),
+                    }),
+                    Err(error) => {
+                        let mapped: codegg_core::collaboration::CollaborationError = error.into();
+                        Ok(chat_error(mapped))
+                    }
+                }
+            }
+            CoreRequest::ChatProjectPolicySet {
+                project_id,
+                principal_id,
+                decision,
+                expected_revision,
+            } => {
+                let project = match codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let target = match codegg_core::identity::PrincipalId::parse(principal_id.as_str())
+                {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_unavailable".to_owned(),
+                        message: "project chat requires a durable database pool".to_owned(),
+                    });
+                };
+                let decision =
+                    decision.map(codegg_core::collaboration::ChatPolicyDecision::from_dto);
+                let caller = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match codegg_core::collaboration::set_project_override(
+                    &pool,
+                    &project,
+                    &target,
+                    decision,
+                    expected_revision,
+                    &caller,
+                    now_ms,
+                )
+                .await
+                {
+                    Ok(policy) => {
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ChatPolicyChanged {
+                                    project_id: project.as_str().to_owned(),
+                                    channel_id: None,
+                                    revision: policy.revision,
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ChatPolicy {
+                            project: policy.to_dto(),
+                            channel: None,
+                        })
+                    }
+                    Err(error) => {
+                        let mapped: codegg_core::collaboration::CollaborationError = error.into();
+                        Ok(chat_error(mapped))
+                    }
+                }
+            }
+            CoreRequest::ChatChannelPolicySet {
+                channel_id,
+                mode,
+                principal_id,
+                decision,
+                expected_revision,
+            } => {
+                let channel = match codegg_core::identity::ChannelId::parse(channel_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_unavailable".to_owned(),
+                        message: "project chat requires a durable database pool".to_owned(),
+                    });
+                };
+                // Resolve the owning project server-side; foreign/stale
+                // ids fail closed without leaking existence.
+                let Some(project) =
+                    codegg_core::collaboration::channel_project(&pool, channel.as_str()).await
+                else {
+                    return Ok(Self::chat_policy_denied());
+                };
+                let target = match principal_id.as_deref() {
+                    None => None,
+                    Some(raw) => match codegg_core::identity::PrincipalId::parse(raw) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "chat_invalid_input".to_owned(),
+                                message: error.to_string(),
+                            });
+                        }
+                    },
+                };
+                if mode.is_none() && target.is_none() {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_invalid_input".to_owned(),
+                        message: "channel policy update requires a mode or principal override"
+                            .to_owned(),
+                    });
+                }
+                let mode = mode.map(codegg_core::collaboration::ChatChannelMode::from_dto);
+                let decision =
+                    decision.map(codegg_core::collaboration::ChatPolicyDecision::from_dto);
+                let caller = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match codegg_core::collaboration::set_channel_policy(
+                    &pool,
+                    &project,
+                    &channel,
+                    mode,
+                    target.as_ref(),
+                    decision,
+                    expected_revision,
+                    &caller,
+                    now_ms,
+                )
+                .await
+                {
+                    Ok(policy) => {
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ChatPolicyChanged {
+                                    project_id: project.as_str().to_owned(),
+                                    channel_id: Some(channel.as_str().to_owned()),
+                                    revision: policy.revision,
+                                },
+                            )
+                            .await;
+                        let project_policy =
+                            match codegg_core::collaboration::get_project_policy(&pool, &project)
+                                .await
+                            {
+                                Ok(policy) => policy,
+                                Err(error) => {
+                                    let mapped: codegg_core::collaboration::CollaborationError =
+                                        error.into();
+                                    return Ok(chat_error(mapped));
+                                }
+                            };
+                        Ok(CoreResponse::ChatPolicy {
+                            project: project_policy.to_dto(),
+                            channel: Some(policy.to_dto()),
+                        })
+                    }
+                    Err(error) => {
+                        let mapped: codegg_core::collaboration::CollaborationError = error.into();
+                        Ok(chat_error(mapped))
+                    }
+                }
+            }
             other => Ok(CoreResponse::Error {
                 code: "chat_invalid_input".to_owned(),
                 message: format!(
@@ -1411,6 +2085,16 @@ impl CoreDaemon {
             Ok(pair) => pair,
             Err(response) => return Ok(*response),
         };
+        // M002: chat access is required in addition to the semantic
+        // capability below. A chat grant alone never authorizes
+        // execution; a chat deny blocks it even when the semantic
+        // capability would otherwise allow it.
+        if !self
+            .chat_access_allows(&project, Some(&channel), authority.principal())
+            .await
+        {
+            return Ok(Self::chat_policy_denied());
+        }
         let message = match codegg_core::identity::ChatMessageId::parse(message_id) {
             Ok(id) => id,
             Err(error) => {

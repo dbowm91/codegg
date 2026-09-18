@@ -428,18 +428,24 @@ resolve through deterministic lookup of an existing unique locator.
   M001, `chat.v1`, protocol version 1): `ChatChannelEnsure/List`,
   `ChatHistory/Send/Edit/Redact`, `ChatReadSet/Get`,
   `ChatComposingSet/List`, `ChatSync`, plus `ChatCapabilities`.
-  Every project-scoped operation requires `project.chat`; denials use
-  `project_not_found`. Message bodies are bounded inert text (free
-  text never executes); secrets are redacted before durable write.
-  Sync is bounded cursor pagination with explicit `resync_required`
-  once a cursor predates the retention floor. Events
-  (`ChatMessageCommitted/Edited/Redacted`, `ChatComposingUpdated`)
-  are structural liveness hints. Older clients ignore the chat
-  surface. M003 adds explicit `ChatActionSubmit/Get/List`,
-  `ChatAction/ChatActionList`, and `ChatActionUpdated` for separately
-  authorized structured actions (typed payload + idempotency key;
-  `project.chat` plus the ordinary semantic capability; free text
-  never becomes an action). See `architecture/collaboration.md`.
+  `project.chat` is the role baseline; team-collaboration M002
+  (ADR-0006) adds the revisioned access overlay (active membership
+  first, then project/channel overrides). Gate denials use
+  `project_not_found`, handler denials use `chat_channel_not_found`.
+  Message bodies are bounded inert text (free text never executes);
+  secrets are redacted before durable write. Sync is bounded cursor
+  pagination with explicit `resync_required` once a cursor predates
+  the retention floor. Events (`ChatMessageCommitted/Edited/Redacted`,
+  `ChatComposingUpdated`) are structural liveness hints. Older clients
+  ignore the chat surface and retain role-default behavior. M003 adds
+  explicit `ChatActionSubmit/Get/List`, `ChatAction/ChatActionList`,
+  and `ChatActionUpdated` for separately authorized structured actions
+  (typed payload + idempotency key; chat access plus the ordinary
+  semantic capability; free text never becomes an action). Team M002
+  adds `ChatPolicyGet/List`, `ChatProjectPolicySet`,
+  `ChatChannelPolicySet` (`member.manage`, optimistic revision),
+  `ChatPolicy/ChatPolicyList`, and `ChatPolicyChanged` (ids/revision
+  only). See `architecture/collaboration.md`.
 
 ## Testing
 

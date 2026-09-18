@@ -211,6 +211,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 63 {
         migrate_and_record(pool, 63).await?;
     }
+    if current_version < 64 {
+        migrate_and_record(pool, 64).await?;
+    }
 
     Ok(())
 }
@@ -286,6 +289,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             61 => migrate_v61(&mut tx).await?,
             62 => migrate_v62(&mut tx).await?,
             63 => migrate_v63(&mut tx).await?,
+            64 => migrate_v64(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2636,6 +2640,23 @@ async fn migrate_v62(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// ever a column; only the SHA-256 verifier persists.
 async fn migrate_v63(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::work_order::TASK_TRIGGER_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Team collaboration corrective M002: revisioned project/channel chat
+/// access policy (ADR-0006).
+///
+/// Additive `IF NOT EXISTS`, safe on existing databases. Pre-policy
+/// databases gain empty tables; readers treat absence as role
+/// defaults (Viewer denied, Contributor+ allowed, channels inherit
+/// project policy). No chat rows are backfilled and no role grants
+/// change.
+async fn migrate_v64(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::collaboration::CHAT_POLICY_SCHEMA_STATEMENTS {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await
