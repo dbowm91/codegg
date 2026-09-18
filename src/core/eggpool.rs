@@ -940,12 +940,19 @@ impl ProviderConnectionProvisioner {
             .credential_store
             .clone()
             .ok_or(RotationError::Storage)?;
+        // Staged rotation credentials live under the connection's own
+        // provider namespace (Eggpool rows keep `eggpool`, so historical
+        // behavior is unchanged while catalog rows stay coherent).
+        let provider_ref = old_binding
+            .as_ref()
+            .map(|binding| binding.provider_ref.clone())
+            .unwrap_or_else(|| EGGPOOL_PRESET_ID.to_string());
         let (binding, probe_secret) = if let Some(value) = staged_secret.as_deref() {
             let account = format!("rot-{}", uuid::Uuid::new_v4());
             let secret_ref = SecretRef::new();
             credential_store
                 .put(
-                    "eggpool",
+                    &provider_ref,
                     Some(&account),
                     codegg_providers::CredentialKind::ApiKey,
                     value,
@@ -955,7 +962,9 @@ impl ProviderConnectionProvisioner {
                 .map_err(|_| RotationError::Storage)?;
             (
                 codegg_core::provider_connections::SecretBindingLocator::new(
-                    secret_ref, "eggpool", &account,
+                    secret_ref,
+                    &provider_ref,
+                    &account,
                 )
                 .map_err(|_| RotationError::Storage)?,
                 value.to_owned(),
@@ -965,7 +974,7 @@ impl ProviderConnectionProvisioner {
                 .clone()
                 .ok_or(RotationError::SecretUnavailable)?;
             let value = credential_store
-                .get_plaintext("eggpool", Some(&binding.account_ref), |_| true)
+                .get_plaintext(&provider_ref, Some(&binding.account_ref), |_| true)
                 .map_err(|_| RotationError::Storage)?
                 .ok_or(RotationError::SecretUnavailable)?;
             (binding, value)
@@ -985,7 +994,7 @@ impl ProviderConnectionProvisioner {
             Err(error) => {
                 if staged_secret.is_some() {
                     if let Err(error) =
-                        credential_store.remove("eggpool", Some(&binding.account_ref))
+                        credential_store.remove(&provider_ref, Some(&binding.account_ref))
                     {
                         tracing::warn!(?error, "eggpool staged credential cleanup failed");
                     }
@@ -1019,7 +1028,7 @@ impl ProviderConnectionProvisioner {
         if update.rows_affected() != 1 {
             drop(tx);
             if staged_secret.is_some() {
-                let _ = credential_store.remove("eggpool", Some(&binding.account_ref));
+                let _ = credential_store.remove(&provider_ref, Some(&binding.account_ref));
             }
             return Err(RotationError::StaleRevision);
         }
@@ -1092,7 +1101,9 @@ impl ProviderConnectionProvisioner {
 
         if staged_secret.is_some() && delete_previous_on_commit {
             if let Some(old) = old_binding {
-                if let Err(error) = credential_store.remove("eggpool", Some(&old.account_ref)) {
+                if let Err(error) =
+                    credential_store.remove(&old.provider_ref, Some(&old.account_ref))
+                {
                     tracing::warn!(?error, "eggpool previous credential cleanup failed");
                 }
             }
@@ -1317,7 +1328,7 @@ impl ProviderConnectionProvisioner {
             .clone()
             .ok_or(RefreshError::CredentialMissing)?;
         let api_key = store_credentials
-            .get_plaintext("eggpool", Some(&binding.account_ref), |_| true)
+            .get_plaintext(&binding.provider_ref, Some(&binding.account_ref), |_| true)
             .map_err(|_| RefreshError::CredentialMissing)?
             .ok_or(RefreshError::CredentialMissing)?;
         let config = super::load_config_or_default();
@@ -3240,7 +3251,6 @@ mod tests {
             .expect_err("azure without an endpoint must fail");
         assert!(!format!("{secret_leak:?}").contains("generic-test-key"));
     }
-
     #[test]
     fn direct_probe_error_mapping_is_bounded() {
         use codegg_providers::ProviderError;
@@ -3256,5 +3266,65 @@ mod tests {
             map_provider_error_reason(&ProviderError::RateLimit),
             ProbeReason::UnsupportedApi
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rotation_uses_the_connection_credential_namespace() {
+        use codegg_core::identity::ProviderConnectionId;
+
+        let _master = MasterKeyGuard::new("generic-rotation-namespace-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+
+        // Provision a non-Eggpool row through the generic service.
+        let body = r#"{"data":[{"id":"rot-model"}]}"#.to_string();
+        let (host, server) = fake_status_server(200, body, Duration::ZERO);
+        let mut create_request = generic_request("custom");
+        create_request.endpoint = Some(host);
+        create_request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        create_request.credential_kind = ProviderCredentialKind::Bearer;
+        let created = provisioner
+            .create_connection(create_request)
+            .await
+            .expect("custom provision succeeds");
+        server.join().expect("fake server joins");
+        assert_eq!(created.connection.provider_kind, "openai_compatible");
+        let connection_id = ProviderConnectionId::parse(&created.connection.id).unwrap();
+
+        // Endpoint-only rotation must resolve the stored credential through
+        // the connection's own namespace (`custom`, not `eggpool`) and keep
+        // exactly one credential record there.
+        let (rotated_host, rotated_server) = fake_status_server(
+            200,
+            r#"{"data":[{"id":"rot-model"}]}"#.to_string(),
+            Duration::ZERO,
+        );
+        let status = provisioner
+            .rotate(
+                "rotation-namespace",
+                &connection_id,
+                created.connection.revision,
+                ConnectionRotateChange::EndpointOnly {
+                    endpoint: rotated_host,
+                    tls_policy: "disabled".to_owned(),
+                    display_name: None,
+                },
+                SecretInputRef::new("unused-rotation-handle").unwrap(),
+                false,
+            )
+            .await
+            .expect("endpoint-only rotation succeeds");
+        rotated_server.join().expect("rotation fake server joins");
+
+        assert_eq!(status.state, "committed");
+        let records = credential_store.list();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].provider_id, "custom");
     }
 }
