@@ -2,9 +2,11 @@
 
 Status: active
 
-Closure so far: M001 closed
-(`plans/closure/provider-connect-restoration-corrective/001-status.md`;
-implementation `568cae33`).
+Closure so far: M001+M002 closed
+(`plans/closure/provider-connect-restoration-corrective/001-status.md`,
+implementation `568cae33`;
+`plans/closure/provider-connect-restoration-corrective/002-status.md`,
+implementations `b532ef84` + `189eb37b`).
 
 Repository baseline reviewed: 5af6766a04d6326ba1e7bb3695b2f0422399e9ee
 
@@ -158,7 +160,9 @@ compatibility and fail-closed handling of pre-existing encrypted material.
 
 ### M002 — Provider catalog and provider-neutral provisioning
 
-Status: ready (unblocked by M001 closure)
+Status: closed (closure at
+`plans/closure/provider-connect-restoration-corrective/002-status.md`;
+implementations `b532ef84` + `189eb37b`)
 
 Plan:
 plans/implementation/provider-connect-restoration-corrective/002-provider-catalog-and-neutral-provisioning.md
@@ -169,7 +173,7 @@ into provider-neutral services, and retain Eggpool as a compatible-proxy preset.
 
 ### M003 — Restore the provider-neutral /connect TUI
 
-Status: blocked on M002 closure
+Status: ready (unblocked by M002 closure)
 
 Plan:
 plans/implementation/provider-connect-restoration-corrective/003-connect-tui-restoration.md

@@ -64,7 +64,7 @@ Canonical direction remains in:
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | — |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | Historical 0.3.6-era workstream remains closed; the 0.3.9 compatibility trigger is owned by the new corrective addendum above. |
 | Command surface reconciliation corrective | closed | `plans/subsystems/command-surface-reconciliation-corrective-addendum.md` | M001+M002 closed | M001 closure accepted at `plans/closure/command-surface-reconciliation-corrective/001-status.md`; M002 closure accepted at `plans/closure/command-surface-reconciliation-corrective/002-status.md`. |
-| Provider /connect restoration corrective | active | `plans/subsystems/provider-connect-restoration-corrective-addendum.md` | M001 closed; M002 ready | M001 first-run credential bootstrap closed (`plans/closure/provider-connect-restoration-corrective/001-status.md`; implementation `568cae33`); M002 unblocked to ready; M003 remains blocked on M002. |
+| Provider /connect restoration corrective | active | `plans/subsystems/provider-connect-restoration-corrective-addendum.md` | M001+M002 closed; M003 ready | M001 first-run credential bootstrap closed (`plans/closure/provider-connect-restoration-corrective/001-status.md`; implementation `568cae33`); M002 provider catalog and neutral provisioning closed (`plans/closure/provider-connect-restoration-corrective/002-status.md`; implementations `b532ef84` + `189eb37b`); M003 unblocked to ready. |
 
 ## Dependency-ready implementation plans
 
@@ -73,7 +73,8 @@ Canonical direction remains in:
 | Command surface reconciliation corrective | M001 TUI command action convergence | closed | `plans/implementation/command-surface-reconciliation-corrective/001-tui-command-action-convergence.md` | Closure accepted at `plans/closure/command-surface-reconciliation-corrective/001-status.md`; implementation `6e5203b6`. |
 | Command surface reconciliation corrective | M002 CLI surface cleanup | closed | `plans/implementation/command-surface-reconciliation-corrective/002-cli-surface-cleanup.md` | Closure accepted at `plans/closure/command-surface-reconciliation-corrective/002-status.md`; implementation `da7fab03`. |
 | Provider /connect restoration corrective | M001 first-run credential key bootstrap | closed | `plans/implementation/provider-connect-restoration-corrective/001-first-run-credential-key-bootstrap.md` | Closure accepted at `plans/closure/provider-connect-restoration-corrective/001-status.md`; implementation `568cae33`. |
-| Provider /connect restoration corrective | M002 provider catalog and neutral provisioning | ready | `plans/implementation/provider-connect-restoration-corrective/002-provider-catalog-and-neutral-provisioning.md` | Unblocked by M001 closure; hard dependency satisfied. |
+| Provider /connect restoration corrective | M002 provider catalog and neutral provisioning | closed | `plans/implementation/provider-connect-restoration-corrective/002-provider-catalog-and-neutral-provisioning.md` | Closure accepted at `plans/closure/provider-connect-restoration-corrective/002-status.md`; implementations `b532ef84` + `189eb37b`. |
+| Provider /connect restoration corrective | M003 provider-neutral /connect TUI | ready | `plans/implementation/provider-connect-restoration-corrective/003-connect-tui-restoration.md` | Unblocked by M002 closure; hard dependency satisfied. |
 | Project Work Orders and Task View — UX fidelity corrective | C001 human Task UX and trigger surface | closed | `plans/implementation/project-work-orders-task-view-corrective/001-human-task-ux-and-trigger-surface.md` | Closure accepted at `plans/closure/project-work-orders-task-view-corrective/001-status.md`; implementation `1bd77c6d`. |
 | Project Work Orders and Task View | M003 project Task composer/view | closed | `plans/implementation/project-work-orders-task-view/003-project-task-composer-and-view.md` | Closure accepted at `plans/closure/project-work-orders-task-view/003-status.md`; implementation `79a00460`. |
 | Project Work Orders and Task View | M004 global Workspace dashboard | closed | `plans/implementation/project-work-orders-task-view/004-global-workspace-dashboard.md` | Closure accepted at `plans/closure/project-work-orders-task-view/004-status.md`; implementation `8c6e8190`. |
@@ -130,7 +131,6 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 | Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific (hardening landed; see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
-| Provider /connect restoration corrective | M003 provider-neutral /connect TUI | Blocked on M002 closure (`plans/implementation/provider-connect-restoration-corrective/003-connect-tui-restoration.md`). |
 
 ## Closure work and current control points
 
@@ -166,6 +166,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| Provider /connect restoration corrective | M002 provider catalog and neutral provisioning | closed | `plans/closure/provider-connect-restoration-corrective/002-status.md` | `b532ef84` + `189eb37b` |
 | Provider /connect restoration corrective | M001 first-run credential key bootstrap | closed | `plans/closure/provider-connect-restoration-corrective/001-status.md` | `568cae33` |
 | Command surface reconciliation corrective | M002 CLI surface cleanup | closed | `plans/closure/command-surface-reconciliation-corrective/002-status.md` | `da7fab03` |
 | Command surface reconciliation corrective | M001 TUI command action convergence | closed | `plans/closure/command-surface-reconciliation-corrective/001-status.md` | `6e5203b6` |
