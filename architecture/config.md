@@ -240,6 +240,12 @@ Master key lookup order:
 1. `CODEGG_MASTER_KEY`
 2. `CODEGG_ENCRYPTION_KEY`
 3. `OPENCODE_ENCRYPTION_KEY`
+4. Existing CodeGG-managed key under the user config directory
+
+Protected-store write paths use the corresponding create-on-write resolver:
+if no explicit or managed key exists and the protected store is genuinely
+fresh, CodeGG atomically bootstraps the managed key. Read/decrypt paths never
+create one.
 
 ### ModelProfileConfig (`schema.rs:98`)
 
@@ -354,8 +360,10 @@ Validated fields:
 - **ProviderConfig merge**: `auth` field merges like any other optional;
   a project config setting `auth: { type: "stored" }` overrides the
   global `api_key` path.
-- **No encryption without master key**: `decrypt_provider_keys()` is
-  a no-op when `CODEGG_MASTER_KEY` is not set.
+- **No decryption without a resolvable master key**:
+  `decrypt_provider_keys()` is a no-op when neither an explicit
+  environment key nor an existing CodeGG-managed key can be resolved.
+  Decryption never bootstraps a new key.
 
 ## Testing
 
