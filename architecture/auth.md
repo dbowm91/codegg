@@ -293,15 +293,17 @@ pub struct CredentialStore {
 Key methods:
 - `at_default_location()` — opens `~/.config/codegg/credentials.json`
 - `put(provider_id, account_id, kind, secret, expires_at, scopes)` —
-  encrypts with master key, requires `CODEGG_MASTER_KEY`. One record per
-  `(provider_id, account_id)`; `put` replaces in place (including kind
+  encrypts through the canonical master-key resolver: an explicit
+  environment key wins, an existing managed key is reused, and a genuinely
+  fresh protected store bootstraps the managed key automatically. One record
+  per `(provider_id, account_id)`; `put` replaces in place (including kind
   changes).
 - `get_plaintext(provider_id, account_id, predicate)` — decrypts on
-  demand; returns `Ok(None)` without master key (legacy seam, retained
-  for non-provider callers)
+  demand; returns `Ok(None)` when no resolvable master key is available
+  (legacy seam, retained for non-provider callers)
 - `get_credential(provider_id, account_id)` — decrypts to a full
-  `Credential` preserving `kind` + `expires_at`; `Ok(None)` without
-  master key
+  `Credential` preserving `kind` + `expires_at`; `Ok(None)` when no
+  resolvable master key is available
 - `find_record(provider_id, account_id)` — exact-match metadata lookup
   used for expiry/capability checks before decryption
 - `remove(provider_id, account_id)` — `Some("*")` removes all accounts
@@ -380,13 +382,25 @@ type = "none"                    # no auth needed
 
 ### Master Key
 
+Fresh local credential/token stores do not require a preconfigured key.
+On the first protected write, CodeGG creates a managed 256-bit key under
+the user configuration directory (for example
+`~/.config/codegg/master.key` on Linux) and reuses it on later reads and
+writes.
+
+Deployments may provide an explicit key instead; explicit environment keys
+take precedence over the managed key:
+
 ```bash
-# Required for storing new credentials and decrypting encrypted_value
 export CODEGG_MASTER_KEY="your-master-key"
-# Also checked (legacy):
+# Also checked for compatibility:
 export CODEGG_ENCRYPTION_KEY="..."
 export OPENCODE_ENCRYPTION_KEY="..."
 ```
+
+If protected material already exists but its historical key is unavailable,
+CodeGG fails closed with `MasterKeyMissing`; it does not create a replacement
+key over existing ciphertext.
 
 ### CLI Usage
 
