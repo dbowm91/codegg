@@ -1,7 +1,8 @@
 # Provider /connect Restoration M003 — Provider-Neutral TUI Restoration
 
-Status: ready (unblocked by M002 closure at
-plans/closure/provider-connect-restoration-corrective/002-status.md)
+Status: implemented (closure at
+plans/closure/provider-connect-restoration-corrective/003-status.md;
+implementation `5cc460c0`)
 
 Corrective roadmap:
 plans/subsystems/provider-connect-restoration-corrective-addendum.md

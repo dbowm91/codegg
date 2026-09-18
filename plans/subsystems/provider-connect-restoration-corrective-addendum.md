@@ -1,12 +1,14 @@
 # Provider /connect Restoration Corrective Addendum
 
-Status: active
+Status: closed
 
-Closure so far: M001+M002 closed
+Closure so far: M001+M002+M003 closed
 (`plans/closure/provider-connect-restoration-corrective/001-status.md`,
 implementation `568cae33`;
 `plans/closure/provider-connect-restoration-corrective/002-status.md`,
-implementations `b532ef84` + `189eb37b`).
+implementations `b532ef84` + `189eb37b`;
+`plans/closure/provider-connect-restoration-corrective/003-status.md`,
+implementation `5cc460c0`).
 
 Repository baseline reviewed: 5af6766a04d6326ba1e7bb3695b2f0422399e9ee
 
@@ -173,7 +175,9 @@ into provider-neutral services, and retain Eggpool as a compatible-proxy preset.
 
 ### M003 — Restore the provider-neutral /connect TUI
 
-Status: ready (unblocked by M002 closure)
+Status: closed (closure at
+`plans/closure/provider-connect-restoration-corrective/003-status.md`;
+implementation `5cc460c0`)
 
 Plan:
 plans/implementation/provider-connect-restoration-corrective/003-connect-tui-restoration.md
