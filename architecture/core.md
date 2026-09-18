@@ -334,6 +334,17 @@ Selection: `CoreRuntimeMode` enum (default `DaemonClient`). `--standalone`
 maps to `StandaloneInproc`; `--stdio` maps to `StandaloneStdio`. Legacy
 `--core-transport inproc|stdio` still parses but emits a deprecation warning.
 
+End-user vs internal surface: ordinary `codegg --help` shows only user
+operations. `--standalone` stays visible (documented non-daemon user
+mode); the deprecated `--core-transport`, the compatibility `--stdio`,
+and the internal `--core-endpoint` still parse but are hidden from
+normal help, as is the `core-stdio` JSONL entry point. Local daemon
+attachment is `codegg daemon attach` (top-level `attach-daemon` remains
+as a hidden compatibility alias); it is distinct from the
+feature-gated remote HTTP `attach`, which only exists in `server`
+builds. `CODEGG_CORE_TRANSPORT` remains honored as a deprecated
+environment override with the same mapping and warnings.
+
 ### Singleton Lifecycle
 
 Phase 1 establishes the production invariant that exactly one user-scoped

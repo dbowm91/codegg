@@ -211,16 +211,26 @@ pub struct CommandConfig {
 }
 ```
 
-### Plugin Commands (`src/command/plugin.rs`)
+### Headless plugin management (no `codegg plugin` CLI)
 
-```rust
-#[derive(Debug, Subcommand)]
-pub enum PluginCommand {
-    List,
-    Search { query: String },
-    Install { source: String },
-}
-```
+There is deliberately no `codegg plugin ...` process CLI. An early
+`src/command/plugin.rs` Clap module (list/search/install over the old
+marketplace service) was never wired into the root CLI and was removed
+rather than preserved: it duplicated install policy instead of calling
+the shared authority, and its marketplace tier model predates the
+current manifest/policy implementation.
+
+Headless plugin operations go through the shared authority instead:
+
+- install/uninstall policy and path validation: `src/plugin/install.rs`
+  (`install_from_path`, `install_from_url`, `uninstall`);
+- lifecycle/management views: `src/plugin/management.rs`
+  (`PluginManager`, also used by the TUI plugin commands);
+- contribution inventory: `src/plugin/manifest.rs` / `registry.rs`.
+
+A future headless plugin surface must call that shared authority
+without duplicating install policy, and must add parser tests plus
+docs in the same change.
 
 ### CommandRegistry (`src/tui/command.rs:84`)
 

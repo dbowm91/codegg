@@ -130,6 +130,12 @@ Local TUI startup selects core transport via `CoreRuntimeMode` (default `DaemonC
 
 Legacy `--core-transport inproc|stdio` still parses but emits a deprecation warning.
 
+Ordinary `codegg --help` shows only user operations: `--standalone` stays
+visible while `--core-transport`, `--stdio`, and `--core-endpoint` still
+parse but are hidden, as is the `core-stdio` entry point. Local daemon
+attachment is `codegg daemon attach` (top-level `attach-daemon` remains
+as a hidden compatibility alias).
+
 ## Workspace Registry and Execution Context (Phase 2)
 
 Phase 2 introduces workspace identity as a first-class daemon concept. The daemon serves multiple distinct workspaces and tracks which workspace each execution targets.

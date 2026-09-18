@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use codegg::agent;
 use codegg::auth::AuthCli;
@@ -24,12 +24,84 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[derive(Parser, Clone, Debug)]
-#[command(
-    name = "codegg",
-    version,
-    about = "A lightweight, pure-Rust implementation of Codegg",
-    after_help = r#"EXAMPLES:
+// Shared execution-policy flags for root one-shot mode and `exec`.
+//
+// Both spellings resolve through the single
+// `codegg::policy_surface::resolve_cli_policy` validation authority:
+// `--yolo` is an exact alias for `--approval-mode yolo` and combining it
+// with a different explicit mode is rejected. When no flag is given the
+// root one-shot path keeps the stored preference (or built-in default)
+// while `exec` keeps its legacy permissive behavior; explicit modes map
+// to the same daemon policy contract in both.
+//
+// (Plain comments, not doc comments: Clap renders a flattened `Args`
+// struct's doc comment as a help header, which would displace `about`.)
+#[derive(Args, Clone, Debug, Default)]
+struct ExecutionPolicyArgs {
+    /// Approval mode for this invocation (interactive, automatic, yolo).
+    /// Maps to the same daemon policy contract as the TUI approval
+    /// selector. `--yolo` is an exact alias for `--approval-mode yolo`.
+    #[arg(long = "approval-mode", value_name = "MODE")]
+    approval_mode: Option<String>,
+
+    /// Sandbox profile for this invocation (read-only, workspace-write,
+    /// full-host). Orthogonal to `--approval-mode`: automatic modes never
+    /// imply full-host access.
+    #[arg(long = "sandbox", value_name = "PROFILE")]
+    sandbox: Option<String>,
+
+    /// Autonomous execution without approval prompts. Exact alias for
+    /// `--approval-mode yolo` (conflicts with a different explicit mode).
+    /// Sandbox containment still applies unless `--sandbox full-host` is
+    /// also given.
+    #[arg(long = "yolo")]
+    yolo: bool,
+}
+
+impl ExecutionPolicyArgs {
+    fn resolve(&self) -> Result<Option<codegg::policy_surface::CliPolicyOverride>, String> {
+        codegg::policy_surface::resolve_cli_policy(
+            self.approval_mode.as_deref(),
+            self.sandbox.as_deref(),
+            self.yolo,
+        )
+    }
+}
+
+/// Canonical `--format text|json` output selection shared by root one-shot
+/// mode and `exec`.
+///
+/// The pre-existing `--output-format` (root) and `--json-output`/`-j`
+/// (`exec`) spellings remain as compatibility aliases.
+fn resolve_output_format(format: OutputFormat, json_output: bool) -> OutputFormat {
+    if json_output || matches!(format, OutputFormat::Json) {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Text
+    }
+}
+
+/// Clap log-level mapping for `-v` counting.
+///
+/// Documented and tested exactly: no flag warns, `-v` informs, `-vv`
+/// debugs, `-vvv` and above traces.
+fn verbosity_log_level(verbose: u8) -> &'static str {
+    match verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    }
+}
+
+/// Feature-gated root examples: the default build must not advertise the
+/// `server`-gated `server` / remote `attach` commands. Applied at runtime
+/// (and to generated completions) because Clap `after_help` is a static
+/// attribute; every example below names a command that exists in the
+/// compiled feature set.
+#[cfg(feature = "server")]
+fn root_after_help() -> &'static str {
+    r#"EXAMPLES:
     # Start a new session
     codegg
 
@@ -48,64 +120,99 @@ use tracing_subscriber::util::SubscriberInitExt;
     # List models from specific provider
     codegg models -p anthropic
 
-    # Attach to remote server
+    # Diagnose a subsystem
+    codegg doctor search
+
+    # Manage the core daemon
+    codegg daemon status
+
+    # Attach to remote server (requires the `server` feature build)
     codegg attach http://localhost:3000 --token YOUR_TOKEN
 
-    # Start server
+    # Start server (requires the `server` feature build)
     codegg server --host 0.0.0.0 --port 8080"#
+}
+
+/// Feature-gated root examples: the default build must not advertise the
+/// `server`-gated `server` / remote `attach` commands. Applied at runtime
+/// (and to generated completions) because Clap `after_help` is a static
+/// attribute; every example below names a command that exists in the
+/// compiled feature set.
+#[cfg(not(feature = "server"))]
+fn root_after_help() -> &'static str {
+    r#"EXAMPLES:
+    # Start a new session
+    codegg
+
+    # Resume last session
+    codegg -c
+
+    # Use specific model
+    codegg -m claude-sonnet-4-20250514
+
+    # Run a single prompt
+    codegg --run "Hello, write a hello world program"
+
+    # List available models
+    codegg models
+
+    # List models from specific provider
+    codegg models -p anthropic
+
+    # Diagnose a subsystem
+    codegg doctor search
+
+    # Manage the core daemon
+    codegg daemon status"#
+}
+
+#[derive(Parser, Clone, Debug)]
+#[command(
+    name = "codegg",
+    version,
+    about = "CodeGG, the Rust-native AI coding agent for terminal workflows"
 )]
 struct Cli {
     /// Resume last session
-    #[arg(long, short = 'c')]
+    #[arg(long, short = 'c', conflicts_with_all = ["session", "fork", "no_session"])]
     continue_session: bool,
 
     /// Open specific session
-    #[arg(long, short = 's')]
+    #[arg(long, short = 's', conflicts_with_all = ["continue_session", "fork", "no_session"])]
     session: Option<String>,
 
     /// Override model
     #[arg(long, short = 'm')]
     model: Option<String>,
 
-    /// Approval mode for this invocation (interactive, automatic, yolo).
-    /// Maps to the same daemon policy contract as the TUI approval
-    /// selector; when absent the stored preference (or built-in default)
-    /// applies. `--yolo` is an exact alias for `--approval-mode yolo`.
-    #[arg(long = "approval-mode", value_name = "MODE")]
-    approval_mode: Option<String>,
-
-    /// Sandbox profile for this invocation (read-only, workspace-write,
-    /// full-host). Orthogonal to `--approval-mode`: automatic modes never
-    /// imply full-host access.
-    #[arg(long = "sandbox", value_name = "PROFILE")]
-    sandbox: Option<String>,
-
-    /// Autonomous execution without approval prompts. Exact alias for
-    /// `--approval-mode yolo` (conflicts with a different explicit mode).
-    /// Sandbox containment still applies unless `--sandbox full-host` is
-    /// also given (strongly warned, interactive confirmation required in
-    /// the TUI).
-    #[arg(long = "yolo")]
-    yolo: bool,
+    #[command(flatten)]
+    policy: ExecutionPolicyArgs,
 
     /// Override agent
     #[arg(long, short = 'a')]
     agent: Option<String>,
 
     /// Ephemeral session (no persistence)
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["continue_session", "session", "fork"])]
     no_session: bool,
 
     /// Fork a session
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["continue_session", "session", "no_session"])]
     fork: Option<String>,
 
     /// Run a single prompt and exit
     #[arg(long, short = 'p')]
     run: Option<String>,
 
-    /// Output format for non-interactive mode (text, json)
-    #[arg(long, short = 'f', default_value = "text")]
+    /// Output format for one-shot mode (text, json).
+    /// Canonical spelling is `--format`; `--output-format` is retained
+    /// as a compatibility alias.
+    #[arg(
+        long = "format",
+        alias = "output-format",
+        short = 'f',
+        default_value = "text"
+    )]
     output_format: OutputFormat,
 
     /// Hide status messages in non-interactive mode
@@ -116,7 +223,8 @@ struct Cli {
     #[arg(long = "cwd", value_name = "DIRECTORY")]
     cwd: Option<PathBuf>,
 
-    /// Enable verbose output (-v for warning, -vv for info, -vvv for debug)
+    /// Enable verbose output (no flag: warn; -v: info; -vv: debug;
+    /// -vvv and above: trace)
     #[arg(long, short = 'v', action = clap::ArgAction::Count)]
     verbose: u8,
 
@@ -124,8 +232,9 @@ struct Cli {
     ///
     /// DEPRECATED: prefer `--standalone` (in-process) or `--stdio` (subprocess).
     /// The singleton daemon is the default for ordinary TUI startup.
-    /// `socket` is still honored for explicit attach.
-    #[arg(long = "core-transport", value_enum)]
+    /// `socket` is still honored for explicit attach. Hidden from normal
+    /// help; see `architecture/core.md` for the transport model.
+    #[arg(long = "core-transport", value_enum, hide = true)]
     core_transport: Option<CoreTransport>,
 
     /// Run the core in-process without contacting the singleton daemon.
@@ -136,12 +245,14 @@ struct Cli {
 
     /// Spawn a `core-stdio` subprocess and exchange JSONL over stdio.
     /// Compatibility/testing mode; treated as standalone (does not touch
-    /// the singleton lock).
-    #[arg(long = "stdio")]
+    /// the singleton lock). Hidden from normal help; see
+    /// `architecture/core.md`.
+    #[arg(long = "stdio", hide = true)]
     stdio: bool,
 
     /// Core transport endpoint (required for socket mode), e.g. unix:///tmp/codegg-core.sock
-    #[arg(long = "core-endpoint")]
+    /// Hidden from normal help; see `architecture/core.md`.
+    #[arg(long = "core-endpoint", hide = true)]
     core_endpoint: Option<String>,
 
     #[command(subcommand)]
@@ -223,7 +334,13 @@ enum Commands {
         #[arg(long)]
         file: Option<String>,
 
-        /// Output JSON format
+        /// Output format (text, json). Canonical spelling is `--format`;
+        /// `--json-output` is retained as a compatibility alias and also
+        /// selects JSON output when given.
+        #[arg(long = "format", value_enum)]
+        format: Option<OutputFormat>,
+
+        /// Output JSON format (compatibility alias for `--format json`)
         #[arg(long, short = 'j')]
         json_output: bool,
 
@@ -235,23 +352,8 @@ enum Commands {
         #[arg(long, short = 's')]
         session: Option<String>,
 
-        /// Approval mode for this run (interactive, automatic, yolo).
-        /// When absent, exec keeps its legacy permissive behavior
-        /// (compatibility alias for autonomous workspace execution).
-        /// Explicit modes map to the same daemon policy contract as the
-        /// TUI selector; deterministic denies and security escalations
-        /// still apply.
-        #[arg(long = "approval-mode", value_name = "MODE")]
-        approval_mode: Option<String>,
-
-        /// Sandbox profile for this run (read-only, workspace-write,
-        /// full-host). Orthogonal to `--approval-mode`.
-        #[arg(long = "sandbox", value_name = "PROFILE")]
-        sandbox: Option<String>,
-
-        /// Exact alias for `--approval-mode yolo`.
-        #[arg(long = "yolo")]
-        yolo: bool,
+        #[command(flatten)]
+        policy: ExecutionPolicyArgs,
     },
     /// Generate shell completions
     Completions {
@@ -295,7 +397,11 @@ enum Commands {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Attach to a running daemon via local Unix socket
+    /// Attach to a running daemon via local Unix socket.
+    /// Deprecated compatibility spelling of `codegg daemon attach`;
+    /// hidden from normal help. Distinct from the feature-gated remote
+    /// HTTP `attach` command.
+    #[command(hide = true)]
     AttachDaemon {
         /// Socket endpoint path
         #[arg(long)]
@@ -309,11 +415,16 @@ enum Commands {
     },
     #[command(hide = true, name = "core-stdio")]
     CoreStdio,
-    /// Run diagnostics for search backend, MCP, providers, and storage.
+    /// Run diagnostics for search, MCP, LSP, deterministic tools,
+    /// providers, and credentials (default: all).
     Doctor {
         /// Restrict diagnostics to a single subsystem.
-        #[arg(long, value_enum)]
+        #[arg(value_enum)]
         subsystem: Option<DoctorSubsystem>,
+        /// Deprecated compatibility spelling for the positional subsystem.
+        /// Hidden from normal help; prefer `codegg doctor [SUBSYSTEM]`.
+        #[arg(long = "subsystem", value_enum, hide = true)]
+        subsystem_flag: Option<DoctorSubsystem>,
     },
     /// Manage the user-level credential store (status, set-key, logout).
     Auth {
@@ -368,9 +479,42 @@ pub enum DoctorSubsystem {
     Lsp,
     /// Deterministic tools (eggsact) and preflight.
     DeterministicTools,
+    /// Configured LLM providers (read-only listing, no network probes).
+    Providers,
+    /// User-level credential store (metadata only, never secrets).
+    Credentials,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
+/// Resolve the `doctor` subsystem from the positional argument and the
+/// deprecated `--subsystem` compatibility flag.
+///
+/// The positional spelling wins when both are given identically; differing
+/// spellings are rejected rather than silently preferring one.
+fn resolve_doctor_subsystem(
+    positional: Option<DoctorSubsystem>,
+    flag: Option<DoctorSubsystem>,
+) -> Result<DoctorSubsystem, AppError> {
+    match (positional, flag) {
+        (Some(pos), Some(fl)) if pos != fl => Err(AppError::Other(anyhow::anyhow!(
+            "conflicting doctor subsystems: positional {pos:?} differs from --subsystem {fl:?} (use one spelling)"
+        ))),
+        (Some(pos), _) => {
+            if flag.is_some() {
+                eprintln!(
+                    "warning: --subsystem is deprecated; prefer `codegg doctor [SUBSYSTEM]`"
+                );
+            }
+            Ok(pos)
+        }
+        (None, Some(fl)) => {
+            eprintln!("warning: --subsystem is deprecated; prefer `codegg doctor [SUBSYSTEM]`");
+            Ok(fl)
+        }
+        (None, None) => Ok(DoctorSubsystem::All),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     #[default]
@@ -418,10 +562,48 @@ enum DaemonCommand {
         #[arg(long, default_value = "50")]
         lines: usize,
     },
+    /// Attach to a running daemon via local Unix socket.
+    /// Canonical spelling; top-level `attach-daemon` remains as a hidden
+    /// compatibility alias. Distinct from the feature-gated remote HTTP
+    /// `attach` command.
+    Attach {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Session ID to attach to
+        #[arg(long)]
+        session: Option<String>,
+        /// Create a new session
+        #[arg(long)]
+        new: bool,
+    },
 }
 
 fn resolve_endpoint(endpoint: Option<String>) -> String {
     codegg::core::instance::DaemonPaths::resolve_for_endpoint(endpoint.as_deref()).endpoint_uri()
+}
+
+/// Attach the TUI to a running daemon over the local Unix socket.
+///
+/// Shared by `codegg daemon attach` (canonical) and the hidden
+/// top-level `attach-daemon` compatibility alias.
+async fn cmd_daemon_attach(
+    endpoint: Option<String>,
+    session: Option<String>,
+    new: bool,
+    cli: &Cli,
+) -> Result<(), AppError> {
+    let ep = resolve_endpoint(endpoint);
+    let mut cli_copy = cli.clone();
+    cli_copy.core_transport = Some(CoreTransport::Socket);
+    cli_copy.core_endpoint = Some(format!("unix://{}", ep));
+    if new {
+        cli_copy.continue_session = false;
+        cli_copy.session = None;
+    } else if let Some(sid) = session {
+        cli_copy.session = Some(sid);
+    }
+    launch_tui(&cli_copy).await
 }
 
 impl OutputFormat {
@@ -461,16 +643,377 @@ mod output_format_tests {
     }
 }
 
+#[cfg(test)]
+mod cli_surface_tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    fn root_long_help() -> String {
+        Cli::command()
+            .after_help(root_after_help())
+            .render_long_help()
+            .to_string()
+    }
+
+    fn doctor_long_help() -> String {
+        Cli::command()
+            .find_subcommand("doctor")
+            .expect("doctor subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string()
+    }
+
+    fn doctor_possible_values() -> Vec<String> {
+        let cmd = Cli::command();
+        let doctor = cmd
+            .find_subcommand("doctor")
+            .expect("doctor subcommand exists");
+        let arg = doctor
+            .get_arguments()
+            .find(|a| a.get_id() == "subsystem")
+            .expect("doctor positional subsystem exists");
+        let mut values: Vec<String> = arg
+            .get_possible_values()
+            .iter()
+            .map(|v| v.get_name().to_string())
+            .collect();
+        values.sort();
+        values
+    }
+
+    #[test]
+    fn verbosity_mapping_matches_help() {
+        assert_eq!(verbosity_log_level(0), "warn");
+        assert_eq!(verbosity_log_level(1), "info");
+        assert_eq!(verbosity_log_level(2), "debug");
+        assert_eq!(verbosity_log_level(3), "trace");
+        assert_eq!(verbosity_log_level(255), "trace");
+
+        let help = root_long_help();
+        assert!(
+            help.contains("-vvv"),
+            "verbose help must document the trace level"
+        );
+        assert!(help.contains("trace"), "verbose help must name trace");
+    }
+
+    #[test]
+    fn doctor_positional_and_compat_flag_parse() {
+        let cli = Cli::try_parse_from(["codegg", "doctor", "search"]).expect("positional parses");
+        match cli.command {
+            Some(Commands::Doctor {
+                subsystem,
+                subsystem_flag,
+            }) => {
+                assert_eq!(subsystem, Some(DoctorSubsystem::Search));
+                assert_eq!(subsystem_flag, None);
+                assert_eq!(
+                    resolve_doctor_subsystem(subsystem, subsystem_flag).expect("resolves"),
+                    DoctorSubsystem::Search
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["codegg", "doctor", "--subsystem", "search"])
+            .expect("compat flag parses");
+        match cli.command {
+            Some(Commands::Doctor {
+                subsystem,
+                subsystem_flag,
+            }) => {
+                assert_eq!(subsystem, None);
+                assert_eq!(subsystem_flag, Some(DoctorSubsystem::Search));
+                assert_eq!(
+                    resolve_doctor_subsystem(subsystem, subsystem_flag).expect("resolves"),
+                    DoctorSubsystem::Search
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(resolve_doctor_subsystem(None, None).expect("default") == DoctorSubsystem::All);
+        assert!(
+            resolve_doctor_subsystem(Some(DoctorSubsystem::Search), Some(DoctorSubsystem::Lsp))
+                .is_err(),
+            "differing positional and flag spellings must be rejected"
+        );
+    }
+
+    #[test]
+    fn doctor_advertised_subsystems_match_enum() {
+        assert_eq!(
+            doctor_possible_values(),
+            vec![
+                "all",
+                "credentials",
+                "deterministic-tools",
+                "lsp",
+                "mcp",
+                "providers",
+                "search",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>(),
+        );
+
+        let help = doctor_long_help();
+        assert!(
+            !help.contains("--subsystem"),
+            "deprecated flag must stay hidden from normal doctor help"
+        );
+        assert!(
+            !help.contains("storage"),
+            "doctor help must not claim unimplemented storage diagnostics"
+        );
+    }
+
+    #[test]
+    fn default_help_excludes_feature_gated_commands() {
+        let cmd = Cli::command();
+        assert!(
+            cmd.find_subcommand("plugin").is_none(),
+            "orphan plugin CLI must stay unwired (removal disposition)"
+        );
+        #[cfg(not(feature = "server"))]
+        {
+            assert!(cmd.find_subcommand("server").is_none());
+            assert!(cmd.find_subcommand("attach").is_none());
+            assert!(
+                !root_after_help().contains("codegg attach"),
+                "default examples must not advertise remote attach"
+            );
+            assert!(
+                !root_after_help().contains("codegg server"),
+                "default examples must not advertise the gated server"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn all_feature_help_includes_gated_commands() {
+        let cmd = Cli::command();
+        assert!(cmd.find_subcommand("server").is_some());
+        assert!(cmd.find_subcommand("attach").is_some());
+        assert!(root_after_help().contains("codegg attach"));
+        assert!(root_after_help().contains("codegg server"));
+    }
+
+    #[test]
+    fn session_launch_conflicts_fail_at_parse_time() {
+        for args in [
+            vec!["codegg", "-c", "-s", "abc"],
+            vec!["codegg", "-c", "--fork", "abc"],
+            vec!["codegg", "-c", "--no-session"],
+            vec!["codegg", "-s", "abc", "--fork", "def"],
+            vec!["codegg", "-s", "abc", "--no-session"],
+            vec!["codegg", "--fork", "abc", "--no-session"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_err(),
+                "conflicting launch flags must fail: {args:?}"
+            );
+        }
+
+        for args in [
+            vec!["codegg", "-c"],
+            vec!["codegg", "-s", "abc"],
+            vec!["codegg", "--fork", "abc"],
+            vec!["codegg", "--no-session"],
+            vec!["codegg"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "single launch mode must parse: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn execution_policy_uses_one_shared_authority() {
+        // `--yolo` with a different explicit mode parses (alias surface)
+        // but is rejected by the single validation authority at
+        // resolution time, identically on both spellings.
+        let root = Cli::try_parse_from(["codegg", "--yolo", "--approval-mode", "interactive"])
+            .expect("root policy flags parse");
+        assert!(root.policy.resolve().is_err());
+
+        let exec =
+            Cli::try_parse_from(["codegg", "exec", "--yolo", "--approval-mode", "interactive"])
+                .expect("exec policy flags parse");
+        match exec.command {
+            Some(Commands::Exec { policy, .. }) => {
+                assert_eq!(
+                    policy.resolve(),
+                    root.policy.resolve(),
+                    "root and exec must share one resolution outcome"
+                );
+                assert!(policy.resolve().is_err());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let root_ok = Cli::try_parse_from(["codegg", "--yolo", "--sandbox", "workspace-write"])
+            .expect("root policy parses");
+        let exec_ok =
+            Cli::try_parse_from(["codegg", "exec", "--yolo", "--sandbox", "workspace-write"])
+                .expect("exec policy parses");
+        match exec_ok.command {
+            Some(Commands::Exec { policy, .. }) => {
+                assert_eq!(policy.resolve(), root_ok.policy.resolve());
+                assert!(policy.resolve().is_ok());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_format_compat_aliases() {
+        let cli = Cli::try_parse_from(["codegg", "--output-format", "json"])
+            .expect("legacy root spelling parses");
+        assert!(matches!(cli.output_format, OutputFormat::Json));
+
+        let cli =
+            Cli::try_parse_from(["codegg", "--format", "json"]).expect("canonical spelling parses");
+        assert!(matches!(cli.output_format, OutputFormat::Json));
+
+        let cli = Cli::try_parse_from(["codegg", "exec", "--json-output"])
+            .expect("legacy exec spelling parses");
+        match cli.command {
+            Some(Commands::Exec {
+                format,
+                json_output,
+                ..
+            }) => {
+                assert_eq!(format, None);
+                assert!(json_output);
+                assert!(matches!(
+                    resolve_output_format(format.unwrap_or(OutputFormat::Text), json_output),
+                    OutputFormat::Json
+                ));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["codegg", "exec", "--format", "json"])
+            .expect("canonical exec spelling parses");
+        match cli.command {
+            Some(Commands::Exec {
+                format,
+                json_output,
+                ..
+            }) => {
+                assert_eq!(format, Some(OutputFormat::Json));
+                assert!(!json_output);
+                assert!(matches!(
+                    resolve_output_format(format.unwrap_or(OutputFormat::Text), json_output),
+                    OutputFormat::Json
+                ));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        assert!(matches!(
+            resolve_output_format(OutputFormat::Text, false),
+            OutputFormat::Text
+        ));
+    }
+
+    #[test]
+    fn daemon_attach_canonical_and_compat_alias() {
+        Cli::try_parse_from(["codegg", "daemon", "attach", "--new"])
+            .expect("canonical daemon attach parses");
+        Cli::try_parse_from(["codegg", "attach-daemon", "--new"])
+            .expect("hidden compat alias still parses");
+
+        let cmd = Cli::command();
+        let compat = cmd
+            .find_subcommand("attach-daemon")
+            .expect("compat alias exists");
+        assert!(
+            compat.is_hide_set(),
+            "attach-daemon must stay hidden from normal help"
+        );
+    }
+
+    #[test]
+    fn internal_transports_stay_parseable_but_hidden() {
+        for args in [
+            vec!["codegg", "--core-transport", "stdio"],
+            vec!["codegg", "--stdio"],
+            vec!["codegg", "--core-endpoint", "unix:///tmp/codegg-core.sock"],
+            vec!["codegg", "--standalone"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "transport spelling must still parse: {args:?}"
+            );
+        }
+
+        let cmd = Cli::command();
+        for hidden in ["core_transport", "stdio", "core_endpoint"] {
+            let arg = cmd
+                .get_arguments()
+                .find(|a| a.get_id().as_str() == hidden)
+                .unwrap_or_else(|| panic!("{hidden} flag still exists"));
+            assert!(
+                arg.is_hide_set(),
+                "{hidden} must stay hidden from normal help"
+            );
+        }
+    }
+
+    #[test]
+    fn documented_examples_parse_as_written() {
+        for args in [
+            vec!["codegg"],
+            vec!["codegg", "-c"],
+            vec!["codegg", "-s", "abc"],
+            vec!["codegg", "-m", "anthropic/model"],
+            vec!["codegg", "--run", "Hello, write a hello world program"],
+            vec!["codegg", "models"],
+            vec!["codegg", "models", "-p", "anthropic"],
+            vec!["codegg", "doctor", "search"],
+            vec!["codegg", "doctor", "providers"],
+            vec!["codegg", "doctor", "credentials"],
+            vec!["codegg", "daemon", "status"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "documented example must parse: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn server_examples_parse_as_written() {
+        for args in [
+            vec!["codegg", "attach", "http://localhost:3000"],
+            vec!["codegg", "server", "--host", "0.0.0.0", "--port", "8080"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_ok(),
+                "server example must parse: {args:?}"
+            );
+        }
+    }
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), AppError> {
-    let cli = Cli::parse();
+    // Apply the feature-gated examples fragment at runtime so the
+    // rendered help only advertises commands in the compiled build.
+    let matches = Cli::command()
+        .after_help(root_after_help())
+        .try_get_matches_from(std::env::args())
+        .unwrap_or_else(|e| e.exit());
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
-    let log_level = match cli.verbose {
-        0 => "warn",
-        1 => "info",
-        2 => "debug",
-        _ => "trace",
-    };
+    let log_level = verbosity_log_level(cli.verbose);
 
     let env_log_level = std::env::var("RUST_LOG").ok();
 
@@ -536,8 +1079,11 @@ async fn main() -> Result<(), AppError> {
             Commands::Attach { url, token } => {
                 cmd_attach(url, token.as_deref()).await?;
             }
-            Commands::Doctor { subsystem } => {
-                cmd_doctor(subsystem.unwrap_or(DoctorSubsystem::All)).await?;
+            Commands::Doctor {
+                subsystem,
+                subsystem_flag,
+            } => {
+                cmd_doctor(resolve_doctor_subsystem(*subsystem, *subsystem_flag)?).await?;
             }
             Commands::Auth { command } => {
                 cmd_auth(command.clone())?;
@@ -551,22 +1097,22 @@ async fn main() -> Result<(), AppError> {
             Commands::Exec {
                 json,
                 file,
+                format,
                 json_output,
                 quiet,
                 session,
-                approval_mode,
-                sandbox,
-                yolo,
+                policy,
             } => {
+                let policy = policy.resolve().map_err(|e| {
+                    AppError::Other(anyhow::anyhow!("invalid execution policy flags: {}", e))
+                })?;
                 cmd_exec(
                     json.as_deref(),
                     file.as_deref(),
-                    *json_output,
+                    resolve_output_format(format.unwrap_or(OutputFormat::Text), *json_output),
                     *quiet,
                     session.as_deref(),
-                    approval_mode.as_deref(),
-                    sandbox.as_deref(),
-                    *yolo,
+                    policy,
                 )
                 .await?;
             }
@@ -755,6 +1301,13 @@ async fn main() -> Result<(), AppError> {
                         }
                     }
                 }
+                DaemonCommand::Attach {
+                    endpoint,
+                    session,
+                    new,
+                } => {
+                    cmd_daemon_attach(endpoint.clone(), session.clone(), *new, &cli).await?;
+                }
                 DaemonCommand::Logs { file, lines } => {
                     let log_path = file.clone().map(std::path::PathBuf::from).map_or_else(
                         || codegg::core::instance::DaemonPaths::resolve().log_path,
@@ -784,17 +1337,8 @@ async fn main() -> Result<(), AppError> {
                 session,
                 new,
             } => {
-                let ep = resolve_endpoint(endpoint.clone());
-                let mut cli_copy = cli.clone();
-                cli_copy.core_transport = Some(CoreTransport::Socket);
-                cli_copy.core_endpoint = Some(format!("unix://{}", ep));
-                if *new {
-                    cli_copy.continue_session = false;
-                    cli_copy.session = None;
-                } else if let Some(sid) = session {
-                    cli_copy.session = Some(sid.clone());
-                }
-                launch_tui(&cli_copy).await?;
+                eprintln!("warning: `attach-daemon` is deprecated; prefer `codegg daemon attach`");
+                cmd_daemon_attach(endpoint.clone(), session.clone(), *new, &cli).await?;
             }
             Commands::CoreStdio => {
                 run_core_stdio().await?;
@@ -1125,6 +1669,23 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
     println!("== Codegg doctor ==");
     println!("config: loaded");
 
+    // Single-dispatch per subsystem; `All` runs every section below.
+    // Each arm has a real implementation — subsystems without one
+    // (notably installation/runfile data, owned by the blocked
+    // self-contained-installation M002) are deliberately absent from
+    // `DoctorSubsystem` rather than advertised empty.
+    if matches!(subsystem, DoctorSubsystem::Providers) {
+        println!("\n== Providers ==");
+        print_providers_report(&config);
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::Credentials) {
+        println!("\n== Credentials ==");
+        print_credentials_report();
+        return Ok(());
+    }
+
     if matches!(subsystem, DoctorSubsystem::Mcp) {
         println!("\n== MCP ==");
         list_mcp_servers(&config);
@@ -1169,7 +1730,79 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
         print_deterministic_tools_report(&config);
     }
 
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Providers) {
+        println!("\n== Providers ==");
+        print_providers_report(&config);
+    }
+
+    if matches!(
+        subsystem,
+        DoctorSubsystem::All | DoctorSubsystem::Credentials
+    ) {
+        println!("\n== Credentials ==");
+        print_credentials_report();
+    }
+
     Ok(())
+}
+
+/// Read-only provider listing for `doctor providers`.
+///
+/// Reuses the same config-aware registration as `codegg providers` and
+/// the TUI. No network probes: model inventory stays behind
+/// `codegg models`, which may contact providers.
+fn print_providers_report(config: &Config) {
+    let mut registry = ProviderRegistry::new();
+    provider::register_builtin_with_config(&mut registry, config);
+
+    let listed = registry.list();
+    if listed.is_empty() {
+        println!(
+            "No providers configured. Set API keys, configure provider auth, or store a key with `codegg auth set-key <provider>`."
+        );
+        return;
+    }
+
+    println!("Configured providers ({}):", listed.len());
+    for p in listed {
+        println!("  - {} ({})", p.id(), p.name());
+    }
+}
+
+/// Metadata-only credential listing for `doctor credentials`.
+///
+/// Reuses the user-level [`codegg::auth::CredentialStore`] read path also
+/// used by `codegg auth status`. Never prints secrets: only provider id,
+/// credential kind, account label, expiry, and scopes.
+fn print_credentials_report() {
+    let store = match codegg::auth::CredentialStore::at_default_location() {
+        Ok(store) => store,
+        Err(e) => {
+            println!("credential store unavailable: {e}");
+            return;
+        }
+    };
+    let records = store.list();
+    if records.is_empty() {
+        println!("No credentials stored.");
+        return;
+    }
+    println!("Stored credentials ({}):", records.len());
+    for rec in &records {
+        let account = rec.account_id.as_deref().unwrap_or("(default)");
+        let kind = match rec.kind {
+            codegg::auth::CredentialKind::ApiKey => "api_key",
+            codegg::auth::CredentialKind::BearerToken => "bearer",
+        };
+        let expires = rec
+            .expires_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_else(|| "never".to_string());
+        println!(
+            "  - {} [{}] account={} expires={} scopes={:?}",
+            rec.provider_id, kind, account, expires, rec.scopes
+        );
+    }
 }
 
 fn cmd_auth(command: AuthSubcommand) -> Result<(), AppError> {
@@ -1327,7 +1960,7 @@ fn print_deterministic_tools_report(config: &Config) {
 }
 
 fn cmd_completions(shell: Shell, output_dir: Option<&str>) -> Result<(), AppError> {
-    let mut cmd = Cli::command();
+    let mut cmd = Cli::command().after_help(root_after_help());
     let name = cmd.get_name().to_string();
 
     match output_dir {
@@ -1373,12 +2006,10 @@ fn cmd_completions(shell: Shell, output_dir: Option<&str>) -> Result<(), AppErro
 async fn cmd_exec(
     json_input: Option<&str>,
     file_input: Option<&str>,
-    json_output: bool,
+    format: OutputFormat,
     quiet: bool,
     session: Option<&str>,
-    approval_mode: Option<&str>,
-    sandbox: Option<&str>,
-    yolo: bool,
+    policy: Option<codegg::policy_surface::CliPolicyOverride>,
 ) -> Result<(), AppError> {
     let input_json = if let Some(path) = file_input {
         tokio::fs::read_to_string(path).await?
@@ -1393,12 +2024,15 @@ async fn cmd_exec(
     let input: ExecInput = serde_json::from_str(&input_json)
         .map_err(|e| AppError::Other(anyhow::anyhow!("Failed to parse exec input JSON: {}", e)))?;
 
-    // M007: explicit headless flags map to the same daemon policy
-    // contract as the TUI selector. Absent flags keep the legacy
-    // permissive exec behavior (documented compatibility alias).
-    let policy = codegg::policy_surface::resolve_cli_policy(approval_mode, sandbox, yolo)
-        .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
-    let mut exec_mode = ExecMode::new(quiet, json_output, session.map(String::from));
+    // Explicit headless flags map to the same daemon policy contract as
+    // the TUI selector. Absent flags keep the legacy permissive exec
+    // behavior (documented compatibility alias for autonomous workspace
+    // execution).
+    let mut exec_mode = ExecMode::new(
+        quiet,
+        matches!(format, OutputFormat::Json),
+        session.map(String::from),
+    );
     if let Some(policy) = policy {
         exec_mode = exec_mode.with_policy(policy);
     }
@@ -1414,7 +2048,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
 
     let default_model = config.model.clone().unwrap_or_default();
     let model = cli.model.as_ref().unwrap_or(&default_model);
-    let (provider_id, model_name) = parse_model(model);
+    let (provider_id, model_name) = codegg::exec::ExecMode::parse_model(model);
 
     let provider = registry
         .get(&provider_id)
@@ -1482,14 +2116,11 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     );
     agent_loop.set_agent(&safe_agent.name)?;
 
-    // M007: top-level --approval-mode/--sandbox/--yolo map to the same
-    // daemon policy contract as the TUI selector. Absent flags leave the
-    // built-in Interactive/WorkspaceWrite snapshot untouched.
-    match codegg::policy_surface::resolve_cli_policy(
-        cli.approval_mode.as_deref(),
-        cli.sandbox.as_deref(),
-        cli.yolo,
-    ) {
+    // Top-level --approval-mode/--sandbox/--yolo map to the same
+    // daemon policy contract as the TUI selector through the single
+    // shared `ExecutionPolicyArgs` validation authority. Absent flags
+    // leave the built-in Interactive/WorkspaceWrite snapshot untouched.
+    match cli.policy.resolve() {
         Ok(Some(policy)) => {
             if let Some(mode) = policy.approval_mode {
                 agent_loop.set_approval_mode(mode);
@@ -1505,7 +2136,10 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         }
         Ok(None) => {}
         Err(e) => {
-            return Err(AppError::Other(anyhow::anyhow!(e)));
+            return Err(AppError::Other(anyhow::anyhow!(
+                "invalid execution policy flags: {}",
+                e
+            )));
         }
     }
 
@@ -1571,10 +2205,12 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         }
         processor.process(&event);
     }
-    print!("{}", processor.text());
+    print!("{}", cli.output_format.format(processor.text()));
     println!();
-    if let Some((input, output)) = final_usage {
-        eprintln!("\nTokens: {} input, {} output", input, output);
+    if !cli.quiet {
+        if let Some((input, output)) = final_usage {
+            eprintln!("\nTokens: {} input, {} output", input, output);
+        }
     }
 
     Ok(())
@@ -1860,18 +2496,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     };
     app.set_core_client(core_client);
 
-    // M007: top-level --approval-mode/--sandbox/--yolo seed the
-    // daemon-owned preference once at startup (no expected revision: an
+    // Top-level --approval-mode/--sandbox/--yolo seed the
+    // daemon-owned preference once at startup through the single shared
+    // `ExecutionPolicyArgs` validation authority (no expected revision: an
     // explicit invocation wins over the stored preference). The flag
     // itself is the deliberate act, so no blocking confirmation is
     // collected here; FullHost is strongly warned on stderr and the
     // startup restore notice below shows the daemon-resolved effective
     // state inside the TUI.
-    match codegg::policy_surface::resolve_cli_policy(
-        cli.approval_mode.as_deref(),
-        cli.sandbox.as_deref(),
-        cli.yolo,
-    ) {
+    match cli.policy.resolve() {
         Ok(Some(policy)) => {
             if policy.sandbox_profile.is_some_and(|p| p.is_full_host()) {
                 eprintln!(
@@ -2601,14 +3234,6 @@ async fn run_core_stdio() -> Result<(), AppError> {
         stdout.flush().await.map_err(AppError::Io)?;
     }
     Ok(())
-}
-
-fn parse_model(model: &str) -> (String, String) {
-    if let Some(pos) = model.find('/') {
-        (model[..pos].to_string(), model[pos + 1..].to_string())
-    } else {
-        ("openai".to_string(), model.to_string())
-    }
 }
 
 #[cfg(feature = "server")]

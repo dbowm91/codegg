@@ -2984,7 +2984,7 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 - **Compact output**: Model-facing output uses DTOs (`LocationSummary`, `DiagnosticSummary`, etc.) with 1-indexed positions, not raw LSP JSON
 - **Position conversion**: `to_lsp_position()` converts 1-indexed model input to 0-indexed LSP positions exactly once at the wrapper boundary
 - **Client routing**: `workspaceSymbol` resolves client via `get_or_create_client_for_file` or `get_or_create_client_for_root_hint`, not arbitrary first-key selection
-- **Doctor subsystem**: `codegg doctor --subsystem lsp` provides non-mutating LSP diagnostics
+- **Doctor subsystem**: `codegg doctor lsp` provides non-mutating LSP diagnostics
 
 ## Phase 2: Scripted Stdio Integration Testing (Complete)
 

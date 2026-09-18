@@ -160,9 +160,15 @@ codegg daemon status
 codegg daemon logs
 codegg daemon stop
 codegg daemon start
+codegg daemon attach --new
 ```
 
-`--standalone` runs an in-process core without the singleton daemon. `--stdio` runs the compatibility stdio core transport. These modes are useful for development, diagnostics, and integrations, but they do not provide the daemon's machine-wide scheduling behavior.
+`codegg daemon attach` connects the TUI to the running daemon over the
+local socket (the old top-level `attach-daemon` spelling still parses as
+a hidden compatibility alias). It is distinct from the feature-gated
+remote HTTP `codegg attach`, which only exists in `server` builds.
+
+`--standalone` runs an in-process core without the singleton daemon. `--stdio` runs the compatibility stdio core transport. These modes are useful for development, diagnostics, and integrations, but they do not provide the daemon's machine-wide scheduling behavior. The deprecated `--core-transport`, `--stdio`, `--core-endpoint`, and `attach-daemon` spellings still parse for compatibility but are hidden from normal `--help`; see [`architecture/core.md`](architecture/core.md) for the transport model.
 
 See [`architecture/core.md`](architecture/core.md), [`architecture/scheduler.md`](architecture/scheduler.md), and [`architecture/client.md`](architecture/client.md) for the runtime model.
 
@@ -343,7 +349,7 @@ printf '%s\n' '{"prompt":"Review this repository","model":"openai/<model-id>","a
 
 Other useful CLI entry points include `research`, `doctor`, `validate`, `completions`, `upgrade`, and the session import/export commands. Run the relevant `--help` before scripting against a subcommand.
 
-`exec` accepts the same policy contract (`--approval-mode`, `--sandbox`, `--yolo`); without flags it keeps its legacy permissive behavior for existing CI.
+`exec` accepts the same policy contract (`--approval-mode`, `--sandbox`, `--yolo`); without flags it keeps its legacy permissive behavior for existing CI. Output selection is `--format text|json` on both `--run` and `exec`; the older `--output-format` (one-shot) and `--json-output`/`-j` (`exec`) spellings remain as compatibility aliases.
 
 ## Safety model
 
@@ -362,10 +368,17 @@ Validate configuration and inspect runtime integrations with:
 ```bash
 codegg validate
 codegg doctor
+codegg doctor search
 codegg daemon status
 ```
 
-`doctor` can focus on supported diagnostic subsystems; run `codegg doctor --help` for the current choices. Troubleshooting notes are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+`doctor` accepts an optional positional subsystem (`all`, `search`,
+`mcp`, `lsp`, `deterministic-tools`, `providers`, `credentials`) and
+defaults to all. The older `doctor --subsystem <name>` spelling still
+parses as a deprecated compatibility alias. Only subsystems with real
+diagnostic implementations are advertised; installation/runfile
+diagnostics will arrive with the self-contained-installation work, not
+as empty help text. Run `codegg doctor --help` for the current choices. Troubleshooting notes are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Development
 

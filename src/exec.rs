@@ -249,7 +249,9 @@ impl ExecMode {
         }
     }
 
-    fn parse_model(model: &str) -> (String, String) {
+    /// Split `provider/model` selection strings. Shared by `exec` and the
+    /// root one-shot path so both spellings resolve models identically.
+    pub fn parse_model(model: &str) -> (String, String) {
         if let Some(pos) = model.find('/') {
             (model[..pos].to_string(), model[pos + 1..].to_string())
         } else {
