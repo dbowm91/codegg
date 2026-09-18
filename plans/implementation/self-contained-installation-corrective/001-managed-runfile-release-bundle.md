@@ -1,6 +1,8 @@
 # Self-Contained Installation M001 — Managed Runfile Release Bundle
 
-Status: ready
+Status: implemented (closure at
+plans/closure/self-contained-installation-corrective/001-status.md;
+implementation `f9ec8602`)
 
 Corrective roadmap:
 plans/subsystems/self-contained-installation-corrective-addendum.md

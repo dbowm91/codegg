@@ -1,7 +1,9 @@
 # Self-Contained Installation M002 — Runtime Resolution and Clean-Host Qualification
 
-Status: blocked on Self-Contained Installation M001
-Final closure dependency: Provider /connect Restoration M003
+Status: ready (unblocked by M001 closure at
+plans/closure/self-contained-installation-corrective/001-status.md;
+Provider /connect Restoration M003 precondition closed at
+plans/closure/provider-connect-restoration-corrective/003-status.md)
 
 Corrective roadmap:
 plans/subsystems/self-contained-installation-corrective-addendum.md

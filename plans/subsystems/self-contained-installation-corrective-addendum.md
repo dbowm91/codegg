@@ -115,17 +115,21 @@ authoritative.
 
 ### M001 — Multi-runfile release artifact and installer contract
 
-Status: ready
+Status: closed
 
 Plan:
 plans/implementation/self-contained-installation-corrective/001-managed-runfile-release-bundle.md
+
+Closure:
+plans/closure/self-contained-installation-corrective/001-status.md
+(implementation `f9ec8602`)
 
 Update release packaging, verification, checksums, installer tests and rollback rules
 for the exact managed runfile bundle, including pinned eggsearch provenance.
 
 ### M002 — Managed runtime resolution and clean-host qualification
 
-Status: blocked on M001; final closure also requires Provider /connect Restoration M003
+Status: ready (M001 closed; Provider /connect Restoration M003 closed)
 
 Plan:
 plans/implementation/self-contained-installation-corrective/002-runtime-resolution-and-clean-host-qualification.md
