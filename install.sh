@@ -1,10 +1,16 @@
 #!/bin/sh
 # install.sh — verified CodeGG installer for supported Linux/macOS hosts.
 #
-# Maps the current host to the stable M001 GitHub release assets, downloads
-# over a fixed HTTPS origin, verifies the selected archive against the
-# release SHA-256 manifest, extracts a controlled payload, and atomically
-# installs the `codegg` executable into a user-writable directory.
+# Maps the current host to the stable managed-runfile GitHub release assets,
+# downloads over a fixed HTTPS origin, verifies the selected archive against
+# the release SHA-256 manifest, extracts a controlled payload, and atomically
+# installs the managed runfile bundle into a user-writable directory.
+#
+# The bundle installs three installation-owned siblings into one canonical
+# directory: `codegg`, `codegg-sandbox-helper`, and `codegg-eggsearch`
+# (plus the fixed `THIRD-PARTY-NOTICES.txt` when the release carries it).
+# The end user invokes only `codegg`; the helpers are resolved by CodeGG
+# relative to its own executable, never from PATH.
 #
 # Usage (latest release):
 #   curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
@@ -20,8 +26,11 @@
 #   CODEGG_VERSION       optional; default latest release.
 #                        Bare "0.1.1" or "v0.1.1" (normalized to tag "v0.1.1").
 #   CODEGG_INSTALL_DIR   optional; default "$HOME/.local/bin".
-#                        Empty means the default. The final binary is always
-#                        "<dir>/codegg".
+#                        Empty means the default. The managed runfiles are
+#                        always installed as "<dir>/codegg",
+#                        "<dir>/codegg-sandbox-helper",
+#                        "<dir>/codegg-eggsearch" (plus "<dir>/THIRD-PARTY-NOTICES.txt"
+#                        when the release carries the fixed notice).
 #
 # Guarantees:
 #   - Release origin is hard-coded below and is never built from environment.
@@ -29,9 +38,13 @@
 #     variable would turn the installer into arbitrary remote-code execution
 #     by configuration.
 #   - SHA-256 is verified before extraction or execution of the payload.
-#   - The existing installed binary is not replaced until the new artifact
-#     has passed download, checksum, extraction, payload, executable, and
-#     version checks.
+#   - The existing installed runfiles are not replaced until the new
+#     artifact has passed download, checksum, extraction, payload,
+#     executable, and version checks.
+#   - All three runfiles commit as one bundle: staged replacements are
+#     renamed into place only after every payload check passes, with
+#     backup/rollback so a failure replacing the second or third runfile
+#     cannot leave a mixed old/new installation.
 #   - Default destination is user-local. The script never invokes privilege
 #     escalation, never edits shell profiles, never starts services, and
 #     never installs Rust/Cargo.
@@ -58,12 +71,25 @@ set -eu
 
 # --- Fixed release origin (never constructed from environment) ----------------
 CODEGG_INSTALLER_ORIGIN="https://github.com/dbowm91/codegg"
-CODEGG_INSTALLER_MEMBER="codegg"
+CODEGG_INSTALLER_RUNFILES="codegg codegg-sandbox-helper codegg-eggsearch"
+CODEGG_INSTALLER_NOTICE="THIRD-PARTY-NOTICES.txt"
 CODEGG_INSTALLER_CHECKSUM_FILE="checksums.txt"
 
 # Globals owned by main() and the EXIT/HUP/INT/TERM cleanup below.
 codegg_installer_tmpdir=""
 codegg_installer_stage=""
+codegg_installer_stage_helper=""
+codegg_installer_stage_egg=""
+codegg_installer_stage_notice=""
+codegg_installer_backup_codegg=""
+codegg_installer_backup_helper=""
+codegg_installer_backup_egg=""
+codegg_installer_backup_notice=""
+codegg_installer_dest_dir_global=""
+codegg_installer_have_bkp_codegg=0
+codegg_installer_have_bkp_helper=0
+codegg_installer_have_bkp_egg=0
+codegg_installer_have_bkp_notice=0
 
 codegg_installer_fail() {
     printf 'error: %s\n' "$1" >&2
@@ -74,22 +100,67 @@ codegg_installer_usage() {
     cat <<'USAGE'
 Usage: sh install.sh [--help]
 
-Installs the CodeGG executable for supported Linux/macOS hosts.
+Installs the CodeGG managed runfile bundle for supported Linux/macOS hosts.
 
 Environment:
   CODEGG_VERSION       optional; default latest; e.g. 0.1.1 or v0.1.1
   CODEGG_INSTALL_DIR   optional; default $HOME/.local/bin
 
 The installer verifies the release SHA-256 manifest before extracting and
-installs atomically to <dir>/codegg without privilege escalation, shell
-profile edits, or daemon/service management.
+installs codegg, codegg-sandbox-helper, and codegg-eggsearch (plus
+THIRD-PARTY-NOTICES.txt when present) atomically into one directory
+without privilege escalation, shell profile edits, or daemon/service
+management.
 USAGE
 }
 
 # Remove private temp state. Safe to run repeatedly; no-ops when idle.
+# Destination staging files are always safe to delete. Backup files are
+# restored when they hold the only surviving copy of a destination entry
+# (backup-phase failure before commit); otherwise they are removed.
+# Committed runfiles are never deleted here.
 codegg_installer_cleanup() {
     if [ -n "$codegg_installer_stage" ] && [ -e "$codegg_installer_stage" ]; then
         rm -f -- "$codegg_installer_stage"
+    fi
+    if [ -n "$codegg_installer_stage_helper" ] && [ -e "$codegg_installer_stage_helper" ]; then
+        rm -f -- "$codegg_installer_stage_helper"
+    fi
+    if [ -n "$codegg_installer_stage_egg" ] && [ -e "$codegg_installer_stage_egg" ]; then
+        rm -f -- "$codegg_installer_stage_egg"
+    fi
+    if [ -n "$codegg_installer_stage_notice" ] && [ -e "$codegg_installer_stage_notice" ]; then
+        rm -f -- "$codegg_installer_stage_notice"
+    fi
+    if [ -n "$codegg_installer_backup_codegg" ] && [ -e "$codegg_installer_backup_codegg" ]; then
+        if [ -n "$codegg_installer_dest_dir_global" ] \
+            && [ ! -e "$codegg_installer_dest_dir_global/codegg" ] \
+            && [ ! -L "$codegg_installer_dest_dir_global/codegg" ]; then
+            mv -- "$codegg_installer_backup_codegg" "$codegg_installer_dest_dir_global/codegg" 2>/dev/null || rm -rf -- "$codegg_installer_backup_codegg"
+        else
+            rm -f -- "$codegg_installer_backup_codegg"
+        fi
+    fi
+    if [ -n "$codegg_installer_backup_helper" ] && [ -e "$codegg_installer_backup_helper" ]; then
+        if [ -n "$codegg_installer_dest_dir_global" ] \
+            && [ ! -e "$codegg_installer_dest_dir_global/codegg-sandbox-helper" ] \
+            && [ ! -L "$codegg_installer_dest_dir_global/codegg-sandbox-helper" ]; then
+            mv -- "$codegg_installer_backup_helper" "$codegg_installer_dest_dir_global/codegg-sandbox-helper" 2>/dev/null || rm -rf -- "$codegg_installer_backup_helper"
+        else
+            rm -f -- "$codegg_installer_backup_helper"
+        fi
+    fi
+    if [ -n "$codegg_installer_backup_egg" ] && [ -e "$codegg_installer_backup_egg" ]; then
+        if [ -n "$codegg_installer_dest_dir_global" ] \
+            && [ ! -e "$codegg_installer_dest_dir_global/codegg-eggsearch" ] \
+            && [ ! -L "$codegg_installer_dest_dir_global/codegg-eggsearch" ]; then
+            mv -- "$codegg_installer_backup_egg" "$codegg_installer_dest_dir_global/codegg-eggsearch" 2>/dev/null || rm -rf -- "$codegg_installer_backup_egg"
+        else
+            rm -f -- "$codegg_installer_backup_egg"
+        fi
+    fi
+    if [ -n "$codegg_installer_backup_notice" ] && [ -e "$codegg_installer_backup_notice" ]; then
+        rm -rf -- "$codegg_installer_backup_notice"
     fi
     if [ -n "$codegg_installer_tmpdir" ] && [ -d "$codegg_installer_tmpdir" ]; then
         rm -rf -- "$codegg_installer_tmpdir"
@@ -324,9 +395,11 @@ codegg_installer_verify_checksum() {
     printf 'checksum ok: %s\n' "$codegg_installer_vc_expected"
 }
 
-# Validate the archive member listing before extraction. Requires exactly one
-# top-level regular file named `codegg`; rejects absolute paths, traversal,
-# symlinks, devices, and unexpected payloads. Never extracts.
+# Validate the archive member listing before extraction. Requires exactly
+# the managed runfile set (`codegg`, `codegg-sandbox-helper`,
+# `codegg-eggsearch`) plus optionally the fixed THIRD-PARTY-NOTICES.txt;
+# rejects absolute paths, traversal, symlinks, devices, duplicates, and
+# unexpected payloads. Never extracts.
 codegg_installer_check_archive_members() {
     codegg_installer_am_members=""
     if ! codegg_installer_am_members="$(tar -tzf "$1" 2>/dev/null)"; then
@@ -334,49 +407,102 @@ codegg_installer_check_archive_members() {
         return 1
     fi
     codegg_installer_am_count="$(printf '%s\n' "$codegg_installer_am_members" | wc -l | tr -d ' ')"
-    if [ "$codegg_installer_am_count" != "1" ]; then
-        printf 'error: archive must contain exactly one file, found %s\n' "$codegg_installer_am_count" >&2
+    if [ "$codegg_installer_am_count" != "3" ] && [ "$codegg_installer_am_count" != "4" ]; then
+        printf 'error: archive must contain 3 runfiles (+ optional notice), found %s\n' "$codegg_installer_am_count" >&2
         return 1
     fi
-    codegg_installer_am_member="$codegg_installer_am_members"
-    case "$codegg_installer_am_member" in
-        /*)
-            printf 'error: archive has absolute member\n' >&2
+    codegg_installer_am_seen=""
+    codegg_installer_am_member=""
+    for codegg_installer_am_member in $codegg_installer_am_members; do
+        case "$codegg_installer_am_member" in
+            /*)
+                printf 'error: archive has absolute member: %s\n' "$codegg_installer_am_member" >&2
+                return 1
+                ;;
+        esac
+        case "$codegg_installer_am_member" in
+            *..* | *\\*)
+                printf 'error: archive has traversal member: %s\n' "$codegg_installer_am_member" >&2
+                return 1
+                ;;
+        esac
+        codegg_installer_am_norm="$codegg_installer_am_member"
+        case "$codegg_installer_am_norm" in
+            ./*) codegg_installer_am_norm="${codegg_installer_am_norm#./}" ;;
+        esac
+        case "$codegg_installer_am_norm" in
+            "" | */*)
+                printf 'error: archive member must be a top-level file: %s\n' "$codegg_installer_am_member" >&2
+                return 1
+                ;;
+        esac
+        case " $codegg_installer_am_seen " in
+            *" $codegg_installer_am_norm "*)
+                printf 'error: archive has duplicate member: %s\n' "$codegg_installer_am_member" >&2
+                return 1
+                ;;
+        esac
+        codegg_installer_am_seen="$codegg_installer_am_seen $codegg_installer_am_norm"
+        codegg_installer_am_ok=0
+        # shellcheck disable=SC2086
+        for codegg_installer_am_want in $CODEGG_INSTALLER_RUNFILES; do
+            if [ "$codegg_installer_am_norm" = "$codegg_installer_am_want" ]; then
+                codegg_installer_am_ok=1
+                break
+            fi
+        done
+        if [ "$codegg_installer_am_ok" -eq 0 ] && [ "$codegg_installer_am_norm" = "$CODEGG_INSTALLER_NOTICE" ]; then
+            codegg_installer_am_ok=1
+        fi
+        if [ "$codegg_installer_am_ok" -eq 0 ]; then
+            printf 'error: archive has unexpected member: %s (expected runfiles + optional %s)\n' "$codegg_installer_am_member" "$CODEGG_INSTALLER_NOTICE" >&2
             return 1
-            ;;
-    esac
-    case "$codegg_installer_am_member" in
-        *..* | *\\*)
-            printf 'error: archive has traversal member\n' >&2
-            return 1
-            ;;
-    esac
-    codegg_installer_am_norm="$codegg_installer_am_member"
-    case "$codegg_installer_am_norm" in
-        ./*) codegg_installer_am_norm="${codegg_installer_am_norm#./}" ;;
-    esac
-    if [ "$codegg_installer_am_norm" != "$CODEGG_INSTALLER_MEMBER" ]; then
-        printf 'error: archive must contain exactly `%s`, found `%s`\n' "$CODEGG_INSTALLER_MEMBER" "$codegg_installer_am_member" >&2
+        fi
+    done
+    # shellcheck disable=SC2086
+    for codegg_installer_am_want in $CODEGG_INSTALLER_RUNFILES; do
+        case " $codegg_installer_am_seen " in
+            *" $codegg_installer_am_want "*) ;;
+            *)
+                printf 'error: archive missing required runfile: %s\n' "$codegg_installer_am_want" >&2
+                return 1
+                ;;
+        esac
+    done
+    if [ "$codegg_installer_am_count" = "4" ]; then
+        case " $codegg_installer_am_seen " in
+            *" $CODEGG_INSTALLER_NOTICE "*) ;;
+            *)
+                printf 'error: archive has 4 members but no %s\n' "$CODEGG_INSTALLER_NOTICE" >&2
+                return 1
+                ;;
+        esac
+    fi
+    codegg_installer_am_verbose_all=""
+    if ! codegg_installer_am_verbose_all="$(tar -tvzf "$1" 2>/dev/null)"; then
+        printf 'error: cannot inspect archive members\n' >&2
         return 1
     fi
-    codegg_installer_am_verbose=""
-    if ! codegg_installer_am_verbose="$(tar -tvzf "$1" 2>/dev/null | head -n 1)"; then
-        printf 'error: cannot inspect archive member\n' >&2
-        return 1
-    fi
-    case "$codegg_installer_am_verbose" in
-        -*) ;;
-        *)
-            printf 'error: archive member is not a regular file\n' >&2
-            return 1
-            ;;
-    esac
-    case "$codegg_installer_am_verbose" in
+    case "$codegg_installer_am_verbose_all" in
         *" -> "*)
             printf 'error: archive member is a symlink\n' >&2
             return 1
             ;;
     esac
+    # Every verbose entry must be a regular file (leading '-').
+    codegg_installer_am_vline=""
+    while IFS= read -r codegg_installer_am_vline; do
+        [ -n "$codegg_installer_am_vline" ] || continue
+        case "$codegg_installer_am_vline" in
+            -*) ;;
+            *)
+                printf 'error: archive member is not a regular file: %s\n' "$codegg_installer_am_vline" >&2
+                return 1
+                ;;
+        esac
+    done <<EOF
+$codegg_installer_am_verbose_all
+EOF
 }
 
 # Validate `codegg --version` output. $1 = output, $2 = expected normalized
@@ -403,6 +529,25 @@ codegg_installer_check_version_output() {
                 return 1
                 ;;
         esac
+    fi
+}
+
+# Validate `codegg-eggsearch --version` output. The sidecar must identify
+# as eggsearch and carry a dotted version; the release-time pin is enforced
+# by packaging/verification, while the installer rejects obvious identity
+# mismatches without hard-coding a version here.
+codegg_installer_check_eggsearch_output() {
+    codegg_installer_eo_out="$1"
+    case "$codegg_installer_eo_out" in
+        *eggsearch* | *Eggsearch* | *EGGSEARCH*) ;;
+        *)
+            printf 'error: unexpected eggsearch version output: %s\n' "$codegg_installer_eo_out" >&2
+            return 1
+            ;;
+    esac
+    if ! printf '%s' "$codegg_installer_eo_out" | grep -Eq '[0-9]+\.[0-9]+'; then
+        printf 'error: eggsearch output has no version number: %s\n' "$codegg_installer_eo_out" >&2
+        return 1
     fi
 }
 
@@ -477,6 +622,9 @@ codegg_install_main() {
     if [ ! -w "$codegg_installer_dest_dir" ]; then
         codegg_installer_fail "install directory is not writable: $codegg_installer_dest_dir (no privilege escalation fallback; choose a user-writable CODEGG_INSTALL_DIR)"
     fi
+    # Publish the destination to the cleanup trap so a backup-phase failure
+    # can restore the only surviving copy instead of deleting it.
+    codegg_installer_dest_dir_global="$codegg_installer_dest_dir"
 
     codegg_installer_asset=""
     if ! codegg_installer_asset="$(codegg_installer_asset_for_target "$codegg_installer_target")"; then
@@ -489,7 +637,7 @@ codegg_install_main() {
     else
         codegg_installer_display_tag="v$codegg_installer_version"
     fi
-    printf 'codegg installer: release=%s target=%s asset=%s\ndestination: %s/codegg\n' \
+    printf 'codegg installer: release=%s target=%s asset=%s\ndestination: %s/(codegg codegg-sandbox-helper codegg-eggsearch)\n' \
         "$codegg_installer_display_tag" "$codegg_installer_target" "$codegg_installer_asset" "$codegg_installer_dest_dir"
 
     trap codegg_installer_cleanup EXIT HUP INT TERM
@@ -518,52 +666,225 @@ codegg_install_main() {
 
     tar -xzf "$codegg_installer_dl_archive" -C "$codegg_installer_tmpdir/extract" \
         || codegg_installer_fail "archive extraction failed"
-    codegg_installer_extracted="$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_MEMBER"
-    if [ -L "$codegg_installer_extracted" ]; then
-        codegg_installer_fail "extracted payload is a symlink"
-    fi
-    if [ ! -f "$codegg_installer_extracted" ]; then
-        codegg_installer_fail "extracted payload is missing: $CODEGG_INSTALLER_MEMBER"
-    fi
-    chmod 755 "$codegg_installer_extracted" || codegg_installer_fail "cannot set executable mode on extracted payload"
-    if [ ! -x "$codegg_installer_extracted" ]; then
-        codegg_installer_fail "extracted payload is not executable"
+    # Validate every extracted runfile before touching the destination.
+    # shellcheck disable=SC2086
+    for codegg_installer_name in $CODEGG_INSTALLER_RUNFILES; do
+        codegg_installer_extracted="$codegg_installer_tmpdir/extract/$codegg_installer_name"
+        if [ -L "$codegg_installer_extracted" ]; then
+            codegg_installer_fail "extracted payload is a symlink: $codegg_installer_name"
+        fi
+        if [ ! -f "$codegg_installer_extracted" ]; then
+            codegg_installer_fail "extracted payload is missing: $codegg_installer_name"
+        fi
+        chmod 755 "$codegg_installer_extracted" || codegg_installer_fail "cannot set executable mode on extracted payload: $codegg_installer_name"
+        if [ ! -x "$codegg_installer_extracted" ]; then
+            codegg_installer_fail "extracted payload is not executable: $codegg_installer_name"
+        fi
+    done
+    if [ -e "$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_NOTICE" ]; then
+        if [ -L "$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_NOTICE" ]; then
+            codegg_installer_fail "extracted notice is a symlink"
+        fi
+        if [ ! -f "$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_NOTICE" ]; then
+            codegg_installer_fail "extracted notice is not a regular file"
+        fi
+        chmod 644 "$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_NOTICE" \
+            || codegg_installer_fail "cannot set mode on extracted notice"
     fi
 
-    # Pre-install smoke: the payload runs only after checksum and payload
+    # Pre-install smoke: payloads run only after checksum and payload
     # validation have passed.
     codegg_installer_pre_out=""
-    if ! codegg_installer_pre_out="$("$codegg_installer_extracted" --version 2>&1)"; then
-        codegg_installer_fail "pre-install version smoke failed; existing binary left intact"
+    if ! codegg_installer_pre_out="$("$codegg_installer_tmpdir/extract/codegg" --version 2>&1)"; then
+        codegg_installer_fail "pre-install version smoke failed; existing runfiles left intact"
     fi
     codegg_installer_check_version_output "$codegg_installer_pre_out" "$codegg_installer_version" \
-        || codegg_installer_fail "pre-install version smoke rejected output; existing binary left intact"
+        || codegg_installer_fail "pre-install version smoke rejected output; existing runfiles left intact"
+    codegg_installer_pre_egg=""
+    if ! codegg_installer_pre_egg="$("$codegg_installer_tmpdir/extract/codegg-eggsearch" --version 2>&1)"; then
+        codegg_installer_fail "pre-install eggsearch smoke failed; existing runfiles left intact"
+    fi
+    codegg_installer_check_eggsearch_output "$codegg_installer_pre_egg" \
+        || codegg_installer_fail "pre-install eggsearch smoke rejected output; existing runfiles left intact"
 
-    # Atomic commit: stage inside the destination filesystem, set the mode,
-    # then rename over the directory entry. rename(2) replaces a stale
-    # symlink entry instead of following it, and the existing binary is
-    # untouched until this point.
+    # Bundle-level atomic commit: stage every runfile inside the destination
+    # filesystem, back up existing entries, then rename staged files over
+    # the directory entries. rename(2) replaces a stale symlink entry
+    # instead of following it, and existing runfiles are untouched until
+    # this point. A historical single-codegg layout simply has no helper
+    # or eggsearch backup; fresh-install that path by creating them.
     codegg_installer_stage="$(mktemp "$codegg_installer_dest_dir/.codegg-install.XXXXXX")" \
         || codegg_installer_fail "cannot stage installer output in destination directory"
-    cp -- "$codegg_installer_extracted" "$codegg_installer_stage" \
-        || codegg_installer_fail "cannot stage verified executable"
+    cp -- "$codegg_installer_tmpdir/extract/codegg" "$codegg_installer_stage" \
+        || codegg_installer_fail "cannot stage verified codegg executable"
     chmod 755 "$codegg_installer_stage" \
-        || codegg_installer_fail "cannot set executable mode on staged binary"
-    mv -- "$codegg_installer_stage" "$codegg_installer_dest_dir/$CODEGG_INSTALLER_MEMBER" \
-        || codegg_installer_fail "cannot install binary to destination"
+        || codegg_installer_fail "cannot set executable mode on staged codegg"
+    codegg_installer_stage_helper="$(mktemp "$codegg_installer_dest_dir/.codegg-helper-install.XXXXXX")" \
+        || codegg_installer_fail "cannot stage helper output in destination directory"
+    cp -- "$codegg_installer_tmpdir/extract/codegg-sandbox-helper" "$codegg_installer_stage_helper" \
+        || codegg_installer_fail "cannot stage verified helper executable"
+    chmod 755 "$codegg_installer_stage_helper" \
+        || codegg_installer_fail "cannot set executable mode on staged helper"
+    codegg_installer_stage_egg="$(mktemp "$codegg_installer_dest_dir/.codegg-eggsearch-install.XXXXXX")" \
+        || codegg_installer_fail "cannot stage eggsearch output in destination directory"
+    cp -- "$codegg_installer_tmpdir/extract/codegg-eggsearch" "$codegg_installer_stage_egg" \
+        || codegg_installer_fail "cannot stage verified eggsearch executable"
+    chmod 755 "$codegg_installer_stage_egg" \
+        || codegg_installer_fail "cannot set executable mode on staged eggsearch"
+    codegg_installer_has_notice=0
+    if [ -f "$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_NOTICE" ]; then
+        codegg_installer_stage_notice="$(mktemp "$codegg_installer_dest_dir/.codegg-notice-install.XXXXXX")" \
+            || codegg_installer_fail "cannot stage notice in destination directory"
+        cp -- "$codegg_installer_tmpdir/extract/$CODEGG_INSTALLER_NOTICE" "$codegg_installer_stage_notice" \
+            || codegg_installer_fail "cannot stage verified notice"
+        chmod 644 "$codegg_installer_stage_notice" \
+            || codegg_installer_fail "cannot set mode on staged notice"
+        codegg_installer_has_notice=1
+    fi
+    # Back up existing destination entries (when present) before replacing.
+    # Each backup is a rename within the destination directory, so a stale
+    # symlink entry is renamed itself, never followed.
+    codegg_installer_backup_codegg="$(mktemp -u "$codegg_installer_dest_dir/.codegg-backup.XXXXXX")"
+    codegg_installer_backup_helper="$(mktemp -u "$codegg_installer_dest_dir/.codegg-helper-backup.XXXXXX")"
+    codegg_installer_backup_egg="$(mktemp -u "$codegg_installer_dest_dir/.codegg-eggsearch-backup.XXXXXX")"
+    codegg_installer_backup_notice="$(mktemp -u "$codegg_installer_dest_dir/.codegg-notice-backup.XXXXXX")"
+    codegg_installer_have_bkp_codegg=0
+    codegg_installer_have_bkp_helper=0
+    codegg_installer_have_bkp_egg=0
+    codegg_installer_have_bkp_notice=0
+    if [ -e "$codegg_installer_dest_dir/codegg" ] || [ -L "$codegg_installer_dest_dir/codegg" ]; then
+        mv -- "$codegg_installer_dest_dir/codegg" "$codegg_installer_backup_codegg" \
+            || codegg_installer_fail "cannot back up existing codegg"
+        codegg_installer_have_bkp_codegg=1
+    fi
+    if [ -e "$codegg_installer_dest_dir/codegg-sandbox-helper" ] || [ -L "$codegg_installer_dest_dir/codegg-sandbox-helper" ]; then
+        mv -- "$codegg_installer_dest_dir/codegg-sandbox-helper" "$codegg_installer_backup_helper" \
+            || codegg_installer_fail "cannot back up existing helper"
+        codegg_installer_have_bkp_helper=1
+    fi
+    if [ -e "$codegg_installer_dest_dir/codegg-eggsearch" ] || [ -L "$codegg_installer_dest_dir/codegg-eggsearch" ]; then
+        mv -- "$codegg_installer_dest_dir/codegg-eggsearch" "$codegg_installer_backup_egg" \
+            || codegg_installer_fail "cannot back up existing eggsearch sidecar"
+        codegg_installer_have_bkp_egg=1
+    fi
+    if [ "$codegg_installer_has_notice" -eq 1 ]; then
+        if [ -e "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" ] || [ -L "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" ]; then
+            mv -- "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" "$codegg_installer_backup_notice" \
+                || codegg_installer_fail "cannot back up existing notice"
+            codegg_installer_have_bkp_notice=1
+        fi
+    fi
+    # Commit staged files one by one; on any failure roll back the entries
+    # already replaced and leave no staged files behind.
+    codegg_installer_rollback() {
+        # Bounded best-effort recovery: one restore attempt per entry.
+        if [ "$codegg_installer_have_bkp_codegg" -eq 1 ] || [ -e "$codegg_installer_dest_dir/codegg" ] || [ -L "$codegg_installer_dest_dir/codegg" ]; then
+            if [ "$codegg_installer_committed_codegg" -eq 1 ]; then
+                rm -f -- "$codegg_installer_dest_dir/codegg"
+                if [ "$codegg_installer_have_bkp_codegg" -eq 1 ]; then
+                    mv -- "$codegg_installer_backup_codegg" "$codegg_installer_dest_dir/codegg" 2>/dev/null || true
+                fi
+            fi
+        fi
+        if [ "${codegg_installer_committed_helper:-0}" -eq 1 ]; then
+            rm -f -- "$codegg_installer_dest_dir/codegg-sandbox-helper"
+            if [ "$codegg_installer_have_bkp_helper" -eq 1 ]; then
+                mv -- "$codegg_installer_backup_helper" "$codegg_installer_dest_dir/codegg-sandbox-helper" 2>/dev/null || true
+            fi
+        else
+            if [ "$codegg_installer_have_bkp_helper" -eq 1 ] && [ ! -e "$codegg_installer_dest_dir/codegg-sandbox-helper" ] && [ ! -L "$codegg_installer_dest_dir/codegg-sandbox-helper" ]; then
+                mv -- "$codegg_installer_backup_helper" "$codegg_installer_dest_dir/codegg-sandbox-helper" 2>/dev/null || true
+            fi
+        fi
+        if [ "${codegg_installer_committed_egg:-0}" -eq 1 ]; then
+            rm -f -- "$codegg_installer_dest_dir/codegg-eggsearch"
+            if [ "$codegg_installer_have_bkp_egg" -eq 1 ]; then
+                mv -- "$codegg_installer_backup_egg" "$codegg_installer_dest_dir/codegg-eggsearch" 2>/dev/null || true
+            fi
+        else
+            if [ "$codegg_installer_have_bkp_egg" -eq 1 ] && [ ! -e "$codegg_installer_dest_dir/codegg-eggsearch" ] && [ ! -L "$codegg_installer_dest_dir/codegg-eggsearch" ]; then
+                mv -- "$codegg_installer_backup_egg" "$codegg_installer_dest_dir/codegg-eggsearch" 2>/dev/null || true
+            fi
+        fi
+        if [ "${codegg_installer_committed_notice:-0}" -eq 1 ]; then
+            rm -f -- "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE"
+            if [ "$codegg_installer_have_bkp_notice" -eq 1 ]; then
+                mv -- "$codegg_installer_backup_notice" "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" 2>/dev/null || true
+            fi
+        else
+            if [ "$codegg_installer_have_bkp_notice" -eq 1 ] && [ ! -e "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" ] && [ ! -L "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" ]; then
+                mv -- "$codegg_installer_backup_notice" "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE" 2>/dev/null || true
+            fi
+        fi
+        rm -f -- "$codegg_installer_stage" "$codegg_installer_stage_helper" "$codegg_installer_stage_egg"
+        if [ -n "$codegg_installer_stage_notice" ]; then
+            rm -f -- "$codegg_installer_stage_notice"
+        fi
+    }
+    codegg_installer_committed_codegg=0
+    codegg_installer_committed_helper=0
+    codegg_installer_committed_egg=0
+    codegg_installer_committed_notice=0
+    if ! mv -- "$codegg_installer_stage" "$codegg_installer_dest_dir/codegg"; then
+        codegg_installer_rollback
+        codegg_installer_fail "cannot install codegg to destination; previous runfiles restored where possible"
+    fi
+    codegg_installer_committed_codegg=1
     codegg_installer_stage=""
+    if ! mv -- "$codegg_installer_stage_helper" "$codegg_installer_dest_dir/codegg-sandbox-helper"; then
+        codegg_installer_rollback
+        codegg_installer_fail "cannot install helper to destination; bundle rolled back where possible"
+    fi
+    codegg_installer_committed_helper=1
+    codegg_installer_stage_helper=""
+    if ! mv -- "$codegg_installer_stage_egg" "$codegg_installer_dest_dir/codegg-eggsearch"; then
+        codegg_installer_rollback
+        codegg_installer_fail "cannot install eggsearch sidecar to destination; bundle rolled back where possible"
+    fi
+    codegg_installer_committed_egg=1
+    codegg_installer_stage_egg=""
+    if [ "$codegg_installer_has_notice" -eq 1 ]; then
+        if ! mv -- "$codegg_installer_stage_notice" "$codegg_installer_dest_dir/$CODEGG_INSTALLER_NOTICE"; then
+            codegg_installer_rollback
+            codegg_installer_fail "cannot install notice to destination; bundle rolled back where possible"
+        fi
+        codegg_installer_committed_notice=1
+        codegg_installer_stage_notice=""
+    fi
+    # Success: drop backups and temp state.
+    if [ "$codegg_installer_have_bkp_codegg" -eq 1 ]; then rm -rf -- "$codegg_installer_backup_codegg"; fi
+    if [ "$codegg_installer_have_bkp_helper" -eq 1 ]; then rm -rf -- "$codegg_installer_backup_helper"; fi
+    if [ "$codegg_installer_have_bkp_egg" -eq 1 ]; then rm -rf -- "$codegg_installer_backup_egg"; fi
+    if [ "$codegg_installer_have_bkp_notice" -eq 1 ]; then rm -rf -- "$codegg_installer_backup_notice"; fi
+    codegg_installer_backup_codegg=""
+    codegg_installer_backup_helper=""
+    codegg_installer_backup_egg=""
+    codegg_installer_backup_notice=""
 
-    # Post-install smoke of the committed binary.
+    # Post-install smoke of the committed bundle.
     codegg_installer_final_out=""
-    if ! codegg_installer_final_out="$("$codegg_installer_dest_dir/$CODEGG_INSTALLER_MEMBER" --version 2>&1)"; then
+    if ! codegg_installer_final_out="$("$codegg_installer_dest_dir/codegg" --version 2>&1)"; then
         printf 'error: installed binary smoke failed AFTER replacement: %s/codegg --version exited nonzero.\n' "$codegg_installer_dest_dir" >&2
-        printf 'The previous binary was already replaced. Re-run the installer or restore from a backup manually.\n' >&2
+        printf 'The previous runfiles were already replaced. Re-run the installer or restore from a backup manually.\n' >&2
         exit 1
     fi
     codegg_installer_check_version_output "$codegg_installer_final_out" "$codegg_installer_version" || exit 1
+    codegg_installer_final_egg=""
+    if ! codegg_installer_final_egg="$("$codegg_installer_dest_dir/codegg-eggsearch" --version 2>&1)"; then
+        printf 'error: installed eggsearch smoke failed AFTER replacement: %s/codegg-eggsearch --version exited nonzero.\n' "$codegg_installer_dest_dir" >&2
+        exit 1
+    fi
+    codegg_installer_check_eggsearch_output "$codegg_installer_final_egg" || exit 1
+    if [ ! -x "$codegg_installer_dest_dir/codegg-sandbox-helper" ]; then
+        printf 'error: installed helper is not executable: %s/codegg-sandbox-helper\n' "$codegg_installer_dest_dir" >&2
+        exit 1
+    fi
 
-    printf 'installed: %s/%s\nversion: %s\n' \
-        "$codegg_installer_dest_dir" "$CODEGG_INSTALLER_MEMBER" "$codegg_installer_final_out"
+    printf 'installed: %s/codegg\nversion: %s\n' \
+        "$codegg_installer_dest_dir" "$codegg_installer_final_out"
+    printf 'installed: %s/codegg-sandbox-helper\n' "$codegg_installer_dest_dir"
+    printf 'installed: %s/codegg-eggsearch\nversion: %s\n' \
+        "$codegg_installer_dest_dir" "$codegg_installer_final_egg"
     case ":$PATH:" in
         *":$codegg_installer_dest_dir:"*) ;;
         *)

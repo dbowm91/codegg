@@ -352,7 +352,7 @@ git tag -a v<VERSION> -m "Release v<VERSION>"
 git push origin v<VERSION>
 ```
 
-#### Canonical prebuilt-artifact contract (M001)
+#### Canonical prebuilt-artifact contract (managed runfile bundle)
 
 A GitHub release tagged `v<VERSION>` that claims installer support MUST
 carry exactly these stable asset names (version identity comes from the
@@ -367,22 +367,108 @@ release/
   checksums.txt
 ```
 
-Each `codegg-<target>.tar.gz` contains exactly one top-level regular
-executable named `codegg` (mode 755). No `target/`, `.git`, configs,
-databases, credentials, planning files, logs, or other source-tree content
-may be included. `checksums.txt` holds one `<sha256>  <basename>` line per
-archive, sorted by basename, generated from the exact files that will be
-uploaded (compatible with `sha256sum -c`).
+Each Unix `codegg-<target>.tar.gz` contains exactly the managed runfile
+set as top-level regular executables (mode 755):
+
+```text
+codegg
+codegg-sandbox-helper
+codegg-eggsearch
+```
+
+plus optionally the single fixed notice member `THIRD-PARTY-NOTICES.txt`
+(mode 644). No `target/`, `.git`, configs, databases, credentials,
+planning files, logs, or other source-tree content may be included, and no
+other member is permitted. `checksums.txt` holds one
+`<sha256>  <basename>` line per archive, sorted by basename, generated
+from the exact files that will be uploaded (compatible with
+`sha256sum -c`).
 
 `x86_64-pc-windows-msvc` (`codegg-x86_64-pc-windows-msvc.tar.gz`) remains
-optional best-effort when a Windows build is available. It is hashed and
-listed explicitly when present but is never required for release-set
-completeness and is not consumed by the Linux/macOS installer path.
+optional best-effort when a Windows build is available. It carries the
+same bundle with explicit Windows names (`codegg.exe`,
+`codegg-sandbox-helper.exe`, `codegg-eggsearch.exe`, plus the optional
+fixed notice). It is hashed and listed explicitly when present but is
+never required for release-set completeness and is not consumed by the
+Linux/macOS installer path.
 
-The current release artifact is the single `codegg` executable for each target;
-there are no separately packaged daemon and TUI binaries. This matches the
-measured no-split topology decision and preserves the user-scoped singleton
-daemon discovery contract.
+The per-target manifest is defined once in
+`scripts/release/lib-release.sh` (`codegg_release_runfiles_for_target`)
+so the packager, verifier, and installer tests consume the same names.
+The old "exactly one top-level executable" invariant is superseded: any
+release tooling or documentation still asserting a single-member archive
+is stale and must be updated, not bypassed.
+
+The current release artifact is the managed `codegg` runfile bundle for
+each target; there are no separately packaged daemon and TUI binaries.
+This matches the measured no-split topology decision and preserves the
+user-scoped singleton daemon discovery contract. The end user installs
+once and invokes only `codegg`; the helpers are resolved by CodeGG
+relative to its own executable.
+
+#### Upstream eggsearch provenance and pinning
+
+The `codegg-eggsearch` sidecar is the pinned upstream eggsearch
+executable, renamed to a CodeGG-owned name so a managed install never
+resolves an unrelated PATH `eggsearch`:
+
+- source: `https://github.com/eggstack/eggsearch`
+- pinned version: `0.3.9` (tag `v0.3.9`; authoritative pin is
+  `CODEGG_EGGSEARCH_PINNED_VERSION` in `scripts/release/lib-release.sh`)
+- license: MIT, as published upstream; redistributed under upstream terms
+- stable contract: upstream MCP tool surface and CLI. Do not compile
+  CodeGG against eggsearch's internal Rust modules to ease packaging.
+
+Release packaging accepts an already-built upstream binary and validates
+it before staging:
+
+- `eggsearch --version` output must identify eggsearch and contain the
+  pinned version (wrong version/identity is rejected);
+- the input must be a regular executable file (symlinks rejected);
+- target architecture/OS is cross-checked where inspectable via `file`
+  (contradictory ELF/Mach-O/PE magic is rejected; fixture scripts with no
+  magic are skipped);
+- input SHA-256 hashes are printed with the packaging receipt for the
+  release notes; the final archive checksum in `checksums.txt` covers the
+  staged bundle.
+
+Obtain the pinned sidecar deterministically in a separate preparation
+step before packaging, for example:
+
+```bash
+# Option A: build upstream from the pinned tag.
+git clone https://github.com/eggstack/eggsearch.git /tmp/eggsearch
+git -C /tmp/eggsearch checkout v0.3.9
+cargo build --release --manifest-path /tmp/eggsearch/Cargo.toml
+/tmp/eggsearch/target/release/eggsearch --version  # must report eggsearch 0.3.9
+
+# Option B: reuse an already-built pinned binary and validate it the same way.
+eggsearch --version  # must report eggsearch 0.3.9
+```
+
+When eggsearch redistribution requires license attribution, pass a
+regular text file (max 64 KiB) via `--notice`; it is staged under the
+fixed name `THIRD-PARTY-NOTICES.txt`. At minimum it records the source
+URL, pinned version/tag, and license above. Arbitrary extra files are
+never folded into the archive.
+
+#### Source-build policy
+
+A raw `cargo install codegg` installs only the `codegg` binary from
+source; Cargo cannot install another package's eggsearch binary, so that
+path is NOT self-contained and must never be described as such.
+
+- The supported self-contained contract is the prebuilt installer bundle
+  from this document.
+- Source developers provide the pinned eggsearch sidecar themselves: build
+  or fetch eggsearch `0.3.9` per the provenance section above and place
+  the resulting executable as `codegg-eggsearch` next to the built
+  `codegg` (alongside `codegg-sandbox-helper` from `cargo build`), or
+  configure an explicit `[search.eggsearch].command` / `[mcp.eggsearch]`
+  override.
+- Until the first release carrying the managed bundle exists, do not
+  advertise the self-contained installer as available (see the release
+  availability note in `README.md`).
 
 #### Manual build → package → validate → upload order
 
@@ -408,24 +494,38 @@ cargo build --release --target aarch64-apple-darwin
 # 3. Run the native version smoke for each built binary on its build host.
 target/release/codegg --version
 target/x86_64-unknown-linux-gnu/release/codegg --version
-# ... repeat per target on the host that built it.
+# ... repeat per target on the host that built it, including the helper
+# identity probe and the pinned eggsearch version:
+target/x86_64-unknown-linux-gnu/release/codegg-sandbox-helper 2>&1 | head -1
+/tmp/eggsearch/target/release/eggsearch --version  # must report eggsearch 0.3.9
 
-# 4. Package each binary with an explicit target label (never guessed).
+# 4. Package each target's bundle with an explicit target label (never
+#    guessed). Every target needs its codegg binary, its
+#    codegg-sandbox-helper binary, and the pinned eggsearch binary
+#    (staged as codegg-eggsearch); --notice is optional.
 scripts/release/package-binary.sh \
   --target x86_64-unknown-linux-gnu \
   --binary target/x86_64-unknown-linux-gnu/release/codegg \
+  --sandbox-helper target/x86_64-unknown-linux-gnu/release/codegg-sandbox-helper \
+  --eggsearch /tmp/eggsearch/target/release/eggsearch \
   --out-dir release
 scripts/release/package-binary.sh \
   --target aarch64-unknown-linux-gnu \
   --binary target/aarch64-unknown-linux-gnu/release/codegg \
+  --sandbox-helper target/aarch64-unknown-linux-gnu/release/codegg-sandbox-helper \
+  --eggsearch /tmp/eggsearch/target/release/eggsearch \
   --out-dir release
 scripts/release/package-binary.sh \
   --target x86_64-apple-darwin \
   --binary target/x86_64-apple-darwin/release/codegg \
+  --sandbox-helper target/x86_64-apple-darwin/release/codegg-sandbox-helper \
+  --eggsearch /tmp/eggsearch/target/release/eggsearch \
   --out-dir release
 scripts/release/package-binary.sh \
   --target aarch64-apple-darwin \
   --binary target/aarch64-apple-darwin/release/codegg \
+  --sandbox-helper target/aarch64-apple-darwin/release/codegg-sandbox-helper \
+  --eggsearch /tmp/eggsearch/target/release/eggsearch \
   --out-dir release
 
 # 5. Generate the deterministic checksum manifest, then validate the set.
@@ -477,6 +577,12 @@ After an actual crates.io release, verify end-user installation:
 cargo install codegg --version <VERSION>
 ```
 
+> Note: `cargo install codegg` installs only `codegg` and is NOT the
+> self-contained contract (Cargo cannot install the upstream eggsearch
+> binary). The self-contained contract is the prebuilt installer bundle
+> above; see the source-build policy for how developers provide the
+> pinned sidecar.
+
 Source/development installation remains:
 
 ```bash
@@ -511,6 +617,10 @@ Each smoke run must show:
 - the expected release/tag, target, and asset mapping;
 - `checksum ok: codegg-<target>.tar.gz` before extraction;
 - `installed: <dir>/codegg` plus a matching `codegg --version` line;
+- `installed: <dir>/codegg-sandbox-helper` (executable, refuses a bare
+  invocation like the packaged helper);
+- `installed: <dir>/codegg-eggsearch` plus a matching
+  `eggsearch 0.3.9` version line;
 - PATH guidance only when the destination is not discoverable;
 - no privilege escalation, shell-profile edit, or daemon/service change.
 

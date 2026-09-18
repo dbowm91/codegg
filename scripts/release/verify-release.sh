@@ -20,11 +20,19 @@
 #   3. Every supported archive present on disk is listed in the manifest.
 #   4. Required-set completeness (unless relaxed).
 #   5. No unexpected files in the release directory.
-#   6. Every archive contains exactly one `codegg` regular-file member;
-#      absolute/traversal/symlink/device/unexpected payloads are rejected.
+#   6. Every archive contains exactly the managed runfile set for its
+#      target (Unix: codegg, codegg-sandbox-helper, codegg-eggsearch;
+#      Windows: corresponding .exe names) plus optionally the fixed
+#      THIRD-PARTY-NOTICES.txt; absolute/traversal/symlink/device/
+#      duplicate/unexpected payloads are rejected, as is any missing
+#      helper or eggsearch sidecar.
 #   7. Where the archive target matches the current host, extract to a temp
 #      dir and run `codegg --version` (compared to --expect-version when
-#      given). Non-native targets skip execution with a note.
+#      given), `codegg-eggsearch --version` (must report the pinned
+#      eggsearch version), and a safe sandbox-helper identity probe.
+#      Non-native targets skip execution with a note.
+#   8. Executable permission checks and source/config/credential leakage
+#      rejection via the exact allowlist.
 #
 # Exit 0 only when every check passes. Safe to re-run (idempotent).
 
@@ -332,7 +340,7 @@ if [ -n "$unexpected" ]; then
 fi
 printf 'directory ok: no unexpected files\n'
 
-# --- 6+7. Archive payload + version smoke -----------------------------------------
+# --- 6+7+8. Archive payload + version smoke + permissions/leakage --------------
 TMP_EXTRACT_BASE=""
 cleanup_extract() {
     if [ -n "$TMP_EXTRACT_BASE" ] && [ -d "$TMP_EXTRACT_BASE" ]; then
@@ -372,42 +380,103 @@ for name in $MANIFEST_NAMES; do
         printf 'error: cannot list archive members: %s\n' "$name" >&2
         exit 1
     }
+    # Reject absolute/traversal members before any allowlist comparison.
+    bad_member=""
+    for m in $members; do
+        case "$m" in
+            /*) bad_member="$m"; break ;;
+        esac
+        case "$m" in
+            *".."*|*"\\"*) bad_member="$m"; break ;;
+        esac
+    done
+    if [ -n "$bad_member" ]; then
+        printf 'error: archive %s has unsafe member: %s\n' "$name" "$bad_member" >&2
+        exit 1
+    fi
+    # Normalize ./ prefixes, detect duplicates, and compare against the
+    # exact per-target runfile manifest (+ optional fixed notice).
+    norm_list=""
+    for m in $members; do
+        n="${m#./}"
+        case " $norm_list " in
+            *" $n "*)
+                printf 'error: archive %s has duplicate member: %s\n' "$name" "$m" >&2
+                exit 1
+                ;;
+        esac
+        norm_list="$norm_list $n"
+    done
+    # Strip leading space for stable comparisons.
+    norm_list="${norm_list# }"
+    expected_runfiles="$(codegg_release_runfiles_for_target "$target")"
+    # Every required runfile must be present.
+    missing=""
+    for f in $expected_runfiles; do
+        case " $norm_list " in
+            *" $f "*) ;;
+            *) missing="$missing $f" ;;
+        esac
+    done
+    if [ -n "$missing" ]; then
+        printf 'error: archive %s missing required runfile(s):%s (found: %s)\n' "$name" "$missing" "$norm_list" >&2
+        exit 1
+    fi
+    # Only runfiles + the fixed notice are permitted. Anything else —
+    # configs, credentials, source trees, logs, stray binaries — fails
+    # closed as an unexpected payload.
+    for n in $norm_list; do
+        is_ok=0
+        for f in $expected_runfiles; do
+            if [ "$n" = "$f" ]; then is_ok=1; break; fi
+        done
+        if [ "$is_ok" -eq 0 ] && codegg_release_is_notice_member "$n"; then
+            is_ok=1
+        fi
+        if [ "$is_ok" -eq 0 ]; then
+            printf 'error: archive %s has unexpected member: %s (expected runfiles + optional %s)\n' "$name" "$n" "$CODEGG_NOTICE_MEMBER" >&2
+            exit 1
+        fi
+        case "$n" in
+            *target/*|*.git*|*config*|*credential*|*plans/*|*.log)
+                printf 'error: archive %s member suggests source/config/credential leakage: %s\n' "$name" "$n" >&2
+                exit 1
+                ;;
+        esac
+    done
     count="$(printf '%s\n' "$members" | wc -l | tr -d ' ')"
-    if [ "$count" != "1" ]; then
-        printf 'error: archive %s must contain exactly one member, found %s:\n%s\n' "$name" "$count" "$members" >&2
+    if [ "$count" != "3" ] && [ "$count" != "4" ]; then
+        printf 'error: archive %s must contain 3 runfiles (+ optional notice), found %s:\n%s\n' "$name" "$count" "$members" >&2
         exit 1
     fi
-    member="$(printf '%s\n' "$members" | head -n 1)"
-    case "$member" in
-        /*)
-            printf 'error: archive %s has absolute member: %s\n' "$name" "$member" >&2
-            exit 1
-            ;;
-    esac
-    case "$member" in
-        *".."*|*"\\"*)
-            printf 'error: archive %s has traversal member: %s\n' "$name" "$member" >&2
-            exit 1
-            ;;
-    esac
-    normalized="${member#./}"
-    if [ "$normalized" != "$CODEGG_ARCHIVE_MEMBER" ]; then
-        printf 'error: archive %s must contain exactly `%s`, found `%s`\n' "$name" "$CODEGG_ARCHIVE_MEMBER" "$member" >&2
+    if [ "$count" = "4" ]; then
+        case " $norm_list " in
+            *" $CODEGG_NOTICE_MEMBER "*) ;;
+            *)
+                printf 'error: archive %s has 4 members but no %s\n' "$name" "$CODEGG_NOTICE_MEMBER" >&2
+                exit 1
+                ;;
+        esac
+    fi
+    # Reject symlinks/devices: every verbose entry must start with '-'.
+    verbose_all="$(tar -tvzf "$path" 2>/dev/null || true)"
+    if printf '%s\n' "$verbose_all" | grep -q " -> "; then
+        printf 'error: archive %s contains a symlink member\n' "$name" >&2
         exit 1
     fi
-    # Reject symlinks/devices: verbose entry must start with '-' (regular).
-    verbose="$(tar -tvzf "$path" 2>/dev/null | head -n 1 || true)"
-    case "$verbose" in
-        "-"*) ;;
-        *)
-            printf 'error: archive %s member is not a regular file: %s\n' "$name" "$verbose" >&2
-            exit 1
-            ;;
-    esac
-    case "$verbose" in
-        *" -> "*) printf 'error: archive %s member is a symlink: %s\n' "$name" "$verbose" >&2; exit 1 ;;
-    esac
-    printf 'payload ok: %s contains exactly `%s`\n' "$name" "$CODEGG_ARCHIVE_MEMBER"
+    while IFS= read -r vline; do
+        [ -n "$vline" ] || continue
+        case "$vline" in
+            "-"*) ;;
+            *)
+                printf 'error: archive %s member is not a regular file: %s\n' "$name" "$vline" >&2
+                exit 1
+                ;;
+        esac
+    done <<EOF
+$verbose_all
+EOF
+    printf 'payload ok: %s contains managed runfiles for %s\n' "$name" "$target"
 
     # Smoke: only the native target is executed.
     if [ "$SKIP_SMOKE" -eq 1 ]; then
@@ -427,21 +496,34 @@ for name in $MANIFEST_NAMES; do
         printf 'error: extraction failed for %s\n' "$name" >&2
         exit 1
     }
-    bin="$work/$CODEGG_ARCHIVE_MEMBER"
-    if [ -L "$bin" ]; then
-        printf 'error: extracted %s is a symlink\n' "$name" >&2
-        exit 1
+    # Resolve per-target names for the smoke.
+    if codegg_release_is_windows_target "$target"; then
+        smoke_main="$work/codegg.exe"
+        smoke_helper="$work/codegg-sandbox-helper.exe"
+        smoke_egg="$work/codegg-eggsearch.exe"
+    else
+        smoke_main="$work/$CODEGG_ARCHIVE_MEMBER"
+        smoke_helper="$work/$CODEGG_SANDBOX_HELPER"
+        smoke_egg="$work/$CODEGG_EGGSEARCH_SIDECAR"
     fi
-    if [ ! -f "$bin" ]; then
-        printf 'error: extracted %s missing `%s`\n' "$name" "$CODEGG_ARCHIVE_MEMBER" >&2
-        exit 1
-    fi
-    chmod 755 "$bin" 2>/dev/null || true
-    if [ ! -x "$bin" ]; then
-        printf 'error: extracted %s is not executable\n' "$name" >&2
-        exit 1
-    fi
-    version_out="$("$bin" --version 2>&1)" || {
+    for smoke_bin in "$smoke_main" "$smoke_helper" "$smoke_egg"; do
+        if [ -L "$smoke_bin" ]; then
+            printf 'error: extracted %s is a symlink: %s\n' "$name" "$smoke_bin" >&2
+            exit 1
+        fi
+        if [ ! -f "$smoke_bin" ]; then
+            printf 'error: extracted %s missing `%s`\n' "$name" "$(basename "$smoke_bin")" >&2
+            exit 1
+        fi
+    done
+    chmod 755 "$smoke_main" "$smoke_helper" "$smoke_egg" 2>/dev/null || true
+    for smoke_bin in "$smoke_main" "$smoke_helper" "$smoke_egg"; do
+        if [ ! -x "$smoke_bin" ]; then
+            printf 'error: extracted %s is not executable: %s\n' "$name" "$smoke_bin" >&2
+            exit 1
+        fi
+    done
+    version_out="$("$smoke_main" --version 2>&1)" || {
         printf 'error: `%s --version` failed: %s\n' "$name" "$version_out" >&2
         exit 1
     }
@@ -462,6 +544,37 @@ for name in $MANIFEST_NAMES; do
                 ;;
         esac
     fi
+    egg_out="$("$smoke_egg" --version 2>&1)" || {
+        printf 'error: `%s eggsearch --version` failed: %s\n' "$name" "$egg_out" >&2
+        exit 1
+    }
+    printf 'eggsearch smoke: %s -> %s\n' "$name" "$egg_out"
+    if ! codegg_release_check_eggsearch_version_output "$egg_out" "$CODEGG_EGGSEARCH_PINNED_VERSION"; then
+        printf 'error: archive %s carries wrong eggsearch sidecar version\n' "$name" >&2
+        exit 1
+    fi
+    # Safe sandbox-helper identity probe: the helper takes --spec/--status-fd
+    # and must refuse a bare invocation without doing any work. Any exit-125
+    # (or nonzero) refusal mentioning the helper/protocol counts as identity;
+    # success (exit 0) would mean the wrong binary was staged.
+    if helper_out="$("$smoke_helper" 2>&1)"; then
+        helper_status=0
+    else
+        helper_status=$?
+    fi
+    if [ "$helper_status" -eq 0 ]; then
+        printf 'error: sandbox helper probe unexpectedly succeeded for %s: %s\n' "$name" "$helper_out" >&2
+        exit 1
+    fi
+    case "$helper_out" in
+        *sandbox*|*Sandbox*|*protocol*|*Protocol*|*unavailable*|*spec*|*status-fd*)
+            printf 'helper smoke: %s helper identity ok (exit %s)\n' "$name" "$helper_status"
+            ;;
+        *)
+            printf 'error: sandbox helper probe output unrecognized for %s: %s\n' "$name" "$helper_out" >&2
+            exit 1
+            ;;
+    esac
     SMOKE_RAN=1
 done
 

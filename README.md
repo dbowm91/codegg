@@ -29,9 +29,13 @@ Linux and macOS are the primary Unix runtime targets represented in the current 
 
 The installer downloads the release asset for your host from the canonical
 CodeGG GitHub repository over HTTPS, verifies its SHA-256 checksum against
-the release manifest, and atomically installs `codegg` into a user-writable
-directory. It never uses privilege escalation, never edits shell profiles,
-and never starts background services.
+the release manifest, and atomically installs the managed runfile bundle
+(`codegg`, `codegg-sandbox-helper`, `codegg-eggsearch`, plus
+`THIRD-PARTY-NOTICES.txt` when the release carries it) into one
+user-writable directory. It never uses privilege escalation, never edits
+shell profiles, and never starts background services. You invoke only
+`codegg`; the helpers are resolved by CodeGG relative to its own
+executable, so only the install directory needs to be on `PATH`.
 
 Supported hosts:
 
@@ -80,6 +84,16 @@ asset set (see `RELEASING.md`); older releases without those assets are not
 installer-compatible. Other hosts should install from source below.
 
 ### From source
+
+> Note: installing from source is NOT the self-contained contract. `cargo
+> install --path .` installs only `codegg` (plus `codegg-sandbox-helper`
+> via `cargo build`); the pinned upstream eggsearch sidecar
+> (`codegg-eggsearch`, currently 0.3.9 from
+> `https://github.com/eggstack/eggsearch`) must be provided separately —
+> build it from the pinned tag and place it next to `codegg`, or configure
+> an explicit `[search.eggsearch].command` / `[mcp.eggsearch]` override.
+> The supported self-contained installation is the prebuilt installer
+> bundle above. See `RELEASING.md` for the pinning and provenance policy.
 
 ```bash
 git clone https://github.com/dbowm91/codegg.git
@@ -143,11 +157,13 @@ codegg --run "Explain this project"   # run one prompt and exit
 Use `codegg --help` for the complete CLI surface.
 
 CodeGG uses the external `eggsearch` MCP server for web, repository, security,
-research, batch-fetch, and evidence-bundle tools by default. Install
-eggsearch separately, then run `codegg doctor search` to verify the executable,
-MCP tool coverage, and provider degradation. Raw eggsearch MCP tools remain
-hidden by default; CodeGG wrappers keep model output bounded and
-trust-framed.
+research, batch-fetch, and evidence-bundle tools by default. Prebuilt
+installer bundles already include the pinned `codegg-eggsearch` sidecar, so
+no separate eggsearch installation is needed; run `codegg doctor search` to
+verify the sidecar, MCP tool coverage, and provider degradation. Source
+installs must provide the pinned sidecar separately (see above). Raw
+eggsearch MCP tools remain hidden by default; CodeGG wrappers keep model
+output bounded and trust-framed.
 
 ## Daemon model
 

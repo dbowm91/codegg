@@ -130,6 +130,31 @@ EOF
     chmod +x "$path"
 }
 
+# Fixture sandbox helper: refuses a bare invocation like the real helper.
+make_helper_fixture() {
+    local path="$1"
+    cat >"$path" <<'EOF'
+#!/bin/sh
+echo "sandbox helper protocol failure: missing --spec path" >&2
+exit 125
+EOF
+    chmod +x "$path"
+}
+
+# Fixture eggsearch sidecar: reports pinned upstream version via --version.
+make_eggsearch_fixture() {
+    local path="$1" version="${2:-0.3.9}"
+    cat >"$path" <<EOF
+#!/bin/sh
+if [ "\$1" = "--version" ]; then
+    echo "eggsearch $version"
+    exit 0
+fi
+echo "fixture eggsearch $version"
+EOF
+    chmod +x "$path"
+}
+
 # Sentinel "previously installed" binary with stable bytes.
 make_sentinel() {
     local path="$1"
@@ -141,14 +166,22 @@ EOF
 }
 
 # Build a fixture release dir with all four targets at one version, using the
-# real M001 packaging helpers (dogfoods the artifact contract).
+# real managed-runfile packaging helpers (dogfoods the artifact contract).
 make_release_dir() {
     local dir="$1" version="$2"
     local bin="$3"
+    local helper="${4:-}"
+    local egg="${5:-}"
+    if [ -z "${helper:-}" ]; then
+        helper="$FIXBIN_DIR/helper-fixture"
+    fi
+    if [ -z "${egg:-}" ]; then
+        egg="$FIXBIN_DIR/eggsearch-fixture"
+    fi
     mkdir -p -- "$dir"
     local t
     for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin; do
-        "$PKG" --target "$t" --binary "$bin" --out-dir "$dir" >/dev/null 2>&1
+        "$PKG" --target "$t" --binary "$bin" --sandbox-helper "$helper" --eggsearch "$egg" --out-dir "$dir" >/dev/null 2>&1
     done
     "$FIN" --dir "$dir" >/dev/null 2>&1
 }
@@ -161,8 +194,24 @@ sha_of() {
     fi
 }
 
-# Fresh destination dir containing a sentinel binary; prints the dest path.
+# Fresh destination dir containing sentinel runfiles; prints the dest path.
+# Creates sentinels for all three bundle members so rollback tests can prove
+# no mixed old/new installation survives a failed commit.
 fresh_dest_with_sentinel() {
+    local dest="$1"
+    mkdir -p -- "$dest"
+    make_sentinel "$dest/codegg"
+    cp -- "$dest/codegg" "$dest/codegg.sentinel-copy"
+    make_sentinel "$dest/codegg-sandbox-helper"
+    cp -- "$dest/codegg-sandbox-helper" "$dest/codegg-sandbox-helper.sentinel-copy"
+    make_sentinel "$dest/codegg-eggsearch"
+    cp -- "$dest/codegg-eggsearch" "$dest/codegg-eggsearch.sentinel-copy"
+    printf '%s\n' "$dest"
+}
+
+# Fresh destination dir with only the historical single-codegg sentinel
+# (pre-bundle upgrade path).
+fresh_dest_with_single_sentinel() {
     local dest="$1"
     mkdir -p -- "$dest"
     make_sentinel "$dest/codegg"
@@ -177,6 +226,27 @@ sentinel_intact() {
         ok "$label (sentinel byte-identical)"
     else
         fail "$label (sentinel was modified)"
+    fi
+}
+
+# Assert all three bundle sentinels are byte-identical (no mixed install).
+bundle_sentinels_intact() {
+    local label="$1" dest="$2"
+    local intact=1
+    for name in codegg codegg-sandbox-helper codegg-eggsearch; do
+        if [ ! -e "$dest/$name" ] || [ ! -e "$dest/$name.sentinel-copy" ]; then
+            intact=0
+            break
+        fi
+        if ! cmp -s -- "$dest/$name" "$dest/$name.sentinel-copy"; then
+            intact=0
+            break
+        fi
+    done
+    if [ "$intact" -eq 1 ]; then
+        ok "$label (bundle sentinels byte-identical, no mixed install)"
+    else
+        fail "$label (bundle sentinels were modified)"
     fi
 }
 
@@ -232,7 +302,7 @@ run_log_lacks() {
     fi
 }
 
-printf '== M002 installer tests (root=%s host=%s)\n' "$ROOT" "$HOST_TARGET"
+printf '== managed-runfile installer tests (root=%s host=%s)\n' "$ROOT" "$HOST_TARGET"
 
 # --- 1. OS/arch mapping ---------------------------------------------------------
 iu_out_eq "map Linux x86_64" "x86_64-unknown-linux-gnu" codegg_installer_map_target Linux x86_64
@@ -325,9 +395,13 @@ fi
 UROOT="$ROOT/unitsum"
 mkdir -p -- "$UROOT"
 make_fixture "$FIXBIN_DIR/unit-fixture" "0.1.0"
+make_helper_fixture "$FIXBIN_DIR/unit-helper"
+make_eggsearch_fixture "$FIXBIN_DIR/unit-egg" "0.3.9"
 mkdir -p -- "$UROOT/stage"
 cp -- "$FIXBIN_DIR/unit-fixture" "$UROOT/stage/codegg"
-tar -czf "$UROOT/unit.tar.gz" -C "$UROOT/stage" codegg
+cp -- "$FIXBIN_DIR/unit-helper" "$UROOT/stage/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/unit-egg" "$UROOT/stage/codegg-eggsearch"
+tar -czf "$UROOT/unit.tar.gz" -C "$UROOT/stage" codegg codegg-sandbox-helper codegg-eggsearch
 UHASH="$(sha_of "$UROOT/unit.tar.gz")"
 printf '%s  %s\n' "$UHASH" "$HOST_ASSET" >"$UROOT/good.txt"
 expect_pass "valid manifest verifies" codegg_installer_verify_checksum "$UROOT/unit.tar.gz" "$UROOT/good.txt" "$HOST_ASSET"
@@ -399,19 +473,37 @@ with tarfile.open(sys.argv[1], "w:gz") as tf:
     ti.devminor = 5
     tf.addfile(ti)
 PYEOF
-mkdir -p -- "$MROOT/extra-stage" "$MROOT/missing-stage"
+mkdir -p -- "$MROOT/extra-stage" "$MROOT/missing-stage" "$MROOT/bundle-stage"
+cp -- "$FIXBIN_DIR/unit-fixture" "$MROOT/bundle-stage/codegg"
+cp -- "$FIXBIN_DIR/unit-helper" "$MROOT/bundle-stage/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/unit-egg" "$MROOT/bundle-stage/codegg-eggsearch"
+tar -czf "$MROOT/bundle.tar.gz" -C "$MROOT/bundle-stage" codegg codegg-sandbox-helper codegg-eggsearch
 cp -- "$FIXBIN_DIR/unit-fixture" "$MROOT/extra-stage/codegg"
+cp -- "$FIXBIN_DIR/unit-helper" "$MROOT/extra-stage/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/unit-egg" "$MROOT/extra-stage/codegg-eggsearch"
 printf 'extra\n' >"$MROOT/extra-stage/extra.txt"
-tar -czf "$MROOT/extra.tar.gz" -C "$MROOT/extra-stage" codegg extra.txt
+tar -czf "$MROOT/extra.tar.gz" -C "$MROOT/extra-stage" codegg codegg-sandbox-helper codegg-eggsearch extra.txt
+cp -- "$FIXBIN_DIR/unit-helper" "$MROOT/missing-stage/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/unit-egg" "$MROOT/missing-stage/codegg-eggsearch"
 printf 'nothing here\n' >"$MROOT/missing-stage/not-codegg"
-tar -czf "$MROOT/nocodegg.tar.gz" -C "$MROOT/missing-stage" not-codegg
-expect_pass "valid single-codegg archive passes" codegg_installer_check_archive_members "$UROOT/unit.tar.gz"
+tar -czf "$MROOT/nocodegg.tar.gz" -C "$MROOT/missing-stage" not-codegg codegg-sandbox-helper codegg-eggsearch
+mkdir -p -- "$MROOT/nohelper-stage" "$MROOT/noegg-stage"
+cp -- "$FIXBIN_DIR/unit-fixture" "$MROOT/nohelper-stage/codegg"
+cp -- "$FIXBIN_DIR/unit-egg" "$MROOT/nohelper-stage/codegg-eggsearch"
+tar -czf "$MROOT/nohelper.tar.gz" -C "$MROOT/nohelper-stage" codegg codegg-eggsearch
+cp -- "$FIXBIN_DIR/unit-fixture" "$MROOT/noegg-stage/codegg"
+cp -- "$FIXBIN_DIR/unit-helper" "$MROOT/noegg-stage/codegg-sandbox-helper"
+tar -czf "$MROOT/noegg.tar.gz" -C "$MROOT/noegg-stage" codegg codegg-sandbox-helper
+expect_pass "valid bundle archive passes" codegg_installer_check_archive_members "$UROOT/unit.tar.gz"
+expect_pass "valid staged bundle passes" codegg_installer_check_archive_members "$MROOT/bundle.tar.gz"
 expect_fail "traversal member rejected" codegg_installer_check_archive_members "$MROOT/trav.tar.gz"
 expect_fail "absolute member rejected" codegg_installer_check_archive_members "$MROOT/abs.tar.gz"
 expect_fail "symlink member rejected" codegg_installer_check_archive_members "$MROOT/sym.tar.gz"
 expect_fail "device member rejected" codegg_installer_check_archive_members "$MROOT/dev.tar.gz"
 expect_fail "extra payload rejected" codegg_installer_check_archive_members "$MROOT/extra.tar.gz"
 expect_fail "missing codegg rejected" codegg_installer_check_archive_members "$MROOT/nocodegg.tar.gz"
+expect_fail "missing helper rejected" codegg_installer_check_archive_members "$MROOT/nohelper.tar.gz"
+expect_fail "missing eggsearch rejected" codegg_installer_check_archive_members "$MROOT/noegg.tar.gz"
 
 # --- 6. Version output validation ---------------------------------------------------------
 expect_pass "matching version output accepted" codegg_installer_check_version_output "codegg 0.1.0" "0.1.0"
@@ -419,41 +511,74 @@ expect_fail "mismatched version rejected" codegg_installer_check_version_output 
 expect_pass "latest accepts any well-formed version" codegg_installer_check_version_output "codegg 0.1.0" ""
 expect_fail "garbage version output rejected" codegg_installer_check_version_output "hello world" ""
 expect_fail "empty version output rejected" codegg_installer_check_version_output "" ""
+expect_pass "eggsearch version output accepted" codegg_installer_check_eggsearch_output "eggsearch 0.3.9"
+expect_fail "eggsearch impostor rejected" codegg_installer_check_eggsearch_output "codegg 0.1.0"
+expect_fail "eggsearch empty rejected" codegg_installer_check_eggsearch_output ""
 
 # --- 7. End-to-end fixture installs ------------------------------------------------------------
 REL="$ROOT/rel"
 make_fixture "$FIXBIN_DIR/codegg-0.1.0" "0.1.0"
-make_release_dir "$REL" "0.1.0" "$FIXBIN_DIR/codegg-0.1.0"
+make_helper_fixture "$FIXBIN_DIR/helper-0.1.0"
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-0.3.9" "0.3.9"
+make_release_dir "$REL" "0.1.0" "$FIXBIN_DIR/codegg-0.1.0" "$FIXBIN_DIR/helper-0.1.0" "$FIXBIN_DIR/eggsearch-0.3.9"
 
 # 7a. Valid install into a fresh directory.
 DEST_OK="$ROOT/dest-ok"
 installer_expect_pass "valid fixture installs" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_OK"
-if [ -x "$DEST_OK/codegg" ] && [ "$("$DEST_OK/codegg" --version)" = "codegg 0.1.0" ]; then
-    ok "installed binary is executable and reports version"
+if [ -x "$DEST_OK/codegg" ] && [ "$("$DEST_OK/codegg" --version)" = "codegg 0.1.0" ] \
+    && [ -x "$DEST_OK/codegg-sandbox-helper" ] && [ -x "$DEST_OK/codegg-eggsearch" ] \
+    && [ "$("$DEST_OK/codegg-eggsearch" --version)" = "eggsearch 0.3.9" ]; then
+    ok "installed bundle is executable and reports versions"
 else
-    fail "installed binary is executable and reports version"
+    fail "installed bundle is executable and reports versions"
+fi
+if [ -x "$DEST_OK/codegg-sandbox-helper" ] && ! "$DEST_OK/codegg-sandbox-helper" >/dev/null 2>&1; then
+    ok "installed helper refuses bare invocation (identity)"
+else
+    fail "installed helper refuses bare invocation (identity)"
 fi
 installer_run env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_OK"
 run_log_contains "success prints checksum evidence" "checksum ok: $HOST_ASSET"
 run_log_contains "success prints install destination" "installed: $DEST_OK/codegg"
+run_log_contains "success prints helper destination" "installed: $DEST_OK/codegg-sandbox-helper"
+run_log_contains "success prints eggsearch destination" "installed: $DEST_OK/codegg-eggsearch"
 run_log_contains "success prints PATH guidance" "not on PATH"
 run_log_contains "success notes daemon semantics" "daemon"
+
+# 7a2. Upgrade from the historical single-codegg layout adds the sidecars.
+DEST_SINGLE="$ROOT/dest-single"
+fresh_dest_with_single_sentinel "$DEST_SINGLE" >/dev/null
+installer_expect_pass "upgrade from single-codegg layout succeeds" \
+    env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_SINGLE"
+if [ "$("$DEST_SINGLE/codegg" --version)" = "codegg 0.1.0" ] \
+    && [ -x "$DEST_SINGLE/codegg-sandbox-helper" ] && [ -x "$DEST_SINGLE/codegg-eggsearch" ]; then
+    ok "single-codegg upgrade gains managed sidecars"
+else
+    fail "single-codegg upgrade gains managed sidecars"
+fi
 
 # 7b. Sentinel replacement + idempotent rerun.
 DEST_REPLACE="$ROOT/dest-replace"
 fresh_dest_with_sentinel "$DEST_REPLACE" >/dev/null
-installer_expect_pass "success replaces prior sentinel" \
+installer_expect_pass "success replaces prior sentinel bundle" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_REPLACE"
-if [ "$("$DEST_REPLACE/codegg" --version)" = "codegg 0.1.0" ]; then
-    ok "prior sentinel replaced with new binary"
+if [ "$("$DEST_REPLACE/codegg" --version)" = "codegg 0.1.0" ] \
+    && [ "$("$DEST_REPLACE/codegg-eggsearch" --version)" = "eggsearch 0.3.9" ]; then
+    ok "prior sentinel bundle replaced with new bundle"
 else
-    fail "prior sentinel replaced with new binary"
+    fail "prior sentinel bundle replaced with new bundle"
 fi
 installer_expect_pass "rerunning same version succeeds" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_REPLACE"
+if [ "$("$DEST_REPLACE/codegg" --version)" = "codegg 0.1.0" ] \
+    && [ "$("$DEST_REPLACE/codegg-eggsearch" --version)" = "eggsearch 0.3.9" ]; then
+    ok "idempotent rerun keeps the bundle"
+else
+    fail "idempotent rerun keeps the bundle"
+fi
 
-# 7c. Checksum mismatch leaves the sentinel intact.
+# 7c. Checksum mismatch leaves the sentinel bundle intact.
 TAMPER="$ROOT/tamper"
 rm -rf -- "$TAMPER"
 cp -r -- "$REL" "$TAMPER"
@@ -464,7 +589,7 @@ installer_expect_fail "tampered archive fails" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$TAMPER" "CODEGG_INSTALL_DIR=$DEST_TAMPER"
 installer_run env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$TAMPER" "CODEGG_INSTALL_DIR=$DEST_TAMPER"
 run_log_contains "mismatch is reported" "checksum mismatch"
-sentinel_intact "checksum mismatch" "$DEST_TAMPER"
+bundle_sentinels_intact "checksum mismatch" "$DEST_TAMPER"
 
 # 7d. Missing manifest / missing archive (download failure) leaves sentinel intact.
 NOMANIFEST="$ROOT/nomanifest"
@@ -475,7 +600,7 @@ DEST_NOMANIFEST="$ROOT/dest-nomanifest"
 fresh_dest_with_sentinel "$DEST_NOMANIFEST" >/dev/null
 installer_expect_fail "missing manifest fails" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$NOMANIFEST" "CODEGG_INSTALL_DIR=$DEST_NOMANIFEST"
-sentinel_intact "missing manifest" "$DEST_NOMANIFEST"
+bundle_sentinels_intact "missing manifest" "$DEST_NOMANIFEST"
 
 NOARCHIVE="$ROOT/noarchive"
 mkdir -p -- "$NOARCHIVE"
@@ -483,7 +608,7 @@ DEST_NOARCHIVE="$ROOT/dest-noarchive"
 fresh_dest_with_sentinel "$DEST_NOARCHIVE" >/dev/null
 installer_expect_fail "download failure fails" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$NOARCHIVE" "CODEGG_INSTALL_DIR=$DEST_NOARCHIVE"
-sentinel_intact "download failure" "$DEST_NOARCHIVE"
+bundle_sentinels_intact "download failure" "$DEST_NOARCHIVE"
 
 # 7e. Duplicate manifest entry fails without touching the sentinel.
 DUP="$ROOT/dup"
@@ -496,14 +621,14 @@ DEST_DUP="$ROOT/dest-dup"
 fresh_dest_with_sentinel "$DEST_DUP" >/dev/null
 installer_expect_fail "duplicate manifest entry fails" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$DUP" "CODEGG_INSTALL_DIR=$DEST_DUP"
-sentinel_intact "duplicate manifest" "$DEST_DUP"
+bundle_sentinels_intact "duplicate manifest" "$DEST_DUP"
 
-# 7f. Version-mismatch smoke fails without touching the sentinel.
+# 7f. Version-mismatch smoke fails without touching the sentinel bundle.
 DEST_VMISMATCH="$ROOT/dest-vmismatch"
 fresh_dest_with_sentinel "$DEST_VMISMATCH" >/dev/null
 installer_expect_fail "version mismatch smoke fails" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_VMISMATCH" "CODEGG_VERSION=9.9.9"
-sentinel_intact "version mismatch smoke" "$DEST_VMISMATCH"
+bundle_sentinels_intact "version mismatch smoke" "$DEST_VMISMATCH"
 installer_expect_pass "pinned version matching fixture succeeds" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$ROOT/dest-pinned" "CODEGG_VERSION=0.1.0"
 installer_expect_pass "v-prefixed pinned version succeeds" \
@@ -522,13 +647,64 @@ check_bad_payload() {
     fresh_dest_with_sentinel "$dest" >/dev/null
     installer_expect_fail "$label" \
         env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$work" "CODEGG_INSTALL_DIR=$dest"
-    sentinel_intact "$label" "$dest"
+    bundle_sentinels_intact "$label" "$dest"
 }
 check_bad_payload "$MROOT/trav.tar.gz" "traversal payload rejected end-to-end"
 check_bad_payload "$MROOT/abs.tar.gz" "absolute payload rejected end-to-end"
 check_bad_payload "$MROOT/sym.tar.gz" "symlink payload rejected end-to-end"
 check_bad_payload "$MROOT/extra.tar.gz" "unexpected extra payload rejected end-to-end"
 check_bad_payload "$MROOT/nocodegg.tar.gz" "missing codegg payload rejected end-to-end"
+check_bad_payload "$MROOT/nohelper.tar.gz" "missing helper payload rejected end-to-end"
+check_bad_payload "$MROOT/noegg.tar.gz" "missing eggsearch payload rejected end-to-end"
+
+# 7g2. Bundle rollback: when replacement of the second runfile fails, the
+# whole previous bundle must survive (no mixed old/new install). Inject a
+# fake `mv` that fails exactly the helper commit rename (staged helper ->
+# destination helper) after the codegg backup/commit already happened.
+DEST_ROLLBACK="$ROOT/dest-rollback"
+fresh_dest_with_sentinel "$DEST_ROLLBACK" >/dev/null
+ROLLBACK_FAKEBIN="$ROOT/rollback-fakebin"
+mkdir -p -- "$ROLLBACK_FAKEBIN"
+cat >"$ROLLBACK_FAKEBIN/mv" <<'EOF'
+#!/bin/sh
+# Fail the helper commit rename; delegate everything else to the real mv.
+for arg in "$@"; do
+    case "$arg" in
+        *.codegg-helper-install.*) is_staged_helper=1 ;;
+    esac
+    case "$arg" in
+        */codegg-sandbox-helper) is_dest_helper=1 ;;
+    esac
+done
+if [ "${is_staged_helper:-0}" -eq 1 ] && [ "${is_dest_helper:-0}" -eq 1 ]; then
+    printf 'fake mv: injected helper commit failure\n' >&2
+    exit 1
+fi
+for candidate in /bin/mv /usr/bin/mv; do
+    if [ -x "$candidate" ]; then
+        exec "$candidate" "$@"
+    fi
+done
+exit 127
+EOF
+chmod +x "$ROLLBACK_FAKEBIN/mv"
+if PATH="$ROLLBACK_FAKEBIN:$PATH" \
+    env -u CODEGG_INSTALL_LIB_ONLY \
+    "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_ROLLBACK" \
+    "$SH" "$INSTALL_SH" >"$RUN_LOG" 2>&1; then
+    fail "helper replacement failure rolls back (expected failure, got success)"
+else
+    ok "helper replacement failure rolls back"
+fi
+if [ -f "$DEST_ROLLBACK/codegg" ] && [ -f "$DEST_ROLLBACK/codegg-sandbox-helper" ] && [ -f "$DEST_ROLLBACK/codegg-eggsearch" ] \
+    && cmp -s -- "$DEST_ROLLBACK/codegg" "$DEST_ROLLBACK/codegg.sentinel-copy" \
+    && cmp -s -- "$DEST_ROLLBACK/codegg-sandbox-helper" "$DEST_ROLLBACK/codegg-sandbox-helper.sentinel-copy" \
+    && cmp -s -- "$DEST_ROLLBACK/codegg-eggsearch" "$DEST_ROLLBACK/codegg-eggsearch.sentinel-copy"; then
+    ok "rollback keeps previous bundle (no mixed install)"
+else
+    fail "rollback keeps previous bundle (no mixed install)"
+fi
+run_log_contains "rollback reports recovery" "rolled back"
 
 # 7h. Unsupported host fails before the download seam is invoked.
 FAKEBIN="$ROOT/fakebin"
@@ -556,7 +732,7 @@ run_log_contains "unsupported host message" "unsupported OS/architecture"
 run_log_contains "unsupported host prints alternatives" "cargo install"
 run_log_lacks "unsupported host downloads nothing" "downloading"
 run_log_lacks "unsupported host skips fixture seam" "test fixture missing"
-sentinel_intact "unsupported host" "$DEST_UNSUP"
+bundle_sentinels_intact "unsupported host" "$DEST_UNSUP"
 if PATH="$FAKEBIN:$PATH" FAKE_UNAME_S="Linux" FAKE_UNAME_M="mips" \
     env -u CODEGG_INSTALL_LIB_ONLY \
     "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$ROOT/does-not-exist" "CODEGG_INSTALL_DIR=$DEST_UNSUP" \
@@ -594,18 +770,18 @@ installer_expect_fail "option-like install dir rejected" \
 SPACED="$ROOT/dir with spaces/bin"
 installer_expect_pass "spaced install dir succeeds" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$SPACED"
-if [ "$("$SPACED/codegg" --version)" = "codegg 0.1.0" ]; then
-    ok "spaced install dir binary works"
+if [ "$("$SPACED/codegg" --version)" = "codegg 0.1.0" ] && [ -x "$SPACED/codegg-sandbox-helper" ] && [ -x "$SPACED/codegg-eggsearch" ]; then
+    ok "spaced install dir bundle works"
 else
-    fail "spaced install dir binary works"
+    fail "spaced install dir bundle works"
 fi
 METADIR="$ROOT/we;ird \$dollar (paren)/bin"
 installer_expect_pass "metachar install dir treated as data" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$METADIR"
-if [ -x "$METADIR/codegg" ] && [ "$("$METADIR/codegg" --version)" = "codegg 0.1.0" ]; then
-    ok "metachar install dir binary works"
+if [ -x "$METADIR/codegg" ] && [ "$("$METADIR/codegg" --version)" = "codegg 0.1.0" ] && [ -x "$METADIR/codegg-eggsearch" ]; then
+    ok "metachar install dir bundle works"
 else
-    fail "metachar install dir binary works"
+    fail "metachar install dir bundle works"
 fi
 
 # 7k. Checksum failure prevents execution of the untrusted payload (canary).
@@ -624,7 +800,7 @@ chmod +x "$FIXBIN_DIR/canary-fixture"
 CANREL="$ROOT/canrel"
 rm -rf -- "$CANREL"
 mkdir -p -- "$CANREL"
-"$PKG" --target "$HOST_TARGET" --binary "$FIXBIN_DIR/canary-fixture" --out-dir "$CANREL" >/dev/null 2>&1
+"$PKG" --target "$HOST_TARGET" --binary "$FIXBIN_DIR/canary-fixture" --sandbox-helper "$FIXBIN_DIR/helper-0.1.0" --eggsearch "$FIXBIN_DIR/eggsearch-0.3.9" --out-dir "$CANREL" >/dev/null 2>&1
 "$FIN" --dir "$CANREL" >/dev/null 2>&1
 printf 'x' >>"$CANREL/$HOST_ASSET"
 DEST_CANARY="$ROOT/dest-canary"
@@ -636,7 +812,7 @@ if [ -e "$CANARY" ]; then
 else
     ok "checksum failure prevents payload execution (canary untouched)"
 fi
-sentinel_intact "tampered executable payload" "$DEST_CANARY"
+bundle_sentinels_intact "tampered executable payload" "$DEST_CANARY"
 
 # 7l. Default HOME layout works and user config is untouched.
 FAKEHOME="$ROOT/fakehome"
@@ -645,10 +821,12 @@ printf '{"sentinel":"credentials"}\n' >"$FAKEHOME/.config/codegg/credentials.jso
 cp -- "$FAKEHOME/.config/codegg/credentials.json" "$ROOT/credentials-copy.json"
 installer_expect_pass "default HOME install succeeds" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "HOME=$FAKEHOME"
-if [ "$("$FAKEHOME/.local/bin/codegg" --version)" = "codegg 0.1.0" ]; then
-    ok "default HOME binary works"
+if [ "$("$FAKEHOME/.local/bin/codegg" --version)" = "codegg 0.1.0" ] \
+    && [ -x "$FAKEHOME/.local/bin/codegg-sandbox-helper" ] \
+    && [ -x "$FAKEHOME/.local/bin/codegg-eggsearch" ]; then
+    ok "default HOME bundle works"
 else
-    fail "default HOME binary works"
+    fail "default HOME bundle works"
 fi
 if cmp -s -- "$FAKEHOME/.config/codegg/credentials.json" "$ROOT/credentials-copy.json"; then
     ok "existing user config untouched"
@@ -677,27 +855,27 @@ installer_expect_fail "version traversal rejected" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$ROOT/dest-inject2" \
     "CODEGG_VERSION=../../etc"
 
-# 7n. Failed runs leave no staging files; a clean retry succeeds.
+# 7n. Failed runs leave no staging/backup files; a clean retry succeeds.
 STAGING_LEFTOVER=0
 for d in "$ROOT"/dest-*; do
     if [ -d "$d" ]; then
-        for entry in "$d"/.codegg-install.*; do
+        for entry in "$d"/.codegg-install.* "$d"/.codegg-helper-install.* "$d"/.codegg-eggsearch-install.* "$d"/.codegg-notice-install.* "$d"/.codegg-backup.* "$d"/.codegg-helper-backup.* "$d"/.codegg-eggsearch-backup.* "$d"/.codegg-notice-backup.*; do
             [ -e "$entry" ] || continue
             STAGING_LEFTOVER=1
         done
     fi
 done
 if [ "$STAGING_LEFTOVER" -eq 0 ]; then
-    ok "no staging leftovers in destinations"
+    ok "no staging/backup leftovers in destinations"
 else
-    fail "no staging leftovers in destinations"
+    fail "no staging/backup leftovers in destinations"
 fi
 installer_expect_pass "clean retry after failures succeeds" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_TAMPER"
-if [ "$("$DEST_TAMPER/codegg" --version)" = "codegg 0.1.0" ]; then
-    ok "retry replaced the intact sentinel"
+if [ "$("$DEST_TAMPER/codegg" --version)" = "codegg 0.1.0" ] && [ -x "$DEST_TAMPER/codegg-eggsearch" ]; then
+    ok "retry replaced the intact sentinel bundle"
 else
-    fail "retry replaced the intact sentinel"
+    fail "retry replaced the intact sentinel bundle"
 fi
 
 # 7o. Missing-tool failure is clean (no destination mutation).
@@ -711,7 +889,7 @@ else
     ok "missing tools fail"
 fi
 run_log_contains "missing tools reported" "missing required command"
-sentinel_intact "missing tools" "$DEST_NOTOOLS"
+bundle_sentinels_intact "missing tools" "$DEST_NOTOOLS"
 
 # 7p. Portability: success path also works under bash (and dash when present).
 if env -u CODEGG_INSTALL_LIB_ONLY \

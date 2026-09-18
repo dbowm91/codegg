@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# test-release-tools.sh — focused offline tests for the M001 manual
-# prebuilt-artifact contract. No network, no real GitHub release, no
-# cross-compilation. Uses fixture executables and local release dirs.
+# test-release-tools.sh — focused offline tests for the managed-runfile
+# release bundle (self-contained-installation M001). No network, no real
+# GitHub release, no cross-compilation. Uses fixture executables and local
+# release dirs.
 #
 # Usage:
 #   scripts/release/test-release-tools.sh
@@ -76,7 +77,34 @@ EOF
     chmod +x "$path"
 }
 
-printf '== M001 release-tool tests (root=%s)\n' "$ROOT"
+# Fixture sandbox helper: safe identity probe refuses a bare invocation
+# (mirrors the real helper's --spec/--status-fd protocol refusal).
+make_helper_fixture() {
+    local path="$1"
+    cat > "$path" <<'EOF'
+#!/bin/sh
+echo "sandbox helper protocol failure: missing --spec path" >&2
+exit 125
+EOF
+    chmod +x "$path"
+}
+
+# Fixture eggsearch: reports the given upstream version via --version.
+make_eggsearch_fixture() {
+    local path="$1"
+    local version="${2:-0.3.9}"
+    cat > "$path" <<EOF
+#!/bin/sh
+if [ "\$1" = "--version" ]; then
+    echo "eggsearch $version"
+    exit 0
+fi
+echo "fixture eggsearch $version"
+EOF
+    chmod +x "$path"
+}
+
+printf '== managed-runfile release-tool tests (root=%s)\n' "$ROOT"
 
 # --- 1. Target allowlist and filename mapping --------------------------------
 if codegg_release_is_supported_target "aarch64-apple-darwin" \
@@ -98,35 +126,82 @@ else
     fail "required vs optional target distinction (windows optional)"
 fi
 
+# --- 1b. Canonical runfile manifest ------------------------------------------
+if [ "$(codegg_release_runfiles_for_target "x86_64-unknown-linux-gnu" | LC_ALL=C sort | tr '\n' ' ')" = "codegg codegg-eggsearch codegg-sandbox-helper " ] \
+    && [ "$(codegg_release_runfiles_for_target "aarch64-apple-darwin" | LC_ALL=C sort | tr '\n' ' ')" = "codegg codegg-eggsearch codegg-sandbox-helper " ] \
+    && [ "$(codegg_release_runfiles_for_target "x86_64-pc-windows-msvc" | LC_ALL=C sort | tr '\n' ' ')" = "codegg-eggsearch.exe codegg-sandbox-helper.exe codegg.exe " ] \
+    && [ "$CODEGG_EGGSEARCH_PINNED_VERSION" = "0.3.9" ] \
+    && [ "$CODEGG_EGGSEARCH_SIDECAR" = "codegg-eggsearch" ]; then
+    ok "canonical per-target runfile manifest with pinned eggsearch 0.3.9"
+else
+    fail "canonical per-target runfile manifest with pinned eggsearch 0.3.9"
+fi
+
+if codegg_release_check_eggsearch_version_output "eggsearch 0.3.9" "0.3.9" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.3.8" "0.3.9" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "codegg 0.1.0" "0.3.9" 2>/dev/null; then
+    ok "eggsearch identity/version check accepts pin, rejects drift"
+else
+    fail "eggsearch identity/version check accepts pin, rejects drift"
+fi
+
 # --- 2. Valid packaging for every required target ------------------------------
 REL="$ROOT/rel"
 mkdir -p -- "$REL"
 make_fixture "$FIXBIN_DIR/codegg-fixture" "0.1.0"
+make_helper_fixture "$FIXBIN_DIR/helper-fixture"
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-fixture" "0.3.9"
+printf 'eggsearch 0.3.9 (%s tag %s)\nlicense: see upstream %s\n' "$CODEGG_EGGSEARCH_SOURCE" "$CODEGG_EGGSEARCH_UPSTREAM_TAG" "$CODEGG_EGGSEARCH_SOURCE" > "$FIXBIN_DIR/notice.txt"
 
 for t in $CODEGG_REQUIRED_TARGETS; do
-    expect_pass "package fixture for $t" "$PKG" --target "$t" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL"
+    expect_pass "package bundle fixture for $t" "$PKG" --target "$t" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
 done
 
-# Archive payload: exactly one `codegg` member, executable mode after extract.
+# Archive payload: exact managed runfiles, executable mode after extract.
 EXTRACT_CHECK="$ROOT/extract-check"
 mkdir -p -- "$EXTRACT_CHECK"
 payload_ok=1
 for t in $CODEGG_REQUIRED_TARGETS; do
     aname="$(codegg_release_archive_name "$t")"
     [ -f "$REL/$aname" ] || { payload_ok=0; break; }
-    members="$(tar -tzf "$REL/$aname")"
-    [ "$members" = "codegg" ] || { payload_ok=0; break; }
+    members="$(tar -tzf "$REL/$aname" | LC_ALL=C sort | tr '\n' ' ')"
+    [ "$members" = "codegg codegg-eggsearch codegg-sandbox-helper " ] || { payload_ok=0; break; }
     rm -rf -- "$EXTRACT_CHECK/$t"
     mkdir -p -- "$EXTRACT_CHECK/$t"
     tar -xzf "$REL/$aname" -C "$EXTRACT_CHECK/$t"
     [ -f "$EXTRACT_CHECK/$t/codegg" ] && [ ! -L "$EXTRACT_CHECK/$t/codegg" ] && [ -x "$EXTRACT_CHECK/$t/codegg" ] || { payload_ok=0; break; }
+    [ -f "$EXTRACT_CHECK/$t/codegg-sandbox-helper" ] && [ ! -L "$EXTRACT_CHECK/$t/codegg-sandbox-helper" ] && [ -x "$EXTRACT_CHECK/$t/codegg-sandbox-helper" ] || { payload_ok=0; break; }
+    [ -f "$EXTRACT_CHECK/$t/codegg-eggsearch" ] && [ ! -L "$EXTRACT_CHECK/$t/codegg-eggsearch" ] && [ -x "$EXTRACT_CHECK/$t/codegg-eggsearch" ] || { payload_ok=0; break; }
     out="$("$EXTRACT_CHECK/$t/codegg" --version)"
     [ "$out" = "codegg 0.1.0" ] || { payload_ok=0; break; }
+    egg_out="$("$EXTRACT_CHECK/$t/codegg-eggsearch" --version)"
+    [ "$egg_out" = "eggsearch 0.3.9" ] || { payload_ok=0; break; }
+    if "$EXTRACT_CHECK/$t/codegg-sandbox-helper" >/dev/null 2>&1; then payload_ok=0; break; fi
 done
 if [ "$payload_ok" -eq 1 ]; then
-    ok "archive payload is exactly one executable codegg per target"
+    ok "archive payload is exactly the managed runfile bundle per target"
 else
-    fail "archive payload is exactly one executable codegg per target"
+    fail "archive payload is exactly the managed runfile bundle per target"
+fi
+
+# Notice member: fixed name only, staged when --notice is given.
+NOTICEREL="$ROOT/rel-notice"
+mkdir -p -- "$NOTICEREL"
+expect_pass "package bundle with notice" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --notice "$FIXBIN_DIR/notice.txt" --out-dir "$NOTICEREL"
+if [ "$(tar -tzf "$NOTICEREL/codegg-x86_64-unknown-linux-gnu.tar.gz" | LC_ALL=C sort | tr '\n' ' ')" = "THIRD-PARTY-NOTICES.txt codegg codegg-eggsearch codegg-sandbox-helper " ]; then
+    ok "notice member uses the fixed allowlisted name"
+else
+    fail "notice member uses the fixed allowlisted name"
+fi
+
+# Windows manifest uses explicit .exe names.
+WINMANIFEST="$ROOT/winmanifest"
+mkdir -p -- "$WINMANIFEST"
+expect_pass "package windows bundle manifest" "$PKG" --target "x86_64-pc-windows-msvc" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$WINMANIFEST"
+if [ "$(tar -tzf "$WINMANIFEST/codegg-x86_64-pc-windows-msvc.tar.gz" | LC_ALL=C sort | tr '\n' ' ')" = "codegg-eggsearch.exe codegg-sandbox-helper.exe codegg.exe " ]; then
+    ok "windows bundle uses explicit .exe runfile names"
+else
+    fail "windows bundle uses explicit .exe runfile names"
 fi
 
 # No source/config/credential content leaks into archives.
@@ -137,21 +212,41 @@ else
 fi
 
 # --- 3. Negative packaging inputs ----------------------------------------------
-expect_fail "reject unknown target" "$PKG" --target "mips-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL"
-expect_fail "reject malicious target (metachars)" "$PKG" --target 'aarch64-apple-darwin; echo pwned' --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL"
-expect_fail "reject malicious target (traversal)" "$PKG" --target '../etc/passwd' --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL"
-expect_fail "reject option-like target" "$PKG" --target '-h' --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL"
-expect_fail "reject missing binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/does-not-exist" --out-dir "$REL"
-expect_fail "reject directory as binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR" --out-dir "$REL"
+expect_fail "reject unknown target" "$PKG" --target "mips-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject malicious target (metachars)" "$PKG" --target 'aarch64-apple-darwin; echo pwned' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject malicious target (traversal)" "$PKG" --target '../etc/passwd' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject option-like target" "$PKG" --target '-h' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject missing binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/does-not-exist" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject missing helper" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$ROOT/does-not-exist" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject missing eggsearch" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$ROOT/does-not-exist" --out-dir "$REL"
+expect_fail "reject directory as binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
 
 ln -sf -- "$FIXBIN_DIR/codegg-fixture" "$ROOT/link-fixture"
-expect_fail "reject symlink binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/link-fixture" --out-dir "$REL"
+expect_fail "reject symlink binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/link-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+ln -sf -- "$FIXBIN_DIR/helper-fixture" "$ROOT/link-helper"
+expect_fail "reject symlink helper" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$ROOT/link-helper" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+ln -sf -- "$FIXBIN_DIR/eggsearch-fixture" "$ROOT/link-egg"
+expect_fail "reject symlink eggsearch" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$ROOT/link-egg" --out-dir "$REL"
 
 printf 'not executable\n' > "$ROOT/plain-file"
-expect_fail "reject non-executable binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/plain-file" --out-dir "$REL"
+expect_fail "reject non-executable binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/plain-file" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
 
-expect_fail "reject option-like binary path" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary '-evil' --out-dir "$REL"
-expect_fail "reject option-like out-dir" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --out-dir '-evil'
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-wrong" "0.3.8"
+expect_fail "reject wrong eggsearch version" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-wrong" --out-dir "$REL"
+cat > "$FIXBIN_DIR/not-eggsearch" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+    echo "totally-different-tool 1.0.0"
+    exit 0
+fi
+echo "impostor"
+EOF
+chmod +x "$FIXBIN_DIR/not-eggsearch"
+expect_fail "reject wrong eggsearch identity" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/not-eggsearch" --out-dir "$REL"
+expect_fail "reject drifted --eggsearch-version flag" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --eggsearch-version "0.3.8" --out-dir "$REL"
+
+expect_fail "reject option-like binary path" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary '-evil' --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_fail "reject option-like out-dir" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir '-evil'
 
 # Packaging failure must leave no final archive behind.
 if [ -e "$REL/codegg-mips-unknown-linux-gnu.tar.gz" ]; then
@@ -163,7 +258,7 @@ fi
 # --- 4. Output path quoting (spaces) --------------------------------------------
 SPACED="$ROOT/dir with spaces/release out"
 mkdir -p -- "$SPACED"
-expect_pass "package with spaced out-dir" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$SPACED" --force
+expect_pass "package with spaced out-dir" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$SPACED" --force
 if [ -f "$SPACED/codegg-x86_64-unknown-linux-gnu.tar.gz" ]; then
     ok "spaced out-dir archive exists"
 else
@@ -171,8 +266,8 @@ else
 fi
 
 # --- 5. Overwrite policy ---------------------------------------------------------
-expect_fail "refuse overwrite without --force" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL"
-expect_pass "allow overwrite with --force" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$REL" --force
+expect_fail "refuse overwrite without --force" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
+expect_pass "allow overwrite with --force" "$PKG" --target "x86_64-unknown-linux-gnu" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL" --force
 
 # --- 6. Finalize determinism + sha256sum -c compat --------------------------------
 expect_pass "finalize checksums" "$FIN" --dir "$REL"
@@ -212,6 +307,92 @@ expect_fail "reject mismatched --expect-version" "$VER" --dir "$REL" --allow-inc
 expect_fail "reject malformed --expect-version" "$VER" --dir "$REL" --allow-incomplete-target-set --expect-version "../9.9.9"
 expect_pass "rerun verification is idempotent" "$VER" --dir "$REL"
 
+# --- 7b. Missing sidecars fail verification ---------------------------------------
+MISSBASE="$ROOT/missbase"
+rm -rf -- "$MISSBASE"
+mkdir -p -- "$MISSBASE"
+cp -- "$REL/$(codegg_release_archive_name "x86_64-unknown-linux-gnu")" "$MISSBASE/good.tar.gz"
+# Archive with only codegg (historical single-binary layout).
+stage_single="$ROOT/stage-single"
+rm -rf -- "$stage_single"
+mkdir -p -- "$stage_single"
+cp -- "$FIXBIN_DIR/codegg-fixture" "$stage_single/codegg"
+tar -czf "$MISSBASE/single.tar.gz" -C "$stage_single" codegg
+single_work="$ROOT/work-single"
+rm -rf -- "$single_work"
+mkdir -p -- "$single_work"
+cp -- "$MISSBASE/single.tar.gz" "$single_work/codegg-x86_64-unknown-linux-gnu.tar.gz"
+cp -- "$REL/checksums.txt" "$single_work/checksums.txt"
+"$FIN" --dir "$single_work" >/dev/null 2>&1
+expect_fail "historical single-codegg archive rejected (missing sidecars)" "$VER" --dir "$single_work" --allow-incomplete-target-set --skip-version-smoke
+# Archive missing only the helper.
+stage_nohelper="$ROOT/stage-nohelper"
+rm -rf -- "$stage_nohelper"
+mkdir -p -- "$stage_nohelper"
+cp -- "$FIXBIN_DIR/codegg-fixture" "$stage_nohelper/codegg"
+cp -- "$FIXBIN_DIR/eggsearch-fixture" "$stage_nohelper/codegg-eggsearch"
+tar -czf "$MISSBASE/nohelper.tar.gz" -C "$stage_nohelper" codegg codegg-eggsearch
+nohelper_work="$ROOT/work-nohelper"
+rm -rf -- "$nohelper_work"
+mkdir -p -- "$nohelper_work"
+cp -- "$MISSBASE/nohelper.tar.gz" "$nohelper_work/codegg-x86_64-unknown-linux-gnu.tar.gz"
+cp -- "$REL/checksums.txt" "$nohelper_work/checksums.txt"
+"$FIN" --dir "$nohelper_work" >/dev/null 2>&1
+expect_fail "archive missing helper rejected" "$VER" --dir "$nohelper_work" --allow-incomplete-target-set --skip-version-smoke
+# Archive missing only eggsearch.
+stage_noegg="$ROOT/stage-noegg"
+rm -rf -- "$stage_noegg"
+mkdir -p -- "$stage_noegg"
+cp -- "$FIXBIN_DIR/codegg-fixture" "$stage_noegg/codegg"
+cp -- "$FIXBIN_DIR/helper-fixture" "$stage_noegg/codegg-sandbox-helper"
+tar -czf "$MISSBASE/noegg.tar.gz" -C "$stage_noegg" codegg codegg-sandbox-helper
+noegg_work="$ROOT/work-noegg"
+rm -rf -- "$noegg_work"
+mkdir -p -- "$noegg_work"
+cp -- "$MISSBASE/noegg.tar.gz" "$noegg_work/codegg-x86_64-unknown-linux-gnu.tar.gz"
+cp -- "$REL/checksums.txt" "$noegg_work/checksums.txt"
+"$FIN" --dir "$noegg_work" >/dev/null 2>&1
+expect_fail "archive missing eggsearch rejected" "$VER" --dir "$noegg_work" --allow-incomplete-target-set --skip-version-smoke
+# Archive with wrong eggsearch version (native target so the version smoke runs).
+detect_native_target() {
+    if command -v rustc >/dev/null 2>&1; then
+        host_line="$(rustc -vV 2>/dev/null | grep '^host:' | awk '{print $2}' || true)"
+        if codegg_release_is_supported_target "${host_line:-}" >/dev/null 2>&1; then
+            printf '%s\n' "$host_line"
+            return 0
+        fi
+    fi
+    os="$(uname -s 2>/dev/null || printf 'unknown')"
+    mach="$(uname -m 2>/dev/null || printf 'unknown')"
+    case "$os/$mach" in
+        Linux/x86_64|Linux/amd64) printf '%s\n' "x86_64-unknown-linux-gnu" ;;
+        Linux/aarch64|Linux/arm64) printf '%s\n' "aarch64-unknown-linux-gnu" ;;
+        Darwin/x86_64) printf '%s\n' "x86_64-apple-darwin" ;;
+        Darwin/arm64|Darwin/aarch64) printf '%s\n' "aarch64-apple-darwin" ;;
+        *) return 1 ;;
+    esac
+}
+NATIVE_T=""
+if NATIVE_T="$(detect_native_target)"; then
+    :
+else
+    NATIVE_T="x86_64-unknown-linux-gnu"
+fi
+NATIVE_ARCHIVE="$(codegg_release_archive_name "$NATIVE_T")"
+stage_wrongegg="$ROOT/stage-wrongegg"
+rm -rf -- "$stage_wrongegg"
+mkdir -p -- "$stage_wrongegg"
+cp -- "$FIXBIN_DIR/codegg-fixture" "$stage_wrongegg/codegg"
+cp -- "$FIXBIN_DIR/helper-fixture" "$stage_wrongegg/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/eggsearch-wrong" "$stage_wrongegg/codegg-eggsearch"
+tar -czf "$MISSBASE/wrongegg.tar.gz" -C "$stage_wrongegg" codegg codegg-sandbox-helper codegg-eggsearch
+wrongegg_work="$ROOT/work-wrongegg"
+rm -rf -- "$wrongegg_work"
+mkdir -p -- "$wrongegg_work"
+cp -- "$MISSBASE/wrongegg.tar.gz" "$wrongegg_work/$NATIVE_ARCHIVE"
+"$FIN" --dir "$wrongegg_work" >/dev/null 2>&1
+expect_fail "archive with wrong eggsearch version rejected" "$VER" --dir "$wrongegg_work" --allow-incomplete-target-set
+
 # --- 8. Tamper / missing / duplicate ----------------------------------------------
 TAMPER="$ROOT/tamper"
 rm -rf -- "$TAMPER"
@@ -234,7 +415,7 @@ i=0
 for t in $CODEGG_REQUIRED_TARGETS; do
     i=$((i + 1))
     if [ "$i" -eq 4 ]; then continue; fi
-    "$PKG" --target "$t" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$MISSING2" >/dev/null 2>&1
+    "$PKG" --target "$t" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$MISSING2" >/dev/null 2>&1
 done
 "$FIN" --dir "$MISSING2" >/dev/null 2>&1
 expect_fail "incomplete set fails strict verification" "$VER" --dir "$MISSING2"
@@ -273,27 +454,11 @@ printf '0000000000000000000000000000000000000000000000000000000000000000  /tmp/e
 expect_fail "absolute manifest entry fails" "$VER" --dir "$ABS_MANIFEST"
 
 # --- 10. Malicious archive payloads --------------------------------------------------
-craft_payload() {
-    # $1 = dest archive path; remaining args are tar member specs created
-    # under a private staging dir. Caller creates files/symlinks first.
-    :
-}
-
 BADBASE="$ROOT/badpayload"
 rm -rf -- "$BADBASE"
 mkdir -p -- "$BADBASE"
-cp -- "$REL/$(codegg_release_archive_name "x86_64-unknown-linux-gnu")" "$BADBASE/good.tar.gz"
 
 # Traversal member.
-stage="$ROOT/stage-trav"
-rm -rf -- "$stage"
-mkdir -p -- "$stage/sub"
-printf 'evil\n' > "$stage/sub/evil"
-# GNU/BSD tar: -P preserves names; craft ../evil by archiving from sub with
-# an explicit ../ name via -C games is fiddly, so build with python-free
-# approach: create archive containing "sub/evil" then rename member? Instead
-# directly create a traversal archive using tar's ability to store ../ when
-# given a path outside -C root:
 mkdir -p -- "$ROOT/stage-trav-outer/inner"
 printf 'evil\n' > "$ROOT/stage-trav-outer/payload"
 (cd "$ROOT/stage-trav-outer/inner" && tar -czf "$BADBASE/trav.tar.gz" --exclude='./*' -C .. ../payload 2>/dev/null || tar -czf "$BADBASE/trav.tar.gz" -C "$ROOT/stage-trav-outer/inner" ../../stage-trav-outer/payload 2>/dev/null || true)
@@ -344,21 +509,25 @@ with tarfile.open(dest, "w:gz") as tf:
 PYEOF
 ok "crafted symlink fixture"
 
-# Wrong payload: extra file alongside codegg.
+# Wrong payload: extra file alongside the bundle.
 stage2="$ROOT/stage-extra"
 rm -rf -- "$stage2"
 mkdir -p -- "$stage2"
 cp -- "$FIXBIN_DIR/codegg-fixture" "$stage2/codegg"
+cp -- "$FIXBIN_DIR/helper-fixture" "$stage2/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/eggsearch-fixture" "$stage2/codegg-eggsearch"
 printf 'extra\n' > "$stage2/extra.txt"
-tar -czf "$BADBASE/extra.tar.gz" -C "$stage2" codegg extra.txt
+tar -czf "$BADBASE/extra.tar.gz" -C "$stage2" codegg codegg-sandbox-helper codegg-eggsearch extra.txt
 ok "crafted extra-file fixture"
 
-# Wrong payload: missing codegg.
+# Wrong payload: bundle with an impostor member instead of codegg.
 stage3="$ROOT/stage-missing"
 rm -rf -- "$stage3"
 mkdir -p -- "$stage3"
+cp -- "$FIXBIN_DIR/helper-fixture" "$stage3/codegg-sandbox-helper"
+cp -- "$FIXBIN_DIR/eggsearch-fixture" "$stage3/codegg-eggsearch"
 printf 'nothing here\n' > "$stage3/not-codegg"
-tar -czf "$BADBASE/nocodegg.tar.gz" -C "$stage3" not-codegg
+tar -czf "$BADBASE/nocodegg.tar.gz" -C "$stage3" not-codegg codegg-sandbox-helper codegg-eggsearch
 ok "crafted missing-codegg fixture"
 
 check_bad_payload() {
@@ -392,9 +561,9 @@ expect_fail "stale temp file fails closed" "$VER" --dir "$STALE"
 WIN="$ROOT/win"
 rm -rf -- "$WIN"
 cp -r -- "$REL" "$WIN"
-expect_pass "package optional windows target" "$PKG" --target "x86_64-pc-windows-msvc" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$WIN"
+expect_pass "package optional windows target" "$PKG" --target "x86_64-pc-windows-msvc" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$WIN"
 expect_pass "finalize with optional windows" "$FIN" --dir "$WIN"
-expect_pass "verify complete set with optional windows extra" "$VER" --dir "$WIN"
+expect_pass "verify complete set with optional windows extra" "$VER" --dir "$WIN" --skip-version-smoke
 if grep -q "codegg-x86_64-pc-windows-msvc.tar.gz" -- "$WIN/checksums.txt"; then
     ok "windows artifact explicitly listed (not silently folded)"
 else
@@ -404,10 +573,10 @@ fi
 WINONLY="$ROOT/winonly"
 rm -rf -- "$WINONLY"
 mkdir -p -- "$WINONLY"
-"$PKG" --target "x86_64-pc-windows-msvc" --binary "$FIXBIN_DIR/codegg-fixture" --out-dir "$WINONLY" >/dev/null 2>&1
+"$PKG" --target "x86_64-pc-windows-msvc" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$WINONLY" >/dev/null 2>&1
 "$FIN" --dir "$WINONLY" >/dev/null 2>&1
-expect_fail "windows-only set fails strict completeness" "$VER" --dir "$WINONLY"
-expect_pass "windows-only set passes relaxed mode" "$VER" --dir "$WINONLY" --allow-incomplete-target-set
+expect_fail "windows-only set fails strict completeness" "$VER" --dir "$WINONLY" --skip-version-smoke
+expect_pass "windows-only set passes relaxed mode" "$VER" --dir "$WINONLY" --allow-incomplete-target-set --skip-version-smoke
 
 # --- 13. Empty finalize ---------------------------------------------------------------
 EMPTY="$ROOT/empty"

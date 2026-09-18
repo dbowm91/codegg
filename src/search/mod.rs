@@ -3,7 +3,7 @@
 //! This module retains the original in-tree [`SearchProvider`]
 //! implementations that powered `websearch` before the eggsearch
 //! migration. New provider work should happen in the
-//! [eggsearch](https://github.com/anomalyco/eggsearch) project.
+//! [eggsearch](https://github.com/eggstack/eggsearch) project.
 //! Codegg's native `websearch` and `webfetch` tools are now thin
 //! wrappers around eggsearch when
 //! `[search].backend = "eggsearch"` (the default).
