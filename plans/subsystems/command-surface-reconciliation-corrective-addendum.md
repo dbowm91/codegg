@@ -1,6 +1,12 @@
 # Command Surface Reconciliation Corrective Addendum
 
-Status: active
+Status: closed
+
+M001 closed (`plans/closure/command-surface-reconciliation-corrective/001-status.md`;
+implementation `6e5203b6`); M002 closed
+(`plans/closure/command-surface-reconciliation-corrective/002-status.md`;
+implementation `da7fab03`). Both exit conditions in §6 hold; no further
+milestones are registered under this addendum.
 
 Repository baseline reviewed: 5af6766a04d6326ba1e7bb3695b2f0422399e9ee
 
@@ -110,7 +116,7 @@ coverage tests.
 
 ### M002 — CLI truthfulness and compatibility cleanup
 
-Status: ready; independent of M001
+Status: closed (`plans/closure/command-surface-reconciliation-corrective/002-status.md`; implementation `da7fab03`)
 
 Plan:
 plans/implementation/command-surface-reconciliation-corrective/002-cli-surface-cleanup.md

@@ -63,14 +63,14 @@ Canonical direction remains in:
 | Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | — |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | — |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | Historical 0.3.6-era workstream remains closed; the 0.3.9 compatibility trigger is owned by the new corrective addendum above. |
-| Command surface reconciliation corrective | active | `plans/subsystems/command-surface-reconciliation-corrective-addendum.md` | M001 closed; M002 ready (independent of M001) | M001 closure accepted at `plans/closure/command-surface-reconciliation-corrective/001-status.md`; M002 remains ready. |
+| Command surface reconciliation corrective | closed | `plans/subsystems/command-surface-reconciliation-corrective-addendum.md` | M001+M002 closed | M001 closure accepted at `plans/closure/command-surface-reconciliation-corrective/001-status.md`; M002 closure accepted at `plans/closure/command-surface-reconciliation-corrective/002-status.md`. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
 | Command surface reconciliation corrective | M001 TUI command action convergence | closed | `plans/implementation/command-surface-reconciliation-corrective/001-tui-command-action-convergence.md` | Closure accepted at `plans/closure/command-surface-reconciliation-corrective/001-status.md`; implementation `6e5203b6`. |
-| Command surface reconciliation corrective | M002 CLI surface cleanup | ready | `plans/implementation/command-surface-reconciliation-corrective/002-cli-surface-cleanup.md` | Independent of M001; parser/help/ownership cleanup. |
+| Command surface reconciliation corrective | M002 CLI surface cleanup | closed | `plans/implementation/command-surface-reconciliation-corrective/002-cli-surface-cleanup.md` | Closure accepted at `plans/closure/command-surface-reconciliation-corrective/002-status.md`; implementation `da7fab03`. |
 | Project Work Orders and Task View — UX fidelity corrective | C001 human Task UX and trigger surface | closed | `plans/implementation/project-work-orders-task-view-corrective/001-human-task-ux-and-trigger-surface.md` | Closure accepted at `plans/closure/project-work-orders-task-view-corrective/001-status.md`; implementation `1bd77c6d`. |
 | Project Work Orders and Task View | M003 project Task composer/view | closed | `plans/implementation/project-work-orders-task-view/003-project-task-composer-and-view.md` | Closure accepted at `plans/closure/project-work-orders-task-view/003-status.md`; implementation `79a00460`. |
 | Project Work Orders and Task View | M004 global Workspace dashboard | closed | `plans/implementation/project-work-orders-task-view/004-global-workspace-dashboard.md` | Closure accepted at `plans/closure/project-work-orders-task-view/004-status.md`; implementation `8c6e8190`. |
@@ -162,6 +162,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| Command surface reconciliation corrective | M002 CLI surface cleanup | closed | `plans/closure/command-surface-reconciliation-corrective/002-status.md` | `da7fab03` |
 | Command surface reconciliation corrective | M001 TUI command action convergence | closed | `plans/closure/command-surface-reconciliation-corrective/001-status.md` | `6e5203b6` |
 | Project Work Orders and Task View — UX fidelity corrective | C001 human Task UX and trigger surface | closed | `plans/closure/project-work-orders-task-view-corrective/001-status.md` | `1bd77c6d` |
 | Project Work Orders and Task View | M007 trajectory/recovery/security qualification | closed | `plans/closure/project-work-orders-task-view/007-status.md` | `0216e814` |

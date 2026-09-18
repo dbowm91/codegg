@@ -1,6 +1,6 @@
 # Command Surface Reconciliation M002 — CLI Surface Cleanup
 
-Status: ready
+Status: implemented
 
 Corrective roadmap:
 plans/subsystems/command-surface-reconciliation-corrective-addendum.md
