@@ -1,6 +1,7 @@
 # Self-Contained Installation Corrective Addendum
 
-Status: active
+Status: closed (M001+M002 closed; closure at
+plans/closure/self-contained-installation-corrective/002-status.md)
 
 Repository baseline reviewed: 5af6766a04d6326ba1e7bb3695b2f0422399e9ee
 
@@ -129,10 +130,14 @@ for the exact managed runfile bundle, including pinned eggsearch provenance.
 
 ### M002 — Managed runtime resolution and clean-host qualification
 
-Status: ready (M001 closed; Provider /connect Restoration M003 closed)
+Status: closed
 
 Plan:
 plans/implementation/self-contained-installation-corrective/002-runtime-resolution-and-clean-host-qualification.md
+
+Closure:
+plans/closure/self-contained-installation-corrective/002-status.md
+(implementation `cf7a06bb`)
 
 Make default search resolve the bundled sidecar, add installation diagnostics, retain
 advanced overrides, and qualify the install → `codegg` → `/connect` path on a
