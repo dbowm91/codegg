@@ -269,13 +269,12 @@ codegg models -p openai
 Environment-backed API keys are the simplest authentication path. Provider configuration can also reference the encrypted user credential store:
 
 ```bash
-export CODEGG_MASTER_KEY='...'
 printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai
 codegg auth status
 codegg auth logout openai
 ```
 
-`codegg auth status` does not print stored secrets. Stored keys require `CODEGG_MASTER_KEY` (or a supported compatibility encryption-key variable). Some typed authentication modes exist in the configuration schema but are not yet runtime-complete; API-key and stored-key flows are the documented production paths today.
+`codegg auth status` does not print stored secrets. On a fresh profile, the first protected credential write automatically creates and persists a CodeGG-managed master key. `CODEGG_MASTER_KEY` and the supported compatibility encryption-key variables remain optional higher-precedence overrides for deployments that manage key material externally. If existing ciphertext was created with an external key and that key is later unavailable, CodeGG fails closed rather than replacing it. Some typed authentication modes exist in the configuration schema but are not yet runtime-complete; API-key and stored-key flows are the documented production paths today.
 
 See [`architecture/provider.md`](architecture/provider.md) and [`architecture/auth.md`](architecture/auth.md).
 
@@ -419,12 +418,13 @@ codegg daemon status
 ```
 
 `doctor` accepts an optional positional subsystem (`all`, `search`,
-`mcp`, `lsp`, `deterministic-tools`, `providers`, `credentials`) and
-defaults to all. The older `doctor --subsystem <name>` spelling still
-parses as a deprecated compatibility alias. Only subsystems with real
-diagnostic implementations are advertised; installation/runfile
-diagnostics will arrive with the self-contained-installation work, not
-as empty help text. Run `codegg doctor --help` for the current choices. Troubleshooting notes are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+`mcp`, `lsp`, `deterministic-tools`, `providers`, `credentials`,
+`installation`) and defaults to all. The older
+`doctor --subsystem <name>` spelling still parses as a deprecated
+compatibility alias. `doctor installation` reports the installation-owned
+runfiles and helper/sidecar state; only subsystems with real diagnostic
+implementations are advertised. Run `codegg doctor --help` for the current
+choices. Troubleshooting notes are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Development
 
