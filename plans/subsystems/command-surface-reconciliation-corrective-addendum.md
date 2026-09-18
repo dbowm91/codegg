@@ -99,7 +99,7 @@ Concrete defects/drift:
 
 ### M001 — Executable TUI command authority and reachability
 
-Status: ready
+Status: closed (`plans/closure/command-surface-reconciliation-corrective/001-status.md`; implementation `6e5203b6`)
 
 Plan:
 plans/implementation/command-surface-reconciliation-corrective/001-tui-command-action-convergence.md
