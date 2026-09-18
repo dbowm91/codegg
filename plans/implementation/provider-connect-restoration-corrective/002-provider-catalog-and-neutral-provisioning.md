@@ -1,6 +1,7 @@
 # Provider /connect Restoration M002 — Provider Catalog and Neutral Provisioning
 
-Status: blocked on M001 closure
+Status: ready (unblocked by M001 closure at
+plans/closure/provider-connect-restoration-corrective/001-status.md)
 
 Corrective roadmap:
 plans/subsystems/provider-connect-restoration-corrective-addendum.md

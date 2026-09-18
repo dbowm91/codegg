@@ -1,6 +1,9 @@
 # Provider /connect Restoration M001 — First-Run Credential Key Bootstrap
 
-Status: active
+Status: implemented
+
+Closure: plans/closure/provider-connect-restoration-corrective/001-status.md
+Implementation: 568cae33
 
 Corrective roadmap:
 plans/subsystems/provider-connect-restoration-corrective-addendum.md

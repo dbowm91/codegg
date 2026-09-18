@@ -2,6 +2,10 @@
 
 Status: active
 
+Closure so far: M001 closed
+(`plans/closure/provider-connect-restoration-corrective/001-status.md`;
+implementation `568cae33`).
+
 Repository baseline reviewed: 5af6766a04d6326ba1e7bb3695b2f0422399e9ee
 
 Related closed work:
@@ -141,7 +145,9 @@ not own the generic command, request or provisioner names.
 
 ### M001 — First-run credential encryption bootstrap
 
-Status: ready
+Status: closed (closure at
+`plans/closure/provider-connect-restoration-corrective/001-status.md`;
+implementation `568cae33`)
 
 Plan:
 plans/implementation/provider-connect-restoration-corrective/001-first-run-credential-key-bootstrap.md
@@ -152,7 +158,7 @@ compatibility and fail-closed handling of pre-existing encrypted material.
 
 ### M002 — Provider catalog and provider-neutral provisioning
 
-Status: blocked on M001 closure
+Status: ready (unblocked by M001 closure)
 
 Plan:
 plans/implementation/provider-connect-restoration-corrective/002-provider-catalog-and-neutral-provisioning.md
