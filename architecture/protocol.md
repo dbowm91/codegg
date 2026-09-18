@@ -189,6 +189,12 @@ also aliased as `CreateProviderConnectionResult`),
 `ConnectionRotateSecretStaged`, `ConnectionRefreshStatus`,
 `ConnectionRefreshResult`, `ConnectionPurge`
 
+`/connect` drives provider selection from the secret-free `ProviderSetupList`
+projection and submits the secret-bearing `ProviderConnectionCreate` request
+over the local boundary only; remote transport denies it via the
+`is_secret_bearing` predicate. Eggpool is one catalog entry (a proxy preset),
+not a separate protocol.
+
 **Session Responses**: `Ack`, `Json`, `Session`, `SessionMessages`,
 `SessionMessageCounts`, `SessionList`, `SnapshotSession`, `SnapshotDaemon`,
 `SchedulerSnapshot`, `ModelsSnapshot`, `Events`, `ResyncRequired`,

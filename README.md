@@ -246,6 +246,19 @@ codegg auth logout openai
 
 See [`architecture/provider.md`](architecture/provider.md) and [`architecture/auth.md`](architecture/auth.md).
 
+### First-run provider onboarding (`/connect`)
+
+A clean install needs no preconfigured encryption environment variable.
+Launch `codegg`, run `/connect`, choose a provider, and paste the required
+credential (plus an endpoint only when that provider needs one). The first
+protected write bootstraps the managed credential key automatically.
+
+Eggpool is one optional upstream choice in that list — a local/shared
+OpenAI-compatible proxy with its own host, default port `11300`, and TLS
+policy — not a requirement for any other provider. `/connect` adds and
+configures connections; `/connections` inspects, manages, and selects the
+existing durable connections for the session.
+
 ## TUI and sessions
 
 Launching `codegg` without a subcommand opens the TUI. Sessions are persistent by default and can be resumed, inspected, exported, and imported from the CLI:

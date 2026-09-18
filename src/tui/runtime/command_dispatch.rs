@@ -902,14 +902,77 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     app.close_dialog();
                 }
                 Err(error) => {
-                    app.messages_state
-                        .toasts
-                        .error(&format!("Eggpool connection failed: {error}"));
-                    if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
-                        dialog.operation_id = None;
-                        dialog.clear_secret();
-                        dialog.set_error(error);
+                    apply_connect_error(app, &operation_id, &error, "Eggpool");
+                }
+            }
+        }
+        TuiCommand::ConnectSetupLoaded { providers, error } => {
+            // The dialog stays open in loading state until this completion.
+            // A closed dialog means stale completion: drop it.
+            if app.dialog_state.connect_dialog.is_none() {
+                return;
+            }
+            if let Some(error) = error {
+                if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_setup_error(error.clone());
+                }
+                app.focus_manager
+                    .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                        crate::tui::components::component::DialogType::Connect,
+                        |live| {
+                            live.set_setup_error(error.clone());
+                        },
+                    );
+                return;
+            }
+            if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+                dialog.set_setup_entries(&providers);
+            }
+            app.focus_manager
+                .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                    crate::tui::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_setup_entries(&providers);
+                    },
+                );
+        }
+        TuiCommand::ProviderConnectionFinished {
+            operation_id,
+            provider_id,
+            display_name,
+            result,
+        } => {
+            // Stale-completion guard: only the in-flight operation may mutate
+            // the dialog. Closing the dialog cancels the task and drops late
+            // completions via the operation-ID check.
+            let is_current = app
+                .dialog_state
+                .connect_dialog
+                .as_ref()
+                .and_then(|dialog| dialog.operation_id.as_deref())
+                == Some(operation_id.as_str());
+            if !is_current {
+                return;
+            }
+            match result {
+                Ok(result) => {
+                    app.messages_state.toasts.success(&format!(
+                        "{display_name} connected on {} ({} models)",
+                        result.connection.endpoint,
+                        result.models.len()
+                    ));
+                    let _ = provider_id;
+                    app.dialog_state.connect_dialog = None;
+                    app.close_dialog();
+                    // Refresh the existing connections/model projections
+                    // rather than maintaining a second TUI-only provider
+                    // list. No-ops unless the management surface is open.
+                    if let Some(tx) = app.tui_cmd_tx.clone() {
+                        let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
                     }
+                }
+                Err(error) => {
+                    apply_connect_error(app, &operation_id, &error, &display_name);
                 }
             }
         }
@@ -2272,4 +2335,28 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             }
         }
     }
+}
+
+/// Shared secret-safe error path for `/connect` provisioning completions.
+/// Clears the in-flight operation, forgets any typed secret on both the
+/// stored and live dialog copies, and surfaces a bounded daemon error.
+fn apply_connect_error(app: &mut App, operation_id: &str, error: &str, display_name: &str) {
+    let _ = operation_id;
+    app.messages_state
+        .toasts
+        .error(&format!("{display_name} connection failed: {error}"));
+    if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
+        dialog.operation_id = None;
+        dialog.clear_secret();
+        dialog.set_error(error.to_string());
+    }
+    app.focus_manager
+        .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+            crate::tui::components::component::DialogType::Connect,
+            |live| {
+                live.operation_id = None;
+                live.clear_secret();
+                live.set_error(error.to_string());
+            },
+        );
 }

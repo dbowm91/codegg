@@ -220,6 +220,20 @@ pub enum TuiCommand {
         operation_id: String,
         result: Result<crate::protocol::provider::CreateEggpoolConnectionResult, String>,
     },
+    /// Completion for the daemon-owned setup catalog backing `/connect`.
+    /// Secret-free presentation metadata only; never carries credentials.
+    ConnectSetupLoaded {
+        providers: Vec<crate::protocol::provider::ProviderSetupEntryDto>,
+        error: Option<String>,
+    },
+    /// Completion for daemon-owned provider-neutral provisioning. The result
+    /// is secret-free; the credential is never carried in a TUI command.
+    ProviderConnectionFinished {
+        operation_id: String,
+        provider_id: String,
+        display_name: String,
+        result: Result<crate::protocol::provider::CreateProviderConnectionResult, String>,
+    },
     ConnectionRotationFinished {
         operation_id: String,
         result: Result<crate::protocol::provider::ConnectionRotateStatusDto, String>,

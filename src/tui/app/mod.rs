@@ -6707,9 +6707,17 @@ impl App {
                     }
                 }
                 Dialog::Permission => {
-                    if idx < 4 {
-                        if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                    if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                        if idx < 4 {
                             pd.selected_option = idx;
+                        }
+                    }
+                }
+                Dialog::Connect => {
+                    if let Some(cd) = self.dialog_state.connect_dialog.as_mut() {
+                        if idx < cd.providers.len() {
+                            cd.selected = idx;
+                            cd.list_state.select(Some(idx));
                         }
                     }
                 }
@@ -6780,6 +6788,17 @@ impl App {
                     }
                 }
             }
+            Dialog::Connect => {
+                if let Some(cd) = self.dialog_state.connect_dialog.as_mut() {
+                    // Legacy fallback uses raw rows; the component hit-test
+                    // already accounts for borders/scroll, so this path only
+                    // needs a bounded index guard.
+                    if idx < cd.providers.len() {
+                        cd.selected = idx;
+                        cd.list_state.select(Some(idx));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -6789,6 +6808,7 @@ impl App {
             Dialog::Model
             | Dialog::Agent
             | Dialog::Session
+            | Dialog::Connect
             | Dialog::Theme
             | Dialog::Question
             | Dialog::Permission => Some(InputAction::Send),
@@ -7104,6 +7124,17 @@ impl App {
                         dialog.clear_secret();
                         dialog.operation_id.take()
                     });
+                // The live FocusManager copy may hold typed secrets that the
+                // stored clone never saw; forget both before dismissal so
+                // cancellation leaves no credential behind.
+                self.focus_manager
+                    .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                        crate::tui::components::component::DialogType::Connect,
+                        |live| {
+                            live.clear_secret();
+                            live.operation_id.take();
+                        },
+                    );
                 if let (Some(client), Some(operation_id)) = (self.core_client.clone(), operation_id)
                 {
                     tokio::spawn(async move {
@@ -8472,21 +8503,68 @@ impl App {
     }
 
     fn open_connect_dialog(&mut self) {
-        use crate::tui::components::dialogs::connect::ProviderInfo;
-
-        let providers = vec![ProviderInfo::api_key(
-            "eggpool",
-            "Eggpool",
-            "Connect to an Eggpool OpenAI-compatible model gateway",
-            None,
-        )];
-
-        let connect_dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
-            providers,
+        // Provider-neutral `/connect`: the dialog opens in a short loading
+        // state and populates from the daemon-owned setup catalog. The TUI
+        // never hard-codes an Eggpool-only provider list and never falls
+        // back to one on load failure.
+        let connect_dialog = crate::tui::components::dialogs::connect::ConnectDialog::new_loading(
             Arc::clone(&self.ui_state.theme),
         );
         self.dialog_state.connect_dialog = Some(connect_dialog);
         self.open_dialog(Dialog::Connect);
+
+        let Some(client) = self.core_client.clone() else {
+            let message =
+                "Daemon connection is unavailable — check daemon status with /doctor".to_string();
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_setup_error(message);
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                    crate::tui::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_setup_error(
+                            "Daemon connection is unavailable — check daemon status with /doctor"
+                                .to_string(),
+                        );
+                    },
+                );
+            return;
+        };
+        crate::tui::async_cmd::spawn_registered_tui_task(
+            self.tui_cmd_tx.clone(),
+            &mut self.task_registry,
+            crate::tui::task_lifecycle::TuiTaskKind::Command,
+            "connect_setup_list",
+            async move {
+                let request = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::ProviderSetupList,
+                );
+                match client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::ProviderSetupList { providers }) => {
+                        Some(crate::tui::app::TuiCommand::ConnectSetupLoaded {
+                            providers,
+                            error: None,
+                        })
+                    }
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        Some(crate::tui::app::TuiCommand::ConnectSetupLoaded {
+                            providers: Vec::new(),
+                            error: Some(format!("Provider catalog failed ({code}): {message}")),
+                        })
+                    }
+                    Ok(_) => Some(crate::tui::app::TuiCommand::ConnectSetupLoaded {
+                        providers: Vec::new(),
+                        error: Some("Unexpected provider catalog response".to_string()),
+                    }),
+                    Err(error) => Some(crate::tui::app::TuiCommand::ConnectSetupLoaded {
+                        providers: Vec::new(),
+                        error: Some(format!("Provider catalog request failed: {error}")),
+                    }),
+                }
+            },
+        );
     }
 
     fn open_connection_rotation_dialog(&mut self, connection_id: String, expected_revision: u64) {
@@ -8606,63 +8684,105 @@ impl App {
     }
 
     fn handle_connect_send(&mut self) {
-        use crate::tui::components::dialogs::connect::ConnectStep;
+        use crate::tui::components::dialogs::connect::{ConnectFormKind, ConnectStep};
         use crate::tui::task_lifecycle::TuiTaskKind;
         use codegg_protocol::provider::{
-            ConnectionRotateChange, CreateEggpoolConnectionRequest, EggpoolConnectionScope,
+            ConnectionRotateChange, CreateProviderConnectionRequest, ProviderConnectionScope,
             SecretInput,
         };
 
-        let (host, port, display_name, tls_policy, api_key, operation_id, rotation_target) = {
-            let Some(dialog) = self.dialog_state.connect_dialog.as_mut() else {
-                return;
-            };
-            if dialog.step != ConnectStep::Review && dialog.rotation_target.is_none() {
-                return;
-            }
-            let port = if dialog.rotation_target.is_some() {
-                0
-            } else {
-                let Ok(port) = dialog.port.parse::<u16>() else {
-                    dialog.set_error("Port must be between 1 and 65535".to_string());
-                    return;
-                };
-                port
-            };
-            let Ok(api_key) = SecretInput::new(dialog.get_api_key()) else {
-                dialog.set_error("API key is invalid".to_string());
-                return;
-            };
-            let operation_id = if dialog.rotation_target.is_some() {
-                format!("rot-{}", uuid::Uuid::new_v4())
-            } else {
-                format!("prov-{}", uuid::Uuid::new_v4())
-            };
-            dialog.operation_id = Some(operation_id.clone());
-            let host = dialog.host.clone();
-            let display_name =
-                (!dialog.display_name.trim().is_empty()).then(|| dialog.display_name.clone());
-            let tls_policy = dialog.tls_policy;
-            let rotation_target = dialog.rotation_target.clone();
-            dialog.clear_secret();
+        // Read the live FocusManager-owned dialog when present; the
+        // DialogState clone is stale for user-typed input. Fall back to the
+        // stored clone only when no live component is mounted (tests).
+        let live_snapshot = self
+            .focus_manager
+            .with_dialog::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+            crate::tui::components::component::DialogType::Connect,
+            |live| {
+                (
+                    live.step.clone(),
+                    live.rotation_target.clone(),
+                    live.host.clone(),
+                    live.port.clone(),
+                    live.endpoint.clone(),
+                    live.credential_kind,
+                    live.tls_policy,
+                    live.display_name.clone(),
+                    live.get_api_key(),
+                    live.selected,
+                    live.providers.get(live.selected).cloned(),
+                )
+            },
+        );
+        let stored_snapshot = self.dialog_state.connect_dialog.as_ref().map(|dialog| {
             (
-                host,
-                port,
-                display_name,
-                tls_policy,
-                api_key,
-                operation_id,
-                rotation_target,
+                dialog.step.clone(),
+                dialog.rotation_target.clone(),
+                dialog.host.clone(),
+                dialog.port.clone(),
+                dialog.endpoint.clone(),
+                dialog.credential_kind,
+                dialog.tls_policy,
+                dialog.display_name.clone(),
+                dialog.get_api_key(),
+                dialog.selected,
+                dialog.providers.get(dialog.selected).cloned(),
             )
-        };
-
-        let Some(client) = self.core_client.clone() else {
-            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
-                dialog.set_error("Daemon connection is unavailable".to_string());
-            }
+        });
+        let Some((
+            step,
+            rotation_target,
+            host,
+            port_text,
+            endpoint_text,
+            credential_kind,
+            tls_policy,
+            display_name_text,
+            api_key_text,
+            _selected,
+            selected_entry,
+        )) = live_snapshot.or(stored_snapshot)
+        else {
             return;
         };
-        if let Some((connection_id, expected_revision)) = rotation_target {
+        if step != ConnectStep::Review && rotation_target.is_none() {
+            return;
+        }
+        // Rotation keeps the existing masked-credential editor path.
+        if let Some((connection_id, expected_revision)) = rotation_target.clone() {
+            let Ok(api_key) = SecretInput::new(api_key_text.clone()) else {
+                let message = "Credential is invalid".to_string();
+                if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_error(message);
+                }
+                self.focus_manager
+                    .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                        crate::tui::components::component::DialogType::Connect,
+                        |live| {
+                            live.set_error("Credential is invalid".to_string());
+                        },
+                    );
+                return;
+            };
+            let Some(client) = self.core_client.clone() else {
+                if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_error("Daemon connection is unavailable".to_string());
+                }
+                return;
+            };
+            let operation_id = format!("rot-{}", uuid::Uuid::new_v4());
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.operation_id = Some(operation_id.clone());
+                dialog.clear_secret();
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                    crate::tui::components::component::DialogType::Connect,
+                    |live| {
+                        live.operation_id = Some(operation_id.clone());
+                        live.clear_secret();
+                    },
+                );
             let stage_request = crate::core::new_request(
                 uuid::Uuid::new_v4().to_string(),
                 crate::protocol::core::CoreRequest::ConnectionRotateSecretStage {
@@ -8723,16 +8843,148 @@ impl App {
                 .info("Rotating Eggpool credential (probe in progress)…");
             return;
         }
+
+        let Some(entry) = selected_entry else {
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error("Selected provider is invalid".to_string());
+            }
+            return;
+        };
+        if !entry.is_selectable() {
+            let message = format!("{} is not yet supported in /connect", entry.name);
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error(message);
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                    crate::tui::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_error(format!("{} is not yet supported in /connect", entry.name));
+                    },
+                );
+            return;
+        }
+        // Build the provider-neutral create request from the typed form.
+        // Fixed providers send no endpoint material; proxy presets send
+        // host/port/TLS; required/optional forms send the endpoint input.
+        let form_kind = entry.form_kind();
+        let (endpoint, port, tls_policy_opt) = match form_kind {
+            ConnectFormKind::EggpoolProxy => {
+                let trimmed_host = host.trim();
+                if trimmed_host.is_empty() {
+                    let message = "Host cannot be empty".to_string();
+                    if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                        dialog.set_error(message);
+                    }
+                    return;
+                }
+                let Some(port) = port_text
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port > 0)
+                else {
+                    let message = "Port must be between 1 and 65535".to_string();
+                    if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                        dialog.set_error(message);
+                    }
+                    return;
+                };
+                (
+                    Some(trimmed_host.to_string()),
+                    Some(port),
+                    Some(codegg_protocol::provider::ProviderTlsPolicy::from(
+                        tls_policy,
+                    )),
+                )
+            }
+            ConnectFormKind::RequiredEndpoint => {
+                let trimmed = endpoint_text.trim();
+                if trimmed.is_empty() {
+                    let message = "Endpoint is required".to_string();
+                    if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                        dialog.set_error(message);
+                    }
+                    return;
+                }
+                (Some(trimmed.to_string()), None, None)
+            }
+            ConnectFormKind::OptionalOverride => {
+                let trimmed = endpoint_text.trim();
+                let endpoint = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                (endpoint, None, None)
+            }
+            ConnectFormKind::Fixed => (None, None, None),
+        };
+        // The admitted credential kind is pinned by the catalog entry; a
+        // stale toggle cannot smuggle bearer into an ApiKeyOnly provider.
+        if entry.needs_credential_choice() {
+            let kind_label = match credential_kind {
+                codegg_protocol::provider::ProviderCredentialKind::ApiKey => "api_key",
+                codegg_protocol::provider::ProviderCredentialKind::Bearer => "bearer",
+            };
+            if !entry.credential_kinds.iter().any(|k| k == kind_label) {
+                let message = "Credential kind is not supported by this provider".to_string();
+                if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                    dialog.set_error(message);
+                }
+                return;
+            }
+        }
+        let Ok(credential) = SecretInput::new(api_key_text.clone()) else {
+            let label = match credential_kind {
+                codegg_protocol::provider::ProviderCredentialKind::Bearer => "Bearer token",
+                codegg_protocol::provider::ProviderCredentialKind::ApiKey => "API key",
+            };
+            let message = format!("{label} is invalid");
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error(message.clone());
+            }
+            self.focus_manager
+                .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                    crate::tui::components::component::DialogType::Connect,
+                    |live| {
+                        live.set_error(message.clone());
+                    },
+                );
+            return;
+        };
+        let operation_id = format!("prov-{}", uuid::Uuid::new_v4());
+        if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+            dialog.operation_id = Some(operation_id.clone());
+            dialog.clear_secret();
+        }
+        self.focus_manager
+            .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                crate::tui::components::component::DialogType::Connect,
+                |live| {
+                    live.operation_id = Some(operation_id.clone());
+                    live.clear_secret();
+                },
+            );
+        let display_name =
+            (!display_name_text.trim().is_empty()).then(|| display_name_text.trim().to_string());
+        let provider_id = entry.id.clone();
+        let provider_display = entry.name.clone();
+
+        let Some(client) = self.core_client.clone() else {
+            if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
+                dialog.set_error("Daemon connection is unavailable".to_string());
+            }
+            return;
+        };
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
-            crate::protocol::core::CoreRequest::EggpoolConnectionCreate {
-                request: CreateEggpoolConnectionRequest {
-                    host,
-                    port: Some(port),
-                    tls_policy,
-                    api_key,
+            crate::protocol::core::CoreRequest::ProviderConnectionCreate {
+                request: CreateProviderConnectionRequest {
+                    provider_id: provider_id.clone(),
+                    endpoint,
+                    port,
+                    tls_policy: tls_policy_opt,
+                    credential,
+                    credential_kind,
                     display_name,
-                    scope: EggpoolConnectionScope::Personal {
+                    scope: ProviderConnectionScope::Personal {
                         owner_id: "local-user".to_string(),
                     },
                     operation_id: Some(operation_id.clone()),
@@ -8743,10 +8995,10 @@ impl App {
             self.tui_cmd_tx.clone(),
             &mut self.task_registry,
             TuiTaskKind::Command,
-            "eggpool_connect",
+            "provider_connect",
             async move {
                 let result = match client.request(request).await {
-                    Ok(crate::protocol::core::CoreResponse::EggpoolConnectionCreated {
+                    Ok(crate::protocol::core::CoreResponse::ProviderConnectionCreated {
                         result,
                     }) => Ok(result),
                     Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
@@ -8755,15 +9007,20 @@ impl App {
                     Ok(_) => Err("unexpected daemon response".to_string()),
                     Err(error) => Err(error.to_string()),
                 };
-                Some(TuiCommand::EggpoolConnectionFinished {
+                Some(TuiCommand::ProviderConnectionFinished {
                     operation_id,
+                    provider_id,
+                    display_name: provider_display,
                     result,
                 })
             },
         );
-        self.messages_state
-            .toasts
-            .info("Connecting to Eggpool (probe in progress)…");
+        // `provider_display` moved into the task above; toast from the entry
+        // name cloned earlier.
+        self.messages_state.toasts.info(&format!(
+            "Connecting to {} (probe in progress)…",
+            entry.name
+        ));
     }
 
     fn on_char(&mut self, c: char) {

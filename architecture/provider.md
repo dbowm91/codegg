@@ -153,6 +153,24 @@ No network I/O happens inside the final transaction.
 Operator flow: connect -> select -> rotate -> refresh -> disable -> delete
 (tombstone) -> restore -> purge.
 
+### Provider-Neutral `/connect` TUI (M003)
+
+`/connect` is the provider onboarding surface. It opens in a short loading
+state, fetches the secret-free setup catalog through
+`CoreRequest::ProviderSetupList`, and renders one selectable row per catalog
+entry. Eggpool appears as one ordinary upstream choice (a proxy preset with
+its host/port/TLS form), never as the command's hard-coded meaning.
+
+The dialog branches on the catalog endpoint policy with a small typed form
+enum — fixed secret-only, optional endpoint override, required endpoint, and
+the Eggpool proxy preset — plus an explicit API-key/bearer choice exactly
+when the catalog admits both. Non-connectable entries render disabled with a
+concise reason instead of a second TUI-maintained allowlist. Submit sends the
+generic `CoreRequest::ProviderConnectionCreate` request; on success the
+existing connections/model projections refresh. `/connections` remains the
+management surface for durable connections, and model selection stays with
+the provider-connection selection subsystem.
+
 ## Key Types & APIs
 
 ### Provider Trait (`provider_core.rs:51`)

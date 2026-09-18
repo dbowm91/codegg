@@ -1972,6 +1972,7 @@ fn test_connect_dialog_handle_paste() {
         auth_modes: vec![codegg::tui::components::dialogs::connect::ProviderAuthMode::ApiKey],
         env_var_name: None,
         base_url_example: None,
+        ..Default::default()
     }];
     let mut dialog = ConnectDialog::new(providers, theme);
 
@@ -1999,6 +2000,7 @@ fn test_connect_dialog_cycles_tls_policy_without_exposing_secret() {
         auth_modes: vec![codegg::tui::components::dialogs::connect::ProviderAuthMode::ApiKey],
         env_var_name: None,
         base_url_example: None,
+        ..Default::default()
     }];
     let mut dialog = ConnectDialog::new(providers, theme);
     dialog.step = ConnectStep::SelectTls;

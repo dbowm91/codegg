@@ -253,8 +253,8 @@ Representative built-ins:
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/connect` | | Connect provider |
-| `/connections` | | Manage connections |
+| `/connect` | | Add/configure a provider connection (catalog selection + credential form; Eggpool is one optional upstream) |
+| `/connections` | | Inspect/manage/select existing durable connections |
 | `/exit` | `quit`, `q` | Exit the app |
 | `/status` | | View status |
 | `/policy` | | Show effective approval mode and sandbox profile |

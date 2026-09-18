@@ -469,6 +469,17 @@ variant are rejected with `secret_operation_remote_denied`. Rotation
 allocates a new credential account reference and removes the previous
 exact binding only after commit.
 
+## Provider-Neutral `/connect` Secret Handling
+
+`/connect` collects credentials through the same masked `SecretInput`
+path: masked rendering with paste support, no insertion into prompt
+history, command text, toasts, generic TUI snapshots, or debug output,
+and buffer clearing on submit, cancellation, error, and dialog close.
+Only the trusted local core request carries the plaintext secret, and
+completion events/results are secret-free. A clean local profile needs
+no preconfigured encryption environment variable: the first protected
+write self-initializes the managed master key (M001).
+
 ## Intentionally Not Implemented
 
 - **SuperGrok, Claude, ChatGPT, Copilot, other consumer-session /

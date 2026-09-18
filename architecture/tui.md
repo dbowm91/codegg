@@ -628,6 +628,19 @@ disabled external-trigger row. Tab/Shift+Tab move sheet focus (consumed
 by the modal, never the agent selector); `j`/`k` stay unbound. Enter on
 Confirm emits `TuiMsg::TaskScheduleConfirm` for App-side validation.
 
+### `/connect` vs `/connections`
+
+`/connect` (`components/dialogs/connect.rs`) adds and configures provider
+connections: catalog loading state, provider-list selection with keyboard
+(arrows/`j`/`k`/`Enter`/`Esc`) and mouse hit-testing, then the typed form
+for the chosen entry (secret-only, optional endpoint override, required
+endpoint, or the Eggpool host/port/TLS preset, plus an API-key/bearer
+choice when the catalog admits both). Completion is secret-free with
+operation-ID stale protection and refreshes the existing
+connections/model projections. `/connections`
+(`components/dialogs/connection_selection.rs`) only inspects, manages,
+and selects already-durable connections; it never collects secrets.
+
 `TaskView` is the project Task view
 (`components/dialogs/task_view.rs`): renders the `TaskViewSnapshot`
 synced from `DialogState.task_view` (RUNNING / FUTURE-WAITING /
@@ -845,7 +858,9 @@ tui/
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette
 │   │   ├── confirm.rs      # ConfirmDialog
-│   │   ├── connect.rs      # ConnectDialog (Eggpool endpoint/API key)
+│   │   ├── connect.rs      # ConnectDialog (provider-neutral /connect:
+│   │   │                     # setup-catalog selection + typed per-provider
+│   │   │                     # credential forms; Eggpool is one proxy preset)
 │   │   ├── connection_selection.rs # ConnectionSelectionDialog
 │   │   ├── diff.rs         # DiffDialog
 │   │   ├── goto.rs         # GotoDialog
