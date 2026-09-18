@@ -1,6 +1,6 @@
 # Command Surface Reconciliation M001 — TUI Command Action Convergence
 
-Status: ready
+Status: active
 
 Corrective roadmap:
 plans/subsystems/command-surface-reconciliation-corrective-addendum.md

@@ -2672,37 +2672,6 @@ impl App {
                                             ));
                                         }
                                     }
-                                    "/shell-ask" => {
-                                        self.ui_state.command_mode = false;
-                                        let query = self.dialog_state.command_palette.query.clone();
-                                        let args_str =
-                                            query.strip_prefix("/shell-ask").unwrap_or("").trim();
-                                        let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
-                                        let id_str = parts.first().copied().unwrap_or("");
-                                        let question =
-                                            parts.get(1).copied().unwrap_or("").to_string();
-                                        if question.is_empty() {
-                                            self.messages_state
-                                                .toasts
-                                                .warning("Usage: /shell-ask <id|last> <question>");
-                                        } else {
-                                            match self.resolve_shell_id(id_str) {
-                                                Some(id) => {
-                                                    if let Some(ref tx) = self.tui_cmd_tx {
-                                                        let _ = send_tui(
-                                                            tx,
-                                                            TuiCommand::ShellAsk { id, question },
-                                                        );
-                                                    }
-                                                }
-                                                None => {
-                                                    self.messages_state.toasts.warning(
-                                                        "Usage: /shell-ask <id|last> <question>",
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
                                     _ => {}
                                 }
                             }
@@ -3171,7 +3140,8 @@ impl App {
         // Presence M003: central read-only enforcement. While observing,
         // every slash command except the observer lifecycle + narrow
         // read-only allowlist is rejected here (covers dialog, process,
-        // template, and match arms below). The guard shows the toast.
+        // template, plugin, and built-in actions below). The guard shows
+        // the toast.
         if self.observer.is_observing() {
             let effective = raw_input.unwrap_or(cmd.name.as_str());
             if crate::tui::commands::observe::check_observer_block(self, effective) {
@@ -3181,106 +3151,131 @@ impl App {
                 return;
             }
         }
-        if let Some(dialog) = &cmd.dialog {
-            self.ui_state.command_mode = false;
-            self.open_dialog(dialog.clone());
-            return;
-        }
-        if let Some(ref spec) = cmd.process {
-            if self.prompt_state.pending_send {
-                self.messages_state
-                    .toasts
-                    .warning("Still waiting for previous prompt to finish");
-                return;
+        // Typed dispatch: the registry resolved the name/alias to a
+        // `CommandAction`. Dialog, process, template, and plugin actions
+        // execute without entering the built-in action switch. Built-in
+        // operations match `BuiltinSlashAction` exhaustively below; no
+        // branch compares a raw command name.
+        match cmd.action.clone() {
+            crate::tui::command::CommandAction::Dialog(dialog) => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(dialog);
             }
-            let args = raw_input
-                .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                .unwrap_or_default()
-                .to_string();
-            let arg_list: Vec<String> = if args.is_empty() {
-                Vec::new()
-            } else {
-                args.split_whitespace().map(String::from).collect()
-            };
-            if let Some(ref tx) = self.tui_cmd_tx {
-                let context = match self.project_execution_context() {
-                    Ok(context) => context,
-                    Err(error) => {
-                        self.messages_state.toasts.error(&error);
-                        return;
-                    }
+            crate::tui::command::CommandAction::Process => {
+                if self.prompt_state.pending_send {
+                    self.messages_state
+                        .toasts
+                        .warning("Still waiting for previous prompt to finish");
+                    return;
+                }
+                let args = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default()
+                    .to_string();
+                let arg_list: Vec<String> = if args.is_empty() {
+                    Vec::new()
+                } else {
+                    args.split_whitespace().map(String::from).collect()
                 };
-                let session_id = context.session_id.clone();
-                let model = Some(self.agent_state.current_model.clone());
-                let _ = send_tui(
-                    tx,
-                    TuiCommand::PluginCommandRun {
-                        spec: spec.clone(),
-                        args: arg_list,
-                        session_id,
-                        model,
-                        workspace_root: context.workspace_root,
-                    },
-                );
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let context = match self.project_execution_context() {
+                        Ok(context) => context,
+                        Err(error) => {
+                            self.messages_state.toasts.error(&error);
+                            return;
+                        }
+                    };
+                    let session_id = context.session_id.clone();
+                    let model = Some(self.agent_state.current_model.clone());
+                    let spec = cmd.process.clone().expect("process action needs spec");
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::PluginCommandRun {
+                            spec,
+                            args: arg_list,
+                            session_id,
+                            model,
+                            workspace_root: context.workspace_root,
+                        },
+                    );
+                }
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
             }
-            self.ui_state.command_mode = false;
-            self.prompt_state.prompt.clear();
-            self.prompt_state.show_completions = false;
-            return;
-        }
-        if let Some(template) = &cmd.template {
-            if self.prompt_state.pending_send {
+            crate::tui::command::CommandAction::Template => {
+                if self.prompt_state.pending_send {
+                    self.messages_state
+                        .toasts
+                        .warning("Still waiting for previous prompt to finish");
+                    return;
+                }
+                let template = cmd
+                    .template
+                    .clone()
+                    .expect("template action needs template");
+                let args = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default()
+                    .to_string();
+                let mut variables = std::collections::HashMap::new();
+                variables.insert("args".to_string(), args);
+                let rendered = crate::command::execute_command_template(&template, &variables);
                 self.messages_state
-                    .toasts
-                    .warning("Still waiting for previous prompt to finish");
-                return;
+                    .messages
+                    .add_user_message(rendered.clone(), Some(self.agent_state.plan_mode));
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                self.reset_live_token_estimate();
+                self.session_state.session_status = SessionStatus::Working;
+                if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+                    self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
+                    self.prompt_state.pending_send = false;
+                } else {
+                    self.prompt_state.pending_send = true;
+                }
             }
-            let args = raw_input
-                .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
-                .unwrap_or_default()
-                .to_string();
-            let mut variables = std::collections::HashMap::new();
-            variables.insert("args".to_string(), args);
-            let rendered = crate::command::execute_command_template(template, &variables);
-            self.messages_state
-                .messages
-                .add_user_message(rendered.clone(), Some(self.agent_state.plan_mode));
-            self.prompt_state.prompt.clear();
-            self.prompt_state.show_completions = false;
-            self.reset_live_token_estimate();
-            self.session_state.session_status = SessionStatus::Working;
-            if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
-                self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
-                self.prompt_state.pending_send = false;
-            } else {
-                self.prompt_state.pending_send = true;
+            crate::tui::command::CommandAction::Plugin => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                self.messages_state.toasts.info(&format!(
+                    "{} is a plugin command; use the plugin panel to run it",
+                    cmd.name
+                ));
             }
-            return;
+            crate::tui::command::CommandAction::Builtin(builtin) => {
+                self.dispatch_builtin_command(builtin, raw_input);
+            }
         }
-        match cmd.name.as_str() {
-            "/reload" => {
+    }
+
+    fn dispatch_builtin_command(
+        &mut self,
+        action: crate::tui::command::BuiltinSlashAction,
+        raw_input: Option<&str>,
+    ) {
+        use crate::tui::command::BuiltinSlashAction as B;
+        match action {
+            B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
             }
-            "/exit" | "/quit" | "/q" => {
+            B::Exit => {
                 self.ui_state.running = false;
                 let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
             }
-            "/help" => {
+            B::Help => {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Help);
             }
-            "/tree" => {
+            B::Tree => {
                 self.ui_state.command_mode = false;
                 self.open_tree_dialog();
             }
-            "/model" => {
-                self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Model);
-            }
-            "/agent" => {
+            B::AgentSelect => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let name = query
                     .strip_prefix("/agent")
@@ -3309,7 +3304,7 @@ impl App {
                     }
                 }
             }
-            "/agents" => {
+            B::Agents => {
                 let workspace_root = match self.project_execution_context() {
                     Ok(context) => context.workspace_root,
                     Err(error) => {
@@ -3462,23 +3457,23 @@ impl App {
                     }
                 }
             }
-            "/clear" | "/new" => {
+            B::New => {
                 self.clear_session();
             }
-            "/compact" => {
+            B::Compact => {
                 self.messages_state
                     .toasts
                     .info("Compaction triggered - reducing context");
             }
-            "/connect" => {
+            B::Connect => {
                 self.ui_state.command_mode = false;
                 self.open_connect_dialog();
             }
-            "/connections" | "/connection" | "/select-connection" => {
+            B::Connections => {
                 self.ui_state.command_mode = false;
                 self.open_connection_selection_dialog();
             }
-            "/status" => {
+            B::Status => {
                 let mut status = format!(
                     "status: {:?} | tokens: {}↑ {}↓ | model: {}",
                     self.session_state.session_status,
@@ -3498,7 +3493,7 @@ impl App {
                 }
                 self.messages_state.toasts.info(&status);
             }
-            "/policy" => {
+            B::Policy => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3513,7 +3508,7 @@ impl App {
                     crate::tui::commands::policy::PolicySnapshotReason::SelectorRefresh,
                 );
             }
-            "/approval" | "/approval-mode" => {
+            B::Approval => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3539,7 +3534,7 @@ impl App {
                     }
                 }
             }
-            "/sandbox" | "/sandbox-profile" => {
+            B::Sandbox => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3567,25 +3562,25 @@ impl App {
                     }
                 }
             }
-            "/context" => {
+            B::Context => {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Context);
             }
-            "/cost" => {
+            B::Cost => {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Cost);
             }
-            "/usage" => {
+            B::Usage => {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Usage);
             }
-            "/themes" | "/theme" => {
+            B::Themes => {
                 self.handle_theme_command(raw_input);
             }
-            "/tui" => {
+            B::Tui => {
                 self.toggle_fullscreen();
             }
-            "/tui-stats" => {
+            B::TuiStats => {
                 self.ui_state.command_mode = false;
                 let mut by_kind: Vec<(String, usize)> = self
                     .task_registry
@@ -3620,10 +3615,10 @@ impl App {
                 );
                 self.open_ui_node_dialog("TUI Stats".into(), node);
             }
-            "/tts" => {
+            B::Tts => {
                 self.toggle_tts();
             }
-            "/collaborators" | "/presence" | "/team" => {
+            B::Collaborators => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3641,7 +3636,7 @@ impl App {
                     crate::tui::commands::presence::show_collaborators(self);
                 }
             }
-            "/observe" | "/watch" => {
+            B::Observe => {
                 self.ui_state.command_mode = false;
                 let session_arg = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3673,19 +3668,19 @@ impl App {
                 self.prompt_state.show_completions = false;
                 crate::tui::commands::observe::start_observe(self, project_id, session_id);
             }
-            "/stop-observing" | "/unwatch" => {
+            B::StopObserving => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 crate::tui::commands::observe::stop_observing(self);
             }
-            "/chat" => {
+            B::Chat => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 crate::tui::commands::chat::show_chat(self);
             }
-            "/chat-send" => {
+            B::ChatSend => {
                 self.ui_state.command_mode = false;
                 let body = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3701,7 +3696,7 @@ impl App {
                 };
                 crate::tui::commands::chat::start_chat_send(self, project_id, body, None);
             }
-            "/chat-reply" => {
+            B::ChatReply => {
                 self.ui_state.command_mode = false;
                 let rest = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3734,7 +3729,7 @@ impl App {
                     Some(target.trim().to_string()),
                 );
             }
-            "/chat-history" => {
+            B::ChatHistory => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3748,7 +3743,7 @@ impl App {
                 // Refresh the panel view when it is showing chat.
                 crate::tui::commands::chat::show_chat(self);
             }
-            "/chat-sync" => {
+            B::ChatSync => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3760,7 +3755,7 @@ impl App {
                 };
                 crate::tui::commands::chat::start_chat_sync(self, project_id);
             }
-            "/chat-read" => {
+            B::ChatRead => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -3772,7 +3767,7 @@ impl App {
                 };
                 crate::tui::commands::chat::start_chat_read(self, project_id);
             }
-            "/chat-edit" => {
+            B::ChatEdit => {
                 self.ui_state.command_mode = false;
                 let rest = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3804,7 +3799,7 @@ impl App {
                     body.trim().to_string(),
                 );
             }
-            "/chat-redact" => {
+            B::ChatRedact => {
                 self.ui_state.command_mode = false;
                 let rest = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3831,7 +3826,7 @@ impl App {
                 };
                 crate::tui::commands::chat::start_chat_redact(self, project_id, target, reason);
             }
-            "/chat-composing" => {
+            B::ChatComposing => {
                 self.ui_state.command_mode = false;
                 let arg = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3856,7 +3851,7 @@ impl App {
                 };
                 crate::tui::commands::chat::start_chat_composing(self, project_id, composing);
             }
-            "/chat-action-task" => {
+            B::ChatActionTask => {
                 self.ui_state.command_mode = false;
                 let rest = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3894,7 +3889,7 @@ impl App {
                     prompt.to_string(),
                 );
             }
-            "/chat-action-review" => {
+            B::ChatActionReview => {
                 self.ui_state.command_mode = false;
                 let rest = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3931,7 +3926,7 @@ impl App {
                     prompt.to_string(),
                 );
             }
-            "/chat-action-list" => {
+            B::ChatActionList => {
                 self.ui_state.command_mode = false;
                 let rest = raw_input
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
@@ -3952,10 +3947,10 @@ impl App {
                 crate::tui::commands::chat::start_chat_action_list(self, project_id, message_id);
                 crate::tui::commands::chat::show_chat(self);
             }
-            "/sessions" => {
+            B::Sessions => {
                 self.open_dialog(Dialog::Session);
             }
-            "/share" => {
+            B::Share => {
                 if let Some(ref session) = self.session_state.session {
                     if let Some(ref existing) = session.share_url {
                         let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
@@ -3981,36 +3976,36 @@ impl App {
                         .info("No active session to share");
                 }
             }
-            "/unshare" => {
+            B::Unshare => {
                 if self.session_state.session.is_some() {
                     self.messages_state.toasts.info("Session unshared");
                 } else {
                     self.messages_state.toasts.info("No active session");
                 }
             }
-            "/rename" => {
+            B::Rename => {
                 self.messages_state
                     .toasts
                     .info("Use /sessions to rename - select and press Enter");
             }
-            "/timeline" => {
+            B::Timeline => {
                 self.show_timeline();
             }
-            "/undo" => {
+            B::Undo => {
                 if self.messages_state.messages.undo() {
                     self.messages_state.toasts.info("Undid last message");
                 } else {
                     self.messages_state.toasts.info("Nothing to undo");
                 }
             }
-            "/redo" => {
+            B::Redo => {
                 if self.messages_state.messages.redo() {
                     self.messages_state.toasts.info("Redid message");
                 } else {
                     self.messages_state.toasts.info("Nothing to redo");
                 }
             }
-            "/export" => {
+            B::Export => {
                 let sub = raw_input
                     .map(|s| s.trim_start_matches("/export").trim())
                     .unwrap_or("");
@@ -4022,14 +4017,14 @@ impl App {
                         .info("Exporting session - copy to clipboard");
                 }
             }
-            "/import" => {
+            B::Import => {
                 self.dialog_state.import_dialog =
                     Some(crate::tui::components::dialogs::import::ImportDialog::new(
                         Arc::clone(&self.ui_state.theme),
                     ));
                 self.open_dialog(Dialog::Import);
             }
-            "/timestamps" => {
+            B::Timestamps => {
                 self.ui_state.show_timestamps = !self.ui_state.show_timestamps;
                 let msg = if self.ui_state.show_timestamps {
                     "timestamps shown"
@@ -4038,7 +4033,7 @@ impl App {
                 };
                 self.messages_state.toasts.info(msg);
             }
-            "/thinking" => {
+            B::Thinking => {
                 self.ui_state.show_thinking = !self.ui_state.show_thinking;
                 let msg = if self.ui_state.show_thinking {
                     "thinking shown"
@@ -4047,30 +4042,17 @@ impl App {
                 };
                 self.messages_state.toasts.info(msg);
             }
-            "/models-refresh" | "/refresh-models" => {
+            B::ModelsRefresh => {
                 self.refresh_models();
             }
-            "/variants" => {
+            B::Variants => {
                 let model = &self.agent_state.current_model;
                 let base = model.split('/').next_back().unwrap_or(model);
                 self.messages_state
                     .toasts
                     .info(&format!("Variants for {}: default (no suffix)", base));
             }
-            "/mcps" => {
-                if self.session_state.mcp_servers.is_empty() {
-                    self.messages_state.toasts.info("No MCP servers configured");
-                } else {
-                    let status: Vec<String> = self
-                        .session_state
-                        .mcp_servers
-                        .iter()
-                        .map(|(name, status)| format!("{}: {}", name, status))
-                        .collect();
-                    self.messages_state.toasts.info(&status.join(", "));
-                }
-            }
-            "/fork" => {
+            B::Fork => {
                 if let Some(idx) = self.messages_state.messages.sel_msg {
                     self.messages_state.toasts.info(&format!(
                         "Fork from message {} - use CLI --fork flag for now",
@@ -4082,12 +4064,12 @@ impl App {
                         .info("Select a message with arrow keys first, then use /fork");
                 }
             }
-            "/workspaces" => {
+            B::Workspaces => {
                 self.messages_state
                     .toasts
                     .info("Workspace management - use /sessions to switch workspaces");
             }
-            "/worktree" => {
+            B::Worktree => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::WorktreeList);
                 } else {
@@ -4111,10 +4093,10 @@ impl App {
                     }
                 }
             }
-            "/editor" => {
+            B::Editor => {
                 self.open_external_editor();
             }
-            "/loop" => {
+            B::Loop => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
                 if parts.len() < 2 {
@@ -4144,7 +4126,7 @@ impl App {
                         .warning("Invalid interval. Examples: 30s, 5m, 1h, 1d");
                 }
             }
-            "/tasks" => {
+            B::Tasks => {
                 // Project Work Orders M003: `/tasks` opens the WorkOrder
                 // Task view when the capability is available, falling
                 // back to the low-level schedule list with an explicit
@@ -4153,23 +4135,23 @@ impl App {
                 // preserved.
                 crate::tui::commands::work_orders::start_tasks_command(self);
             }
-            "/task" => {
+            B::Task => {
                 crate::tui::commands::work_orders::open_task_view(self);
             }
-            "/workspace" => {
+            B::Workspace => {
                 // Project Work Orders M004: `/workspace` opens the same
                 // global bounded dashboard as the `OpenWorkspaceDashboard`
                 // hotkey (Ctrl+O / W).
                 crate::tui::commands::workspace_dashboard::open_workspace_dashboard(self);
             }
-            "/schedules" => {
+            B::Schedules => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::ListTasks);
                 } else {
                     self.messages_state.toasts.info("No background tasks");
                 }
             }
-            "/task-del" => {
+            B::TaskDel => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let id = query.trim();
                 if id.is_empty() {
@@ -4186,14 +4168,14 @@ impl App {
                         .warning("Scheduler not available");
                 }
             }
-            "/memory" => {
+            B::Memory => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemorySummary);
                 } else {
                     self.handle_memory_command(None);
                 }
             }
-            "/memory-search" => {
+            B::MemorySearch => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemorySearch { query });
@@ -4201,7 +4183,7 @@ impl App {
                     self.handle_memory_command(Some(("search", &query)));
                 }
             }
-            "/memory-list" => {
+            B::MemoryList => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemorySummary);
@@ -4209,7 +4191,7 @@ impl App {
                     self.handle_memory_command(Some(("list", &query)));
                 }
             }
-            "/memory-remember" => {
+            B::MemoryRemember => {
                 let text = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemoryRemember { text });
@@ -4217,7 +4199,7 @@ impl App {
                     self.handle_memory_command(Some(("remember", &text)));
                 }
             }
-            "/memory-forget" => {
+            B::MemoryForget => {
                 let id = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::MemoryForget { id });
@@ -4225,10 +4207,10 @@ impl App {
                     self.handle_memory_command(Some(("forget", &id)));
                 }
             }
-            "/memory-consolidate" => {
+            B::MemoryConsolidate => {
                 self.handle_memory_command(Some(("consolidate", "")));
             }
-            "/habits" => {
+            B::Habits => {
                 let ready_only = self.dialog_state.command_palette.query.trim() == "ready";
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::HabitList { ready_only });
@@ -4238,7 +4220,7 @@ impl App {
                         .warning("Habit store unavailable");
                 }
             }
-            "/habit-dismiss" => {
+            B::HabitDismiss => {
                 let id = self.dialog_state.command_palette.query.trim().to_string();
                 if id.is_empty() {
                     self.messages_state
@@ -4252,7 +4234,7 @@ impl App {
                         .warning("Habit store unavailable");
                 }
             }
-            "/skill-promote" => {
+            B::SkillPromote => {
                 if self.prompt_state.pending_send {
                     self.messages_state
                         .toasts
@@ -4317,7 +4299,7 @@ impl App {
                         .warning(&format!("Could not start skill promotion: {error}")),
                 }
             }
-            "/skill-proposals" => {
+            B::SkillProposals => {
                 let project_dir = self.active_workspace_root().unwrap_or_default();
                 match crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
                     store.list_proposals(project_dir.to_string_lossy().as_ref(), 32)
@@ -4354,7 +4336,7 @@ impl App {
                         .warning(&format!("Could not load skill proposals: {error}")),
                 }
             }
-            "/skill-proposal" => {
+            B::SkillProposal => {
                 let argument = raw_input
                     .and_then(|input| input.trim().strip_prefix("/skill-proposal"))
                     .unwrap_or("")
@@ -4525,7 +4507,7 @@ impl App {
                     }
                 }
             }
-            "/goal" => {
+            B::Goal => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let query = query.trim_start_matches("/goal").trim();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
@@ -4668,7 +4650,7 @@ impl App {
                     }
                 }
             }
-            "/plan" => {
+            B::Plan => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let query = query.trim_start_matches("/plan").trim();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
@@ -4783,7 +4765,7 @@ impl App {
                     }
                 }
             }
-            "/state" => {
+            B::State => {
                 let state = &self.session_state_derived;
                 let mut lines = Vec::new();
 
@@ -4825,7 +4807,7 @@ impl App {
                     lines,
                 );
             }
-            "/search" => {
+            B::Search => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 if query.is_empty() {
                     self.messages_state.toasts.warning("Usage: /search <query>");
@@ -4846,7 +4828,7 @@ impl App {
                     }
                 }
             }
-            "/doctor" => {
+            B::Doctor => {
                 // The doctor routine is async (it has to await the
                 // eggsearch MCP spawn), so fire it in a background task
                 // and let the agent loop pick up the result via a
@@ -4859,7 +4841,7 @@ impl App {
                         .info("doctor: not connected to a core client");
                 }
             }
-            "/tool-contracts" => {
+            B::ToolContracts => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::ToolContracts);
                 } else {
@@ -4868,7 +4850,7 @@ impl App {
                         .info("tool-contracts: not connected to a core client");
                 }
             }
-            "/lsp-status" => {
+            B::LspStatus => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     let handle = tokio::runtime::Handle::current();
@@ -4882,7 +4864,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-previews" | "/preview-list" => {
+            B::LspPreviews => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     let output = lsp_tool.preview_list_text();
@@ -4891,7 +4873,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-preview" | "/preview-show" => {
+            B::LspPreview => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let id = query
@@ -4913,7 +4895,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-preview-clear" | "/preview-clear" => {
+            B::LspPreviewClear => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query
@@ -4943,7 +4925,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-preview-refresh" | "/preview-refresh" => {
+            B::LspPreviewRefresh => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let id = query
@@ -4975,7 +4957,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-preview-apply" | "/preview-apply" => {
+            B::LspPreviewApply => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let id = query
@@ -5072,7 +5054,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-servers" | "/lsp-detail" => {
+            B::LspServers => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     let handle = tokio::runtime::Handle::current();
@@ -5086,7 +5068,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-capabilities" => {
+            B::LspCapabilities => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let key = query
@@ -5110,7 +5092,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-errors" => {
+            B::LspErrors => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let key = query.strip_prefix("/lsp-errors ").unwrap_or("").trim();
@@ -5131,7 +5113,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-root" => {
+            B::LspRoot => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let path_arg = query.strip_prefix("/lsp-root ").unwrap_or("").trim();
@@ -5146,7 +5128,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-doctor" => {
+            B::LspDoctor => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let path_arg = query.strip_prefix("/lsp-doctor ").unwrap_or("").trim();
@@ -5162,7 +5144,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-context-diagnostics" => {
+            B::LspContextDiagnostics => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let path_arg = query
@@ -5181,7 +5163,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-repair-local" => {
+            B::LspRepairLocal => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query
@@ -5213,7 +5195,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-repair-hunk" => {
+            B::LspRepairHunk => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-repair-hunk ").unwrap_or("").trim();
@@ -5241,7 +5223,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-review-file" => {
+            B::LspReviewFile => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-review-file ").unwrap_or("").trim();
@@ -5267,7 +5249,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-review-diff" => {
+            B::LspReviewDiff => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     let invocation = LspWorkflowInvocation {
@@ -5286,7 +5268,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-security-review" => {
+            B::LspSecurityReview => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query
@@ -5316,7 +5298,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-impact" => {
+            B::LspImpact => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-impact ").unwrap_or("").trim();
@@ -5345,7 +5327,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-test-repair" => {
+            B::LspTestRepair => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-test-repair ").unwrap_or("").trim();
@@ -5375,7 +5357,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-interface" => {
+            B::LspInterface => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-interface ").unwrap_or("").trim();
@@ -5405,7 +5387,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-cross-repair" => {
+            B::LspCrossRepair => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query
@@ -5439,7 +5421,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-call-neighbors" => {
+            B::LspCallNeighbors => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query
@@ -5479,7 +5461,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-restart" => {
+            B::LspRestart => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let key = query.strip_prefix("/lsp-restart ").unwrap_or("").trim();
@@ -5495,7 +5477,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-stop" => {
+            B::LspStop => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-stop ").unwrap_or("").trim();
@@ -5512,7 +5494,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-cache-status" => {
+            B::LspCacheStatus => {
                 self.ui_state.command_mode = false;
                 if let Some(ref lsp_tool) = self.lsp_tool {
                     let text = lsp_tool.lsp_cache_status();
@@ -5521,7 +5503,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/lsp-cache-clear" => {
+            B::LspCacheClear => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.strip_prefix("/lsp-cache-clear ").unwrap_or("").trim();
@@ -5543,7 +5525,7 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
-            "/tool-backends" | "/tools" | "/backends" => {
+            B::ToolBackends => {
                 // Build the report synchronously from the resolved
                 // config. The App doesn't hold a direct reference to
                 // the live `ToolRegistry`, so the connectivity half of
@@ -5564,11 +5546,7 @@ impl App {
                 let rendered = report.render();
                 self.messages_state.toasts.info(&rendered);
             }
-            "/review" => {
-                self.ui_state.command_mode = false;
-                self.open_dialog(Dialog::Review);
-            }
-            "/diff" => {
+            B::Diff => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let path_arg = query.trim_start_matches("/diff").trim();
                 self.ui_state.command_mode = false;
@@ -5578,13 +5556,13 @@ impl App {
                     self.handle_diff_command(Some(path_arg));
                 }
             }
-            "/tests" => {
+            B::Tests => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let subcmd = query.trim_start_matches("/tests").trim();
                 self.ui_state.command_mode = false;
                 self.handle_tests_command(subcmd);
             }
-            "/test" => {
+            B::Test => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let raw_args = query
                     .strip_prefix("/test")
@@ -5602,7 +5580,7 @@ impl App {
                     .toasts
                     .info("Starting supervised test run...");
             }
-            "/revert" => {
+            B::Revert => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let path_arg = query.trim_start_matches("/revert").trim();
                 self.ui_state.command_mode = false;
@@ -5612,7 +5590,7 @@ impl App {
                     self.handle_revert_command(path_arg);
                 }
             }
-            "/edit-undo" => {
+            B::EditUndo => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.trim_start_matches("/edit-undo").trim();
                 self.ui_state.command_mode = false;
@@ -5659,7 +5637,7 @@ impl App {
                         .warning("TUI command channel unavailable for undo");
                 }
             }
-            "/edit-reapply" => {
+            B::EditReapply => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let arg = query.trim_start_matches("/edit-reapply").trim();
                 self.ui_state.command_mode = false;
@@ -5706,9 +5684,10 @@ impl App {
                         .warning("TUI command channel unavailable for reapply");
                 }
             }
-            "/checkpoints" | "/history" => {
+            B::EditCheckpoints => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let _arg = query
+                    .trim_start_matches("/edit-checkpoints")
                     .trim_start_matches("/checkpoints")
                     .trim_start_matches("/history")
                     .trim();
@@ -5740,7 +5719,7 @@ impl App {
                         .warning("TUI command channel unavailable for checkpoints");
                 }
             }
-            "/research" => {
+            B::Research => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.trim_start_matches("/research").trim();
                 self.ui_state.command_mode = false;
@@ -5752,11 +5731,11 @@ impl App {
                     self.handle_research_command(args);
                 }
             }
-            "/research-runs" => {
+            B::ResearchRuns => {
                 self.ui_state.command_mode = false;
                 self.handle_research_runs_command();
             }
-            "/research-open" => {
+            B::ResearchOpen => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let run_id = query.trim_start_matches("/research-open").trim();
                 self.ui_state.command_mode = false;
@@ -5768,7 +5747,7 @@ impl App {
                     self.handle_research_open_command(run_id);
                 }
             }
-            "/research-show" => {
+            B::ResearchShow => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let rest = query.trim_start_matches("/research-show").trim();
                 self.ui_state.command_mode = false;
@@ -5807,7 +5786,7 @@ impl App {
                     }
                 }
             }
-            "/security-review" => {
+            B::SecurityReview => {
                 self.ui_state.command_mode = false;
                 let raw_args = raw_input.unwrap_or("").trim();
                 let parsed_args = crate::security::workflow::parse_security_review_args(raw_args);
@@ -5882,7 +5861,7 @@ impl App {
                         .error("TUI command channel unavailable; cannot run security review");
                 }
             }
-            "/security-review-show" => {
+            B::SecurityReviewShow => {
                 self.ui_state.command_mode = false;
                 if self.latest_security_review.is_some() {
                     self.open_dialog(Dialog::SecurityReview);
@@ -5892,11 +5871,11 @@ impl App {
                     );
                 }
             }
-            "/security-review-cancel" => {
+            B::SecurityReviewCancel => {
                 self.ui_state.command_mode = false;
                 self.cancel_security_review();
             }
-            "/shell-include" => {
+            B::ShellInclude => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let args_str = query.strip_prefix("/shell-include").unwrap_or("").trim();
@@ -5941,7 +5920,7 @@ impl App {
                     }
                 }
             }
-            "/shell-rerun" => {
+            B::ShellRerun => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let id_str = query.strip_prefix("/shell-rerun").unwrap_or("").trim();
@@ -5958,7 +5937,7 @@ impl App {
                     }
                 }
             }
-            "/shell-kill" => {
+            B::ShellKill => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let id_str = query.strip_prefix("/shell-kill").unwrap_or("").trim();
@@ -5975,7 +5954,7 @@ impl App {
                     }
                 }
             }
-            "/shell-list" => {
+            B::ShellList => {
                 self.ui_state.command_mode = false;
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::ShellList);
@@ -6007,7 +5986,7 @@ impl App {
                     }
                 }
             }
-            "/shell-show" => {
+            B::ShellShow => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let id_str = query.strip_prefix("/shell-show").unwrap_or("").trim();
@@ -6024,7 +6003,7 @@ impl App {
                     }
                 }
             }
-            "/shell-expand" => {
+            B::ShellExpand => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
                 let args_str = query.strip_prefix("/shell-expand").unwrap_or("").trim();
@@ -6052,10 +6031,10 @@ impl App {
                     }
                 }
             }
-            "/plugins" | "/plugin-list" | "/plugin-ls" => {
+            B::Plugins => {
                 crate::tui::commands::plugin_management::show_plugins(self);
             }
-            "/terminal-create" => {
+            B::TerminalCreate => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6070,10 +6049,10 @@ impl App {
                     crate::tui::commands::interactive_terminal::start_terminal_create(self, argv);
                 }
             }
-            "/terminal-list" => {
+            B::TerminalList => {
                 crate::tui::commands::interactive_terminal::start_terminal_list(self);
             }
-            "/terminal-attach" => {
+            B::TerminalAttach => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6087,7 +6066,7 @@ impl App {
                     );
                 }
             }
-            "/terminal-show" => {
+            B::TerminalShow => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6103,7 +6082,7 @@ impl App {
                     );
                 }
             }
-            "/terminal-focus" => {
+            B::TerminalFocus => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let handle = if args.is_empty() {
@@ -6113,7 +6092,7 @@ impl App {
                 };
                 crate::tui::commands::interactive_terminal::focus_terminal(self, handle);
             }
-            "/terminal-send" => {
+            B::TerminalSend => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 match args.split_once(' ') {
@@ -6131,7 +6110,7 @@ impl App {
                     }
                 }
             }
-            "/terminal-resize" => {
+            B::TerminalResize => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let parts: Vec<&str> = args.split_whitespace().collect();
@@ -6158,7 +6137,7 @@ impl App {
                     }
                 }
             }
-            "/terminal-resume" => {
+            B::TerminalResume => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let handle = if args.is_empty() {
@@ -6168,7 +6147,7 @@ impl App {
                 };
                 crate::tui::commands::interactive_terminal::start_terminal_resume(self, handle);
             }
-            "/terminal-detach" => {
+            B::TerminalDetach => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let handle = if args.is_empty() {
@@ -6178,7 +6157,7 @@ impl App {
                 };
                 crate::tui::commands::interactive_terminal::start_terminal_detach(self, handle);
             }
-            "/terminal-terminate" => {
+            B::TerminalTerminate => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let handle = if args.is_empty() {
@@ -6188,7 +6167,7 @@ impl App {
                 };
                 crate::tui::commands::interactive_terminal::start_terminal_terminate(self, handle);
             }
-            "/terminal-remove" => {
+            B::TerminalRemove => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let handle = if args.is_empty() {
@@ -6198,7 +6177,7 @@ impl App {
                 };
                 crate::tui::commands::interactive_terminal::start_terminal_remove(self, handle);
             }
-            "/plugin-info" => {
+            B::PluginInfo => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6209,7 +6188,7 @@ impl App {
                     crate::tui::commands::plugin_management::show_plugin_info(self, args);
                 }
             }
-            "/plugin-enable" => {
+            B::PluginEnable => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6220,7 +6199,7 @@ impl App {
                     crate::tui::commands::plugin_management::enable_plugin(self, args);
                 }
             }
-            "/plugin-disable" => {
+            B::PluginDisable => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6231,13 +6210,13 @@ impl App {
                     crate::tui::commands::plugin_management::disable_plugin(self, args);
                 }
             }
-            "/plugin-doctor" => {
+            B::PluginDoctor => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 let query_opt = if args.is_empty() { None } else { Some(args) };
                 crate::tui::commands::plugin_management::doctor_plugin(self, query_opt);
             }
-            "/plugin-remove" => {
+            B::PluginRemove => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6248,7 +6227,7 @@ impl App {
                     crate::tui::commands::plugin_management::remove_plugin(self, args);
                 }
             }
-            "/plugin-install" => {
+            B::PluginInstall => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
                 if args.is_empty() {
@@ -6259,7 +6238,32 @@ impl App {
                     crate::tui::commands::plugin_management::install_plugin(self, args);
                 }
             }
-            _ => {}
+            B::ShellAsk => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let args_str = query.strip_prefix("/shell-ask").unwrap_or("").trim();
+                let parts: Vec<&str> = args_str.splitn(2, ' ').collect();
+                let id_str = parts.first().copied().unwrap_or("");
+                let question = parts.get(1).copied().unwrap_or("").to_string();
+                if question.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /shell-ask <id|last> <question>");
+                } else {
+                    match self.resolve_shell_id(id_str) {
+                        Some(id) => {
+                            if let Some(ref tx) = self.tui_cmd_tx {
+                                let _ = send_tui(tx, TuiCommand::ShellAsk { id, question });
+                            }
+                        }
+                        None => {
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /shell-ask <id|last> <question>");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -6869,13 +6873,10 @@ impl App {
             return false;
         }
 
-        if trimmed.starts_with("/search ") {
-            let query = trimmed.trim_start_matches("/search ").trim();
-            if !query.is_empty() {
-                self.messages_state.messages.search(query);
-            }
-            return true;
-        }
+        // Typed input path: raw slash text → registry name/alias
+        // resolution → typed command action. Sync the palette query so
+        // built-in handlers that read the query observe the same args
+        // whether invoked from the palette or from direct typed input.
         let command_name = trimmed
             .split_whitespace()
             .next()
@@ -6886,6 +6887,7 @@ impl App {
             .find_by_name_or_alias(command_name)
             .cloned()
         {
+            self.dialog_state.command_palette.query = trimmed.to_string();
             self.execute_command(&cmd, Some(trimmed));
             return true;
         }

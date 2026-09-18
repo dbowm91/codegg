@@ -12,14 +12,14 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 142 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 149 built-in commands
 - `src/config/schema.rs` — `CommandConfig` for config-file commands
 
 ## How It Works
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 142 hardcoded commands (highest priority)
+1. **Built-in commands**: 149 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -74,17 +74,25 @@ literal placeholders.
 
 ### Command Execution Flow
 
-1. If command has `dialog` set → open that dialog
-2. If command has `process` set (process-backed):
+Raw slash text → registry name/alias resolution → typed `CommandAction`
+→ existing domain handler. Dispatch matches the resolved action, never
+a raw command string.
+
+1. If action is `Dialog(dialog)` → open that dialog
+2. If action is `Process` (process-backed):
    - Extract args from user input after command name
    - Send `TuiCommand::PluginCommandRun { spec, args }` through channel
    - Process spawns as child with timeout, output capping
    - Completion arrives as `PluginCommandFinished`
-3. If command has `template`:
+3. If action is `Template`:
    - Extract `args` from user input after command name
    - Render template with `{args}` variable
    - Add rendered text as user message
    - Trigger agent processing
+4. If action is `Builtin(action)` → exhaustive `BuiltinSlashAction`
+   dispatch in `App::dispatch_builtin_command`
+5. If action is `Plugin` → bounded discovery-only toast directing to
+   the plugin panel
 
 ## Key Types & APIs
 
@@ -135,8 +143,29 @@ pub struct Command {
     pub source_kind: CommandSource,
     pub keywords: Vec<String>,
     pub process: Option<ProcessCommandSpec>,
+    pub action: CommandAction,
 }
 ```
+
+### CommandAction (`src/tui/command.rs`)
+
+```rust
+pub enum CommandAction {
+    Dialog(Dialog),
+    Builtin(BuiltinSlashAction),
+    Template,
+    Process,
+    Plugin,
+}
+```
+
+`BuiltinSlashAction` is an exhaustive enum with one variant per
+built-in executable operation (142 variants). Adding a new built-in
+command requires touching this one typed registry/action authority;
+the compiler (exhaustive match in `dispatch_builtin_command`) and the
+`every_builtin_action_is_referenced_by_a_canonical_command` /
+`every_builtin_entry_has_coherent_action` tests make a registry-only
+or dispatcher-only command impossible to land unnoticed.
 
 `CommandCategory` is retained as a compatibility classification. Discovery
 surfaces use the stable `CommandDomain` taxonomy (Project, Session, Agent,
@@ -208,7 +237,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (142 total)
+### Built-in Commands (149 total)
 
 Representative built-ins:
 
@@ -237,7 +266,7 @@ Representative built-ins:
 | `/import` | | Import session |
 | `/timestamps` | `toggle-timestamps` | Toggle timestamps |
 | `/thinking` | `toggle-thinking` | Toggle thinking |
-| `/models` | | Switch model |
+| `/models` | `/model` | Switch model |
 | `/models-refresh` | `refresh-models` | Refresh model list |
 | `/variants` | | Switch model variant |
 | `/agents` | | Switch agent |
@@ -261,7 +290,11 @@ Representative built-ins:
 | `/memory-remember` | | Remember something |
 | `/memory-forget` | | Forget a memory |
 | `/memory-consolidate` | | Consolidate session into memories |
-| `/checkpoint` | | Create a checkpoint |
+| `/edit-undo` | | Undo the latest durable edit checkpoint |
+| `/edit-reapply` | | Reapply the latest undone edit checkpoint |
+| `/edit-checkpoints` | `/checkpoints`, `/history` | List durable edit checkpoints |
+| `/tool-contracts` | | Show tool contract diagnostics |
+| `/worktree` | | List worktrees for the active workspace |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
 | `/lsp-servers` | `/lsp-detail` | List active LSP servers |
@@ -273,8 +306,11 @@ Representative built-ins:
 | `/shell-ask` | | Ask about a shell command |
 | `/test` | | Run supervised tests |
 | `/tui-stats` | | Show TUI runtime diagnostics |
-| `/git-status` | | Show git status |
-| `/provider-connections` | | Manage provider connections |
+
+`/checkpoint` was removed: it was registered without any execution
+branch and no session-checkpoint operation with the promised semantics
+exists (goal checkpoints are goal-scoped via `/goal checkpoint`; edit
+checkpoints list via `/edit-checkpoints`). It is not redirected.
 
 ### Dynamic Commands
 
@@ -324,10 +360,12 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 142**: Tested by
-  `built_in_command_count_matches_release_docs` in
-  `src/tui/command.rs`. Update both the test assertion and this doc
-  when adding built-ins.
+- **Built-in count is 149**: Guarded by
+  `built_in_command_count_matches_release_docs` and
+  `command_docs_count_matches_registry` in `src/tui/command.rs`. The
+  docs test parses this file and fails on drift, so update the test
+  assertion and every count in this doc together when adding built-ins.
+  The authoritative catalog is `CommandRegistry::built_in_commands`.
 - **Core Command has no `subtask` field**: The `subtask` field exists
   only in `CommandConfig` (config schema), not in `src/command::Command`.
 - **`find_command_files()` is async wrapper**: Internally calls sync
@@ -342,7 +380,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-142 count stays in sync with this documentation.
+149 count stays in sync with this documentation.
 
 ## Related Docs
 

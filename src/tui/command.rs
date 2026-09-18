@@ -101,6 +101,174 @@ impl fmt::Display for CommandCategory {
     }
 }
 
+/// Exhaustive built-in slash operations.
+///
+/// Each variant corresponds to one executable built-in command authority
+/// in the canonical registry. Aliases resolve to the same variant as
+/// their canonical command. The TUI dispatcher matches this enum
+/// exhaustively; no production branch may introduce a new built-in
+/// behavior by comparing a raw command name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinSlashAction {
+    Reload,
+    Exit,
+    Help,
+    Tree,
+    AgentSelect,
+    Agents,
+    New,
+    Compact,
+    Connect,
+    Connections,
+    Status,
+    Policy,
+    Approval,
+    Sandbox,
+    Context,
+    Cost,
+    Usage,
+    Themes,
+    Tui,
+    TuiStats,
+    Tts,
+    Collaborators,
+    Observe,
+    StopObserving,
+    Chat,
+    ChatSend,
+    ChatReply,
+    ChatHistory,
+    ChatSync,
+    ChatRead,
+    ChatEdit,
+    ChatRedact,
+    ChatComposing,
+    ChatActionTask,
+    ChatActionReview,
+    ChatActionList,
+    Sessions,
+    Share,
+    Unshare,
+    Rename,
+    Timeline,
+    Undo,
+    Redo,
+    Export,
+    Import,
+    Timestamps,
+    Thinking,
+    ModelsRefresh,
+    Variants,
+    Fork,
+    Workspaces,
+    Worktree,
+    Editor,
+    Loop,
+    Tasks,
+    Task,
+    Workspace,
+    Schedules,
+    TaskDel,
+    Memory,
+    MemorySearch,
+    MemoryList,
+    MemoryRemember,
+    MemoryForget,
+    MemoryConsolidate,
+    Habits,
+    HabitDismiss,
+    SkillPromote,
+    SkillProposals,
+    SkillProposal,
+    Goal,
+    Plan,
+    State,
+    Search,
+    Doctor,
+    ToolContracts,
+    LspStatus,
+    LspPreviews,
+    LspPreview,
+    LspPreviewClear,
+    LspPreviewRefresh,
+    LspPreviewApply,
+    LspServers,
+    LspCapabilities,
+    LspErrors,
+    LspRoot,
+    LspDoctor,
+    LspContextDiagnostics,
+    LspRepairLocal,
+    LspRepairHunk,
+    LspReviewFile,
+    LspReviewDiff,
+    LspSecurityReview,
+    LspImpact,
+    LspTestRepair,
+    LspInterface,
+    LspCrossRepair,
+    LspCallNeighbors,
+    LspRestart,
+    LspStop,
+    LspCacheStatus,
+    LspCacheClear,
+    ToolBackends,
+    Diff,
+    Tests,
+    Test,
+    Revert,
+    EditUndo,
+    EditReapply,
+    EditCheckpoints,
+    Research,
+    ResearchRuns,
+    ResearchOpen,
+    ResearchShow,
+    SecurityReview,
+    SecurityReviewShow,
+    SecurityReviewCancel,
+    ShellList,
+    ShellShow,
+    ShellInclude,
+    ShellRerun,
+    ShellKill,
+    ShellAsk,
+    ShellExpand,
+    Plugins,
+    TerminalCreate,
+    TerminalList,
+    TerminalAttach,
+    TerminalShow,
+    TerminalFocus,
+    TerminalSend,
+    TerminalResize,
+    TerminalResume,
+    TerminalDetach,
+    TerminalTerminate,
+    TerminalRemove,
+    PluginInfo,
+    PluginEnable,
+    PluginDisable,
+    PluginDoctor,
+    PluginRemove,
+    PluginInstall,
+}
+
+/// Typed executable authority for a registry entry.
+///
+/// The registry owns names, aliases, and discovery metadata, but
+/// execution dispatches on this action. `Dialog`, `Template`, `Process`,
+/// and `Plugin` actions are handled without entering the built-in
+/// action switch; `Builtin` actions are dispatched exhaustively.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandAction {
+    Dialog(Dialog),
+    Builtin(BuiltinSlashAction),
+    Template,
+    Process,
+    Plugin,
+}
+
 #[derive(Debug, Clone)]
 pub struct Command {
     pub name: String,
@@ -118,10 +286,19 @@ pub struct Command {
     pub keywords: Vec<String>,
     /// Process execution spec for `runtime: process` commands.
     pub process: Option<crate::command::ProcessCommandSpec>,
+    /// Typed executable authority. Dispatch matches on this value;
+    /// it must agree with the `dialog`/`template`/`process` fields:
+    /// `Dialog(d)` requires `dialog == Some(d)`, `Template` requires
+    /// `template.is_some()`, `Process` requires `process.is_some()`.
+    pub action: CommandAction,
 }
 
 impl Command {
-    pub fn new(name: &str, category: CommandCategory, dialog: Option<Dialog>) -> Self {
+    pub fn new(name: &str, category: CommandCategory, action: CommandAction) -> Self {
+        let dialog = match &action {
+            CommandAction::Dialog(d) => Some(d.clone()),
+            _ => None,
+        };
         Self {
             name: name.to_string(),
             aliases: Vec::new(),
@@ -137,6 +314,7 @@ impl Command {
             source_kind: CommandSource::BuiltIn,
             keywords: Vec::new(),
             process: None,
+            action,
         }
     }
 
@@ -290,326 +468,356 @@ impl CommandRegistry {
 
     fn built_in_commands() -> Vec<Command> {
         vec![
-            Command::new("/connect", CommandCategory::System, None)
+            Command::new("/connect", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Connect))
                 .with_description("Connect provider"),
-            Command::new("/connections", CommandCategory::System, None)
+            Command::new("/connections", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Connections))
                 .with_aliases(&["/connection", "/select-connection"])
                 .with_description("Select provider connection and model for current session"),
-            Command::new("/exit", CommandCategory::System, None)
+            Command::new("/exit", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Exit))
                 .with_aliases(&["quit", "q"])
                 .with_description("Exit the app"),
-            Command::new("/status", CommandCategory::System, None).with_description("View status"),
-            Command::new("/policy", CommandCategory::System, None)
+            Command::new("/status", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Status)).with_description("View status"),
+            Command::new("/policy", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Policy))
                 .with_description("Show effective approval mode and sandbox profile (/policy)"),
-            Command::new("/approval", CommandCategory::System, None)
+            Command::new("/approval", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Approval))
                 .with_aliases(&["/approval-mode"])
                 .with_description("Select approval mode: interactive, automatic, or yolo (/approval [mode])"),
-            Command::new("/sandbox", CommandCategory::System, None)
+            Command::new("/sandbox", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Sandbox))
                 .with_aliases(&["/sandbox-profile"])
                 .with_description("Select sandbox profile: read-only, workspace-write, or full-host (/sandbox [profile])"),
-            Command::new("/themes", CommandCategory::System, None)
+            Command::new("/themes", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Themes))
                 .with_aliases(&["/theme"])
                 .with_description("Switch theme (/theme, /theme list, /theme use <name>, /theme reload, /theme diagnostics)"),
-            Command::new("/help", CommandCategory::System, None).with_description("Help"),
-            Command::new("/sessions", CommandCategory::Session, None)
+            Command::new("/help", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Help)).with_description("Help"),
+            Command::new("/sessions", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Sessions))
                 .with_aliases(&["resume", "continue"])
                 .with_description("Switch session"),
-            Command::new("/new", CommandCategory::Session, None)
+            Command::new("/new", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::New))
                 .with_aliases(&["clear"])
                 .with_description("New session"),
-            Command::new("/share", CommandCategory::Session, None)
+            Command::new("/share", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Share))
                 .with_description("Share session"),
-            Command::new("/unshare", CommandCategory::Session, None)
+            Command::new("/unshare", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Unshare))
                 .with_description("Unshare session"),
-            Command::new("/rename", CommandCategory::Session, None)
+            Command::new("/rename", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Rename))
                 .with_description("Rename session"),
-            Command::new("/compact", CommandCategory::Session, None)
+            Command::new("/compact", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Compact))
                 .with_aliases(&["summarize"])
                 .with_description("Compact session"),
-            Command::new("/timeline", CommandCategory::Session, None)
+            Command::new("/timeline", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Timeline))
                 .with_description("Jump to message"),
-            Command::new("/fork", CommandCategory::Session, None)
+            Command::new("/fork", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Fork))
                 .with_description("Fork from message"),
-            Command::new("/undo", CommandCategory::Session, None)
+            Command::new("/undo", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Undo))
                 .with_description("Undo previous message"),
-            Command::new("/redo", CommandCategory::Session, None).with_description("Redo"),
-            Command::new("/export", CommandCategory::Session, None)
+            Command::new("/redo", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Redo)).with_description("Redo"),
+            Command::new("/export", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Export))
                 .with_description("Export session transcript"),
-            Command::new("/import", CommandCategory::Session, None)
+            Command::new("/import", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Import))
                 .with_description("Import session"),
-            Command::new("/timestamps", CommandCategory::Session, None)
+            Command::new("/timestamps", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Timestamps))
                 .with_aliases(&["toggle-timestamps"])
                 .with_description("Toggle timestamps"),
-            Command::new("/thinking", CommandCategory::Session, None)
+            Command::new("/thinking", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Thinking))
                 .with_aliases(&["toggle-thinking"])
                 .with_description("Toggle thinking"),
-            Command::new("/models", CommandCategory::System, Some(Dialog::Model))
-                .with_description("Switch model"),
-            Command::new("/models-refresh", CommandCategory::System, None)
+            Command::new("/models", CommandCategory::System, CommandAction::Dialog(Dialog::Model))
+                .with_aliases(&["/model"])
+                .with_description("Switch model (/models, alias /model)"),
+            Command::new("/models-refresh", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ModelsRefresh))
                 .with_aliases(&["refresh-models"])
                 .with_description("Refresh model list"),
-            Command::new("/reload", CommandCategory::System, None)
+            Command::new("/reload", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Reload))
                 .with_aliases(&["reload", "/skills-refresh", "/agents-refresh"])
                 .with_description("Refresh project runtime assets (/reload skills|agents)"),
-            Command::new("/variants", CommandCategory::System, None)
+            Command::new("/variants", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Variants))
                 .with_description("Switch model variant"),
-            Command::new("/agents", CommandCategory::Agent, None)
+            Command::new("/agents", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Agents))
                 .with_description("Manage agents (/agents, /agents --all, show <name>, diff <name>, validate, rebuild)"),
-            Command::new("/agent", CommandCategory::Agent, None)
+            Command::new("/agent", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::AgentSelect))
                 .with_description("Select active agent (/agent <name>)"),
-            Command::new("/mcps", CommandCategory::System, Some(Dialog::Mcp))
+            Command::new("/mcps", CommandCategory::System, CommandAction::Dialog(Dialog::Mcp))
                 .with_description("Manage MCP servers"),
-            Command::new("/workspaces", CommandCategory::System, None)
+            Command::new("/workspaces", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Workspaces))
                 .with_description("Manage workspaces"),
-            Command::new("/tree", CommandCategory::System, None).with_description("Show file tree"),
-            Command::new("/editor", CommandCategory::Agent, None).with_description("Open editor"),
-            Command::new("/keybinds", CommandCategory::System, Some(Dialog::Keybind))
+            Command::new("/tree", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tree)).with_description("Show file tree"),
+            Command::new("/editor", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Editor)).with_description("Open editor"),
+            Command::new("/keybinds", CommandCategory::System, CommandAction::Dialog(Dialog::Keybind))
                 .with_description("Customize keybindings"),
-            Command::new("/context", CommandCategory::Session, None)
+            Command::new("/context", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Context))
                 .with_description("View context window usage"),
-            Command::new("/cost", CommandCategory::Session, None)
+            Command::new("/cost", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Cost))
                 .with_description("View token usage and cost"),
-            Command::new("/usage", CommandCategory::Session, None)
+            Command::new("/usage", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Usage))
                 .with_description("View rate limits and quota"),
-            Command::new("/stats", CommandCategory::Session, Some(Dialog::Stats))
+            Command::new("/stats", CommandCategory::Session, CommandAction::Dialog(Dialog::Stats))
                 .with_description("View session analytics and cost breakdown"),
-            Command::new("/tui", CommandCategory::System, None)
+            Command::new("/tui", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tui))
                 .with_aliases(&["fullscreen"])
                 .with_description("Toggle fullscreen mode"),
-            Command::new("/tts", CommandCategory::System, None)
+            Command::new("/tts", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tts))
                 .with_aliases(&["voice"])
                 .with_description("Toggle text-to-speech"),
-            Command::new("/loop", CommandCategory::Agent, None)
+            Command::new("/loop", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Loop))
                 .with_description("Schedule periodic task (e.g. /loop 5m \"check status\")"),
-            Command::new("/tasks", CommandCategory::Agent, Some(Dialog::TaskView))
+            Command::new("/tasks", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Tasks))
                 .with_description(
                     "Project tasks: running, waiting, attention, and recent WorkOrders (/task, /schedules for low-level schedules)",
                 ),
-            Command::new("/task", CommandCategory::Agent, Some(Dialog::TaskView))
+            Command::new("/task", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Task))
                 .with_aliases(&["/task-view"])
                 .with_description("Open the project Task view (WorkOrders)"),
-            Command::new("/workspace", CommandCategory::System, Some(Dialog::WorkspaceDashboard))
+            Command::new("/workspace", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Workspace))
                 .with_description(
                     "Global Workspace dashboard: every authorized project with running, future, and attention state (hotkey Ctrl+O / W)",
                 ),
-            Command::new("/schedules", CommandCategory::Agent, None)
+            Command::new("/schedules", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Schedules))
                 .with_description(
                     "Low-level schedule diagnostics (recurring Subagent templates; project tasks live in /tasks)",
                 ),
-            Command::new("/task-del", CommandCategory::Agent, None)
+            Command::new("/task-del", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::TaskDel))
                 .with_description("Delete background task"),
-            Command::new("/memory", CommandCategory::Session, None)
+            Command::new("/memory", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Memory))
                 .with_description("Memory dashboard"),
-            Command::new("/memory-search", CommandCategory::Session, None)
+            Command::new("/memory-search", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::MemorySearch))
                 .with_description("Search memories (args: query)"),
-            Command::new("/memory-list", CommandCategory::Session, None)
+            Command::new("/memory-list", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::MemoryList))
                 .with_description("List memories (args: namespace)"),
-            Command::new("/memory-remember", CommandCategory::Agent, None)
+            Command::new("/memory-remember", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::MemoryRemember))
                 .with_description("Remember something (args: text)"),
-            Command::new("/memory-forget", CommandCategory::Agent, None)
+            Command::new("/memory-forget", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::MemoryForget))
                 .with_description("Forget a memory (args: id)"),
-            Command::new("/memory-consolidate", CommandCategory::Session, None)
+            Command::new("/memory-consolidate", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::MemoryConsolidate))
                 .with_description("Consolidate session into memories"),
-            Command::new("/habits", CommandCategory::Session, None)
+            Command::new("/habits", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Habits))
                 .with_description("Inspect workflow habit candidates (args: ready)"),
-            Command::new("/habit-dismiss", CommandCategory::Session, None)
+            Command::new("/habit-dismiss", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::HabitDismiss))
                 .with_description("Dismiss a workflow habit candidate (args: id)"),
-            Command::new("/skill-promote", CommandCategory::Agent, None)
+            Command::new("/skill-promote", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::SkillPromote))
                 .with_description("Draft one skill proposal from a ready habit (args: habit id)"),
-            Command::new("/skill-proposals", CommandCategory::Session, None)
+            Command::new("/skill-proposals", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::SkillProposals))
                 .with_description("List skill proposals"),
-            Command::new("/skill-proposal", CommandCategory::Session, None)
+            Command::new("/skill-proposal", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::SkillProposal))
                 .with_description("Preview, publish, or reject a skill proposal (args: id | publish id [project|global] | reject id)"),
-            Command::new("/checkpoint", CommandCategory::Session, None)
-                .with_description("Create a checkpoint of current session"),
-            Command::new("/goal", CommandCategory::Session, None)
+            Command::new("/goal", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Goal))
                 .with_description("Manage active long-running goal (/goal set, show, pause, resume, clear, done, checkpoint, from-file, budget [show|raise <axis> <n>])"),
-            Command::new("/plan", CommandCategory::Session, None)
+            Command::new("/plan", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Plan))
                 .with_description("Manage task plan (/plan, /plan add, done, skip, block, clear)"),
-            Command::new("/state", CommandCategory::Session, None)
+            Command::new("/state", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::State))
                 .with_description("Show work/session state view"),
-            Command::new("/pr", CommandCategory::Agent, None)
+            Command::new("/pr", CommandCategory::Agent, CommandAction::Template)
                 .with_description("GitHub pull requests")
                 .with_template("Use GitHub MCP (mcp__github) to {args}"),
-            Command::new("/issue", CommandCategory::Agent, None)
+            Command::new("/issue", CommandCategory::Agent, CommandAction::Template)
                 .with_aliases(&["/bugs", "/features"])
                 .with_description("GitHub issues")
                 .with_template("Use GitHub MCP (mcp__github) to {args}"),
-            Command::new("/review", CommandCategory::Session, Some(Dialog::Review))
+            Command::new("/review", CommandCategory::Session, CommandAction::Dialog(Dialog::Review))
                 .with_description("Review changed files"),
-            Command::new("/diff", CommandCategory::Session, None)
+            Command::new("/diff", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Diff))
                 .with_description("Show diff for a file (/diff <path>)"),
-            Command::new("/tests", CommandCategory::Session, None)
+            Command::new("/tests", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Tests))
                 .with_description("Show test state (/tests, /tests last, /tests failed)"),
-            Command::new("/test", CommandCategory::Session, None)
+            Command::new("/test", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Test))
                 .with_description("Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous, /test custom <command>)"),
-            Command::new("/revert", CommandCategory::Agent, None)
+            Command::new("/revert", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Revert))
                 .with_description("Revert a file change (/revert <path>)"),
-            Command::new("/research", CommandCategory::Agent, None)
+            Command::new("/research", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Research))
                 .with_description("Run research on a question (/research <question> [--mode <mode>] [--depth <depth>])"),
-            Command::new("/research-runs", CommandCategory::Session, None)
+            Command::new("/research-runs", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::ResearchRuns))
                 .with_description("List recent research runs"),
-            Command::new("/research-open", CommandCategory::Session, None)
+            Command::new("/research-open", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::ResearchOpen))
                 .with_description("Show artifacts for a research run (/research-open <run_id>)"),
-            Command::new("/research-show", CommandCategory::Session, None)
+            Command::new("/research-show", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::ResearchShow))
                 .with_description("Show research runs and details (/research-show report|handoff|claims <run_id>)"),
-            Command::new("/search", CommandCategory::Session, None)
+            Command::new("/search", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Search))
                 .with_description("Search session transcript"),
-            Command::new("/doctor", CommandCategory::System, None)
+            Command::new("/doctor", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Doctor))
                 .with_description("Run diagnostics (search backend, MCP, providers)"),
-            Command::new("/lsp-status", CommandCategory::System, None)
+            Command::new("/lsp-status", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspStatus))
                 .with_description("Show LSP server status and diagnostics"),
-            Command::new("/lsp-previews", CommandCategory::System, None)
+            Command::new("/lsp-previews", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviews))
                 .with_aliases(&["/preview-list"])
                 .with_description("List LSP preview artifacts"),
-            Command::new("/lsp-preview", CommandCategory::System, None)
+            Command::new("/lsp-preview", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreview))
                 .with_aliases(&["/preview-show"])
                 .with_description("Show LSP preview detail (args: <id>)"),
-            Command::new("/lsp-preview-clear", CommandCategory::System, None)
+            Command::new("/lsp-preview-clear", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviewClear))
                 .with_aliases(&["/preview-clear"])
                 .with_description("Clear LSP preview(s) (args: <id> or --all)"),
-            Command::new("/lsp-preview-refresh", CommandCategory::System, None)
+            Command::new("/lsp-preview-refresh", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviewRefresh))
                 .with_aliases(&["/preview-refresh"])
                 .with_description("Refresh LSP preview staleness (args: <id>)"),
-            Command::new("/lsp-preview-apply", CommandCategory::System, None)
+            Command::new("/lsp-preview-apply", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviewApply))
                 .with_aliases(&["/preview-apply"])
                 .with_description("Apply LSP preview patches to disk with hash revalidation (args: <id>)"),
-            Command::new("/lsp-servers", CommandCategory::System, None)
+            Command::new("/lsp-servers", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspServers))
                 .with_aliases(&["/lsp-detail"])
                 .with_description("List active LSP servers with status, root, generation"),
-            Command::new("/lsp-capabilities", CommandCategory::System, None)
+            Command::new("/lsp-capabilities", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCapabilities))
                 .with_description("Show effective LSP capabilities (args: server-key)"),
-            Command::new("/lsp-errors", CommandCategory::System, None)
+            Command::new("/lsp-errors", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspErrors))
                 .with_description("Show LSP server errors and health (args: server-key)"),
-            Command::new("/lsp-root", CommandCategory::System, None)
+            Command::new("/lsp-root", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspRoot))
                 .with_description("Diagnose LSP root for a file path (args: <path>)"),
-            Command::new("/lsp-restart", CommandCategory::System, None)
+            Command::new("/lsp-restart", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspRestart))
                 .with_description("Restart an LSP server (args: server-key)"),
-            Command::new("/lsp-stop", CommandCategory::System, None)
+            Command::new("/lsp-stop", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspStop))
                 .with_description("Stop LSP servers (args: server-key or --all)"),
-            Command::new("/lsp-cache-status", CommandCategory::System, None)
+            Command::new("/lsp-cache-status", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCacheStatus))
                 .with_description("Show LSP semantic cache status and stats"),
-            Command::new("/lsp-cache-clear", CommandCategory::System, None)
+            Command::new("/lsp-cache-clear", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCacheClear))
                 .with_description("Clear LSP semantic cache (args: --all or <root-path>)"),
-            Command::new("/lsp-doctor", CommandCategory::System, None)
+            Command::new("/lsp-doctor", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspDoctor))
                 .with_description("Diagnose LSP status for a file path (args: <path>)"),
-            Command::new("/lsp-context-diagnostics", CommandCategory::System, None)
+            Command::new("/lsp-context-diagnostics", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspContextDiagnostics))
                 .with_description("Show LSP context diagnostics for a file path"),
-            Command::new("/lsp-repair-local", CommandCategory::System, None)
+            Command::new("/lsp-repair-local", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspRepairLocal))
                 .with_description("Repair localized issue (args: <path[:line]>)"),
-            Command::new("/lsp-repair-hunk", CommandCategory::System, None)
+            Command::new("/lsp-repair-hunk", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspRepairHunk))
                 .with_description("Repair code around diff hunks (args: <path> [hunk-id|range])"),
-            Command::new("/lsp-review-file", CommandCategory::System, None)
+            Command::new("/lsp-review-file", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspReviewFile))
                 .with_description("Semantic review of a file (args: <path>)"),
-            Command::new("/lsp-review-diff", CommandCategory::System, None)
+            Command::new("/lsp-review-diff", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspReviewDiff))
                 .with_description("Review changed files/hunks in current diff"),
-            Command::new("/lsp-security-review", CommandCategory::System, None)
+            Command::new("/lsp-security-review", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspSecurityReview))
                 .with_description("Enriched security review (args: [path|diff])"),
-            Command::new("/lsp-impact", CommandCategory::System, None)
+            Command::new("/lsp-impact", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspImpact))
                 .with_description("Impact analysis for a symbol (args: <path:line:col>)"),
-            Command::new("/lsp-test-repair", CommandCategory::System, None)
+            Command::new("/lsp-test-repair", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspTestRepair))
                 .with_description("Test failure repair (args: <test-file> [failure-text])"),
-            Command::new("/lsp-interface", CommandCategory::System, None)
+            Command::new("/lsp-interface", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspInterface))
                 .with_description("API boundary review (args: <path[:symbol]>)"),
-            Command::new("/lsp-cross-repair", CommandCategory::System, None)
+            Command::new("/lsp-cross-repair", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCrossRepair))
                 .with_description("Cross-file repair context (args: <primary> [related...])"),
-            Command::new("/lsp-call-neighbors", CommandCategory::System, None)
+            Command::new("/lsp-call-neighbors", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspCallNeighbors))
                 .with_description("Call neighborhood (args: <path:line:col> [incoming|outgoing|both])"),
-            Command::new("/tool-backends", CommandCategory::System, None)
+            Command::new("/tool-backends", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ToolBackends))
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),
-            Command::new("/security-review", CommandCategory::Agent, None)
+            Command::new("/security-review", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::SecurityReview))
                 .with_description("Security review of changed files (/security-review [--changed] [--base <ref>] [--json] [--prompts-only] [--findings-only] [--no-content] [--no-filename] [--max-findings N] [--max-prompts N] [--enrich] [--panel])"),
-            Command::new("/security-review-show", CommandCategory::Agent, Some(Dialog::SecurityReview))
+            Command::new("/security-review-show", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::SecurityReviewShow))
                 .with_description("Reopen the latest security review result panel (no rerun)"),
-            Command::new("/security-review-cancel", CommandCategory::Agent, None)
+            Command::new("/security-review-cancel", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::SecurityReviewCancel))
                 .with_description("Cancel an in-flight security review"),
-            Command::new("/shell-list", CommandCategory::System, None)
+            Command::new("/shell-list", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellList))
                 .with_description("List recent shell commands"),
-            Command::new("/shell-show", CommandCategory::System, None)
+            Command::new("/shell-show", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellShow))
                 .with_description("Show detailed info for a shell command (args: <id|last>)"),
-            Command::new("/shell-include", CommandCategory::System, None)
+            Command::new("/shell-include", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellInclude))
                 .with_description("Include shell output in context (args: <id|last> [--tail N|--stdout|--stderr|--summary])"),
-            Command::new("/shell-rerun", CommandCategory::System, None)
+            Command::new("/shell-rerun", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellRerun))
                 .with_description("Re-run a shell command (args: <id|last>)"),
-            Command::new("/shell-kill", CommandCategory::System, None)
+            Command::new("/shell-kill", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellKill))
                 .with_description("Kill a running shell command (args: <id|last>)"),
-            Command::new("/shell-ask", CommandCategory::System, None)
+            Command::new("/shell-ask", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellAsk))
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
-            Command::new("/shell-expand", CommandCategory::System, None)
+            Command::new("/shell-expand", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellExpand))
                 .with_description("Expand raw shell output from projection handle (args: <id|last> stdout|stderr [start..end])"),
-            Command::new("/terminal-create", CommandCategory::System, None)
+            Command::new("/terminal-create", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalCreate))
                 .with_description("Create an interactive workspace terminal (args: <command> [args...])"),
-            Command::new("/terminal-list", CommandCategory::System, None)
+            Command::new("/terminal-list", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalList))
                 .with_description("List interactive terminals in this workspace"),
-            Command::new("/terminal-attach", CommandCategory::System, None)
+            Command::new("/terminal-attach", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalAttach))
                 .with_description("Attach to an interactive terminal (args: <handle>)"),
-            Command::new("/terminal-show", CommandCategory::System, None)
+            Command::new("/terminal-show", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalShow))
                 .with_description("Show an interactive terminal (args: <handle>)"),
-            Command::new("/terminal-focus", CommandCategory::System, None)
+            Command::new("/terminal-focus", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalFocus))
                 .with_description("Focus an interactive terminal so keystrokes go to the process (args: [handle])"),
-            Command::new("/terminal-send", CommandCategory::System, None)
+            Command::new("/terminal-send", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalSend))
                 .with_description("Send text to an interactive terminal (args: <handle> <text>)"),
-            Command::new("/terminal-resize", CommandCategory::System, None)
+            Command::new("/terminal-resize", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalResize))
                 .with_description("Resize an interactive terminal (args: <handle> <cols> <rows>)"),
-            Command::new("/terminal-resume", CommandCategory::System, None)
+            Command::new("/terminal-resume", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalResume))
                 .with_description("Resume live terminal output after lag/resync (args: [handle])"),
-            Command::new("/terminal-detach", CommandCategory::System, None)
+            Command::new("/terminal-detach", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalDetach))
                 .with_description("Detach from an interactive terminal; the process keeps running (args: [handle])"),
-            Command::new("/terminal-terminate", CommandCategory::System, None)
+            Command::new("/terminal-terminate", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalTerminate))
                 .with_description("Terminate an interactive terminal process (args: [handle])"),
-            Command::new("/terminal-remove", CommandCategory::System, None)
+            Command::new("/terminal-remove", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalRemove))
                 .with_description("Remove an interactive terminal handle, freeing scrollback (args: [handle])"),
-            Command::new("/tui-stats", CommandCategory::System, None)
+            Command::new("/tui-stats", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TuiStats))
                 .with_description("Show TUI runtime diagnostics"),
-            Command::new("/plugins", CommandCategory::System, None)
+            Command::new("/plugins", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Plugins))
                 .with_aliases(&["/plugin-list", "/plugin-ls"])
                 .with_description("List installed and built-in plugins"),
-            Command::new("/plugin-info", CommandCategory::System, None)
+            Command::new("/plugin-info", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginInfo))
                 .with_description("Show plugin runtime, capabilities, trust, and diagnostics (args: <plugin-id-or-name>)"),
-            Command::new("/plugin-enable", CommandCategory::System, None)
+            Command::new("/plugin-enable", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginEnable))
                 .with_description("Enable a plugin (args: <plugin-id-or-name>)"),
-            Command::new("/plugin-disable", CommandCategory::System, None)
+            Command::new("/plugin-disable", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginDisable))
                 .with_description("Disable a plugin (args: <plugin-id-or-name>)"),
-            Command::new("/plugin-doctor", CommandCategory::System, None)
+            Command::new("/plugin-doctor", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginDoctor))
                 .with_description("Diagnose plugin configuration and runtime health (args: [plugin-id-or-name])"),
-            Command::new("/plugin-remove", CommandCategory::System, None)
+            Command::new("/plugin-remove", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginRemove))
                 .with_description("Remove a local installed plugin (args: <plugin-id-or-name>)"),
-            Command::new("/plugin-install", CommandCategory::System, None)
+            Command::new("/plugin-install", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginInstall))
                 .with_description("Install a plugin from a local path (args: <path>)"),
-            Command::new("/collaborators", CommandCategory::System, None)
+            Command::new("/collaborators", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Collaborators))
                 .with_aliases(&["/presence", "/team"])
                 .with_description("Show collaborators for the active project (/collaborators, /collaborators refresh)"),
-            Command::new("/observe", CommandCategory::System, None)
+            Command::new("/observe", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Observe))
                 .with_aliases(&["/watch"])
                 .with_description("Follow another session read-only (/observe <session-id>)"),
-            Command::new("/stop-observing", CommandCategory::System, None)
+            Command::new("/stop-observing", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::StopObserving))
                 .with_aliases(&["/unwatch"])
                 .with_description("Stop following the observed session"),
-            Command::new("/chat", CommandCategory::System, None)
+            Command::new("/chat", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Chat))
                 .with_description("Show project chat for the active project (/chat)"),
-            Command::new("/chat-send", CommandCategory::System, None)
+            Command::new("/chat-send", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatSend))
                 .with_description("Send a chat message to the active project (/chat-send <text>)"),
-            Command::new("/chat-reply", CommandCategory::System, None)
+            Command::new("/chat-reply", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatReply))
                 .with_description("Reply to a chat message (/chat-reply <message-id> <text>)"),
-            Command::new("/chat-history", CommandCategory::System, None)
+            Command::new("/chat-history", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatHistory))
                 .with_description("Reload the project chat window (/chat-history)"),
-            Command::new("/chat-sync", CommandCategory::System, None)
+            Command::new("/chat-sync", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatSync))
                 .with_description("Incrementally sync project chat from the cached cursor (/chat-sync)"),
-            Command::new("/chat-read", CommandCategory::System, None)
+            Command::new("/chat-read", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatRead))
                 .with_description("Mark project chat as read up to the newest message (/chat-read)"),
-            Command::new("/chat-edit", CommandCategory::System, None)
+            Command::new("/chat-edit", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatEdit))
                 .with_description("Edit your chat message (/chat-edit <message-id> <new-text>)"),
-            Command::new("/chat-redact", CommandCategory::System, None)
+            Command::new("/chat-redact", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatRedact))
                 .with_description("Redact your chat message (/chat-redact <message-id> [reason])"),
-            Command::new("/chat-composing", CommandCategory::System, None)
+            Command::new("/chat-composing", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatComposing))
                 .with_description("Set or clear your typing indicator (/chat-composing on|off)"),
-            Command::new("/chat-action-task", CommandCategory::System, None)
+            Command::new("/chat-action-task", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatActionTask))
                 .with_description("Submit an agent task linked to a chat message (/chat-action-task <message-id> <agent> <prompt>)"),
-            Command::new("/chat-action-review", CommandCategory::System, None)
+            Command::new("/chat-action-review", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatActionReview))
                 .with_description("Request a review linked to a chat message (/chat-action-review <message-id> <agent> <prompt>)"),
-            Command::new("/chat-action-list", CommandCategory::System, None)
+            Command::new("/chat-action-list", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatActionList))
                 .with_description("List structured chat actions for the active channel (/chat-action-list [message-id])"),
+            Command::new(
+                "/edit-undo",
+                CommandCategory::Session,
+                CommandAction::Builtin(BuiltinSlashAction::EditUndo),
+            )
+            .with_description("Undo the latest durable edit checkpoint (/edit-undo [checkpoint-id])"),
+            Command::new(
+                "/edit-reapply",
+                CommandCategory::Session,
+                CommandAction::Builtin(BuiltinSlashAction::EditReapply),
+            )
+            .with_description("Reapply the latest undone edit checkpoint (/edit-reapply [checkpoint-id])"),
+            Command::new(
+                "/edit-checkpoints",
+                CommandCategory::Session,
+                CommandAction::Builtin(BuiltinSlashAction::EditCheckpoints),
+            )
+            .with_aliases(&["/checkpoints", "/history"])
+            .with_description("List durable edit checkpoints (/edit-checkpoints, aliases /checkpoints and /history)"),
+            Command::new(
+                "/tool-contracts",
+                CommandCategory::System,
+                CommandAction::Builtin(BuiltinSlashAction::ToolContracts),
+            )
+            .with_description("Show tool contract diagnostics (/tool-contracts)"),
+            Command::new(
+                "/worktree",
+                CommandCategory::System,
+                CommandAction::Builtin(BuiltinSlashAction::Worktree),
+            )
+            .with_description("List worktrees for the active workspace (/worktree)"),
         ]
     }
 
@@ -673,6 +881,13 @@ impl CommandRegistry {
         };
         let name = Self::to_slash_name(&cmd.name);
         let description = cmd.description.unwrap_or_default();
+        let is_process = cmd.process.is_some();
+        let template = if is_process { None } else { Some(cmd.template) };
+        let action = if is_process {
+            CommandAction::Process
+        } else {
+            CommandAction::Template
+        };
         Command {
             name: name.clone(),
             aliases: Vec::new(),
@@ -681,17 +896,14 @@ impl CommandRegistry {
             domain: classify_domain(&name, CommandCategory::Agent),
             scope,
             dialog: None,
-            template: if cmd.process.is_some() {
-                None
-            } else {
-                Some(cmd.template)
-            },
+            template,
             agent: cmd.agent,
             model: cmd.model,
             source: Some(cmd.source),
             source_kind,
             keywords: search_terms(&name, &description),
             process: cmd.process,
+            action,
         }
     }
 
@@ -766,6 +978,7 @@ impl CommandRegistry {
             source_kind,
             keywords: search_terms(&name, &description),
             process: None,
+            action: CommandAction::Plugin,
         }
     }
 
@@ -868,7 +1081,502 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 145);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 149);
+    }
+
+    #[test]
+    fn command_docs_count_matches_registry() {
+        // Guard against hand-maintained count drift: every hard-coded
+        // built-in total in `architecture/command.md` must equal the
+        // canonical registry length.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let doc = manifest.join("architecture/command.md");
+        let text = std::fs::read_to_string(&doc).expect("architecture/command.md must be readable");
+        let mut counts = Vec::new();
+        for cap in regex::Regex::new(r"(\d+)\s+(hardcoded|built-in|total)")
+            .expect("count regex")
+            .captures_iter(&text)
+        {
+            let n: usize = cap[1].parse().expect("count parses");
+            counts.push(n);
+        }
+        // Fallback scan for the "Built-in count is N" invariant line.
+        for cap in regex::Regex::new(r"[Cc]ount is (\d+)")
+            .expect("invariant regex")
+            .captures_iter(&text)
+        {
+            counts.push(cap[1].parse().expect("count parses"));
+        }
+        assert!(
+            !counts.is_empty(),
+            "command.md must state the built-in total"
+        );
+        let expected = CommandRegistry::built_in_commands().len();
+        for n in counts {
+            assert_eq!(
+                n, expected,
+                "architecture/command.md count {n} drifts from registry {expected}"
+            );
+        }
+    }
+
+    fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
+        use BuiltinSlashAction as B;
+        vec![
+            B::Reload,
+            B::Exit,
+            B::Help,
+            B::Tree,
+            B::AgentSelect,
+            B::Agents,
+            B::New,
+            B::Compact,
+            B::Connect,
+            B::Connections,
+            B::Status,
+            B::Policy,
+            B::Approval,
+            B::Sandbox,
+            B::Context,
+            B::Cost,
+            B::Usage,
+            B::Themes,
+            B::Tui,
+            B::TuiStats,
+            B::Tts,
+            B::Collaborators,
+            B::Observe,
+            B::StopObserving,
+            B::Chat,
+            B::ChatSend,
+            B::ChatReply,
+            B::ChatHistory,
+            B::ChatSync,
+            B::ChatRead,
+            B::ChatEdit,
+            B::ChatRedact,
+            B::ChatComposing,
+            B::ChatActionTask,
+            B::ChatActionReview,
+            B::ChatActionList,
+            B::Sessions,
+            B::Share,
+            B::Unshare,
+            B::Rename,
+            B::Timeline,
+            B::Undo,
+            B::Redo,
+            B::Export,
+            B::Import,
+            B::Timestamps,
+            B::Thinking,
+            B::ModelsRefresh,
+            B::Variants,
+            B::Fork,
+            B::Workspaces,
+            B::Worktree,
+            B::Editor,
+            B::Loop,
+            B::Tasks,
+            B::Task,
+            B::Workspace,
+            B::Schedules,
+            B::TaskDel,
+            B::Memory,
+            B::MemorySearch,
+            B::MemoryList,
+            B::MemoryRemember,
+            B::MemoryForget,
+            B::MemoryConsolidate,
+            B::Habits,
+            B::HabitDismiss,
+            B::SkillPromote,
+            B::SkillProposals,
+            B::SkillProposal,
+            B::Goal,
+            B::Plan,
+            B::State,
+            B::Search,
+            B::Doctor,
+            B::ToolContracts,
+            B::LspStatus,
+            B::LspPreviews,
+            B::LspPreview,
+            B::LspPreviewClear,
+            B::LspPreviewRefresh,
+            B::LspPreviewApply,
+            B::LspServers,
+            B::LspCapabilities,
+            B::LspErrors,
+            B::LspRoot,
+            B::LspDoctor,
+            B::LspContextDiagnostics,
+            B::LspRepairLocal,
+            B::LspRepairHunk,
+            B::LspReviewFile,
+            B::LspReviewDiff,
+            B::LspSecurityReview,
+            B::LspImpact,
+            B::LspTestRepair,
+            B::LspInterface,
+            B::LspCrossRepair,
+            B::LspCallNeighbors,
+            B::LspRestart,
+            B::LspStop,
+            B::LspCacheStatus,
+            B::LspCacheClear,
+            B::ToolBackends,
+            B::Diff,
+            B::Tests,
+            B::Test,
+            B::Revert,
+            B::EditUndo,
+            B::EditReapply,
+            B::EditCheckpoints,
+            B::Research,
+            B::ResearchRuns,
+            B::ResearchOpen,
+            B::ResearchShow,
+            B::SecurityReview,
+            B::SecurityReviewShow,
+            B::SecurityReviewCancel,
+            B::ShellList,
+            B::ShellShow,
+            B::ShellInclude,
+            B::ShellRerun,
+            B::ShellKill,
+            B::ShellAsk,
+            B::ShellExpand,
+            B::Plugins,
+            B::TerminalCreate,
+            B::TerminalList,
+            B::TerminalAttach,
+            B::TerminalShow,
+            B::TerminalFocus,
+            B::TerminalSend,
+            B::TerminalResize,
+            B::TerminalResume,
+            B::TerminalDetach,
+            B::TerminalTerminate,
+            B::TerminalRemove,
+            B::PluginInfo,
+            B::PluginEnable,
+            B::PluginDisable,
+            B::PluginDoctor,
+            B::PluginRemove,
+            B::PluginInstall,
+        ]
+    }
+
+    #[test]
+    fn every_builtin_entry_has_coherent_action() {
+        let registry = CommandRegistry::new();
+        for cmd in registry.commands() {
+            match &cmd.action {
+                CommandAction::Dialog(d) => {
+                    assert_eq!(
+                        cmd.dialog.as_ref(),
+                        Some(d),
+                        "{} dialog action must agree with dialog field",
+                        cmd.name
+                    );
+                    assert!(
+                        cmd.template.is_none(),
+                        "{} dialog must not carry template",
+                        cmd.name
+                    );
+                    assert!(
+                        cmd.process.is_none(),
+                        "{} dialog must not carry process",
+                        cmd.name
+                    );
+                }
+                CommandAction::Builtin(_) => {
+                    assert!(
+                        cmd.dialog.is_none(),
+                        "{} builtin must not carry dialog",
+                        cmd.name
+                    );
+                    assert!(
+                        cmd.template.is_none(),
+                        "{} builtin must not carry template",
+                        cmd.name
+                    );
+                    assert!(
+                        cmd.process.is_none(),
+                        "{} builtin must not carry process",
+                        cmd.name
+                    );
+                }
+                CommandAction::Template => {
+                    assert!(
+                        cmd.dialog.is_none(),
+                        "{} template must not carry dialog",
+                        cmd.name
+                    );
+                    assert!(
+                        cmd.template.is_some(),
+                        "{} template action needs template",
+                        cmd.name
+                    );
+                    assert!(
+                        cmd.process.is_none(),
+                        "{} template must not carry process",
+                        cmd.name
+                    );
+                }
+                CommandAction::Process => {
+                    assert!(
+                        cmd.process.is_some(),
+                        "{} process action needs spec",
+                        cmd.name
+                    );
+                }
+                CommandAction::Plugin => {
+                    panic!(
+                        "built-in catalog must not contain plugin actions ({})",
+                        cmd.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_builtin_action_is_referenced_by_a_canonical_command() {
+        let registry = CommandRegistry::new();
+        let mut seen = std::collections::HashSet::new();
+        for cmd in registry.commands() {
+            if let CommandAction::Builtin(b) = &cmd.action {
+                seen.insert(*b);
+            }
+        }
+        for variant in all_builtin_variants() {
+            assert!(
+                seen.contains(&variant),
+                "BuiltinSlashAction::{variant:?} has no canonical registry command"
+            );
+        }
+        // No surplus: registry builtins must equal the exhaustive list.
+        assert_eq!(
+            seen.len(),
+            all_builtin_variants().len(),
+            "registry builtin count must match exhaustive variant list"
+        );
+    }
+
+    #[test]
+    fn aliases_resolve_to_canonical_action() {
+        let registry = CommandRegistry::new();
+        for cmd in registry.commands() {
+            for alias in &cmd.aliases {
+                let resolved = registry
+                    .find_by_name_or_alias(alias)
+                    .unwrap_or_else(|| panic!("alias {alias} must resolve"));
+                assert_eq!(
+                    resolved.name, cmd.name,
+                    "alias {alias} must resolve to canonical {}",
+                    cmd.name
+                );
+                assert_eq!(
+                    resolved.action, cmd.action,
+                    "alias {alias} must share the canonical action"
+                );
+            }
+        }
+        // Spot-check the corrective reconciliation aliases.
+        let models = registry
+            .find_by_name_or_alias("/model")
+            .expect("/model resolves");
+        assert_eq!(models.name, "/models");
+        assert!(matches!(models.action, CommandAction::Dialog(_)));
+        let checkpoints = registry
+            .find_by_name_or_alias("/checkpoints")
+            .expect("/checkpoints resolves");
+        assert_eq!(checkpoints.name, "/edit-checkpoints");
+        let history = registry
+            .find_by_name_or_alias("/history")
+            .expect("/history resolves");
+        assert_eq!(history.name, "/edit-checkpoints");
+        assert_eq!(checkpoints.action, history.action);
+    }
+
+    #[test]
+    fn builtin_aliases_win_dynamic_collisions() {
+        // Under existing precedence rules built-ins win name collisions;
+        // aliases participate in the reservation set.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("commands")).unwrap();
+        std::fs::write(
+            root.path().join("commands/model.md"),
+            "---\ndescription: Must lose to builtin alias\n---\nNope\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("commands/checkpoints.md"),
+            "---\ndescription: Must lose to builtin alias\n---\nNope\n",
+        )
+        .unwrap();
+        let registry = CommandRegistry::new_for_workspace_root(root.path());
+        assert_eq!(
+            registry
+                .find_by_name_or_alias("/model")
+                .unwrap()
+                .source_kind,
+            CommandSource::BuiltIn
+        );
+        assert_eq!(
+            registry
+                .find_by_name_or_alias("/checkpoints")
+                .unwrap()
+                .source_kind,
+            CommandSource::BuiltIn
+        );
+        registry.validate().expect("scoped catalog is valid");
+    }
+
+    #[test]
+    fn dialog_template_process_actions_bypass_builtin_switch() {
+        let registry = CommandRegistry::new();
+        // Dialog authorities.
+        for name in ["/models", "/mcps", "/keybinds", "/stats", "/review"] {
+            let cmd = registry.find_by_name_or_alias(name).unwrap();
+            assert!(
+                matches!(cmd.action, CommandAction::Dialog(_)),
+                "{name} must be a dialog action"
+            );
+        }
+        // Template authorities.
+        for name in ["/pr", "/issue"] {
+            let cmd = registry.find_by_name_or_alias(name).unwrap();
+            assert!(
+                matches!(cmd.action, CommandAction::Template),
+                "{name} must be a template action"
+            );
+        }
+        // Dynamic adapters preserve M010 scope.
+        let template_cmd = CommandRegistry::from_dynamic_command(crate::command::Command {
+            name: "ship".to_string(),
+            description: Some("Ship it".to_string()),
+            template: "Release {args}".to_string(),
+            agent: None,
+            model: None,
+            source: "test".to_string(),
+            process: None,
+        });
+        assert!(matches!(template_cmd.action, CommandAction::Template));
+        let process_cmd = CommandRegistry::from_dynamic_command(crate::command::Command {
+            name: "quota".to_string(),
+            description: Some("quota".to_string()),
+            template: String::new(),
+            agent: None,
+            model: None,
+            source: "test".to_string(),
+            process: Some(crate::command::ProcessCommandSpec {
+                command: "echo".to_string(),
+                ..Default::default()
+            }),
+        });
+        assert!(matches!(process_cmd.action, CommandAction::Process));
+    }
+
+    #[test]
+    fn previously_unreachable_literals_now_resolve_to_bounded_actions() {
+        let registry = CommandRegistry::new();
+        let expectations: &[(&str, &str)] = &[
+            ("/model", "/models"),
+            ("/checkpoints", "/edit-checkpoints"),
+            ("/history", "/edit-checkpoints"),
+            ("/edit-undo", "/edit-undo"),
+            ("/edit-reapply", "/edit-reapply"),
+            ("/tool-contracts", "/tool-contracts"),
+            ("/worktree", "/worktree"),
+            ("/shell-ask", "/shell-ask"),
+        ];
+        for (literal, canonical) in expectations {
+            let cmd = registry
+                .find_by_name_or_alias(literal)
+                .unwrap_or_else(|| panic!("{literal} must resolve"));
+            assert_eq!(&cmd.name, canonical, "{literal} canonical mismatch");
+            assert!(
+                matches!(
+                    cmd.action,
+                    CommandAction::Builtin(_) | CommandAction::Dialog(_)
+                ),
+                "{literal} must carry a bounded executable action"
+            );
+        }
+        // /edit-undo, /edit-reapply, /tool-contracts, /worktree, /shell-ask
+        // are built-in actions; /model is a dialog alias; checkpoints share
+        // one built-in action.
+        let undo = registry.find_by_name_or_alias("/edit-undo").unwrap();
+        assert_eq!(
+            undo.action,
+            CommandAction::Builtin(BuiltinSlashAction::EditUndo)
+        );
+        let reapply = registry.find_by_name_or_alias("/edit-reapply").unwrap();
+        assert_eq!(
+            reapply.action,
+            CommandAction::Builtin(BuiltinSlashAction::EditReapply)
+        );
+        let list = registry.find_by_name_or_alias("/edit-checkpoints").unwrap();
+        assert_eq!(
+            list.action,
+            CommandAction::Builtin(BuiltinSlashAction::EditCheckpoints)
+        );
+        let contracts = registry.find_by_name_or_alias("/tool-contracts").unwrap();
+        assert_eq!(
+            contracts.action,
+            CommandAction::Builtin(BuiltinSlashAction::ToolContracts)
+        );
+        let worktree = registry.find_by_name_or_alias("/worktree").unwrap();
+        assert_eq!(
+            worktree.action,
+            CommandAction::Builtin(BuiltinSlashAction::Worktree)
+        );
+        let ask = registry.find_by_name_or_alias("/shell-ask").unwrap();
+        assert_eq!(
+            ask.action,
+            CommandAction::Builtin(BuiltinSlashAction::ShellAsk)
+        );
+    }
+
+    #[test]
+    fn checkpoint_has_evidence_backed_removal_disposition() {
+        // `/checkpoint` was registered since 9bf9293b without any execution
+        // branch. No session-checkpoint operation with the promised
+        // "Create a checkpoint of current session" semantics exists today:
+        // goal checkpoints are goal-scoped (`/goal checkpoint`) and edit
+        // checkpoints are listed via `/edit-checkpoints`. Per the plan the
+        // name is removed rather than silently redirected.
+        let registry = CommandRegistry::new();
+        assert!(registry.find_by_name_or_alias("/checkpoint").is_none());
+        assert!(registry.find_by_name_or_alias("/checkpoints").is_some());
+        assert!(registry
+            .find_by_name_or_alias("/edit-checkpoints")
+            .is_some());
+    }
+
+    #[test]
+    fn reconciled_commands_stay_observer_blocked() {
+        // Fail-closed allowlist: none of the reconciled mutating/list
+        // commands may become observer-allowed.
+        for name in [
+            "/model",
+            "/edit-undo",
+            "/edit-reapply",
+            "/edit-checkpoints",
+            "/checkpoints",
+            "/history",
+            "/tool-contracts",
+            "/worktree",
+            "/shell-ask",
+        ] {
+            assert!(
+                !crate::tui::app::state::observe::is_observer_allowed_command(name),
+                "{name} must stay observer-blocked"
+            );
+        }
     }
 
     #[test]
@@ -937,6 +1645,7 @@ mod tests {
         assert_eq!(converted.source_kind, CommandSource::Project);
         assert_eq!(converted.scope, CommandScope::Project);
         assert!(converted.process.is_none());
+        assert_eq!(converted.action, CommandAction::Template);
     }
 
     #[test]
@@ -974,6 +1683,7 @@ mod tests {
         assert_eq!(proc.command, "python3");
         assert_eq!(proc.args, vec!["scripts/quota.py"]);
         assert!(converted.is_process());
+        assert_eq!(converted.action, CommandAction::Process);
     }
 
     #[test]
@@ -995,6 +1705,7 @@ mod tests {
         assert!(converted.is_process());
         assert!(converted.process.is_some());
         assert!(converted.template.is_none());
+        assert_eq!(converted.action, CommandAction::Process);
     }
 
     #[test]

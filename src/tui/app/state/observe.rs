@@ -675,7 +675,15 @@ mod tests {
             "/plan",
             // File/worktree mutations.
             "/revert",
-            "/checkpoint",
+            "/worktree",
+            "/edit-undo",
+            "/edit-reapply",
+            "/edit-checkpoints",
+            "/checkpoints",
+            "/history",
+            "/tool-contracts",
+            "/shell-ask",
+            "/model",
             "/lsp-preview-apply",
             "/preview-apply",
             // Git-adjacent mutations via agent templates.
