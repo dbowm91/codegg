@@ -1,6 +1,7 @@
 # Team Collaboration Corrective M002 — Project/Channel Chat Access Policy
 
-Status: blocked
+Status: ready (unblocked by M001 closure at
+plans/closure/team-collaboration-corrective/001-status.md)
 
 Repository baseline: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 

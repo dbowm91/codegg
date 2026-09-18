@@ -1,6 +1,8 @@
 # Team Collaboration Corrective M001 — Network API Authorization Convergence
 
-Status: ready for handoff
+Status: implemented (closure at
+plans/closure/team-collaboration-corrective/001-status.md;
+implementation `cc41e4a4`)
 
 Repository baseline: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 

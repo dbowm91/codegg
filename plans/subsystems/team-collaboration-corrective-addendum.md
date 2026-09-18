@@ -173,9 +173,9 @@ The corrective campaign closes only when a Viewer can be granted one project/cha
 
 | Milestone | Status | Dependencies |
 |---|---|---|
-| M001 | ready | closed identity/authorization foundation |
-| M002 | blocked | M001 |
+| M001 | closed | closed identity/authorization foundation (`plans/closure/team-collaboration-corrective/001-status.md`; implementation `cc41e4a4`) |
+| M002 | ready | M001 closed |
 | M003 | blocked | M001 + M002 |
-| M004 | blocked | M001 |
+| M004 | ready | M001 closed |
 | M005 | blocked | M001 + M002 |
 | M006 | blocked | M001-M005 |
