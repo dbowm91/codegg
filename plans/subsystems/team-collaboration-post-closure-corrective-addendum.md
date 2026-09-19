@@ -1,6 +1,6 @@
 # Team Collaboration — Post-Closure Authority and Lifecycle Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `626585a1fad449a637e4828777bfa21d222abea0`
 
@@ -179,4 +179,4 @@ This corrective closes only when:
 |---|---|---|
 | M001 | closed | predecessor M001-M006 closed; existing local-filesystem authority rule is stable |
 | M002 | closed | predecessor M005 closed; TUI task registry contract is stable |
-| M003 | ready | M001 + M002 closed; guard semantics encode corrected production boundary |
+| M003 | closed | M001 + M002 closed; guard semantics encode corrected production boundary |
