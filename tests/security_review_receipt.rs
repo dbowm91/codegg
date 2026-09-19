@@ -10,7 +10,7 @@ use codegg::security::workflow::{
     StructuredSecurityEvidence,
 };
 use codegg::tui::app::{App, TuiMsg};
-use codegg::tui::command::COMMAND_REGISTRY;
+use codegg::tui::command::{BuiltinSlashAction, CommandAction, COMMAND_REGISTRY};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -341,7 +341,11 @@ fn security_review_show_command_is_registered() {
         .find_by_name_or_alias("security-review-show")
         .expect("/security-review-show command should be registered");
     assert_eq!(cmd.name, "/security-review-show");
-    assert_eq!(cmd.dialog, Some(codegg::tui::Dialog::SecurityReview));
+    assert_eq!(
+        cmd.action,
+        CommandAction::Builtin(BuiltinSlashAction::SecurityReviewShow)
+    );
+    assert!(cmd.dialog.is_none());
 }
 
 #[test]
@@ -355,10 +359,9 @@ fn security_review_cancel_command_is_registered() {
 
 #[test]
 fn security_review_show_without_receipt_warns() {
-    // When no receipt exists, the dialog opens (because the command
-    // is registered with `dialog: Some(Dialog::SecurityReview)`) but
-    // the inner `receipt` field stays `None` — the dialog renders an
-    // empty-state message and the user is informed via toast.
+    // The typed built-in action handles the missing-result case directly:
+    // no empty dialog is mounted, no review is started, and the user gets
+    // a bounded instruction to run the review first.
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::new_for_testing(dir.path().to_string_lossy().to_string());
     assert!(app.latest_security_review.is_none());
@@ -370,15 +373,16 @@ fn security_review_show_without_receipt_warns() {
     app.prompt_state.prompt.set_cursor(len);
     app.process_msg(TuiMsg::SubmitPrompt);
 
-    let dialog = app
-        .dialog_state
-        .security_review_dialog
-        .as_ref()
-        .expect("dialog should be opened even without a receipt");
-    assert!(
-        dialog.receipt.is_none(),
-        "dialog should render the no-receipt empty state"
-    );
+    assert_eq!(app.ui_state.dialog, codegg::tui::Dialog::None);
+    assert!(app.dialog_state.security_review_dialog.is_none());
+    assert!(app.security_review_running.is_none());
+    assert!(app.latest_security_review.is_none());
+    assert!(app.messages_state.toasts.iter().any(|toast| {
+        toast
+            .message
+            .contains("No security review result available yet")
+            && toast.message.contains("/security-review")
+    }));
 }
 
 #[test]
@@ -396,6 +400,16 @@ fn security_review_show_with_receipt_opens_dialog() {
     app.process_msg(TuiMsg::SubmitPrompt);
 
     assert_eq!(app.ui_state.dialog, codegg::tui::Dialog::SecurityReview);
+    let dialog = app
+        .dialog_state
+        .security_review_dialog
+        .as_ref()
+        .expect("dialog should be mounted with a receipt");
+    assert_eq!(
+        dialog.receipt.as_ref().as_ref().map(|r| r.id.as_str()),
+        Some("sr-test-1")
+    );
+    assert!(app.security_review_running.is_none());
 }
 
 #[test]

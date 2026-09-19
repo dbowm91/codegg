@@ -1,6 +1,6 @@
 # Command Surface / Security Review — Post-Closure CI Corrective Addendum
 
-Status: active
+Status: closing
 
 Repository baseline reviewed: `a996e20060a0103a152a80fb62463241c1fd1162`
 
@@ -51,7 +51,7 @@ No production change is expected. If implementation discovers that the current b
 
 ### C001 — Security Review command test-contract and CI closure
 
-Status: ready.
+Status: closing; hosted CI closure evidence pending.
 
 Plan: `plans/implementation/command-surface-security-review-ci-post-closure-corrective/001-security-review-show-contract-and-ci-closure.md`.
 
@@ -72,4 +72,4 @@ The workstream closes only when:
 
 | Milestone | Status | Dependencies |
 |---|---|---|
-| C001 | ready | command-surface M001 closed; current production behavior already matches accepted contract |
+| C001 | implemented | command-surface M001 closed; typed-action tests and local verification updated; hosted CI closure evidence pending |
