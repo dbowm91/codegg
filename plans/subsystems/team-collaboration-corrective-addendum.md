@@ -1,6 +1,6 @@
 # Team Collaboration, Shared Sessions, and Workspace Chat — Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 
@@ -178,4 +178,4 @@ The corrective campaign closes only when a Viewer can be granted one project/cha
 | M003 | closed | team administration (`plans/closure/team-collaboration-corrective/003-status.md`; implementation `f7afefb1`) |
 | M004 | closed | M001 closed (closure `plans/closure/team-collaboration-corrective/004-status.md`; implementation `1bc967c1`) |
 | M005 | closed | M001 + M002 closed (closure `plans/closure/team-collaboration-corrective/005-status.md`; implementation `86217a7d`) |
-| M006 | ready | M001-M005 (M001+M002+M003+M004+M005 closed) |
+| M006 | closed | M001-M005 (M001+M002+M003+M004+M005 closed; qualification `plans/closure/team-collaboration-corrective/006-status.md`, harness-only, no production delta) |

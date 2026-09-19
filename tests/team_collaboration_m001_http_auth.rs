@@ -578,17 +578,34 @@ async fn pending_control_ids_do_not_leak_across_projects() {
     let fx = fixture().await;
     let session_a = create_session_as(&fx, &fx.owner_a, &fx.project_a, &fx.workspace_a).await;
 
+    // M004 (ADR-0007, accepted): control responses narrow to the
+    // active-turn controller lease — no lease means no one may respond
+    // until an explicit recovery takeover. The pending items below
+    // therefore carry their owning turn and the owner holds the matching
+    // durable lease; outsider/viewer probes still deny as 404 at the
+    // capability gate before the lease is ever consulted.
+    let turn_id = "turn-m001-pending".to_owned();
+    codegg_core::session_control::SessionControllerStore::new(fx.pool.clone())
+        .acquire(
+            &session_a,
+            &turn_id,
+            fx.owner_a.principal_id(),
+            Some("client-owner-a"),
+            1,
+        )
+        .await
+        .expect("owner controller lease");
     let (tx, _rx) = tokio::sync::oneshot::channel();
     codegg_core::bus::PermissionRegistry::register_with_session(
         session_a.clone(),
-        None,
+        Some(turn_id.clone()),
         "perm-1".to_owned(),
         tx,
     );
     let (qtx, _qrx) = tokio::sync::oneshot::channel();
     codegg_core::bus::QuestionRegistry::register_with_session(
         session_a.clone(),
-        None,
+        Some(turn_id.clone()),
         "q-1".to_owned(),
         qtx,
     );
