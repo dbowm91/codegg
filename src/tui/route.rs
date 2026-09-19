@@ -3,6 +3,12 @@ pub enum Route {
     #[default]
     Home,
     Session(String),
+    /// Team Collaboration M005: non-modal Workspace primary view.
+    /// The selected project is an explicit routing locator stored in
+    /// `WorkspaceDashboardState`; it never confers authority. The
+    /// ordinary Session/Task composer stays editable while this route
+    /// is active and the sidebar shows project chat for the selection.
+    Workspace,
 }
 
 pub struct RouteManager {

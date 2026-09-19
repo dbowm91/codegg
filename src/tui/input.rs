@@ -387,7 +387,7 @@ impl ActionKey {
             Self::PreviousProjectTab => "Previous project tab",
             Self::CloseProjectTab => "Close project tab",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
-            Self::OpenWorkspaceDashboard => "Open workspace dashboard",
+            Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
         }
     }
 
@@ -962,7 +962,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Ctrl+O",
-            action: "Open workspace dashboard",
+            action: "Open Workspace view (selected-project chat)",
             condition: None,
         },
         HelpEntry {
@@ -1119,13 +1119,13 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Ctrl+O",
-            action: "Open workspace dashboard",
+            action: "Open Workspace view (selected-project chat)",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "W",
-            action: "Open workspace dashboard",
+            action: "Open Workspace view (selected-project chat)",
             condition: Some("vim mode"),
         },
         HelpEntry {

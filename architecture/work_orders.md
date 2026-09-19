@@ -438,20 +438,20 @@ One bounded daemon-owned aggregate for every authorized project
   migration: the projection derives from canonical stores on
   request; caches are rebuildable and never authoritative.
 - TUI (`src/tui/commands/workspace_dashboard.rs`,
-  `src/tui/app/state/workspace_dashboard.rs`,
-  `src/tui/components/dialogs/workspace_dashboard.rs`): one
-  aggregate request per refresh (no N+1 fan-out, fake-client counted
-  in tests); `Dialog::WorkspaceDashboard` overlay preserves the
-  active tab/session and `Esc` pops back without reloads; `j`/`k`,
-  arrows, `g`/`G`, type-to-filter, `Tab` expand (one bounded
-  `WorkOrderList` for the selected project only), `Ctrl+R` refresh;
-  `Enter` focuses/opens the project tab and opens its Task view
-  through existing machinery (no second tab model, no fabricated
-  sessions). Event hints mark rows dirty without focus theft;
-  reconnect resyncs from the daemon; revocation clears via
-  whole-page replacement. `/workspace` and the configurable
-  `OpenWorkspaceDashboard` action (`Ctrl+O`, vim `W`) open the same
-  view; collision audit and help entries cover both.
+  `src/tui/app/state/workspace_dashboard.rs`): one aggregate request
+  per refresh (no N+1 fan-out, fake-client counted in tests);
+  M005 promotes the dashboard to the non-modal `Route::Workspace`
+  primary view (the obsolete `Dialog::WorkspaceDashboard` modal is
+  never pushed for normal navigation). The composer stays editable and
+  resolves the selected project through an open tab (fail visibly, no
+  cwd/hidden-session fallback); `Space` expands one bounded
+  `WorkOrderList` for the selected project only (`Tab` stays
+  composer-mode owned); `Enter` with text submits Session/Task for the
+  selection while empty `Enter` descends to the Task view. Event hints
+  mark rows dirty without focus theft; reconnect resyncs; revocation
+  clears the row plus that project's chat cache. `/workspace` and the
+  configurable `OpenWorkspaceDashboard` action (`Ctrl+O`) open the same
+  view; collision audit and help entries cover it.
 
 ## External task triggers (M005)
 

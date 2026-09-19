@@ -335,6 +335,12 @@ pub(crate) fn apply_chat_history_loaded(
             false,
             reconnect_epoch,
         );
+        // M005: Workspace revocation is fail-closed across both surfaces:
+        // drop the dashboard row/expansion so denied projects vanish from
+        // the list and never linger under another selection.
+        if crate::tui::commands::workspace_dashboard::is_workspace_view_active(app) {
+            crate::tui::commands::workspace_dashboard::clear_workspace_revoked(app, &project_id);
+        }
         refresh_chat_panel(app);
         return;
     }
@@ -549,6 +555,9 @@ pub(crate) fn apply_chat_sync_loaded(
             false,
             reconnect_epoch,
         );
+        if crate::tui::commands::workspace_dashboard::is_workspace_view_active(app) {
+            crate::tui::commands::workspace_dashboard::clear_workspace_revoked(app, &project_id);
+        }
         refresh_chat_panel(app);
         return;
     }
@@ -1406,8 +1415,11 @@ pub(crate) fn on_chat_message_committed(app: &mut App, message: ChatMessageDto) 
     if app.chat.apply_event_committed(&message) {
         refresh_chat_panel(app);
     } else if app.chat.note_hint(&message.project_id) {
-        let is_active = app.active_project_id() == Some(message.project_id.as_str());
-        if is_active {
+        // M005: Workspace selection owns the chat target while the view
+        // is active; otherwise the active tab.
+        let is_target =
+            app.chat_target_project_id().as_deref() == Some(message.project_id.as_str());
+        if is_target {
             start_chat_history(app, message.project_id.clone());
         }
     }
@@ -1418,8 +1430,9 @@ pub(crate) fn on_chat_message_edited(app: &mut App, message: ChatMessageDto) {
     if app.chat.apply_event_edited(&message) {
         refresh_chat_panel(app);
     } else if app.chat.note_hint(&message.project_id) {
-        let is_active = app.active_project_id() == Some(message.project_id.as_str());
-        if is_active {
+        let is_target =
+            app.chat_target_project_id().as_deref() == Some(message.project_id.as_str());
+        if is_target {
             start_chat_history(app, message.project_id.clone());
         }
     }
@@ -1439,8 +1452,8 @@ pub(crate) fn on_chat_message_redacted(
     {
         refresh_chat_panel(app);
     } else if app.chat.note_hint(&project_id) {
-        let is_active = app.active_project_id() == Some(project_id.as_str());
-        if is_active {
+        let is_target = app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+        if is_target {
             start_chat_history(app, project_id);
         }
     }
@@ -1451,16 +1464,22 @@ pub(crate) fn on_chat_message_redacted(
 /// authorized composing-list path only when the chat panel is showing
 /// (no polling storm from background typing).
 pub(crate) fn on_chat_composing_hint(app: &mut App, project_id: String, channel_id: String) {
-    let panel_showing = app
-        .focus_manager
-        .has_dialog(crate::tui::components::component::DialogType::ProjectChat);
+    // M005: the Workspace side panel counts as showing when the view is
+    // active and bound to this project; otherwise the modal dialog.
+    let workspace_showing =
+        crate::tui::commands::workspace_dashboard::is_workspace_view_active(app)
+            && app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+    let panel_showing = workspace_showing
+        || app
+            .focus_manager
+            .has_dialog(crate::tui::components::component::DialogType::ProjectChat);
     if !panel_showing {
         app.chat.note_hint(&project_id);
         return;
     }
     if app.chat.note_hint(&project_id) {
-        let is_active = app.active_project_id() == Some(project_id.as_str());
-        if is_active {
+        let is_target = app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+        if is_target {
             // Refresh the composing snapshot only; the message window
             // re-fetches on explicit user action.
             let _ = channel_id;
@@ -1966,8 +1985,8 @@ pub(crate) fn on_chat_action_updated(app: &mut App, action: ChatActionDto) {
     if app.chat.apply_event_action(&action) {
         refresh_chat_panel(app);
     } else if app.chat.note_hint(&action.project_id) {
-        let is_active = app.active_project_id() == Some(action.project_id.as_str());
-        if is_active {
+        let is_target = app.chat_target_project_id().as_deref() == Some(action.project_id.as_str());
+        if is_target {
             start_chat_action_list(
                 app,
                 action.project_id.clone(),

@@ -54,9 +54,27 @@ impl WorkspaceDashboardRow {
     }
 }
 
+/// M005: explicit input focus while the Workspace primary view is
+/// active. The ordinary bottom composer stays editable in `Composer`
+/// (Session/Task input); `Chat` focuses the side-panel chat draft for
+/// the selected project. List navigation (Up/Down/PgUp/PgDn/Home/End)
+/// works in both; bare filter text is only accepted in Normal mode so
+/// Insert-mode typing never leaves the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceFocus {
+    #[default]
+    Composer,
+    Chat,
+}
+
 /// Global dashboard view state: bounded cached rows, filter/selection,
 /// refresh generation, return-to-prior-view identity, and one lazily
 /// fetched inline expansion for the selected project.
+///
+/// M005: this state backs the non-modal `Route::Workspace` primary view
+/// (not a `Dialog::WorkspaceDashboard` modal). The selected project is
+/// an explicit routing locator guarded by `generation` + `reconnect_epoch`;
+/// it never activates heavy project services and never confers authority.
 #[derive(Debug)]
 pub struct WorkspaceDashboardState {
     /// Cached rows in daemon order (attention/running/recency/name).
@@ -76,7 +94,7 @@ pub struct WorkspaceDashboardState {
     /// completions from a prior epoch are dropped.
     pub reconnect_epoch: u64,
     /// The project tab that was active when the dashboard opened.
-    /// `Esc` returns focus there without reloading unrelated state.
+    /// Retained for diagnostics; `Route` history owns return navigation.
     pub return_tab: Option<ProjectTabId>,
     /// Event-hint dirty flag: set without stealing focus; cleared by a
     /// bounded refresh.
@@ -205,6 +223,20 @@ impl WorkspaceDashboardState {
         indices
             .get(self.selected_row)
             .and_then(|&i| self.rows.get(i))
+    }
+
+    /// M005: canonical selected-project locator for composer/chat routing.
+    /// `None` when no row is selected. Callers must resolve execution
+    /// context through an open project tab and fail visibly when the
+    /// project has no tab/root — never fall back to cwd or the hidden
+    /// prior session.
+    pub fn selected_project_id(&self) -> Option<String> {
+        self.selected().map(|row| row.summary.project_id.clone())
+    }
+
+    /// M005: selected project display name for the chat side panel.
+    pub fn selected_display_name(&self) -> Option<String> {
+        self.selected().map(|row| row.summary.display_name.clone())
     }
 
     /// Begin a new load generation; returns the generation the

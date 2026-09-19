@@ -19,6 +19,18 @@ impl App {
         crate::tui::app::state::resolve_active_execution_context(&self.project_tabs)
     }
 
+    /// M005: chat/composer target project. While the Workspace primary
+    /// view is active, the selected project owns routing; otherwise the
+    /// active tab. `None` when the view has no selection or no tab is
+    /// active. Never falls back to cwd or hidden state.
+    pub fn chat_target_project_id(&self) -> Option<String> {
+        if crate::tui::commands::workspace_dashboard::is_workspace_view_active(self) {
+            crate::tui::commands::workspace_dashboard::workspace_selected_project_id(self)
+        } else {
+            self.active_project_id().map(str::to_string)
+        }
+    }
+
     /// Return the active workspace root for legacy local services. The
     /// value is still resolved from the active tab, never from process cwd.
     pub fn active_workspace_root(&self) -> Option<PathBuf> {
@@ -178,10 +190,12 @@ impl App {
         // Project Collaboration M002: reconnect resumes the M001 cursor
         // (`next_cursor`) or resyncs the bounded window. Bump the chat
         // epoch (drops pre-reconnect completions) and re-fetch the
-        // active project; an observer-target disconnect leaves chat
-        // usable because chat refresh is independent of observation.
+        // chat target (M005: Workspace selection while the view is
+        // active, otherwise the active project); an observer-target
+        // disconnect leaves chat usable because chat refresh is
+        // independent of observation.
         self.chat.on_reconnect();
-        if let Some(project_id) = self.active_project_id().map(str::to_string) {
+        if let Some(project_id) = self.chat_target_project_id() {
             crate::tui::commands::chat::start_chat_history(self, project_id);
         }
         // Project Work Orders M004: reconnect rebuilds the open

@@ -77,7 +77,7 @@ pub use work_orders::{
     MAX_TRIGGER_BEARER_CHARS, MAX_TRIGGER_ID_CHARS,
 };
 pub use workspace_dashboard::{
-    dashboard_row_badge, WorkspaceDashboardRow, WorkspaceDashboardState,
+    dashboard_row_badge, WorkspaceDashboardRow, WorkspaceDashboardState, WorkspaceFocus,
     MAX_DASHBOARD_EXPANDED_TASKS, MAX_DASHBOARD_FILTER_LEN, MAX_DASHBOARD_ROWS,
     MAX_DASHBOARD_VISIBLE_ROWS,
 };

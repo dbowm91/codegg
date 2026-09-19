@@ -639,10 +639,13 @@ Async request states: `import_request`, `research_request`,
 `DialogState` also holds the M003 Task sheet draft
 (`task_schedule_draft`, `None` = closed), the bounded project Task
 view cache (`task_view`: rows/summary/lanes/selection/generation —
-display only, daemon owns truth), and the M004 global dashboard cache
-(`workspace_dashboard: Option<WorkspaceDashboardState>` — rows,
-filter/selection, generation, return tab, one inline expansion;
-`None` = closed, display only, daemon owns truth).
+display only, daemon owns truth), and the M005 Workspace primary-view
+cache (`workspace_dashboard: Option<WorkspaceDashboardState>` — rows,
+filter/selection, generation, one inline expansion; `None` = view
+closed, display only, daemon owns truth). The selected project is an
+explicit routing locator (`selected_project_id`, generation + reconnect
+guarded); `workspace_focus` (`Composer`/`Chat`) owns input focus while
+`Route::Workspace` is active.
 
 Pending fields: `permission_perm_id`, `question_session_id`,
 `pending_delete_session`, `pending_archive_session`,
@@ -720,20 +723,27 @@ NEEDS-ATTENTION / RECENT). `j`/`k`/arrows navigate, Shift+J/K reorder
 waiting lane members, Enter opens materialized sessions (future rows
 fetch detail), `r`/`d`/`x`/`u` refresh/detail/cancel/resume.
 
-`WorkspaceDashboard` is the M004 global dashboard
-(`components/dialogs/workspace_dashboard.rs`,
-`commands/workspace_dashboard.rs`, `app/state/workspace_dashboard.rs`):
-renders the `WorkspaceDashboardSnapshot` synced from
-`DialogState.workspace_dashboard` (one coarse row per authorized
-project). One `WorkspaceDashboard` aggregate per refresh (never N+1);
-`j`/`k`/arrows/`g`/`G` navigate, bare text filters (picker
-convention), `Tab` expands one project's running tasks (single bounded
-`WorkOrderList`), `Ctrl+R` refreshes, `Enter` focuses the project tab
-and opens its Task view, `Esc` pops back with the tab/session alive.
-Event hints mark rows dirty without focus theft; reconnect resyncs;
-revocation clears via whole-page replacement. Opened by `/workspace`
-and the configurable `OpenWorkspaceDashboard` action (`Ctrl+O`, vim
-`W`).
+`WorkspaceDashboard` is the M005 Workspace primary view
+(`Route::Workspace`, `commands/workspace_dashboard.rs`,
+`app/state/workspace_dashboard.rs`): a non-modal top-level view that
+keeps the ordinary bottom Session/Task composer editable and shows
+project chat for the selected project in the sidebar region (existing
+`ChatState`/`chat.v1`, no second cache). One `WorkspaceDashboard`
+aggregate per refresh (never N+1); Up/Down/PgUp/PgDn/Home/End and
+Normal-mode `j`/`k`/`g`/`G` navigate, Normal-mode unbound text filters,
+`Space` expands one project's running tasks (single bounded
+`WorkOrderList`, `Tab` stays composer-mode owned), `Ctrl+R` refreshes,
+`Enter` with empty prompt descends to the Task view while `Enter` with
+text submits the composer for the selected project, `Esc` blurs chat to
+the composer first and leaves the view only from composer focus.
+Composer routing resolves the selected project through an open tab and
+fails visibly without cwd/hidden-session fallback; chat focus owns
+draft editing/Enter send per project. Event hints mark rows dirty
+without focus theft; reconnect resyncs; revocation clears the row plus
+that project's chat cache. Opened by `/workspace` and the configurable
+`OpenWorkspaceDashboard` action (`Ctrl+O`). The obsolete
+`Dialog::WorkspaceDashboard` modal is retained only as a compatibility
+shim and is never pushed for normal navigation.
 
 `Dialog` and `DialogType` have exhaustive compatibility conversions. The
 canonical lifecycle identity is the live component's `DialogType`; the

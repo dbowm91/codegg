@@ -231,14 +231,19 @@ pub(crate) fn open_task_sheet_for_prompt(app: &mut App, prompt_text: String) {
     if prompt_text.trim().is_empty() {
         return;
     }
-    let context = match app.project_execution_context() {
+    // M005: Workspace selection owns Task routing while the view is
+    // active; otherwise the active tab. Fail visibly, never cwd/active
+    // fallback when the selection has no tab/root.
+    let context = match crate::tui::commands::workspace_dashboard::composer_execution_context(app) {
         Ok(context) => context,
         Err(error) => {
             app.messages_state.toasts.error(&error);
             return;
         }
     };
-    let project_id = match context.project_id.clone() {
+    let project_id = match crate::tui::commands::workspace_dashboard::composer_project_id(app)
+        .or_else(|| context.project_id.clone())
+    {
         Some(project_id) => project_id,
         None => {
             app.messages_state
@@ -437,7 +442,9 @@ pub(crate) fn apply_sheet_prefetched(
     if !route.matches(&check) {
         return;
     }
-    if app.active_project_id() != Some(project_id.as_str()) {
+    if crate::tui::commands::workspace_dashboard::composer_project_id(app).as_deref()
+        != Some(project_id.as_str())
+    {
         return;
     }
     let Some(data) = data else {
@@ -625,7 +632,7 @@ pub(crate) fn confirm_task_schedule(
             draft.model_from_task_preference = false;
         }
     }
-    let context = match app.project_execution_context() {
+    let context = match crate::tui::commands::workspace_dashboard::composer_execution_context(app) {
         Ok(context) => context,
         Err(error) => {
             sync_sheet_error(app, &error);
@@ -633,7 +640,9 @@ pub(crate) fn confirm_task_schedule(
             return;
         }
     };
-    let project_id = match context.project_id.clone() {
+    let project_id = match crate::tui::commands::workspace_dashboard::composer_project_id(app)
+        .or_else(|| context.project_id.clone())
+    {
         Some(project_id) => project_id,
         None => {
             let error = "Task mode needs an active project tab".to_string();
@@ -1284,7 +1293,10 @@ pub(crate) fn apply_trigger_created(
             let Some(check) = current_task_route_check(app) else {
                 return;
             };
-            if route.matches(&check) && app.active_project_id() == Some(project_id.as_str()) {
+            if route.matches(&check)
+                && crate::tui::commands::workspace_dashboard::composer_project_id(app).as_deref()
+                    == Some(project_id.as_str())
+            {
                 let short: String = work_order_id.chars().take(8).collect();
                 app.messages_state.toasts.warning(&format!(
                     "Task {short}: trigger setup incomplete ({error}); press t in the Task view to retry"
@@ -3330,11 +3342,13 @@ pub(crate) fn start_tasks_command(app: &mut App) {
 // ── Route/scope helpers ──────────────────────────────────────────────
 
 fn capture_route(app: &App, request_id: u64) -> Option<UiRouteToken> {
-    // `project_execution_context` validates explicit project scope
+    // `composer_execution_context` validates explicit project scope
     // (never process cwd); the token carries the same scope plus tab,
     // session, view-epoch, and reconnect identity for stale guards.
-    let context = app.project_execution_context().ok()?;
-    let tab_id = app.active_tab_id()?;
+    // M005: Workspace selection owns routing while the view is active.
+    let context =
+        crate::tui::commands::workspace_dashboard::composer_execution_context(app).ok()?;
+    let tab_id = crate::tui::commands::workspace_dashboard::composer_tab_id(app)?;
     Some(UiRouteToken::new(
         Some(tab_id),
         context
@@ -3356,8 +3370,9 @@ fn capture_route(app: &App, request_id: u64) -> Option<UiRouteToken> {
 }
 
 fn current_task_route_check(app: &App) -> Option<RouteCheck> {
-    let context = app.project_execution_context().ok()?;
-    let tab_id = app.active_tab_id();
+    let context =
+        crate::tui::commands::workspace_dashboard::composer_execution_context(app).ok()?;
+    let tab_id = crate::tui::commands::workspace_dashboard::composer_tab_id(app);
     Some(app.routing_registry.check_for(
         tab_id.as_ref(),
         context.project_id.as_deref(),

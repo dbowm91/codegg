@@ -402,6 +402,12 @@ pub struct App {
     /// project's lines the `InfoType::ProjectChat` dialog displays so
     /// completions refresh the visible window without a new fetch.
     pub chat_panel_project: Option<String>,
+    /// M005: explicit input focus while `Route::Workspace` is active.
+    /// `Composer` (default) keeps the ordinary Session/Task prompt
+    /// editable; `Chat` routes printable keys + Enter to the side-panel
+    /// chat draft for the Workspace-selected project. List navigation
+    /// works in both. Render performs no I/O.
+    pub workspace_focus: crate::tui::app::state::WorkspaceFocus,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -820,6 +826,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
         }
     }
 
@@ -854,6 +861,7 @@ impl App {
         let route = match self.ui_state.routes.current() {
             crate::tui::route::Route::Home => "home".to_string(),
             crate::tui::route::Route::Session(id) => format!("session:{}", id),
+            crate::tui::route::Route::Workspace => "workspace".to_string(),
         };
 
         let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
@@ -1306,6 +1314,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
         }
     }
 
@@ -2131,6 +2140,19 @@ impl App {
         }
 
         let sidebar_focused = self.ui_state.sidebar_visible && self.sidebar.is_focused();
+        // M005: non-modal Workspace view owns navigation/filter/chat-focus
+        // before generic prompt handling. The composer stays editable:
+        // only consumed keys return early; Enter-with-text and Tab fall
+        // through to normal SubmitPrompt/ToggleComposerMode.
+        let workspace_active = matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Workspace
+        ) && self.dialog_state.workspace_dashboard.is_some();
+        if workspace_active
+            && crate::tui::commands::workspace_dashboard::handle_workspace_view_key(self, key)
+        {
+            return;
+        }
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
             Some(&self.ui_state.bindings),
@@ -2145,19 +2167,66 @@ impl App {
             self.handle_sidebar_action(action, key);
             return;
         }
+        // M005: Normal-mode filter text for the Workspace view. Only
+        // unbound keys reach the dashboard query; Insert-mode text stays
+        // in the composer and bound keys (j/k/Space/etc.) were already
+        // consumed above.
+        if workspace_active
+            && self.workspace_focus == crate::tui::app::state::WorkspaceFocus::Composer
+            && self.ui_state.input_mode == InputMode::Normal
+            && action.is_none()
+        {
+            use crossterm::event::{KeyCode, KeyModifiers};
+            match key.code {
+                KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.pop_filter();
+                    }
+                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                    return;
+                }
+                KeyCode::Char(ch)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.push_filter(ch);
+                    }
+                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                    return;
+                }
+                _ => {}
+            }
+        }
         match action {
             Some(InputAction::Send) => self.process_msg(TuiMsg::SubmitPrompt),
             Some(InputAction::Newline) => self.prompt_state.prompt.insert_newline(),
-            Some(InputAction::Cancel) => self.cancel(),
+            Some(InputAction::Cancel) => {
+                // M005: Esc/Ctrl+C never exits from the Workspace view.
+                // Chat focus blurs first; composer focus leaves the view.
+                if workspace_active {
+                    if self.workspace_focus == crate::tui::app::state::WorkspaceFocus::Chat {
+                        crate::tui::commands::workspace_dashboard::focus_workspace_composer(self);
+                    } else {
+                        crate::tui::commands::workspace_dashboard::leave_workspace_view(self);
+                    }
+                } else {
+                    self.cancel()
+                }
+            }
             Some(InputAction::NavigateUp) => {
-                if self.ui_state.input_mode == InputMode::Normal {
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, -1);
+                } else if self.ui_state.input_mode == InputMode::Normal {
                     self.scroll_viewport_up();
                 } else {
                     self.process_msg(TuiMsg::NavigateUp);
                 }
             }
             Some(InputAction::NavigateDown) => {
-                if self.ui_state.input_mode == InputMode::Normal {
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, 1);
+                } else if self.ui_state.input_mode == InputMode::Normal {
                     self.scroll_viewport_down();
                 } else {
                     self.process_msg(TuiMsg::NavigateDown);
@@ -2169,12 +2238,16 @@ impl App {
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
             Some(InputAction::FocusSidebar) => {
-                if self.ui_state.sidebar_visible {
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
+                } else if self.ui_state.sidebar_visible {
                     self.sidebar.focus_sidebar();
                 }
             }
             Some(InputAction::ToggleSection) => {
-                if self.ui_state.sidebar_visible {
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::toggle_dashboard_expand(self);
+                } else if self.ui_state.sidebar_visible {
                     self.sidebar.toggle_focused();
                 }
             }
@@ -2223,10 +2296,40 @@ impl App {
             Some(InputAction::Right) => self.process_msg(TuiMsg::CursorRight),
             Some(InputAction::Home) => self.process_msg(TuiMsg::CursorHome),
             Some(InputAction::End) => self.process_msg(TuiMsg::CursorEnd),
-            Some(InputAction::PageUp) => self.scroll_page_up(),
-            Some(InputAction::PageDown) => self.scroll_page_down(),
-            Some(InputAction::GoToTop) => self.go_to_top(),
-            Some(InputAction::GoToBottom) => self.go_to_bottom(),
+            Some(InputAction::PageUp) => {
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, -10);
+                } else {
+                    self.scroll_page_up()
+                }
+            }
+            Some(InputAction::PageDown) => {
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::move_dashboard_selection(self, 10);
+                } else {
+                    self.scroll_page_down()
+                }
+            }
+            Some(InputAction::GoToTop) => {
+                if workspace_active {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.go_top();
+                    }
+                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                } else {
+                    self.go_to_top()
+                }
+            }
+            Some(InputAction::GoToBottom) => {
+                if workspace_active {
+                    if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
+                        dashboard.go_bottom();
+                    }
+                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                } else {
+                    self.go_to_bottom()
+                }
+            }
             Some(InputAction::Search) => self.process_msg(TuiMsg::Search),
             Some(InputAction::SearchNext) => self.process_msg(TuiMsg::SearchNext),
             Some(InputAction::SearchPrev) => self.process_msg(TuiMsg::SearchPrev),
@@ -3715,7 +3818,13 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                crate::tui::commands::chat::show_chat(self);
+                // M005: Workspace side panel owns chat while the view is
+                // active (explicit focus, no modal); otherwise the modal.
+                if crate::tui::commands::workspace_dashboard::is_workspace_view_active(self) {
+                    crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
+                } else {
+                    crate::tui::commands::chat::show_chat(self);
+                }
             }
             B::ChatSend => {
                 self.ui_state.command_mode = false;
@@ -3725,10 +3834,10 @@ impl App {
                     .to_string();
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_send(self, project_id, body, None);
@@ -3753,10 +3862,10 @@ impl App {
                         .warning("Usage: /chat-reply <message-id> <text>");
                     return;
                 }
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_send(
@@ -3770,24 +3879,30 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
+                let workspace_active =
+                    crate::tui::commands::workspace_dashboard::is_workspace_view_active(self);
                 crate::tui::commands::chat::start_chat_history(self, project_id);
-                // Refresh the panel view when it is showing chat.
-                crate::tui::commands::chat::show_chat(self);
+                if workspace_active {
+                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                } else {
+                    // Refresh the panel view when it is showing chat.
+                    crate::tui::commands::chat::show_chat(self);
+                }
             }
             B::ChatSync => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_sync(self, project_id);
@@ -3796,10 +3911,10 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_read(self, project_id);
@@ -3823,10 +3938,10 @@ impl App {
                         .warning("Usage: /chat-edit <message-id> <new-text>");
                     return;
                 }
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_edit(
@@ -3855,10 +3970,10 @@ impl App {
                     }
                     _ => (rest.trim().to_string(), None),
                 };
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_redact(self, project_id, target, reason);
@@ -3880,10 +3995,10 @@ impl App {
                         return;
                     }
                 };
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_composing(self, project_id, composing);
@@ -3911,10 +4026,10 @@ impl App {
                     );
                     return;
                 }
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_action_task(
@@ -3948,10 +4063,10 @@ impl App {
                     );
                     return;
                 }
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_action_review(
@@ -3975,14 +4090,18 @@ impl App {
                 } else {
                     Some(rest.to_string())
                 };
-                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                let Some(project_id) = self.chat_target_project_id() else {
                     self.messages_state
                         .toasts
-                        .warning("No active project — open a project tab first");
+                        .warning("No project selected — select a Workspace project or open a project tab first");
                     return;
                 };
                 crate::tui::commands::chat::start_chat_action_list(self, project_id, message_id);
-                crate::tui::commands::chat::show_chat(self);
+                if crate::tui::commands::workspace_dashboard::is_workspace_view_active(self) {
+                    crate::tui::commands::workspace_dashboard::sync_workspace_chat_panel(self);
+                } else {
+                    crate::tui::commands::chat::show_chat(self);
+                }
             }
             B::Sessions => {
                 self.open_dialog(Dialog::Session);
@@ -4176,9 +4295,10 @@ impl App {
                 crate::tui::commands::work_orders::open_task_view(self);
             }
             B::Workspace => {
-                // Project Work Orders M004: `/workspace` opens the same
-                // global bounded dashboard as the `OpenWorkspaceDashboard`
-                // hotkey (Ctrl+O / W).
+                // M005: `/workspace` opens the non-modal primary Workspace
+                // view (same as `OpenWorkspaceDashboard` hotkey Ctrl+O).
+                // The composer stays editable and the sidebar shows
+                // project chat for the selection.
                 crate::tui::commands::workspace_dashboard::open_workspace_dashboard(self);
             }
             B::Schedules => {
@@ -7235,11 +7355,11 @@ impl App {
                 self.dialog_state.team_request.cancel();
             }
             Dialog::WorkspaceDashboard => {
-                // Dashboard close never cancels daemon-owned work: only
-                // frontend dashboard requests are dropped. The
-                // generation bump makes late completions stale. The
-                // return tab stays alive underneath; Esc simply pops
-                // back to the exact prior project/session view.
+                // M005 obsolete modal path: normal Workspace navigation no
+                // longer pushes `Dialog::WorkspaceDashboard` (the primary
+                // `Route::Workspace` view owns state). This arm only runs
+                // for legacy modal teardowns. View close never cancels
+                // daemon-owned work: only frontend requests are dropped.
                 self.task_registry.cancel_kind(TuiTaskKind::Command);
                 if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
                     dashboard.generation = dashboard.generation.wrapping_add(1);
@@ -7247,6 +7367,8 @@ impl App {
                     dashboard.request.cancel();
                 }
                 self.dialog_state.workspace_dashboard = None;
+                self.workspace_focus = crate::tui::app::state::WorkspaceFocus::Composer;
+                self.chat_panel_project = None;
             }
             _ => {}
         }

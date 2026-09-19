@@ -460,9 +460,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             // Liveness hint only: flag for a bounded re-fetch when the
             // project is not already loading. No task per hint.
+            // M005: Workspace selection owns the target while active.
             if app.chat.note_hint(&project_id) {
-                let is_active = app.active_project_id() == Some(project_id.as_str());
-                if is_active {
+                let is_target =
+                    app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+                if is_target {
                     super::super::commands::chat::start_chat_history(app, project_id);
                 } else {
                     let _ = channel_id;
@@ -519,10 +521,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             message_id,
         } => {
             // Action liveness hint: flag for a bounded action re-fetch
-            // when the project is active; otherwise mark resync.
+            // when the project is the chat target; otherwise mark resync.
+            // M005: Workspace selection owns the target while active.
             if app.chat.note_hint(&project_id) {
-                let is_active = app.active_project_id() == Some(project_id.as_str());
-                if is_active {
+                let is_target =
+                    app.chat_target_project_id().as_deref() == Some(project_id.as_str());
+                if is_target {
                     super::super::commands::chat::start_chat_action_list(
                         app,
                         project_id,

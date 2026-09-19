@@ -176,8 +176,30 @@ cargo test --test collaboration_m001_chat       # 12 default-behavior tests
 cargo test --test collaboration_m003_chat_actions  # 10 non-escalation tests
 cargo test --test team_m003_membership_admin  # 12 membership/token/chat-override tests (M003)
 cargo test --test session_control_m004_controller_lease  # 23 controller lease tests (M004)
+cargo test --test workspace_m005_selected_project_chat  # 9 Workspace selected-project routing tests (M005)
 python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops + 11 team ops + 5 control ops
 ```
+
+### Workspace selected-project chat view (team-collaboration M005)
+
+Non-modal `Route::Workspace` primary view (`src/tui/route.rs`,
+`src/tui/commands/workspace_dashboard.rs`,
+`src/tui/app/state/workspace_dashboard.rs`): the bottom Session/Task
+composer stays editable for the Workspace-selected project while the
+sidebar region shows project chat for that same selection over the
+existing `ChatState`/daemon `chat.v1` service (no second server/cache).
+Selection is an explicit routing locator (`selected_project_id`,
+generation + reconnect guarded); it never activates heavy services and
+never confers authority. Session submits against the selected project's
+tab context (mismatched hidden sessions force creation of an ordinary
+session for the selection); Task submits create `WorkOrder`s for the
+selection; ambiguous context fails visibly with no cwd/prior fallback.
+Chat focus owns per-project draft editing/Enter send; prompt focus
+keeps Session/Task input. Denied/unsupported chat renders the generic
+unavailable state; revocation clears the dashboard row plus that
+project's chat cache. Narrow terminals hide the sidebar (clean degrade).
+`/workspace` + `Ctrl+O` open the view; `/chat` focuses the side panel
+while the view is active.
 
 ### Team membership and device-token administration (team-collaboration M003)
 

@@ -18,63 +18,154 @@
 
 use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::protocol::work_order::{ProjectActivitySummaryDto, WorkOrderDto};
-use crate::tui::app::state::{WorkspaceDashboardState, MAX_DASHBOARD_EXPANDED_TASKS};
-use crate::tui::app::{App, Dialog, TuiCommand};
+use crate::tui::app::state::{
+    ProjectExecutionContext, WorkspaceDashboardState, WorkspaceFocus, MAX_DASHBOARD_EXPANDED_TASKS,
+};
+use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_scoped_registered_tui_task;
+use crate::tui::route::Route;
 use crate::tui::task_lifecycle::TuiTaskKind;
+
+// ── Workspace view identity ──────────────────────────────────────────
+
+/// M005: whether the non-modal Workspace primary view is active.
+/// Modal `Dialog::WorkspaceDashboard` ownership is obsolete; the view is
+/// identified solely by `Route::Workspace` plus cached dashboard state.
+pub(crate) fn is_workspace_view_active(app: &App) -> bool {
+    matches!(app.ui_state.routes.current(), Route::Workspace)
+        && app.dialog_state.workspace_dashboard.is_some()
+}
+
+/// M005: canonical selected-project locator for composer/chat routing.
+/// `None` when the view is closed or no row is selected.
+pub(crate) fn workspace_selected_project_id(app: &App) -> Option<String> {
+    app.dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .and_then(|dashboard| dashboard.selected_project_id())
+}
+
+/// M005: resolve the selected project's execution context without eager
+/// activation. Uses an open project tab's canonical binding; fails
+/// visibly when the selected project has no open tab/root. Never falls
+/// back to the active tab, cwd, or the hidden prior session.
+pub(crate) fn workspace_composer_context(app: &App) -> Result<ProjectExecutionContext, String> {
+    let dashboard = app
+        .dialog_state
+        .workspace_dashboard
+        .as_ref()
+        .ok_or_else(|| "Workspace view is not open; open /workspace first".to_string())?;
+    let selected = dashboard
+        .selected_project_id()
+        .ok_or_else(|| "No project selected in Workspace; select a project first".to_string())?;
+    let tab = app.project_tabs.find_by_project(&selected).ok_or_else(|| {
+        format!(
+            "Selected project has no open tab; open the project tab for '{selected}' first (no automatic activation)"
+        )
+    })?;
+    ProjectExecutionContext::from_tab(tab).map_err(|_| {
+        format!(
+            "Selected project '{selected}' has no resolved workspace root; select or restore the workspace before sending"
+        )
+    })
+}
+
+/// M005: composer execution context for Session/Task submission.
+/// When the Workspace view is active, resolves the selected project;
+/// otherwise resolves the active tab. Never falls back to cwd.
+pub(crate) fn composer_execution_context(app: &App) -> Result<ProjectExecutionContext, String> {
+    if is_workspace_view_active(app) {
+        workspace_composer_context(app)
+    } else {
+        app.project_execution_context()
+    }
+}
+
+/// M005: tab owning the current composer target. Workspace selection
+/// resolves through `find_by_project`; otherwise the active tab.
+pub(crate) fn composer_tab_id(app: &App) -> Option<crate::tui::app::state::ProjectTabId> {
+    if is_workspace_view_active(app) {
+        let selected = workspace_selected_project_id(app)?;
+        app.project_tabs
+            .find_by_project(&selected)
+            .map(|tab| tab.tab_id.clone())
+    } else {
+        app.active_tab_id()
+    }
+}
+
+/// M005: project owning the current composer target. Workspace selection
+/// is authoritative while the view is active; otherwise the active tab.
+pub(crate) fn composer_project_id(app: &App) -> Option<String> {
+    if is_workspace_view_active(app) {
+        workspace_selected_project_id(app)
+    } else {
+        app.active_project_id().map(str::to_string)
+    }
+}
 
 // ── Open / refresh ───────────────────────────────────────────────────
 
-/// Open the global Workspace dashboard. Stores the active tab as the
-/// return target, pushes the FocusManager-owned dialog, and issues one
-/// bounded aggregate refresh. The active session/tab keeps running
-/// underneath; nothing is activated, reloaded, or cancelled.
+/// Open the global Workspace as a non-modal primary view.
+///
+/// Stores the active tab as the return diagnostic, navigates to
+/// `Route::Workspace`, and issues one bounded aggregate refresh. The
+/// active session/tab keeps running underneath; nothing is activated,
+/// reloaded, or cancelled. The ordinary bottom composer stays editable
+/// and the sidebar shows project chat for the selection. No
+/// FocusManager modal is pushed for normal navigation; other modal
+/// dialogs may still open above this route.
 pub(crate) fn open_workspace_dashboard(app: &mut App) {
     let return_tab = app.project_tabs.active_tab_id().cloned();
     let reconnect_epoch = app.routing_registry.reconnect_epoch;
+    // Explicit opens always start fresh (bounded aggregate reload);
+    // modal dialogs above the view (TaskView, confirmations) never call
+    // open and therefore preserve selection via `leave`/`close` paths.
     app.dialog_state.workspace_dashboard =
         Some(WorkspaceDashboardState::new(return_tab, reconnect_epoch));
-    ensure_dashboard_dialog(app);
+    app.workspace_focus = crate::tui::app::state::WorkspaceFocus::default();
+    if !matches!(app.ui_state.routes.current(), Route::Workspace) {
+        app.ui_state.routes.navigate_to(Route::Workspace);
+    }
     start_dashboard_refresh(app);
-    app.messages_state
-        .toasts
-        .info("Workspace dashboard — one bounded view over every authorized project (Esc returns)");
+    sync_workspace_chat_panel(app);
+    app.messages_state.toasts.info(
+        "Workspace — Session/Task composer for the selected project; side panel is project chat (Esc leaves)",
+    );
 }
 
-/// Refresh the visible dashboard projection (no-op when closed).
+/// Leave the Workspace primary view. Cancels/invalidates only frontend
+/// dashboard requests (generation bump + request cancel); daemon work is
+/// never cancelled. Navigates back through `Route` history without
+/// touching the active tab/session binding.
+pub(crate) fn leave_workspace_view(app: &mut App) {
+    app.task_registry.cancel_kind(TuiTaskKind::Command);
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.generation = dashboard.generation.wrapping_add(1);
+        dashboard.loading = false;
+        dashboard.request.cancel();
+    }
+    app.dialog_state.workspace_dashboard = None;
+    app.workspace_focus = WorkspaceFocus::Composer;
+    // Clear the Workspace-driven chat panel binding; per-project drafts
+    // stay in `ChatState` and are not deleted.
+    app.chat_panel_project = None;
+    if !app.ui_state.routes.back() {
+        app.ui_state.routes.navigate_to(Route::Home);
+    }
+}
+
+/// Refresh the visible Workspace projection (no-op when closed).
 pub(crate) fn refresh_workspace_dashboard(app: &mut App) {
     if app.dialog_state.workspace_dashboard.is_none() {
         return;
     }
-    ensure_dashboard_dialog(app);
+    // Re-assert the primary route without pushing history when a modal
+    // dialog (e.g. TaskView) is open above the view.
+    if app.focus_manager.is_empty() && !matches!(app.ui_state.routes.current(), Route::Workspace) {
+        app.ui_state.routes.navigate_to(Route::Workspace);
+    }
     start_dashboard_refresh(app);
-}
-
-fn ensure_dashboard_dialog(app: &mut App) {
-    use crate::tui::components::dialogs::workspace_dashboard::WorkspaceDashboardDialog;
-    if app.ui_state.dialog != Dialog::WorkspaceDashboard {
-        app.push_dialog(
-            Dialog::WorkspaceDashboard,
-            Box::new(WorkspaceDashboardDialog::new()),
-        );
-    }
-    sync_dashboard_dialog(app);
-}
-
-fn sync_dashboard_dialog(app: &mut App) {
-    use crate::tui::components::dialogs::workspace_dashboard::{
-        WorkspaceDashboardDialog, WorkspaceDashboardSnapshot,
-    };
-    let Some(dashboard) = app.dialog_state.workspace_dashboard.as_ref() else {
-        return;
-    };
-    let snapshot = WorkspaceDashboardSnapshot::from_state(dashboard);
-    if let Some(dialog) = app
-        .focus_manager
-        .dialog_mut_any::<WorkspaceDashboardDialog>()
-    {
-        dialog.set_snapshot(snapshot);
-    }
 }
 
 /// Issue one bounded `WorkspaceDashboard` aggregate request. This is the
@@ -87,7 +178,8 @@ fn start_dashboard_refresh(app: &mut App) {
     let generation = dashboard.begin_refresh();
     let reconnect_epoch = dashboard.reconnect_epoch;
     let request_id = dashboard.request.begin();
-    sync_dashboard_dialog(app);
+    // Non-modal view: no FocusManager dialog to sync. The viewport reads
+    // directly from `dialog_state.workspace_dashboard` during render.
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let task_id = spawn_scoped_registered_tui_task(
@@ -174,9 +266,15 @@ fn start_dashboard_refresh(app: &mut App) {
             dashboard.loading = false;
             dashboard.error = Some("TUI command channel unavailable".to_string());
         }
-        sync_dashboard_dialog(app);
     }
 }
+
+/// M005 compatibility shim: the modal `WorkspaceDashboardDialog` no
+/// longer owns normal Workspace navigation (the primary `Route::Workspace`
+/// view reads state directly during render). Kept as a no-op so legacy
+/// call sites migrate without a second dialog model.
+#[allow(dead_code)]
+fn sync_dashboard_dialog(_app: &mut App) {}
 
 /// Apply one dashboard page with generation + reconnect guards.
 /// Whole-page replacement: revoked projects vanish (fail-closed) and
@@ -202,8 +300,7 @@ pub(crate) fn apply_dashboard_loaded(
         {
             dashboard.loading = false;
             dashboard.error = Some(error.clone());
-            sync_dashboard_dialog(app);
-            if app.ui_state.dialog == Dialog::WorkspaceDashboard {
+            if is_workspace_view_active(app) {
                 app.messages_state.toasts.warning(&error);
             }
         }
@@ -221,18 +318,21 @@ pub(crate) fn apply_dashboard_loaded(
         return;
     }
     dashboard.apply_loaded(generation, rows, truncated, next_cursor);
-    sync_dashboard_dialog(app);
+    sync_workspace_chat_panel(app);
 }
 
 // ── Selection / expand / descend ─────────────────────────────────────
 
-/// Move the dashboard selection over the filtered list.
+/// Move the dashboard selection over the filtered list. Switching
+/// selection switches the chat projection/draft via
+/// `sync_workspace_chat_panel` (refresh only when stale); drafts stay
+/// per-project in `ChatState` and are never cross-routed.
 pub(crate) fn move_dashboard_selection(app: &mut App, delta: isize) {
     let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() else {
         return;
     };
     dashboard.move_selection(delta);
-    sync_dashboard_dialog(app);
+    sync_workspace_chat_panel(app);
 }
 
 /// Expand or collapse the selected project's inline task detail. The
@@ -268,7 +368,6 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
             dashboard.expanded_loading = false;
             dashboard.expanded_error = None;
         }
-        sync_dashboard_dialog(app);
         return;
     }
     let (generation, reconnect_epoch, request_id) =
@@ -283,7 +382,6 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
             }
             None => return,
         };
-    sync_dashboard_dialog(app);
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let task_id = spawn_scoped_registered_tui_task(
@@ -342,7 +440,6 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
             dashboard.expanded_loading = false;
             dashboard.expanded_error = Some("TUI command channel unavailable".to_string());
         }
-        sync_dashboard_dialog(app);
     }
     let _ = display_name;
 }
@@ -368,7 +465,6 @@ pub(crate) fn apply_dashboard_expanded(
         {
             dashboard.expanded_loading = false;
             dashboard.expanded_error = Some(error);
-            sync_dashboard_dialog(app);
         }
         return;
     }
@@ -382,7 +478,6 @@ pub(crate) fn apply_dashboard_expanded(
         return;
     }
     dashboard.apply_expanded(generation, &project_id, tasks);
-    sync_dashboard_dialog(app);
 }
 
 /// Descend from the dashboard: focus/open the selected project's tab
@@ -428,7 +523,6 @@ pub(crate) fn note_dashboard_hint(app: &mut App, project_id: Option<&str>) {
         return;
     };
     dashboard.mark_hint_dirty(project_id);
-    sync_dashboard_dialog(app);
 }
 
 /// Resolve one bus event to its owning project for dashboard hints.
@@ -522,23 +616,132 @@ pub(crate) fn resync_dashboard_after_reconnect(app: &mut App) {
     start_dashboard_refresh(app);
 }
 
+// ── Chat side-panel sync ─────────────────────────────────────────────
+
+/// M005: keep the Workspace chat side panel bound to the selected
+/// project. Uses the existing `ChatState`/daemon `chat.v1` service;
+/// selection only changes the project locator. Refreshes only when
+/// stale (`needs_refresh`); denied/unsupported projects render the
+/// generic unavailable state via `panel_lines`. No second chat cache.
+pub(crate) fn sync_workspace_chat_panel(app: &mut App) {
+    let Some(selected) = workspace_selected_project_id(app) else {
+        return;
+    };
+    // Track the visible panel project so existing `refresh_chat_panel`
+    // completions also update a modal opened above the view.
+    app.chat_panel_project = Some(selected.clone());
+    if app.chat.needs_refresh(&selected) {
+        crate::tui::commands::chat::start_chat_history(app, selected);
+    }
+}
+
+/// M005: fail-closed revocation for one project across Workspace + chat.
+/// Drops the dashboard row/expansion and clears that project's cached
+/// chat window/draft. Never falls back to another project's data.
+pub(crate) fn clear_workspace_revoked(app: &mut App, project_id: &str) {
+    if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+        dashboard.clear_revoked(project_id);
+    }
+    app.chat.clear_project(project_id);
+    if app.chat_panel_project.as_deref() == Some(project_id) {
+        app.chat_panel_project = None;
+    }
+    sync_workspace_chat_panel(app);
+}
+
+/// M005: focus the side-panel chat draft for the selected project.
+/// Printable keys + Enter then edit/send chat; the main prompt stays
+/// intact but does not receive keys until focus returns.
+pub(crate) fn focus_workspace_chat(app: &mut App) {
+    if app.dialog_state.workspace_dashboard.is_none() {
+        return;
+    }
+    let Some(selected) = workspace_selected_project_id(app) else {
+        app.messages_state
+            .toasts
+            .info("No project selected — select a project before chatting");
+        return;
+    };
+    app.workspace_focus = WorkspaceFocus::Chat;
+    sync_workspace_chat_panel(app);
+    let draft_len = app.chat.draft_for(&selected).len();
+    app.messages_state.toasts.info(&format!(
+        "Chat: {selected} — type to edit draft ({draft_len} chars), Enter sends, Esc returns to composer"
+    ));
+}
+
+/// M005: return focus to the ordinary Session/Task composer.
+pub(crate) fn focus_workspace_composer(app: &mut App) {
+    app.workspace_focus = WorkspaceFocus::Composer;
+}
+
+/// M005: edit the selected project's chat draft (per-project, bounded).
+pub(crate) fn push_workspace_chat_char(app: &mut App, ch: char) {
+    let Some(selected) = workspace_selected_project_id(app) else {
+        return;
+    };
+    let mut draft = app.chat.draft_for(&selected).to_string();
+    if draft.chars().count() >= crate::tui::app::state::chat::MAX_CHAT_DRAFT_LEN {
+        return;
+    }
+    draft.push(ch);
+    app.chat.set_draft(&selected, draft);
+}
+
+/// M005: backspace the selected project's chat draft.
+pub(crate) fn pop_workspace_chat_char(app: &mut App) {
+    let Some(selected) = workspace_selected_project_id(app) else {
+        return;
+    };
+    let mut draft = app.chat.draft_for(&selected).to_string();
+    draft.pop();
+    app.chat.set_draft(&selected, draft);
+}
+
+/// M005: send the selected project's chat draft via the existing
+/// `chat.v1` path. Failures retain the draft; empty drafts are ignored.
+pub(crate) fn send_workspace_chat(app: &mut App) {
+    let Some(selected) = workspace_selected_project_id(app) else {
+        app.messages_state.toasts.info("No project selected");
+        return;
+    };
+    let draft = app.chat.draft_for(&selected).to_string();
+    let trimmed = draft.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+    // Clear the editable draft optimistically; `note_failed_send`
+    // restores it when the daemon denies.
+    app.chat.set_draft(&selected, String::new());
+    crate::tui::commands::chat::start_chat_send(app, selected, trimmed, None);
+}
+
 // ── Key handling ─────────────────────────────────────────────────────
 
-/// App-level key router for the open dashboard (mirrors the picker
-/// split: the FocusManager-owned component owns actions, the App owns
-/// filter text). Called from `handle_dialog_key` before the generic
-/// component path.
+/// Legacy modal key router. Retained for the obsolete
+/// `Dialog::WorkspaceDashboard` modal path; normal Workspace navigation
+/// uses `handle_workspace_view_key` via the non-modal `Route::Workspace`
+/// view. This shim leaves the view through the route path when no modal
+/// is present.
 pub(crate) fn handle_workspace_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::{KeyCode, KeyModifiers};
     if app.dialog_state.workspace_dashboard.is_none() {
-        app.close_dialog();
+        return;
+    }
+    // When the obsolete modal is not on the focus stack, treat keys as
+    // view keys (non-modal semantics below).
+    if !app
+        .focus_manager
+        .has_dialog(crate::tui::components::component::DialogType::WorkspaceDashboard)
+    {
+        handle_workspace_view_key(app, key);
         return;
     }
     // Actions first (same map as the dialog component); everything
     // else falls through to filter text below.
     let actioned = match key.code {
         KeyCode::Esc => {
-            app.close_dialog();
+            leave_workspace_view(app);
             true
         }
         KeyCode::Up
@@ -583,7 +786,6 @@ pub(crate) fn handle_workspace_dashboard_key(app: &mut App, key: crossterm::even
             if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
                 dashboard.pop_filter();
             }
-            sync_dashboard_dialog(app);
         }
         KeyCode::Char(ch)
             if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
@@ -591,10 +793,175 @@ pub(crate) fn handle_workspace_dashboard_key(app: &mut App, key: crossterm::even
             if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
                 dashboard.push_filter(ch);
             }
-            sync_dashboard_dialog(app);
         }
         _ => {}
     }
+}
+
+/// M005: non-modal key router for the `Route::Workspace` primary view.
+///
+/// Returns `true` when the key was consumed by Workspace navigation/chat
+/// and must not reach the prompt; `false` when the key should fall
+/// through to generic prompt handling (Enter with non-empty prompt
+/// submits the composer, Tab toggles composer mode, Insert-mode text
+/// stays in the composer).
+///
+/// The ordinary composer stays editable: Insert-mode printable keys go
+/// to the prompt (or to the chat draft when the side panel is focused).
+/// List navigation works in both focus states; `Space` toggles the
+/// single inline expansion (bounded `WorkOrderList`); `Enter` with
+/// non-empty prompt submits the composer while `Enter` with an empty
+/// prompt descends to the Task view; `Esc` blurs chat back to the
+/// composer first and leaves the view only from composer focus.
+pub(crate) fn handle_workspace_view_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if app.dialog_state.workspace_dashboard.is_none() {
+        return false;
+    }
+    // Chat-panel focus owns printable input + Enter/Backspace.
+    if app.workspace_focus == WorkspaceFocus::Chat {
+        match key.code {
+            KeyCode::Esc => {
+                focus_workspace_composer(app);
+                return true;
+            }
+            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
+                send_workspace_chat(app);
+                return true;
+            }
+            KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
+                pop_workspace_chat_char(app);
+                return true;
+            }
+            KeyCode::Char(ch)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                // Navigation aliases still move selection even when the
+                // chat draft is focused; all other text edits the draft.
+                match ch {
+                    'j' => {
+                        move_dashboard_selection(app, 1);
+                        return true;
+                    }
+                    'k' => {
+                        move_dashboard_selection(app, -1);
+                        return true;
+                    }
+                    _ => {
+                        push_workspace_chat_char(app, ch);
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        // Navigation keys fall through to list handling below.
+    }
+    let actioned = match key.code {
+        KeyCode::Esc => {
+            leave_workspace_view(app);
+            true
+        }
+        KeyCode::Up => {
+            move_dashboard_selection(app, -1);
+            true
+        }
+        KeyCode::Down => {
+            move_dashboard_selection(app, 1);
+            true
+        }
+        KeyCode::PageUp => {
+            move_dashboard_selection(app, -10);
+            true
+        }
+        KeyCode::PageDown => {
+            move_dashboard_selection(app, 10);
+            true
+        }
+        KeyCode::Home => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.go_top();
+            }
+            sync_workspace_chat_panel(app);
+            true
+        }
+        KeyCode::End => {
+            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                dashboard.go_bottom();
+            }
+            sync_workspace_chat_panel(app);
+            true
+        }
+        KeyCode::Enter => {
+            // Non-empty prompt submits the composer for the selected
+            // project; empty prompt descends to the Task view.
+            if !app.prompt_state.prompt.get_text().trim().is_empty() {
+                false
+            } else {
+                open_selected_dashboard_project(app);
+                true
+            }
+        }
+        KeyCode::Tab => {
+            // Tab stays composer-mode owned; expansion uses Space.
+            false
+        }
+        KeyCode::Char('k') | KeyCode::Char('j') | KeyCode::Char('g') | KeyCode::Char('G') => {
+            if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
+                // Normal-mode list aliases; Insert-mode text must reach
+                // the prompt, so only handle here when not in Insert.
+                if app.ui_state.input_mode != crate::tui::input::InputMode::Insert {
+                    match key.code {
+                        KeyCode::Char('k') => move_dashboard_selection(app, -1),
+                        KeyCode::Char('j') => move_dashboard_selection(app, 1),
+                        KeyCode::Char('g') => {
+                            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                                dashboard.go_top();
+                            }
+                            sync_workspace_chat_panel(app);
+                        }
+                        KeyCode::Char('G') => {
+                            if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
+                                dashboard.go_bottom();
+                            }
+                            sync_workspace_chat_panel(app);
+                        }
+                        _ => {}
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        KeyCode::Char(' ') => {
+            if key.modifiers == KeyModifiers::NONE {
+                toggle_dashboard_expand(app);
+                true
+            } else {
+                false
+            }
+        }
+        _ => {
+            if key.modifiers == KeyModifiers::CONTROL
+                && matches!(key.code, KeyCode::Char('r') | KeyCode::Char('R'))
+            {
+                app.process_msg(crate::tui::app::TuiMsg::WorkspaceDashboardRefresh);
+                true
+            } else {
+                false
+            }
+        }
+    };
+    if actioned {
+        return true;
+    }
+    // Non-modal filter: only Normal-mode unbound text reaches the
+    // dashboard query; Insert-mode text stays in the composer. Handled
+    // by `App::on_key` (which owns `input_mode`); nothing to do here.
+    false
 }
 
 #[cfg(test)]
@@ -740,10 +1107,19 @@ mod tests {
         let (mut app, _client) = test_app();
         let tab_before = app.project_tabs.active_tab_id().cloned();
         open_workspace_dashboard(&mut app);
-        assert_eq!(app.ui_state.dialog, Dialog::WorkspaceDashboard);
+        assert!(matches!(
+            app.ui_state.routes.current(),
+            crate::tui::route::Route::Workspace
+        ));
         // Opening preserves the active session/tab: nothing switches.
         assert_eq!(app.project_tabs.active_tab_id(), tab_before.as_ref());
         assert!(app.dialog_state.workspace_dashboard.is_some());
+        // Non-modal: no FocusManager modal owns Workspace navigation.
+        assert!(!app
+            .focus_manager
+            .has_dialog(crate::tui::components::component::DialogType::WorkspaceDashboard));
+        // Ordinary composer stays editable (prompt not stolen).
+        assert_eq!(app.workspace_focus, WorkspaceFocus::Composer);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -752,8 +1128,11 @@ mod tests {
         let tab_before = app.project_tabs.active_tab_id().cloned();
         let session_before = app.active_session_id().map(str::to_string);
         open_workspace_dashboard(&mut app);
-        app.close_dialog();
-        assert_eq!(app.ui_state.dialog, Dialog::None);
+        leave_workspace_view(&mut app);
+        assert!(!matches!(
+            app.ui_state.routes.current(),
+            crate::tui::route::Route::Workspace
+        ));
         assert_eq!(app.project_tabs.active_tab_id(), tab_before.as_ref());
         assert_eq!(app.active_session_id().map(str::to_string), session_before);
         assert!(app.dialog_state.workspace_dashboard.is_none());
@@ -826,9 +1205,9 @@ mod tests {
     async fn inactive_permission_hint_marks_badge_without_focus_theft() {
         let (mut app, _client) = test_app();
         open_test_dashboard(&mut app);
-        let dialog_before = app.ui_state.dialog.clone();
+        let route_before = app.ui_state.routes.current().clone();
         note_dashboard_hint(&mut app, Some("project-1"));
-        assert_eq!(app.ui_state.dialog, dialog_before);
+        assert_eq!(app.ui_state.routes.current(), &route_before);
         let dashboard = app.dialog_state.workspace_dashboard.as_ref().unwrap();
         assert!(dashboard.dirty);
         assert!(dashboard.rows[0].stale);
@@ -931,16 +1310,16 @@ mod tests {
         assert!(ActionKey::all().contains(&ActionKey::OpenWorkspaceDashboard));
         let entries = default_help_entries();
         assert!(
-            entries
-                .iter()
-                .any(|e| e.action == "Open workspace dashboard" && e.key == "Ctrl+O"),
-            "Insert/Normal help must document the dashboard hotkey"
+            entries.iter().any(
+                |e| e.action == "Open Workspace view (selected-project chat)" && e.key == "Ctrl+O"
+            ),
+            "Insert/Normal help must document the Workspace hotkey"
         );
         assert!(
             entries
                 .iter()
-                .any(|e| e.action == "Open workspace dashboard" && e.key == "W"),
-            "Vim help must document the dashboard hotkey"
+                .any(|e| e.action == "Open Workspace view (selected-project chat)" && e.key == "W"),
+            "Vim help must document the Workspace hotkey"
         );
     }
 }

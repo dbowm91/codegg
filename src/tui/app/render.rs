@@ -373,6 +373,41 @@ impl App {
                 },
             ]),
             Route::Session(_) => Line::from(""),
+            Route::Workspace => {
+                let selected = self
+                    .dialog_state
+                    .workspace_dashboard
+                    .as_ref()
+                    .and_then(|dashboard| dashboard.selected())
+                    .map(|row| row.summary.display_name.clone())
+                    .unwrap_or_default();
+                let focus = match self.workspace_focus {
+                    crate::tui::app::state::WorkspaceFocus::Chat => "chat",
+                    crate::tui::app::state::WorkspaceFocus::Composer => "composer",
+                };
+                Line::from(vec![
+                    Span::styled(
+                        " workspace ",
+                        Style::default()
+                            .fg(self.ui_state.theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" selected:{selected}  focus:{focus}"),
+                        Style::default().fg(self.ui_state.theme.muted),
+                    ),
+                    if self.prompt_state.composer_mode.is_task() {
+                        Span::styled(
+                            "  composer:task",
+                            Style::default()
+                                .fg(self.ui_state.theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else {
+                        Span::raw("")
+                    },
+                ])
+            }
         };
         let block = Block::default()
             .borders(Borders::BOTTOM)
@@ -477,7 +512,141 @@ impl App {
         match self.ui_state.routes.current() {
             Route::Home => self.render_home(frame, area),
             Route::Session(_) => self.render_session(frame, area),
+            Route::Workspace => self.render_workspace_view(frame, area),
         }
+    }
+
+    /// M005: non-modal Workspace primary view. Reads the bounded
+    /// `WorkspaceDashboardState` projection; performs no I/O. The bottom
+    /// composer stays editable (rendered separately) and the sidebar
+    /// shows project chat for the same selection.
+    fn render_workspace_view(&mut self, frame: &mut Frame, area: Rect) {
+        use crate::tui::app::state::MAX_DASHBOARD_VISIBLE_ROWS;
+        let theme = Arc::clone(&self.ui_state.theme);
+        let block = Block::default()
+            .title(" Workspace (Esc leaves · Enter descends when prompt empty · Space expands) ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let Some(dashboard) = self.dialog_state.workspace_dashboard.as_ref() else {
+            let paragraph = Paragraph::new("Workspace closed — /workspace to open")
+                .style(Style::default().fg(theme.muted));
+            frame.render_widget(paragraph, inner);
+            return;
+        };
+        let mut lines: Vec<Line> = Vec::new();
+        if dashboard.loading {
+            lines.push(Line::from(Span::styled(
+                "Loading workspace…",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        if let Some(error) = dashboard.error.as_ref() {
+            lines.push(Line::from(Span::styled(
+                format!("Error: {error}"),
+                Style::default().fg(theme.error),
+            )));
+        }
+        if !dashboard.query.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("Filter: {}", dashboard.query),
+                Style::default().fg(theme.secondary),
+            )));
+        }
+        let indices = dashboard.filtered_indices();
+        if indices.is_empty() && !dashboard.loading {
+            lines.push(Line::from(Span::styled(
+                "No projects match — adjust the filter",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        for (visible_pos, row_idx) in indices.iter().take(MAX_DASHBOARD_VISIBLE_ROWS).enumerate() {
+            let Some(row) = dashboard.rows.get(*row_idx) else {
+                continue;
+            };
+            let is_selected = visible_pos == dashboard.selected_row;
+            let badge = crate::tui::app::state::dashboard_row_badge(row);
+            let stale = if row.stale { " stale" } else { "" };
+            let expanded = if dashboard.expanded_project_id.as_deref()
+                == Some(row.summary.project_id.as_str())
+            {
+                " [expanded]"
+            } else {
+                ""
+            };
+            let text = format!(
+                "{} {} — {badge}{stale}{expanded}",
+                row.summary.display_name, row.summary.project_id
+            );
+            let style = if is_selected {
+                Style::default()
+                    .fg(theme.primary)
+                    .bg(theme.selection)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+            let prefix = if is_selected { "▸ " } else { "  " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(text, style),
+            ]));
+            // Inline expansion for the selected project only.
+            if dashboard.expanded_project_id.as_deref() == Some(row.summary.project_id.as_str()) {
+                if dashboard.expanded_loading {
+                    lines.push(Line::from(Span::styled(
+                        "    Loading tasks…",
+                        Style::default().fg(theme.muted),
+                    )));
+                } else if let Some(error) = dashboard.expanded_error.as_ref() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    Task detail: {error}"),
+                        Style::default().fg(theme.error),
+                    )));
+                } else if dashboard.expanded_tasks.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "    No running tasks",
+                        Style::default().fg(theme.muted),
+                    )));
+                } else {
+                    for task in dashboard.expanded_tasks.iter() {
+                        let title = task.title.as_deref().unwrap_or(&task.work_order_id);
+                        lines.push(Line::from(Span::styled(
+                            format!("    · {} [{}]", title, task.state),
+                            Style::default().fg(theme.foreground),
+                        )));
+                    }
+                }
+            }
+        }
+        if dashboard.truncated {
+            lines.push(Line::from(Span::styled(
+                "More projects exist — refine the filter",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        if dashboard.dirty {
+            lines.push(Line::from(Span::styled(
+                "Stale — Ctrl+R refreshes",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        let focus_hint = match self.workspace_focus {
+            crate::tui::app::state::WorkspaceFocus::Chat => {
+                "Chat panel focused — Enter sends, Esc returns to composer"
+            }
+            crate::tui::app::state::WorkspaceFocus::Composer => {
+                "Composer focused — type Session/Task input; Space expands, / focuses slash"
+            }
+        };
+        lines.push(Line::from(Span::styled(
+            focus_hint,
+            Style::default().fg(theme.muted),
+        )));
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, inner);
     }
 
     fn render_home(&mut self, frame: &mut Frame, area: Rect) {
@@ -887,6 +1056,18 @@ impl App {
     }
 
     fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
+        // M005: when the Workspace primary view is active, the normal
+        // sidebar region shows project chat for the selected project
+        // (existing `ChatState` projection, no second cache). Narrow
+        // terminals hide the sidebar entirely via layout bounds; that is
+        // the clean degrade (no panic, viewport still shows Workspace).
+        if matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Workspace
+        ) {
+            self.render_workspace_chat_panel(frame, area);
+            return;
+        }
         self.sidebar.set_theme(&self.ui_state.theme);
         let project_scope = self.active_project_id().map(str::to_string);
         self.sidebar.set_project_scope(project_scope.as_deref());
@@ -1024,6 +1205,70 @@ impl App {
         }
 
         frame.render_widget(&self.sidebar, area);
+    }
+
+    /// M005: dedicated project-chat side panel for the Workspace-selected
+    /// project. Routes history/draft through `ChatState[selected]` and the
+    /// existing `chat.v1` operations; selection changes switch projection
+    /// via `sync_workspace_chat_panel`. Render performs no I/O and stays
+    /// bounded through `panel_lines`. Denied/unsupported chat renders the
+    /// generic unavailable state (never another project's data).
+    fn render_workspace_chat_panel(&mut self, frame: &mut Frame, area: Rect) {
+        let theme = Arc::clone(&self.ui_state.theme);
+        let selected = self
+            .dialog_state
+            .workspace_dashboard
+            .as_ref()
+            .and_then(|dashboard| dashboard.selected())
+            .map(|row| {
+                (
+                    row.summary.project_id.clone(),
+                    row.summary.display_name.clone(),
+                )
+            });
+        let Some((project_id, display_name)) = selected else {
+            let block = Block::default()
+                .title(" Project chat ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background));
+            let paragraph = Paragraph::new("No project selected")
+                .block(block)
+                .style(Style::default().fg(theme.muted))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(paragraph, area);
+            return;
+        };
+        // `now_ms` is display-only (composing expiry); no I/O.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut panel = self.chat.panel_lines(&project_id, now_ms);
+        // Append the editable draft + focus hint (bounded display only;
+        // the durable draft lives in `ChatState` per project).
+        let draft = self.chat.draft_for(&project_id).to_string();
+        let focused = self.workspace_focus == crate::tui::app::state::WorkspaceFocus::Chat;
+        if focused {
+            panel.push(format!("> {draft}▌ (Enter sends, Esc returns)"));
+        } else if !draft.is_empty() {
+            let preview: String = draft.chars().take(80).collect();
+            panel.push(format!("draft: {preview}"));
+        } else {
+            panel.push("/chat focuses panel · Space expands tasks".to_string());
+        }
+        let title = format!(" Chat: {display_name} ");
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if focused { theme.primary } else { theme.border }))
+            .style(Style::default().bg(theme.background));
+        let text: Vec<Line> = panel
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.foreground))))
+            .collect();
+        let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {

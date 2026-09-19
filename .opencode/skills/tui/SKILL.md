@@ -31,7 +31,7 @@ root and lifecycle modules.
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
 | `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope, `async_request.rs` holds the finish/fail guard, `work_orders.rs` owns Task composer/sheet/view pure state (mode, validation, grouping, reorder math), and `workspace_dashboard.rs` owns global dashboard pure state (filter/nav/generation/dirty/revocation) |
 | `src/tui/commands/work_orders.rs` | Project Task flows: composer toggle (bare Tab owns Session/Task, `Ctrl+A` owns SwitchAgent, `Ctrl+G` alias), sheet prefetch/confirm with focused queue insertion (`j/k`/Up/Down) and capability-aware external-trigger gate, `WorkOrderCreate` then chained `WorkOrderTriggerCreate` with one-time secret dialog, Task view refresh/reorder/mutate/open plus trigger setup/rotate/revoke/refresh (`t`/`T`/`X`/`e`), `/tasks` migration — all spawn-and-complete with route+generation stale guards; bearer cleared on close/switch/reconnect |
-| `src/tui/commands/workspace_dashboard.rs` | Global dashboard flows: open/refresh (one `WorkspaceDashboard` aggregate), expand (one bounded `WorkOrderList`), descend via project tabs + Task view, `/workspace` — generation+epoch stale guards, hint-dirty without focus theft |
+| `src/tui/commands/workspace_dashboard.rs` | Workspace primary-view flows (`Route::Workspace`, non-modal): open/refresh (one `WorkspaceDashboard` aggregate), `Space` expand (one bounded `WorkOrderList`), empty-`Enter` descend via project tabs + Task view, `/workspace` + `/chat` side-panel focus — generation+epoch stale guards, hint-dirty without focus theft; composer/chat routing via selected-project locator with no cwd/hidden-session fallback |
 | `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
 | `src/tui/commands/` | command-handler submodules (see `mod.rs` for the current set) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
@@ -121,7 +121,10 @@ root and lifecycle modules.
   spawning project-scoped work. The active tab supplies project/workspace/
   session identities and the workspace root. Never use process cwd or the
   legacy `session_state.project_dir` mirror as project authority; do not
-  change process cwd to switch tabs.
+  change process cwd to switch tabs. While `Route::Workspace` is active,
+  resolve `workspace_dashboard::composer_execution_context()` (selected
+  project through an open tab, fail visibly with no fallback) and never
+  send to the hidden prior session when the selection points elsewhere.
 - **Prompt/session creation**: `App::send_prompt` captures immutable prompt
   text and a `ProjectExecutionContext`/`UiRouteToken` when no session exists.
   The event loop starts the registered `PromptSessionCreated` continuation;

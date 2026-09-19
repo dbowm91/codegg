@@ -134,9 +134,23 @@ pub(crate) fn apply_session_create_for_prompt(
     let Some(check) = current_route_check(app) else {
         return;
     };
+    // M005: Workspace mismatch forces creation even though a hidden
+    // session exists (daemon work untouched; only the binding changes).
+    // Otherwise a session that appeared via another path invalidates the
+    // no-session slot.
+    let workspace_active = crate::tui::commands::workspace_dashboard::is_workspace_view_active(app);
+    let workspace_selected =
+        crate::tui::commands::workspace_dashboard::workspace_selected_project_id(app);
+    let session_mismatched = workspace_active
+        && match (&app.session_state.session, &workspace_selected) {
+            (Some(sess), Some(selected)) => {
+                sess.project_id.is_empty() || sess.project_id != *selected
+            }
+            _ => false,
+        };
     if !route.matches(&check)
-        || app.session_state.session.is_some()
-        || app.active_session_id().is_some()
+        || (!session_mismatched
+            && (app.session_state.session.is_some() || app.active_session_id().is_some()))
     {
         app.prompt_state.cancel_session_submit();
         app.prompt_state.pending_send = false;
@@ -201,8 +215,10 @@ pub(crate) fn apply_session_create_for_prompt(
 }
 
 fn current_route_check(app: &App) -> Option<crate::tui::app::state::RouteCheck> {
-    let context = app.project_execution_context().ok()?;
-    let tab_id = app.active_tab_id();
+    // M005: Workspace selection owns routing while the view is active.
+    let context =
+        crate::tui::commands::workspace_dashboard::composer_execution_context(app).ok()?;
+    let tab_id = crate::tui::commands::workspace_dashboard::composer_tab_id(app);
     Some(app.routing_registry.check_for(
         tab_id.as_ref(),
         context.project_id.as_deref(),

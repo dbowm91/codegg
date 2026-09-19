@@ -85,13 +85,18 @@ impl App {
                 tracing::debug!(target: "codegg::tui::app", "send_prompt: intercepted human shell command: {}", command);
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
-                let cwd = match self.project_execution_context() {
-                    Ok(context) => context.workspace_root,
-                    Err(error) => {
-                        self.messages_state.toasts.error(&error);
-                        return;
-                    }
-                };
+                // M005: Workspace selection drives the execution root;
+                // fail visibly instead of falling back to cwd/active tab.
+                let cwd =
+                    match crate::tui::commands::workspace_dashboard::composer_execution_context(
+                        self,
+                    ) {
+                        Ok(context) => context.workspace_root,
+                        Err(error) => {
+                            self.messages_state.toasts.error(&error);
+                            return;
+                        }
+                    };
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(
                         tx,
@@ -127,17 +132,60 @@ impl App {
         // Capture the project/workspace route before mutating the visible
         // message state.  A no-session prompt must never fall back to the tab
         // that happens to be active when SessionCreate completes.
-        let needs_session_create = !matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
-            && self.session_state.session.is_none();
-        let pending_session_route = if needs_session_create {
-            let context = match self.project_execution_context() {
-                Ok(context) => context,
-                Err(error) => {
-                    self.messages_state.toasts.error(&error);
-                    return;
+        //
+        // M005: while the Workspace view is active, the selected project
+        // owns routing. The hidden prior session must never silently
+        // receive the submit when the selection points elsewhere: a
+        // mismatched existing session forces creation of an ordinary
+        // session for the selected project (daemon work keeps running;
+        // only the frontend binding changes). Ambiguous context fails
+        // visibly; never cwd or prior-session fallback.
+        let workspace_active =
+            crate::tui::commands::workspace_dashboard::is_workspace_view_active(self);
+        let workspace_selected =
+            crate::tui::commands::workspace_dashboard::workspace_selected_project_id(self);
+        // M005: explicit submit focuses the selected project's tab so the
+        // tab/session/composer stay aligned. Daemon work for the hidden
+        // prior session is untouched; only the frontend binding changes.
+        if workspace_active {
+            if let Some(selected) = workspace_selected.clone() {
+                if let Some(tab) = self
+                    .project_tabs
+                    .ordered()
+                    .iter()
+                    .find(|tab| tab.project_id.as_deref() == Some(selected.as_str()))
+                    .map(|tab| tab.tab_id.clone())
+                {
+                    let current = self.active_tab_id();
+                    if current.as_ref() != Some(&tab) {
+                        let _ = self.switch_active_tab(&tab);
+                    }
                 }
-            };
-            let tab_id = match self.active_tab_id() {
+            }
+        }
+        let session_matches_selection = match (&self.session_state.session, &workspace_selected) {
+            (_, None) => true,
+            (None, _) => true,
+            (Some(sess), Some(selected)) => {
+                // Empty project ids are legacy compat bindings: treat as
+                // mismatch when Workspace selection is explicit so the
+                // hidden session is never reused silently.
+                !sess.project_id.is_empty() && sess.project_id == *selected
+            }
+        };
+        let needs_session_create = !matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
+            && (self.session_state.session.is_none()
+                || (workspace_active && !session_matches_selection));
+        let pending_session_route = if needs_session_create {
+            let context =
+                match crate::tui::commands::workspace_dashboard::composer_execution_context(self) {
+                    Ok(context) => context,
+                    Err(error) => {
+                        self.messages_state.toasts.error(&error);
+                        return;
+                    }
+                };
+            let tab_id = match crate::tui::commands::workspace_dashboard::composer_tab_id(self) {
                 Some(tab_id) => tab_id,
                 None => {
                     self.messages_state
@@ -147,12 +195,22 @@ impl App {
                 }
             };
             let request_id = self.prompt_state.session_submit_request.begin();
+            // M005: token carries the composer target (selected project
+            // while Workspace is active), never the hidden prior session.
+            let token_project = context
+                .project_id
+                .clone()
+                .or_else(|| self.active_project_id().map(str::to_string));
+            let token_workspace = context
+                .workspace_id
+                .clone()
+                .or_else(|| self.active_workspace_id().map(str::to_string));
             Some((
                 context,
                 crate::tui::app::state::UiRouteToken::new(
                     Some(tab_id),
-                    self.active_project_id().map(str::to_string),
-                    self.active_workspace_id().map(str::to_string),
+                    token_project,
+                    token_workspace,
                     self.active_session_id().map(str::to_string),
                     self.view_switch.active_view_epoch,
                     self.routing_registry.reconnect_epoch,
