@@ -1,7 +1,8 @@
 # Team Collaboration Corrective M004 — Shared-Session Controller Lease
 
-Status: active (unblocked by M001 closure at
-plans/closure/team-collaboration-corrective/001-status.md)
+Status: implemented (closure at
+plans/closure/team-collaboration-corrective/004-status.md;
+implementation `1bc967c1`)
 
 Repository baseline: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 
