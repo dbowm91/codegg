@@ -182,6 +182,38 @@ deployment-wide device credentials via a shared project.
 (method/transport/kind/outcome); token digests and plaintext never
 enter audit metadata. See `architecture/identity.md`.
 
+### Shared-session controller lease (team-collaboration M004)
+
+Successful `TurnSubmit` atomically establishes a turn-scoped controller
+lease (ADR-0007) attributed to the submitting principal, durable in
+`session_turn_controller` (migration v65) and mirrored into the
+in-memory turn handle. While the turn is active, the controller
+principal is required *in addition to* existing capabilities for
+`turn_steer`, `turn_cancel`, and permission/question responses; the
+lease narrows authority and never widens it. Same-principal second
+devices pass (client identity is audit/presence metadata, not a second
+authority); observers, Viewers, and chat grants never satisfy the
+predicate. Transfer is controller-only to an eligible (`agent.invoke`)
+recipient under CAS revision; release is controller-only under CAS;
+forced takeover requires Maintainer/Owner (`project.configure` gate
+plus an explicit role check), a bounded reason, and is audited as
+`membership_change` with ids/revision only. Terminal transitions
+release the lease (the per-turn reaper and restart recovery both
+delete on turn match, so stale writers observe `NotFound` and change
+nothing); ambiguous provenance (no lease, legacy attribution, revoked
+controller) fails closed until an explicit recovery takeover with
+`expected_revision: 0`. Permission/question Core handlers resolve the
+owning session/turn from the pending id before the check, and the
+REST hook (`authorize_control_response_for_turn`) enforces the same
+predicate after the `session.create` gate, so no legacy route mutates
+the active turn outside the controller gate. `session_control_get`
+(`session.read`), `session_control_request/transfer/release`
+(`agent.invoke`), and `session_control_takeover`
+(`project.configure`) are `ViaSession`; gate denials use
+`project_not_found`, handler controller denials use the typed
+`session_control_not_controller` / `session_control_conflict` codes.
+See `architecture/session.md` and `plans/adrs/ADR-0007-*`.
+
 ### Project work orders (M001)
 
 Every `work_order_*` operation except `work_order_capabilities` is
@@ -232,7 +264,9 @@ scope resolvers — never a duplicated role expansion:
   closed.
 - Permission/question lists require `session.read` on the owning session;
   responses require `session.create` via `authorize_control_response`,
-  which M004 will narrow to the controller lease without another bypass.
+  which M004 narrows to the active-turn controller lease
+  (`authorize_control_response_for_turn` enforces the lease after the
+  capability gate, including turn-match and revocation rechecks).
 - Config/provider/tool/MCP and global SSE are LocalOwner-only
   compatibility (no safe project scope); legacy `/ws` is LocalOwner-only
   with no projection authority. Team denials are privacy-safe 404s
@@ -399,6 +433,11 @@ gates (firing is not a Core operation):
 | `session_selection_list` | via_session | `session.read` |
 | `session_selection_models` | via_session | `session.read` |
 | `session_selection_update` | via_session | `agent.invoke` |
+| `session_control_get` | via_session | `session.read` |
+| `session_control_release` | via_session | `agent.invoke` |
+| `session_control_request` | via_session | `agent.invoke` |
+| `session_control_takeover` | via_session | `project.configure` |
+| `session_control_transfer` | via_session | `agent.invoke` |
 | `session_share` | via_session | `project.configure` |
 | `session_unshare` | via_session | `project.configure` |
 | `presence_capabilities` | global | `none` |

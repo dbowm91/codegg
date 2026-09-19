@@ -969,6 +969,40 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::ProjectConfigure),
         ),
+        // ── Team Collaboration Corrective M004: Shared-Session Controller Lease ──
+        //
+        // Turn-scoped controller lease from ADR-0007. All operations are
+        // session-scoped (`ViaSession`): `SessionControlGet` inspects the
+        // lease plus inert requests (`session.read`); request/transfer/
+        // release narrow `agent.invoke` in-flight control to the lease
+        // holder (enforced in the handler after this gate, never widening
+        // it); forced takeover requires Maintainer/Owner-equivalent
+        // `project.configure` and a bounded reason, and is audited.
+        R::SessionControlGet { .. } => OperationDescriptor::new(
+            "session_control_get",
+            ScopeKind::ViaSession,
+            Some(Capability::SessionRead),
+        ),
+        R::SessionControlRequest { .. } => OperationDescriptor::new(
+            "session_control_request",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::SessionControlTransfer { .. } => OperationDescriptor::new(
+            "session_control_transfer",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::SessionControlRelease { .. } => OperationDescriptor::new(
+            "session_control_release",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::SessionControlTakeover { .. } => OperationDescriptor::new(
+            "session_control_takeover",
+            ScopeKind::ViaSession,
+            Some(Capability::ProjectConfigure),
+        ),
         // ── Execution Reliability M003: Approval / Sandbox / Policy ──
         //
         // Principal-scoped daemon-owned preferences. Transport-level scope
@@ -1832,6 +1866,28 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::TeamTokenRevoke {
             token_id: String::new(),
+        },
+        R::SessionControlGet {
+            session_id: String::new(),
+        },
+        R::SessionControlRequest {
+            session_id: String::new(),
+            message: None,
+        },
+        R::SessionControlTransfer {
+            session_id: String::new(),
+            recipient_principal: String::new(),
+            expected_revision: 0,
+            reason: None,
+        },
+        R::SessionControlRelease {
+            session_id: String::new(),
+            expected_revision: 0,
+        },
+        R::SessionControlTakeover {
+            session_id: String::new(),
+            expected_revision: 0,
+            reason: String::new(),
         },
         R::ApprovalPreferenceGet,
         R::ApprovalModeSet {

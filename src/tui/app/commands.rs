@@ -1259,6 +1259,32 @@ pub enum TuiCommand {
         unauthorized: bool,
         reconnect_epoch: u64,
     },
+    /// M004: `SessionControlGet` completion for the `/control` lease
+    /// view. Stale completions are dropped at apply time; the dialog
+    /// renders only for the captured session. Carries ids/revisions/
+    /// reasons only, never secrets.
+    ControlLoaded {
+        request_id: u64,
+        session_id: String,
+        controller: Option<crate::protocol::core::SessionControllerDto>,
+        requests: Vec<crate::protocol::core::SessionControlRequestDto>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// M004: control mutation completion (request/transfer/release/
+    /// takeover). Success refreshes the `/control` view; `message` is
+    /// the structural summary (ids/revisions, never secrets).
+    ControlMutationFinished {
+        request_id: u64,
+        session_id: Option<String>,
+        message: Option<String>,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
 }
 
 /// Send a command on the bounded TUI effect channel.

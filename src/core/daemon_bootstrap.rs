@@ -28,7 +28,6 @@ use std::sync::Arc;
 
 use super::daemon::CoreDaemon;
 use super::event_log::EventFilter;
-use crate::core::session_runtime::RuntimeSessionStatus;
 use crate::error::AppError;
 use chrono::Utc;
 use sqlx::Row;
@@ -250,17 +249,19 @@ impl CoreDaemon {
                     )
                     .await;
 
-                // Clear runtime state for this session
-                if let Some(runtime) = self.sessions.get(session_id) {
-                    let mut active = runtime.active_turn.write().await;
-                    *active = None;
-                    drop(active);
-
-                    let mut status = runtime.status.write().await;
-                    *status = RuntimeSessionStatus::Idle;
-                }
+                // Clear runtime state for this session and release
+                // the M004 controller lease (terminal wins: the failed
+                // turn no longer has a controller).
+                self.release_turn_controller(session_id, turn_id).await;
             }
         }
+
+        // M004: reconcile the controller domain against terminal
+        // state and trustworthy origin attribution (stale leases for
+        // terminal turns are released; active turns without a lease
+        // derive one only from trustworthy attribution, otherwise
+        // control fails closed until explicit takeover).
+        self.reconcile_session_controllers(&active_turns).await;
 
         // Count stale PermissionPending events (no PermissionResponded in same session)
         let stale_perms: Result<i64, sqlx::Error> = sqlx::query_scalar(

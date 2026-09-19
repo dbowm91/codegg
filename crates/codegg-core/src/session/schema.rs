@@ -214,6 +214,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 64 {
         migrate_and_record(pool, 64).await?;
     }
+    if current_version < 65 {
+        migrate_and_record(pool, 65).await?;
+    }
 
     Ok(())
 }
@@ -290,6 +293,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             62 => migrate_v62(&mut tx).await?,
             63 => migrate_v63(&mut tx).await?,
             64 => migrate_v64(&mut tx).await?,
+            65 => migrate_v65(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2657,6 +2661,24 @@ async fn migrate_v63(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// change.
 async fn migrate_v64(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::collaboration::CHAT_POLICY_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Team collaboration corrective M004: turn-scoped shared-session
+/// controller lease (ADR-0007).
+///
+/// Additive `IF NOT EXISTS`, safe on existing databases. Pre-lease
+/// databases gain empty tables; readers treat absence as "no
+/// controller" and control fails closed until an explicit takeover.
+/// No turn rows are backfilled: existing active turns encountered
+/// during upgrade derive controller identity only from trustworthy
+/// stored origin attribution, otherwise recovery takeover is required.
+async fn migrate_v65(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::session_control::SESSION_CONTROL_SCHEMA_STATEMENTS {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

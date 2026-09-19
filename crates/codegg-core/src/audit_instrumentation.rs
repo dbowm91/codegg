@@ -541,6 +541,15 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("team_principal_status_set", "membership_change"),
     ("team_token_create", "authentication"),
     ("team_token_revoke", "authentication"),
+    // Team collaboration corrective M004: control transitions emit
+    // `membership_change` with session/turn/controller ids and revision
+    // only (post-mutation in the handler, like team mutations). The
+    // inert request path audits the same way; the get path is a
+    // bounded read and stays uninstrumented.
+    ("session_control_request", "membership_change"),
+    ("session_control_transfer", "membership_change"),
+    ("session_control_release", "membership_change"),
+    ("session_control_takeover", "membership_change"),
     ("work_order_create", "work_order_lifecycle"),
     ("work_order_batch_create", "work_order_lifecycle"),
     ("work_order_update", "work_order_lifecycle"),
@@ -645,6 +654,10 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "team_membership_list",
     "team_principal_list",
     "team_token_list",
+    // Team collaboration corrective M004: the control get path is a
+    // bounded session-scoped read (lease plus inert requests); the
+    // mutations above carry the audit trail.
+    "session_control_get",
     "work_order_capabilities",
     "work_order_list",
     "work_order_get",

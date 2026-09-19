@@ -25,6 +25,7 @@ pub enum InfoType {
     Agents,
     Collaborators,
     Team,
+    Control,
     ProjectChat,
 }
 
@@ -74,6 +75,7 @@ impl InfoDialog {
             InfoType::Agents => " Agents ",
             InfoType::Collaborators => " Collaborators ",
             InfoType::Team => " Team ",
+            InfoType::Control => " Control ",
             InfoType::ProjectChat => " Project Chat ",
         }
     }
@@ -94,6 +96,10 @@ impl InfoDialog {
             InfoType::Agents => DialogType::Agent,
             InfoType::Collaborators => DialogType::Collaborators,
             InfoType::Team => DialogType::Team,
+            // M004 shares the Team dialog slot (single InfoDialog
+            // instance; last writer wins). Control output never
+            // carries secrets, so sharing the slot is safe.
+            InfoType::Control => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
         }
     }

@@ -291,8 +291,9 @@ tests/presence_m003_observation.rs                    # allow/deny, negatives, l
 | Subscribe/resume another session | allow with `session.observe` | `project_not_found` | Same shape for missing vs denied |
 | Snapshot/replay/live tail | redacted canonical stream | nothing delivered | Redaction before durable replay is authoritative |
 | Prompt submit / chat input | blocked, chat placeholder | n/a | Never sent as a turn; chat seam reserved for project-collaboration M001 |
-| Permission/question answers | blocked | n/a | Counts visible via projection summary only |
-| Turn steer/cancel, `agent.invoke` | `authorization_denied` | `project_not_found` | Every turn re-enters the gate |
+| Permission/question answers | blocked | n/a | Counts visible via projection summary only; M004 additionally requires the active-turn controller daemon-side |
+| Turn steer/cancel, `agent.invoke` | `authorization_denied` | `project_not_found` | Every turn re-enters the gate; M004 additionally requires the active-turn controller (`session_control_not_controller` for non-controller members) |
+| Shared-session control handoff (`/control`, `session_control_*`) | blocked (TUI, including read-only get) | n/a | Controller identity stays visible through the session projection; M004 transfer/takeover never inferred from observation or disconnect |
 | Model/agent/provider settings | blocked (TUI) | n/a | `/models`, `/agent`, `/connections` denied while observing |
 | Session/file/worktree/Git/job mutations | blocked (TUI) + gate denies | n/a | `/new`, `/fork`, `/revert`, `/lsp-preview-apply`, `/pr`, `/loop`, `/test`, … |
 | Shell/terminal control | blocked (TUI) | n/a | Inspection (`/shell-list`, `/terminal-show`, …) stays allowed |

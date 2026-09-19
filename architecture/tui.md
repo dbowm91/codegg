@@ -336,6 +336,42 @@ state; the TUI owns no membership truth. Full contract in
   on these paths. `/collaborators` remains the ephemeral presence
   view and never shows durable membership detail.
 
+### Shared-Session Control (Team Collaboration M004)
+
+Turn-scoped controller lease rendered from daemon
+`session_control.v1` state; the TUI owns no control truth. Full
+contract in `architecture/authorization.md` (ADR-0007).
+
+- **State**: `DialogState::control_request` (`AsyncUiRequestState`)
+  guards every `/control` round-trip; completions additionally check
+  the captured session against the active tab and the captured
+  `reconnect_epoch`, so stale completions drop.
+  `DialogState::control_last` caches the last-known lease for the
+  active session (display only; refreshed via `/control`).
+- **Flow**: `src/tui/commands/control.rs` issues `SessionControlGet`
+  (lease plus inert requests), `SessionControlRequest` (inert),
+  `SessionControlTransfer` (controller-only, CAS),
+  `SessionControlRelease` (controller-only, CAS), and
+  `SessionControlTakeover` (Maintainer/Owner, bounded reason) in
+  registered tasks, with `TuiCommand::ControlLoaded` /
+  `ControlMutationFinished` dispatch arms in
+  `src/tui/runtime/command_dispatch.rs`. Mutations refresh the lease
+  view so the indicator and revision stay coherent.
+- **Surface**: bare `/control` opens a scrollable `InfoType::Control`
+  dialog (controller principal, turn, revision, last action/actor/
+  reason, plus bounded inert requests). Subcommands:
+  `/control request [message]`, `/control transfer <principal-id>
+  <revision> [--reason <text>]`, `/control release <revision>`,
+  `/control takeover <revision> <reason>`. The status bar shows
+  `control:<principal>` for the active session while a cached lease
+  is held.
+- **Observer enforcement**: `/control` (every subcommand, including
+  read-only get) is absent from the observer allowlist, so the
+  central `execute_command` gate rejects it while observing;
+  permission/question answers stay blocked by `ObserverState`
+  exactly as before. Controller identity remains visible through
+  the session projection.
+
 ### Long Output → Info Dialog
 
 `App::show_short_or_info(info_type, lines)` routes output to short toast

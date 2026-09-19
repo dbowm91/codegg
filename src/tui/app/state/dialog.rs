@@ -98,6 +98,14 @@ pub struct DialogState {
     /// completions (newer request, tab switch, reconnect) are dropped at
     /// apply time.
     pub team_request: crate::tui::app::state::AsyncUiRequestState,
+    /// M004: `SessionControl*` continuations for the `/control` shared-
+    /// session surface. Stale completions are dropped at apply time.
+    pub control_request: crate::tui::app::state::AsyncUiRequestState,
+    /// M004: last-known controller lease for the active session
+    /// `(session_id, controller)`. Display cache only; authority stays
+    /// daemon-side. `None` controller means the last fetch observed no
+    /// active lease (idle or released). Refresh with `/control`.
+    pub control_last: Option<(String, Option<crate::protocol::core::SessionControllerDto>)>,
     /// C001: `WorkOrderTriggerCreate` continuation (WorkOrder+trigger
     /// chain, retry, and rotation creates).
     pub trigger_create_request: crate::tui::app::state::AsyncUiRequestState,

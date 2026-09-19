@@ -511,6 +511,20 @@ impl CoreDaemon {
                 | CoreRequest::TeamMembershipUpdate { .. }
                 | CoreRequest::TeamMembershipRevoke { .. }
         );
+        // Team collaboration corrective M004: single-session control
+        // reads/writes deny as not-found at the gate so unauthorized
+        // callers cannot infer session existence or controller
+        // identity. Handler-level controller denials (not-controller,
+        // conflict) keep their typed codes because the caller already
+        // holds session access at that point.
+        let control_private = matches!(
+            request,
+            CoreRequest::SessionControlGet { .. }
+                | CoreRequest::SessionControlRequest { .. }
+                | CoreRequest::SessionControlTransfer { .. }
+                | CoreRequest::SessionControlRelease { .. }
+                | CoreRequest::SessionControlTakeover { .. }
+        );
         // Work Orders M001: every work-order read/write denies as
         // not-found so unauthorized callers cannot infer project
         // existence, membership, or waiting-work activity from an opaque
@@ -523,6 +537,7 @@ impl CoreDaemon {
         ) || observe_private
             || chat_private
             || team_private
+            || control_private
             || Self::is_work_order_request(request))
             && error.is_denial()
         {
@@ -2750,6 +2765,11 @@ impl CoreDaemon {
             | CoreRequest::TurnSubmit { session_id, .. }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
+            | CoreRequest::SessionControlGet { session_id }
+            | CoreRequest::SessionControlRequest { session_id, .. }
+            | CoreRequest::SessionControlTransfer { session_id, .. }
+            | CoreRequest::SessionControlRelease { session_id, .. }
+            | CoreRequest::SessionControlTakeover { session_id, .. }
             | CoreRequest::AgentSelect { session_id, .. }
             | CoreRequest::ModelSelect { session_id, .. }
             | CoreRequest::SessionSelectionGet { session_id }
@@ -2788,7 +2808,7 @@ impl CoreDaemon {
     }
 
     /// M003: owning project of one session row, if resolvable.
-    async fn session_project(
+    pub(crate) async fn session_project(
         &self,
         pool: &sqlx::SqlitePool,
         session_id: &str,
@@ -3024,6 +3044,12 @@ impl CoreDaemon {
             // recorded post-mutation with their durable ids and
             // revisions (see `handle_team_request`).
             _ if Self::is_team_mutation(request) => return,
+            // Team collaboration corrective M004: control mutations
+            // change the lease revision in the handler, so they skip
+            // the pre-side-effect emit and are recorded post-mutation
+            // with their durable revision (see
+            // `handle_control_request`).
+            _ if Self::is_control_mutation(request) => return,
             _ => {}
         }
         let provenance = codegg_core::authorization::audit_provenance(decision);
@@ -4900,6 +4926,9 @@ mod tests {
             steer_tx: Some(steer_tx),
             started_at: chrono::Utc::now(),
             asset_pin: None,
+            controller_principal: None,
+            controller_client: None,
+            controller_revision: 0,
         });
         (cancel_tx, cancel_rx, steer_rx)
     }

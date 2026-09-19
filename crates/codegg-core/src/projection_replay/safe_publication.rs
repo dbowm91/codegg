@@ -124,6 +124,12 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // Work Orders M005: trigger hints carry trigger identity, change
         // kind, and effective status only (never secrets or verifiers).
         CoreEvent::WorkOrderTriggerChanged { .. } => SafePublicationClass::Safe,
+        // Team collaboration corrective M004: control hints carry
+        // session/turn/controller ids, revision, and the action only.
+        // Receivers re-fetch through the authorized control get path;
+        // the events never carry credentials or device secrets.
+        CoreEvent::SessionControlChanged { .. } => SafePublicationClass::Safe,
+        CoreEvent::SessionControlRequested { .. } => SafePublicationClass::Safe,
     }
 }
 
@@ -175,6 +181,8 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::ToolProgramFailed { session_id, .. } => session_id.is_some(),
         CoreEvent::ToolProgramUpdated { session_id, .. } => session_id.is_some(),
         CoreEvent::ConvergenceUpserted { session_id, .. } => !session_id.is_empty(),
+        CoreEvent::SessionControlChanged { session_id, .. } => !session_id.is_empty(),
+        CoreEvent::SessionControlRequested { session_id, .. } => !session_id.is_empty(),
         _ => false,
     }
 }

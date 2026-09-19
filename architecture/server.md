@@ -124,9 +124,12 @@ authorization framework and no handler hand-rolls role expansion:
   mutation, so denied writes have zero side effects.
 - Permission/question lists require `session.read` on the owning session;
   responses require mutation authority (`session.create`) via the
-  `authorize_control_response` hook, which M004 will narrow to the
-  controller lease without another bypass. Pending IDs never leak across
-  projects (denials are 404).
+  `authorize_control_response` hook, which M004 narrows to the
+  active-turn controller lease
+  (`authorize_control_response_for_turn` enforces the lease after the
+  capability gate, including turn-match and revocation rechecks, with
+  privacy-safe 404s). Pending IDs never leak across projects, and no
+  legacy route mutates the active turn outside the controller gate.
 - `/api/event` is LocalOwner-only compatibility: the global event bus is
   unfiltered, so team principals receive 404 rather than a cross-project
   stream. A future milestone may adapt it to authorized

@@ -865,6 +865,15 @@ impl App {
             activity.push("security".to_string());
         }
 
+        // M004: shared-session controller indicator (cached lease for
+        // the active session; display only, refreshed via `/control`).
+        let active_session = self.active_session_id().map(str::to_string);
+        if let Some(indicator) =
+            crate::tui::commands::control::control_indicator_for(self, active_session.as_deref())
+        {
+            activity.push(indicator);
+        }
+
         if let Some(ref goal) = self.active_goal {
             activity.push(format!("goal:{}", format_goal_status_line(goal)));
         }

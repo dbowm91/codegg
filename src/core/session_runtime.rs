@@ -110,6 +110,13 @@ pub struct TurnHandle {
     /// Immutable runtime-asset identity captured when this turn started.
     pub asset_pin:
         Option<std::sync::Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    /// M004 controller lease (ADR-0007): principal that submitted the
+    /// turn plus originating client and lease revision. `None` means no
+    /// controller is tracked (pool-less legacy path still gates on the
+    /// in-memory principal when present; durable daemons always set it).
+    pub controller_principal: Option<String>,
+    pub controller_client: Option<String>,
+    pub controller_revision: u64,
 }
 
 pub struct SessionRuntimeRegistry {

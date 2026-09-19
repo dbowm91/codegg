@@ -171,10 +171,12 @@ M003 `/team` surface and M005 selected-project rendering.
 ```bash
 cargo test -p codegg-core --lib collaboration  # resolver truth table + domain
 cargo test --test collaboration_m002_chat_policy # 13 policy boundary tests
+cargo test --test collaboration_m002_chat_tui # 11 chat policy TUI tests
 cargo test --test collaboration_m001_chat       # 12 default-behavior tests
 cargo test --test collaboration_m003_chat_actions  # 10 non-escalation tests
 cargo test --test team_m003_membership_admin  # 12 membership/token/chat-override tests (M003)
-python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops + 11 team ops
+cargo test --test session_control_m004_controller_lease  # 23 controller lease tests (M004)
+python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops + 11 team ops + 5 control ops
 ```
 
 ### Team membership and device-token administration (team-collaboration M003)
@@ -193,6 +195,26 @@ plaintext exactly once and `TeamTokenCreate` is secret-bearing
 The `/team` TUI surface (see `architecture/tui.md`) administers both
 membership and the M002 chat overrides above; `/collaborators` stays
 presence-only.
+
+### Shared-session controller lease (team-collaboration M004, ADR-0007)
+
+Chat access never grants execution authority, and the complementary
+positive rule lives in the turn domain: an idle session has no
+controller, and successful `TurnSubmit` atomically establishes a
+turn-scoped lease (`codegg-core::session_control`, migration v65)
+attributed to the submitting principal. While the turn is active, the
+controller principal is required in addition to existing capabilities
+for steer/cancel and permission/question responses; observers and
+chat participants may watch and chat but cannot mutate the active
+turn. Handoff is explicit — inert request, controller transfer (CAS),
+controller release (CAS), or Maintainer/Owner forced takeover with a
+bounded reason (audited) — and disconnect never transfers control.
+Terminal transitions release the lease; ambiguous provenance fails
+closed until recovery takeover. Projection carries the controller
+principal plus coarse revision only (`SnapshotSession`,
+`SessionSnapshot`, `SessionControlChanged/Requested` events are all
+`Safe`). The `/control` TUI surface (see `architecture/tui.md`)
+inspects and hands off control without weakening the observer block.
 
 ### Audit separation
 

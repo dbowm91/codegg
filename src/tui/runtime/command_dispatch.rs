@@ -1477,6 +1477,48 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 reconnect_epoch,
             );
         }
+        TuiCommand::ControlLoaded {
+            request_id,
+            session_id,
+            controller,
+            requests,
+            truncated,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::control::apply_control_loaded(
+                app,
+                request_id,
+                session_id,
+                controller,
+                requests,
+                truncated,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ControlMutationFinished {
+            request_id,
+            session_id,
+            message,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::control::apply_control_mutation(
+                app,
+                request_id,
+                session_id,
+                message,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
         TuiCommand::WorkspaceDashboardLoaded {
             request_id,
             generation,

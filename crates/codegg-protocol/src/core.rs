@@ -584,6 +584,58 @@ pub struct TeamTokenDto {
     pub revoked_at_ms: Option<i64>,
 }
 
+// ── Team Collaboration Corrective M004: Shared-Session Controller Lease ──
+//
+// Turn-scoped controller lease from ADR-0007. An idle session has no
+// controller; successful `TurnSubmit` atomically establishes a lease
+// attributed to the submitting principal. While the turn is active, the
+// controller principal is required in addition to existing capabilities
+// for steer/cancel/permission/question responses. Transfer is explicit
+// (current controller + eligible recipient, CAS revision); forced
+// takeover requires Maintainer/Owner-equivalent policy plus a bounded
+// reason and is audited. Requests are inert notification/state only.
+// Projection carries only principal/coarse status, never credentials.
+
+/// Capability negotiation for the session-control surface.
+pub const SESSION_CONTROL_CAPABILITY: &str = "session_control.v1";
+/// Version of the session-control protocol.
+pub const SESSION_CONTROL_PROTOCOL_VERSION: u32 = 1;
+/// Maximum rows returned by a control-request listing.
+pub const SESSION_CONTROL_MAX_LIST_LIMIT: usize = 20;
+/// Maximum UTF-8 bytes accepted for a takeover/transfer reason or request message.
+pub const SESSION_CONTROL_MAX_REASON_LEN: usize = 280;
+
+/// Wire shape of one active turn controller lease (no secrets).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionControllerDto {
+    pub session_id: String,
+    pub turn_id: String,
+    pub controller_principal: String,
+    #[serde(default)]
+    pub origin_client: Option<String>,
+    pub revision: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub last_action: String,
+    #[serde(default)]
+    pub last_actor: Option<String>,
+    #[serde(default)]
+    pub last_reason: Option<String>,
+}
+
+/// Wire shape of one inert control request (notification/state only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionControlRequestDto {
+    pub request_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    pub requester_principal: String,
+    #[serde(default)]
+    pub message: Option<String>,
+    pub created_at_ms: i64,
+}
+
 // ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
 //
 // Free text never executes: bodies stay inert bounded text (M001). A
@@ -939,6 +991,9 @@ pub struct EventEnvelope<T> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Snapshot variants carry bounded session/message payloads by design;
+// the M004 controller projection adds only two small `Option` fields.
+#[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
     AssetRefresh {
@@ -1138,6 +1193,12 @@ pub enum CoreResponse {
         input_tokens: Option<usize>,
         output_tokens: Option<usize>,
         active_subagents: usize,
+        /// Active turn controller principal, when a turn holds a lease.
+        /// Additive and safe: principal id plus coarse revision only.
+        #[serde(default)]
+        controller_principal: Option<String>,
+        #[serde(default)]
+        controller_revision: Option<u64>,
     },
     SnapshotDaemon {
         event_seq: u64,
@@ -1562,6 +1623,21 @@ pub enum CoreResponse {
         token: TeamTokenDto,
         plaintext: String,
     },
+    // ── Team Collaboration Corrective M004: Controller Lease Views ──
+    /// Current controller lease plus bounded inert requests (no secrets).
+    SessionControl {
+        #[serde(default)]
+        controller: Option<SessionControllerDto>,
+        #[serde(default)]
+        requests: Vec<SessionControlRequestDto>,
+        #[serde(default)]
+        truncated: bool,
+    },
+    /// Updated controller lease after transfer/takeover/release/acquire.
+    SessionControlUpdated {
+        #[serde(default)]
+        controller: Option<SessionControllerDto>,
+    },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     /// Daemon-owned principal preference (approval + sandbox + revision).
     /// The principal comes from transport authority; the payload carries
@@ -1661,6 +1737,11 @@ pub struct SessionSnapshot {
     pub input_tokens: Option<usize>,
     pub output_tokens: Option<usize>,
     pub active_subagents: usize,
+    /// Active turn controller principal (safe coarse metadata only).
+    #[serde(default)]
+    pub controller_principal: Option<String>,
+    #[serde(default)]
+    pub controller_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2650,6 +2731,47 @@ pub enum CoreRequest {
     TeamTokenRevoke {
         token_id: String,
     },
+    // ── Team Collaboration Corrective M004: Shared-Session Controller Lease ──
+    //
+    // Turn-scoped controller lease from ADR-0007. `SessionControlGet`
+    // inspects the current lease plus bounded inert requests.
+    // `SessionControlRequest` records an inert request (never mutates
+    // the lease). `SessionControlTransfer` moves control from the
+    // current controller to an eligible recipient under CAS revision.
+    // `SessionControlRelease` lets the controller release an active
+    // lease (terminal completion auto-releases). `SessionControlTakeover`
+    // is an explicit Maintainer/Owner recovery with a bounded reason.
+    // Principals come from transport authority, never from the payload
+    // except the explicit recipient of a transfer.
+    /// Inspect the current controller lease and bounded requests.
+    SessionControlGet {
+        session_id: String,
+    },
+    /// Record an inert control request/suggestion (no lease mutation).
+    SessionControlRequest {
+        session_id: String,
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Transfer control to an eligible recipient (controller-only, CAS).
+    SessionControlTransfer {
+        session_id: String,
+        recipient_principal: String,
+        expected_revision: u64,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Release an active lease (controller-only; terminal auto-releases).
+    SessionControlRelease {
+        session_id: String,
+        expected_revision: u64,
+    },
+    /// Forced recovery takeover (Maintainer/Owner, bounded reason, audited).
+    SessionControlTakeover {
+        session_id: String,
+        expected_revision: u64,
+        reason: String,
+    },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     //
     // Principal-scoped, daemon-owned. Payloads carry no identity field;
@@ -2957,6 +3079,24 @@ pub enum CoreEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         message: String,
+    },
+    /// Controller lease changed (acquire/transfer/takeover/release).
+    /// Structural locators only: session/turn/principal ids, revision,
+    /// action, and bounded reason. Never credentials or device secrets.
+    SessionControlChanged {
+        session_id: String,
+        #[serde(default)]
+        turn_id: Option<String>,
+        #[serde(default)]
+        controller_principal: Option<String>,
+        revision: u64,
+        action: String,
+    },
+    /// Inert control request recorded (notification/state only).
+    SessionControlRequested {
+        session_id: String,
+        request_id: String,
+        requester_principal: String,
     },
     SessionUpdated {
         session_id: String,

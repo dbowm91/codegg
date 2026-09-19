@@ -150,6 +150,28 @@ Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:46`).
 7. **Share**: Generates a 7-day share URL (configurable via
    `CODEGG_SHARE_DURATION_DAYS`) with a random token.
 
+### Active-turn controller lease (team-collaboration M004)
+
+Writers serialize turns through the per-session `active_turn` lock,
+but the lock alone names no human: the turn-scoped controller lease
+(ADR-0007, `codegg-core::session_control`, migration v65 tables
+`session_turn_controller` + `session_control_request`) names the
+principal that submitted the turn plus originating client, revision,
+and transfer/takeover provenance. Successful `TurnSubmit` acquires
+the lease atomically with accepting the turn (store conflict rolls
+the in-memory turn back, so failed submissions leave no lease); the
+per-turn reaper and restart recovery release it on the first terminal
+event for the exact turn id (terminal wins over later transfer).
+Steer/cancel and permission/question responses require the
+controller principal in addition to existing capabilities;
+same-principal second devices pass, observers/chat grants never do,
+and ambiguous provenance (no lease, legacy attribution, revoked
+controller) fails closed until an explicit Maintainer/Owner
+takeover. `SnapshotSession` and `SessionSnapshot` project the
+controller principal plus coarse revision only — never credentials
+or device secrets. See `architecture/authorization.md` and
+`architecture/collaboration.md`.
+
 ### Event System
 
 `EventStore` (`session/store.rs:2598`) persists typed `SessionEvent`

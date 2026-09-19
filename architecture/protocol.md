@@ -132,6 +132,15 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 **Model (1)**: `ModelsRefresh`
 
 **Permission/Question (2)**: `PermissionRespond`, `QuestionRespond`
+(M004 gates both on the owning session/turn controller lease in
+addition to existing authority; see `architecture/authorization.md`)
+
+**Session Control (5)**: `SessionControlGet`, `SessionControlRequest`,
+`SessionControlTransfer`, `SessionControlRelease`,
+`SessionControlTakeover` (`session_control.v1`, ADR-0007; responses
+`SessionControl` / `SessionControlUpdated`, events
+`SessionControlChanged` / `SessionControlRequested` — ids, revisions,
+and bounded reasons only, never secrets)
 
 **Memory (4)**: `MemorySearch`, `MemoryList`, `MemoryRemember`,
 `MemoryForget`

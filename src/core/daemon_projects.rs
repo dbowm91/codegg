@@ -384,6 +384,20 @@ impl CoreDaemon {
                         let input_tokens = snap.input_tokens;
                         let output_tokens = snap.output_tokens;
                         let active_subagents = snap.active_subagents;
+                        // M004: safe controller projection from the
+                        // in-memory handle (principal id plus coarse
+                        // revision only). Durable daemons mirror the
+                        // store into the handle on every mutation, so
+                        // this stays coherent without a DB read per row.
+                        let active = runtime.active_turn.read().await;
+                        let (controller_principal, controller_revision) = match active.as_ref() {
+                            Some(handle) => (
+                                handle.controller_principal.clone(),
+                                Some(handle.controller_revision),
+                            ),
+                            None => (None, None),
+                        };
+                        drop(active);
                         snapshots.push(crate::protocol::core::SessionSnapshot {
                             session_id: sid.clone(),
                             project_id: runtime.project_id.clone(),
@@ -408,6 +422,8 @@ impl CoreDaemon {
                             input_tokens,
                             output_tokens,
                             active_subagents,
+                            controller_principal,
+                            controller_revision,
                         });
                     }
                 }

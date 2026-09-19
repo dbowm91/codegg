@@ -35,11 +35,29 @@ pub async fn submit_question(
     // Resolve the pending items to the canonical owning session before
     // mutating. Unknown sessions fail closed with the privacy-safe shape
     // so cross-project IDs never leak.
-    if QuestionRegistry::get_pending_for_session(&session_id).is_empty() {
+    let pending = QuestionRegistry::get_pending_for_session(&session_id);
+    if pending.is_empty() {
         return Err(authz::denial_not_found());
     }
-    authz::authorize_control_response(&state.pool, &principal, &session_id, "question_respond")
-        .await?;
+    // M004: all pending answers must belong to one turn; ambiguous
+    // turns fail closed before the controller check.
+    let mut turns: Vec<String> = pending
+        .iter()
+        .filter_map(|item| item.turn_id.clone())
+        .collect();
+    turns.sort();
+    turns.dedup();
+    if turns.len() != 1 {
+        return Err(authz::denial_not_found());
+    }
+    authz::authorize_control_response_for_turn(
+        &state.pool,
+        &principal,
+        &session_id,
+        Some(&turns[0]),
+        "question_respond",
+    )
+    .await?;
 
     // Normalize answers to consistent JSON string format
     // Accepts both Vec<String> and object mapping question IDs to answers
@@ -53,7 +71,8 @@ pub async fn submit_question(
     // Questions are keyed by their registry id (`q-{uuid}`) and owned by
     // a session. Answer every pending question owned by this session —
     // the legacy path looked up `session_id` as a question key, which
-    // never matched a real registration.
+    // never matched a real registration. Re-read after the
+    // authorization gate so a concurrent answer cannot double-respond.
     let pending = QuestionRegistry::get_pending_for_session(&session_id);
     let mut answered_any = false;
     for info in pending {

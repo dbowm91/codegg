@@ -21,7 +21,29 @@ impl CoreDaemon {
         authority: codegg_core::transport_auth::RequestAuthorityContext,
         authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
-        let _ = (request_id, trusted_client_id, &authority, &authz_decision);
+        // Session-control operations dispatch to the dedicated M004
+        // handler (same Turns family, separate function to keep this
+        // match small). The capability gate has already run; the
+        // handler enforces lease eligibility against current team
+        // state.
+        match &request {
+            CoreRequest::SessionControlGet { .. }
+            | CoreRequest::SessionControlRequest { .. }
+            | CoreRequest::SessionControlTransfer { .. }
+            | CoreRequest::SessionControlRelease { .. }
+            | CoreRequest::SessionControlTakeover { .. } => {
+                return self
+                    .handle_control_request(
+                        request,
+                        request_id,
+                        trusted_client_id,
+                        authority,
+                        authz_decision,
+                    )
+                    .await;
+            }
+            _ => {}
+        }
         match request {
             CoreRequest::TurnSubmit {
                 session_id,
@@ -181,9 +203,67 @@ impl CoreDaemon {
                         steer_tx: None,
                         started_at: chrono::Utc::now(),
                         asset_pin: asset_pin.clone(),
+                        controller_principal: None,
+                        controller_client: None,
+                        controller_revision: 0,
                     });
                     turn_id
                 };
+
+                // M004 (ADR-0007): atomic controller acquisition with
+                // accepting the turn. The durable row is written before
+                // any execution starts; a store conflict rolls back the
+                // in-memory turn so a failed submission leaves no lease.
+                // LocalOwner broad policy still records a lease (solo
+                // behavior unchanged: the submitter controls its turn)
+                // so projection/presence stay coherent.
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match self
+                    .acquire_turn_controller(
+                        &session_id,
+                        &turn_id,
+                        &authority,
+                        trusted_client_id,
+                        now_ms,
+                    )
+                    .await
+                {
+                    Ok((controller, revision)) => {
+                        self.mirror_controller_to_runtime(
+                            &session_id,
+                            &turn_id,
+                            controller
+                                .as_deref()
+                                .unwrap_or(authority.principal_id().as_str()),
+                            Some(trusted_client_id),
+                            revision,
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        // Roll back: failed submissions must not leave a
+                        // controller lease or a stuck active turn behind.
+                        if let Some(runtime) = self.sessions.get(&session_id) {
+                            let mut active = runtime.active_turn.write().await;
+                            if let Some(handle) = active.as_ref() {
+                                if handle.turn_id == turn_id {
+                                    *active = None;
+                                }
+                            }
+                            drop(active);
+                            let mut status = runtime.status.write().await;
+                            *status = crate::core::session_runtime::RuntimeSessionStatus::Idle;
+                        }
+                        return Ok(CoreResponse::Error {
+                            code: "turn_already_active".to_string(),
+                            message: format!("turn submission raced active control: {error}"),
+                        });
+                    }
+                }
+                // The terminal transition wins over later transfer: the
+                // reaper releases the lease on the first TurnCompleted /
+                // TurnFailed for this exact turn id.
+                self.spawn_turn_reaper(session_id.clone(), turn_id.clone());
 
                 {
                     let mut status = runtime.status.write().await;
@@ -357,16 +437,21 @@ impl CoreDaemon {
                         });
                     }
                 };
-                // Extract session_id and simple perm_id from protocol ID: perm:{session_id}:{turn_id}:{perm_id}.
-                // Reject malformed IDs explicitly rather than silently using empty defaults
+                // Extract session_id, turn_id, and simple perm_id from protocol ID:
+                // perm:{session_id}:{turn_id}:{perm_id}. Reject malformed IDs
+                // explicitly rather than silently using empty defaults
                 // (which could route a response to the wrong session).
-                let (session_id, simple_perm_id) = match id.strip_prefix("perm:").and_then(|rest| {
-                    let mut parts = rest.splitn(3, ':');
-                    let sid = parts.next()?.to_string();
-                    let _turn_id = parts.next()?;
-                    let pid = parts.next()?.to_string();
-                    Some((sid, pid))
-                }) {
+                // The owning session/turn is resolved before the
+                // controller check so opaque IDs cannot bypass it.
+                let (session_id, turn_id, simple_perm_id) = match id.strip_prefix("perm:").and_then(
+                    |rest| {
+                        let mut parts = rest.splitn(3, ':');
+                        let sid = parts.next()?.to_string();
+                        let turn = parts.next()?.to_string();
+                        let pid = parts.next()?.to_string();
+                        Some((sid, turn, pid))
+                    },
+                ) {
                     Some(parsed) => parsed,
                     None => {
                         return Ok(CoreResponse::Error {
@@ -378,6 +463,20 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // M004: permission responses are in-flight human control.
+                // The capability gate for this Global operation is `none`,
+                // so the handler enforces the owning-session mutation
+                // authority plus the controller lease here. Failures use
+                // the no-pending shape when the caller lacks session
+                // authority (no existence oracle) and the typed
+                // controller code when an authorized member is not the
+                // controller.
+                if let Some(denial) = self
+                    .check_control_response(&session_id, &turn_id, &authority, &authz_decision)
+                    .await
+                {
+                    return Ok(denial);
+                }
                 let sent = crate::bus::PermissionRegistry::respond_scoped(
                     &session_id,
                     &simple_perm_id,
@@ -405,17 +504,18 @@ impl CoreDaemon {
                 }
             }
             CoreRequest::QuestionRespond { id, answers } => {
-                // Extract session_id and simple question_id from protocol ID: question:{session_id}:{turn_id}:{question_id}.
+                // Extract session_id, turn_id, and simple question_id from
+                // protocol ID: question:{session_id}:{turn_id}:{question_id}.
                 // Reject malformed IDs explicitly.
-                let (session_id, simple_question_id) = match id.strip_prefix("question:").and_then(
-                    |rest| {
+                let (session_id, turn_id, simple_question_id) = match id
+                    .strip_prefix("question:")
+                    .and_then(|rest| {
                         let mut parts = rest.splitn(3, ':');
                         let sid = parts.next()?.to_string();
-                        let _turn_id = parts.next()?;
+                        let turn = parts.next()?.to_string();
                         let qid = parts.next()?.to_string();
-                        Some((sid, qid))
-                    },
-                ) {
+                        Some((sid, turn, qid))
+                    }) {
                     Some(parsed) => parsed,
                     None => {
                         return Ok(CoreResponse::Error {
@@ -427,6 +527,13 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // M004: same in-flight control predicate as permissions.
+                if let Some(denial) = self
+                    .check_control_response(&session_id, &turn_id, &authority, &authz_decision)
+                    .await
+                {
+                    return Ok(denial);
+                }
                 let sent = crate::bus::QuestionRegistry::answer_question_scoped(
                     &session_id,
                     &simple_question_id,
@@ -537,6 +644,17 @@ impl CoreDaemon {
                         message: format!("No runtime for session: {}", session_id),
                     });
                 };
+                // M004: controller authorization runs after the
+                // capability gate. Only the submitting principal (any
+                // of its devices) may cancel the active turn; an
+                // eligible Maintainer/Owner recovers via explicit
+                // takeover, never by direct cancel.
+                if let Some(denial) = self
+                    .check_turn_controller(&session_id, &turn_id, &authority, &authz_decision)
+                    .await
+                {
+                    return Ok(denial);
+                }
                 let active = runtime.active_turn.read().await;
                 match active.as_ref() {
                     Some(handle) if handle.turn_id == turn_id => {
@@ -569,6 +687,15 @@ impl CoreDaemon {
                         message: format!("No runtime for session: {}", session_id),
                     });
                 };
+                // M004: same controller predicate as cancel. Observers
+                // and non-controller Contributors cannot steer another
+                // human's active turn.
+                if let Some(denial) = self
+                    .check_turn_controller(&session_id, &turn_id, &authority, &authz_decision)
+                    .await
+                {
+                    return Ok(denial);
+                }
                 let active = runtime.active_turn.read().await;
                 match active.as_ref() {
                     Some(handle) if handle.turn_id == turn_id => {
@@ -833,6 +960,8 @@ impl CoreDaemon {
                     input_tokens,
                     output_tokens,
                     active_subagents,
+                    controller_principal,
+                    controller_revision,
                 ) = if let Some(runtime) = self.sessions.get(&session_id) {
                     let status = format!("{:?}", *runtime.status.read().await);
                     let cached = runtime.selected_model.read().await.clone();
@@ -854,6 +983,29 @@ impl CoreDaemon {
                     let active_subagents = runtime
                         .active_subagent_count
                         .load(std::sync::atomic::Ordering::Relaxed);
+                    // M004: safe controller projection (principal id plus
+                    // coarse revision only; never credentials or device
+                    // secrets). Prefers the durable lease; falls back to
+                    // the in-memory handle for pool-less daemons.
+                    let (controller_principal, controller_revision) =
+                        if let Some(store) = self.controller_store() {
+                            match store.get(&session_id).await {
+                                Ok(Some(record)) => (
+                                    Some(record.controller_principal.as_str().to_owned()),
+                                    Some(record.revision),
+                                ),
+                                _ => (None, None),
+                            }
+                        } else {
+                            let active = runtime.active_turn.read().await;
+                            match active.as_ref() {
+                                Some(handle) => (
+                                    handle.controller_principal.clone(),
+                                    Some(handle.controller_revision),
+                                ),
+                                None => (None, None),
+                            }
+                        };
                     (
                         status,
                         model,
@@ -863,6 +1015,8 @@ impl CoreDaemon {
                         input_tokens,
                         output_tokens,
                         active_subagents,
+                        controller_principal,
+                        controller_revision,
                     )
                 } else {
                     (
@@ -874,6 +1028,8 @@ impl CoreDaemon {
                         None,
                         None,
                         0,
+                        None,
+                        None,
                     )
                 };
 
@@ -900,6 +1056,8 @@ impl CoreDaemon {
                     input_tokens,
                     output_tokens,
                     active_subagents,
+                    controller_principal,
+                    controller_revision,
                 })
             }
             CoreRequest::SnapshotModels => {

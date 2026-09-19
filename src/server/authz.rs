@@ -517,24 +517,96 @@ pub async fn authorize_session(
 ///
 /// M001 requires mutation authority (`session.create`) on the owning
 /// session before exposing or mutating a pending item. M004 (controller
-/// lease) will narrow this hook to the active-turn controller without
-/// adding another registry-only route: add the controller check here and
-/// keep the capability gate.
+/// lease) narrows this hook to the active-turn controller without
+/// adding another registry-only route: the capability gate runs first
+/// and the lease check runs second. `turn_id` is the pending item's
+/// owning turn when the route resolved one (permission submit);
+/// `None` skips the turn-match but still requires the caller to be
+/// the session's controller (question fan-out answers only its own
+/// turn's items; mismatched turns are rejected by the route before
+/// mutation).
 pub async fn authorize_control_response(
     pool: &sqlx::SqlitePool,
     principal: &AuthenticatedPrincipal,
     session_id: &str,
     operation: &'static str,
 ) -> Result<ProjectId, AxumAppError> {
+    authorize_control_response_for_turn(pool, principal, session_id, None, operation).await
+}
+
+/// Same hook with an explicit owning-turn check.
+pub async fn authorize_control_response_for_turn(
+    pool: &sqlx::SqlitePool,
+    principal: &AuthenticatedPrincipal,
+    session_id: &str,
+    turn_id: Option<&str>,
+    operation: &'static str,
+) -> Result<ProjectId, AxumAppError> {
     // M004 hook: controller-lease narrowing plugs in here.
-    authorize_session(
+    let project = authorize_session(
         pool,
         principal,
         session_id,
         Capability::SessionCreate,
         operation,
     )
-    .await
+    .await?;
+    if codegg_core::authorization::is_local_owner_broad(principal) {
+        return Ok(project);
+    }
+    let store = codegg_core::session_control::SessionControllerStore::new(pool.clone());
+    let lease = store
+        .get(session_id)
+        .await
+        .map_err(|_| denial_not_found())?;
+    let Some(lease) = lease else {
+        // Ambiguous controller fails closed: no lease means no one
+        // may respond until an explicit recovery takeover.
+        return Err(denial_not_found());
+    };
+    if lease.controller_principal.as_str() != principal.principal_id().as_str() {
+        return Err(denial_not_found());
+    }
+    if let Some(turn) = turn_id {
+        if lease.turn_id != turn {
+            return Err(denial_not_found());
+        }
+    }
+    // Revoked/suspended controllers cannot exercise a stale lease:
+    // re-resolve current standing at request time.
+    if !principal_currently_holds_invoke(pool, &project, principal).await {
+        return Err(denial_not_found());
+    }
+    Ok(project)
+}
+
+/// `true` when `principal` currently holds `agent.invoke` on
+/// `project` with an active principal record and membership.
+async fn principal_currently_holds_invoke(
+    pool: &sqlx::SqlitePool,
+    project: &ProjectId,
+    principal: &AuthenticatedPrincipal,
+) -> bool {
+    use codegg_core::team::{Capability, MembershipState, PrincipalStatus};
+    let team = TeamStore::new(pool.clone());
+    let principal_record = match team.get_principal(principal.principal_id()).await {
+        Ok(Some(record)) => record,
+        _ => return false,
+    };
+    if principal_record.status != PrincipalStatus::Active {
+        return false;
+    }
+    let membership = match team.get_membership(project, principal.principal_id()).await {
+        Ok(membership) => membership,
+        Err(_) => return false,
+    };
+    let Some(membership) = membership else {
+        return false;
+    };
+    if membership.state != MembershipState::Active {
+        return false;
+    }
+    membership.has_capability(Capability::AgentInvoke)
 }
 
 #[cfg(test)]
@@ -565,5 +637,184 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── M004 controller-lease narrowing ──────────────────────────────
+
+    async fn control_test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrate test pool");
+        pool
+    }
+
+    async fn control_test_principal(team: &TeamStore, name: &str) -> AuthenticatedPrincipal {
+        use codegg_core::team::PrincipalKind;
+        let tokens = codegg_core::transport_auth::PersonalTokenStore::with_team(
+            team.pool().clone(),
+            team.clone(),
+        );
+        let record = team
+            .create_principal(PrincipalKind::Human, name)
+            .await
+            .unwrap();
+        let (plaintext, _) = tokens
+            .create_personal_token(&record.id, "device", None)
+            .await
+            .unwrap();
+        tokens
+            .verify_for_client(&plaintext, &format!("client-{name}"))
+            .await
+            .unwrap()
+    }
+
+    async fn control_fixture() -> (
+        sqlx::SqlitePool,
+        AuthenticatedPrincipal,
+        AuthenticatedPrincipal,
+        String,
+        String,
+    ) {
+        use codegg_core::team::ProjectRole;
+        let pool = control_test_pool().await;
+        let team = TeamStore::new(pool.clone());
+        let project = codegg_core::identity::ProjectId::new();
+        sqlx::query(
+            "INSERT OR IGNORE INTO project (id, worktree, time_created, time_updated, sandboxes) VALUES (?, '/tmp', 1, 1, '[]')",
+        )
+        .bind(project.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('sess-ctl', ?, 's', '/tmp', 't', 'v', 1, 1)",
+        )
+        .bind(project.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let alice = control_test_principal(&team, "alice").await;
+        let bob = control_test_principal(&team, "bob").await;
+        for principal in [&alice, &bob] {
+            let record = team
+                .get_principal(principal.principal_id())
+                .await
+                .unwrap()
+                .unwrap();
+            team.create_membership(&project, &record.id, ProjectRole::Contributor)
+                .await
+                .unwrap();
+        }
+        let store = codegg_core::session_control::SessionControllerStore::new(pool.clone());
+        store
+            .acquire(
+                "sess-ctl",
+                "turn-ctl",
+                alice.principal_id(),
+                Some("client-alice"),
+                1,
+            )
+            .await
+            .unwrap();
+        (
+            pool,
+            alice,
+            bob,
+            "sess-ctl".to_string(),
+            "turn-ctl".to_string(),
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_hook_allows_controller_denies_non_controller() {
+        let (pool, alice, bob, session, turn) = control_fixture().await;
+        assert!(
+            authorize_control_response_for_turn(
+                &pool,
+                &alice,
+                &session,
+                Some(&turn),
+                "permission_respond"
+            )
+            .await
+            .is_ok(),
+            "controller must pass the REST hook"
+        );
+        let denied = authorize_control_response_for_turn(
+            &pool,
+            &bob,
+            &session,
+            Some(&turn),
+            "permission_respond",
+        )
+        .await
+        .expect_err("non-controller must fail the REST hook");
+        assert!(
+            format!("{denied:?}").contains("project_not_found"),
+            "REST denial must stay privacy-safe, got {denied:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_hook_rejects_turn_mismatch_and_missing_lease() {
+        let (pool, alice, _bob, session, _turn) = control_fixture().await;
+        // A stale turn never authorizes, even for the controller.
+        assert!(authorize_control_response_for_turn(
+            &pool,
+            &alice,
+            &session,
+            Some("turn-stale"),
+            "question_respond"
+        )
+        .await
+        .is_err());
+        // Sessions without a lease fail closed (recovery takeover first).
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) SELECT 'sess-idle', project_id, 's', '/tmp', 't', 'v', 1, 1 FROM session WHERE id = 'sess-ctl'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(authorize_control_response_for_turn(
+            &pool,
+            &alice,
+            "sess-idle",
+            None,
+            "permission_respond"
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_hook_denies_revoked_controller() {
+        let (pool, alice, _bob, session, turn) = control_fixture().await;
+        let team = TeamStore::new(pool.clone());
+        // Revoke Alice's membership: the stale lease is ineffective at
+        // the next request boundary.
+        let project = session_project(&pool, &session).await.unwrap();
+        let membership = team
+            .get_membership(&project, alice.principal_id())
+            .await
+            .unwrap()
+            .unwrap();
+        team.revoke_membership(&project, &membership.principal_id, membership.revision)
+            .await
+            .unwrap();
+        assert!(
+            authorize_control_response_for_turn(
+                &pool,
+                &alice,
+                &session,
+                Some(&turn),
+                "permission_respond"
+            )
+            .await
+            .is_err(),
+            "revoked controller must fail the REST hook"
+        );
     }
 }

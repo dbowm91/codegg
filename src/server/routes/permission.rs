@@ -92,10 +92,18 @@ pub async fn submit_permission(
     if !crate::bus::PermissionRegistry::is_registered_scoped(&owning_session, &simple_perm_id) {
         return Err(authz::denial_not_found());
     }
-    authz::authorize_control_response(
+    // M004: resolve the pending item's owning turn before the
+    // controller check so opaque IDs cannot bypass it. Unknown turns
+    // fail closed with the same privacy-safe shape.
+    let pending_turn = crate::bus::PermissionRegistry::get_pending_for_session(&owning_session)
+        .into_iter()
+        .find(|item| item.perm_id == simple_perm_id)
+        .and_then(|item| item.turn_id);
+    authz::authorize_control_response_for_turn(
         &state.pool,
         &principal,
         &owning_session,
+        pending_turn.as_deref(),
         "permission_respond",
     )
     .await?;

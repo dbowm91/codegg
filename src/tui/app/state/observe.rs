@@ -657,6 +657,16 @@ mod tests {
             "permission_respond",
             "question_respond",
             "/permission",
+            // M004 shared-session control handoff (every subcommand,
+            // including read-only get: observers already see the
+            // controller through the session projection).
+            "/control",
+            "control",
+            "session_control_get",
+            "session_control_request",
+            "session_control_transfer",
+            "session_control_release",
+            "session_control_takeover",
             // Model/provider/agent settings.
             "/models",
             "/agent",

@@ -705,6 +705,8 @@ impl App {
                 trigger_secret: None,
                 team_token_secret: None,
                 team_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                control_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                control_last: None,
                 trigger_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_manage_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_metadata: std::collections::HashMap::new(),
@@ -1204,6 +1206,8 @@ impl App {
                 trigger_secret: None,
                 team_token_secret: None,
                 team_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                control_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                control_last: None,
                 trigger_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_manage_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_metadata: std::collections::HashMap::new(),
@@ -3653,6 +3657,21 @@ impl App {
                     .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
                     .unwrap_or_default();
                 crate::tui::commands::team::dispatch_team_command(self, args);
+            }
+            B::Control => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                // M004: shared-session controller lease. Bare `/control`
+                // shows the current lease plus inert requests for the
+                // active session; subcommands request/transfer/release/
+                // take over explicit control. Observer mode stays
+                // hard-blocked via the central `blocks_command` gate
+                // (this arm is unreachable while observing).
+                let args = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                crate::tui::commands::control::dispatch_control_command(self, args);
             }
             B::Observe => {
                 self.ui_state.command_mode = false;

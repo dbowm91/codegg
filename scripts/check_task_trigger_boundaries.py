@@ -209,8 +209,9 @@ def check_migration_and_layout() -> list[str]:
     if "TASK_TRIGGER_SCHEMA_STATEMENTS" not in schema:
         failures.append("schema.rs: migrate_v63 must apply TASK_TRIGGER_SCHEMA_STATEMENTS")
     storage = _read(STORAGE_MOD)
-    if "STORAGE_LAYOUT_VERSION: u32 = 63" not in storage:
-        failures.append("storage/mod.rs: STORAGE_LAYOUT_VERSION must be 63")
+    match = re.search(r"STORAGE_LAYOUT_VERSION:\s*u32\s*=\s*(\d+)", storage)
+    if not match or int(match.group(1)) < 63:
+        failures.append("storage/mod.rs: STORAGE_LAYOUT_VERSION must be >= 63")
     return failures
 
 

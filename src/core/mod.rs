@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod daemon_assets;
 pub mod daemon_bootstrap;
 pub mod daemon_construct;
+pub mod daemon_control;
 pub mod daemon_family;
 pub mod daemon_goals;
 pub mod daemon_jobs;
