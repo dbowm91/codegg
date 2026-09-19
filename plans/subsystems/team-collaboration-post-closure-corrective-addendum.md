@@ -178,5 +178,5 @@ This corrective closes only when:
 | Milestone | Status | Dependencies |
 |---|---|---|
 | M001 | closed | predecessor M001-M006 closed; existing local-filesystem authority rule is stable |
-| M002 | ready | predecessor M005 closed; TUI task registry contract is stable |
-| M003 | blocked | hard dependency on M001 + M002 closure |
+| M002 | closed | predecessor M005 closed; TUI task registry contract is stable |
+| M003 | ready | M001 + M002 closed; guard semantics encode corrected production boundary |

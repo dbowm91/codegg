@@ -1,6 +1,8 @@
 # Team Collaboration Post-Closure Corrective Milestone 002 — Workspace Task Cancellation Ownership
 
-Status: ready for handoff
+Status: implemented (closure at
+`plans/closure/team-collaboration-post-closure-corrective/002-status.md`;
+implementation `06d92a17`)
 
 Repository baseline: `626585a1fad449a637e4828777bfa21d222abea0`
 
