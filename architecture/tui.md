@@ -156,7 +156,8 @@ TUI-owned background tasks tracked via `TuiTaskRegistry`
 - `TuiTaskId(u64)` — monotonically increasing task ID
 - `TuiTaskKind` — category enum: `Command`, `FileDiff`, `Shell`,
   `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`,
-  `GitStatus`, `Other`
+  `GitStatus`, `Other`, `Workspace` (view-owned dashboard
+  refresh/expand fetches; the only kind cancelled on Workspace close)
 - `TuiTaskRecord` — stores name, kind, started_at, abort_handle,
   completion flag
 
@@ -751,6 +752,18 @@ that project's chat cache. Opened by `/workspace` and the configurable
 `OpenWorkspaceDashboard` action (`Ctrl+O`). The obsolete
 `Dialog::WorkspaceDashboard` modal is retained only as a compatibility
 shim and is never pushed for normal navigation.
+
+**Workspace cancellation ownership** (post-closure M002): leaving the
+view (`leave_workspace_view` or the legacy `Dialog::WorkspaceDashboard`
+teardown) cancels only `TuiTaskKind::Workspace` tasks — the dashboard
+refresh and inline-expansion fetches spawned by
+`commands/workspace_dashboard.rs`. Unrelated generic `Command` tasks
+(chat, team administration, control, provider, project/session,
+diagnostics, WorkOrders) keep running, per-project chat drafts/cache in
+`ChatState` survive, and no daemon turn/job is ever cancelled.
+Cancellation is best-effort resource hygiene; the correctness boundary
+remains generation/request/reconnect fencing, so a completion racing
+with close observes the dropped dashboard state and does nothing.
 
 `Dialog` and `DialogType` have exhaustive compatibility conversions. The
 canonical lifecycle identity is the live component's `DialogType`; the

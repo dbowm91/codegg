@@ -135,11 +135,12 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
 }
 
 /// Leave the Workspace primary view. Cancels/invalidates only frontend
-/// dashboard requests (generation bump + request cancel); daemon work is
-/// never cancelled. Navigates back through `Route` history without
-/// touching the active tab/session binding.
+/// dashboard requests (Workspace-owned task cancel + generation bump +
+/// request cancel); daemon work is never cancelled and unrelated generic
+/// `TuiTaskKind::Command` tasks keep running. Navigates back through
+/// `Route` history without touching the active tab/session binding.
 pub(crate) fn leave_workspace_view(app: &mut App) {
-    app.task_registry.cancel_kind(TuiTaskKind::Command);
+    app.task_registry.cancel_kind(TuiTaskKind::Workspace);
     if let Some(dashboard) = app.dialog_state.workspace_dashboard.as_mut() {
         dashboard.generation = dashboard.generation.wrapping_add(1);
         dashboard.loading = false;
@@ -185,7 +186,7 @@ fn start_dashboard_refresh(app: &mut App) {
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
-        TuiTaskKind::Command,
+        TuiTaskKind::Workspace,
         "workspace_dashboard_refresh",
         None,
         None,
@@ -387,7 +388,7 @@ pub(crate) fn toggle_dashboard_expand(app: &mut App) {
     let task_id = spawn_scoped_registered_tui_task(
         tx,
         &mut app.task_registry,
-        TuiTaskKind::Command,
+        TuiTaskKind::Workspace,
         "workspace_dashboard_expand",
         None,
         None,

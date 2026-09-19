@@ -56,6 +56,10 @@ pub enum TuiTaskKind {
     Other,
     /// Git sidebar background refresh.
     GitStatus,
+    /// Workspace dashboard view-owned fetches (dashboard refresh +
+    /// inline expansion). Cancelled when `Route::Workspace` closes;
+    /// unrelated `Command` tasks must never be affected.
+    Workspace,
 }
 
 impl std::fmt::Display for TuiTaskKind {
@@ -71,6 +75,7 @@ impl std::fmt::Display for TuiTaskKind {
             Self::Indexer => write!(f, "Indexer"),
             Self::Other => write!(f, "Other"),
             Self::GitStatus => write!(f, "GitStatus"),
+            Self::Workspace => write!(f, "Workspace"),
         }
     }
 }
@@ -641,6 +646,7 @@ mod tests {
         assert_eq!(TuiTaskKind::SecurityReview.to_string(), "SecurityReview");
         assert_eq!(TuiTaskKind::Indexer.to_string(), "Indexer");
         assert_eq!(TuiTaskKind::Other.to_string(), "Other");
+        assert_eq!(TuiTaskKind::Workspace.to_string(), "Workspace");
     }
 
     #[tokio::test]

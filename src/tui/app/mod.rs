@@ -7359,8 +7359,9 @@ impl App {
                 // longer pushes `Dialog::WorkspaceDashboard` (the primary
                 // `Route::Workspace` view owns state). This arm only runs
                 // for legacy modal teardowns. View close never cancels
-                // daemon-owned work: only frontend requests are dropped.
-                self.task_registry.cancel_kind(TuiTaskKind::Command);
+                // daemon-owned work nor unrelated generic `Command` tasks:
+                // only Workspace-owned frontend requests are dropped.
+                self.task_registry.cancel_kind(TuiTaskKind::Workspace);
                 if let Some(dashboard) = self.dialog_state.workspace_dashboard.as_mut() {
                     dashboard.generation = dashboard.generation.wrapping_add(1);
                     dashboard.loading = false;
