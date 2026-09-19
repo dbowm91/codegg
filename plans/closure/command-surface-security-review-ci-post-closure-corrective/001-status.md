@@ -26,9 +26,12 @@ panel; without a receipt it leaves the panel closed, starts no task, fabricates
 no receipt, and emits the bounded instruction to run `/security-review` first.
 No production code changed in this corrective.
 
-The hosted `CI / verify` result for the pushed closure candidate is the one
-remaining strict-closure item and will be appended here before this record is
-marked closed.
+The first hosted `CI / verify` result for the pushed closure candidate was
+green through all guards, formatting, and Clippy, then failed in an unrelated
+WorkOrder remigration assertion (`tests/work_orders_m001_foundation.rs`:
+expected 63, current canonical layout 65). That finding is now owned by the
+narrow follow-up `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`;
+the corrected candidate is the remaining strict-closure item.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -42,7 +45,7 @@ marked closed.
 | Canonical quick verification | `scripts/verify.sh quick` | pass | All guards and workspace check passed |
 | Clippy and Git policy guard | `cargo clippy --workspace --all-targets --locked -- -D warnings`; `python3 scripts/check_git_forbidden_patterns.py` | pass | No warnings/findings |
 | Full workspace suite | `cargo test --workspace --locked -- --test-threads=1` | partial | 5,909 tests passed before the completed run reported 9 unrelated pre-existing failures: one MCP local fixture timeout and eight Python AST assertions. Exact MCP test and all 39 Python analyzer tests pass in isolation; no C001 test failed. |
-| Hosted canonical CI | Pushed closure candidate's `CI / verify` run | pending | Required before changing this record to `Status: closed` |
+| Hosted canonical CI | Run [35467200089](https://github.com/dbowm91/codegg/actions/runs/35467200089) | corrective pass required | Guards, formatting, and Clippy passed; workspace tests exposed the unrelated stale v63 WorkOrder assertion. A separate follow-up owns that correction and a new hosted run is required. |
 
 ## 3. Production implementation evidence
 
@@ -88,9 +91,10 @@ git diff --check
   suite passed 39 tests in isolation.
 - `scripts/verify.sh quick`, Clippy, the Git static guard, and `git diff
   --check` passed.
-- The full workspace run completed with 5,909 passed, 1 ignored, and 9
-  unrelated failures outside the Security Review surface. Those failures are
-  recorded rather than hidden; hosted CI remains the canonical closure gate.
+- The first hosted workspace run completed its guards, formatting, and Clippy
+  successfully but failed only at the unrelated WorkOrder remigration test;
+  run 35467200089 is recorded above. A focused local rerun reproduced that
+  failure as 11 passed and 1 failed, confirming the separate stale assertion.
 
 ## 5. Invariant review
 
@@ -131,20 +135,23 @@ document required a semantic update.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | The local single-threaded workspace sweep reproduced one MCP fixture timeout and eight Python AST assertions, while each affected focused suite passed independently. | Unrelated to C001; hosted CI determines whether this is environment/order-specific or requires separate ownership. | Do not change C001 production code. If hosted CI reproduces it, register a narrowly owned corrective before closing this record. |
+| low | Hosted CI exposed a stale WorkOrder remigration assertion expecting layout 63 while the canonical layout is 65. | Unrelated to C001; it prevented the first full hosted gate from passing. | Owned by `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`; do not change Security Review production code. |
 
 ## 11. Roadmap disposition
 
-C001 implementation is complete. Strict closure remains pending only on the
-hosted `CI / verify` result for the pushed closure candidate. The registry
-unblock audit found no registered plan blocked on this test-contract
-corrective; Identity/audit M001 remains independently ready, while its M002,
-M003, and M004 dependencies remain unchanged.
+C001 implementation is complete. Strict closure is pending on the hosted
+`CI / verify` result for the corrected candidate after the separate WorkOrder
+test-contract follow-up. The registry unblock audit found no registered plan
+blocked on this Security Review correction; Identity/audit M001 remains
+independently ready, while its M002, M003, and M004 dependencies remain
+unchanged.
 
 ## 12. Registry updates
 
 The implementation plan is marked `implemented`, the subsystem roadmap and
 registry move C001 to `closing`, and the closure record is discoverable under
-the required path. After hosted CI passes, this record, the roadmap, registry,
-recently-closed table, and post-closure cleanup gate will be changed together
-to `closed`; no future plan is unblocked by this test-only correction.
+the required path. The unrelated hosted failure is registered as a separate
+WorkOrder CI corrective; after the corrected hosted run passes, this record,
+the roadmap, registry, recently-closed table, and post-closure cleanup gate
+will be changed together to `closed`. No future plan is unblocked by this
+test-only correction.
