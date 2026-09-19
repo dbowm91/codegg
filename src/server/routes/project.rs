@@ -12,7 +12,6 @@ use crate::error::{AppError, AxumAppError};
 use codegg_core::context::ProjectContext;
 use codegg_core::identity::ProjectId;
 use codegg_core::project_catalog::{ProjectCatalog, ProjectCatalogRecord, RegisterLocalProject};
-use codegg_core::team::{ProjectRole, TeamStore};
 use codegg_core::transport_auth::AuthenticatedPrincipal;
 use codegg_core::workspace::{SqliteWorkspaceStore, WorkspaceRegistry};
 use std::path::{Path, PathBuf};
@@ -279,12 +278,16 @@ pub async fn create_project(
     State(state): State<ServerState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<(StatusCode, Json<ProjectInfo>), AxumAppError> {
-    // Project registration is the team bootstrap (Core `project_register`
-    // is global): any active principal may create. The gate runs before
-    // any filesystem/catalog mutation; the creator receives Owner so the
-    // new project is immediately usable through the canonical authority.
-    // No body/query principal, role, or capability field is trusted.
-    authz::authorize_enumeration(&state.pool, &principal, "project_register").await?;
+    // Raw daemon-local project registration is LocalOwner/proven-local
+    // deployment authority, not team bootstrap (Core `project_register`
+    // is Opaque + `project.configure` with no project locator, so team
+    // principals fail closed with `MissingScope`). The gate runs before
+    // any filesystem/catalog/membership side effect; team denials use
+    // the bounded LocalOwner-only shape regardless of whether the
+    // supplied path exists. No body/query principal, role, or
+    // capability field is trusted. LocalOwner needs no membership row
+    // to operate under the broad policy.
+    authz::require_local_owner(&state.pool, &principal, "project_register").await?;
     let requested = Path::new(&req.path);
     if !requested.is_absolute() {
         return Err(context_error(
@@ -329,19 +332,11 @@ pub async fn create_project(
         )
         .await
         .map_err(|e| context_error("project_registration_failed", e.to_string()))?;
-    // Grant the creator Owner through the canonical team authority so the
-    // bootstrap project is immediately visible to them. LocalOwner needs no
-    // row; failure to grant never fails the registration itself.
-    if !codegg_core::authorization::is_local_owner_broad(&principal) {
-        let team = TeamStore::new(state.pool.clone());
-        let _ = team
-            .create_membership(
-                &project.project_id,
-                principal.principal_id(),
-                ProjectRole::Owner,
-            )
-            .await;
-    }
+    // LocalOwner operates under the broad policy with no membership row.
+    // There is intentionally no non-LocalOwner Owner-grant bootstrap
+    // branch: a future team project-creation path must atomically define
+    // creator membership and workspace authority under a separately
+    // reviewed contract.
     Ok((
         StatusCode::CREATED,
         Json(project_info(project, canonical, 0)),

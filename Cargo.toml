@@ -312,6 +312,11 @@ name = "team_collaboration_m006_trajectory"
 path = "tests/team_collaboration_m006_trajectory.rs"
 required-features = ["server"]
 
+[[test]]
+name = "team_collaboration_postclosure_m001_registration_auth"
+path = "tests/team_collaboration_postclosure_m001_registration_auth.rs"
+required-features = ["server"]
+
 [profile.release]
 lto = "thin"
 strip = true

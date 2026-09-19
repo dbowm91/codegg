@@ -85,8 +85,11 @@ core that defeats the singleton invariant.
   ├── /providers           — LocalOwner-only (credential-adjacent)
   ├── /tools               — LocalOwner-only (daemon-global catalog)
   ├── /file/{read,list,write,delete}  — file ops (project-scoped authz)
-  ├── /project, /projects  — project management (project-scoped authz)
-  └── /workspace           — workspace management (project-scoped authz)
+  ├── /project, /projects  — project management (project-scoped authz,
+  except raw `POST /api/project` bootstrap which is LocalOwner-only)
+  └── /workspace           — workspace management (project-scoped authz;
+  raw global register/list is LocalOwner-only, scoped mutation stays
+  under `project.configure`)
 /api/v1/task-triggers/{id}/fire (POST) — narrow external trigger fire
   (M005; bearer-only capability, outside the principal auth layer —
   see below)
@@ -118,6 +121,14 @@ authorization framework and no handler hand-rolls role expansion:
   as their Core equivalents (`project.read` / `project.configure`,
   `session.read` / `session.create`, `project.configure` for share).
   Project enumeration filters by `visible_projects` before building rows.
+  Raw daemon-local bootstrap is LocalOwner-only deployment authority:
+  `POST /api/project` (`LocalOwnerOnly`) accepts an absolute daemon-local
+  path only from LocalOwner/proven-local callers after the gate and
+  before any mkdir/workspace/catalog/membership side effect; team
+  callers receive the same bounded 404 whether or not the path exists.
+  Global workspace enumeration is not a team surface; project-scoped
+  `POST /api/workspace` mutation under `project.configure` remains
+  available. REST is compatibility and cannot widen Core authority.
 - File routes require explicit canonical project/workspace context and
   `file.read` / `file.modify`; ambiguous or scope-free team requests fail
   closed with `project_not_found`. Authorization precedes any filesystem
@@ -134,8 +145,9 @@ authorization framework and no handler hand-rolls role expansion:
   unfiltered, so team principals receive 404 rather than a cross-project
   stream. A future milestone may adapt it to authorized
   projection/subscription machinery with explicit scope.
-- Config/provider/tool/MCP surfaces are LocalOwner-only compatibility
-  (no safe project scope; Core connection operations are opaque and fail
+- Config/provider/tool/MCP surfaces plus raw `POST /api/project` are
+  LocalOwner-only compatibility (no safe project scope; Core connection
+  operations and raw workspace/project registration are opaque and fail
   closed for team principals).
 - Legacy `/ws` JSON-RPC is LocalOwner-only compatibility with no
   projection authority; team clients must use `/core`. `/core` behavior

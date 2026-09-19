@@ -166,7 +166,7 @@ pub fn route_disposition_table() -> Vec<RouteDispositionEntry> {
         RouteDispositionEntry {
             method: "POST",
             path: "/api/project",
-            disposition: D::SharedAuthz,
+            disposition: D::LocalOwnerOnly,
             operation: "project_register",
             capability: "none",
         },

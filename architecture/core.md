@@ -461,6 +461,10 @@ record.
 `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`,
 `SessionSnapshot::workspace_id` + `directory`,
 `ServerCapabilities::workspace_registration` + `workspace_snapshots`.
+Raw `WorkspaceRegister`, global `WorkspaceList`, and unscoped
+`ProjectRegister` are LocalOwner/proven-local only (`opaque` scope;
+team principals fail closed); see `architecture/authorization.md` and
+`architecture/workspace.md`.
 
 **Static guard**: `scripts/check_daemon_cwd_usage.py` scans protected
 modules for `std::env::current_dir()` usage. Existing legacy uses in tool

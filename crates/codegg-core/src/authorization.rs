@@ -520,8 +520,24 @@ mod tests {
             find("project_register"),
             (
                 "project_register".to_owned(),
-                "global".to_owned(),
-                "none".to_owned()
+                "opaque".to_owned(),
+                "project.configure".to_owned()
+            )
+        );
+        assert_eq!(
+            find("workspace_register"),
+            (
+                "workspace_register".to_owned(),
+                "opaque".to_owned(),
+                "project.configure".to_owned()
+            )
+        );
+        assert_eq!(
+            find("workspace_list"),
+            (
+                "workspace_list".to_owned(),
+                "opaque".to_owned(),
+                "project.read".to_owned()
             )
         );
         assert_eq!(

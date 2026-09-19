@@ -32,6 +32,13 @@ project, and must never change process cwd. The launch directory is used only
 once by the CLI/bootstrap composition path to create the initial compatibility
 tab.
 
+The local project picker flow (`WorkspaceRegister` -> `ProjectRegister`)
+runs under the implicit/proven LocalOwner principal and continues to work
+locally. Remote/team transports carrying a team principal receive the
+canonical daemon denial (`authorization_scope_required`) as a bounded picker
+error rather than a silent fallback to local path interpretation; no process
+`cwd` inference is reintroduced.
+
 The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
 workspace root and refreshed on tab activation or explicit asset reload.

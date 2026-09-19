@@ -397,12 +397,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::WorktreeRemove),
         ),
-        R::WorkspaceRegister { .. } => {
-            OperationDescriptor::new("workspace_register", ScopeKind::Global, None)
-        }
-        R::WorkspaceList { .. } => {
-            OperationDescriptor::new("workspace_list", ScopeKind::Global, None)
-        }
+        R::WorkspaceRegister { .. } => OperationDescriptor::new(
+            "workspace_register",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::WorkspaceList { .. } => OperationDescriptor::new(
+            "workspace_list",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectRead),
+        ),
         R::WorkspaceArchive { .. } => OperationDescriptor::new(
             "workspace_archive",
             ScopeKind::Opaque,
@@ -431,11 +435,19 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectRead),
         ),
-        // Registration is the team bootstrap: any active principal may
-        // create a project, and the daemon grants the creator Owner.
-        R::ProjectRegister { .. } => {
-            OperationDescriptor::new("project_register", ScopeKind::Global, None)
-        }
+        // Registration is daemon-local deployment authority, not team
+        // bootstrap: raw workspace/project registration and global
+        // workspace enumeration are LocalOwner/proven-local only until an
+        // explicit team workspace-ownership contract exists. The Opaque
+        // scope carries no project locator, so ordinary team principals
+        // fail closed with `MissingScope`; only the LocalOwner broad
+        // policy authorizes. A `workspace_id` locator never proves
+        // ownership and must not authorize project creation.
+        R::ProjectRegister { .. } => OperationDescriptor::new(
+            "project_register",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
         R::ProjectArchive { .. } => OperationDescriptor::new(
             "project_archive",
             ScopeKind::DirectProject,

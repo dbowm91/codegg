@@ -121,7 +121,9 @@ Key points:
 
 ### Project Routes (`/api/project`, `/api/projects`)
 - `GET /api/project` - Get current project info
-- `POST /api/project` - Create project
+- `POST /api/project` - Create project (LocalOwner-only raw daemon-local
+  bootstrap; team principals fail closed before any mkdir/workspace/
+  catalog/membership side effect)
 - `GET /api/project/list` - List projects
 - `GET /api/projects` - List bounded catalog summaries
 - `GET /api/projects/:id` - Get one explicit project
@@ -130,8 +132,11 @@ Key points:
 
 ### Workspace Routes (`/api/workspace`)
 - `GET /api/workspace` - Get workspace info
-- `POST /api/workspace` - Create workspace
-- `GET /api/workspace/list` - List workspaces
+- `POST /api/workspace` - Create workspace (project-scoped mutation
+  under `project.configure`; raw global register/list stays
+  LocalOwner-only)
+- `GET /api/workspace/list` - List workspaces (project-scoped; global
+  enumeration is not a team surface)
 
 ### WebSocket Routes
 - `GET /ws` - Deprecated bounded JSON-RPC WebSocket (legacy compatibility)

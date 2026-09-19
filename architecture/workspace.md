@@ -121,8 +121,13 @@ never merged from path names or directory basenames.
 ## Protocol
 
 - DTO: `WorkspaceSnapshot { workspace_id, canonical_root, display_name, active_sessions }` in `crates/codegg-protocol/src/dto.rs`.
-- Requests: `CoreRequest::WorkspaceRegister { root }`,
-  `CoreRequest::WorkspaceList { include_archived }`,
+- Requests: `CoreRequest::WorkspaceRegister { root }`
+  (LocalOwner/proven-local only: `opaque` + `project.configure`; no
+  project locator, so team principals fail closed with
+  `authorization_scope_required`),
+  `CoreRequest::WorkspaceList { include_archived }` (global form is
+  LocalOwner-only: `opaque` + `project.read`; canonical roots are never
+  disclosed to team principals; project-filtered listing is future work),
   `CoreRequest::WorkspaceArchive { workspace_id }`,
   `CoreRequest::WorkspaceSnapshotRequest { workspace_id }`.
 - Responses: `CoreResponse::WorkspaceList { workspaces }`,
@@ -130,6 +135,13 @@ never merged from path names or directory basenames.
 - `SessionSnapshot` carries `workspace_id` (new) and `directory` (compat).
 - `ServerCapabilities` advertises `workspace_registration` and
   `workspace_snapshots`.
+- Authority: raw daemon-local registration/global enumeration is
+  LocalOwner/proven-local deployment authority, not team bootstrap;
+  `ProjectRegister` from a `workspace_id` locator is likewise
+  LocalOwner-only until a durable workspace-ownership contract exists.
+  Project-scoped workspace mutation under `project.configure`
+  (`POST /api/workspace`) remains available; `POST /api/project` is
+  `LocalOwnerOnly` compatibility.
 
 ## Propagation
 

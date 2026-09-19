@@ -168,6 +168,11 @@ record.
 
 - `WorkspaceSnapshot` DTO for workspace state serialization
 - `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`
+  (raw `WorkspaceRegister`, global `WorkspaceList`, and unscoped
+  `ProjectRegister` are LocalOwner/proven-local only: `opaque` scope, so
+  team principals fail closed with `authorization_scope_required`; a
+  `workspace_id` locator never proves ownership; project-scoped workspace
+  mutation under `project.configure` remains available)
 - `SessionSnapshot::workspace_id` + `directory`
 - `ServerCapabilities::workspace_registration` + `workspace_snapshots`
 

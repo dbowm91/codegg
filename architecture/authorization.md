@@ -258,7 +258,18 @@ scope resolvers — never a duplicated role expansion:
 
 - Project/session/workspace/file routes use the same capabilities as their
   Core equivalents; project enumeration filters by `visible_projects`
-  before building rows.
+  before building rows. Raw daemon-local workspace/project bootstrap is
+  the exception: `WorkspaceRegister` (`opaque` + `project.configure`),
+  global `WorkspaceList` (`opaque` + `project.read`), and
+  `ProjectRegister` (`opaque` + `project.configure`) carry no project
+  locator, so team principals fail closed with
+  `authorization_scope_required` and only LocalOwner/proven-local
+  authorizes. A `workspace_id` locator never proves ownership. Team
+  project creation is intentionally unavailable until a safe
+  workspace/deployment authority contract exists; project-scoped
+  workspace mutation under `project.configure` remains available.
+  `POST /api/project` is `LocalOwnerOnly` compatibility and cannot widen
+  Core authority; REST remains an adapter surface.
 - File routes require explicit canonical project/workspace context and
   `file.read` / `file.modify`; ambiguous or scope-free team requests fail
   closed.
@@ -267,10 +278,11 @@ scope resolvers — never a duplicated role expansion:
   which M004 narrows to the active-turn controller lease
   (`authorize_control_response_for_turn` enforces the lease after the
   capability gate, including turn-match and revocation rechecks).
-- Config/provider/tool/MCP and global SSE are LocalOwner-only
-  compatibility (no safe project scope); legacy `/ws` is LocalOwner-only
-  with no projection authority. Team denials are privacy-safe 404s
-  (`project_not_found` or equivalent) with zero side effects.
+- Config/provider/tool/MCP, global SSE, and raw `POST /api/project`
+  bootstrap are LocalOwner-only compatibility (no safe project scope);
+  legacy `/ws` is LocalOwner-only with no projection authority. Team
+  denials are privacy-safe 404s (`project_not_found` or equivalent)
+  with zero side effects.
 - The executable route-disposition matrix
   (`route_disposition_table()`) classifies every authenticated route;
   `scripts/check_http_route_disposition.py` enforces coverage so new
@@ -389,7 +401,7 @@ gates (firing is not a Core operation):
 | `project_get` | direct_project | `project.read` |
 | `project_health` | direct_project | `project.read` |
 | `project_list` | enumeration | `project.read` |
-| `project_register` | global | `none` |
+| `project_register` | opaque | `project.configure` |
 | `project_restore` | direct_project | `project.configure` |
 | `projection_ack` | global | `none` |
 | `projection_artifact_list` | direct_project | `project.observe` |
@@ -483,8 +495,8 @@ gates (firing is not a Core operation):
 | `work_order_update` | direct_project | `session.create` |
 | `workspace_archive` | opaque | `project.configure` |
 | `workspace_config_reload` | opaque | `project.configure` |
-| `workspace_list` | global | `none` |
-| `workspace_register` | global | `none` |
+| `workspace_list` | opaque | `project.read` |
+| `workspace_register` | opaque | `project.configure` |
 | `workspace_services_snapshot` | global | `none` |
 | `workspace_snapshot_request` | opaque | `project.read` |
 | `worktree_list` | opaque | `git.read` |
