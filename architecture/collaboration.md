@@ -173,8 +173,26 @@ cargo test -p codegg-core --lib collaboration  # resolver truth table + domain
 cargo test --test collaboration_m002_chat_policy # 13 policy boundary tests
 cargo test --test collaboration_m001_chat       # 12 default-behavior tests
 cargo test --test collaboration_m003_chat_actions  # 10 non-escalation tests
-python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops
+cargo test --test team_m003_membership_admin  # 12 membership/token/chat-override tests (M003)
+python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops + 11 team ops
 ```
+
+### Team membership and device-token administration (team-collaboration M003)
+
+Membership management and LocalOwner principal/device-token
+provisioning are canonical Core operations over the existing
+`TeamStore`/`PersonalTokenStore` (no new store, no new migration):
+`TeamMembershipList/Add/Update/Revoke` (`DirectProject +
+member.manage`), `TeamPrincipalList/Create/StatusSet` and
+`TeamTokenList/Create/Revoke` (`Opaque + project.configure`,
+LocalOwner-only). `TeamCapabilities` negotiates `team.v1`. Token list
+returns metadata only; `TeamTokenCreated` returns the `cggt_...`
+plaintext exactly once and `TeamTokenCreate` is secret-bearing
+(local-only). Events (`TeamMembershipChanged`,
+`TeamPrincipalChanged`, `TeamTokenChanged`) carry ids/revision only.
+The `/team` TUI surface (see `architecture/tui.md`) administers both
+membership and the M002 chat overrides above; `/collaborators` stays
+presence-only.
 
 ### Audit separation
 

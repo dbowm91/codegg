@@ -529,6 +529,18 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("connection_purge", "provider_select"),
     ("provider_connection_use", "provider_select"),
     ("chat_action_submit", "chat_triggered_action"),
+    // Team collaboration corrective M003: membership/principal lifecycle
+    // emits `membership_change` with member ids/roles/revisions only;
+    // device-token mint/revoke emits `authentication` with method/
+    // transport/kind only. Token digests and plaintext never enter
+    // audit metadata (rejected by the builder's secret-key guard).
+    ("team_membership_add", "membership_change"),
+    ("team_membership_update", "membership_change"),
+    ("team_membership_revoke", "membership_change"),
+    ("team_principal_create", "membership_change"),
+    ("team_principal_status_set", "membership_change"),
+    ("team_token_create", "authentication"),
+    ("team_token_revoke", "authentication"),
     ("work_order_create", "work_order_lifecycle"),
     ("work_order_batch_create", "work_order_lifecycle"),
     ("work_order_update", "work_order_lifecycle"),
@@ -625,6 +637,14 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "worktree_list",
     "chat_action_get",
     "chat_action_list",
+    // Team collaboration corrective M003: read-only team listings are
+    // explicitly uninstrumented (bounded, privacy-filtered reads; the
+    // mutations above carry the audit trail). `team_capabilities` is a
+    // global version probe.
+    "team_capabilities",
+    "team_membership_list",
+    "team_principal_list",
+    "team_token_list",
     "work_order_capabilities",
     "work_order_list",
     "work_order_get",

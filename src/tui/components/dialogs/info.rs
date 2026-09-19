@@ -24,6 +24,7 @@ pub enum InfoType {
     DoctorReport,
     Agents,
     Collaborators,
+    Team,
     ProjectChat,
 }
 
@@ -72,6 +73,7 @@ impl InfoDialog {
             InfoType::DoctorReport => " Doctor ",
             InfoType::Agents => " Agents ",
             InfoType::Collaborators => " Collaborators ",
+            InfoType::Team => " Team ",
             InfoType::ProjectChat => " Project Chat ",
         }
     }
@@ -91,6 +93,7 @@ impl InfoDialog {
             InfoType::DoctorReport => DialogType::DoctorReport,
             InfoType::Agents => DialogType::Agent,
             InfoType::Collaborators => DialogType::Collaborators,
+            InfoType::Team => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
         }
     }

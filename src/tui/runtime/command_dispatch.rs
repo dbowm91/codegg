@@ -1375,6 +1375,108 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::TeamMembershipLoaded {
+            request_id,
+            project_id,
+            memberships,
+            policy,
+            truncated,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_membership_loaded(
+                app,
+                request_id,
+                project_id,
+                memberships,
+                policy,
+                truncated,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamPrincipalsLoaded {
+            request_id,
+            principals,
+            truncated,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_principals_loaded(
+                app,
+                request_id,
+                principals,
+                truncated,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamTokensLoaded {
+            request_id,
+            principal_id,
+            tokens,
+            truncated,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_tokens_loaded(
+                app,
+                request_id,
+                principal_id,
+                tokens,
+                truncated,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamMutationFinished {
+            request_id,
+            project_id,
+            message,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_mutation_finished(
+                app,
+                request_id,
+                project_id,
+                message,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::TeamTokenCreated {
+            request_id,
+            project_id,
+            principal_id,
+            token,
+            plaintext,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::team::apply_team_token_created(
+                app,
+                request_id,
+                project_id,
+                principal_id,
+                token,
+                plaintext,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
         TuiCommand::WorkspaceDashboardLoaded {
             request_id,
             generation,

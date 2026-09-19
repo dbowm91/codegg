@@ -213,10 +213,12 @@ The TUI owns no presence truth.
   `CoreEvent::PresenceUpdated`) only flags resync; the active project
   re-fetches, inactive tabs refresh on foreground.
 - **Surface**: header shows `👥 N` only for authorized data (hidden
-  otherwise); `/collaborators` (`/presence`, `/team`, `refresh`
-  subcommand) opens a scrollable `InfoType::Collaborators` dialog with
-  coarse activity labels and empty/loading/error states. Focus follows
-  the standard info-dialog convention and never mutates sessions.
+  otherwise); `/collaborators` (`/presence`, `refresh` subcommand) opens
+  a scrollable `InfoType::Collaborators` dialog with coarse activity
+  labels and empty/loading/error states. Focus follows the standard
+  info-dialog convention and never mutates sessions. `/collaborators`
+  is ephemeral presence only; durable membership administration lives
+  under `/team` (next section).
 - **Lifecycle**: tab switch refreshes the new active project; tab close
   drops unheld projects; `App::on_projection_reconnect` resyncs the
   active project. See `architecture/presence.md` for the full contract.
@@ -299,6 +301,40 @@ no durable messages. Full contract in `architecture/collaboration.md`.
   error and fabricate nothing. Failed actions retain the typed error;
   the bounded action projection (`⚡ id kind job [status] title`)
   renders in the panel footer.
+
+### Team Administration (Team Collaboration M003)
+
+Durable project-team administration rendered from daemon `team.v1`
+state; the TUI owns no membership truth. Full contract in
+`architecture/identity.md`.
+
+- **State**: `DialogState::team_request` (`AsyncUiRequestState`)
+  guards every `/team` round-trip; completions additionally check the
+  captured project against the active tab and the captured
+  `reconnect_epoch`, so stale completions drop. No chat/team cache is
+  introduced: views re-fetch through the authorized list paths.
+- **Flow**: `src/tui/commands/team.rs` negotiates `TeamCapabilities`
+  then membership list (+ `ChatPolicyGet` summary) in one registered
+  task, with `TuiCommand::TeamMembershipLoaded` /
+  `TeamPrincipalsLoaded` / `TeamTokensLoaded` / `TeamMutationFinished`
+  / `TeamTokenCreated` dispatch arms in
+  `src/tui/runtime/command_dispatch.rs`.
+- **Surface**: bare `/team` opens a FocusManager-backed
+  `InfoType::Team` dialog (member list with revisions + M002
+  chat-policy summary). Mutations require the visible revision
+  (`/team add <principal> <role>`, `/team role|suspend|reactivate|
+  revoke <principal> <rev>`); stale revisions report
+  `team_revision_conflict` with a reload hint and change nothing.
+  Chat overrides ride the M002 operations
+  (`/team chat-allow|chat-deny|chat-clear`, `/team chat-restrict|
+  chat-inherit`, `/team chat`).
+- **LocalOwner device flow**: `/team principals`,
+  `/team principal-create`, `/team tokens`, `/team token-create`
+  (credential rendered exactly once in the secret-safe
+  `DeviceSecretDialog`, redacted `Debug`, close destroys the frontend
+  copy), `/team token-revoke`. Ordinary team principals fail closed
+  on these paths. `/collaborators` remains the ephemeral presence
+  view and never shows durable membership detail.
 
 ### Long Output → Info Dialog
 

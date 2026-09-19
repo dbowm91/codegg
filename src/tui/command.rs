@@ -132,6 +132,7 @@ pub enum BuiltinSlashAction {
     TuiStats,
     Tts,
     Collaborators,
+    Team,
     Observe,
     StopObserving,
     Chat,
@@ -755,8 +756,10 @@ impl CommandRegistry {
             Command::new("/plugin-install", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::PluginInstall))
                 .with_description("Install a plugin from a local path (args: <path>)"),
             Command::new("/collaborators", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Collaborators))
-                .with_aliases(&["/presence", "/team"])
+                .with_aliases(&["/presence"])
                 .with_description("Show collaborators for the active project (/collaborators, /collaborators refresh)"),
+            Command::new("/team", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Team))
+                .with_description("Manage project team membership and chat access (/team, /team add <principal-id> <role>, /team revoke <principal-id> <rev>; LocalOwner: /team principals, /team token-create <principal-id> <label>)"),
             Command::new("/observe", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Observe))
                 .with_aliases(&["/watch"])
                 .with_description("Follow another session read-only (/observe <session-id>)"),
@@ -1081,7 +1084,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 149);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 150);
     }
 
     #[test]
@@ -1145,6 +1148,7 @@ mod tests {
             B::TuiStats,
             B::Tts,
             B::Collaborators,
+            B::Team,
             B::Observe,
             B::StopObserving,
             B::Chat,

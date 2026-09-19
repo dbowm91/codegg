@@ -653,6 +653,9 @@ impl App {
             TuiMsg::TriggerSecretClose => {
                 crate::tui::commands::work_orders::close_trigger_secret(self);
             }
+            TuiMsg::TeamTokenSecretClose => {
+                crate::tui::commands::team::close_team_token_secret(self);
+            }
             TuiMsg::TaskTriggerSetup => {
                 crate::tui::commands::work_orders::setup_trigger_for_selected(self);
             }

@@ -1194,6 +1194,71 @@ pub enum TuiCommand {
         trigger: Option<crate::protocol::work_order::TaskTriggerMetadataDto>,
         error: Option<String>,
     },
+    /// Team Collaboration Corrective M003: project membership + chat
+    /// policy view completion for the `/team` administration surface.
+    /// Stale completions (newer request, tab switch, reconnect) are
+    /// dropped at apply time; the dialog renders only for the captured
+    /// project. `unauthorized` covers `project_not_found` denials
+    /// (indistinguishable from absent); `unsupported` covers older
+    /// daemons without the team surface. Both render identically.
+    TeamMembershipLoaded {
+        request_id: u64,
+        project_id: String,
+        memberships: Option<Vec<crate::protocol::core::TeamMembershipDto>>,
+        policy: Option<crate::protocol::core::ChatProjectPolicyDto>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: principal listing completion (LocalOwner-only). Carries
+    /// metadata only, never secrets.
+    TeamPrincipalsLoaded {
+        request_id: u64,
+        principals: Option<Vec<crate::protocol::core::TeamPrincipalDto>>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: token metadata listing completion for one principal
+    /// (LocalOwner-only, never secrets).
+    TeamTokensLoaded {
+        request_id: u64,
+        principal_id: String,
+        tokens: Option<Vec<crate::protocol::core::TeamTokenDto>>,
+        truncated: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: team mutation completion (membership add/update/revoke,
+    /// principal create/status, token revoke, chat policy set). Success
+    /// refreshes the `/team` view; `message` is the structural summary
+    /// (ids/revisions, never secrets).
+    TeamMutationFinished {
+        request_id: u64,
+        project_id: Option<String>,
+        message: Option<String>,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// M003: `TeamTokenCreate` completion. `plaintext` carries the
+    /// one-time `cggt_...` credential only on a fresh creation; all
+    /// other paths set it to `None`. Stale routes drop foreground
+    /// display without logging the credential; metadata drives rotation.
+    TeamTokenCreated {
+        request_id: u64,
+        project_id: Option<String>,
+        principal_id: String,
+        token: Option<crate::protocol::core::TeamTokenDto>,
+        plaintext: Option<String>,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
 }
 
 /// Send a command on the bounded TUI effect channel.

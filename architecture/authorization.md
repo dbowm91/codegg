@@ -165,6 +165,23 @@ submits, `session.read` for job references) before creating anything,
 so a chat grant alone never authorizes execution. See
 `architecture/collaboration.md`.
 
+### Team membership and device-token administration (team-collaboration M003)
+
+Membership operations (`team_membership_list/add/update/revoke`) are
+`DirectProject + member.manage` (Owner only): a project Owner manages
+only their own project, and gate denials use `project_not_found` so
+unauthorized callers cannot infer project existence or membership.
+Principal/token operations (`team_principal_list/create/status_set`,
+`team_token_list/create/revoke`) are `Opaque + project.configure`:
+they carry no project locator, so ordinary team principals fail
+closed with `authorization_scope_required` and only the LocalOwner
+broad policy passes — a project Owner can never mint
+deployment-wide device credentials via a shared project.
+`team_capabilities` is a global version probe. Mutations audit as
+`membership_change` (member/role/revision) and `authentication`
+(method/transport/kind/outcome); token digests and plaintext never
+enter audit metadata. See `architecture/identity.md`.
+
 ### Project work orders (M001)
 
 Every `work_order_*` operation except `work_order_capabilities` is

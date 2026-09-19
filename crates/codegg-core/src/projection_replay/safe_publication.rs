@@ -105,6 +105,13 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // re-fetch through the authorized policy get/list path; the
         // event itself never carries override content.
         CoreEvent::ChatPolicyChanged { .. } => SafePublicationClass::Safe,
+        // Team collaboration corrective M003: membership/principal/token
+        // hints carry ids and the new revision only. Receivers re-fetch
+        // through the authorized list path; the events never carry
+        // token digests, plaintext, display names, or chat content.
+        CoreEvent::TeamMembershipChanged { .. } => SafePublicationClass::Safe,
+        CoreEvent::TeamPrincipalChanged { .. } => SafePublicationClass::Safe,
+        CoreEvent::TeamTokenChanged { .. } => SafePublicationClass::Safe,
         // Work Orders M001: change hints carry identity, change kind,
         // and revision only. Receivers re-fetch through the authorized
         // get/list path; the event itself never carries prompt bodies,

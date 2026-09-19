@@ -513,6 +513,77 @@ pub struct ChatChannelPolicyDto {
     pub overrides: Vec<ChatPolicyOverrideDto>,
 }
 
+// ── Team Collaboration Corrective M003: Membership and Device-Token Admin ──
+//
+// Canonical team administration over the existing `TeamStore` /
+// `PersonalTokenStore` primitives. Membership operations are
+// `DirectProject + member.manage` (Owner-only in the current role model).
+// Principal/token operations carry no project locator (`Opaque +
+// project.configure`): ordinary team principals fail closed with
+// `authorization_scope_required` and only LocalOwner broad policy passes.
+// Token list/metadata responses never carry digests or plaintext; the
+// create response carries the plaintext exactly once (`TeamTokenCreated`)
+// and every other path sets it to `None`. All DTOs are bounded
+// structural locators; principals come from transport authority, never
+// from the payload except the explicit target ids of an admin row.
+
+/// Capability negotiation for the team administration surface.
+pub const TEAM_CAPABILITY: &str = "team.v1";
+/// Version of the team administration protocol.
+pub const TEAM_PROTOCOL_VERSION: u32 = 1;
+/// Maximum rows returned by a single team listing.
+pub const TEAM_MAX_LIST_LIMIT: usize = 200;
+
+/// Capability negotiation for the team administration surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamCapabilitiesDto {
+    pub supported: bool,
+    pub protocol_version: u32,
+    pub max_list_limit: usize,
+}
+
+/// Wire shape of one durable principal (metadata only, never secrets).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamPrincipalDto {
+    pub principal_id: String,
+    pub kind: String,
+    pub display_name: String,
+    pub status: String,
+    pub revision: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Wire shape of one durable project membership.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamMembershipDto {
+    pub project_id: String,
+    pub principal_id: String,
+    pub role: String,
+    pub state: String,
+    pub revision: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Wire shape of one personal-token record (metadata only).
+///
+/// Carries the non-secret lookup prefix, label, and lifecycle
+/// timestamps. Never carries the token digest or plaintext: the
+/// plaintext appears exactly once inside `TeamTokenCreated.plaintext`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamTokenDto {
+    pub token_id: String,
+    pub principal_id: String,
+    pub token_prefix: String,
+    pub label: String,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default)]
+    pub revoked_at_ms: Option<i64>,
+}
+
 // ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
 //
 // Free text never executes: bodies stay inert bounded text (M001). A
@@ -1450,6 +1521,46 @@ pub enum CoreResponse {
     ChatPolicyList {
         project: ChatProjectPolicyDto,
         channels: Vec<ChatChannelPolicyDto>,
+    },
+    // ── Team Collaboration Corrective M003: Membership/Device-Token Views ──
+    /// Team administration capability negotiation response.
+    TeamCapabilities {
+        capabilities: TeamCapabilitiesDto,
+    },
+    /// One durable principal (metadata only, never secrets).
+    TeamPrincipal {
+        principal: TeamPrincipalDto,
+    },
+    /// Bounded principal listing (LocalOwner-only).
+    TeamPrincipalList {
+        principals: Vec<TeamPrincipalDto>,
+        truncated: bool,
+    },
+    /// One durable project membership.
+    TeamMembership {
+        membership: TeamMembershipDto,
+    },
+    /// Bounded project membership listing.
+    TeamMembershipList {
+        memberships: Vec<TeamMembershipDto>,
+        truncated: bool,
+    },
+    /// One personal-token record (metadata only, never secrets).
+    TeamToken {
+        token: TeamTokenDto,
+    },
+    /// Bounded token metadata listing for one principal (never secrets).
+    TeamTokenList {
+        tokens: Vec<TeamTokenDto>,
+        truncated: bool,
+    },
+    /// Freshly minted device token. `plaintext` is the one-time
+    /// `cggt_...` credential: it is returned exactly once here and never
+    /// again through list/get, audit, events, or logs. The TUI renders it
+    /// in a secret-safe modal whose close destroys the frontend copy.
+    TeamTokenCreated {
+        token: TeamTokenDto,
+        plaintext: String,
     },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     /// Daemon-owned principal preference (approval + sandbox + revision).
@@ -2448,6 +2559,97 @@ pub enum CoreRequest {
         #[serde(default)]
         expected_revision: Option<u64>,
     },
+    // ── Team Collaboration Corrective M003: Membership/Device-Token Admin ──
+    //
+    // Membership operations carry a direct `project_id` and require
+    // `member.manage` on that project (Owner-only in the current role
+    // model). Principal/token operations carry no project locator and are
+    // classified `Opaque + project.configure`: ordinary team principals
+    // fail closed and only LocalOwner broad policy passes. Token list
+    // returns metadata only; create returns the plaintext exactly once.
+    // Retrying `TeamTokenCreate` without an explicit idempotency contract
+    // mints a new credential per call: after an ambiguous transport
+    // failure callers must reconcile through `TeamTokenList` and require
+    // explicit user confirmation before re-issuing.
+    /// Query team administration capabilities and bounds.
+    TeamCapabilities,
+    /// Bounded membership listing for one project.
+    TeamMembershipList {
+        project_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Add an existing principal to a project. Fails with
+    /// `team_membership_conflict` when the pair already exists (including
+    /// revoked rows); re-grants go through `TeamMembershipUpdate` with
+    /// the current revision.
+    TeamMembershipAdd {
+        project_id: String,
+        principal_id: String,
+        role: String,
+    },
+    /// Change a membership's role and/or state under CAS revision
+    /// protection. Stale writers receive `team_revision_conflict` and
+    /// change nothing. `state` accepts `active` or `suspended`
+    /// (revocation has its own explicit operation).
+    TeamMembershipUpdate {
+        project_id: String,
+        principal_id: String,
+        expected_revision: u64,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        state: Option<String>,
+    },
+    /// Revoke a membership without deleting its row (monotonic).
+    TeamMembershipRevoke {
+        project_id: String,
+        principal_id: String,
+        expected_revision: u64,
+    },
+    /// Bounded principal listing (LocalOwner-only).
+    TeamPrincipalList {
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Create one human/service principal (LocalOwner-only). `kind`
+    /// accepts `human` (default) or `service_account`; node and
+    /// local-owner kinds are rejected.
+    TeamPrincipalCreate {
+        #[serde(default)]
+        kind: Option<String>,
+        display_name: String,
+    },
+    /// Set a principal's lifecycle status under CAS revision protection
+    /// (LocalOwner-only). `status` accepts `active` or `disabled`.
+    TeamPrincipalStatusSet {
+        principal_id: String,
+        status: String,
+        expected_revision: u64,
+    },
+    /// Bounded token metadata listing for one principal (LocalOwner-only,
+    /// never secrets).
+    TeamTokenList {
+        principal_id: String,
+    },
+    /// Mint one device token for an active principal (LocalOwner-only).
+    /// The `cggt_...` plaintext is returned exactly once in
+    /// `TeamTokenCreated`; it is denied on the remote WebSocket transport
+    /// (`secret_operation_remote_denied`) so issuance stays on the
+    /// secret-safe local surface.
+    TeamTokenCreate {
+        principal_id: String,
+        label: String,
+        #[serde(default)]
+        expires_at_ms: Option<i64>,
+        #[serde(default)]
+        idempotency_key: Option<String>,
+    },
+    /// Revoke one device token by id (LocalOwner-only, monotonic and
+    /// idempotent; revocation rejects only new authentications).
+    TeamTokenRevoke {
+        token_id: String,
+    },
     // ── Execution Reliability M003: Approval / Sandbox / Effective Policy ──
     //
     // Principal-scoped, daemon-owned. Payloads carry no identity field;
@@ -2643,6 +2845,10 @@ impl CoreRequest {
                 | Self::ProviderConnectionCreate { .. }
                 | Self::ConnectionRotateSecretStage { .. }
                 | Self::ConnectionRotateBegin { .. }
+                // M003: the create *response* carries the one-time
+                // `cggt_...` plaintext, so issuance stays on the
+                // secret-safe local surface (no remote secret delivery).
+                | Self::TeamTokenCreate { .. }
         )
     }
 }
@@ -3147,6 +3353,29 @@ pub enum CoreEvent {
         channel_id: Option<String>,
         revision: u64,
     },
+    // ── Team Collaboration Corrective M003: Membership/Device-Token Liveness ──
+    //
+    // Structural hints only. Carry project/principal/token ids and the
+    // new revision; receivers re-fetch through the authorized get/list
+    // path on doubt. Never carry token digests, plaintext, display
+    // names, or chat content.
+    /// A project membership was created, updated, or revoked.
+    TeamMembershipChanged {
+        project_id: String,
+        principal_id: String,
+        revision: u64,
+    },
+    /// A principal was created or had its lifecycle status changed.
+    TeamPrincipalChanged {
+        principal_id: String,
+        revision: u64,
+    },
+    /// A device token was minted or revoked (metadata only).
+    TeamTokenChanged {
+        principal_id: String,
+        token_id: String,
+        revoked: bool,
+    },
     // ── Project Work Orders M001: structural liveness hints ──────────
     //
     // Structural hints only: receivers re-fetch through the authorized
@@ -3266,6 +3495,20 @@ mod tests {
         // Secret-free neighbors must stay admissible remotely.
         assert!(!CoreRequest::ProviderConnectionList.is_secret_bearing());
         assert!(!CoreRequest::ProviderSetupList.is_secret_bearing());
+        // M003: device-token issuance is local-only (the response bears
+        // the one-time plaintext); metadata reads stay remote-safe.
+        assert!(CoreRequest::TeamTokenCreate {
+            principal_id: "p".to_string(),
+            label: "device".to_string(),
+            expires_at_ms: None,
+            idempotency_key: None,
+        }
+        .is_secret_bearing());
+        assert!(!CoreRequest::TeamTokenList {
+            principal_id: "p".to_string(),
+        }
+        .is_secret_bearing());
+        assert!(!CoreRequest::TeamCapabilities.is_secret_bearing());
         assert!(!CoreRequest::ConnectionRotateStatus {
             request_id: "req".to_string(),
         }

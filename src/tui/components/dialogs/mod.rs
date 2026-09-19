@@ -3,6 +3,7 @@ pub mod command;
 pub mod confirm;
 pub mod connect;
 pub mod connection_selection;
+pub mod device_secret;
 pub mod diff;
 pub mod goto;
 pub mod help;

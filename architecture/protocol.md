@@ -444,8 +444,22 @@ resolve through deterministic lookup of an existing unique locator.
   semantic capability; free text never becomes an action). Team M002
   adds `ChatPolicyGet/List`, `ChatProjectPolicySet`,
   `ChatChannelPolicySet` (`member.manage`, optimistic revision),
-  `ChatPolicy/ChatPolicyList`, and `ChatPolicyChanged` (ids/revision
-  only). See `architecture/collaboration.md`.
+   `ChatPolicy/ChatPolicyList`, and `ChatPolicyChanged` (ids/revision
+   only). See `architecture/collaboration.md`.
+- **Team administration is a versioned namespaced capability**
+  (team-collaboration M003, `team.v1`, protocol version 1):
+  `TeamMembershipList/Add/Update/Revoke` (`member.manage`;
+  `TeamMembership/TeamMembershipList`), `TeamPrincipalList/Create/
+  StatusSet` and `TeamTokenList/Create/Revoke` (LocalOwner-only
+  `Opaque`; `TeamPrincipal/TeamPrincipalList`, `TeamToken/TeamTokenList`),
+  plus `TeamCapabilities`. `TeamTokenCreated` returns the one-time
+  `cggt_...` plaintext exactly once (list/get never repeat it);
+  `TeamTokenCreate` is secret-bearing (local-only,
+  `secret_operation_remote_denied`). Events (`TeamMembershipChanged`,
+  `TeamPrincipalChanged`, `TeamTokenChanged`) carry ids/revision only.
+  Membership denials use `project_not_found`; principal/token denials
+  keep the typed scope shape. Older clients ignore the team surface.
+  See `architecture/identity.md`.
 
 ## Testing
 

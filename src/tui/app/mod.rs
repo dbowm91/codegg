@@ -703,6 +703,8 @@ impl App {
                 work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_model_pref_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_secret: None,
+                team_token_secret: None,
+                team_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_manage_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_metadata: std::collections::HashMap::new(),
@@ -1200,6 +1202,8 @@ impl App {
                 work_order_occurrence_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_model_pref_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_secret: None,
+                team_token_secret: None,
+                team_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_manage_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 trigger_metadata: std::collections::HashMap::new(),
@@ -3635,6 +3639,20 @@ impl App {
                 } else {
                     crate::tui::commands::presence::show_collaborators(self);
                 }
+            }
+            B::Team => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                // M003: durable project-team administration. Bare `/team`
+                // shows the bounded member list plus the M002 chat-policy
+                // summary for the active project; subcommands mutate
+                // membership, principals/tokens (LocalOwner), and chat
+                // overrides. `/collaborators` stays the presence view.
+                let args = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                crate::tui::commands::team::dispatch_team_command(self, args);
             }
             B::Observe => {
                 self.ui_state.command_mode = false;
@@ -7188,6 +7206,14 @@ impl App {
                 // Dropping here zeroes the transient plaintext.
                 self.dialog_state.trigger_secret = None;
                 self.dialog_state.trigger_create_request.cancel();
+            }
+            Dialog::TeamTokenSecret => {
+                // One-time device credential is forgotten on close;
+                // token metadata stays listable but the plaintext is
+                // never re-readable. Dropping here zeroes the transient
+                // credential.
+                self.dialog_state.team_token_secret = None;
+                self.dialog_state.team_request.cancel();
             }
             Dialog::WorkspaceDashboard => {
                 // Dashboard close never cancels daemon-owned work: only

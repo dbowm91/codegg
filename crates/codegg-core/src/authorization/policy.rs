@@ -905,6 +905,70 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::MemberManage),
         ),
+        // ── Team Collaboration Corrective M003: Membership/Device-Token Admin ──
+        //
+        // Membership administration is project teamwork: reads and writes
+        // both require `member.manage` on the owning project (Owner only
+        // in the current role model), so a project Owner can manage only
+        // their own project. Principal/token operations carry no project
+        // locator (`Opaque + project.configure`): ordinary team
+        // principals fail closed with `MissingScope` and only the
+        // LocalOwner broad policy passes, so a project Owner can never
+        // mint deployment-wide device credentials via a shared project.
+        // `TeamCapabilities` is a global version probe with no data.
+        R::TeamCapabilities => {
+            OperationDescriptor::new("team_capabilities", ScopeKind::Global, None)
+        }
+        R::TeamMembershipList { .. } => OperationDescriptor::new(
+            "team_membership_list",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::TeamMembershipAdd { .. } => OperationDescriptor::new(
+            "team_membership_add",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::TeamMembershipUpdate { .. } => OperationDescriptor::new(
+            "team_membership_update",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::TeamMembershipRevoke { .. } => OperationDescriptor::new(
+            "team_membership_revoke",
+            ScopeKind::DirectProject,
+            Some(Capability::MemberManage),
+        ),
+        R::TeamPrincipalList { .. } => OperationDescriptor::new(
+            "team_principal_list",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::TeamPrincipalCreate { .. } => OperationDescriptor::new(
+            "team_principal_create",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::TeamPrincipalStatusSet { .. } => OperationDescriptor::new(
+            "team_principal_status_set",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::TeamTokenList { .. } => OperationDescriptor::new(
+            "team_token_list",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::TeamTokenCreate { .. } => OperationDescriptor::new(
+            "team_token_create",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
+        R::TeamTokenRevoke { .. } => OperationDescriptor::new(
+            "team_token_revoke",
+            ScopeKind::Opaque,
+            Some(Capability::ProjectConfigure),
+        ),
         // ── Execution Reliability M003: Approval / Sandbox / Policy ──
         //
         // Principal-scoped daemon-owned preferences. Transport-level scope
@@ -1724,6 +1788,50 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             principal_id: None,
             decision: None,
             expected_revision: None,
+        },
+        R::TeamCapabilities,
+        R::TeamMembershipList {
+            project_id: String::new(),
+            limit: None,
+        },
+        R::TeamMembershipAdd {
+            project_id: String::new(),
+            principal_id: String::new(),
+            role: String::new(),
+        },
+        R::TeamMembershipUpdate {
+            project_id: String::new(),
+            principal_id: String::new(),
+            expected_revision: 0,
+            role: None,
+            state: None,
+        },
+        R::TeamMembershipRevoke {
+            project_id: String::new(),
+            principal_id: String::new(),
+            expected_revision: 0,
+        },
+        R::TeamPrincipalList { limit: None },
+        R::TeamPrincipalCreate {
+            kind: None,
+            display_name: String::new(),
+        },
+        R::TeamPrincipalStatusSet {
+            principal_id: String::new(),
+            status: String::new(),
+            expected_revision: 0,
+        },
+        R::TeamTokenList {
+            principal_id: String::new(),
+        },
+        R::TeamTokenCreate {
+            principal_id: String::new(),
+            label: String::new(),
+            expires_at_ms: None,
+            idempotency_key: None,
+        },
+        R::TeamTokenRevoke {
+            token_id: String::new(),
         },
         R::ApprovalPreferenceGet,
         R::ApprovalModeSet {

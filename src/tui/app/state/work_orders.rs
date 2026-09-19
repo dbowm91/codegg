@@ -910,6 +910,23 @@ impl OneTimeBearer {
         Ok(Self { inner: trimmed })
     }
 
+    /// M003 device-token plaintext wrapper. Same redacted-`Debug`,
+    /// no-`Serialize`, drop-on-close contract as the trigger bearer;
+    /// only the validation messages name the device-token surface.
+    pub fn new_device_token(plaintext: String) -> Result<Self, String> {
+        let trimmed = plaintext.trim().to_string();
+        if trimmed.is_empty() {
+            return Err("Token response carried no credential".to_string());
+        }
+        if trimmed.len() > MAX_TRIGGER_BEARER_CHARS {
+            return Err("Device token exceeds transient display bound".to_string());
+        }
+        if !trimmed.starts_with("cggt_") {
+            return Err("Token response is not a device credential".to_string());
+        }
+        Ok(Self { inner: trimmed })
+    }
+
     /// Explicit display accessor for the one-time dialog render path.
     pub fn expose(&self) -> &str {
         &self.inner
@@ -965,6 +982,31 @@ impl std::fmt::Debug for OneTimeTriggerSecret {
 impl OneTimeTriggerSecret {
     pub fn endpoint_path(&self) -> String {
         format!("/api/v1/task-triggers/{}/fire", self.trigger_id)
+    }
+}
+
+/// M003 transient one-time device-token display payload (never
+/// persisted, never logged, never placed in prompt/transcript/
+/// notification/audit state). The plaintext lives only here until the
+/// secret dialog closes; metadata stays listable but the credential is
+/// never re-readable (rotation is revoke + create).
+pub struct OneTimeDeviceToken {
+    pub principal_id: String,
+    pub token_id: String,
+    pub label: String,
+    pub token: OneTimeBearer,
+    pub project_id: Option<String>,
+}
+
+impl std::fmt::Debug for OneTimeDeviceToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneTimeDeviceToken")
+            .field("principal_id", &self.principal_id)
+            .field("token_id", &self.token_id)
+            .field("label", &self.label)
+            .field("token", &self.token)
+            .field("project_id", &self.project_id)
+            .finish()
     }
 }
 

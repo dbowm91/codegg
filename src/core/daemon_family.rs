@@ -4,8 +4,8 @@
 //! [`DaemonRequestFamily::of`] is the only request-to-owner routing table:
 //! the thin dispatcher in `super::daemon` routes each envelope to exactly
 //! one family handler operating on the same daemon-owned state. Chat,
-//! interactive-process, and work-order requests are classified here for
-//! documentation but are served before the router by their existing
+//! team, interactive-process, and work-order requests are classified here
+//! for documentation but are served before the router by their existing
 //! boxed/spawned paths, preserving their stack/cancellation semantics
 //! exactly.
 //!
@@ -21,6 +21,7 @@
 //! | `projection` | `daemon_projection.rs` | projection replay subscribe/resume/ack/snapshot/artifacts plus ephemeral presence leases |
 //! | `ops` | `daemon_ops.rs` | audit query/export, memory, and notification routing over daemon-owned stores |
 //! | `chat` | `daemon.rs::handle_chat_request` (pre-router, boxed) | durable project chat channels/messages/actions |
+//! | `team` | `daemon_team.rs::handle_team_request` (pre-router, boxed) | canonical project membership + LocalOwner principal/device-token administration |
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
 //! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
 
@@ -39,6 +40,7 @@ pub enum DaemonRequestFamily {
     Projection,
     Ops,
     Chat,
+    Team,
     Interactive,
     WorkOrders,
 }
@@ -215,6 +217,17 @@ impl DaemonRequestFamily {
             CoreRequest::ChatRedact { .. } => Self::Chat,
             CoreRequest::ChatSend { .. } => Self::Chat,
             CoreRequest::ChatSync { .. } => Self::Chat,
+            CoreRequest::TeamCapabilities => Self::Team,
+            CoreRequest::TeamMembershipList { .. } => Self::Team,
+            CoreRequest::TeamMembershipAdd { .. } => Self::Team,
+            CoreRequest::TeamMembershipUpdate { .. } => Self::Team,
+            CoreRequest::TeamMembershipRevoke { .. } => Self::Team,
+            CoreRequest::TeamPrincipalList { .. } => Self::Team,
+            CoreRequest::TeamPrincipalCreate { .. } => Self::Team,
+            CoreRequest::TeamPrincipalStatusSet { .. } => Self::Team,
+            CoreRequest::TeamTokenList { .. } => Self::Team,
+            CoreRequest::TeamTokenCreate { .. } => Self::Team,
+            CoreRequest::TeamTokenRevoke { .. } => Self::Team,
             CoreRequest::WorkOrderBatchCreate { .. } => Self::WorkOrders,
             CoreRequest::WorkOrderCancel { .. } => Self::WorkOrders,
             CoreRequest::WorkOrderCapabilities => Self::WorkOrders,
@@ -263,6 +276,7 @@ impl DaemonRequestFamily {
             Self::Projection => "src/core/daemon_projection.rs",
             Self::Ops => "src/core/daemon_ops.rs",
             Self::Chat => "src/core/daemon.rs::handle_chat_request",
+            Self::Team => "src/core/daemon_team.rs::handle_team_request",
             Self::Interactive => "src/core/daemon.rs::run_interactive_request",
             Self::WorkOrders => "src/core/daemon_work_orders.rs::handle_work_order_request",
         }

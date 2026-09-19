@@ -497,6 +497,20 @@ impl CoreDaemon {
                 | CoreRequest::ChatProjectPolicySet { .. }
                 | CoreRequest::ChatChannelPolicySet { .. }
         );
+        // Team collaboration corrective M003: single-project membership
+        // reads/writes deny as not-found so unauthorized callers cannot
+        // infer project existence, membership, or collaborator activity.
+        // Principal/token operations are `Opaque` (no project locator):
+        // team principals fail closed with the typed scope denial and
+        // only LocalOwner broad policy passes, so no project oracle is
+        // involved and the typed shape is preserved.
+        let team_private = matches!(
+            request,
+            CoreRequest::TeamMembershipList { .. }
+                | CoreRequest::TeamMembershipAdd { .. }
+                | CoreRequest::TeamMembershipUpdate { .. }
+                | CoreRequest::TeamMembershipRevoke { .. }
+        );
         // Work Orders M001: every work-order read/write denies as
         // not-found so unauthorized callers cannot infer project
         // existence, membership, or waiting-work activity from an opaque
@@ -508,6 +522,7 @@ impl CoreDaemon {
                 | CoreRequest::PresenceHeartbeat { .. }
         ) || observe_private
             || chat_private
+            || team_private
             || Self::is_work_order_request(request))
             && error.is_denial()
         {
@@ -859,6 +874,10 @@ impl CoreDaemon {
             | CoreRequest::ChatPolicyGet { project_id, .. }
             | CoreRequest::ChatPolicyList { project_id, .. }
             | CoreRequest::ChatProjectPolicySet { project_id, .. } => Some(project_id.as_str()),
+            CoreRequest::TeamMembershipList { project_id, .. }
+            | CoreRequest::TeamMembershipAdd { project_id, .. }
+            | CoreRequest::TeamMembershipUpdate { project_id, .. }
+            | CoreRequest::TeamMembershipRevoke { project_id, .. } => Some(project_id.as_str()),
             CoreRequest::WorkOrderCreate { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderBatchCreate { request } => Some(request.project_id.as_str()),
             CoreRequest::WorkOrderLaneCreate { request } => Some(request.project_id.as_str()),
@@ -2999,6 +3018,12 @@ impl CoreDaemon {
             // their durable ids and revisions (see
             // `handle_work_order_request`).
             _ if Self::is_work_order_mutation(request) => return,
+            // Team collaboration corrective M003: membership/principal/
+            // token mutations mint or change durable identity in the
+            // handler, so they skip the pre-side-effect emit and are
+            // recorded post-mutation with their durable ids and
+            // revisions (see `handle_team_request`).
+            _ if Self::is_team_mutation(request) => return,
             _ => {}
         }
         let provenance = codegg_core::authorization::audit_provenance(decision);
@@ -3418,6 +3443,23 @@ impl CoreDaemon {
             ))
             .await;
         }
+        // Team collaboration corrective M003: team arms run in a
+        // dedicated handler so the main dispatch future stays small (same
+        // rationale as the boxed chat preamble above). The M003 gate has
+        // already enforced `member.manage` (membership) or LocalOwner-only
+        // `Opaque` scope (principals/tokens); the handler only
+        // records/reads the caller's team state and never mints
+        // authority beyond the existing stores.
+        if Self::is_team_request(&request.payload) {
+            return Box::pin(self.handle_team_request(
+                &request.request_id,
+                request.payload,
+                trusted_client_id,
+                &authority,
+                &authz_decision,
+            ))
+            .await;
+        }
         // Interactive Process Sessions M002: the attach/resume family runs
         // on a fresh task (boxed at the call site). The dispatch match
         // below is already near its stack limit: nesting the PTY handler
@@ -3540,13 +3582,14 @@ impl CoreDaemon {
                 .await
             }
             super::daemon_family::DaemonRequestFamily::Chat
+            | super::daemon_family::DaemonRequestFamily::Team
             | super::daemon_family::DaemonRequestFamily::Interactive
             | super::daemon_family::DaemonRequestFamily::WorkOrders => {
-                // Unreachable: chat, interactive-process, and work-order
-                // envelopes return through their boxed pre-router paths
-                // above, which preserve their stack and cancellation
-                // semantics. Keep the historical unimplemented contract
-                // as defense in depth.
+                // Unreachable: chat, team, interactive-process, and
+                // work-order envelopes return through their boxed
+                // pre-router paths above, which preserve their stack and
+                // cancellation semantics. Keep the historical
+                // unimplemented contract as defense in depth.
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {
                     code: "unimplemented".to_string(),

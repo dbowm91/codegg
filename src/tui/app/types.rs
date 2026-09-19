@@ -40,6 +40,13 @@ pub enum Dialog {
     ProjectPicker,
     Collaborators,
     ProjectChat,
+    /// Team Collaboration Corrective M003: project team administration
+    /// view (durable membership management). FocusManager-owned; see
+    /// `team.rs`. `/collaborators` remains ephemeral presence.
+    Team,
+    /// M003: one-time device-token plaintext display (transient,
+    /// secret-safe; see `device_secret.rs`). FocusManager-owned.
+    TeamTokenSecret,
     /// Project Work Orders M003: Task scheduling sheet (confirm/cancel
     /// a WorkOrder create). FocusManager-owned; see `task_schedule.rs`.
     TaskSchedule,
@@ -98,6 +105,8 @@ impl Dialog {
                 | Self::ProjectPicker
                 | Self::Collaborators
                 | Self::ProjectChat
+                | Self::Team
+                | Self::TeamTokenSecret
                 | Self::TaskSchedule
                 | Self::TaskView
                 | Self::TriggerSecret
@@ -390,6 +399,10 @@ pub enum TuiMsg {
     /// C001: close the one-time trigger secret dialog and forget the
     /// bearer. Metadata stays listable; the secret is never re-readable.
     TriggerSecretClose,
+    /// M003: close the one-time device-token secret dialog and forget
+    /// the plaintext. Token metadata stays listable; the credential is
+    /// never re-readable (rotation is revoke + create).
+    TeamTokenSecretClose,
     /// C001: create/retry the external trigger for the selected Task
     /// row (or the setup-incomplete WorkOrder). Idempotent via the
     /// deterministic creation key; ambiguous timeouts reconcile via

@@ -22,6 +22,7 @@ pub mod daemon_providers;
 pub mod daemon_refresh;
 pub mod daemon_sessions;
 pub mod daemon_shutdown;
+pub mod daemon_team;
 pub mod daemon_turns;
 pub mod daemon_work_orders;
 pub mod daemon_workspace_dashboard;

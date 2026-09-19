@@ -288,21 +288,25 @@ origins = ["http://localhost:3000"]
 | `CODEGG_SERVER_TOKEN` | Legacy bootstrap bearer (overrides config). Compatibility only; maps to `LocalOwner`. |
 | `CODEGG_SERVER_AUTH_DISABLED` | Disable auth entirely (binds `LocalOwner` for diagnostics). |
 
-### Operator auth setup (M002)
+### Operator auth setup (M002, administered via `/team` in M003)
 
 Personal-local needs no login: start the daemon normally and trusted local
 transports resolve `LocalOwner` automatically. Team remote access uses
-personal tokens:
+personal tokens, provisioned through the secret-safe local `/team`
+surface (LocalOwner-only; see `architecture/identity.md`):
 
-1. Create one principal per human via `TeamStore::create_principal`
-   (daemon-owned API; no request payload can self-grant).
-2. Issue one token per device via
-   `PersonalTokenStore::create_personal_token` (returns the one-time
-   `cggt_...` plaintext; only the digest persists).
-3. Present it as `Authorization: Bearer cggt_...` on HTTP and WebSocket.
+1. Create one principal per human via `/team principal-create <display-name>`
+   (`TeamPrincipalCreate`; daemon-owned API, no request payload can self-grant).
+2. Add the principal to each project via `/team add <principal-id> <role>`
+   (project Owner scope, `member.manage`).
+3. Issue one token per device via `/team token-create <principal-id> <label>`
+   (`TeamTokenCreate` returns the one-time `cggt_...` plaintext in a
+   copy-once modal; only the digest persists; local transport only).
+4. Present it as `Authorization: Bearer cggt_...` on HTTP and WebSocket.
    Distinct tokens bind distinct canonical principals; revocation/expiry
-   fails new authentication immediately.
-4. Keep the legacy `server.token`/`CODEGG_SERVER_TOKEN` only until every
+   (`/team token-revoke <token-id>`, monotonic) fails new authentication
+   immediately.
+5. Keep the legacy `server.token`/`CODEGG_SERVER_TOKEN` only until every
    operator holds a personal token; it always maps to `LocalOwner` and
    never to distinct identities. Delete it to complete the migration.
 

@@ -177,7 +177,7 @@ src/tui/commands/presence.rs       # capability + snapshot fetch (spawn-and-comp
 src/tui/app/mod.rs                 # App.presence, header count, /collaborators, reconnect/switch hooks
 src/tui/components/dialogs/info.rs # InfoType::Collaborators (scrollable panel)
 src/tui/components/component.rs    # DialogType::Collaborators (focus slot)
-src/tui/command.rs                 # /collaborators (/presence, /team) registry
+src/tui/command.rs                 # /collaborators (/presence) registry; /team is the separate durable admin surface
 src/tui/input.rs                   # help entries
 tests/presence_m002_collaborators.rs
 ```
@@ -198,13 +198,16 @@ tests/presence_m002_collaborators.rs
   (plus `· agent running` / `(stale)`) only for authorized `Ready`
   data; unavailable/loading renders nothing (hidden, identical for
   unauthorized and absent).
-- **Panel**: `/collaborators` (`/presence`, `/team`; `refresh`
+- **Panel**: `/collaborators` (`/presence`; `refresh`
   subcommand forces re-fetch) opens a scrollable info dialog from
   `presence.panel_lines(project_id)`: stable activity-rank + id order,
   32-row display bound with `+N more`, coarse labels only
   (`active`/`idle`/`observing`/`agent running`), empty/loading/error/
   unavailable states. Focus follows the standard info-dialog convention
   (`j`/`k` scroll, `Esc`/`Enter` close); opening never mutates sessions.
+  `/collaborators` is ephemeral presence only: durable membership and
+  device-token administration live under `/team` (team-collaboration
+  M003, see `architecture/identity.md`).
 - **Lifecycle**: tab switch triggers a bounded refresh for the new
   active project; tab close drops the project when no remaining tab
   holds it; `on_projection_reconnect` bumps both presence and routing

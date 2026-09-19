@@ -88,6 +88,16 @@ pub struct DialogState {
     /// C001: one-time trigger bearer display (transient, never persisted
     /// or logged; cleared on close/switch/reconnect/authority loss).
     pub trigger_secret: Option<crate::tui::app::state::OneTimeTriggerSecret>,
+    /// M003: one-time device-token plaintext display (transient, never
+    /// persisted or logged; cleared on close/switch/reconnect/authority
+    /// loss). Token metadata stays listable; the credential is never
+    /// re-readable.
+    pub team_token_secret: Option<crate::tui::app::state::OneTimeDeviceToken>,
+    /// M003: `TeamMembership*`/`TeamPrincipal*`/`TeamToken*`/chat-policy
+    /// continuations for the `/team` administration surface. Stale
+    /// completions (newer request, tab switch, reconnect) are dropped at
+    /// apply time.
+    pub team_request: crate::tui::app::state::AsyncUiRequestState,
     /// C001: `WorkOrderTriggerCreate` continuation (WorkOrder+trigger
     /// chain, retry, and rotation creates).
     pub trigger_create_request: crate::tui::app::state::AsyncUiRequestState,

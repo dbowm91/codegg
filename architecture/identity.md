@@ -211,3 +211,50 @@ into durable work. Full contract and the 138-row operation matrix live in
 - Projection: `team_capabilities_to_projection` plus
   `bounded_resolver_for_principal` converge the projection seam onto team
   grants.
+
+## Team membership and device-token administration (team-collaboration M003)
+
+Canonical Core/TUI administration over the existing `TeamStore` /
+`PersonalTokenStore` primitives — no new identity store, no new
+migration, no password/OIDC flow. Full milestone contract in
+`plans/implementation/team-collaboration-corrective/003-team-membership-and-token-administration.md`.
+
+- Membership (`DirectProject + member.manage`, Owner-only): `TeamMembershipList`
+  (bounded, 200 rows), `TeamMembershipAdd` (existing principals only;
+  revoked rows conflict on re-add so revocation cannot be bypassed),
+  `TeamMembershipUpdate` (role/state under CAS revision;
+  `team_revision_conflict` on stale, zero overwrite), `TeamMembershipRevoke`
+  (monotonic, row retained). Gate denials use `project_not_found`, so a
+  project Owner manages only their own project and learns nothing about
+  other projects.
+- Principals/tokens (`Opaque + project.configure`, LocalOwner-only):
+  `TeamPrincipalList/Create/StatusSet`, `TeamTokenList/Create/Revoke`.
+  Ordinary team principals fail closed with `authorization_scope_required`;
+  only LocalOwner broad policy passes, so a project Owner can never mint
+  deployment-wide device credentials via a shared project.
+- One-time secret: `TeamTokenCreate` is secret-bearing (denied on the
+  remote WebSocket with `secret_operation_remote_denied`, like provider
+  creates), so issuance stays on the secret-safe local surface. The
+  `cggt_...` plaintext is returned exactly once in `TeamTokenCreated`;
+  list/get carry metadata only (prefix/label/timestamps, never digests).
+  Each explicit create mints one credential: after an ambiguous transport
+  failure reconcile through `TeamTokenList` with explicit user
+  confirmation before re-issuing (never silent auto-retry).
+- Events (`TeamMembershipChanged`, `TeamPrincipalChanged`,
+  `TeamTokenChanged`) carry ids/revision only and classify `Safe`.
+  Audit uses `membership_change` (member/role/revision) and
+  `authentication` (method/transport/kind/outcome) — token digests and
+  plaintext never enter audit metadata.
+- TUI: `/team` is the FocusManager-backed administration surface
+  (member list + M002 chat-policy summary + subcommands for
+  membership/principal/token/chat-override management, all with
+  request-id/project/reconnect-epoch stale guards); device credentials
+  render once in the secret-safe device-secret modal whose close
+  destroys the frontend copy. `/collaborators` remains the ephemeral
+  presence/observe chooser.
+
+```bash
+cargo test --test team_m003_membership_admin  # 12 boundary tests
+cargo test -p codegg-core team                # 14 team-domain tests
+cargo test -p codegg-core transport_auth      # 15 token-lifecycle tests
+```

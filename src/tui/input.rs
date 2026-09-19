@@ -1313,13 +1313,21 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Command,
             key: "/collaborators",
-            action: "Show collaborators for the active project",
+            action:
+                "Show live presence for the active project (ephemeral; membership admin is /team)",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Command,
             key: "/collaborators refresh",
             action: "Refresh collaborator presence",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/team",
+            action:
+                "Manage project membership and chat access (Owner; LocalOwner issues device tokens)",
             condition: None,
         },
         HelpEntry {
