@@ -2,8 +2,10 @@ name: CI
 
 # Routine verification: one bounded job answering the ordinary development
 # question — does this revision format, compile, lint, and pass the default
-# workspace tests? Optional feature, plugin, example, LSP, audit, and
-# cross-platform checks remain available locally via scripts/verify.sh
+# workspace tests? Cheap authority guards (route disposition, audit
+# coverage, scheduler bypass) run here as well as in `verify.sh quick`.
+# Optional feature, plugin, example, LSP, and cross-platform checks
+# remain available locally via scripts/verify.sh
 # and the change-specific matrix in architecture/testing.md.
 
 on:
@@ -49,6 +51,15 @@ jobs:
 
       - name: TUI project authority guard
         run: python3 scripts/check_tui_project_authority.py
+
+      - name: HTTP route disposition guard
+        run: python3 scripts/check_http_route_disposition.py
+
+      - name: Audit coverage guard
+        run: python3 scripts/check_audit_coverage.py
+
+      - name: Scheduler bypass guard
+        run: python3 scripts/check_scheduler_bypass.py
 
       - name: Formatting
         run: cargo fmt --check --all

@@ -154,9 +154,9 @@ impl AgentLoop {
         let Some(pool) = self.subagent_pool.clone() else {
             return;
         };
-        // scheduler-audit: standalone-compat
-        // security-review fallback when the daemon is not wired with
-        // a JobSubmissionService (explicit --standalone / test harness).
+        // Standalone-compat security-review fallback when the daemon is
+        // not wired with a JobSubmissionService (explicit --standalone /
+        // test harness).
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             run_id: None,
@@ -178,6 +178,7 @@ impl AgentLoop {
             sandbox_profile: None,
         };
         tokio::spawn(async move {
+            // scheduler-audit: standalone-compat
             if let Err(e) = pool.spawner().send(request).await {
                 tracing::warn!("Failed to spawn security-review subagent: {}", e);
             }

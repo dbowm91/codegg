@@ -21,7 +21,7 @@ match_boundary() {
 }
 
 bad_imports=""
-if bad_imports=$(match_boundary "crate::(agent|tool[^_]|permission|mcp|plugin|tui|server|client|auth|crypto|search|search_backend|research|theme|tts|upgrade)" crates/codegg-core/src); then
+if bad_imports=$(match_boundary "crate::(agent|tool[^_]|permission|mcp|plugin|tui|server|client|auth([^a-z]|$)|crypto|search|search_backend|research|theme|tts|upgrade)" crates/codegg-core/src); then
   :
 else
   status=$?

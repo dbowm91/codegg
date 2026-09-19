@@ -6,7 +6,8 @@ Rust 1.89+, edition 2021.
 
 ```bash
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core-boundary, sandbox,
-                          # execution-ownership, tui-authority guards, cargo check workspace
+                          # execution-ownership, tui-authority, http-route-disposition,
+                          # audit-coverage, scheduler-bypass guards, cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
@@ -67,7 +68,8 @@ CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1  # capped
 
 `verify.sh quick` runs the routine subset. CI (`.github/workflows/ci.yml`) is one bounded
 `verify` job: agent schema, core-boundary, sandbox, execution-ownership, tui-authority,
-fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/check_*`
+http-route-disposition, audit-coverage, scheduler-bypass, fmt, clippy, workspace tests.
+Everything else is change-triggered (`ls scripts/check_*`
 for the full list):
 
 - `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`

@@ -137,12 +137,17 @@ def matches_any(path: str, globs: list[str]) -> bool:
 
 def has_audit_annotation(content: str, line_start: int) -> bool:
     """Check if a line has a `// scheduler-audit: <reason>` annotation
-    on itself or on one of the preceding lines within a small window
-    (covers multi-line comment blocks)."""
+    on itself or on the line immediately preceding it.
+
+    The window is intentionally tight (same line or one line above):
+    a distant annotation must not bless an unrelated call. See
+    `--self-test` for the regression fixture pinning this behavior.
+    """
     lines = content.splitlines()
-    # Walk back at most 24 lines to allow structured comment blocks
-    # above the call (covers function-level audit annotations).
-    for offset in range(0, 24):
+    # Same line or exactly one line above. A function-level comment
+    # block farther away does not qualify; move the annotation to the
+    # call site instead.
+    for offset in range(0, 2):
         idx = line_start - offset
         if 0 <= idx < len(lines):
             if ANNOTATION.search(lines[idx]):
@@ -177,7 +182,56 @@ def walk(root: str) -> list[str]:
     return out
 
 
+def run_self_test() -> int:
+    """Deterministic regression fixture for annotation association.
+
+    Proves:
+    - adjacent valid annotation (same line or one line above) passes;
+    - missing annotation fails;
+    - unrelated annotation farther away does not bless a call.
+    """
+    failures: list[str] = []
+
+    def check(name: str, content: str, expect_pass: bool) -> None:
+        global FAILURES
+        FAILURES = []
+        scan_file("src/fixture.rs", content)
+        passed = not FAILURES
+        if passed != expect_pass:
+            failures.append(
+                f"{name}: expected {'pass' if expect_pass else 'fail'}, "
+                f"got {'pass' if passed else 'fail'} ({FAILURES})"
+            )
+
+    adjacent_above = "// scheduler-audit: standalone-compat\npool.spawner().send(req).await\n"
+    check("adjacent line above passes", adjacent_above, True)
+
+    same_line = "pool.spawner().send(req).await // scheduler-audit: standalone-compat\n"
+    check("same line passes", same_line, True)
+
+    missing = "pool.spawner().send(req).await\n"
+    check("missing annotation fails", missing, False)
+
+    distant = (
+        "// scheduler-audit: standalone-compat\n"
+        "// unrelated context\n"
+        "let x = 1;\n"
+        "pool.spawner().send(req).await\n"
+    )
+    check("distant annotation does not bless", distant, False)
+
+    if failures:
+        print("scheduler-bypass self-test failed:")
+        for line in failures:
+            print(f"  {line}")
+        return 1
+    print("scheduler-bypass self-test ok (adjacent/same-line pass, missing/distant fail)")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv:
+        return run_self_test()
     src_root = os.path.join(ROOT, "src")
     files = walk(src_root)
     # Don't lint the scheduler subsystem itself

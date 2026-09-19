@@ -1217,6 +1217,10 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::EggpoolConnectionCreate {
             request: dummy_eggpool_create(),
         },
+        R::ProviderConnectionCreate {
+            request: dummy_provider_connection_create(),
+        },
+        R::ProviderSetupList,
         R::EggpoolConnectionCancel {
             operation_id: String::new(),
         },
@@ -2056,6 +2060,23 @@ fn dummy_eggpool_create() -> codegg_protocol::provider::CreateEggpoolConnectionR
         api_key: codegg_protocol::provider::SecretInput::new("placeholder").expect("literal"),
         display_name: None,
         scope: codegg_protocol::provider::EggpoolConnectionScope::Personal {
+            owner_id: "placeholder".to_owned(),
+        },
+        operation_id: None,
+    }
+}
+
+fn dummy_provider_connection_create() -> codegg_protocol::provider::CreateProviderConnectionRequest
+{
+    codegg_protocol::provider::CreateProviderConnectionRequest {
+        provider_id: "placeholder".to_owned(),
+        endpoint: None,
+        port: None,
+        tls_policy: None,
+        credential: codegg_protocol::provider::SecretInput::new("placeholder").expect("literal"),
+        credential_kind: codegg_protocol::provider::ProviderCredentialKind::default(),
+        display_name: None,
+        scope: codegg_protocol::provider::ProviderConnectionScope::Personal {
             owner_id: "placeholder".to_owned(),
         },
         operation_id: None,

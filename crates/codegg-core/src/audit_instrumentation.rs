@@ -518,6 +518,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("project_archive", "config_change"),
     ("project_restore", "config_change"),
     ("eggpool_connection_create", "provider_select"),
+    ("provider_connection_create", "provider_select"),
     ("connection_rotate_begin", "provider_select"),
     ("connection_rotate_secret_stage", "provider_select"),
     ("connection_rotate_cancel", "provider_select"),
@@ -529,6 +530,13 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("connection_purge", "provider_select"),
     ("provider_connection_use", "provider_select"),
     ("chat_action_submit", "chat_triggered_action"),
+    // Team collaboration post-closure M003: chat policy administration
+    // is membership/collaboration administration (`member.manage`), not
+    // ordinary message content. Reads stay uninstrumented below; the two
+    // policy-set mutations emit `membership_change` through the generic
+    // pre-side-effect seam with structural locators only.
+    ("chat_project_policy_set", "membership_change"),
+    ("chat_channel_policy_set", "membership_change"),
     // Team collaboration corrective M003: membership/principal lifecycle
     // emits `membership_change` with member ids/roles/revisions only;
     // device-token mint/revoke emits `authentication` with method/
@@ -559,14 +567,38 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("work_order_lane_create", "work_order_lifecycle"),
     ("work_order_lane_reorder", "work_order_lifecycle"),
     ("work_order_lane_attach", "work_order_lifecycle"),
+    // Work Orders M005: trigger mint/revoke are already audited
+    // post-mutation via `after_trigger_mutation` as `work_order_lifecycle`
+    // with trigger/work-order ids and state only (secret never enters
+    // audit). The table entry makes the guard truthful; the generic
+    // pre-side-effect emit is skipped via `is_work_order_mutation`.
+    ("work_order_trigger_create", "work_order_lifecycle"),
+    ("work_order_trigger_revoke", "work_order_lifecycle"),
 ];
 
 /// Explicitly uninstrumented operations.
 ///
-/// Every entry is a read-only, global-infrastructure, or
-/// privacy-filtered listing whose per-request volume would violate the
-/// bounded-emission invariant. The coverage guard pins this list so a
-/// new privileged operation cannot hide here.
+/// Every entry is one of:
+///
+/// - read-only, global-infrastructure, or privacy-filtered listing whose
+///   per-request volume would violate the bounded-emission invariant;
+/// - caller-scoped principal preference/infrastructure with no
+///   project-keyed data (analogous to `memory_*`);
+/// - chat-domain message/channel/composing/read/sync content: only
+///   structured chat actions emit `chat_triggered_action` (see
+///   `architecture/audit.md` "Live in M003"); ordinary chat content
+///   carries no audit action by design, like `memory_*`;
+/// - presence heartbeat/snapshot: high-volume own-contribution plus
+///   bounded `project.observe` reads;
+/// - interactive-process execution surface (`Global`, per-process
+///   attachment registry): deferred like the explicit
+///   `command_execute`/`git_operation` gaps in `architecture/audit.md`
+///   (builders/fixtures landed, no live single-host emission).
+///
+/// The coverage guard pins this list so a new privileged operation
+/// cannot hide here. Do not add a shared-state mutation (membership,
+/// credential, bearer-mint, config) to this list merely to pass the
+/// guard; instrument it instead.
 pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "asset_refresh_capabilities",
     "asset_refresh_status",
@@ -666,6 +698,70 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "work_order_occurrence_get",
     "work_order_occurrence_list",
     "work_order_summary",
+    // Work Orders M005: trigger metadata reads are bounded listings
+    // like `work_order_list`; mint/revoke above carry the audit trail.
+    "work_order_trigger_list",
+    "work_order_trigger_get",
+    // Execution Reliability M003: principal-scoped daemon-owned
+    // preferences. Transport scope is `Global` with no semantic
+    // capability; the daemon binds the principal server-side and the
+    // payload carries no project-keyed data. Reads and own-preference
+    // writes are caller-scoped infrastructure like `memory_*`, not
+    // shared-state mutations.
+    "approval_preference_get",
+    "approval_mode_set",
+    "sandbox_profile_set",
+    "runtime_policy_set",
+    "task_model_preference_set",
+    "execution_policy_get",
+    // Provider setup catalog: secret-free daemon-owned projection for
+    // selection surfaces (no secrets, no authorization grant), like
+    // `provider_connection_list`.
+    "provider_setup_list",
+    // Project Work Orders M004: enumeration-style dashboard listing;
+    // the daemon returns only `project.read` rows, like `project_list`.
+    "workspace_dashboard",
+    // Presence: `presence_capabilities` is a global version probe;
+    // `presence_heartbeat` is a high-volume own-contribution write;
+    // `presence_snapshot_get` is a bounded `project.observe` read.
+    "presence_capabilities",
+    "presence_heartbeat",
+    "presence_snapshot_get",
+    // Project Collaboration chat domain: ordinary message/channel/
+    // composing/read/sync content plus policy reads. Only structured
+    // chat actions emit `chat_triggered_action` (see
+    // `architecture/audit.md` "Live in M003"); ordinary content has no
+    // audit action by design. Policy-set mutations above carry the
+    // administration trail as `membership_change`.
+    "chat_capabilities",
+    "chat_channel_ensure",
+    "chat_channel_list",
+    "chat_history",
+    "chat_send",
+    "chat_edit",
+    "chat_redact",
+    "chat_read_set",
+    "chat_read_get",
+    "chat_composing_set",
+    "chat_composing_list",
+    "chat_sync",
+    "chat_policy_get",
+    "chat_policy_list",
+    // Interactive Process Sessions: `Global` execution surface with
+    // per-process attachment-registry authority (trusted `client_id`,
+    // never payload fields). Deferred like the explicit
+    // `command_execute`/`git_operation` gaps: builders/fixtures prove
+    // the chain shape, but no live single-host emission by design.
+    "interactive_process_capabilities",
+    "interactive_process_create",
+    "interactive_process_list",
+    "interactive_process_attach",
+    "interactive_process_detach",
+    "interactive_process_input",
+    "interactive_process_resize",
+    "interactive_process_resume",
+    "interactive_process_terminate",
+    "interactive_process_remove",
 ];
 
 /// Map one daemon operation name to its structural audit action.
@@ -1370,6 +1466,13 @@ mod tests {
             "asset_refresh",
             "audit_export",
             "audit_query",
+            // Team-collaboration post-closure M003: canonical
+            // descriptor drift must not silently drop audit mappings.
+            "provider_connection_create",
+            "work_order_trigger_create",
+            "work_order_trigger_revoke",
+            "chat_project_policy_set",
+            "chat_channel_policy_set",
         ] {
             assert!(
                 operation_to_audit_action(operation).is_some(),
@@ -1378,6 +1481,48 @@ mod tests {
         }
         assert!(operation_to_audit_action("session_load").is_none());
         assert!(operation_to_audit_action("unknown_future_op").is_none());
+    }
+
+    #[test]
+    fn operation_matrix_covers_canonical_policy_descriptor_set() {
+        // Regression for the M003 stale-guard failure: the descriptor
+        // table lives in `authorization/policy.rs`, and the audit tables
+        // must classify every canonical operation. The Python guard pins
+        // the same invariant statically; this test pins it at the type
+        // level so a future move fails here instead of silently passing.
+        let matrix = crate::authorization::operation_capability_matrix();
+        assert!(
+            matrix.len() >= 130,
+            "canonical operation set too small: {}",
+            matrix.len()
+        );
+        let ops: std::collections::HashSet<&str> =
+            matrix.iter().map(|(op, _, _)| op.as_str()).collect();
+        for required in [
+            "workspace_register",
+            "workspace_list",
+            "project_register",
+            "provider_connection_create",
+            "work_order_trigger_create",
+            "work_order_trigger_revoke",
+            "chat_project_policy_set",
+            "workspace_dashboard",
+        ] {
+            assert!(ops.contains(required), "canonical set missing {required}");
+        }
+        let instrumented: std::collections::HashSet<&str> =
+            INSTRUMENTED_OPERATIONS.iter().map(|(op, _)| *op).collect();
+        let uninstrumented: std::collections::HashSet<&str> =
+            UNINSTRUMENTED_OPERATIONS.iter().copied().collect();
+        for (op, _, _) in &matrix {
+            if *op == "provider_connection_use" {
+                continue;
+            }
+            assert!(
+                instrumented.contains(op.as_str()) || uninstrumented.contains(op.as_str()),
+                "unclassified canonical operation: {op}"
+            );
+        }
     }
 
     #[test]

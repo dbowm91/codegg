@@ -253,6 +253,15 @@ emit nothing new.
 
 ## Verification
 
+`scripts/check_audit_coverage.py` parses the canonical authorization
+descriptor source (`crates/codegg-core/src/authorization/policy.rs`,
+`operation_descriptor`) — never the historical `authorization.rs`
+location — and fails closed with a non-empty inventory check if the
+table moves. `crates/codegg-core/src/audit_instrumentation.rs`
+(`INSTRUMENTED_OPERATIONS` / `UNINSTRUMENTED_OPERATIONS`) must classify
+every canonical operation; the guard pins that list so a new privileged
+operation cannot hide as uninstrumented.
+
 ```bash
 cargo test -p codegg-core audit
 cargo test --test identity_m004_audit_foundation

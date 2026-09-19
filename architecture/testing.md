@@ -21,7 +21,10 @@ scripts/verify.sh full     # broad verification before handoff or release
 4. `check_sandbox_contract.py`
 5. `check_execution_ownership.py`
 6. `check_tui_project_authority.py`
-7. `cargo check --workspace --all-targets --locked`
+7. `check_http_route_disposition.py`
+8. `check_audit_coverage.py`
+9. `check_scheduler_bypass.py`
+10. `cargo check --workspace --all-targets --locked`
 
 ### `verify.sh full`
 
@@ -212,12 +215,15 @@ for PRs and pushes to `main`. Steps in order:
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
 5. TUI project authority guard (`check_tui_project_authority.py`)
-6. Formatting (`cargo fmt --check --all`)
-7. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
-8. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
+6. HTTP route disposition guard (`check_http_route_disposition.py`)
+7. Audit coverage guard (`check_audit_coverage.py`)
+8. Scheduler bypass guard (`check_scheduler_bypass.py`)
+9. Formatting (`cargo fmt --check --all`)
+10. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
+11. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
 CI uses default features, bounded resources. Optional feature, plugin,
-example, LSP, audit, and cross-platform checks remain local.
+example, LSP, and cross-platform checks remain local.
 
 ### Release-footprint measurements
 

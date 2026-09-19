@@ -19,7 +19,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "audit.rs"
 INSTR_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "audit_instrumentation.rs"
-AUTHZ_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization.rs"
+# Canonical authorization descriptor source. The descriptor table moved
+# from `authorization.rs` to `authorization/policy.rs` (team-collaboration
+# post-closure M001); this guard must parse the canonical module, never
+# the historical file location.
+AUTHZ_POLICY_MODULE = (
+    REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization" / "policy.rs"
+)
 DAEMON_MODULE = REPO_ROOT / "src" / "core" / "daemon.rs"
 AUDIT_DOC = REPO_ROOT / "architecture" / "audit.md"
 
@@ -69,10 +75,55 @@ def _uninstrumented_ops() -> list[str]:
 
 
 def _authz_operations() -> set[str]:
-    source = _read(AUTHZ_MODULE)
+    # Canonical source of truth: `authorization/policy.rs`
+    # (`operation_descriptor` + `operation_capability_matrix`). Fail
+    # closed with a clear message if the descriptor table moves again
+    # instead of silently returning an empty set as success.
+    if not AUTHZ_POLICY_MODULE.is_file():
+        print(f"  FAIL: canonical descriptor module missing: {AUTHZ_POLICY_MODULE}")
+        return set()
+    source = _read(AUTHZ_POLICY_MODULE)
+    if "pub fn operation_descriptor" not in source:
+        print("  FAIL: operation_descriptor not found in canonical policy module")
+        return set()
     ops = set(re.findall(r'OperationDescriptor::new\(\s*\"([^\"]+)\"', source))
     ops.discard("projection_scope")
+    if not ops:
+        print("  FAIL: no operations discovered in canonical policy module")
+        return set()
     return ops
+
+
+def check_descriptor_source_is_canonical() -> bool:
+    """Pin the guard to the canonical descriptor source.
+
+    Regression for the M003 stale-guard failure where this script read
+    `authorization.rs` after the table moved to `policy.rs` and silently
+    inventoried an empty/noncanonical set. Fails if the policy module
+    moves, the constructor shape changes, or known post-M001 operations
+    disappear from the inventory.
+    """
+    if not AUTHZ_POLICY_MODULE.is_file():
+        print(f"  FAIL: canonical descriptor module missing: {AUTHZ_POLICY_MODULE}")
+        return False
+    source = _read(AUTHZ_POLICY_MODULE)
+    if "pub fn operation_descriptor" not in source:
+        print("  FAIL: operation_descriptor not found in canonical policy module")
+        return False
+    if "OperationDescriptor::new" not in source:
+        print("  FAIL: OperationDescriptor::new not found in canonical policy module")
+        return False
+    ops = _authz_operations()
+    # Spot-check corrected M001 semantics plus breadth: the inventory
+    # must be non-empty and name the LocalOwner-only registration ops.
+    for required in ("workspace_register", "workspace_list", "project_register"):
+        if required not in ops:
+            print(f"  FAIL: canonical inventory missing {required}")
+            return False
+    if len(ops) < 130:
+        print(f"  FAIL: canonical inventory too small ({len(ops)} ops)")
+        return False
+    return True
 
 
 def check_matrix_covers_every_action() -> bool:
@@ -93,6 +144,7 @@ def check_matrix_covers_every_action() -> bool:
 def check_every_operation_is_classified() -> bool:
     ops = _authz_operations()
     if not ops:
+        print("  FAIL: no daemon operations discovered (descriptor source moved?)")
         return False
     pairs = _instrumented_pairs()
     instrumented = {op for op, _ in pairs}
@@ -161,8 +213,11 @@ def check_instrumentation_stays_append_only_and_trusted() -> bool:
     # Core boundary: the instrumentation module must not import the
     # authorization service (see check-core-boundary.sh). The daemon
     # seam owns the operation_descriptor -> operation_to_audit_action
-    # step plus the audit_provenance bridge.
-    if "crate::authorization" in source or "crate::auth" in source:
+    # step plus the audit_provenance bridge. Test-only coverage pins
+    # (`#[cfg(test)]`) may reference the canonical matrix; strip them
+    # before enforcing the production boundary.
+    production = source.split("#[cfg(test)]")[0]
+    if "crate::authorization" in production or "crate::auth" in production:
         print("  FAIL: instrumentation must not import crate::authorization (core boundary)")
         return False
     daemon = _read(DAEMON_MODULE)
@@ -200,6 +255,7 @@ def check_audit_doc_has_matrix() -> bool:
 def main() -> int:
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     checks: list[tuple[str, object]] = [
+        ("descriptor source is canonical policy module", check_descriptor_source_is_canonical),
         ("coverage matrix covers every audit action", check_matrix_covers_every_action),
         ("every daemon operation is classified", check_every_operation_is_classified),
         ("live-mapped actions have operation mappings", check_live_mapped_actions_have_operation_mapping),

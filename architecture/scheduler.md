@@ -396,9 +396,12 @@ Two static guards enforce the scheduler invariant at source level:
   outside scheduler executors and test fixtures, rejects production use
   of the old `dispatch_to_test_runner` name, and rejects direct
   subagent pool sends and background scheduler loop starts. Each bypass
-  site must carry a `// scheduler-audit: <reason>` inline annotation
+  site must carry a `// scheduler-audit: <reason>` inline annotation on
+  the same line as the call or the line immediately above it
   (recognized reasons: `scheduler-owned`, `standalone-compat`,
-  `definition-site`, `test-only`). Whole-file exemptions are restricted
+  `definition-site`, `test-only`). A distant annotation does not bless
+  a call; move the annotation to the call site instead.
+  Whole-file exemptions are restricted
   to subsystem definition files whose process-spawn entries are owned
   by the scheduler; `src/agent/loop.rs` no longer carries a blanket
   exemption — its standalone-compat fallback uses a per-line annotation.

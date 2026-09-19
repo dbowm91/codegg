@@ -164,7 +164,9 @@ it does not restore unscheduled execution.
    longer accepts whole-file exemptions for files that contain both
    scheduler-owned and compatibility paths (e.g. `src/agent/loop.rs`).
    Each compatibility call site must carry a per-line
-   `// scheduler-audit: <reason>` annotation. The recognized reasons
+   `// scheduler-audit: <reason>` annotation on the same line as the
+   call or the line immediately above it (a distant annotation does
+   not bless the call). The recognized reasons
    are `scheduler-owned`, `standalone-compat`, `definition-site`, and
    `test-only`.
 9. **Execution ownership manifest.** `docs/execution-ownership.toml`
