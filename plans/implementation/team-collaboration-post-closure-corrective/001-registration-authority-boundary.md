@@ -1,6 +1,8 @@
 # Team Collaboration Post-Closure Corrective Milestone 001 — Registration Authority Boundary
 
-Status: ready for handoff
+Status: implemented (closure at
+`plans/closure/team-collaboration-post-closure-corrective/001-status.md`;
+implementation `02971be8`)
 
 Repository baseline: `626585a1fad449a637e4828777bfa21d222abea0`
 
