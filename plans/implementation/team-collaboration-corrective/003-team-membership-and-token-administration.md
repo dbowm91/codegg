@@ -1,8 +1,8 @@
 # Team Collaboration Corrective M003 — Team Membership and Device-Token Administration
 
-Status: ready (unblocked by M002 closure at
-plans/closure/team-collaboration-corrective/002-status.md;
-M001+M002 hard dependencies closed)
+Status: implemented (closure at
+plans/closure/team-collaboration-corrective/003-status.md;
+implementation `f7afefb1`)
 
 Repository baseline: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 
