@@ -1,6 +1,6 @@
 # Project Work Orders and Task View — CI Migration-Test Corrective Addendum
 
-Status: closing
+Status: conditionally closed
 
 Repository baseline reviewed: `4ec46a9b`
 
@@ -37,7 +37,8 @@ preservation and rebuilt constraints.
 
 ### C001 — WorkOrder remigration assertion convergence
 
-Status: implemented; hosted CI evidence pending.
+Status: conditionally closed; focused/local gates are complete, but hosted
+workspace-test closure is transferred to the managed-key corrective.
 
 Plan: `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`.
 

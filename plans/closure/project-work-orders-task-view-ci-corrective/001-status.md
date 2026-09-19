@@ -1,6 +1,6 @@
 # Project Work Orders and Task View CI Corrective C001 — Closure Status
 
-Status: closing
+Status: conditionally closed
 
 Source implementation plan:
 
@@ -12,9 +12,9 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `4ec46a9b`
 
-Implementation commits or pull requests:
+Implementation commit:
 
-- Pending commit for the test-only migration-version assertion correction.
+- `5c4e2966` — test: reconcile migration version closure
 
 ## 1. Executive finding
 
@@ -29,15 +29,17 @@ migration behavior changed.
 | Requirement | Evidence | Result |
 |---|---|---|
 | Canonical version assertion | `tests/work_orders_m001_foundation.rs` compares with `STORAGE_LAYOUT_VERSION` | pass |
-| Focused WorkOrder suite | Pending rerun after push | pending |
-| Hosted canonical CI | Pending rerun after push | pending |
+| Focused WorkOrder suite | `cargo test --test work_orders_m001_foundation -- --test-threads=1` | pass — 12 tests |
+| Hosted canonical CI | Runs [35467200089](https://github.com/dbowm91/codegg/actions/runs/35467200089) and [35468898714](https://github.com/dbowm91/codegg/actions/runs/35468898714) | conditional | The corrected candidate passed all guards, formatting, and Clippy; workspace tests then exposed an unrelated encryption race, and the bounded retry hung in workspace tests until cancellation. |
 
 ## 3. Unresolved findings
 
-None in this corrective's scope. The original hosted failure was unrelated to
-Security Review and is now owned by this narrowly scoped follow-up.
+None in this corrective's scope. The original stale assertion is corrected;
+the later managed-key encryption failure is unrelated and is registered under
+`plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`.
 
 ## 4. Roadmap and registry disposition
 
 This follow-up does not reopen the closed WorkOrder capability roadmap or
-change any migration. No future plan is blocked on this correction.
+change any migration. It is conditionally closed pending the separately owned
+managed-key CI corrective; no future plan is blocked on this correction.

@@ -1,6 +1,6 @@
 # Command Surface / Security Review Post-Closure Corrective C001 — Closure Status
 
-Status: closing
+Status: conditionally closed
 
 Source implementation plan:
 
@@ -12,9 +12,10 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `db90730e`
 
-Implementation commits or pull requests:
+Implementation commits:
 
-- Pending commit for the test-contract correction and planning closure evidence.
+- `4ec46a9b` — test: align security review show contract
+- `5c4e2966` — test: reconcile migration version closure (separate hosted-CI corrective)
 
 ## 1. Executive finding
 
@@ -26,12 +27,17 @@ panel; without a receipt it leaves the panel closed, starts no task, fabricates
 no receipt, and emits the bounded instruction to run `/security-review` first.
 No production code changed in this corrective.
 
-The first hosted `CI / verify` result for the pushed closure candidate was
-green through all guards, formatting, and Clippy, then failed in an unrelated
-WorkOrder remigration assertion (`tests/work_orders_m001_foundation.rs`:
-expected 63, current canonical layout 65). That finding is now owned by the
-narrow follow-up `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`;
-the corrected candidate is the remaining strict-closure item.
+Hosted `CI / verify` run 35467200089 was green through all guards, formatting,
+and Clippy, then failed in an unrelated WorkOrder remigration assertion
+(`tests/work_orders_m001_foundation.rs`: expected 63, current canonical layout
+65). The test-only correction is owned by
+`plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`.
+Its retry on run 35468898714 passed the same guards and Clippy but failed the
+workspace-test gate in `codegg-config::encryption::tests::concurrent_first_writes_converge_on_one_key`
+with `CorruptKeyFile`; the bounded second retry remained in workspace tests for
+approximately 25 minutes and was cancelled. That unrelated encryption
+concurrency finding is registered separately, so this C001 is conditionally
+closed rather than falsely claiming a green canonical suite.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -45,7 +51,7 @@ the corrected candidate is the remaining strict-closure item.
 | Canonical quick verification | `scripts/verify.sh quick` | pass | All guards and workspace check passed |
 | Clippy and Git policy guard | `cargo clippy --workspace --all-targets --locked -- -D warnings`; `python3 scripts/check_git_forbidden_patterns.py` | pass | No warnings/findings |
 | Full workspace suite | `cargo test --workspace --locked -- --test-threads=1` | partial | 5,909 tests passed before the completed run reported 9 unrelated pre-existing failures: one MCP local fixture timeout and eight Python AST assertions. Exact MCP test and all 39 Python analyzer tests pass in isolation; no C001 test failed. |
-| Hosted canonical CI | Run [35467200089](https://github.com/dbowm91/codegg/actions/runs/35467200089) | corrective pass required | Guards, formatting, and Clippy passed; workspace tests exposed the unrelated stale v63 WorkOrder assertion. A separate follow-up owns that correction and a new hosted run is required. |
+| Hosted canonical CI | Runs [35467200089](https://github.com/dbowm91/codegg/actions/runs/35467200089) and [35468898714](https://github.com/dbowm91/codegg/actions/runs/35468898714) | conditional | The first run exposed the unrelated WorkOrder v63 assertion; the corrected candidate passed guards, formatting, and Clippy but hit the unrelated encryption `CorruptKeyFile` race, and its bounded retry hung in workspace tests until cancelled. Separate corrective plans own both findings. |
 
 ## 3. Production implementation evidence
 
@@ -95,6 +101,11 @@ git diff --check
   successfully but failed only at the unrelated WorkOrder remigration test;
   run 35467200089 is recorded above. A focused local rerun reproduced that
   failure as 11 passed and 1 failed, confirming the separate stale assertion.
+- The WorkOrder correction was pushed in `5c4e2966`. Hosted run 35468898714
+  again passed all guards, formatting, and Clippy, but workspace tests failed
+  on the unrelated managed-key concurrency test with `CorruptKeyFile`.
+  A second retry did not complete its workspace-test step within the prior
+  canonical-run duration and was cancelled at 2026-09-19T22:18:49Z.
 
 ## 5. Invariant review
 
@@ -136,22 +147,21 @@ document required a semantic update.
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | low | Hosted CI exposed a stale WorkOrder remigration assertion expecting layout 63 while the canonical layout is 65. | Unrelated to C001; it prevented the first full hosted gate from passing. | Owned by `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`; do not change Security Review production code. |
+| medium | Hosted CI exposed `codegg-config::encryption::tests::concurrent_first_writes_converge_on_one_key` returning `CorruptKeyFile` during concurrent managed-key initialization; a bounded retry then hung in workspace tests. | Unrelated to C001; it prevents strict canonical-CI closure and may indicate a real first-write race. | Registered as `plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`; no Security Review production change is authorized by this finding. |
 
 ## 11. Roadmap disposition
 
-C001 implementation is complete. Strict closure is pending on the hosted
-`CI / verify` result for the corrected candidate after the separate WorkOrder
-test-contract follow-up. The registry unblock audit found no registered plan
-blocked on this Security Review correction; Identity/audit M001 remains
-independently ready, while its M002, M003, and M004 dependencies remain
-unchanged.
+C001 implementation is complete and conditionally closed. Strict closure is
+transferred to the separately registered WorkOrder and managed-key concurrency
+correctives; this record does not claim a green hosted canonical suite. The
+registry unblock audit found no registered plan blocked on this Security Review
+correction. Identity/audit M001 remains independently ready, while its M002,
+M003, and M004 dependencies remain unchanged.
 
 ## 12. Registry updates
 
-The implementation plan is marked `implemented`, the subsystem roadmap and
-registry move C001 to `closing`, and the closure record is discoverable under
-the required path. The unrelated hosted failure is registered as a separate
-WorkOrder CI corrective; after the corrected hosted run passes, this record,
-the roadmap, registry, recently-closed table, and post-closure cleanup gate
-will be changed together to `closed`. No future plan is unblocked by this
-test-only correction.
+The implementation plan, subsystem roadmap, registry, and closure record now
+mark C001 `conditionally closed`. The unrelated WorkOrder and managed-key
+failures are registered as separate corrective plans. No future plan is
+unblocked by this test-only correction; Identity/audit M001 remains ready and
+its dependent milestones remain blocked as before.
