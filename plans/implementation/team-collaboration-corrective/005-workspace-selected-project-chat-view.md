@@ -1,8 +1,8 @@
 # Team Collaboration Corrective M005 — Workspace Selected-Project Chat View
 
-Status: ready (unblocked by M002 closure at
-plans/closure/team-collaboration-corrective/002-status.md;
-M001+M002 hard dependencies closed)
+Status: implemented (closure at
+plans/closure/team-collaboration-corrective/005-status.md;
+implementation `86217a7d`)
 
 Repository baseline: `4e12ecc192ba7e2192d3a62acce6e15fc1bb1153`
 

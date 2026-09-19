@@ -177,5 +177,5 @@ The corrective campaign closes only when a Viewer can be granted one project/cha
 | M002 | closed | chat access overlay (`plans/closure/team-collaboration-corrective/002-status.md`; implementation `2f4bec32`) |
 | M003 | closed | team administration (`plans/closure/team-collaboration-corrective/003-status.md`; implementation `f7afefb1`) |
 | M004 | closed | M001 closed (closure `plans/closure/team-collaboration-corrective/004-status.md`; implementation `1bc967c1`) |
-| M005 | ready | M001 + M002 closed |
-| M006 | blocked | M001-M005 (M001+M002+M003+M004 closed; M005 ready) |
+| M005 | closed | M001 + M002 closed (closure `plans/closure/team-collaboration-corrective/005-status.md`; implementation `86217a7d`) |
+| M006 | ready | M001-M005 (M001+M002+M003+M004+M005 closed) |
