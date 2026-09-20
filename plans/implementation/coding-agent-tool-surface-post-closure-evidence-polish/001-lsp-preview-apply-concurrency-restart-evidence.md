@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Post-Closure Evidence Polish M001 — LSP Preview Apply Concurrency and Restart Evidence
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `44a1f02476409829a752e860ae0917695501ea7a`
 
