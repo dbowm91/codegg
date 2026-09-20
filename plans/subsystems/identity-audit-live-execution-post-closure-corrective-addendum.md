@@ -1,6 +1,6 @@
 # Identity / Audit — Live Execution Post-Closure Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `a996e20060a0103a152a80fb62463241c1fd1162`
 
@@ -117,4 +117,4 @@ Distributed `node_enrollment` and `remote_execute` remain outside this workstrea
 | M001 | closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/001-status.md`; implementation `7c75c009`) | identity M005 closed; M003 verification guard closed |
 | M002 | closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/002-status.md`; implementation `e0cc7f05`) | hard dependency on M001 satisfied (M001 closed) |
 | M003 | closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/003-status.md`; implementation `591cb4de`) | hard dependency on M001 satisfied (M001 closed) |
-| M004 | ready | hard dependencies on M002 + M003 satisfied (M002 + M003 closed) |
+| M004 | closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/004-status.md`; implementation `42b8f9ec`) | hard dependencies on M002 + M003 satisfied (M002 + M003 closed) |

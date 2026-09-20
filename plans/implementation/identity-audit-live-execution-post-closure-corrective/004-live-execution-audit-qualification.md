@@ -1,6 +1,6 @@
 # Identity / Audit Live Execution Corrective M004 — Qualification and Coverage Guard Closure
 
-Status: ready
+Status: closed (closure at `plans/closure/identity-audit-live-execution-post-closure-corrective/004-status.md`; implementation `42b8f9ec`)
 
 Hard dependencies: M002 and M003 closed.
 
