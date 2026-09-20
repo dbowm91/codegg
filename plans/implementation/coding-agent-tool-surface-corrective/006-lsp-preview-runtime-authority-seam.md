@@ -19,9 +19,11 @@ Long-term requirements:
 - `plans/000-long-term-specification.md#47-correctness-before-transparent-magic`
 - `plans/000-long-term-specification.md#87-project-authorization`
 
-Applicable ADRs: none expected. This milestone aligns already-owned daemon workspace services, LSP state, authorization classification, and tool construction. Stop and register an ADR if implementation would change the canonical authorization owner, mutation owner, or preview persistence model.
+Applicable ADRs:
 
-Primary class: invariant / infrastructure
+- `plans/adrs/ADR-0008-lsp-preview-apply-authorization-and-runtime-ownership.md` (accepted)
+
+Primary class: invariant
 
 ## 1. Objective
 
@@ -397,7 +399,7 @@ Stop and report rather than improvise if:
 
 - sharing the preview registry requires daemon-global state;
 - the daemon-resolved LSP service cannot be reused by the tool registry without changing LSP process ownership;
-- correcting `LspPreviewApply` to `ViaSession` conflicts with an accepted ADR or an intentional security invariant;
+- implementation would violate ADR-0008's caller-specific authorization, turn-local preview lifetime, or single mutation-owner decision;
 - agent mutation would require changing project-role capability semantics;
 - the session/workspace binding cannot be factored without moving mutation ownership out of `src/lsp/mutation.rs`;
 - M005 would still require model-supplied workspace/session/project identity after this seam lands;
