@@ -263,5 +263,5 @@ This campaign closes when registration, disclosure, discovery, category/capabili
 | M001 | closed | `plans/implementation/coding-agent-tool-surface-corrective/001-surface-authority-and-discovery-correctness.md` | `plans/closure/coding-agent-tool-surface-corrective/001-status.md` | — |
 | M002 | closed | `plans/implementation/coding-agent-tool-surface-corrective/002-coding-profile-and-contextual-capability-exposure.md` | `plans/closure/coding-agent-tool-surface-corrective/002-status.md` | — |
 | M003 | closed | `plans/implementation/coding-agent-tool-surface-corrective/003-compact-discovery-and-multiplexed-tool-ergonomics.md` | `plans/closure/coding-agent-tool-surface-corrective/003-status.md` | — |
-| M004 | ready | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | — | — |
+| M004 | active | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | — | implementation in progress |
 | M005 | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | — | — |
