@@ -1,6 +1,6 @@
 # Provider /connect Restoration CI Corrective C001 — Managed-Key Concurrent First-Write Closure
 
-Status: ready
+Status: active
 
 Repository baseline: `5c4e2966`
 

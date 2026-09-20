@@ -47,7 +47,7 @@ One corrective milestone:
 
 ### C001 — Managed-key concurrent first-write CI corrective
 
-Status: ready.
+Status: active.
 
 Plan: `plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`.
 

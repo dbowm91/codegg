@@ -26,15 +26,16 @@
 //!   stored in a project/workspace directory or the current working
 //!   directory.
 //! - Content: 32 CSPRNG bytes (256 bits), hex-encoded to 64 characters.
-//! - Unix permissions: parent created `0o700` when newly created; key file
-//!   created atomically with `O_EXCL` (`create_new`) at `0o600` and then
-//!   `fsync`ed (plus a parent-dir `fsync`). Reads reject symlinks,
+//! - Unix permissions: parent created `0o700` when newly created; key content
+//!   is written and `fsync`ed in a private `0o600` sibling before being
+//!   published with a non-overwriting hard link (plus a parent-dir `fsync`).
+//!   Reads reject symlinks,
 //!   non-regular files, and any group/other permission bits, failing
 //!   closed instead of repairing an attacker-controlled path.
-//! - Windows: the file is created with a single `create_new` write inside
-//!   the user profile (`%APPDATA%/codegg`), so it inherits the profile's
-//!   user-private ACL and is never made world-readable. No external
-//!   command is used on any platform.
+//! - Windows: the file is written to a private sibling and published with a
+//!   same-directory hard link inside the user profile (`%APPDATA%/codegg`),
+//!   so it inherits the profile's user-private ACL and is never made
+//!   world-readable. No external command is used on any platform.
 //! - The key value is never printed, logged, serialized into normal
 //!   config, exported with sessions, or included in diagnostics. Debug
 //!   impls for key-carrying types are redacted.
@@ -403,8 +404,10 @@ fn is_valid_managed_key(key: &str) -> bool {
 }
 
 /// Atomically create a new managed key with at least 256 bits of CSPRNG
-/// entropy. Uses `create_new` (`O_EXCL`) so two concurrent first writes
-/// converge: the loser reads back the winner's key.
+/// entropy. The complete key is written and synced to a private sibling first,
+/// then published with a non-overwriting hard link. This prevents readers from
+/// observing the target between `create_new` and the payload write while still
+/// making two concurrent first writes converge on one key.
 fn create_managed_key_file(path: &Path) -> Result<String, MasterKeyError> {
     let key_bytes: [u8; MANAGED_KEY_BYTES] = rand::random();
     let key = hex::encode(key_bytes);
@@ -421,26 +424,56 @@ fn create_managed_key_file(path: &Path) -> Result<String, MasterKeyError> {
         }
     }
 
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(MANAGED_KEY_FILENAME);
+    let (temp_path, mut file) = (0..16)
+        .find_map(|_| {
+            let suffix: u64 = rand::random();
+            let candidate = path.with_file_name(format!(".{file_name}.{suffix:016x}.tmp"));
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&candidate) {
+                Ok(file) => Some(Ok((candidate, file))),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(e) => Some(Err(MasterKeyError::Io(e))),
+            }
+        })
+        .ok_or_else(|| {
+            MasterKeyError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique managed-key temporary path",
+            ))
+        })??;
+
+    let write_result = (|| -> Result<(), MasterKeyError> {
+        use std::io::Write;
+        file.write_all(key.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
     }
-    match options.open(path) {
-        Ok(mut file) => {
-            use std::io::Write;
-            file.write_all(key.as_bytes())?;
-            file.sync_all()?;
-            drop(file);
+
+    match std::fs::hard_link(&temp_path, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&temp_path);
             #[cfg(unix)]
             if let Some(parent) = path.parent() {
                 if let Ok(dir) = std::fs::File::open(parent) {
                     let _ = dir.sync_all();
                 }
             }
-            // Re-read through the validating path so the created file is
+            // Re-read through the validating path so the published file is
             // known-good before it is returned.
             read_managed_key_file(path).map_err(|outcome| match outcome {
                 ReadKeyOutcome::Missing => MasterKeyError::CorruptKeyFile {
@@ -450,13 +483,17 @@ fn create_managed_key_file(path: &Path) -> Result<String, MasterKeyError> {
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Lost the creation race: reuse the winner's key.
+            let _ = std::fs::remove_file(&temp_path);
+            // Lost the publication race: reuse the winner's complete key.
             read_managed_key_file(path).map_err(|outcome| match outcome {
                 ReadKeyOutcome::Missing => MasterKeyError::Io(e),
                 ReadKeyOutcome::Failure(err) => err,
             })
         }
-        Err(e) => Err(MasterKeyError::Io(e)),
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            Err(MasterKeyError::Io(e))
+        }
     }
 }
 

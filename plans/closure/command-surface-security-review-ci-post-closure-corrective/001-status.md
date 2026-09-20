@@ -35,9 +35,12 @@ and Clippy, then failed in an unrelated WorkOrder remigration assertion
 Its retry on run 35468898714 passed the same guards and Clippy but failed the
 workspace-test gate in `codegg-config::encryption::tests::concurrent_first_writes_converge_on_one_key`
 with `CorruptKeyFile`; the bounded second retry remained in workspace tests for
-approximately 25 minutes and was cancelled. That unrelated encryption
-concurrency finding is registered separately, so this C001 is conditionally
-closed rather than falsely claiming a green canonical suite.
+approximately 25 minutes and was cancelled. The same suite also exposed stale
+layout-62 assertions in the continuation and WorkPlan migration fixtures; those
+are registered under
+`plans/implementation/workspace-migration-test-contract-ci-corrective/001-canonical-storage-layout-assertions.md`.
+These unrelated findings are registered separately, so this C001 is
+conditionally closed rather than falsely claiming a green canonical suite.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -148,12 +151,14 @@ document required a semantic update.
 |---|---|---|---|
 | low | Hosted CI exposed a stale WorkOrder remigration assertion expecting layout 63 while the canonical layout is 65. | Unrelated to C001; it prevented the first full hosted gate from passing. | Owned by `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`; do not change Security Review production code. |
 | medium | Hosted CI exposed `codegg-config::encryption::tests::concurrent_first_writes_converge_on_one_key` returning `CorruptKeyFile` during concurrent managed-key initialization; a bounded retry then hung in workspace tests. | Unrelated to C001; it prevents strict canonical-CI closure and may indicate a real first-write race. | Registered as `plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`; no Security Review production change is authorized by this finding. |
+| low | Local/hosted workspace migration fixtures still asserted historical layout 62 while canonical storage layout is 65. | Unrelated to C001; stale test metadata prevents a clean aggregate workspace result. | Registered as `plans/implementation/workspace-migration-test-contract-ci-corrective/001-canonical-storage-layout-assertions.md`; no migration change is authorized by this finding. |
 
 ## 11. Roadmap disposition
 
 C001 implementation is complete and conditionally closed. Strict closure is
-transferred to the separately registered WorkOrder and managed-key concurrency
-correctives; this record does not claim a green hosted canonical suite. The
+transferred to the separately registered WorkOrder, managed-key concurrency,
+and migration-test correctives; this record does not claim a green hosted
+canonical suite. The
 registry unblock audit found no registered plan blocked on this Security Review
 correction. Identity/audit M001 remains independently ready, while its M002,
 M003, and M004 dependencies remain unchanged.
@@ -161,7 +166,7 @@ M003, and M004 dependencies remain unchanged.
 ## 12. Registry updates
 
 The implementation plan, subsystem roadmap, registry, and closure record now
-mark C001 `conditionally closed`. The unrelated WorkOrder and managed-key
-failures are registered as separate corrective plans. No future plan is
+mark C001 `conditionally closed`. The unrelated WorkOrder, managed-key, and
+migration-test failures are registered as separate corrective plans. No future plan is
 unblocked by this test-only correction; Identity/audit M001 remains ready and
 its dependent milestones remain blocked as before.

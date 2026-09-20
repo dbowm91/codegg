@@ -398,6 +398,7 @@ async fn non_idempotent_dispatched_timeout_is_uncertain() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn raw_shell_ambiguous_is_not_replayed() {
+    let secret_command_token = "raw-shell-secret-expected-redaction";
     let attempts = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::with_defaults();
     registry.register(RawShellTool {
@@ -409,7 +410,11 @@ async fn raw_shell_ambiguous_is_not_replayed() {
         .execute_with_retry(
             &registry,
             "raw_shell",
-            json!({"command": "rm -rf /tmp/x --secret-token abc"}),
+            json!({
+                "command": format!(
+                    "rm -rf /tmp/x --secret-token {secret_command_token}"
+                )
+            }),
             ctx_for("process_exec", Some("sh-1".to_string())),
             Some(chain),
         )
@@ -421,7 +426,7 @@ async fn raw_shell_ambiguous_is_not_replayed() {
     );
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     assert!(!result.value.display.contains("rm -rf"));
-    assert!(!result.value.display.contains("abc"));
+    assert!(!result.value.display.contains(secret_command_token));
 }
 
 #[tokio::test(flavor = "current_thread")]
