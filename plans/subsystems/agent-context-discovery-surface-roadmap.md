@@ -1,6 +1,6 @@
 # Agent Context and Discovery Surface Roadmap
 
-Status: active; M001 and M002 ready for handoff
+Status: active; M001 closed, M002 ready for handoff
 
 Repository baseline reviewed: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -164,7 +164,7 @@ Plan:
 
 - plans/implementation/agent-context-discovery-surface/001-mcp-resource-and-prompt-projection.md
 
-Status: ready for handoff.
+Status: closed.
 
 Establish a bounded projection over existing MCP resource/prompt APIs. The model gets deferred, policy-filtered resource search/read capability. MCP prompts gain user-facing discovery/activation through the existing command/question/context path, not autonomous model execution.
 
@@ -260,4 +260,3 @@ Deferred pending separate evidence:
 - MCP resource subscriptions and change streaming beyond compatibility needs;
 - automatic promotion of MCP content into persistent memory;
 - remote/coordinator replication of memory search.
-

@@ -1,6 +1,6 @@
 # Agent Context Discovery Surface M001 — MCP Resource Projection and User-Controlled Prompt Activation
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -371,4 +371,3 @@ Stop and report if:
 - raw MCP tool compatibility test;
 - exact verification commands/outcomes;
 - explicit confirmation that no prompt/resource body persistence or second MCP owner was added.
-
