@@ -1,4 +1,4 @@
-# Coding-Agent Tool Surface Corrective M005 — Checked LSP Preview Application
+# Coding-Agent Tool Surface Corrective M005 — Agent-Facing Checked LSP Preview Application
 
 Status: blocked
 
@@ -10,7 +10,7 @@ Source roadmap:
 
 Hard dependency:
 
-- M001 must close first so the new mutation surface receives correct canonical authority/category/discovery semantics.
+- M001 must close first so the new model-facing mutation adapter receives correct canonical category/capability/discovery semantics.
 
 Long-term requirements:
 
@@ -18,251 +18,308 @@ Long-term requirements:
 - `plans/000-long-term-specification.md#47-correctness-before-transparent-magic`
 - `plans/000-long-term-specification.md#87-project-authorization`
 
-Applicable ADRs: none if the implementation remains an adapter from existing LSP preview artifacts into existing checked native edit/checkpoint ownership. Stop if a new durable edit owner is required.
+Predecessor capability already closed:
+
+- `plans/implementation/architecture-convergence-incomplete-verticals/007-controlled-lsp-mutation-application.md`
+- `plans/closure/architecture-convergence-incomplete-verticals/007-status.md`
+
+Applicable ADRs: none if this remains a thin agent-tool adapter over the existing daemon-owned LSP mutation service. Stop if implementation would create a second mutation/checkpoint/authorization owner.
 
 Primary class: capability / invariant
 
 ## 1. Objective
 
-Add an explicit checked model action for applying a previously generated LSP edit preview.
+Expose the already-implemented controlled LSP preview-application capability to coding agents through one narrow mutating tool.
 
-Today LSP rename/format/source-action/code-action operations intentionally produce previews and never mutate files. The model must then reconstruct or translate the preview into `apply_patch`/other edits. M005 should allow:
+Architecture Convergence M007 already closed the difficult mutation boundary:
 
 ```text
-LSP preview generation
-        ->
-preview_id + affected files/base hashes/edit set
-        ->
-checked apply_lsp_preview(preview_id)
-        ->
-permission + workspace/stale validation
-        ->
-canonical native restorable edit checkpoint
+reviewed LSP preview candidate
+      ->
+LspPreviewApplyRequestDto
+      ->
+CoreRequest::LspPreviewApply
+      ->
+src/lsp/mutation.rs::apply_preview
+      ->
+digest + per-file SHA revalidation
+      ->
+canonical workspace lock
+      ->
+atomic-enough writes / rollback-on-error
+      ->
+checked edit checkpoint
+      ->
+FileChanged projection + LSP document synchronization
 ```
 
-The preview is never itself authorization. Application is a separate mutating tool call subject to normal permission/sandbox/parent-ceiling policy.
+The current model-facing `lsp` tool deliberately remains read-only. The current explicit apply surface is human/TUI-facing (`/lsp-preview-apply`) and the protocol/daemon mutation path; there is no ordinary coding-agent tool that can take a preview it just generated and request the same controlled application.
+
+M005 must add only that missing adapter. It must **not** reimplement preview normalization, hashing, patch application, rollback, checkpointing, workspace locking, or LSP synchronization.
+
+The preferred model contract is intentionally tiny:
+
+```json
+{"preview_id": "preview-..."}
+```
+
+All revision/digest/patch/path/provenance data must be resolved from the host-owned preview registry, not accepted from the model.
 
 ## 2. Why this milestone is blocked
 
-M001 must first fix category/capability authority and discovery semantics. Otherwise a new mutation tool risks entering the same duplicated/fallback classification problem.
+M001 must first correct canonical tool category/capability/discovery semantics. A new mutation tool should not be added while native tool classification can still drift through a duplicate name map.
 
-Existing LSP preview, patch utilities, snapshot/edit checkpoint, workspace locks, permission checker, and broker provide the required foundations.
+After M001, the underlying LSP mutation service is already closed and stable. No new storage or mutation architecture is required.
 
 ## 3. Current implementation evidence
 
-At the baseline:
+At the audited baseline:
 
-- `lsp` preview-producing operations include rename, format, source action, code action, and semantic-check preview paths.
-- tool output carries `preview_id` and `PreviewMetadata` including `not_applied`, affected files, edit count, and stale-base indication.
-- LSP architecture contains a `PreviewArtifactRegistry`/preview representations and explicitly guarantees composed workflows do not apply previews.
-- `ToolBatchExecutor` and snapshot affected-path logic own the native restorable mutation set: `write`, `edit`, `replace`, `apply_patch`.
-- workspace locks cover pre-capture -> native execution -> post-capture -> persistence for eligible native mutation batches.
-- `apply_patch` already has shared patch utilities and allowed-root checks.
+- `crates/codegg-protocol/src/lsp.rs` defines bounded `LspPreviewApplyRequestDto` and `LspPreviewApplyResultDto`.
+- `CoreRequest::LspPreviewApply` / `CoreResponse::LspPreviewApplyResult` are additive protocol paths.
+- `src/core/daemon_goals.rs` owns the daemon request-family dispatch for LSP preview application.
+- `src/lsp/mutation.rs::apply_preview()` is explicitly the daemon-owned reviewed-LSP-workspace-edit mutation boundary.
+- The mutation service validates request shape, canonical workspace containment, preview digest, duplicate paths, per-file original SHA, and patch application.
+- It holds `WorkspaceLockTable`, captures pre/post states through `EditCheckpointManager`, writes atomically per file, rolls back prior writes on failure, persists one checked edit checkpoint, emits `FileChanged`, and updates open LSP documents.
+- Supported preview kinds are currently bounded to `rename`, `code_action`, and `formatting`; resource operations/opaque commands remain denied by the predecessor capability.
+- `PreviewArtifactRegistry` entries carry preview revision/digest and apply metadata; `export_preview_apply_candidate()` is a read-only handoff used by the TUI apply flow.
+- `/lsp-preview-apply` is an explicit human command and observer/project authorization tests already cover the protocol mutation path.
+- The model-facing `lsp` tool is `ReadOnly`; Tool Programs intentionally cannot invoke LSP preview application.
 
-The missing ergonomic bridge is a checked consumer of a preview identity that preserves these owners.
+Therefore M005 is not a new checked-edit feature. It is a model-facing invocation adapter over an existing checked-edit feature.
 
 ## 4. Invariants that must not regress
 
-- LSP query/preview operations remain read-only and never apply edits implicitly.
-- Applying a preview is a separate mutating action requiring current authorization.
-- Preview identity cannot widen workspace/project/session authority.
-- Stale base content, changed file version/hash, missing preview, expired preview, unsafe path, symlink escape, or unsupported workspace edit fails explicitly before mutation.
-- Multi-file application is all-or-nothing from the model's perspective unless the canonical checkpoint/batch machinery already defines a safer transactional contract.
-- No LSP `workspace/executeCommand` is enabled as part of this work.
-- Command-only code actions remain non-applicable unless converted into a safe existing edit representation; do not execute server commands.
-- Native edit history/checkpoint remains the restorable mutation owner.
-- Preview artifacts do not become a second durable history store.
+- `lsp` preview generation stays `ToolCategory::ReadOnly`; no preview-producing call writes files.
+- `src/lsp/mutation.rs` remains the canonical LSP-preview mutation/checkpoint owner.
+- The agent-facing tool is a separate `Mutating`/filesystem-write capability and passes normal ToolBroker/permission/parent-ceiling policy.
+- The model cannot supply or override patches, paths, hashes, preview revision, preview digest, provenance, workspace identity, session identity, or turn identity.
+- Preview identity is scoped to the owning session/workspace; cross-session/project/workspace use fails closed.
+- The adapter cannot bypass project/session/tool/workspace authorization merely because it runs inside the daemon.
+- Existing stale digest/hash/path checks, workspace lock, rollback, checkpoint persistence, FileChanged projection, and LSP synchronization are reused rather than copied.
+- Opaque LSP commands and `workspace/executeCommand` remain denied.
+- Tool Programs/verifier/read-only agents do not gain this mutation capability by discovery.
+- A previously applied or no-longer-present preview is not blindly replayed.
+- No new durable preview store is created.
 
 ## 5. Scope
 
 ### In scope
 
-- A mutating `apply_lsp_preview` tool or repository-conventional equivalent.
-- Exact preview lookup by opaque ID.
-- Session/workspace ownership binding for preview artifacts.
-- Base/staleness validation using preview metadata plus current file hashes/content revisions.
-- Conversion of supported pure text `WorkspaceEdit` previews into canonical patch/edit operations.
-- Precompute complete affected path set.
-- Permission, allowed-root, symlink/path, workspace-lock, snapshot/checkpoint integration.
-- Structured result with applied files/edit count/checkpoint identity where available.
-- Single-file and multi-file pure text edits.
-- Preview expiry/lifecycle cleanup if the existing registry already supports it.
-- Tests and docs.
+- A native model tool such as `lsp_preview_apply` (exact name follows repo conventions).
+- Input restricted to an opaque preview identifier, plus at most a host-verifiable expected revision if the existing registry contract requires it.
+- Host-side export/lookup of the current preview candidate from the same shared `LspService`/preview registry used by the model-facing preview call.
+- Construction of the canonical `LspPreviewApplyRequestDto` from host-owned data.
+- Delegation to the existing `src/lsp/mutation.rs` mutation service through the smallest reusable service seam.
+- Registration wiring with the current session/workspace/pool/`WorkspaceLockTable`/shared LSP service.
+- Correct ToolContract/category/effect/idempotency/retry semantics.
+- Structured projection of the existing `LspPreviewApplyResultDto`.
+- Regression tests comparing TUI/protocol and model-tool application semantics.
+- Documentation and tool-surface/profile integration.
 
 ### Explicitly out of scope
 
-- Applying raw LSP commands or `workspace/executeCommand`.
-- Auto-applying previews without a model/user mutation call.
-- New conflict merge engine.
-- New edit-history database.
-- General refactor engine.
-- Cross-workspace/cross-session preview application.
-- Applying stale previews with best-effort fuzzy matching.
-- Persisting preview artifacts across restart unless already supported by the canonical preview registry.
+- Reimplementing `apply_preview`.
+- Changing the supported WorkspaceEdit subset.
+- Adding resource create/rename/delete operations.
+- Enabling LSP commands or `workspace/executeCommand`.
+- Persisting preview registry entries across restart.
+- New edit-history/checkpoint storage.
+- New conflict/fuzzy-merge behavior.
+- Letting the model send raw patches through this tool; `apply_patch` already owns model-supplied patch mutation.
+- Making preview application available to Tool Programs in this milestone.
+- Replacing the human `/lsp-preview-apply` path.
 
 ## 6. Required production changes
 
-### Preview artifact contract
+### Agent-tool adapter
 
-Ensure each applicable preview record has enough host-owned data to validate application without trusting model-supplied fields:
+Add a small native tool whose public parameters do not reproduce `LspPreviewApplyRequestDto`. The DTO is an internal trusted handoff object containing host-owned material.
 
-- opaque preview ID;
-- session/workspace identity;
-- operation kind;
-- affected canonical-safe relative paths;
-- base content hashes or equivalent version evidence for every affected file;
-- normalized pure text edits/workspace edit;
-- creation/generation identity as already available;
-- applicability flag/reason for command-only/unsupported edits.
-
-Do not accept model-supplied replacement edits alongside a preview ID.
-
-### Checked application tool
-
-Input should be intentionally tiny:
+Illustrative public schema:
 
 ```json
 {
-  "preview_id": "..."
+  "type": "object",
+  "properties": {
+    "preview_id": {
+      "type": "string",
+      "description": "Opaque LSP preview identifier returned by a previous preview operation"
+    }
+  },
+  "required": ["preview_id"],
+  "additionalProperties": false
 }
 ```
 
-Optional explicit expected generation/revision is acceptable if already part of preview semantics; the model must not supply paths or edit bodies to override the artifact.
+The adapter should:
 
-Application sequence:
+1. obtain the current shared preview entry/candidate by ID;
+2. verify it belongs to the current session/workspace execution context and is eligible for agent apply;
+3. reject absent, stale-marked, unsupported, command-bearing, or already-applied candidates before invoking mutation;
+4. construct the full canonical request from host-owned revision/digest/kind/title/provenance/workspace/session/turn/patches;
+5. call the same canonical mutation service used by the daemon path;
+6. mark the preview applied only after mutation success, preserving the predecessor's lifecycle behavior;
+7. return the existing typed result fields in bounded structured form.
 
-1. resolve preview and verify caller/session/workspace ownership;
-2. confirm preview is pure text edit and marked not-applied;
-3. validate all paths through canonical safe-relative-path/symlink/root rules;
-4. recompute base hashes/content versions and reject any stale file;
-5. compute full affected-path set;
-6. enter existing workspace mutation lock/checkpoint boundary;
-7. translate preview to canonical native patch/edit operations;
-8. apply all supported edits deterministically;
-9. capture post-state/checkpoint through existing owner;
-10. mark/consume preview as applied only after successful mutation;
-11. return structured result/provenance.
+### Reusable service seam
 
-If canonical edit-checkpoint machinery cannot make a multi-file preview safely restorable as one logical batch, limit M005 to the supported atomic/restorable subset and report the rest rather than inventing a transaction layer.
+Do not route a tool call through a fake TUI command or duplicate the `CoreRequest` dispatcher. Prefer the smallest internal service/facade that both daemon request handling and the new tool can call while preserving authorization context.
 
-### Permission/category
+If `src/lsp/mutation.rs::apply_preview` is already that reusable seam, inject its required dependencies into the tool:
 
-The new tool is `Mutating`/filesystem-write capability and must obey M001 canonical semantic metadata. It must not be categorized based on the `lsp` preview source's read-only status.
+- canonical workspace root;
+- shared `WorkspaceLockTable`;
+- database pool/checkpoint store;
+- shared `LspService`;
+- bound session/workspace/turn identity.
 
-### LSP integration
+If tool construction lacks one dependency (notably workspace locks), thread it through `SessionToolContext`/`ToolRegistryOptions` rather than introducing a global.
 
-Existing preview-producing operations should advertise the checked application path when the returned preview is applicable. Command-only previews should state why they cannot be applied.
+### Authorization boundary
+
+Before coding, trace the existing model tool invocation authorization chain:
+
+```text
+authorized session/turn principal
+  -> resolved agent capability ceiling
+  -> ToolBroker/ToolContract
+  -> permission/approval mode
+  -> tool execution context
+```
+
+The new adapter must prove that calling the internal mutation service preserves the same project/session/workspace authority represented by `CoreRequest::LspPreviewApply`. If the current tool execution context cannot carry enough trusted identity/authority to prove this, stop and register a narrower authority-seam corrective rather than bypassing the daemon operation boundary.
+
+Do not let model-provided session/project IDs substitute for trusted context.
+
+### Contract semantics
+
+Classify the tool as filesystem mutation. It is non-idempotent at the write boundary unless the existing preview applied-state makes duplicate invocation safely recognizable. Retry policy must therefore be conservative: no automatic replay after an uncertain post-dispatch failure.
+
+Output schema should wrap/reuse `LspPreviewApplyResultDto` fields, including:
+
+- preview ID/revision/digest;
+- kind/title;
+- written files;
+- checkpoint ID;
+- bounded synchronization warnings.
 
 ## 7. Ordered work packages
 
-### Work package A — Preview applicability census
+### Work package A — Authority and dependency trace
 
-Inventory every preview-producing LSP operation and classify output as:
+Document the TUI/protocol path and the model ToolBroker path side by side. Identify the trusted session/workspace/project/principal fields available to the tool and the dependencies required by `apply_preview`.
 
-- pure single-file text edit;
-- pure multi-file text edit;
-- create/delete/rename resource operation;
-- command-only;
-- mixed/unsupported.
+Acceptance evidence: one explicit diagram shows no authority step silently disappears.
 
-Acceptance evidence: M005 scope is based on actual artifact shapes, not assumptions.
+### Work package B — Shared apply service seam
 
-### Work package B — Host-owned base/ownership metadata
+If needed, extract only enough construction/service glue so the existing daemon handler and model tool call the same canonical apply implementation. Do not move validation/write/checkpoint logic into the tool.
 
-Tighten preview records so stale/ownership checks require no model assertions.
+Acceptance evidence: repository search shows one implementation of digest/hash validation and checked application.
 
-Acceptance evidence: cross-session/workspace lookup fails; base hashes cover every mutable file.
+### Work package C — Host-owned preview lookup and request construction
 
-### Work package C — Checked conversion to native edits
+Resolve the preview candidate from the shared LSP preview registry and build the canonical DTO internally.
 
-Implement deterministic conversion for supported text edits using existing patch utilities/edit machinery.
+Acceptance evidence:
 
-Acceptance evidence: generated edits produce the same target content as the preview representation and enter canonical affected-path/checkpoint logic.
+- model schema contains no patch/path/hash/digest/session/workspace override fields;
+- tampered/unknown/cross-session preview IDs fail before mutation;
+- the internal DTO exactly matches the candidate the user-facing TUI path would apply.
 
-### Work package D — Atomicity/staleness/lock integration
+### Work package D — Tool contract and retry semantics
 
-Hold the existing workspace mutation lock across validation capture/application/post-capture where required by current edit-history semantics.
+Register the tool with M001 canonical category/capability metadata, appropriate caller policy, non-idempotent/uncertain-outcome handling, and structured output schema.
 
-Acceptance evidence: concurrent file change between preview and apply produces a stale/conflict result and no partial checkpoint/application.
+Acceptance evidence: read-only/verifier/program callers remain denied; mutation-capable direct coding agent can request permission and apply.
 
-### Work package E — Structured result and lifecycle
+### Work package E — Equivalence and negative tests
 
-Return bounded fields such as `preview_id`, `applied`, `affected_files`, `edit_count`, `checkpoint_id`/turn batch identity if available, and failure reason.
+Run the same representative rename/formatting/edit-only code-action preview through both existing protocol/TUI preparation and the model adapter, then compare mutation result/checkpoint/file contents.
 
-Consume/mark applied previews after success to prevent accidental duplicate application; repeated call should return an explicit already-applied/idempotent result according to chosen contract, not replay edits blindly.
+Acceptance evidence: both routes converge on the same `apply_preview` service and stale/invalid behavior.
 
-### Work package F — Docs/profile integration
+### Work package F — Documentation/exposure
 
-Keep preview generation read-only. Add the apply tool to appropriate mutation-capable coding profiles/discovery after M001; read-only reviewers/verifiers must not receive it.
+Update LSP/tool docs to state:
+
+- preview creation is read-only;
+- human explicit apply is `/lsp-preview-apply`;
+- agent explicit apply is the new mutating tool;
+- both delegate the same checked mutation service;
+- no opaque server command execution is enabled.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
-- Missing/expired preview: no mutation.
-- Stale any-file base: no mutation.
-- Unsafe/cross-root path: no mutation.
-- Permission denial: no mutation and preview remains available according to existing lifetime.
-- Cancellation before first mutation: no mutation.
-- Cancellation/failure after mutation begins must use existing ToolBatchExecutor/checkpoint failure semantics; do not invent rollback claims the current edit engine cannot provide.
-- Concurrent independent session mutation is serialized through canonical workspace locks for the checkpointed operation.
-- Restart: if preview registry is ephemeral, pre-restart IDs become unavailable and return explicit expiration/not-found. Do not add persistence solely to preserve them.
-- Duplicate apply after success must not duplicate edits.
+These inherit the closed M007 mutation service.
+
+- unknown/expired preview: no mutation;
+- unsupported/already-applied preview: no mutation;
+- stale digest/file hash: no mutation;
+- path/containment failure: no mutation;
+- permission/authority denial: no mutation;
+- mutation write/post-state/checkpoint failure: existing rollback/error semantics;
+- LSP synchronization failure after committed checkpoint remains a bounded warning as currently defined;
+- concurrent apply uses the existing repository workspace lock;
+- duplicate preview application must not replay writes blindly;
+- restart invalidates ephemeral preview IDs if that remains canonical behavior; return explicit not-found/expired rather than adding persistence;
+- uncertain post-dispatch tool failure must not trigger automatic retry unless the canonical service can prove the preview was not applied.
 
 ## 9. Compatibility and migration
 
-Additive tool only. No database migration expected.
+Additive model tool only. No storage migration, protocol version bump, or change to `LspPreviewApplyRequestDto` is expected.
 
-Existing LSP preview output fields remain compatible. Additional host metadata may remain internal or additive. Existing models can continue manually translating previews into patches.
-
-No change to LSP server protocol.
+Existing TUI/protocol clients continue unchanged. Existing models may continue translating previews into `apply_patch`; the new adapter is the safer semantic shortcut.
 
 ## 10. Required tests
 
 ### Focused unit tests
 
-- preview ownership binding;
-- stale hash/version detection;
-- path/symlink validation;
-- edit ordering and overlap validation;
-- pure single/multi-file conversion;
-- command-only/mixed preview rejection;
-- already-applied behavior.
+- public schema exposes preview ID only;
+- host-owned candidate -> DTO conversion;
+- unknown/already-applied/unsupported preview rejection;
+- tool category/effect/retry contract;
+- shared-service wiring uses current session/workspace context.
 
 ### Integration tests
 
-- renamePreview -> apply -> files changed as previewed -> checkpoint exists;
-- formatPreview -> apply;
-- sourceAction/codeAction pure edit -> apply;
-- multi-file preview if supported by canonical checkpoint path;
-- cross-session/workspace denial;
-- read-only parent/tool policy denial.
-
-### Contention/cancellation tests
-
-- mutate file after preview before apply -> stale reject;
-- two callers attempt same preview -> at most one successful mutation;
-- concurrent unrelated workspace mutation respects lock ordering;
-- cancellation at defined pre/post dispatch points preserves truthful outcome.
-
-### Restart/recovery tests
-
-- ephemeral preview invalid after restart if that is current canonical behavior;
-- no orphaned “applied” marker without actual checkpointed mutation.
+- model `renamePreview` -> `lsp_preview_apply` -> expected file content + checkpoint;
+- formatting preview apply;
+- edit-only code-action apply;
+- result fields match canonical `LspPreviewApplyResultDto`;
+- same candidate applied through existing CoreRequest route and model route produces equivalent terminal state in independent fixtures.
 
 ### Security/negative tests
 
-- model cannot override paths/edit text under a valid preview ID;
-- path traversal/symlink escape denied;
-- LSP command execution never triggered;
-- preview from another session/project/workspace denied;
-- stale preview never fuzzy-applied.
+- model attempts to pass path/patch/hash/digest/session/workspace fields are rejected by schema;
+- cross-session/project/workspace preview use denied;
+- read-only parent/verifier/program caller denied;
+- stale file after preview rejected;
+- opaque command/mixed unsupported action remains denied;
+- observer/non-controller project authority remains consistent with existing LSP mutation authorization.
+
+### Contention/cancellation tests
+
+- two callers race the same preview: at most one successful apply;
+- concurrent workspace mutation revalidation/lock behavior remains M007-correct;
+- no automatic replay after simulated uncertain post-dispatch outcome.
+
+### Restart/recovery tests
+
+- pre-restart ephemeral preview ID fails explicitly after restart if registry is not durable;
+- no new preview persistence files/rows appear.
 
 ## 11. Required verification commands
 
+Use current exact targets at implementation time. Minimum expected:
+
 ```bash
 cargo test -p codegg --lib tool::lsp
-cargo test -p codegg --lib tool::apply_patch
-cargo test -p codegg --lib agent::tool_batch
+cargo test -p codegg --lib lsp::mutation
+cargo test -p egglsp --lib preview_registry
 cargo test --test lsp
+cargo test --test presence_m003_observation
 cargo test --test tool_execution
 cargo test --test edit_checkpoint
 python3 scripts/check_execution_ownership.py
@@ -273,44 +330,53 @@ scripts/verify.sh quick
 git diff --check
 ```
 
-Use actual current checkpoint test target names at implementation time.
+Reuse the existing Architecture Convergence M007 regression matrix where possible rather than creating a parallel LSP mutation suite.
 
 ## 12. Documentation updates
 
-- `architecture/lsp.md`: preview lifecycle and checked application.
-- `architecture/tool.md`: new mutating surface and category.
-- `architecture/snapshot.md`: only if the existing edit checkpoint contract needs an explicit note for LSP-derived native batches.
-- `architecture/agent-tool-surface.md`: exposure/authority classification.
+- `architecture/lsp.md`: two explicit apply callers, one checked mutation owner.
+- `architecture/tool.md`: agent-facing adapter, mutating category, structured result.
+- `architecture/agent-tool-surface.md`: disclosure/capability classification.
+- `architecture/core.md`: only if service extraction changes the documented daemon-family implementation seam; CoreRequest ownership itself remains unchanged.
 
 ## 13. Acceptance criteria
 
-M005 closes when a supported LSP text-edit preview can be applied by opaque ID through a separate permissioned mutation call; every affected file is ownership/path/base validated; stale/unsafe/cross-session/command-only previews fail without mutation; successful application uses canonical workspace lock/edit-checkpoint ownership; and LSP preview operations themselves remain read-only.
+M005 closes when:
+
+1. a mutation-capable coding agent can apply an LSP preview it received using only its opaque preview ID;
+2. all patch/path/hash/revision/digest/session/workspace data comes from trusted host preview state;
+3. the model adapter and existing human/protocol path call the same canonical `src/lsp/mutation.rs` checked application logic;
+4. stale/unsupported/cross-session/read-only/command-only cases fail without mutation;
+5. successful application creates the existing checked edit checkpoint and LSP synchronization behavior;
+6. no new mutation, storage, scheduler, or authorization owner exists.
 
 ## 14. Stop conditions
 
-Stop if:
+Stop and report if:
 
 - M001 is not closed;
-- the current preview registry lacks enough host-owned edit/base data and adding it requires a new durable store;
-- multi-file correctness would require a new transaction/rollback engine;
-- applying a useful preview requires LSP `workspace/executeCommand`;
-- canonical snapshot/checkpoint machinery cannot represent the affected operation class safely;
-- implementation would bypass ToolBatchExecutor/native edit authority.
+- current ToolExecutionContext/session construction cannot provide enough trusted authority to call the mutation service without bypassing daemon/project authorization;
+- implementation would need to duplicate `src/lsp/mutation.rs` validation/write/checkpoint logic;
+- model access requires exposing raw patches/digests or CoreRequest identity fields;
+- supporting a preview class requires expanding the closed M007 WorkspaceEdit subset or enabling `workspace/executeCommand`;
+- preserving preview IDs across restart would require new persistence.
 
 ## 15. Closure evidence required
 
 Include:
 
-- preview-operation applicability census;
-- exact host-owned preview metadata;
-- application sequence/owner diagram;
-- stale/cross-session/path/command-only negative results;
-- duplicate/concurrent apply result;
-- edit-checkpoint evidence for successful cases;
-- restart behavior;
-- exact verification results;
-- residual unsupported preview classes.
+- side-by-side human/protocol vs model-tool authority/call trace;
+- proof of one mutation implementation owner;
+- public model schema showing preview-ID-only input;
+- host candidate -> DTO construction evidence;
+- rename/format/code-action success trajectories;
+- stale/cross-session/read-only/program/opaque-command negatives;
+- duplicate-race and uncertain-retry evidence;
+- exact checkpoint/result equivalence;
+- verification commands/results;
+- residual unsupported preview classes;
+- registry closure disposition.
 
 ## 16. Handoff notes
 
-Treat the preview as immutable proposed edit evidence, not as a command. The important property is checked transfer into CodeGG's existing mutation owner. If a preview class cannot make that transfer safely, leave it preview-only.
+The difficult capability is already implemented and closed. Resist the temptation to rebuild it in the tool layer. M005 is successful when the agent adapter is boring: resolve trusted preview state, pass normal mutation authority, invoke the canonical service, and project its typed result.
