@@ -15,6 +15,7 @@ Repository baseline reviewed: `2f64c9e16f9ee96ea4d47ed897201f4c24d4606f`
 Implementation commit:
 
 - `c23b22c` — Add Playwright bundle and extension catalog
+- `014ce8d` — Fix strict workspace lint findings
 
 ## 1. Executive finding
 

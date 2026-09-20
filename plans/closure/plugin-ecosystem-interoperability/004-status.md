@@ -16,6 +16,7 @@ Implementation commits:
 
 - `c23b22c` — Add Playwright bundle and extension catalog
 - `fefa622` — Implement extension catalog discovery and host proposals
+- `014ce8d` — Fix strict workspace lint findings
 
 ## 1. Executive finding
 
