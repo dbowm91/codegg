@@ -6,7 +6,7 @@ Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production base
 
 Source roadmap:
 
-- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#M001--surface-authority-and-discovery-correctness`
+- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#m001--surface-authority-and-discovery-correctness`
 
 Long-term requirements:
 
