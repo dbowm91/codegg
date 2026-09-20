@@ -47,6 +47,8 @@ pub struct LspPreviewApplyTool {
     workspace_locks: Arc<codegg_core::workspace_services::WorkspaceLockTable>,
     lsp_service: Arc<crate::lsp::service::LspService>,
     preview_registry: LspPreviewRegistryHandle,
+    #[cfg(test)]
+    apply_barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 
 impl LspPreviewApplyTool {
@@ -70,7 +72,15 @@ impl LspPreviewApplyTool {
             workspace_locks,
             lsp_service,
             preview_registry,
+            #[cfg(test)]
+            apply_barrier: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_apply_barrier(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+        self.apply_barrier = Some(barrier);
+        self
     }
 
     pub(crate) fn parameters_schema() -> serde_json::Value {
@@ -165,6 +175,11 @@ impl LspPreviewApplyTool {
         .ok_or_else(|| {
             ToolError::Execution("LSP preview was not found or has expired".to_string())
         })?;
+
+        #[cfg(test)]
+        if let Some(barrier) = &self.apply_barrier {
+            barrier.wait().await;
+        }
 
         if candidate.applied {
             return Err(ToolError::Execution(
@@ -342,6 +357,7 @@ mod tests {
     use codegg_core::workspace_services::WorkspaceLockTable;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::collections::HashMap;
+    use tokio::sync::Barrier;
 
     async fn test_pool() -> sqlx::SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -365,6 +381,117 @@ mod tests {
         .await
         .expect("session");
         pool
+    }
+
+    async fn factory_pool(workspace_id: &str, session_id: &str) -> sqlx::SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        migrate(&pool).await.expect("migrate");
+        sqlx::query(
+            "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) \
+             VALUES ('project-test', ?, 0, 0, '[]')",
+        )
+        .bind("/tmp")
+        .execute(&pool)
+        .await
+        .expect("project");
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated, workspace_id) \
+             VALUES (?, 'project-test', 'test', '/tmp', 'test', '1', 0, 0, ?)",
+        )
+        .bind(session_id)
+        .bind(workspace_id)
+        .execute(&pool)
+        .await
+        .expect("session");
+        pool
+    }
+
+    fn register_formatting_preview(
+        registry: &LspPreviewRegistryHandle,
+        root: &std::path::Path,
+        path: &std::path::Path,
+    ) -> String {
+        let preview = egglsp::edit::preview_text_edits_for_file(
+            "formatting",
+            path,
+            vec![egglsp::lsp_types::TextEdit {
+                range: egglsp::lsp_types::Range {
+                    start: egglsp::lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: egglsp::lsp_types::Position {
+                        line: 0,
+                        character: 3,
+                    },
+                },
+                new_text: "new".into(),
+            }],
+            Some(root),
+        )
+        .expect("preview");
+        let file = preview.files.into_iter().next().expect("file preview");
+        let original_hash = file.original_hash.clone();
+        let path_string = path.display().to_string();
+        let patch = egglsp::context::PreviewFilePatch {
+            path: path_string.clone(),
+            patch: file.patch,
+            original_hash: original_hash.clone(),
+        };
+        registry.lock().register(
+            egglsp::context::LspPreviewArtifact::Formatting {
+                description: "format old -> new".to_string(),
+                content_hash: None,
+                edit_count: 1,
+                patches: vec![patch],
+            },
+            vec![path_string.clone()],
+            HashMap::from([(path_string, original_hash)]),
+            "test:lsp".to_string(),
+        )
+    }
+
+    fn production_registry(
+        pool: sqlx::SqlitePool,
+        root: &std::path::Path,
+        workspace_id: &str,
+        session_id: &str,
+        locks: Arc<WorkspaceLockTable>,
+        lsp_service: Arc<crate::lsp::service::LspService>,
+    ) -> crate::tool::ToolRegistry {
+        let workspace = Arc::new(codegg_core::workspace::WorkspaceRecord {
+            id: codegg_core::workspace::WorkspaceId::parse(workspace_id).expect("workspace id"),
+            canonical_root: root.to_path_buf(),
+            display_name: "preview-test".to_string(),
+            created_at: chrono::Utc::now(),
+            last_opened_at: chrono::Utc::now(),
+            archived_at: None,
+        });
+        let execution = codegg_core::workspace::ExecutionContext::new(
+            workspace,
+            Some(session_id.to_string()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let (registry, _) = crate::tool::factory::build_session_tool_registry(
+            &crate::config::schema::Config::default(),
+            Some(pool),
+            session_id,
+            None,
+            crate::model_profile::types::TaskStatePolicy::explicit_todo(),
+            None,
+            execution,
+            crate::tool::factory::SessionToolContext {
+                workspace_locks: Some(locks),
+                lsp_service: Some(lsp_service),
+                turn_id: Some("turn-test".to_string()),
+                ..Default::default()
+            },
+        );
+        registry
     }
 
     #[test]
@@ -518,5 +645,153 @@ mod tests {
                 .expect_err("applied preview must not replay");
             assert!(second.to_string().contains("already been applied"));
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn same_preview_concurrent_apply_commits_once() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("main.rs");
+        std::fs::write(&path, "old\n").expect("write original");
+        let pool = test_pool().await;
+        let registry = Arc::new(parking_lot::Mutex::new(
+            egglsp::preview_registry::PreviewArtifactRegistry::new(),
+        ));
+        let preview_id = register_formatting_preview(&registry, root.path(), &path);
+        let tool = Arc::new(
+            LspPreviewApplyTool::new(
+                pool.clone(),
+                root.path().to_path_buf(),
+                "workspace-test".to_string(),
+                "session-test".to_string(),
+                Some("turn-test".to_string()),
+                Arc::new(WorkspaceLockTable::new()),
+                crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+                    crate::config::schema::LspConfig::default(),
+                )),
+                registry.clone(),
+            )
+            .with_apply_barrier(Arc::new(Barrier::new(2))),
+        );
+        let contract = tool.contract(tool.name(), tool.parameters());
+        assert_eq!(contract.caller_policy, ToolCallerPolicy::DirectOnly);
+        assert_eq!(contract.effect_class, ToolEffectClass::NonIdempotent);
+        assert_eq!(contract.idempotency, IdempotencyClass::NonIdempotent);
+        assert_eq!(contract.retry_policy.max_retries, 0);
+
+        let checkpoint_count_before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edit_checkpoint WHERE session_id = ?")
+                .bind("session-test")
+                .fetch_one(&pool)
+                .await
+                .expect("checkpoint count before");
+        assert_eq!(checkpoint_count_before, 0);
+
+        let (left, right) = tokio::join!(
+            tool.execute(json!({"preview_id": preview_id.clone()})),
+            tool.execute(json!({"preview_id": preview_id.clone()})),
+        );
+        let outcomes = [left, right];
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+            1,
+            "same-preview contention must produce exactly one success: {outcomes:?}"
+        );
+        let loser = outcomes
+            .iter()
+            .find_map(|outcome| outcome.as_ref().err())
+            .expect("one contention caller must lose");
+        let loser_text = loser.to_string();
+        assert!(
+            loser_text.contains("already been applied") || loser_text.contains("stale"),
+            "unexpected same-preview loser error: {loser_text}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        assert!(registry.lock().get(&preview_id).unwrap().applied);
+
+        let checkpoint_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM edit_checkpoint WHERE session_id = ? ORDER BY created_at",
+        )
+        .bind("session-test")
+        .fetch_all(&pool)
+        .await
+        .expect("checkpoint query");
+        assert_eq!(checkpoint_ids.len(), checkpoint_count_before as usize + 1);
+        println!(
+            "same_preview_concurrent_apply_commits_once: success=1 loser={loser_text} pre_checkpoints={checkpoint_count_before} post_checkpoints={} checkpoint_id={}",
+            checkpoint_ids.len(),
+            checkpoint_ids[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_tool_registry_expires_prior_preview_id() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("main.rs");
+        std::fs::write(&path, "old\n").expect("write original");
+        let workspace_id = codegg_core::workspace::WorkspaceId::new().into_string();
+        let session_id = "session-fresh-registry-test";
+        let pool = factory_pool(&workspace_id, session_id).await;
+        let locks = Arc::new(WorkspaceLockTable::new());
+        let lsp_service = crate::lsp::service::LspService::new_arc(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        );
+
+        let (preview_id, first_handle_identity) = {
+            let registry_a = production_registry(
+                pool.clone(),
+                root.path(),
+                &workspace_id,
+                session_id,
+                locks.clone(),
+                lsp_service.clone(),
+            );
+            let handle_a = registry_a
+                .lsp_preview_registry()
+                .expect("registry A preview handle");
+            let preview_id = register_formatting_preview(&handle_a, root.path(), &path);
+            assert!(handle_a.lock().get(&preview_id).is_some());
+            assert!(registry_a.get("lsp_preview_apply").is_some());
+            (preview_id, Arc::as_ptr(&handle_a) as usize)
+        };
+
+        let registry_b = production_registry(
+            pool.clone(),
+            root.path(),
+            &workspace_id,
+            session_id,
+            locks,
+            lsp_service,
+        );
+        let handle_b = registry_b
+            .lsp_preview_registry()
+            .expect("registry B preview handle");
+        assert_ne!(first_handle_identity, Arc::as_ptr(&handle_b) as usize);
+        assert!(handle_b.lock().get(&preview_id).is_none());
+
+        let checkpoints_before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edit_checkpoint WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&pool)
+                .await
+                .expect("checkpoint count before");
+        let error = registry_b
+            .get("lsp_preview_apply")
+            .expect("registered preview apply tool")
+            .execute(json!({"preview_id": preview_id}))
+            .await
+            .expect_err("old preview ID must expire with registry A");
+        assert!(error.to_string().contains("not found or has expired"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+        let checkpoints_after: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edit_checkpoint WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&pool)
+                .await
+                .expect("checkpoint count after");
+        assert_eq!(checkpoints_after, checkpoints_before);
+        println!(
+            "fresh_tool_registry_expires_prior_preview_id: handles_distinct=true old_id_error={} checkpoints={checkpoints_after}",
+            error
+        );
     }
 }
