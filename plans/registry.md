@@ -25,7 +25,6 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Coding-agent tool surface — post-closure evidence polish | active | `plans/subsystems/coding-agent-tool-surface-post-closure-evidence-polish-addendum.md` | M001 active | M005/M006 are closed and ADR-0008 is accepted. M001 adds deterministic same-preview concurrency and fresh-registry/restart expiry evidence only; production changes require a separately registered corrective if a semantic defect is exposed. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -34,7 +33,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Coding-agent tool surface — post-closure evidence polish | M001 LSP preview apply concurrency and restart evidence | active | `plans/implementation/coding-agent-tool-surface-post-closure-evidence-polish/001-lsp-preview-apply-concurrency-restart-evidence.md` | M005/M006 closed; ADR-0008 accepted. Evidence-first pass: prove exactly one success/one checkpoint under same-preview contention and old-ID expiry across a fresh production-style registry lifetime. |
 
 ## Current execution order and dependency gates
 
@@ -108,6 +106,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | closed | `plans/closure/coding-agent-tool-surface-corrective/007-status.md` | evidence-only; `4ac7d7e7` |
 | Coding-agent tool surface corrective | M006 LSP preview runtime and authority seam | closed | `plans/closure/coding-agent-tool-surface-corrective/006-status.md` | `4cf35238` |
 | Coding-agent tool surface corrective | M005 checked LSP preview application | closed | `plans/closure/coding-agent-tool-surface-corrective/005-status.md` | `b31ce65` |
+| Coding-agent tool surface — post-closure evidence polish | M001 LSP preview apply concurrency and restart evidence | closed | `plans/closure/coding-agent-tool-surface-post-closure-evidence-polish/001-status.md` | `730b582b` |
 | Team collaboration corrective | M006 multi-user trajectory/security qualification | closed | `plans/closure/team-collaboration-corrective/006-status.md` | harness-only (see closure) |
 | Team collaboration corrective | M005 Workspace selected-project chat view | closed | `plans/closure/team-collaboration-corrective/005-status.md` | `86217a7d` |
 | Team collaboration corrective | M004 shared-session controller lease | closed | `plans/closure/team-collaboration-corrective/004-status.md` | `1bc967c1` |

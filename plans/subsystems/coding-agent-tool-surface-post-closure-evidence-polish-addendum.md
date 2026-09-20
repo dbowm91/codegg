@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface — Post-Closure Evidence Polish Addendum
 
-Status: active
+Status: closed
 
 Repository audit baseline: `44a1f02476409829a752e860ae0917695501ea7a`
 
@@ -217,4 +217,4 @@ This post-closure addendum closes when M005's two previously argument-based prop
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/coding-agent-tool-surface-post-closure-evidence-polish/001-lsp-preview-apply-concurrency-restart-evidence.md` | — | None; M005/M006 closed and ADR-0008 accepted. |
+| M001 | closed | `plans/implementation/coding-agent-tool-surface-post-closure-evidence-polish/001-lsp-preview-apply-concurrency-restart-evidence.md` | `plans/closure/coding-agent-tool-surface-post-closure-evidence-polish/001-status.md` | None; M005/M006 closed and ADR-0008 accepted. |
