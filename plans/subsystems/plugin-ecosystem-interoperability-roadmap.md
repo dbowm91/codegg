@@ -240,7 +240,7 @@ Initial safe support is limited to declarative/passive assets CodeGG already und
 
 ## 9. Security and supply-chain posture
 
-Every package/catal​og flow must retain:
+Every package/catalog flow must retain:
 
 - source URL/path and install provenance;
 - normalized package identity/version;
