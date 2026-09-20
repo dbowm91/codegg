@@ -88,7 +88,7 @@ At the baseline:
 - `ResolvedToolSurface` obtains categories through `permission::tool_category_for_name()`, a second name-based map. Unknown tools default to `Mutating`; newer read-only/safe-mutating tools such as deterministic validators, `context_read`, and WorkPlan reads are not fully represented.
 - Curated/Minimal palettes omit high-value coding-loop capabilities including `test`, `context_read`, and in some profiles safe file-creation paths.
 - `lsp`, `git`, and `task` are broad multiplexers with large operation enums/schemas. This is prompt-efficient at the tool-name level but raises argument/action selection entropy for smaller/tool-fragile models.
-- The broker already supports structured contracts/output schemas, LSP already produces preview artifacts, command-intent already classifies build/lint/format/test families, and edit-checkpoint machinery already owns restorable native mutations. Improvements should compose these installed owners rather than invent replacements.
+- The broker already supports structured contracts/output schemas. LSP already produces preview artifacts **and** the closed Architecture Convergence M007 path already provides daemon-owned checked preview application (`CoreRequest::LspPreviewApply` -> `src/lsp/mutation.rs`) with digest/hash revalidation and edit checkpoints; what is absent is a model-facing tool adapter over that existing authority. Command-intent already classifies build/lint/format/test families. Improvements should compose these installed owners rather than invent replacements.
 
 ## 5. Target architecture
 
@@ -198,7 +198,7 @@ Class: capability / invariant.
 
 Implementation: `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md`
 
-Objective: allow a model to apply a previously-created LSP preview artifact only after stale-base/path/permission validation and through canonical native restorable mutation/checkpoint ownership.
+Objective: add a narrow model-facing adapter for applying a previously-created LSP preview by reusing the already-closed daemon-owned checked mutation service; the model supplies preview identity only, while host-owned preview metadata, stale/path validation, workspace locking, rollback/checkpointing, and LSP synchronization remain canonical.
 
 ## 8. Cross-cutting requirements
 
