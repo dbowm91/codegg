@@ -22,7 +22,8 @@ Related closed work:
 
 Related ADRs:
 
-- None required initially. This campaign corrects and projects existing tool, permission, model-profile, scheduler, LSP, and edit-checkpoint ownership. If implementation would change those owners rather than consume them, stop and register the appropriate ADR.
+- `plans/adrs/ADR-0008-lsp-preview-apply-authorization-and-runtime-ownership.md` — accepted caller-specific authorization, session-scoped transport policy, turn-local preview lifetime, and single LSP mutation-owner contract for M006/M005.
+- No other ADR is currently required. The remaining milestones project existing tool, permission, model-profile, scheduler, and edit-checkpoint ownership.
 
 ## 1. Purpose and ownership boundary
 
@@ -206,7 +207,7 @@ Objective: expose routine build/lint/typecheck/format-check verification as a bo
 
 ### M005 — Checked LSP preview application
 
-Class: capability / invariant.
+Class: capability.
 
 Implementation: `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md`
 
@@ -216,7 +217,7 @@ Dependency: M006 strict closure. M005 must consume the shared host seam rather t
 
 ### M006 — LSP preview runtime and authority seam
 
-Class: invariant / infrastructure.
+Class: invariant.
 
 Implementation: `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md`
 
