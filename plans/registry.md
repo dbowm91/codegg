@@ -35,7 +35,7 @@ Canonical direction remains in:
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
 | Coding-agent tool surface corrective | M005 checked LSP preview application | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | M001 and M006 closed; ADR-0008 accepted. Consume the daemon-owned LSP service, shared turn-local preview registry, workspace locks, host-bound session/workspace identity, and reusable binding seam; add only the narrow model-facing adapter. |
-| Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | ready | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | Production implementations exist. Run and record the required broad verification missing from the historical M003/M004 closure records; no production refactor unless a separate corrective is registered. |
+| Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | active | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | Production implementations exist. Run and record the required broad verification missing from the historical M003/M004 closure records; no production refactor unless a separate corrective is registered. |
 
 ## Current execution order and dependency gates
 
