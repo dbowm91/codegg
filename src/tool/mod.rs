@@ -38,8 +38,11 @@ pub mod lsp;
 pub mod lsp_preview_apply;
 pub mod lsp_read;
 pub(crate) mod lsp_security;
+pub mod mcp_resource;
+pub mod memory;
 pub mod patch_util;
 pub mod plan;
+pub mod plugin;
 pub mod program_cache;
 pub mod program_manifest;
 pub mod question;
@@ -337,6 +340,10 @@ pub struct ToolRegistryOptions {
     /// profile here so `BashTool` receives the configured Landlock policy
     /// instead of `BashTool::default()` without containment.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// Daemon-owned curated memory store used by the bounded read tools.
+    pub memory_store: Option<Arc<codegg_core::memory::MemoryStore>>,
+    /// Stable host-derived project identity used for memory scope.
+    pub project_identity: Option<String>,
 }
 
 impl ToolRegistry {
@@ -532,6 +539,22 @@ impl ToolRegistry {
             crate::tool::codesearch::CodeSearchTool::with_search_runtime(search_runtime.clone()),
         );
         registry.register(crate::tool::question::QuestionTool);
+        registry.register(crate::tool::mcp_resource::McpResourceSearchTool::new(
+            search_runtime.clone(),
+        ));
+        registry.register(crate::tool::mcp_resource::McpResourceReadTool::new(
+            search_runtime.clone(),
+        ));
+        if let Some(store) = options.memory_store.clone() {
+            let scope = codegg_core::memory::MemoryReadScope::for_project(
+                options.project_identity.as_deref(),
+            );
+            registry.register(crate::tool::memory::MemorySearchTool::new(
+                store.clone(),
+                scope.clone(),
+            ));
+            registry.register(crate::tool::memory::MemoryGetTool::new(store, scope));
+        }
 
         // --- Todo tools (policy + persistence gated) ---
         match (options.todo_state.as_ref(), options.todo_policy.as_ref()) {
@@ -1046,6 +1069,8 @@ impl ToolRegistry {
                 &config.search.clone().unwrap_or_default(),
             )),
             sandbox_profile: None,
+            memory_store: None,
+            project_identity: None,
         })
     }
 
@@ -1089,6 +1114,8 @@ impl ToolRegistry {
             notification_service: None,
             search_runtime: None,
             sandbox_profile: None,
+            memory_store: None,
+            project_identity: None,
         })
     }
 

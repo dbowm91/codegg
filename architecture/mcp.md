@@ -148,6 +148,22 @@ Central registry holding `HashMap<String, McpServer>` and an
 | `list_prompts` / `get_prompt` | Prompt management |
 | `list_resources` / `read_resource` | Resource management |
 
+Resource and prompt projections
+
+The turn-scoped `mcp_resource_search` and `mcp_resource_read` wrappers project
+only bounded descriptors and exact, previously admitted resource handles. The
+wrappers use the resolved `McpService` view, retain configured/plugin origin
+provenance, and never accept an arbitrary server/URI pair. Text is truncated
+at the host byte ceiling; blob content is returned as metadata rather than
+unbounded base64.
+
+Prompts are different from resources: `McpService::invoke_user_selected_prompt`
+is an explicit host/user activation seam. It validates the prompt descriptor
+and required arguments before calling `prompts/get`. Returned role labels remain
+untrusted source metadata and must be inserted through the ordinary next-turn
+context compiler; they never become provider system or assistant authority.
+There is no model-facing prompt invocation tool.
+
 ### McpExposurePolicy (`mod.rs`)
 
 Controls which raw `mcp__<server>__<tool>` definitions reach the model:

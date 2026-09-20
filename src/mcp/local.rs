@@ -10,8 +10,8 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::error::McpError;
 use crate::mcp::{
-    protocol, McpPrompt, McpResource, McpResourceContent, McpTool, McpToolCallResult,
-    PromptArgument,
+    protocol, McpPrompt, McpPromptMessage, McpPromptResult, McpResource, McpResourceContent,
+    McpTool, McpToolCallResult, PromptArgument, MAX_RESOURCE_ENTRIES,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -355,6 +355,20 @@ impl LocalClient {
         name: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<String, McpError> {
+        let result = self.get_prompt_structured(name, arguments).await?;
+        Ok(result
+            .messages
+            .into_iter()
+            .filter_map(|message| message.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"))
+    }
+
+    pub async fn get_prompt_structured(
+        &mut self,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<McpPromptResult, McpError> {
         let params = json!({
             "name": name,
             "arguments": arguments.unwrap_or(json!({}))
@@ -366,25 +380,41 @@ impl LocalClient {
             .and_then(|m| m.as_array())
             .ok_or_else(|| McpError::Server("invalid prompt response".into()))?;
 
-        let text_parts: Vec<String> = messages
+        let messages = messages
             .iter()
-            .filter_map(|m| {
-                m.get("content").and_then(|c| c.as_array()).map(|arr| {
-                    arr.iter()
-                        .filter_map(|c| {
-                            c.get("type")
-                                .and_then(|t| t.as_str())
-                                .filter(|t| *t == "text")
-                                .and_then(|_| c.get("text").and_then(|t| t.as_str()))
-                                .map(String::from)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
+            .take(MAX_RESOURCE_ENTRIES)
+            .map(|message| {
+                let role = message
+                    .get("role")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let content = message.get("content").and_then(|value| value.as_object());
+                McpPromptMessage {
+                    role,
+                    text: content
+                        .and_then(|value| value.get("text"))
+                        .and_then(|value| value.as_str())
+                        .map(|value| {
+                            protocol::bounded_string(value, crate::mcp::MAX_RESOURCE_TEXT_BYTES)
+                        }),
+                    mime_type: content
+                        .and_then(|value| value.get("mimeType"))
+                        .and_then(|value| value.as_str())
+                        .map(|value| protocol::bounded_string(value, 256)),
+                }
             })
             .collect();
 
-        Ok(text_parts.join("\n\n"))
+        Ok(McpPromptResult {
+            description: result
+                .get("description")
+                .and_then(|value| value.as_str())
+                .map(|value| {
+                    protocol::bounded_string(value, crate::mcp::MAX_RESOURCE_DESCRIPTOR_BYTES)
+                }),
+            messages,
+        })
     }
 
     pub async fn list_resources(&mut self) -> Result<Vec<McpResource>, McpError> {
@@ -418,38 +448,49 @@ impl LocalClient {
     }
 
     pub async fn read_resource(&mut self, uri: &str) -> Result<McpResourceContent, McpError> {
+        let mut contents = self.read_resource_contents(uri).await?;
+        contents
+            .pop()
+            .ok_or_else(|| McpError::Server("resource response contained no content".into()))
+    }
+
+    pub async fn read_resource_contents(
+        &mut self,
+        uri: &str,
+    ) -> Result<Vec<McpResourceContent>, McpError> {
         let params = json!({ "uri": uri });
         let result = self.send_request("resources/read", params).await?;
         let contents = result
             .get("contents")
             .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
             .ok_or_else(|| McpError::Server("invalid resource response".into()))?;
-
-        let uri = contents
-            .get("uri")
-            .and_then(|u| u.as_str())
-            .unwrap_or(uri)
-            .to_string();
-        let mime_type = contents
-            .get("mimeType")
-            .and_then(|m| m.as_str())
-            .map(String::from);
-        let text = contents
-            .get("text")
-            .and_then(|t| t.as_str())
-            .map(String::from);
-        let blob = contents
-            .get("blob")
-            .and_then(|b| b.as_str())
-            .map(String::from);
-
-        Ok(McpResourceContent {
-            uri,
-            mime_type,
-            text,
-            blob,
-        })
+        Ok(contents
+            .iter()
+            .take(MAX_RESOURCE_ENTRIES)
+            .filter_map(|content| {
+                let uri = content
+                    .get("uri")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or(uri)
+                    .to_string();
+                let mime_type = content
+                    .get("mimeType")
+                    .and_then(|m| m.as_str())
+                    .map(|value| protocol::bounded_string(value, 256));
+                let text = content.get("text").and_then(|t| t.as_str()).map(|value| {
+                    protocol::bounded_string(value, crate::mcp::MAX_RESOURCE_TEXT_BYTES)
+                });
+                let blob = content.get("blob").and_then(|b| b.as_str()).map(|value| {
+                    protocol::bounded_string(value, crate::mcp::MAX_RESOURCE_TEXT_BYTES)
+                });
+                Some(McpResourceContent {
+                    uri,
+                    mime_type,
+                    text,
+                    blob,
+                })
+            })
+            .collect())
     }
 
     pub async fn shutdown(&mut self) -> Result<(), McpError> {

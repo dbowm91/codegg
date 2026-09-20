@@ -29,6 +29,9 @@ pub struct PluginManagementView {
     pub runtime_kind: String,
     pub trust: PluginTrustClass,
     pub source_path: Option<String>,
+    pub package_format: Option<String>,
+    pub schema: Option<String>,
+    pub unsupported_components: Vec<String>,
     pub command_count: usize,
     pub hook_count: usize,
     pub panel_count: usize,
@@ -92,6 +95,19 @@ impl PluginManagementView {
             runtime_kind: manifest.runtime_kind().to_string(),
             trust: info.trust,
             source_path: source_path_from_metadata(info.source.as_ref()),
+            package_format: info
+                .source
+                .as_ref()
+                .and_then(|source| source.package_format.clone()),
+            schema: info
+                .source
+                .as_ref()
+                .and_then(|source| source.schema.clone()),
+            unsupported_components: info
+                .source
+                .as_ref()
+                .map(|source| source.unsupported_components.clone())
+                .unwrap_or_default(),
             command_count: manifest.commands().count(),
             hook_count: manifest.hooks_capabilities().count() + manifest.hooks.len(),
             panel_count: manifest.panels().count(),
@@ -133,6 +149,9 @@ impl PluginManagementView {
             runtime_kind: "marketplace".to_string(),
             trust: PluginTrustClass::TrustedLocal,
             source_path: Some(format!("{}/{}", "plugins", plugin.id)),
+            package_format: None,
+            schema: None,
+            unsupported_components: Vec::new(),
             command_count: 0,
             hook_count: plugin.hooks.len(),
             panel_count: 0,
@@ -487,7 +506,7 @@ impl PluginManager {
     /// Install a plugin from a local filesystem path and register it
     /// in the live registry so subsequent `list()` calls include it.
     ///
-    /// The source directory must contain a `manifest.toml`. The plugin
+    /// The source directory must contain a supported plugin manifest. The plugin
     /// is copied into the canonical plugins directory, the manifest is
     /// parsed, and the plugin is registered in the registry.
     pub async fn install_from_path(
@@ -498,25 +517,30 @@ impl PluginManager {
             .await
             .map_err(|e| PluginManagementError::Install(e.to_string()))?;
 
-        let manifest_path = dest.join("manifest.toml");
-        let content = tokio::fs::read_to_string(&manifest_path)
-            .await
-            .map_err(|e| PluginManagementError::Install(format!("failed to read manifest: {e}")))?;
-        let manifest: PluginManifest = toml::from_str(&content)
-            .map_err(|e| PluginManagementError::Install(format!("invalid manifest: {e}")))?;
+        let loaded = crate::plugin::package::detect_and_load(&dest)
+            .map_err(PluginManagementError::Install)?;
+        let manifest = loaded.manifest;
 
         let plugin_id = format!("plugin:{}", manifest.name);
         let original_canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut source = PluginSourceMetadata::local_path(original_canonical, dest.clone());
+        source.package_format = Some(loaded.format.as_str().to_string());
+        source.schema = loaded.schema.clone();
+        source.unsupported_components = loaded.unsupported.clone();
         let info = PluginInfo {
             id: plugin_id.clone(),
             manifest,
             enabled: true,
             trust: PluginTrustClass::TrustedLocal,
-            diagnostics: Vec::new(),
-            source: Some(PluginSourceMetadata::local_path(
-                original_canonical,
-                dest.clone(),
-            )),
+            diagnostics: loaded
+                .diagnostics
+                .into_iter()
+                .map(|message| crate::plugin::PluginDiagnostic {
+                    level: crate::plugin::PluginDiagnosticLevel::Warning,
+                    message,
+                })
+                .collect(),
+            source: Some(source),
         };
 
         self.service
@@ -1011,6 +1035,11 @@ fn registry_error_to_management(e: PluginRegistryError) -> PluginManagementError
 /// - Wasm: requires the `plugins` feature to be enabled at compile time
 fn check_runtime_availability(manifest: &PluginManifest) -> PluginDoctorCheck {
     match &manifest.runtime {
+        PluginRuntimeSpec::Passive => PluginDoctorCheck {
+            name: "runtime_available".to_string(),
+            passed: true,
+            message: "Passive package has no executable runtime".to_string(),
+        },
         PluginRuntimeSpec::Builtin { .. } => PluginDoctorCheck {
             name: "runtime_available".to_string(),
             passed: true,
@@ -1953,6 +1982,9 @@ mod tests {
                 install_path: Some(install.clone()),
                 original_source_path: Some(original),
                 installed_by: PluginInstallKind::LocalPath,
+                package_format: None,
+                schema: None,
+                unsupported_components: Vec::new(),
             }),
         };
         let view = PluginManagementView::from_info(&info);
@@ -1972,6 +2004,9 @@ mod tests {
                 install_path: None,
                 original_source_path: None,
                 installed_by: PluginInstallKind::Builtin,
+                package_format: None,
+                schema: None,
+                unsupported_components: Vec::new(),
             }),
         };
         let view = PluginManagementView::from_info(&info);
@@ -1992,6 +2027,9 @@ mod tests {
                 install_path: None,
                 original_source_path: Some(original.clone()),
                 installed_by: PluginInstallKind::RegistryLoaded,
+                package_format: None,
+                schema: None,
+                unsupported_components: Vec::new(),
             }),
         };
         let view = PluginManagementView::from_info(&info);
@@ -2016,6 +2054,9 @@ mod tests {
                     install_path: None,
                     original_source_path: None,
                     installed_by: PluginInstallKind::Unknown,
+                    package_format: None,
+                    schema: None,
+                    unsupported_components: Vec::new(),
                 }),
             })
             .await
@@ -2049,6 +2090,9 @@ mod tests {
                     install_path: None,
                     original_source_path: None,
                     installed_by: PluginInstallKind::Builtin,
+                    package_format: None,
+                    schema: None,
+                    unsupported_components: Vec::new(),
                 }),
             })
             .await
@@ -2080,6 +2124,9 @@ mod tests {
                     install_path: Some(outside),
                     original_source_path: None,
                     installed_by: PluginInstallKind::LocalPath,
+                    package_format: None,
+                    schema: None,
+                    unsupported_components: Vec::new(),
                 }),
             })
             .await

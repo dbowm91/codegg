@@ -311,6 +311,9 @@ impl PluginService {
         }
 
         match &plugin_info.manifest.runtime {
+            PluginRuntimeSpec::Passive => Err(PluginError::Runtime(
+                "passive plugin has no executable command runtime".to_string(),
+            )),
             PluginRuntimeSpec::Builtin { handler } => {
                 // Builtin runtime is hook-only: there is no command dispatch path
                 // for builtin plugins. Reject explicitly so callers see a clear
@@ -396,6 +399,151 @@ impl PluginService {
                 }
             }
         }
+    }
+
+    /// Invoke a declared model-facing plugin tool.  This is intentionally a
+    /// typed capability path rather than a command alias, so policy and
+    /// runtime diagnostics can distinguish model tool execution.
+    pub async fn invoke_tool(
+        &self,
+        canonical_name: &str,
+        input: serde_json::Value,
+    ) -> Result<PluginResponse, PluginError> {
+        let tools = match self.active_plugin_ids() {
+            Some(active) => self.registry.plugin_tools_for_ids(&active).await,
+            None => self.registry.plugin_tools().await,
+        };
+        let tool = tools
+            .into_iter()
+            .find(|tool| tool.canonical_name == canonical_name)
+            .ok_or_else(|| PluginError::CommandNotFound(canonical_name.to_string()))?;
+        let info = self
+            .registry
+            .get(&tool.plugin_id)
+            .await
+            .ok_or_else(|| PluginError::PluginNotFound(tool.plugin_id.clone()))?;
+        let active = self
+            .pinned_activation
+            .as_ref()
+            .map(|activation| activation.is_active(&tool.plugin_id))
+            .unwrap_or(info.enabled);
+        if !active {
+            return Err(PluginError::PluginDisabled(tool.plugin_id));
+        }
+        let invocation = PluginInvocation {
+            protocol_version: PLUGIN_PROTOCOL_VERSION,
+            invocation_id: uuid::Uuid::new_v4().to_string(),
+            plugin_id: tool.plugin_id.clone(),
+            capability: PluginCapabilityInvocation::Tool {
+                name: tool.name.clone(),
+            },
+            args: Vec::new(),
+            input,
+            context: PluginContext {
+                project_dir: self
+                    .workspace_root
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                ..PluginContext::default()
+            },
+        };
+        if let Some(policy) = &self.policy {
+            let decision = crate::plugin::permission::check_invocation_allowed(
+                &info.manifest,
+                &invocation.capability,
+                &info.trust,
+                policy,
+            );
+            if !decision.is_allowed() {
+                return Err(PluginError::Runtime(format!(
+                    "policy denied tool invocation: {}",
+                    decision.reason().unwrap_or("unknown reason")
+                )));
+            }
+        }
+
+        let mut response = match &info.manifest.runtime {
+            PluginRuntimeSpec::Passive => {
+                return Err(PluginError::Runtime(
+                    "passive plugin has no executable tool runtime".to_string(),
+                ));
+            }
+            PluginRuntimeSpec::Builtin { .. } => {
+                return Err(PluginError::Runtime(
+                    "builtin plugin tool runtime is not implemented".to_string(),
+                ));
+            }
+            PluginRuntimeSpec::Process { .. } => {
+                let spec: Option<ProcessRuntimeSpec> = (&info.manifest.runtime).into();
+                let spec =
+                    spec.ok_or_else(|| PluginError::Runtime("invalid process runtime".into()))?;
+                let mut runtime = ProcessRuntime::new(spec, RuntimeLimits::default());
+                if let Some(policy) = &self.policy {
+                    runtime = runtime.with_env_policy(policy.permissions.clone());
+                }
+                runtime
+                    .invoke(invocation)
+                    .await
+                    .map_err(|error| PluginError::Runtime(error.to_string()))?
+            }
+            PluginRuntimeSpec::Wasm {
+                module,
+                timeout_ms,
+                memory_max_mb,
+                fuel_per_call,
+            } => {
+                #[cfg(feature = "plugins")]
+                {
+                    let plugin_dir = crate::plugin::install::plugins_dir().join(
+                        tool.plugin_id
+                            .strip_prefix("plugin:")
+                            .unwrap_or(&tool.plugin_id),
+                    );
+                    let spec = WasmRuntimeSpec::from_manifest(
+                        module,
+                        &plugin_dir,
+                        *timeout_ms,
+                        *memory_max_mb,
+                        *fuel_per_call,
+                    );
+                    WasmRuntime::with_defaults(spec)
+                        .invoke(invocation)
+                        .await
+                        .map_err(|error| PluginError::Runtime(error.to_string()))?
+                }
+                #[cfg(not(feature = "plugins"))]
+                {
+                    let _ = (module, timeout_ms, memory_max_mb, fuel_per_call, invocation);
+                    return Err(PluginError::Runtime(
+                        "WASM runtime requires the 'plugins' feature".into(),
+                    ));
+                }
+            }
+        };
+        if let Some(policy) = &self.policy {
+            response.effects.retain(|effect| {
+                crate::plugin::permission::check_ui_effect_allowed(&info.manifest, effect, policy)
+                    .is_allowed()
+            });
+        } else {
+            response.effects.clear();
+        }
+        let max_output = tool.max_output_bytes.unwrap_or(256 * 1024).min(256 * 1024);
+        if let Ok(encoded) = serde_json::to_string(&response.data) {
+            if encoded.len() > max_output {
+                response.data = serde_json::json!({
+                    "status": "output_truncated",
+                    "text": crate::mcp::protocol::bounded_string(&encoded, max_output)
+                });
+                response
+                    .diagnostics
+                    .push(crate::protocol::plugin::PluginDiagnostic {
+                        level: crate::protocol::plugin::PluginDiagnosticLevel::Warning,
+                        message: "plugin tool output exceeded the host bound".into(),
+                    });
+            }
+        }
+        Ok(response)
     }
 
     /// Dispatch a hook through the registry (Phase 5 name, same as existing).

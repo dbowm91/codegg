@@ -19,6 +19,7 @@ pub struct PluginManifestDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PluginRuntimeSpec {
+    Passive,
     Builtin {
         handler: String,
     },
@@ -39,10 +40,22 @@ pub enum PluginRuntimeSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PluginCapability {
     Command(PluginCommandSpec),
+    Tool(PluginToolSpec),
     Hook(PluginHookSpec),
     Panel(PluginPanelContribution),
     StatusWidget(PluginStatusContribution),
     EventSubscription(PluginEventSubscription),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    pub output_schema: Option<serde_json::Value>,
+    pub handler: Option<String>,
+    pub effect_hint: Option<String>,
+    pub max_output_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -129,6 +142,7 @@ pub struct PluginInvocation {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PluginCapabilityInvocation {
     Command { name: String },
+    Tool { name: String },
     Hook { hook_type: String },
     Panel { id: String },
     StatusWidget { id: String },

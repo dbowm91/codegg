@@ -16,6 +16,18 @@ use std::path::PathBuf;
 
 const PROJECT_NAMESPACE_DOMAIN: &[u8] = b"codegg-memory-namespace-v1\0";
 
+/// Truncate a UTF-8 string without splitting a code point.
+pub fn bounded_utf8(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
 /// Returns the current durable namespace for project-scoped memories.
 ///
 /// The domain separator makes this digest independent from other SHA-256
@@ -73,6 +85,50 @@ pub struct MemoryStore {
     root: PathBuf,
     memories: Mutex<HashMap<String, Memory>>,
     auto_save: Mutex<bool>,
+}
+
+/// Host-derived namespaces admitted to model-facing memory reads.  The model
+/// can select among these scope kinds, but it cannot supply a namespace or
+/// path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryScopeKind {
+    User,
+    CurrentProject,
+    Both,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryReadScope {
+    pub current_project: Option<String>,
+    pub legacy_project: Option<String>,
+}
+
+impl MemoryReadScope {
+    pub fn for_project(project_identity: Option<&str>) -> Self {
+        Self {
+            current_project: project_identity.map(project_namespace),
+            legacy_project: project_identity.map(legacy_project_namespace),
+        }
+    }
+
+    fn namespaces(&self, kind: MemoryScopeKind) -> Vec<(&'static str, &str)> {
+        let mut result = Vec::new();
+        if matches!(kind, MemoryScopeKind::User | MemoryScopeKind::Both) {
+            result.push(("user", "user/preferences"));
+        }
+        if matches!(
+            kind,
+            MemoryScopeKind::CurrentProject | MemoryScopeKind::Both
+        ) {
+            if let Some(namespace) = self.current_project.as_deref() {
+                result.push(("current_project", namespace));
+            }
+            if let Some(namespace) = self.legacy_project.as_deref() {
+                result.push(("current_project_legacy", namespace));
+            }
+        }
+        result
+    }
 }
 
 fn is_safe_namespace(namespace: &str) -> bool {
@@ -266,6 +322,73 @@ impl MemoryStore {
             .filter(|m| m.content.to_lowercase().contains(&query_lower))
             .cloned()
             .collect::<Vec<_>>()
+    }
+
+    /// Search only namespaces derived by the host from the current principal
+    /// and project binding.  Superseded records are not effective results.
+    pub fn search_scoped(
+        &self,
+        query: &str,
+        scope: &MemoryReadScope,
+        scope_kind: MemoryScopeKind,
+        limit: usize,
+    ) -> Vec<(String, Memory)> {
+        let query_lower = query.to_lowercase();
+        let namespaces = scope.namespaces(scope_kind);
+        let mut results: Vec<_> = self
+            .memories
+            .lock()
+            .values()
+            .filter(|memory| memory.superseded_by.is_none())
+            .filter_map(|memory| {
+                let source = namespaces
+                    .iter()
+                    .find(|(_, namespace)| *namespace == memory.namespace)
+                    .map(|(source, _)| *source)?;
+                let haystack = format!(
+                    "{} {}",
+                    memory.title.as_deref().unwrap_or_default(),
+                    memory.content
+                )
+                .to_lowercase();
+                haystack
+                    .contains(&query_lower)
+                    .then(|| (source.to_string(), memory.clone()))
+            })
+            .collect();
+        results.sort_by(|(source_a, a), (source_b, b)| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| source_a.cmp(source_b))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        results.truncate(limit);
+        results
+    }
+
+    /// Exact scoped lookup.  Namespace membership is checked before the
+    /// access counter is incremented, so a foreign id cannot be observed.
+    pub fn get_scoped(
+        &self,
+        id: &str,
+        scope: &MemoryReadScope,
+        scope_kind: MemoryScopeKind,
+    ) -> Option<(String, Memory)> {
+        let namespaces = scope.namespaces(scope_kind);
+        let source = {
+            let memories = self.memories.lock();
+            let memory = memories.get(id)?;
+            if memory.superseded_by.is_some() {
+                return None;
+            }
+            namespaces
+                .iter()
+                .find(|(_, namespace)| *namespace == memory.namespace)
+                .map(|(source, _)| source.to_string())?
+        };
+        self.get(id).map(|memory| (source, memory))
     }
 
     pub fn delete(&self, id: &str) -> Option<Memory> {
@@ -722,5 +845,63 @@ mod tests {
             .path()
             .join(namespace_to_path(&legacy_namespace))
             .exists());
+    }
+
+    #[test]
+    fn scoped_reads_include_current_and_legacy_project_but_not_foreign_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = MemoryStore {
+            root: temp_dir.path().to_path_buf(),
+            memories: Mutex::new(HashMap::new()),
+            auto_save: Mutex::new(false),
+        };
+        let scope = MemoryReadScope::for_project(Some("/workspace/current"));
+        let current = Memory::new(
+            project_namespace("/workspace/current"),
+            "current convention",
+        );
+        let current_id = current.id.clone();
+        let legacy = Memory::new(
+            legacy_project_namespace("/workspace/current"),
+            "legacy convention",
+        );
+        let foreign = Memory::new(project_namespace("/workspace/other"), "foreign convention");
+        let foreign_id = foreign.id.clone();
+        store.add(current);
+        store.add(legacy);
+        store.add(foreign);
+
+        let results = store.search_scoped("convention", &scope, MemoryScopeKind::Both, 8);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|(_, memory)| memory.id != foreign_id));
+        assert_eq!(
+            store
+                .get_scoped(&current_id, &scope, MemoryScopeKind::CurrentProject)
+                .unwrap()
+                .0,
+            "current_project"
+        );
+    }
+
+    #[test]
+    fn scoped_reads_exclude_superseded_records() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = MemoryStore {
+            root: temp_dir.path().to_path_buf(),
+            memories: Mutex::new(HashMap::new()),
+            auto_save: Mutex::new(false),
+        };
+        let scope = MemoryReadScope::for_project(Some("/workspace/current"));
+        let replacement = Memory::new(project_namespace("/workspace/current"), "replacement");
+        let mut old = Memory::new(project_namespace("/workspace/current"), "old convention");
+        old.superseded_by = Some(replacement.id.clone());
+        store.add(old.clone());
+        store.add(replacement);
+        assert!(store
+            .search_scoped("convention", &scope, MemoryScopeKind::CurrentProject, 8)
+            .is_empty());
+        assert!(store
+            .get_scoped(&old.id, &scope, MemoryScopeKind::CurrentProject)
+            .is_none());
     }
 }

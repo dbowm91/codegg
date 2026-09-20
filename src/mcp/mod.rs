@@ -30,6 +30,22 @@ pub struct McpPrompt {
     pub arguments: Option<Vec<PromptArgument>>,
 }
 
+/// A bounded prompt message returned by an MCP server.  `role` is retained as
+/// source metadata only; callers must not map it directly to provider
+/// authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpPromptMessage {
+    pub role: String,
+    pub text: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpPromptResult {
+    pub description: Option<String>,
+    pub messages: Vec<McpPromptMessage>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptArgument {
     pub name: String,
@@ -52,6 +68,11 @@ pub struct McpResourceContent {
     pub text: Option<String>,
     pub blob: Option<String>,
 }
+
+pub const MAX_RESOURCE_RESULTS: usize = 10;
+pub const MAX_RESOURCE_TEXT_BYTES: usize = 64 * 1024;
+pub const MAX_RESOURCE_DESCRIPTOR_BYTES: usize = 2048;
+pub const MAX_RESOURCE_ENTRIES: usize = 8;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpTool {
@@ -746,18 +767,86 @@ impl McpService {
         name: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<String, McpError> {
+        let result = self.get_prompt_structured(server, name, arguments).await?;
+        Ok(result
+            .messages
+            .into_iter()
+            .filter_map(|message| message.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"))
+    }
+
+    pub async fn get_prompt_structured(
+        &self,
+        server: &str,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<McpPromptResult, McpError> {
         let srv = self
             .servers
             .get(server)
             .ok_or_else(|| McpError::Server(format!("server {server} not found")))?;
 
         match &srv.client {
-            McpClientType::Local(client) => client.write().await.get_prompt(name, arguments).await,
-            McpClientType::Remote(client) => client.write().await.get_prompt(name, arguments).await,
+            McpClientType::Local(client) => {
+                client
+                    .write()
+                    .await
+                    .get_prompt_structured(name, arguments)
+                    .await
+            }
+            McpClientType::Remote(client) => {
+                client
+                    .write()
+                    .await
+                    .get_prompt_structured(name, arguments)
+                    .await
+            }
             McpClientType::Mock(_) => Err(McpError::Server(
                 "get_prompt is not supported on mock servers".into(),
             )),
         }
+    }
+
+    /// Invoke a prompt only for an explicit host/user selection.  This seam
+    /// intentionally is not used by the model-facing tool registry: prompt
+    /// names and arguments are validated against the connected server's
+    /// descriptor before the transport is called.
+    pub async fn invoke_user_selected_prompt(
+        &self,
+        server: &str,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<McpPromptResult, McpError> {
+        let prompt = self
+            .list_prompts(server)
+            .await?
+            .into_iter()
+            .find(|prompt| prompt.name == name)
+            .ok_or_else(|| {
+                McpError::Server(format!("prompt {name} not found on server {server}"))
+            })?;
+        let supplied = arguments.unwrap_or_else(|| serde_json::json!({}));
+        let object = supplied
+            .as_object()
+            .ok_or_else(|| McpError::Server("prompt arguments must be a JSON object".into()))?;
+        if let Some(arguments) = prompt.arguments.as_ref() {
+            for argument in arguments {
+                if argument.required.unwrap_or(false)
+                    && (!object.contains_key(&argument.name)
+                        || object
+                            .get(&argument.name)
+                            .is_some_and(serde_json::Value::is_null))
+                {
+                    return Err(McpError::Server(format!(
+                        "required prompt argument '{}' is missing",
+                        argument.name
+                    )));
+                }
+            }
+        }
+        self.get_prompt_structured(server, name, Some(supplied))
+            .await
     }
 
     pub async fn list_resources(&self, server: &str) -> Result<Vec<McpResource>, McpError> {
@@ -778,18 +867,77 @@ impl McpService {
         server: &str,
         uri: &str,
     ) -> Result<McpResourceContent, McpError> {
+        let contents = self.read_resource_contents(server, uri).await?;
+        contents
+            .into_iter()
+            .next()
+            .ok_or_else(|| McpError::Server("resource response contained no content".into()))
+    }
+
+    pub async fn read_resource_contents(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<Vec<McpResourceContent>, McpError> {
         let srv = self
             .servers
             .get(server)
             .ok_or_else(|| McpError::Server(format!("server {server} not found")))?;
-
         match &srv.client {
-            McpClientType::Local(client) => client.write().await.read_resource(uri).await,
-            McpClientType::Remote(client) => client.write().await.read_resource(uri).await,
+            McpClientType::Local(client) => client.write().await.read_resource_contents(uri).await,
+            McpClientType::Remote(client) => client.write().await.read_resource_contents(uri).await,
             McpClientType::Mock(_) => Err(McpError::Server(
                 "read_resource is not supported on mock servers".into(),
             )),
         }
+    }
+
+    pub fn server_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.servers.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub async fn list_all_resources(&self) -> Vec<(String, McpServerOrigin, McpResource)> {
+        let mut result = Vec::new();
+        for (server, value) in &self.servers {
+            if !matches!(value.status, McpServerStatus::Connected) {
+                continue;
+            }
+            match self.list_resources(server).await {
+                Ok(resources) => result.extend(
+                    resources
+                        .into_iter()
+                        .map(|resource| (server.clone(), value.origin.clone(), resource)),
+                ),
+                Err(error) => {
+                    tracing::debug!(server = %server, error = %error, "MCP resource listing unavailable")
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.uri.cmp(&b.2.uri)));
+        result
+    }
+
+    pub async fn list_all_prompts(&self) -> Vec<(String, McpServerOrigin, McpPrompt)> {
+        let mut result = Vec::new();
+        for (server, value) in &self.servers {
+            if !matches!(value.status, McpServerStatus::Connected) {
+                continue;
+            }
+            match self.list_prompts(server).await {
+                Ok(prompts) => result.extend(
+                    prompts
+                        .into_iter()
+                        .map(|prompt| (server.clone(), value.origin.clone(), prompt)),
+                ),
+                Err(error) => {
+                    tracing::debug!(server = %server, error = %error, "MCP prompt listing unavailable")
+                }
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.name.cmp(&b.2.name)));
+        result
     }
 }
 

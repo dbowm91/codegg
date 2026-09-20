@@ -47,6 +47,7 @@ pub use crate::protocol::plugin::{PluginDiagnostic, PluginDiagnosticLevel};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PluginRuntimeSpec {
+    Passive,
     Builtin {
         handler: String,
     },
@@ -77,10 +78,29 @@ impl Default for PluginRuntimeSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PluginCapability {
     Command(PluginCommandSpec),
+    Tool(PluginToolSpec),
     Hook(PluginHookSpec),
     Panel(PluginPanelContribution),
     StatusWidget(PluginStatusContribution),
     EventSubscription(PluginEventSubscriptionSpec),
+}
+
+/// A host-authorized model tool contributed by a plugin.  Effect/risk hints
+/// are descriptive only; CodeGG assigns the effective category and authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PluginToolSpec {
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "input_schema")]
+    pub input_schema: serde_json::Value,
+    #[serde(default, rename = "output_schema")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub handler: Option<String>,
+    #[serde(default)]
+    pub effect_hint: Option<String>,
+    #[serde(default)]
+    pub max_output_bytes: Option<usize>,
 }
 
 /// Passive, declarative inputs consumed by CodeGG's existing asset and MCP
@@ -558,6 +578,7 @@ impl PluginManifest {
     /// Get the runtime kind string.
     pub fn runtime_kind(&self) -> &str {
         match &self.runtime {
+            PluginRuntimeSpec::Passive => "passive",
             PluginRuntimeSpec::Builtin { .. } => "builtin",
             PluginRuntimeSpec::Process { .. } => "process",
             PluginRuntimeSpec::Wasm { .. } => "wasm",
@@ -575,6 +596,64 @@ impl PluginManifest {
             PluginCapability::Command(cmd) => Some(cmd),
             _ => None,
         })
+    }
+
+    pub fn tools(&self) -> impl Iterator<Item = &PluginToolSpec> {
+        self.capabilities.iter().filter_map(|cap| match cap {
+            PluginCapability::Tool(tool) => Some(tool),
+            _ => None,
+        })
+    }
+
+    pub fn validate_tools(&self) -> Result<(), String> {
+        let mut names = std::collections::HashSet::new();
+        for tool in self.tools() {
+            if tool.name.is_empty()
+                || tool.name.len() > 128
+                || !tool
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+                || tool.name.contains("__")
+            {
+                return Err(format!("invalid plugin tool name '{}'", tool.name));
+            }
+            if !names.insert(tool.name.clone()) {
+                return Err(format!("duplicate plugin tool name '{}'", tool.name));
+            }
+            if tool.description.len() > 16 * 1024 {
+                return Err(format!(
+                    "plugin tool '{}' description is too large",
+                    tool.name
+                ));
+            }
+            if tool.input_schema.get("type").and_then(|v| v.as_str()) != Some("object") {
+                return Err(format!(
+                    "plugin tool '{}' input_schema must be an object schema",
+                    tool.name
+                ));
+            }
+            if serde_json::to_vec(&tool.input_schema)
+                .map(|v| v.len())
+                .unwrap_or(usize::MAX)
+                > 256 * 1024
+            {
+                return Err(format!(
+                    "plugin tool '{}' input_schema is too large",
+                    tool.name
+                ));
+            }
+            if tool
+                .max_output_bytes
+                .is_some_and(|value| value > 256 * 1024)
+            {
+                return Err(format!(
+                    "plugin tool '{}' max_output_bytes exceeds host bound",
+                    tool.name
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Get all hook capabilities.

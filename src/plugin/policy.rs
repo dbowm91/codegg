@@ -67,6 +67,7 @@ impl PluginLifecyclePolicy {
     /// Check whether a specific runtime is allowed to participate in lifecycle hooks.
     pub fn is_runtime_allowed(&self, runtime: &PluginRuntimeSpec) -> bool {
         match runtime {
+            PluginRuntimeSpec::Passive => false,
             PluginRuntimeSpec::Builtin { .. } => true,
             PluginRuntimeSpec::Wasm { .. } => true,
             PluginRuntimeSpec::Process { .. } => self.allow_process_lifecycle_hooks,

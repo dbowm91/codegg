@@ -50,6 +50,8 @@ pub struct SessionToolContext {
     /// turn construction threads the persisted principal preference here;
     /// child construction narrows it against the parent ceiling.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    pub memory_store: Option<Arc<codegg_core::memory::MemoryStore>>,
+    pub project_identity: Option<String>,
 }
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -95,6 +97,8 @@ pub fn build_session_tool_registry(
         lsp_service,
         search_runtime,
         sandbox_profile,
+        memory_store,
+        project_identity,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
     let preview_apply_locks = workspace_locks.clone();
@@ -166,6 +170,8 @@ pub fn build_session_tool_registry(
         notification_service,
         search_runtime,
         sandbox_profile,
+        memory_store,
+        project_identity,
     });
 
     // M005: register the model-facing checked LSP apply adapter only when

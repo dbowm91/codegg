@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 
 use crate::plugin::hooks::{HookRegistration, HookType};
 use crate::plugin::manifest::{
-    PluginCapability, PluginDiagnostic, PluginManifest, PluginTrustClass,
+    PluginCapability, PluginDiagnostic, PluginManifest, PluginToolSpec, PluginTrustClass,
 };
 
 /// Information about a registered plugin.
@@ -29,6 +29,9 @@ pub struct PluginSourceMetadata {
     pub install_path: Option<PathBuf>,
     pub original_source_path: Option<PathBuf>,
     pub installed_by: PluginInstallKind,
+    pub package_format: Option<String>,
+    pub schema: Option<String>,
+    pub unsupported_components: Vec<String>,
 }
 
 /// How a plugin entered the live registry.
@@ -53,6 +56,9 @@ impl PluginSourceMetadata {
             install_path: None,
             original_source_path: None,
             installed_by: PluginInstallKind::Builtin,
+            package_format: None,
+            schema: None,
+            unsupported_components: Vec::new(),
         }
     }
 
@@ -66,6 +72,9 @@ impl PluginSourceMetadata {
             install_path: Some(install_path),
             original_source_path: Some(original_source),
             installed_by: PluginInstallKind::LocalPath,
+            package_format: None,
+            schema: None,
+            unsupported_components: Vec::new(),
         }
     }
 
@@ -75,6 +84,9 @@ impl PluginSourceMetadata {
             install_path: Some(install_path),
             original_source_path: None,
             installed_by: PluginInstallKind::RegistryLoaded,
+            package_format: None,
+            schema: None,
+            unsupported_components: Vec::new(),
         }
     }
 }
@@ -127,6 +139,19 @@ pub struct PluginEventRegistration {
     pub handler: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PluginToolRegistration {
+    pub plugin_id: String,
+    pub name: String,
+    pub canonical_name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    pub output_schema: Option<serde_json::Value>,
+    pub handler: Option<String>,
+    pub effect_hint: Option<String>,
+    pub max_output_bytes: Option<usize>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PluginRegistryError {
     #[error("plugin already registered: {0}")]
@@ -139,6 +164,10 @@ pub enum PluginRegistryError {
     DuplicatePanel(String, String),
     #[error("duplicate status widget id: '{0}' (owned by '{1}')")]
     DuplicateStatusWidget(String, String),
+    #[error("duplicate plugin tool name: '{0}' (owned by '{1}')")]
+    DuplicateTool(String, String),
+    #[error("invalid plugin tool: {0}")]
+    InvalidTool(String),
 }
 
 pub struct PluginRegistry {
@@ -148,6 +177,15 @@ pub struct PluginRegistry {
     panels: RwLock<Vec<PluginPanelRegistration>>,
     status_widgets: RwLock<Vec<PluginStatusRegistration>>,
     event_subscribers: RwLock<Vec<PluginEventRegistration>>,
+    tools: RwLock<Vec<PluginToolRegistration>>,
+}
+
+pub fn canonical_tool_name(plugin_id: &str, tool_name: &str) -> String {
+    let plugin = plugin_id
+        .strip_prefix("plugin:")
+        .unwrap_or(plugin_id)
+        .replace('-', "_");
+    format!("plugin__{plugin}__{tool_name}")
 }
 
 impl PluginRegistry {
@@ -159,6 +197,7 @@ impl PluginRegistry {
             panels: RwLock::new(Vec::new()),
             status_widgets: RwLock::new(Vec::new()),
             event_subscribers: RwLock::new(Vec::new()),
+            tools: RwLock::new(Vec::new()),
         }
     }
 
@@ -180,6 +219,7 @@ impl PluginRegistry {
         let panel_specs = self.extract_panels(&id, &info.manifest).await;
         let status_specs = self.extract_status_widgets(&id, &info.manifest).await;
         let event_specs = self.extract_event_subscribers(&id, &info.manifest).await;
+        let tool_specs = self.extract_tools(&id, &info.manifest).await?;
 
         // Check command duplicate rules (before namespacing)
         self.check_command_duplicates(&command_specs).await?;
@@ -191,6 +231,7 @@ impl PluginRegistry {
         // Check duplicate rules after namespacing
         self.check_panel_duplicates(&panel_specs).await?;
         self.check_status_widget_duplicates(&status_specs).await?;
+        self.check_tool_duplicates(&tool_specs).await?;
 
         // Store plugin
         self.plugins.write().await.insert(id.clone(), info);
@@ -201,6 +242,7 @@ impl PluginRegistry {
         self.panels.write().await.extend(panel_specs);
         self.status_widgets.write().await.extend(status_specs);
         self.event_subscribers.write().await.extend(event_specs);
+        self.tools.write().await.extend(tool_specs);
 
         self.sort_hooks().await;
 
@@ -263,6 +305,7 @@ impl PluginRegistry {
             .write()
             .await
             .retain(|e| e.plugin_id != id);
+        self.tools.write().await.retain(|tool| tool.plugin_id != id);
         removed
     }
 
@@ -588,6 +631,30 @@ impl PluginRegistry {
         self.commands.read().await.clone()
     }
 
+    pub async fn plugin_tools(&self) -> Vec<PluginToolRegistration> {
+        let enabled = self.enabled_plugin_ids().await;
+        self.tools
+            .read()
+            .await
+            .iter()
+            .filter(|tool| enabled.contains(&tool.plugin_id))
+            .cloned()
+            .collect()
+    }
+
+    pub async fn plugin_tools_for_ids(
+        &self,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Vec<PluginToolRegistration> {
+        self.tools
+            .read()
+            .await
+            .iter()
+            .filter(|tool| active_plugin_ids.contains(&tool.plugin_id))
+            .cloned()
+            .collect()
+    }
+
     /// Get all panels (from enabled plugins only).
     pub async fn panels(&self) -> Vec<PluginPanelRegistration> {
         let enabled = self.enabled_plugin_ids().await;
@@ -778,6 +845,49 @@ impl PluginRegistry {
                 }
             })
             .collect()
+    }
+
+    async fn extract_tools(
+        &self,
+        plugin_id: &str,
+        manifest: &PluginManifest,
+    ) -> Result<Vec<PluginToolRegistration>, PluginRegistryError> {
+        manifest
+            .validate_tools()
+            .map_err(PluginRegistryError::InvalidTool)?;
+        Ok(manifest
+            .tools()
+            .map(|spec: &PluginToolSpec| PluginToolRegistration {
+                plugin_id: plugin_id.to_string(),
+                name: spec.name.clone(),
+                canonical_name: canonical_tool_name(plugin_id, &spec.name),
+                description: spec.description.clone(),
+                input_schema: spec.input_schema.clone(),
+                output_schema: spec.output_schema.clone(),
+                handler: spec.handler.clone(),
+                effect_hint: spec.effect_hint.clone(),
+                max_output_bytes: spec.max_output_bytes,
+            })
+            .collect())
+    }
+
+    async fn check_tool_duplicates(
+        &self,
+        new_tools: &[PluginToolRegistration],
+    ) -> Result<(), PluginRegistryError> {
+        let existing = self.tools.read().await;
+        for tool in new_tools {
+            if let Some(owner) = existing
+                .iter()
+                .find(|existing| existing.canonical_name == tool.canonical_name)
+            {
+                return Err(PluginRegistryError::DuplicateTool(
+                    tool.canonical_name.clone(),
+                    owner.plugin_id.clone(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Check for duplicate command names across ALL registered plugins (global uniqueness).

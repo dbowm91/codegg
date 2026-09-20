@@ -121,6 +121,7 @@ impl ResolvedPluginContributionSet {
                 }
             }
             for declaration in plugin.manifest.contributions.mcp_servers.iter().cloned() {
+                let declaration = expand_mcp_placeholders(declaration, &root, &plugin.id);
                 let canonical_name = canonical_mcp_name(&plugin.id, &declaration.name);
                 contribution.mcp_servers.push(ResolvedPluginMcpServer {
                     plugin_id: plugin.id.clone(),
@@ -154,6 +155,46 @@ impl ResolvedPluginContributionSet {
             })
             .collect()
     }
+}
+
+fn expand_mcp_placeholders(
+    mut declaration: PluginMcpServerContribution,
+    root: &Path,
+    plugin_id: &str,
+) -> PluginMcpServerContribution {
+    let data_root = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("codegg")
+        .join("plugin-data")
+        .join(
+            plugin_id
+                .strip_prefix("plugin:")
+                .unwrap_or(plugin_id)
+                .replace(['/', '\\'], "_"),
+        );
+    let replace = |value: &str| {
+        value
+            .replace("${PLUGIN_ROOT}", &root.to_string_lossy())
+            .replace("${PLUGIN_DATA}", &data_root.to_string_lossy())
+    };
+    declaration.command = declaration.command.map(|value| replace(&value));
+    declaration.args = declaration
+        .args
+        .iter()
+        .map(|value| replace(value))
+        .collect();
+    declaration.url = declaration.url.map(|value| replace(&value));
+    declaration.env = declaration
+        .env
+        .iter()
+        .map(|(key, value)| (key.clone(), replace(value)))
+        .collect();
+    declaration.headers = declaration
+        .headers
+        .iter()
+        .map(|(key, value)| (key.clone(), replace(value)))
+        .collect();
+    declaration
 }
 
 pub fn canonical_mcp_name(plugin_id: &str, declared_name: &str) -> String {

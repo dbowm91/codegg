@@ -53,6 +53,16 @@ pub fn check_invocation_allowed(
                 PolicyDecision::Allow
             }
         }
+        PluginCapabilityInvocation::Tool { name } => {
+            let declared = manifest.capabilities.iter().any(|cap| {
+                matches!(cap, crate::plugin::manifest::PluginCapability::Tool(tool) if tool.name == *name)
+            });
+            if declared || !policy.runtime.deny_undeclared_capabilities {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Deny(format!("tool '{}' not declared in manifest", name))
+            }
+        }
         PluginCapabilityInvocation::Hook { hook_type } => {
             if let Some(ht) = HookType::parse(hook_type) {
                 let category = classify_hook(ht);

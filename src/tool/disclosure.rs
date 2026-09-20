@@ -71,10 +71,30 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
         // discoverable via `tool_search`. `repo_search` stays core as the
         // single canonical repo-inspect primitive; `codesearch` remains
         // registered as the M001 compatibility alias but deferred.
-        "git_query" | "research" | "research_search" | "repo_fetch" | "repo_map"
-        | "security_search" | "batch_fetch" | "evidence_bundle" | "codesearch" | "review"
-        | "image" | "terminal" | "skill_proposal" | "security" | "replace" | "commit"
-        | "lsp_preview_apply" | "python_script" | "tool_program" => ToolDisclosure::Deferred,
+        "git_query"
+        | "research"
+        | "research_search"
+        | "repo_fetch"
+        | "repo_map"
+        | "security_search"
+        | "batch_fetch"
+        | "evidence_bundle"
+        | "codesearch"
+        | "review"
+        | "image"
+        | "terminal"
+        | "skill_proposal"
+        | "security"
+        | "replace"
+        | "commit"
+        | "lsp_preview_apply"
+        | "python_script"
+        | "tool_program"
+        | "mcp_resource_search"
+        | "mcp_resource_read"
+        | "memory_search"
+        | "memory_get"
+        | "extension_search" => ToolDisclosure::Deferred,
         // Eggsact deferred validators (already `defer_loading = true`).
         "text_inspect"
         | "config_preflight"
@@ -254,6 +274,8 @@ pub const PLAN_ALLOWED: &[&str] = &[
     "plan_enter",
     "plan_exit",
     "tool_search",
+    "mcp_resource_search",
+    "mcp_resource_read",
 ];
 
 /// Whether a tool is allowed in plan mode.

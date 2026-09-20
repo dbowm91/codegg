@@ -151,10 +151,33 @@ pub const PERMISSION_TYPES: &[&str] = &[
 pub fn tool_category_for_name(name: &str) -> ToolCategory {
     match name {
         // Read-only
-        "read" | "glob" | "grep" | "list" | "webfetch" | "websearch" | "codesearch" | "lsp"
-        | "diff" | "security" | "skill" | "tool_search" | "plan_enter" | "plan_exit"
-        | "repo_search" | "repo_fetch" | "repo_map" | "research" | "research_search"
-        | "batch_fetch" | "security_search" | "evidence_bundle" => ToolCategory::ReadOnly,
+        "read"
+        | "glob"
+        | "grep"
+        | "list"
+        | "webfetch"
+        | "websearch"
+        | "codesearch"
+        | "lsp"
+        | "diff"
+        | "security"
+        | "skill"
+        | "tool_search"
+        | "plan_enter"
+        | "plan_exit"
+        | "repo_search"
+        | "repo_fetch"
+        | "repo_map"
+        | "research"
+        | "research_search"
+        | "batch_fetch"
+        | "security_search"
+        | "evidence_bundle"
+        | "mcp_resource_search"
+        | "mcp_resource_read"
+        | "memory_search"
+        | "memory_get"
+        | "extension_search" => ToolCategory::ReadOnly,
         // Safe-mutating (in-app state only)
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,
         // Shell

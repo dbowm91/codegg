@@ -92,6 +92,19 @@ For example, if a server named "filesystem" has a tool "read_file", it becomes `
 
 ## Reconnection Behavior
 
+### Resources and prompts
+
+CodeGG exposes bounded MCP resources through deferred native wrappers. Search
+returns descriptors and an integrity-bound handle; read accepts that handle
+only after revalidation against the current connected `McpService` view.
+Binary content is metadata-only, and external text is trust-framed and capped.
+
+MCP prompts remain host/user actions. A caller that has an explicit selection
+uses `McpService::invoke_user_selected_prompt`, which validates required
+arguments and returns source role metadata as untrusted data. The model cannot
+activate a prompt autonomously, and a remote role label cannot create a
+privileged provider message.
+
 The `RemoteClient::reconnect()` method handles reconnection:
 
 ```rust

@@ -26,6 +26,8 @@ pub enum Capability {
     ManageWorkOrders,
     Terminal,
     Image,
+    MemoryRead,
+    PluginExecute,
 }
 
 /// Typed authority summary.  This is intentionally independent of agent
@@ -45,6 +47,8 @@ pub struct AgentCapabilitySet {
     pub manage_work_orders: bool,
     pub terminal: bool,
     pub image: bool,
+    pub memory_read: bool,
+    pub plugin_execute: bool,
 }
 
 impl AgentCapabilitySet {
@@ -63,6 +67,8 @@ impl AgentCapabilitySet {
             Capability::ManageWorkOrders => self.manage_work_orders,
             Capability::Terminal => self.terminal,
             Capability::Image => self.image,
+            Capability::MemoryRead => self.memory_read,
+            Capability::PluginExecute => self.plugin_execute,
         }
     }
 
@@ -81,6 +87,8 @@ impl AgentCapabilitySet {
             manage_work_orders: self.manage_work_orders && ceiling.manage_work_orders,
             terminal: self.terminal && ceiling.terminal,
             image: self.image && ceiling.image,
+            memory_read: self.memory_read && ceiling.memory_read,
+            plugin_execute: self.plugin_execute && ceiling.plugin_execute,
         }
     }
 
@@ -99,6 +107,8 @@ impl AgentCapabilitySet {
             Capability::ManageWorkOrders,
             Capability::Terminal,
             Capability::Image,
+            Capability::MemoryRead,
+            Capability::PluginExecute,
         ]
         .into_iter()
         .filter(|c| self.allows(*c))
@@ -428,6 +438,14 @@ fn tool_capabilities(name: &str, category: ToolCategory) -> Vec<Capability> {
         result.push(Capability::ManageWorkOrders);
         return result;
     }
+    if matches!(name, "memory_search" | "memory_get") {
+        result.push(Capability::MemoryRead);
+        return result;
+    }
+    if name.starts_with("plugin__") {
+        result.push(Capability::PluginExecute);
+        return result;
+    }
     if matches!(
         name,
         "goal_get" | "goal_update_progress" | "goal_request_completion"
@@ -450,7 +468,12 @@ fn tool_capabilities(name: &str, category: ToolCategory) -> Vec<Capability> {
     }
     if matches!(
         name,
-        "websearch" | "webfetch" | "research" | "research_search"
+        "websearch"
+            | "webfetch"
+            | "research"
+            | "research_search"
+            | "mcp_resource_search"
+            | "mcp_resource_read"
     ) {
         result.push(Capability::NetworkResearch);
     }
@@ -484,6 +507,8 @@ fn add_capabilities(set: &mut AgentCapabilitySet, name: &str, category: ToolCate
             Capability::ManageWorkOrders => set.manage_work_orders = true,
             Capability::Terminal => set.terminal = true,
             Capability::Image => set.image = true,
+            Capability::MemoryRead => set.memory_read = true,
+            Capability::PluginExecute => set.plugin_execute = true,
         }
     }
 }

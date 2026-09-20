@@ -286,14 +286,37 @@ impl TurnRuntime for DefaultTurnRuntime {
         // constructed with the explicit runtime context (owned config
         // snapshot + shared daemon MCP handle) and never consult the
         // deprecated process-global slots at execution time.
-        let (search_runtime, _search_report) =
+        let (search_runtime_base, _search_report) =
             crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+
+        // Derive one coherent turn-scoped MCP view before constructing either
+        // native tools or the agent loop. Resource discovery and ordinary
+        // search wrappers must observe the same active plugin contributions.
+        let configured_mcp_service = search_runtime_base.mcp();
+        let mcp_service = if let Some(global_mcp) = configured_mcp_service {
+            let configured = global_mcp.read().await.clone_configured_servers();
+            Some(Arc::new(tokio::sync::RwLock::new(configured)))
+        } else {
+            None
+        };
+        if let (Some(plugin_svc), Some(mcp_arc)) = (&plugin_service, &mcp_service) {
+            let mut mcp = mcp_arc.write().await;
+            let report = plugin_svc.reconcile_mcp_servers(&mut mcp).await;
+            for diagnostic in report.collisions.iter().chain(report.failed.iter()) {
+                tracing::warn!(diagnostic, "plugin MCP contribution unavailable");
+            }
+        }
+        let search_runtime = search_runtime_base.with_mcp_opt(mcp_service.clone());
 
         // ── Tool registry ────────────────────────────────────────────
         let task_tool_runtime = subagent_pool
             .as_ref()
             .map(crate::agent::task_tool_runtime::TaskToolRuntime::from_subagent_pool);
-        let (tool_registry, artifact_store) = crate::tool::factory::build_session_tool_registry(
+        let memory_project_identity = project_id
+            .as_ref()
+            .map(|project| project.as_str().to_owned())
+            .or_else(|| Some(execution.workspace_root.to_string_lossy().into_owned()));
+        let (mut tool_registry, artifact_store) = crate::tool::factory::build_session_tool_registry(
             &config,
             pool.clone(),
             &session_id,
@@ -323,8 +346,27 @@ impl TurnRuntime for DefaultTurnRuntime {
                 // receive the Landlock policy for the authoritative
                 // workspace root. `None` falls back to WorkspaceWrite.
                 sandbox_profile,
+                memory_store: memory_store.clone(),
+                project_identity: memory_project_identity,
             },
         );
+
+        if let Some(plugin_svc) = plugin_service.as_ref() {
+            let descriptors = if let Some(activation) = plugin_svc.pinned_activation() {
+                plugin_svc
+                    .registry()
+                    .plugin_tools_for_ids(&activation.active_plugin_ids())
+                    .await
+            } else {
+                plugin_svc.registry().plugin_tools().await
+            };
+            for descriptor in descriptors {
+                tool_registry.register(crate::tool::plugin::PluginToolAdapter::new(
+                    descriptor,
+                    plugin_svc.clone(),
+                ));
+            }
+        }
 
         // ── Memory context ───────────────────────────────────────────
         let memory_context = memory_store
@@ -621,25 +663,6 @@ impl TurnRuntime for DefaultTurnRuntime {
             },
         );
         let system = compiled_prompt.text.clone();
-
-        // ── Search backend handle for the agent loop ───────────────
-        // Reuse the MCP handle from the explicit runtime context
-        // bootstrapped above (no second bootstrap, no global lookup).
-        let configured_mcp_service = search_runtime.mcp();
-        let mcp_service = if let Some(global_mcp) = configured_mcp_service {
-            let configured = global_mcp.read().await.clone_configured_servers();
-            Some(Arc::new(tokio::sync::RwLock::new(configured)))
-        } else {
-            None
-        };
-
-        if let (Some(plugin_svc), Some(mcp_arc)) = (&plugin_service, &mcp_service) {
-            let mut mcp = mcp_arc.write().await;
-            let report = plugin_svc.reconcile_mcp_servers(&mut mcp).await;
-            for diagnostic in report.collisions.iter().chain(report.failed.iter()) {
-                tracing::warn!(diagnostic, "plugin MCP contribution unavailable");
-            }
-        }
 
         // ── Agent loop construction ──────────────────────────────────
         let agent_loop_input = AgentLoopBuildInput {

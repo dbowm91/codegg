@@ -63,7 +63,7 @@ fn validate_relative_install_path(rel: &Path) -> Result<(), String> {
 ///
 /// Unlike `validate_relative_install_path`, this helper accepts absolute paths
 /// as long as the lexical path contains no `..`, the canonicalized target
-/// exists, is a directory, and contains a `manifest.toml`. This is appropriate
+/// exists, is a directory, and contains a supported plugin manifest. This is appropriate
 /// for a local install command; archive entries and copy-relative paths must
 /// remain strictly relative.
 ///
@@ -101,10 +101,12 @@ pub fn validate_local_install_source(
         )));
     }
 
-    let manifest_path = canonical.join("manifest.toml");
-    if !manifest_path.is_file() {
+    let has_manifest = canonical.join("manifest.toml").is_file()
+        || canonical.join("plugin.json").is_file()
+        || canonical.join(".claude-plugin/plugin.json").is_file();
+    if !has_manifest {
         return Err(InstallError::Manifest(format!(
-            "manifest.toml not found in install source: {}",
+            "supported plugin manifest not found in install source: {}",
             canonical.display()
         )));
     }
@@ -119,7 +121,7 @@ pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
 /// Install a plugin from a local filesystem path into a caller-supplied
 /// destination root.
 ///
-/// The source directory must contain a `manifest.toml`. The plugin is
+/// The source directory must contain a supported plugin manifest. The plugin is
 /// copied into `<dest_root>/<plugin_name>`. Exposing the destination
 /// explicitly keeps tests hermetic and gives callers (e.g. sandboxes)
 /// control over the install root.
@@ -163,14 +165,12 @@ pub async fn install_from_path_into(
 ) -> Result<PathBuf, InstallError> {
     // Validate the user-supplied local install source. This accepts
     // absolute paths and paths containing `..` as long as the canonical
-    // target exists, is a directory, and contains a `manifest.toml`.
+    // target exists, is a directory, and contains a supported manifest.
     let policy = PluginInstallPolicy::default();
     let path = validate_local_install_source(path, &policy)?;
 
-    let manifest_path = path.join("manifest.toml");
-    let manifest_content = tokio::fs::read_to_string(&manifest_path).await?;
-    let manifest: PluginManifest =
-        toml::from_str(&manifest_content).map_err(|e| InstallError::Manifest(e.to_string()))?;
+    let loaded = crate::plugin::package::detect_and_load(&path).map_err(InstallError::Manifest)?;
+    let manifest: PluginManifest = loaded.manifest;
     manifest
         .validate_contributions()
         .map_err(InstallError::Manifest)?;

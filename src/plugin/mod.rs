@@ -13,6 +13,7 @@ pub mod management;
 pub mod management_ui;
 pub mod manifest;
 pub mod marketplace;
+pub mod package;
 pub mod permission;
 pub mod policy;
 pub mod registry;
@@ -50,6 +51,7 @@ pub use manifest::{
     PluginOutputSurface, PluginPanelContribution, PluginPermissionSet, PluginRuntimeSpec,
     PluginStatusContribution, PluginTrustClass,
 };
+pub use package::{detect_and_load, LoadedPackage, PackageFormat};
 pub use permission::{
     check_invocation_allowed, check_lifecycle_hook_allowed, check_secret_access_allowed,
     check_ui_effect_allowed, PolicyDecision,
@@ -85,25 +87,36 @@ pub async fn create_default_plugin_service() -> Option<Arc<PluginService>> {
             if !path.is_dir() {
                 continue;
             }
-            let manifest_path = path.join("manifest.toml");
-            let Ok(raw) = tokio::fs::read_to_string(&manifest_path).await else {
-                continue;
+            let loaded = match package::detect_and_load(&path) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping installed plugin with invalid package");
+                    continue;
+                }
             };
-            let Ok(manifest) = toml::from_str::<manifest::PluginManifest>(&raw) else {
-                tracing::warn!(path = %manifest_path.display(), "skipping installed plugin with invalid manifest");
-                continue;
-            };
+            let manifest = loaded.manifest;
             if manifest.name.is_empty() || manifest.version.is_empty() {
-                tracing::warn!(path = %manifest_path.display(), "skipping installed plugin without name/version");
+                tracing::warn!(path = %path.display(), "skipping installed plugin without name/version");
                 continue;
             }
+            let mut source = registry::PluginSourceMetadata::registry_loaded(path);
+            source.package_format = Some(loaded.format.as_str().to_string());
+            source.schema = loaded.schema.clone();
+            source.unsupported_components = loaded.unsupported.clone();
             let info = registry::PluginInfo {
                 id: format!("plugin:{}", manifest.name),
                 trust: manifest.trust_class(),
                 manifest,
                 enabled: true,
-                diagnostics: Vec::new(),
-                source: Some(registry::PluginSourceMetadata::registry_loaded(path)),
+                diagnostics: loaded
+                    .diagnostics
+                    .into_iter()
+                    .map(|message| manifest::PluginDiagnostic {
+                        level: manifest::PluginDiagnosticLevel::Warning,
+                        message,
+                    })
+                    .collect(),
+                source: Some(source),
             };
             if let Err(error) = registry.register(info).await {
                 tracing::warn!(%error, "skipping installed plugin that could not be registered");
