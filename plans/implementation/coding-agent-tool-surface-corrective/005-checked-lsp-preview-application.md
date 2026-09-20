@@ -2,21 +2,20 @@
 
 Status: blocked
 
-Blocker: the current model-tool construction does not carry the trusted
-workspace/project authority and canonical `WorkspaceLockTable` required by
-`CoreRequest::LspPreviewApply`; each `LspTool` also owns a private preview
-registry. Implementing the adapter now would bypass or duplicate daemon
-authority, so work stops until that seam is designed and approved.
+Blocker: M006 must close first. The re-audit at `5447e3bc62114cf91992690e26f3a09b897802c5` found that the required trusted state already exists above the tool factory, but is not composed there: the daemon LSP service is dropped from model-tool construction, `LspTool` owns a private preview registry, and the existing transport apply is misclassified as opaque rather than session-scoped. M006 owns those seams; M005 must consume them rather than bypass or duplicate authority.
 
-Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production baseline)
+Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (original production audit baseline)
+
+Blocker re-audit baseline: `5447e3bc62114cf91992690e26f3a09b897802c5`
 
 Source roadmap:
 
 - `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#m005--checked-lsp-preview-application`
 
-Hard dependency:
+Hard dependencies:
 
-- M001 must close first so the new model-facing mutation adapter receives correct canonical category/capability/discovery semantics.
+- M001 is closed and supplies the canonical category/capability/discovery semantics.
+- M006 `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md` must close first. It owns daemon LSP-service reuse, the shared ephemeral preview-registry handle, session-resolved transport authorization, reusable session/workspace binding, and proof that the factory has all host dependencies required by this adapter.
 
 Long-term requirements:
 
@@ -73,9 +72,19 @@ All revision/digest/patch/path/provenance data must be resolved from the host-ow
 
 ## 2. Why this milestone is blocked
 
-M001 must first correct canonical tool category/capability/discovery semantics. A new mutation tool should not be added while native tool classification can still drift through a duplicate name map.
+M001 is no longer the blocker. It closed successfully.
 
-After M001, the underlying LSP mutation service is already closed and stable. No new storage or mutation architecture is required.
+The post-M004 re-audit found a narrower construction/authority seam:
+
+- `TurnRunInput` already carries the daemon-owned `LspService`, immutable `ExecutionContext`, pool, project/repository identifiers, and workspace-service lease.
+- `DefaultTurnRuntime` already derives the canonical `WorkspaceLockTable`.
+- `SessionToolContext` already carries locks and turn/project context.
+- `build_session_tool_registry()` nevertheless passes `lsp_service: None` into `ToolRegistryOptions`, so the model-facing LSP tool is not explicitly constructed over the daemon service used by the turn.
+- `LspTool` owns a private `PreviewArtifactRegistry`; a sibling apply tool cannot resolve the preview ID without a shared host handle.
+- `CoreRequest::LspPreviewApply` is currently `ScopeKind::Opaque` despite carrying a session ID, so team principals cannot traverse the normal session-owned-project `file.modify` authorization path.
+- The daemon handler's session/workspace binding SQL check is not yet a reusable internal seam.
+
+M006 owns exactly those prerequisites and does not add the model mutation tool. M005 remains blocked until M006 proves the runtime composition and authorization scope are correct.
 
 ## 3. Current implementation evidence
 
@@ -184,19 +193,28 @@ If tool construction lacks one dependency (notably workspace locks), thread it t
 
 ### Authorization boundary
 
-Before coding, trace the existing model tool invocation authorization chain:
+M006 establishes two caller-specific authority paths that converge only after authorization:
 
 ```text
-authorized session/turn principal
-  -> resolved agent capability ceiling
-  -> ToolBroker/ToolContract
-  -> permission/approval mode
-  -> tool execution context
+Human/TUI:
+transport principal
+  -> AuthorizationService
+  -> file.modify via session-owned project
+  -> host session/workspace binding
+  -> canonical apply service
+
+Agent:
+resolved model tool surface / parent ceiling
+  -> permission decision
+  -> ToolBroker verified mutating contract
+  -> host-bound session/workspace runtime from M006
+  -> host session/workspace binding
+  -> canonical apply service
 ```
 
-The new adapter must prove that calling the internal mutation service preserves the same project/session/workspace authority represented by `CoreRequest::LspPreviewApply`. If the current tool execution context cannot carry enough trusted identity/authority to prove this, stop and register a narrower authority-seam corrective rather than bypassing the daemon operation boundary.
+M005 must use the second path. Do not route the model tool through a fake TUI/CoreRequest envelope and do not invent a second project authorization system.
 
-Do not let model-provided session/project IDs substitute for trusted context.
+The adapter must receive workspace/session identity only from the M006 host construction seam. Model-provided session/project/workspace IDs are forbidden.
 
 ### Contract semantics
 
@@ -360,7 +378,7 @@ M005 closes when:
 
 Stop and report if:
 
-- M001 is not closed;
+- M006 is not strictly closed;
 - current ToolExecutionContext/session construction cannot provide enough trusted authority to call the mutation service without bypassing daemon/project authorization;
 - implementation would need to duplicate `src/lsp/mutation.rs` validation/write/checkpoint logic;
 - model access requires exposing raw patches/digests or CoreRequest identity fields;
@@ -385,4 +403,4 @@ Include:
 
 ## 16. Handoff notes
 
-The difficult capability is already implemented and closed. Resist the temptation to rebuild it in the tool layer. M005 is successful when the agent adapter is boring: resolve trusted preview state, pass normal mutation authority, invoke the canonical service, and project its typed result.
+The difficult mutation capability is already implemented and closed, and M006 is the only prerequisite seam this adapter should consume. Resist rebuilding either layer. M005 is successful when the agent adapter is boring: accept a preview ID, resolve the M006 shared host state, pass normal ToolBroker mutation authority, invoke the canonical service, mark the shared preview applied only after success, and project its typed result.
