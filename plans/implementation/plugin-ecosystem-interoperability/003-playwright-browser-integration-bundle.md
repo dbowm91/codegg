@@ -1,6 +1,6 @@
 # Plugin Ecosystem Interoperability M003 — Playwright Browser-Testing Integration Bundle
 
-Status: blocked on M002 (Agent Plugins 1.0 import)
+Status: implemented
 
 Repository baseline: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -389,4 +389,3 @@ Stop and report if:
 - profile/credential default evidence;
 - dependency/binary-size diff proving no browser engine added;
 - exact verification commands/outcomes.
-

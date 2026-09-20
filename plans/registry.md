@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Agent context and discovery surface | closed | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 + M002 closed | Context discovery workstream closed with MCP projection and scoped curated-memory evidence. |
-| Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001 + M002 closed; M003 + M004 ready | Portable package/import contract is closed; the downstream plans are unblocked and ready. |
+| Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001-M003 closed; M004 ready | Playwright bundle is closed; M004 catalog/install remains ready. |
 
 ## Dependency-ready implementation plans
 
@@ -39,7 +39,7 @@ Canonical direction remains in:
 | Agent context and discovery surface | M002 bounded persistent-memory retrieval | closed | `plans/implementation/agent-context-discovery-surface/002-bounded-persistent-memory-retrieval.md` | Closure: `plans/closure/agent-context-discovery-surface/002-status.md`; transcript/vector search remains out of scope. |
 | Plugin ecosystem and harness interoperability | M001 first-class plugin tools | closed | `plans/implementation/plugin-ecosystem-interoperability/001-first-class-plugin-tools.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/001-status.md`. |
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
-| Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | ready | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | M002 portable package/install contract is closed; package can use the canonical importer. |
+| Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | closed | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/003-status.md`. |
 | Plugin ecosystem and harness interoperability | M004 extension catalog/install | ready | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | M002 hard dependency is closed; M001 soft plugin-tool dependency is also closed. |
 
 ## Current execution order and dependency gates

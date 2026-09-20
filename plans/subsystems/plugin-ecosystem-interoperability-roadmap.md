@@ -1,6 +1,6 @@
 # Plugin Ecosystem and Harness Interoperability Roadmap
 
-Status: active; M001 and M002 closed, M003-M004 ready for handoff
+Status: active; M001-M003 closed, M004 ready for handoff
 
 Repository baseline reviewed: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -196,7 +196,7 @@ Plan:
 
 - plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md
 
-Status: ready for handoff.
+Status: closed.
 
 Package a CodeGG-supported browser-testing integration that prefers Playwright CLI + skill instructions for high-throughput coding tasks and offers Playwright MCP as an optional persistent/introspective mode. Do not add a native browser engine.
 
