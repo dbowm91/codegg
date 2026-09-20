@@ -1,6 +1,6 @@
 # Identity / Audit Live Execution Corrective M004 — Qualification and Coverage Guard Closure
 
-Status: blocked
+Status: ready
 
 Hard dependencies: M002 and M003 closed.
 
