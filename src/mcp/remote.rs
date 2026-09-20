@@ -303,12 +303,12 @@ impl McpConnectionManager {
         arguments: Option<serde_json::Value>,
     ) -> Result<String, McpError> {
         let result = self.get_prompt_structured(name, arguments).await?;
-        return Ok(result
+        Ok(result
             .messages
             .into_iter()
             .filter_map(|message| message.text)
             .collect::<Vec<_>>()
-            .join("\n\n"));
+            .join("\n\n"))
     }
 
     pub async fn get_prompt_structured(
@@ -835,7 +835,7 @@ impl RemoteClient {
         Ok(contents
             .iter()
             .take(MAX_RESOURCE_ENTRIES)
-            .filter_map(|content| {
+            .map(|content| {
                 let uri = content
                     .get("uri")
                     .and_then(|u| u.as_str())
@@ -851,12 +851,12 @@ impl RemoteClient {
                 let blob = content.get("blob").and_then(|b| b.as_str()).map(|value| {
                     protocol::bounded_string(value, crate::mcp::MAX_RESOURCE_TEXT_BYTES)
                 });
-                Some(McpResourceContent {
+                McpResourceContent {
                     uri,
                     mime_type,
                     text,
                     blob,
-                })
+                }
             })
             .collect())
     }

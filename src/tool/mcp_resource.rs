@@ -234,7 +234,7 @@ impl Tool for McpResourceReadTool {
         let mut output = value.to_string();
         if output.len() > MAX_OUTPUT {
             output.truncate(MAX_OUTPUT);
-            output.push_str("…");
+            output.push('…');
         }
         Ok(output)
     }
