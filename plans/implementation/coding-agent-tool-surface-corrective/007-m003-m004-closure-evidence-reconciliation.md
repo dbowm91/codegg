@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Corrective M007 — M003/M004 Closure Evidence Reconciliation
 
-Status: closing
+Status: implemented
 
 Repository baseline: `5447e3bc62114cf91992690e26f3a09b897802c5`
 
