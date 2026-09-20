@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Coding-agent tool surface — post-closure evidence polish | active | `plans/subsystems/coding-agent-tool-surface-post-closure-evidence-polish-addendum.md` | M001 ready | M005/M006 are closed and ADR-0008 is accepted. M001 adds deterministic same-preview concurrency and fresh-registry/restart expiry evidence only; production changes require a separately registered corrective if a semantic defect is exposed. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -33,6 +34,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Coding-agent tool surface — post-closure evidence polish | M001 LSP preview apply concurrency and restart evidence | ready | `plans/implementation/coding-agent-tool-surface-post-closure-evidence-polish/001-lsp-preview-apply-concurrency-restart-evidence.md` | M005/M006 closed; ADR-0008 accepted. Evidence-first pass: prove exactly one success/one checkpoint under same-preview contention and old-ID expiry across a fresh production-style registry lifetime. |
 
 ## Current execution order and dependency gates
 
