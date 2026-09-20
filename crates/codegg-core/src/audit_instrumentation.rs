@@ -261,7 +261,7 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
     },
     AuditCoverageEntry {
         action: "command_execute",
-        owner: "daemon:tool_broker",
+        owner: "executor:tool",
         actor: "transport-bound principal",
         scope: "via_session",
         decision: "run_rerun",
@@ -272,9 +272,9 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
             "command.family",
             "decision.outcome",
         ],
-        causation: "run -> command; store-level chain via builders/fixtures in M005, live tool-broker hook deferred",
+        causation: "run -> command; live executor hook at canonical tool dispatch (bash/terminal/test/interactive) via M001 seam; broker never emits",
         visibility: AuditVisibility::Project,
-        live_mapped: false,
+        live_mapped: true,
     },
     AuditCoverageEntry {
         action: "file_mutate",
@@ -295,7 +295,7 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
     },
     AuditCoverageEntry {
         action: "git_operation",
-        owner: "daemon:git",
+        owner: "executor:git",
         actor: "transport-bound principal",
         scope: "opaque",
         decision: "worktree_list",
@@ -307,9 +307,9 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
             "git.ref_digest",
             "decision.outcome",
         ],
-        causation: "run/job/worktree -> git; store-level chain via builders/fixtures in M005, live git-executor hook deferred",
+        causation: "run/job/worktree -> git; live executor hook at GitMutationExecutor via M001 seam; no daemon operation mapping",
         visibility: AuditVisibility::Project,
-        live_mapped: false,
+        live_mapped: true,
     },
     AuditCoverageEntry {
         action: "worktree_lifecycle",
@@ -346,12 +346,12 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
     },
     AuditCoverageEntry {
         action: "job_complete",
-        owner: "daemon:scheduler",
+        owner: "executor:scheduler",
         actor: "transport-bound principal",
         scope: "via_job",
         decision: "job_retry",
         metadata: &["job.id", "run.id", "job.outcome", "decision.outcome"],
-        causation: "terminal for job; scheduler terminal attempt transitions emit live with truthful outcome; retry maps as the retry request, not a surrogate completion",
+        causation: "terminal for job; live executor hook at scheduler terminal attempt transitions via M001 seam; job_retry maps as the retry request, not a surrogate completion",
         visibility: AuditVisibility::Project,
         live_mapped: true,
     },
@@ -451,6 +451,72 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         live_mapped: true,
     },
 ];
+
+/// One executor-owned live audit hook (identity/audit M004).
+///
+/// `action` is the [`AuditAction`](crate::audit::AuditAction) wire name.
+/// `owner` names the canonical executor that must emit it (never a daemon
+/// operation mapping or a duplicate wrapper). `emit` names the canonical
+/// emit symbol that owns the single live event. The coverage guard and the
+/// M004 qualification matrix consume this table: removing a hook must fail
+/// the guard, and merely listing the action in
+/// [`UNINSTRUMENTED_OPERATIONS`] never satisfies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutorAuditHook {
+    /// Canonical audit action wire name.
+    pub action: &'static str,
+    /// Canonical executor owner (`executor:tool`, `executor:git`, ...).
+    pub owner: &'static str,
+    /// Canonical emit symbol at the owner.
+    pub emit: &'static str,
+}
+
+/// Executor-owned live hooks with executable evidence (M004).
+///
+/// The three corrected single-host actions must each have a live owner:
+/// `command_execute` at the canonical tool dispatch, `git_operation` at
+/// `GitMutationExecutor`, `job_complete` at the scheduler terminal
+/// transition. Daemon request operation mappings (`INSTRUMENTED_OPERATIONS`)
+/// are a separate category: `command_execute`/`git_operation` have no daemon
+/// mapping by design, and `job_complete` keeps its `job_retry` request
+/// mapping only as the retry request, never as surrogate terminal evidence.
+pub const EXECUTOR_LIVE_AUDIT_HOOKS: &[ExecutorAuditHook] = &[
+    ExecutorAuditHook {
+        action: "command_execute",
+        owner: "executor:tool",
+        emit: "emit_command_execute",
+    },
+    ExecutorAuditHook {
+        action: "git_operation",
+        owner: "executor:git",
+        emit: "emit_git_operation",
+    },
+    ExecutorAuditHook {
+        action: "job_complete",
+        owner: "executor:scheduler",
+        emit: "emit_terminal_completion",
+    },
+];
+
+/// Intentionally future/distributed audit actions (M004).
+///
+/// `node_enrollment` and `remote_execute` have landed builders but no live
+/// single-host emission by design. They remain `live_mapped: false`,
+/// outside [`EXECUTOR_LIVE_AUDIT_HOOKS`], and outside
+/// [`INSTRUMENTED_OPERATIONS`].
+pub const FUTURE_DISTRIBUTED_AUDIT_ACTIONS: &[&str] = &["node_enrollment", "remote_execute"];
+
+/// `true` when `action` must have executable executor-hook evidence.
+pub fn is_executor_live_action(action: &str) -> bool {
+    EXECUTOR_LIVE_AUDIT_HOOKS
+        .iter()
+        .any(|hook| hook.action == action)
+}
+
+/// `true` when `action` is intentionally future/distributed scope.
+pub fn is_future_distributed_action(action: &str) -> bool {
+    FUTURE_DISTRIBUTED_AUDIT_ACTIONS.contains(&action)
+}
 
 /// Look up the coverage row for one [`AuditAction`](crate::audit::AuditAction).
 pub fn coverage_for_action(action: &AuditAction) -> Option<&'static AuditCoverageEntry> {
@@ -1656,6 +1722,102 @@ mod tests {
             assert!(!entry.causation.is_empty());
         }
         assert_eq!(REQUIRED_AUDIT_COVERAGE.len(), AuditAction::ALL.len());
+    }
+
+    #[test]
+    fn executor_hook_table_distinguishes_live_future_and_daemon_categories() {
+        // M004: exactly the three corrected single-host actions carry
+        // executable executor-hook evidence. Adding their names to
+        // UNINSTRUMENTED_OPERATIONS never satisfies the guard.
+        assert_eq!(EXECUTOR_LIVE_AUDIT_HOOKS.len(), 3);
+        let actions: Vec<&str> = EXECUTOR_LIVE_AUDIT_HOOKS
+            .iter()
+            .map(|hook| hook.action)
+            .collect();
+        assert_eq!(
+            actions,
+            vec!["command_execute", "git_operation", "job_complete"]
+        );
+        for hook in EXECUTOR_LIVE_AUDIT_HOOKS {
+            assert!(
+                !hook.owner.is_empty(),
+                "hook {} needs an owner",
+                hook.action
+            );
+            assert!(
+                !hook.emit.is_empty(),
+                "hook {} needs an emit symbol",
+                hook.action
+            );
+            let action = AuditAction::parse_known(hook.action).expect("known action");
+            let entry = coverage_for_action(&action).expect("coverage row");
+            assert!(
+                entry.live_mapped,
+                "executor action {} must be live_mapped",
+                hook.action
+            );
+            assert_eq!(
+                entry.owner, hook.owner,
+                "coverage owner must match hook owner"
+            );
+            assert!(
+                !UNINSTRUMENTED_OPERATIONS.contains(&hook.action),
+                "executor action {} must never hide in UNINSTRUMENTED",
+                hook.action
+            );
+            assert!(
+                !is_future_distributed_action(hook.action),
+                "executor action {} is not future scope",
+                hook.action
+            );
+        }
+        // Executor command/git hooks have no daemon operation mapping by
+        // design; job_complete keeps its retry-request mapping only.
+        let mapped: Vec<&str> = INSTRUMENTED_OPERATIONS
+            .iter()
+            .filter(|(_, action)| *action == "command_execute" || *action == "git_operation")
+            .map(|(_, action)| *action)
+            .collect();
+        assert!(
+            mapped.is_empty(),
+            "command_execute/git_operation must stay executor-only, found daemon mappings: {mapped:?}"
+        );
+        assert!(
+            INSTRUMENTED_OPERATIONS
+                .iter()
+                .any(|(op, action)| *op == "job_retry" && *action == "job_complete"),
+            "job_retry must remain the retry-request mapping, not surrogate terminal evidence"
+        );
+        // Future/distributed actions stay explicitly future.
+        assert_eq!(
+            FUTURE_DISTRIBUTED_AUDIT_ACTIONS,
+            &["node_enrollment", "remote_execute"]
+        );
+        for action_name in FUTURE_DISTRIBUTED_AUDIT_ACTIONS {
+            let action = AuditAction::parse_known(action_name).expect("known action");
+            let entry = coverage_for_action(&action).expect("coverage row");
+            assert!(
+                !entry.live_mapped,
+                "future action {action_name} must stay live_mapped=false"
+            );
+            assert!(
+                !is_executor_live_action(action_name),
+                "future action {action_name} must stay outside the executor table"
+            );
+            assert!(
+                !INSTRUMENTED_OPERATIONS
+                    .iter()
+                    .any(|(_, a)| a == action_name),
+                "future action {action_name} must have no daemon mapping"
+            );
+        }
+        assert!(is_executor_live_action("command_execute"));
+        assert!(is_executor_live_action("git_operation"));
+        assert!(is_executor_live_action("job_complete"));
+        assert!(is_future_distributed_action("node_enrollment"));
+        assert!(is_future_distributed_action("remote_execute"));
+        assert!(!is_executor_live_action("node_enrollment"));
+        assert!(!is_future_distributed_action("command_execute"));
     }
 
     #[test]

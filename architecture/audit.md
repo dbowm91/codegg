@@ -176,7 +176,7 @@ losing attributable structure.
   `max_inflight` deliberately; do not retry blindly with fresh event
   ids (reuse the id for idempotent retry).
 
-## Instrumentation coverage (M005)
+## Instrumentation coverage (M005 closed; M004 qualification current)
 
 The required Phase-11 event-coverage matrix lives in
 `crates/codegg-core/src/audit_instrumentation.rs`
@@ -184,7 +184,25 @@ The required Phase-11 event-coverage matrix lives in
 names the canonical owner (never a duplicate wrapper), the trusted
 actor source, the authorization scope, the representative decision
 operation, the allowed structural metadata keys, the causation linkage,
-and whether the daemon maps it live in this milestone.
+and whether the action is live in this milestone.
+
+Coverage has four distinct categories (M004):
+
+- daemon request operation mappings (`INSTRUMENTED_OPERATIONS`): the
+  control-plane seam emits these live after the M003 gate;
+- executor-owned live hooks (`EXECUTOR_LIVE_AUDIT_HOOKS`):
+  `command_execute` at the canonical tool dispatch, `git_operation` at
+  `GitMutationExecutor`, `job_complete` at the scheduler terminal
+  transition — each with executable owner evidence, never satisfied by a
+  daemon operation row or by listing the name in
+  `UNINSTRUMENTED_OPERATIONS`;
+- intentionally future/distributed actions
+  (`FUTURE_DISTRIBUTED_AUDIT_ACTIONS`): `node_enrollment`,
+  `remote_execute` — builders landed, no live single-host emission;
+- intentionally content-free/high-volume domains
+  (`UNINSTRUMENTED_OPERATIONS`): bounded reads/listings plus the
+  `interactive_process_*` daemon operations, whose live evidence is the
+  interactive `command_execute` hook below rather than a daemon mapping.
 
 Live daemon seam (`src/core/daemon.rs`):
 
@@ -230,22 +248,43 @@ Correlation and causation:
   rejects secret-bearing keys/values/bodies with
   `audit_secret_detected` before any write.
 
-Explicit gaps (builders + store fixtures landed, no live single-host
-emission by design):
+Explicit gaps (builders landed, no live single-host emission by design):
 
-- `node_enrollment`, `remote_execute` — future node protocol.
+- `node_enrollment`, `remote_execute` — future node protocol
+  (`FUTURE_DISTRIBUTED_AUDIT_ACTIONS`, `live_mapped: false`).
 
-Live in scheduler M003: `job_complete` is emitted at the durable
-terminal attempt transition (`persist_completion` for executor
-success/failure/cancelled/timed_out/interrupted, `mark_unschedulable`
-for validation failure, queued `request_cancel` for pre-admission
-cancel) through the M001 seam (`src/scheduler/job_complete_audit.rs`).
-Attribution is resolved from the durable `OriginAttribution` row
-(scope `job`) with explicit `legacy-local` fallback; one deterministic
-event id per attempt/outcome dedupes replays; `job_retry` remains the
-retry-request event, not a surrogate completion. Guard:
-`check_m003_scheduler_job_complete_present`; matrix:
-`tests/identity_m003_scheduler_job_complete.rs`.
+Live executors (M004 qualification current):
+
+- `command_execute` is live at the canonical tool dispatch owners
+  (bash/terminal/test plus interactive create) through the M001 seam.
+  No daemon operation mapping exists by design; the guard requires the
+  declarative executor-hook table plus owner pins.
+- `git_operation` is live at `GitMutationExecutor` (typed, network, and
+  recovery transitions plus raw paths) through the M001 seam. No daemon
+  operation mapping exists by design.
+- `job_complete` is live at the durable scheduler terminal attempt
+  transition (`persist_completion` for executor
+  success/failure/cancelled/timed_out/interrupted, `mark_unschedulable`
+  for validation failure, queued `request_cancel` for pre-admission
+  cancel) through the M001 seam (`src/scheduler/job_complete_audit.rs`).
+  Attribution is resolved from the durable `OriginAttribution` row
+  (scope `job`) with explicit `legacy-local` fallback; one deterministic
+  event id per attempt/outcome dedupes replays; `job_retry` remains the
+  retry-request event, not a surrogate completion. Guard:
+  `check_m003_scheduler_job_complete_present` plus the M004
+  executor-table checks; matrix:
+  `tests/identity_m003_scheduler_job_complete.rs` plus the M004
+  trajectory `tests/identity_live_execution_audit.rs`.
+
+Interactive-process create treatment: the `interactive_process_*`
+daemon operations stay explicitly uninstrumented (`Global` execution
+surface, per-process attachment-registry authority). Their live audit
+evidence is one structural `command_execute` event (family
+`interactive`, argv digest only) emitted on successful create through
+the daemon-built transport-bound hook
+(`CoreDaemon::interactive_audit_hook`). Terminal input, cwd, and env
+overrides never enter audit metadata; attach/detach/input/resize/list/
+resume/terminate/remove emit nothing.
 
 Live in M003: `chat_triggered_action` is emitted by the daemon
 collaboration owner for every authorized structured chat action
@@ -357,7 +396,8 @@ canonical execution owners through the M001 seam
   (`check_m002_live_execution_hooks_present`); the regression matrix
   lives in `tests/identity_m002_live_audit_hooks.rs`. Full
   live-vs-builder guard tightening (event samples,
-  duplicate/secret negatives across trajectories) is M004 scope.
+  duplicate/secret negatives across trajectories) is closed in M004
+  (see below).
 
 ## Scheduler terminal hook (M003)
 
@@ -392,6 +432,46 @@ attempt transition through the M001 seam
   (`check_m003_scheduler_job_complete_present`); the regression matrix
   lives in `tests/identity_m003_scheduler_job_complete.rs`.
 
+## Live execution qualification and coverage guard (M004)
+
+M004 closes the original M005 low single-host live-hook findings. The
+three corrected actions are live with executable evidence; distributed
+`node_enrollment`/`remote_execute` remain the only future actions.
+
+- Declarative executor-hook table:
+  `codegg-core::audit_instrumentation::EXECUTOR_LIVE_AUDIT_HOOKS`
+  (exactly `command_execute`, `git_operation`, `job_complete` with
+  `executor:*` owners and `live_mapped: true`) plus
+  `FUTURE_DISTRIBUTED_AUDIT_ACTIONS` (exactly `node_enrollment`,
+  `remote_execute` with `live_mapped: false`). Core unit tests pin the
+  four-category distinction and reject `UNINSTRUMENTED_OPERATIONS`
+  evasion.
+- Declarative owner pins: `src/executor_audit_hooks.rs`
+  (`EXECUTOR_HOOK_OWNER_PINS`) names every canonical emit owner file
+  and symbol. The guard parses this table (not ad-hoc call text) and
+  fails closed if an owner moves; Rust tests pin the table against the
+  core executor table. Guard:
+  `check_executor_hook_table_is_authoritative` +
+  `check_m004_executor_owner_pins_present` (plus `--self-test`);
+  matrix: `tests/identity_live_execution_audit.rs`
+  (`executor_hook_table_is_authoritative_and_fail_closed`).
+- Deterministic single-host trajectory
+  (`single_host_trajectory_is_ordered_correlated_and_secret_free`):
+  Owner turn/job → ToolBroker bash → Git stage → interactive create →
+  scheduler terminal success → Owner audit query. Asserts ordered
+  `command_execute`/`git_operation`/`command_execute(interactive)`/
+  `job_complete` rows on one correlation with trusted actor, decision
+  ids, project/session/turn/run/job linkage where available
+  (workspace-scoped job terminals carry no project by design),
+  structural-only metadata/bodies, and no duplicates after
+  replay/restart. Owner project query returns the three project rows;
+  the job terminal joins the same correlation via the store chain.
+- Negatives (`credential_git_url_secret_command_and_terminal_input_stay_structural`,
+  `unauthorized_project_actor_is_denied_without_execution_leak`):
+  viewer query denied, credential-bearing Git URL emits without URL
+  material, secret-looking command emits digest only, terminal input
+  never enters audit, and no secret leaks through error strings.
+
 ## Verification
 
 `scripts/check_audit_coverage.py` parses the canonical authorization
@@ -407,9 +487,13 @@ operation cannot hide as uninstrumented.
 cargo test -p codegg-core audit
 cargo test --test identity_m004_audit_foundation
 cargo test --test identity_m005_audit_instrumentation
+cargo test --test identity_m002_live_audit_hooks -- --test-threads=1
+cargo test --test identity_m003_scheduler_job_complete -- --test-threads=1
+cargo test --test identity_live_execution_audit -- --test-threads=1
 cargo test --test storage_migrations
 python3 scripts/check_audit_invariants.py --verbose
 python3 scripts/check_audit_coverage.py --verbose
+python3 scripts/check_audit_coverage.py --self-test
 python3 scripts/check_authorization_matrix.py --verbose
 python3 scripts/check_project_catalog_invariants.py --verbose
 bash scripts/check-core-boundary.sh

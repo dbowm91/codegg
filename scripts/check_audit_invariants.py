@@ -19,6 +19,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDIT_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "audit.rs"
 SCHEMA_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "session" / "schema.rs"
 AUTHZ_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization.rs"
+# Canonical descriptor source (team-collaboration post-closure M001 moved
+# `operation_descriptor` from `authorization.rs` to `authorization/policy.rs`).
+AUTHZ_POLICY_MODULE = (
+    REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization" / "policy.rs"
+)
 DAEMON_MODULE = REPO_ROOT / "src" / "core" / "daemon.rs"
 PROTOCOL_CORE = REPO_ROOT / "crates" / "codegg-protocol" / "src" / "core.rs"
 AUDIT_DOC = REPO_ROOT / "architecture" / "audit.md"
@@ -92,22 +97,35 @@ def check_bounded_metadata_and_redaction() -> bool:
 def check_query_is_authorized() -> bool:
     """Audit reads must require audit.read at the daemon gate."""
     authz = _read(AUTHZ_MODULE)
+    # Canonical operation inventory lives in authorization/policy.rs since
+    # team-collaboration post-closure M001; accept either location so the
+    # guard fails only when the mapping is truly absent.
+    policy = _read(AUTHZ_POLICY_MODULE) if AUTHZ_POLICY_MODULE.is_file() else ""
+    combined = authz + "\n" + policy
     for operation in ('"audit_query"', '"audit_export"'):
-        if operation not in authz:
+        if operation not in combined:
             print(f"  FAIL: authorization matrix missing {operation}")
             return False
-    if "Capability::AuditRead" not in _read(AUDIT_MODULE) and "audit.read" not in authz:
+    if "Capability::AuditRead" not in _read(AUDIT_MODULE) and "audit.read" not in combined:
         print("  FAIL: authorization matrix missing audit.read")
         return False
-    if '"audit_query"' not in authz or "AuditRead" not in authz:
+    if '"audit_query"' not in combined or "AuditRead" not in combined:
         print("  FAIL: authorization matrix missing audit.read grant")
         return False
     daemon = _read(DAEMON_MODULE)
+    # Daemon dispatch split across daemon.rs plus daemon_ops/daemon_family
+    # modules; consult all of them so the guard tracks the move.
+    daemon_ops = REPO_ROOT / "src" / "core" / "daemon_ops.rs"
+    daemon_family = REPO_ROOT / "src" / "core" / "daemon_family.rs"
+    daemon_combined = daemon
+    for extra in (daemon_ops, daemon_family):
+        if extra.is_file():
+            daemon_combined += "\n" + _read(extra)
     for variant in ("AuditQuery", "AuditExport", "AuditCapabilities"):
-        if f"CoreRequest::{variant}" not in daemon:
+        if f"CoreRequest::{variant}" not in daemon_combined:
             print(f"  FAIL: daemon dispatch missing CoreRequest::{variant}")
             return False
-    if "authorize_request" not in daemon:
+    if "authorize_request" not in daemon_combined and "authorize_request" not in daemon:
         print("  FAIL: daemon dispatch does not consult the authorization service")
         return False
     protocol = _read(PROTOCOL_CORE)

@@ -27,6 +27,7 @@ pub mod core;
 pub mod eggsact;
 pub mod error;
 pub mod exec;
+pub mod executor_audit_hooks;
 pub mod git_mutation_projector;
 pub mod git_mutations;
 pub mod git_mutations_ops;
