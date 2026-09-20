@@ -1,5 +1,19 @@
 # Tool Module
 
+## Progressive discovery and semantic read surfaces
+
+`tool_search` uses a two-stage contract. Broad queries return bounded,
+schema-free descriptors so selecting among large tools does not inflate the
+context window. An exact selected name can request `detail: "schema"`; the
+response is resolved from the live catalog after the current policy and
+hidden-tool checks. The expanded schema is descriptive only; calls still
+enter through `ToolBroker`.
+
+`git_query` is the model-facing deferred read facade for bounded status, diff,
+log, and branch inspection. It delegates to `GitReadTool`, while `git` retains
+typed mutation, recovery, network, and compatibility ownership. No separate
+Git execution path or recovery state exists.
+
 The `tool` module provides the built-in tools that the agent can use to
 interact with the filesystem, shell, and external services. It owns the
 tool registry, the execution pipeline, and the backend/diagnostics

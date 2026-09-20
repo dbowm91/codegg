@@ -72,6 +72,15 @@ impl Tool for ToolSearchTool {
                 "query": {
                     "type": "string",
                     "description": "Search query to find relevant tools (searches name and description)"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional exact canonical tool name to describe"
+                },
+                "detail": {
+                    "type": "string",
+                    "enum": ["summary", "schema"],
+                    "description": "Use schema only after selecting one exact tool; broad searches stay compact"
                 }
             },
             "required": ["query"]
@@ -86,6 +95,16 @@ impl Tool for ToolSearchTool {
         let query = input["query"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("query required".into()))?;
+        let exact_name = input["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let detail = input["detail"].as_str().unwrap_or("summary");
+        if !matches!(detail, "summary" | "schema") {
+            return Err(ToolError::Execution(
+                "detail must be either 'summary' or 'schema'".into(),
+            ));
+        }
 
         // An empty query would match the whole catalog in keyword mode;
         // return no results instead of dumping registered capability.
@@ -98,7 +117,10 @@ impl Tool for ToolSearchTool {
             .to_string());
         }
 
-        let results = self.catalog.search(query);
+        let results = match exact_name {
+            Some(name) => self.catalog.get(name).into_iter().collect(),
+            None => self.catalog.search(query),
+        };
 
         // Policy filtering first: only tools the current agent/session
         // policy allows are discoverable. When no allow-list is installed
@@ -119,7 +141,39 @@ impl Tool for ToolSearchTool {
             return Ok(json!({
                 "status": "no_results",
                 "query": query,
+                "name": exact_name,
                 "tools": []
+            })
+            .to_string());
+        }
+
+        if exact_name.is_some() && detail == "schema" {
+            // Exact expansion is intentionally policy-gated by the same
+            // allow-list and hidden-tool filter as broad discovery. The
+            // catalog is live, so the schema is the current registration,
+            // not a stale request-time snapshot.
+            let metadata = &filtered[0];
+            let risk =
+                crate::tool::risk::classify_tool_risk(&metadata.name, &serde_json::json!({}));
+            let tool = json!({
+                "canonical_name": metadata.name,
+                "name": metadata.name,
+                "description": metadata.description,
+                "parameters": metadata.parameters,
+                "defer_load": metadata.defer_load,
+                "category": metadata.category,
+                "risk": format!("{risk:?}"),
+                "disclosure": metadata.disclosure,
+                "schema_truncated": false
+            });
+            return Ok(json!({
+                "status": "success",
+                "query": query,
+                "name": metadata.name,
+                "detail": "schema",
+                "count": 1,
+                "total_matches": 1,
+                "tools": [tool]
             })
             .to_string());
         }
@@ -141,8 +195,8 @@ impl Tool for ToolSearchTool {
                     "canonical_name": metadata.name,
                     "name": metadata.name,
                     "description": metadata.description,
-                    "parameters": metadata.parameters,
                     "defer_load": metadata.defer_load,
+                    "schema_available": true,
                     "category": metadata.category,
                     "risk": format!("{risk:?}"),
                     "disclosure": metadata.disclosure
@@ -158,5 +212,164 @@ impl Tool for ToolSearchTool {
             "tools": tools
         })
         .to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct MockTool {
+        name: &'static str,
+        hidden: bool,
+    }
+
+    #[async_trait]
+    impl Tool for MockTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            "A deliberately large semantic tool for deterministic discovery tests"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["status", "diff", "log"]},
+                    "content": {"type": "string"}
+                },
+                "required": ["operation"]
+            })
+        }
+
+        async fn execute(&self, _input: serde_json::Value) -> Result<String, ToolError> {
+            Ok(String::new())
+        }
+
+        fn expose_in_definitions(&self) -> bool {
+            !self.hidden
+        }
+    }
+
+    fn test_search() -> ToolSearchTool {
+        let mut catalog = ToolCatalog::new();
+        catalog.register(&MockTool {
+            name: "git_query",
+            hidden: false,
+        });
+        catalog.register(&MockTool {
+            name: "git_read",
+            hidden: true,
+        });
+        let mut search = ToolSearchTool::new(Arc::new(catalog));
+        search.set_available_tools(vec!["git_query".to_string(), "git_read".to_string()]);
+        search
+    }
+
+    #[tokio::test]
+    async fn broad_search_is_compact_and_schema_expansion_is_exact() {
+        let search = test_search();
+
+        let broad = search
+            .execute(json!({"query": "git"}))
+            .await
+            .expect("broad search");
+        let broad: serde_json::Value = serde_json::from_str(&broad).expect("json");
+        let result = &broad["tools"][0];
+        assert!(result.get("schema_available").is_some());
+        assert!(result.get("parameters").is_none());
+
+        let expanded = search
+            .execute(json!({"query": "git", "name": "git_query", "detail": "schema"}))
+            .await
+            .expect("schema expansion");
+        let expanded: serde_json::Value = serde_json::from_str(&expanded).expect("json");
+        assert_eq!(expanded["count"], 1);
+        assert!(expanded["tools"][0].get("parameters").is_some());
+        assert_eq!(expanded["tools"][0]["name"], "git_query");
+    }
+
+    #[tokio::test]
+    async fn hidden_and_denied_tools_cannot_be_described() {
+        let search = test_search();
+        let hidden = search
+            .execute(json!({
+                "query": "internal",
+                "name": "git_read",
+                "detail": "schema"
+            }))
+            .await
+            .expect("hidden search");
+        let hidden: serde_json::Value = serde_json::from_str(&hidden).expect("json");
+        assert_eq!(hidden["status"], "no_results");
+
+        let mut search = test_search();
+        search.set_available_tools(vec!["some_other_tool".to_string()]);
+        let denied = search
+            .execute(json!({"query": "git", "name": "git_query", "detail": "schema"}))
+            .await
+            .expect("denied search");
+        let denied: serde_json::Value = serde_json::from_str(&denied).expect("json");
+        assert_eq!(denied["status"], "no_results");
+    }
+
+    #[test]
+    fn schema_census_records_large_surface_and_compact_selection() {
+        let registry = crate::tool::ToolRegistry::with_defaults();
+        for name in ["git", "git_query", "lsp", "task", "work_order"] {
+            if let Some(metadata) = registry.catalog().get(name) {
+                let bytes = serde_json::to_vec(&json!({
+                    "description": metadata.description,
+                    "parameters": metadata.parameters,
+                }))
+                .expect("schema census serialization")
+                .len();
+                eprintln!("m003 schema census {name}: {bytes} bytes");
+            }
+        }
+
+        let broad_bytes = registry
+            .catalog()
+            .search("lsp")
+            .into_iter()
+            .take(MAX_SEARCH_RESULTS)
+            .map(|metadata| {
+                serde_json::to_vec(&json!({
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "category": metadata.category,
+                    "disclosure": metadata.disclosure,
+                    "schema_available": true,
+                }))
+                .expect("compact census serialization")
+                .len()
+            })
+            .sum::<usize>();
+        let full_bytes = registry
+            .catalog()
+            .search("lsp")
+            .into_iter()
+            .take(MAX_SEARCH_RESULTS)
+            .map(|metadata| {
+                serde_json::to_vec(&json!({
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "parameters": metadata.parameters,
+                    "category": metadata.category,
+                    "disclosure": metadata.disclosure,
+                }))
+                .expect("full census serialization")
+                .len()
+            })
+            .sum::<usize>();
+        assert!(broad_bytes < full_bytes);
+        eprintln!(
+            "m003 broad lsp search: {full_bytes} -> {broad_bytes} bytes ({}% reduction)",
+            100usize.saturating_sub(broad_bytes.saturating_mul(100) / full_bytes.max(1))
+        );
     }
 }

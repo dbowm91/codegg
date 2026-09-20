@@ -77,6 +77,80 @@ pub struct GitReadTool {
     timeout: Duration,
 }
 
+/// Model-facing semantic Git read surface.
+///
+/// This is deliberately a separate contract from the hidden program-only
+/// adapter above: it exposes only bounded read operations while delegating
+/// execution, workspace-root handling, truncation, and provenance to the
+/// same canonical implementation.
+pub struct GitQueryTool {
+    inner: GitReadTool,
+}
+
+impl GitQueryTool {
+    pub fn new() -> Self {
+        Self {
+            inner: GitReadTool::new(),
+        }
+    }
+
+    pub fn with_workdir(mut self, dir: PathBuf) -> Self {
+        self.inner = self.inner.with_workdir(dir);
+        self
+    }
+}
+
+#[async_trait]
+impl Tool for GitQueryTool {
+    fn name(&self) -> &str {
+        "git_query"
+    }
+
+    fn description(&self) -> &str {
+        "Query bounded repository state with read-only operations: status, diff, log, and branches. Use git for mutations and recovery."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.inner.parameters()
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
+    }
+
+    fn defer_loading(&self) -> bool {
+        true
+    }
+
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
+        let mut contract = ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = ToolEffectClass::ReadOnly;
+        contract.idempotency = IdempotencyClass::Idempotent;
+        contract.cache_policy.enabled = false;
+        contract.retry_policy.max_retries = 0;
+        contract.output_schema = Some(GitReadTool::contract_output_schema());
+        contract
+    }
+
+    async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.inner.execute(input).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        self.inner.execute_structured(input, ctx).await
+    }
+}
+
+impl Default for GitQueryTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GitReadTool {
     pub fn new() -> Self {
         Self {
@@ -435,6 +509,19 @@ mod tests {
             crate::tool::disclosure::disclosure_for("git_read"),
             crate::tool::disclosure::ToolDisclosure::Hidden
         );
+    }
+
+    #[test]
+    fn git_query_is_a_deferred_model_read_facade() {
+        let tool = GitQueryTool::new();
+        assert_eq!(tool.name(), "git_query");
+        assert!(tool.defer_loading());
+        assert!(tool.expose_in_definitions());
+        let contract = tool.contract("git_query", tool.parameters());
+        assert_eq!(contract.caller_policy, ToolCallerPolicy::DirectOnly);
+        assert_eq!(contract.effect_class, ToolEffectClass::ReadOnly);
+        assert_eq!(contract.idempotency, IdempotencyClass::Idempotent);
+        assert!(contract.validate().is_ok());
     }
 
     #[test]

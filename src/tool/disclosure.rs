@@ -71,10 +71,10 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
         // discoverable via `tool_search`. `repo_search` stays core as the
         // single canonical repo-inspect primitive; `codesearch` remains
         // registered as the M001 compatibility alias but deferred.
-        "research" | "research_search" | "repo_fetch" | "repo_map" | "security_search"
-        | "batch_fetch" | "evidence_bundle" | "codesearch" | "review" | "image" | "terminal"
-        | "skill_proposal" | "security" | "replace" | "commit" | "python_script"
-        | "tool_program" => ToolDisclosure::Deferred,
+        "git_query" | "research" | "research_search" | "repo_fetch" | "repo_map"
+        | "security_search" | "batch_fetch" | "evidence_bundle" | "codesearch" | "review"
+        | "image" | "terminal" | "skill_proposal" | "security" | "replace" | "commit"
+        | "python_script" | "tool_program" => ToolDisclosure::Deferred,
         // Eggsact deferred validators (already `defer_loading = true`).
         "text_inspect"
         | "config_preflight"

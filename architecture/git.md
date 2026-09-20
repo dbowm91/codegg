@@ -340,6 +340,11 @@ action regardless of routing mode.
     display cap, and disabled program-call cache. See
     `architecture/tool_programs.md` (Expansion M003).
 
+The same bounded implementation is also available to ordinary model turns as
+the deferred direct-only `git_query` facade. Its strict schema cannot express
+mutation, recovery, network, or raw-subcommand operations; those remain on
+the canonical `git` surface.
+
 13. **RunStore audit-safe rerun argv.** `RerunDescriptor.argv` is
     `Option<AuditSafeArgv>` — always sanitized via URL sanitizer. Raw URL
     reaches Git only ephemerally during execution.

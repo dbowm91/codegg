@@ -653,6 +653,13 @@ impl ToolRegistry {
             Some(root) => crate::tool::git_read::GitReadTool::default().with_workdir(root.clone()),
             None => crate::tool::git_read::GitReadTool::default(),
         });
+        // M003: additive model-facing read facade. It delegates to the
+        // hidden program adapter's bounded implementation, while retaining
+        // a direct-only read contract and a deferred disclosure state.
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::git_read::GitQueryTool::default().with_workdir(root.clone()),
+            None => crate::tool::git_read::GitQueryTool::default(),
+        });
 
         // --- LSP: consult resolved backend config. ---
         let lsp_backend = options

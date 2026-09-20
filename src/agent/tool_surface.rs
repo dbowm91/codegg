@@ -457,6 +457,10 @@ fn tool_capabilities(name: &str, category: ToolCategory) -> Vec<Capability> {
     if name == "image" {
         result.push(Capability::Image);
     }
+    if name == "git_query" {
+        result.push(Capability::GitRead);
+        return result;
+    }
     if name == "git" {
         result.push(Capability::GitRead);
         result.push(Capability::GitWrite);

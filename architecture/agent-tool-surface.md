@@ -138,6 +138,20 @@ discoverable, but is not guessed from prompt wording or conflated with
 live-child `task` delegation. Context artifact recovery is actionable only
 when the session has a registered `context_read` path.
 
+`tool_search` is a two-stage discovery contract. Broad queries return compact
+selection descriptors (`canonical_name`, purpose, category, risk, disclosure,
+and `schema_available`) rather than embedding every matching input schema.
+After selection, the model requests an exact current schema with
+`{query, name, detail: "schema"}`. Both stages use the live catalog and the
+same policy allow-list and hidden-tool filter, so discovery does not grant
+authority or replace broker invocation.
+
+M003 adds deferred `git_query` for bounded status, diff, log, and branch
+inspection. It delegates to the existing Git reader and cannot name mutation,
+recovery, network, or raw-subcommand operations. LSP and task remain their
+canonical multiplexed surfaces because the census did not justify new names
+without duplicating their operation-family routing and authority.
+
 ### Context Palette Reduction
 
 `ResolvedToolSurface::reduce(max)` narrows the unreduced surface to at
