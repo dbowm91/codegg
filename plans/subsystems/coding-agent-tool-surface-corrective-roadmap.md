@@ -58,12 +58,15 @@ The corrective trigger is a September 20, 2026 audit of the current coding-agent
 - One authoritative tool semantic/classification source consumed by disclosure, permission/capability, and discovery.
 - Compact tool descriptor lookup.
 - Thin facades over existing managed command and checked edit machinery.
+- One explicit per-turn LSP runtime seam that reuses the daemon-owned service, canonical workspace locks, and a shared ephemeral preview registry without process-global preview state.
+- Session-resolved authorization for the existing checked LSP preview-apply transport path.
 
 ### Polish
 
 - Reduce large-schema selection entropy for `git`, `lsp`, and `task`.
 - Remove stale model-name heuristics and duplicated classification lists.
 - Improve architecture documentation and regression coverage.
+- Keep closure/registry evidence truthful when required broad verification was not recorded.
 
 ## 3. Non-goals
 
@@ -89,6 +92,9 @@ At the baseline:
 - Curated/Minimal palettes omit high-value coding-loop capabilities including `test`, `context_read`, and in some profiles safe file-creation paths.
 - `lsp`, `git`, and `task` are broad multiplexers with large operation enums/schemas. This is prompt-efficient at the tool-name level but raises argument/action selection entropy for smaller/tool-fragile models.
 - The broker already supports structured contracts/output schemas. LSP already produces preview artifacts **and** the closed Architecture Convergence M007 path already provides daemon-owned checked preview application (`CoreRequest::LspPreviewApply` -> `src/lsp/mutation.rs`) with digest/hash revalidation and edit checkpoints; what is absent is a model-facing tool adapter over that existing authority. Command-intent already classifies build/lint/format/test families. Improvements should compose these installed owners rather than invent replacements.
+- Post-M004 re-audit at `5447e3bc` found the concrete M005 blocker: `TurnRunInput` already has the daemon LSP service, immutable execution context, pool, and workspace-service lease, but `build_session_tool_registry()` passes `lsp_service: None`; `LspTool` owns a private preview registry; and the factory does not retain a sibling-consumable preview handle.
+- The same re-audit found `CoreRequest::LspPreviewApply` classified as `ScopeKind::Opaque` even though the request carries a session ID. That prevents team principals from reaching the normal session-owned-project `file.modify` gate and is corrected by M006 rather than bypassed by M005.
+- M003 and M004 production work landed, but their closure records omit required broad verification promised by their implementation plans. M007 owns supplemental current-baseline qualification; until it closes, those milestones are conditionally closed rather than strictly closed.
 
 ## 5. Target architecture
 
@@ -123,10 +129,14 @@ M001 Surface authority and discovery correctness
   +--> M002 Coding profile and contextual capability exposure
   |      |
   |      +--> M003 Compact discovery and multiplexed-tool ergonomics
-  |      |
+  |      |       \
+  |      |        +--> M007 M003/M004 closure evidence reconciliation
+  |      |       /
   |      +--> M004 Structured verification facade
   |
-  `--> M005 Checked LSP preview application
+  +--> M006 LSP preview runtime and authority seam
+          |
+          `--> M005 Checked LSP preview application
 ```
 
 Dependency classes:
@@ -134,7 +144,9 @@ Dependency classes:
 - M001 -> M002: hard. Palette improvements must build on a correct discovery/authority model.
 - M002 -> M003: interface. Ergonomic reduction must know the intended core/contextual surface.
 - M002 -> M004: interface. Verification exposure should follow the corrected coding profile contract.
-- M001 -> M005: hard. Preview application must enter the canonical authority/category/checkpoint model correctly.
+- M001 -> M006: hard. The LSP seam must use the canonical M001 category/capability/discovery model.
+- M006 -> M005: hard. The model adapter must not be implemented until the daemon LSP service, shared preview registry, workspace lock, session/workspace binding, and transport authorization seams are available.
+- M003 + M004 implementation/closure records -> M007: evidence qualification. M007 does not change their production ownership; it supplies the required broad verification their original closure records did not document.
 
 ## 7. Milestones
 
@@ -200,11 +212,43 @@ Implementation: `plans/implementation/coding-agent-tool-surface-corrective/005-c
 
 Objective: add a narrow model-facing adapter for applying a previously-created LSP preview by reusing the already-closed daemon-owned checked mutation service; the model supplies preview identity only, while host-owned preview metadata, stale/path validation, workspace locking, rollback/checkpointing, and LSP synchronization remain canonical.
 
+Dependency: M006 strict closure. M005 must consume the shared host seam rather than rebuild it.
+
+### M006 — LSP preview runtime and authority seam
+
+Class: invariant / infrastructure.
+
+Implementation: `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md`
+
+Objective: thread the daemon-owned LSP service and canonical workspace state into session tool construction, make preview-registry ownership explicitly shareable but turn-local, correct `LspPreviewApply` transport scope to session-resolved `file.modify`, and centralize the session/workspace binding check needed by both existing transport apply and the future model adapter.
+
+Exit conditions:
+
+- production model-facing LSP uses the daemon-resolved `Arc<LspService>` when supplied;
+- one explicit shared preview registry is visible to sibling host components in the same tool-registry lifetime but isolated across turns/sessions;
+- `CoreRequest::LspPreviewApply` authorizes through `ViaSession` + `FileModify` and fails closed for viewers/non-members/unknown sessions;
+- the existing session/workspace binding check is reusable without duplicating mutation logic;
+- the factory can prove all M005 host dependencies coexist without registering a model mutation tool.
+
+### M007 — M003/M004 closure evidence reconciliation
+
+Class: invariant.
+
+Implementation: `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md`
+
+Objective: execute and record the broad verification required by M003/M004 but absent from their closure records, without rewriting historical evidence or hiding a production failure inside an evidence pass.
+
+Exit conditions:
+
+- all required predecessor commands have explicit current-baseline results or documented exact equivalents;
+- passing evidence restores M003/M004 to strict closed status;
+- any real failure leaves the affected milestone conditionally closed and creates a separate bounded corrective plan.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
 
-M001-M004 should require no storage migration. M005 may extend ephemeral preview metadata/registry contracts but must not create a second durable edit-history store. If persistence is required for preview identity across turns/restarts, stop and register a storage decision rather than improvising.
+M001-M004, M006, and M007 require no storage migration. M005 may consume the shared ephemeral preview registry established by M006 but must not create a second durable edit-history store. If persistence is required for preview identity across turns/restarts, stop and register a storage decision rather than improvising.
 
 ### Protocol and compatibility
 
@@ -212,7 +256,7 @@ Provider wire aliases, MCP namespacing, stored transcript/tool names, model-prof
 
 ### Security and authorization
 
-All disclosure/discovery changes are authority-neutral: visibility cannot widen invocation authority. Parent ceilings, permission modes, sandbox profiles, workspace roots, child Git policy, and broker caller policy remain authoritative.
+All disclosure/discovery changes are authority-neutral: visibility cannot widen invocation authority. Parent ceilings, permission modes, sandbox profiles, workspace roots, child Git policy, and broker caller policy remain authoritative. M006 corrects the existing transport apply classification to session-resolved `file.modify`; M005 must use normal ToolBroker/permission authority for the agent caller and host-bound session/workspace identity rather than model-supplied locators.
 
 ### Concurrency, cancellation, restart
 
@@ -232,7 +276,7 @@ Use focused tool-surface tests that assert four distinct properties: registered,
 
 Regression fixtures must include session-late tools (`context_read`, `goal_*`, `work_order`) and representative deterministic tools.
 
-For M003-M005, add deterministic fake/local fixtures rather than live providers.
+For M003-M006, add deterministic fake/local fixtures rather than live providers. M007 is a repository-standard qualification pass over the exact predecessor verification contract.
 
 Broad closure posture remains:
 
@@ -251,10 +295,12 @@ No new CI lane is authorized.
 - Splitting multiplexed tools can increase tool count. M003 must measure prompt/schema cost and prefer semantic grouping over one-tool-per-operation explosion.
 - Contextual Goal/WorkPlan/WorkOrder exposure must be driven by bound runtime state, not guessed from user prose.
 - M005 must never treat an LSP preview as authorization to mutate. It is evidence/input to a later checked mutation.
+- M006 must not solve registry sharing with process-global preview state or a second LSP service; the daemon-resolved service and workspace lease are already the owners.
+- M007 must not rewrite historical closure records to fabricate original-baseline evidence.
 
 ## 11. Completion definition
 
-This campaign closes when registration, disclosure, discovery, category/capability authority, and profile exposure are internally consistent; ordinary coding agents retain a complete native coding loop; tool discovery remains compact; routine verification has a structured canonical facade; and LSP preview edits can be applied through checked native mutation without introducing a new execution or persistence owner.
+This campaign closes when registration, disclosure, discovery, category/capability authority, and profile exposure are internally consistent; ordinary coding agents retain a complete native coding loop; tool discovery remains compact; routine verification has a structured canonical facade; M003/M004 broad closure evidence is reconciled; the LSP runtime/authorization seam is canonical; and LSP preview edits can be applied through checked native mutation without introducing a new execution, authorization, or persistence owner.
 
 ## 12. Milestone status
 
@@ -262,6 +308,8 @@ This campaign closes when registration, disclosure, discovery, category/capabili
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/coding-agent-tool-surface-corrective/001-surface-authority-and-discovery-correctness.md` | `plans/closure/coding-agent-tool-surface-corrective/001-status.md` | — |
 | M002 | closed | `plans/implementation/coding-agent-tool-surface-corrective/002-coding-profile-and-contextual-capability-exposure.md` | `plans/closure/coding-agent-tool-surface-corrective/002-status.md` | — |
-| M003 | closed | `plans/implementation/coding-agent-tool-surface-corrective/003-compact-discovery-and-multiplexed-tool-ergonomics.md` | `plans/closure/coding-agent-tool-surface-corrective/003-status.md` | — |
-| M004 | closed | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | `plans/closure/coding-agent-tool-surface-corrective/004-status.md` | — |
-| M005 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | — | Trusted workspace/project authority, canonical WorkspaceLockTable, and shared host preview-registry seams are not available to the model-tool construction. |
+| M003 | conditionally closed | `plans/implementation/coding-agent-tool-surface-corrective/003-compact-discovery-and-multiplexed-tool-ergonomics.md` | `plans/closure/coding-agent-tool-surface-corrective/003-status.md` | Required `agent_run_tool`, all-features Clippy, and `scripts/verify.sh quick` are not recorded in the historical closure; M007 owns supplemental qualification. |
+| M004 | conditionally closed | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | `plans/closure/coding-agent-tool-surface-corrective/004-status.md` | Required all-features Clippy and `scripts/verify.sh quick` are not recorded in the historical closure; M007 owns supplemental qualification. |
+| M005 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | — | Blocked on M006 strict closure. |
+| M006 | ready | `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md` | — | M001 closed; blocker is fully repo-evidenced. |
+| M007 | ready | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | — | M003/M004 production implementations exist; this plan qualifies missing closure evidence only. |
