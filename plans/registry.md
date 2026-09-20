@@ -35,7 +35,7 @@ Canonical direction remains in:
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
 | Coding-agent tool surface corrective | M005 checked LSP preview application | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | M001 and M006 closed; ADR-0008 accepted. Consume the daemon-owned LSP service, shared turn-local preview registry, workspace locks, host-bound session/workspace identity, and reusable binding seam; add only the narrow model-facing adapter. |
-| Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | active | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | Production implementations exist. Run and record the required broad verification missing from the historical M003/M004 closure records; no production refactor unless a separate corrective is registered. |
+| Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | closing | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | Qualification passed; closure record is being prepared. Historical M003/M004 closure records remain unchanged. |
 
 ## Current execution order and dependency gates
 
@@ -66,6 +66,8 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
 ## Closure work and current control points
+
+| Coding-agent tool surface corrective | M007 closing | `plans/closure/coding-agent-tool-surface-corrective/007-status.md` | Supplemental M003/M004 qualification evidence is being recorded; no production changes were needed. |
 
 Detailed historical milestone history is intentionally not duplicated here. Current foundation/control evidence relevant to active work includes:
 
