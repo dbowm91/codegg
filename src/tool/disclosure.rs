@@ -191,14 +191,18 @@ pub const CURATED_PALETTE: &[&str] = &[
     "glob",
     "repo_search",
     "edit",
+    "write",
     "apply_patch",
     "bash",
+    "test",
     "git",
     "diff",
     "todoread",
     "todowrite",
     "question",
     "tool_search",
+    "lsp",
+    "context_read",
     "skill",
     "websearch",
 ];
@@ -213,8 +217,11 @@ pub const MINIMAL_PALETTE: &[&str] = &[
     "grep",
     "repo_search",
     "edit",
+    "write",
     "apply_patch",
     "bash",
+    "test",
+    "context_read",
     "question",
     "todowrite",
     "todoread",
@@ -381,6 +388,29 @@ mod tests {
         // `tool_search` itself is always retained where deferral exists.
         assert!(CURATED_PALETTE.contains(&"tool_search"));
         assert!(MINIMAL_PALETTE.contains(&"tool_search"));
+    }
+
+    #[test]
+    fn coding_palettes_keep_the_native_verification_and_creation_loop() {
+        for palette in [CURATED_PALETTE, MINIMAL_PALETTE] {
+            for required in [
+                "read",
+                "repo_search",
+                "edit",
+                "write",
+                "bash",
+                "test",
+                "tool_search",
+            ] {
+                assert!(
+                    palette.contains(&required),
+                    "{required} must remain in coding palette"
+                );
+            }
+        }
+        assert!(CURATED_PALETTE.contains(&"lsp"));
+        assert!(CURATED_PALETTE.contains(&"context_read"));
+        assert!(MINIMAL_PALETTE.contains(&"context_read"));
     }
 
     #[test]

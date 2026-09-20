@@ -130,6 +130,14 @@ deferred. Specialist roles (`research`, `security-review`, `verifier`)
 receive their small role-appropriate immediate palette; ordinary coding
 keeps the core edit-loop primitives plus `tool_search`.
 
+Contextual disclosure is host-derived during request preparation. An active
+Goal promotes `goal_get`, `goal_update_progress`, and
+`goal_request_completion`; an active WorkPlan promotes `work_plan_get` and
+`work_plan_update_item`. WorkOrder remains separately registered and
+discoverable, but is not guessed from prompt wording or conflated with
+live-child `task` delegation. Context artifact recovery is actionable only
+when the session has a registered `context_read` path.
+
 ### Context Palette Reduction
 
 `ResolvedToolSurface::reduce(max)` narrows the unreduced surface to at

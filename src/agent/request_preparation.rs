@@ -12,20 +12,22 @@ use crate::provider::{ChatRequest, ContentPart, Message};
 
 fn project_initial_tool_palette(
     mode: crate::agent::policy::ToolExposureMode,
+    contextual_immediate: &std::collections::BTreeSet<String>,
     definitions: Vec<crate::provider::ToolDefinition>,
 ) -> Vec<crate::provider::ToolDefinition> {
     definitions
         .into_iter()
         .map(|mut definition| {
-            let initially_advertised = match mode {
-                crate::agent::policy::ToolExposureMode::Full => true,
-                crate::agent::policy::ToolExposureMode::Curated => {
-                    crate::tool::disclosure::CURATED_PALETTE.contains(&definition.name.as_str())
-                }
-                crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
-                    crate::tool::disclosure::MINIMAL_PALETTE.contains(&definition.name.as_str())
-                }
-            };
+            let initially_advertised = contextual_immediate.contains(&definition.name)
+                || match mode {
+                    crate::agent::policy::ToolExposureMode::Full => true,
+                    crate::agent::policy::ToolExposureMode::Curated => {
+                        crate::tool::disclosure::CURATED_PALETTE.contains(&definition.name.as_str())
+                    }
+                    crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
+                        crate::tool::disclosure::MINIMAL_PALETTE.contains(&definition.name.as_str())
+                    }
+                };
             if !initially_advertised {
                 definition.defer_loading = Some(true);
             }
@@ -34,20 +36,74 @@ fn project_initial_tool_palette(
         .collect()
 }
 
+fn contextual_tool_names(
+    context_read_available: bool,
+    active_goal: bool,
+    active_work_plan: bool,
+) -> std::collections::BTreeSet<String> {
+    let mut tools = std::collections::BTreeSet::new();
+    if context_read_available {
+        tools.insert("context_read".to_string());
+    }
+    if active_goal {
+        tools.extend([
+            "goal_get".to_string(),
+            "goal_update_progress".to_string(),
+            "goal_request_completion".to_string(),
+        ]);
+    }
+    if active_work_plan {
+        tools.extend([
+            "work_plan_get".to_string(),
+            "work_plan_update_item".to_string(),
+        ]);
+    }
+    tools
+}
+
 impl AgentLoop {
+    async fn contextual_immediate_tools(&self) -> std::collections::BTreeSet<String> {
+        let context_read_available = self.services.tool_registry.contains("context_read")
+            && !self.context_ledger.artifact_handles.is_empty();
+        let mut active_goal = false;
+
+        if let Some(goal_store) = self.services.goal_store.clone() {
+            active_goal = matches!(
+                goal_store.active_for_session(&self.session_id).await,
+                Ok(Some(goal)) if goal.status == crate::goal::model::GoalStatus::Active
+            );
+        }
+
+        let mut active_work_plan = false;
+        if let Some(pool) = self.services.todo_pool.clone() {
+            let store = codegg_core::work_plan::WorkPlanStore::new(pool);
+            active_work_plan = matches!(
+                store.active_for_session(&self.session_id).await,
+                Ok(Some(_))
+            );
+        }
+
+        contextual_tool_names(context_read_available, active_goal, active_work_plan)
+    }
+
     /// Project the policy's initial palette without deleting the allowed
     /// discovery universe.  Palette omission is represented as provider
     /// deferral; deny/disable/callability filtering happens before this
     /// projection and remains authoritative for both prompt and search.
     fn apply_tool_exposure_filter(
         &self,
+        contextual_immediate: &std::collections::BTreeSet<String>,
         definitions: Vec<crate::provider::ToolDefinition>,
     ) -> Vec<crate::provider::ToolDefinition> {
         let Some(ref policy) = self.services.execution_policy else {
             return definitions;
         };
 
-        let filtered = project_initial_tool_palette(policy.initial_tool_mode, definitions);
+        let filtered = project_initial_tool_palette(
+            policy.initial_tool_mode,
+            contextual_immediate,
+            definitions,
+        );
 
         // Then apply model profile disabled_tools filter
         if let Some(ref disabled) = policy.disabled_tools {
@@ -503,6 +559,12 @@ impl AgentLoop {
         // HashMap-backed service and the digest contains no credentials or
         // transport configuration.
         let mcp_tool_revision = mcp_tool_surface_revision(&mcp_tools);
+        let contextual_immediate = self.contextual_immediate_tools().await;
+        let contextual_revision = contextual_immediate
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
 
         let permission_version = self.permission_version();
 
@@ -512,6 +574,7 @@ impl AgentLoop {
             cache_lsp,
             ref cache_mcp_count,
             cache_perm_ver,
+            ref cache_contextual_revision,
             cache_expose_raw,
             ref cache_tool_deferral,
             ref cached_defs,
@@ -523,6 +586,7 @@ impl AgentLoop {
                 && cache_lsp == lsp_enabled
                 && cache_mcp_count == &mcp_tool_revision
                 && cache_perm_ver == permission_version
+                && cache_contextual_revision == &contextual_revision
                 && cache_expose_raw == expose_raw_search
                 && cache_tool_deferral == &self.services.config.tool_deferral
             {
@@ -583,7 +647,8 @@ impl AgentLoop {
             })
             .collect();
 
-        let all_definitions = self.apply_tool_exposure_filter(all_definitions);
+        let all_definitions =
+            self.apply_tool_exposure_filter(&contextual_immediate, all_definitions);
 
         // Include MCP tools in the definitions for deferral partitioning
         let mut all_definitions = all_definitions;
@@ -727,6 +792,7 @@ impl AgentLoop {
             lsp_enabled,
             mcp_tool_revision,
             permission_version,
+            contextual_revision,
             expose_raw_search,
             self.services.config.tool_deferral.clone(),
             definitions.clone(),
@@ -878,10 +944,24 @@ mod tests {
         ];
         let projected = project_initial_tool_palette(
             crate::agent::policy::ToolExposureMode::Curated,
+            &std::collections::BTreeSet::new(),
             definitions,
         );
         assert_eq!(projected.len(), 2);
         assert_eq!(projected[0].defer_loading, None);
         assert_eq!(projected[1].defer_loading, Some(true));
+    }
+
+    #[test]
+    fn contextual_tools_are_host_state_driven_and_bounded() {
+        let inactive = contextual_tool_names(false, false, false);
+        assert!(inactive.is_empty());
+
+        let active = contextual_tool_names(true, true, true);
+        assert_eq!(active.len(), 6);
+        assert!(active.contains("context_read"));
+        assert!(active.contains("goal_update_progress"));
+        assert!(active.contains("work_plan_update_item"));
+        assert!(!active.contains("work_order"));
     }
 }

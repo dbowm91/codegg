@@ -28,6 +28,7 @@ pub(super) type ToolDefCache = (
     bool,
     String,
     u64,
+    String,
     bool,
     Option<ToolDeferralConfig>,
     Vec<ToolDefinition>,

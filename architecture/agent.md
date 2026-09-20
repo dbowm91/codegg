@@ -530,6 +530,12 @@ pub enum ToolExposureMode {
 }
 ```
 
+Coding-oriented profiles preserve a complete native loop: inspect/search,
+edit/create, controlled command execution, supervised test verification, and
+context-artifact recovery when registered. Goal and WorkPlan tools are
+promoted from the policy-allowed deferred universe only when their host-bound
+session state is active; WorkOrder remains distinct from live task delegation.
+
 ### Capability & AgentCapabilitySet (`src/agent/tool_surface.rs:14`)
 
 12 capability kinds: `FilesystemRead`, `FilesystemWrite`, `ShellReadonly`,
