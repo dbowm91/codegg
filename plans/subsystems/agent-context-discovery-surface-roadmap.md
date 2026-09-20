@@ -1,6 +1,6 @@
 # Agent Context and Discovery Surface Roadmap
 
-Status: active; M001 closed, M002 ready for handoff
+Status: closed; M001 and M002 closed
 
 Repository baseline reviewed: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -176,7 +176,7 @@ Plan:
 
 - plans/implementation/agent-context-discovery-surface/002-bounded-persistent-memory-retrieval.md
 
-Status: ready for handoff.
+Status: closed.
 
 Expose the existing curated MemoryStore through model-facing deferred memory_search and memory_get operations. Search is limited to the user preference namespace and the current authorized project namespace, with compact snippets and exact-ID reads. It does not search raw messages, continuation checkpoints, context artifacts, or other projects.
 

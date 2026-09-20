@@ -1,6 +1,6 @@
 # Agent Context Discovery Surface M002 — Bounded Persistent-Memory Retrieval
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -416,4 +416,3 @@ Stop and report if:
 - compatibility evidence for existing memory commands/summary;
 - dependency diff showing no vector/embedding store addition;
 - exact verification commands/outcomes.
-

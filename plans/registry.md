@@ -28,7 +28,7 @@ Canonical direction remains in:
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
-| Agent context and discovery surface | active | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 closed; M002 ready | M001 closed with bounded resource/prompt projection evidence; M002 remains ready. |
+| Agent context and discovery surface | closed | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 + M002 closed | Context discovery workstream closed with MCP projection and scoped curated-memory evidence. |
 | Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001 + M002 ready; M003-M004 dependency-gated | M001 first-class plugin tools and M002 Agent Plugins 1.0 import may execute in parallel; M003/M004 wait on M002. |
 
 ## Dependency-ready implementation plans
@@ -36,7 +36,7 @@ Canonical direction remains in:
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
 | Agent context and discovery surface | M001 MCP resource/prompt projection | closed | `plans/implementation/agent-context-discovery-surface/001-mcp-resource-and-prompt-projection.md` | Closure: `plans/closure/agent-context-discovery-surface/001-status.md`. |
-| Agent context and discovery surface | M002 bounded persistent-memory retrieval | ready | `plans/implementation/agent-context-discovery-surface/002-bounded-persistent-memory-retrieval.md` | Existing MemoryStore/daemon memory operations and closed parent-ceiling/tool-disclosure work satisfy dependencies; does not reopen transcript/vector search. |
+| Agent context and discovery surface | M002 bounded persistent-memory retrieval | closed | `plans/implementation/agent-context-discovery-surface/002-bounded-persistent-memory-retrieval.md` | Closure: `plans/closure/agent-context-discovery-surface/002-status.md`; transcript/vector search remains out of scope. |
 | Plugin ecosystem and harness interoperability | M001 first-class plugin tools | ready | `plans/implementation/plugin-ecosystem-interoperability/001-first-class-plugin-tools.md` | Existing PluginService/PluginPolicy plus canonical ToolRegistry/ToolBroker are available; repairs currently advertised custom_tools contract. |
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | ready | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closed runtime-assets M006 already supplies portable skills and plugin MCP contribution owners. |
 
