@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Agent context and discovery surface | closed | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 + M002 closed | Context discovery workstream closed with MCP projection and scoped curated-memory evidence. |
-| Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001 + M002 ready; M003-M004 dependency-gated | M001 first-class plugin tools and M002 Agent Plugins 1.0 import may execute in parallel; M003/M004 wait on M002. |
+| Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001 closed; M002 ready; M003-M004 dependency-gated | M001 closed with canonical plugin-tool evidence; M003/M004 still wait on portable-import M002. |
 
 ## Dependency-ready implementation plans
 
@@ -37,7 +37,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Agent context and discovery surface | M001 MCP resource/prompt projection | closed | `plans/implementation/agent-context-discovery-surface/001-mcp-resource-and-prompt-projection.md` | Closure: `plans/closure/agent-context-discovery-surface/001-status.md`. |
 | Agent context and discovery surface | M002 bounded persistent-memory retrieval | closed | `plans/implementation/agent-context-discovery-surface/002-bounded-persistent-memory-retrieval.md` | Closure: `plans/closure/agent-context-discovery-surface/002-status.md`; transcript/vector search remains out of scope. |
-| Plugin ecosystem and harness interoperability | M001 first-class plugin tools | ready | `plans/implementation/plugin-ecosystem-interoperability/001-first-class-plugin-tools.md` | Existing PluginService/PluginPolicy plus canonical ToolRegistry/ToolBroker are available; repairs currently advertised custom_tools contract. |
+| Plugin ecosystem and harness interoperability | M001 first-class plugin tools | closed | `plans/implementation/plugin-ecosystem-interoperability/001-first-class-plugin-tools.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/001-status.md`. |
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | ready | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closed runtime-assets M006 already supplies portable skills and plugin MCP contribution owners. |
 
 ## Current execution order and dependency gates

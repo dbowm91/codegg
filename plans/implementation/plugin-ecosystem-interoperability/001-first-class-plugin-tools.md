@@ -1,6 +1,6 @@
 # Plugin Ecosystem Interoperability M001 — First-Class Plugin-Contributed Agent Tools
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -412,4 +412,3 @@ Stop and report if:
 - restart/disable/uninstall evidence;
 - exact verification commands/outcomes;
 - explicit confirmation that no duplicate tool/plugin runtime was introduced.
-

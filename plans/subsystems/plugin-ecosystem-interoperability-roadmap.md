@@ -1,6 +1,6 @@
 # Plugin Ecosystem and Harness Interoperability Roadmap
 
-Status: active; M001 and M002 ready for handoff, M003-M004 dependency-gated
+Status: active; M001 closed, M002 ready for handoff, M003-M004 dependency-gated
 
 Repository baseline reviewed: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -172,7 +172,7 @@ Plan:
 
 - plans/implementation/plugin-ecosystem-interoperability/001-first-class-plugin-tools.md
 
-Status: ready for handoff.
+Status: closed.
 
 Add a Tool capability to plugin manifests/protocol, index it in PluginRegistry, adapt it into the canonical ToolRegistry, and dispatch through PluginService only after ordinary broker/permission/surface checks. Make the existing custom_tools API feature truthful.
 
@@ -319,4 +319,3 @@ Deferred:
 - UI/App portability;
 - browser credential/profile synchronization;
 - model-autonomous installation or enablement.
-
