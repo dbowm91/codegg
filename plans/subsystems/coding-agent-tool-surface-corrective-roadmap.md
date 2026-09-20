@@ -260,8 +260,8 @@ This campaign closes when registration, disclosure, discovery, category/capabili
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | active | `plans/implementation/coding-agent-tool-surface-corrective/001-surface-authority-and-discovery-correctness.md` | — | — |
-| M002 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/002-coding-profile-and-contextual-capability-exposure.md` | — | M001 |
+| M001 | closed | `plans/implementation/coding-agent-tool-surface-corrective/001-surface-authority-and-discovery-correctness.md` | `plans/closure/coding-agent-tool-surface-corrective/001-status.md` | — |
+| M002 | ready | `plans/implementation/coding-agent-tool-surface-corrective/002-coding-profile-and-contextual-capability-exposure.md` | — | — |
 | M003 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/003-compact-discovery-and-multiplexed-tool-ergonomics.md` | — | M001, M002 |
 | M004 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | — | M002 |
-| M005 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | — | M001 |
+| M005 | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | — | — |

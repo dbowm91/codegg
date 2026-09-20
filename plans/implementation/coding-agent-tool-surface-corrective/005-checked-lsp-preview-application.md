@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Corrective M005 — Agent-Facing Checked LSP Preview Application
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production baseline)
 
