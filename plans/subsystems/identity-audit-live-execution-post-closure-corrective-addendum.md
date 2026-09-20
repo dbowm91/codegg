@@ -115,6 +115,6 @@ Distributed `node_enrollment` and `remote_execute` remain outside this workstrea
 | Milestone | Status | Dependencies |
 |---|---|---|
 | M001 | closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/001-status.md`; implementation `7c75c009`) | identity M005 closed; M003 verification guard closed |
-| M002 | ready | hard dependency on M001 satisfied (M001 closed) |
+| M002 | closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/002-status.md`; implementation `e0cc7f05`) | hard dependency on M001 satisfied (M001 closed) |
 | M003 | ready | hard dependency on M001 satisfied (M001 closed) |
 | M004 | blocked | hard dependency on M002 + M003 |
