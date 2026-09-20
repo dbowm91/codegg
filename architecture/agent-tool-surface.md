@@ -152,6 +152,11 @@ recovery, network, or raw-subcommand operations. LSP and task remain their
 canonical multiplexed surfaces because the census did not justify new names
 without duplicating their operation-family routing and authority.
 
+The coding profile also exposes `verify` in Curated profiles and keeps it
+discoverable for Minimal profiles. `verify` is a structured projection over
+the configured Bash/command-intent path, not a second process executor; its
+schema cannot express arbitrary shell syntax or mutation.
+
 ### Context Palette Reduction
 
 `ResolvedToolSurface::reduce(max)` narrows the unreduced surface to at

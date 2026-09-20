@@ -1,6 +1,12 @@
 # Coding-Agent Tool Surface Corrective M005 — Agent-Facing Checked LSP Preview Application
 
-Status: ready for handoff
+Status: blocked
+
+Blocker: the current model-tool construction does not carry the trusted
+workspace/project authority and canonical `WorkspaceLockTable` required by
+`CoreRequest::LspPreviewApply`; each `LspTool` also owns a private preview
+registry. Implementing the adapter now would bypass or duplicate daemon
+authority, so work stops until that seam is designed and approved.
 
 Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production baseline)
 

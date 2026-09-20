@@ -14,6 +14,14 @@ log, and branch inspection. It delegates to `GitReadTool`, while `git` retains
 typed mutation, recovery, network, and compatibility ownership. No separate
 Git execution path or recovery state exists.
 
+`verify` is the bounded semantic verification facade for supported Cargo
+workspaces. Its allow-listed actions (`check`, `build`, `lint`, `typecheck`,
+`format_check`, and `auto`) generate offline Cargo argv and delegate through
+the configured `BashTool`; command-intent classification, scheduler/managed
+process routing, sandboxing, audit, and bounded output therefore keep their
+existing owners. It accepts no command, package, path, installation, or
+auto-fix field. Unsupported project families return a resolver miss.
+
 The `tool` module provides the built-in tools that the agent can use to
 interact with the filesystem, shell, and external services. It owns the
 tool registry, the execution pipeline, and the backend/diagnostics
