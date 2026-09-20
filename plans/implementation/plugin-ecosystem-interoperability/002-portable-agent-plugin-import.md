@@ -1,6 +1,6 @@
 # Plugin Ecosystem Interoperability M002 — Agent Plugins 1.0 and Bounded Foreign-Package Import
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -416,4 +416,3 @@ Stop and report if:
 - Claude unsupported-component no-execution evidence;
 - exact verification commands/outcomes;
 - explicit confirmation that no new MCP/asset/plugin runtime owner was introduced.
-

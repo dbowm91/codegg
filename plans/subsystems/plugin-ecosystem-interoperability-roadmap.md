@@ -1,6 +1,6 @@
 # Plugin Ecosystem and Harness Interoperability Roadmap
 
-Status: active; M001 closed, M002 ready for handoff, M003-M004 dependency-gated
+Status: active; M001 and M002 closed, M003-M004 ready for handoff
 
 Repository baseline reviewed: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -184,7 +184,7 @@ Plan:
 
 - plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md
 
-Status: ready for handoff.
+Status: closed.
 
 Add a package parser/installer that recognizes Agent Plugins 1.0 plugin.json, skills/, and mcp.json and translates them into existing CodeGG passive contributions. Add a bounded Claude-compatible passive import seam for skills/agents/MCP where formats are already safely understood; detect but do not execute unsupported commands/hooks.
 
@@ -196,7 +196,7 @@ Plan:
 
 - plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md
 
-Status: blocked on M002.
+Status: ready for handoff.
 
 Package a CodeGG-supported browser-testing integration that prefers Playwright CLI + skill instructions for high-throughput coding tasks and offers Playwright MCP as an optional persistent/introspective mode. Do not add a native browser engine.
 
@@ -208,7 +208,7 @@ Plan:
 
 - plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md
 
-Status: blocked on M002; soft dependency on M001.
+Status: ready for handoff.
 
 Replace the empty official/repository marketplace tiers with a provenance-aware catalog abstraction and unified installer for supported CodeGG/Agent-Plugins packages. Add read-only model extension discovery, but keep install/enable as explicit host/user actions.
 

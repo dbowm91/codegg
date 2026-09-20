@@ -577,6 +577,23 @@ api_version = 1
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn install_accepts_agent_plugins_package_without_native_manifest() {
+        let src = make_temp_dir("portable");
+        let dest_root = make_temp_dir("portable_dest");
+        fs::write(
+            src.join("plugin.json"),
+            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"portable-demo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+
+        let installed = install_from_path_into(&src, &dest_root).await.unwrap();
+        assert_eq!(installed, dest_root.join("portable-demo"));
+        assert!(installed.join("plugin.json").is_file());
+        assert!(!installed.join("manifest.toml").exists());
+        let _ = fs::remove_dir_all(&dest_root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn install_rejects_path_traversal() {
         // plugins_dir().join(plugin_name) keeps the path anchored to the
         // canonical plugins directory. A traversal attempt resolves into

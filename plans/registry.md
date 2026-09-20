@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Agent context and discovery surface | closed | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 + M002 closed | Context discovery workstream closed with MCP projection and scoped curated-memory evidence. |
-| Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001 closed; M002 ready; M003-M004 dependency-gated | M001 closed with canonical plugin-tool evidence; M003/M004 still wait on portable-import M002. |
+| Plugin ecosystem and harness interoperability | active | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001 + M002 closed; M003 + M004 ready | Portable package/import contract is closed; the downstream plans are unblocked and ready. |
 
 ## Dependency-ready implementation plans
 
@@ -38,7 +38,9 @@ Canonical direction remains in:
 | Agent context and discovery surface | M001 MCP resource/prompt projection | closed | `plans/implementation/agent-context-discovery-surface/001-mcp-resource-and-prompt-projection.md` | Closure: `plans/closure/agent-context-discovery-surface/001-status.md`. |
 | Agent context and discovery surface | M002 bounded persistent-memory retrieval | closed | `plans/implementation/agent-context-discovery-surface/002-bounded-persistent-memory-retrieval.md` | Closure: `plans/closure/agent-context-discovery-surface/002-status.md`; transcript/vector search remains out of scope. |
 | Plugin ecosystem and harness interoperability | M001 first-class plugin tools | closed | `plans/implementation/plugin-ecosystem-interoperability/001-first-class-plugin-tools.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/001-status.md`. |
-| Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | ready | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closed runtime-assets M006 already supplies portable skills and plugin MCP contribution owners. |
+| Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
+| Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | ready | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | M002 portable package/install contract is closed; package can use the canonical importer. |
+| Plugin ecosystem and harness interoperability | M004 extension catalog/install | ready | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | M002 hard dependency is closed; M001 soft plugin-tool dependency is also closed. |
 
 ## Current execution order and dependency gates
 
@@ -69,8 +71,6 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 | Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific (hardening landed; see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
-| Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | Hard dependency on M002 Agent Plugins 1.0/local portable-package import so the integration does not invent a temporary package path. |
-| Plugin ecosystem and harness interoperability | M004 extension catalog/install | Hard dependency on M002 unified portable package parser/installer; M001 plugin tools is a soft dependency for richer capability metadata. |
 
 ## Closure work and current control points
 
