@@ -97,6 +97,8 @@ pub fn build_session_tool_registry(
         sandbox_profile,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
+    let preview_apply_locks = workspace_locks.clone();
+    let preview_apply_lsp_service = lsp_service.clone();
 
     // Determine whether context_read should be registered.
     let ctx_config = config.context.as_ref();
@@ -165,6 +167,33 @@ pub fn build_session_tool_registry(
         search_runtime,
         sandbox_profile,
     });
+
+    // M005: register the model-facing checked LSP apply adapter only when
+    // every daemon-owned dependency is present. The adapter shares the same
+    // service and preview handle as `lsp`; it never reconstructs a preview
+    // from model input or routes through a synthetic CoreRequest.
+    if let (
+        Some(pool_for_preview_apply),
+        Some(workspace_locks_for_preview_apply),
+        Some(lsp_service_for_preview_apply),
+        Some(preview_registry),
+    ) = (
+        pool.clone(),
+        preview_apply_locks,
+        preview_apply_lsp_service,
+        tool_registry.lsp_preview_registry(),
+    ) {
+        tool_registry.register(crate::tool::lsp_preview_apply::LspPreviewApplyTool::new(
+            pool_for_preview_apply,
+            execution.workspace_root.clone(),
+            execution.workspace_id.as_str().to_owned(),
+            session_id.to_owned(),
+            turn_id.clone(),
+            workspace_locks_for_preview_apply,
+            lsp_service_for_preview_apply,
+            preview_registry,
+        ));
+    }
 
     // Register the task/subagent tool when a runtime is available.
     if let Some(runtime) = task_tool_runtime {

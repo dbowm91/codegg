@@ -261,7 +261,7 @@ pub(super) fn filter_tools_for_model<'a>(
             match t.name() {
                 "edit" | "write" => true,
                 "codesearch" | "websearch" => flags.search_provider_available,
-                "lsp" => lsp_enabled,
+                "lsp" | "lsp_preview_apply" => lsp_enabled,
                 "batch" => false,
                 _ => true,
             }

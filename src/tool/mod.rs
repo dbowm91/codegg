@@ -35,6 +35,7 @@ pub mod integrated_config;
 pub mod invalid;
 pub mod list;
 pub mod lsp;
+pub mod lsp_preview_apply;
 pub mod lsp_read;
 pub(crate) mod lsp_security;
 pub mod patch_util;

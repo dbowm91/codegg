@@ -74,7 +74,7 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
         "git_query" | "research" | "research_search" | "repo_fetch" | "repo_map"
         | "security_search" | "batch_fetch" | "evidence_bundle" | "codesearch" | "review"
         | "image" | "terminal" | "skill_proposal" | "security" | "replace" | "commit"
-        | "python_script" | "tool_program" => ToolDisclosure::Deferred,
+        | "lsp_preview_apply" | "python_script" | "tool_program" => ToolDisclosure::Deferred,
         // Eggsact deferred validators (already `defer_loading = true`).
         "text_inspect"
         | "config_preflight"

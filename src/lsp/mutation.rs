@@ -53,6 +53,14 @@ pub async fn validate_session_workspace_binding(
 ) -> Result<(), LspSessionWorkspaceBindingError> {
     codegg_core::context::SessionId::parse(session_id)
         .map_err(|error| LspSessionWorkspaceBindingError::Invalid(error.to_string()))?;
+    // Session IDs are opaque locators, never filesystem paths.  Keep this
+    // seam fail-closed even though the legacy context parser permits other
+    // printable punctuation for compatibility.
+    if session_id.contains('/') || session_id.contains('\\') {
+        return Err(LspSessionWorkspaceBindingError::Invalid(
+            "session ID contains a path separator".to_string(),
+        ));
+    }
     codegg_core::workspace::WorkspaceId::parse(workspace_id)
         .map_err(|error| LspSessionWorkspaceBindingError::Invalid(error.to_string()))?;
     let bound_workspace =

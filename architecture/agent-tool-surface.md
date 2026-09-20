@@ -157,6 +157,13 @@ discoverable for Minimal profiles. `verify` is a structured projection over
 the configured Bash/command-intent path, not a second process executor; its
 schema cannot express arbitrary shell syntax or mutation.
 
+The deferred `lsp_preview_apply` tool is a direct-only, mutating exception to
+the read-oriented LSP surface. It is advertised only when LSP is enabled and
+the session registry has the daemon-owned checked-apply dependencies. Its
+schema accepts only an opaque preview ID; host-owned registry data constructs
+the canonical apply DTO. Plan, exploration, research, security-review, and
+verifier agents explicitly deny it, and Tool Programs cannot invoke it.
+
 ### Context Palette Reduction
 
 `ResolvedToolSurface::reduce(max)` narrows the unreduced surface to at

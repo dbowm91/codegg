@@ -159,6 +159,10 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,
         // Shell
         "bash" | "terminal" | "test" => ToolCategory::ShellExec,
+        // Explicit checked LSP preview application is a filesystem
+        // mutation; keep the semantic map named and aligned with the tool
+        // contract rather than relying on the conservative fallback.
+        "lsp_preview_apply" => ToolCategory::Mutating,
         // Everything else mutates the filesystem or external systems
         _ => ToolCategory::Mutating,
     }

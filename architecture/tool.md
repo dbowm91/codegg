@@ -25,8 +25,11 @@ auto-fix field. Unsupported project families return a resolver miss.
 Session tool construction threads the daemon-resolved LSP service and a
 bounded turn-local preview-registry handle through `SessionToolContext` into
 `ToolRegistryOptions`. The model-facing `lsp` and hidden `lsp_read` adapters
-share the supplied service; a future checked preview-apply adapter can consume
-the same explicit preview handle without a global registry or downcast.
+share the supplied service, and direct-only `lsp_preview_apply` consumes the
+same explicit preview handle plus canonical workspace locks and host-bound
+session/workspace identity. Its only model input is an opaque preview ID; it
+delegates checked mutation to `src/lsp/mutation.rs::apply_preview` and cannot
+be called by Tool Programs.
 
 The `tool` module provides the built-in tools that the agent can use to
 interact with the filesystem, shell, and external services. It owns the
@@ -363,6 +366,7 @@ Raw `mcp__eggsearch__*` tools hidden by default
 | Tool | Registration | Description |
 |------|-------------|-------------|
 | **lsp** | Native or DisabledTool | LSP client tools. Native when backend is Native/Builtin/fallback-MCP; DisabledTool when disabled or MCP-no-fallback. Core when native. |
+| **lsp_preview_apply** | Session-scoped native | Deferred, direct-only checked LSP preview application. Registered only with pool, workspace locks, shared LSP service, and preview handle; unavailable to Tool Programs. |
 | **security** | Native or DisabledTool | Security scanning. Same backend logic as LSP. Deferred for ordinary coding; immediate for `security-review` role. |
 
 ### Conditional: Todo Tools (0-2 tools)

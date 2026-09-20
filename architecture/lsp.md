@@ -40,15 +40,21 @@ The daemon-resolved `Arc<LspService>` is threaded from `TurnRunInput` through
 `SessionToolContext` into the session `ToolRegistry`; prompt-context collection,
 the model-facing `lsp`, and hidden `lsp_read` therefore share one service
 identity for the turn. The registry also owns one bounded, turn-local
-`Arc<Mutex<PreviewArtifactRegistry>>`. A preview-producing `lsp` tool and a
-future sibling apply adapter can share that explicit handle, while independent
+`Arc<Mutex<PreviewArtifactRegistry>>`. The preview-producing `lsp` tool and
+the direct-only `lsp_preview_apply` adapter share that explicit handle, while independent
 registries remain isolated and teardown/restart drops previews.
 
 Preview application remains solely owned by `src/lsp/mutation.rs::apply_preview`.
-The transport `CoreRequest::LspPreviewApply` is authorized as
-`via_session` + `file.modify`, then reuses the canonical session/workspace
-binding helper before acquiring the daemon workspace lock. No preview data is
-persisted and no LSP command or opaque workspace edit is enabled.
+The human `/lsp-preview-apply` path and the direct-only model-facing
+`lsp_preview_apply` tool both converge on that service. The agent tool accepts
+only an opaque `preview_id`; it exports the current candidate from this shared
+turn-local registry, binds host-owned session/workspace/turn identity, and
+marks the candidate applied only after a successful mutation. It is
+`Mutating`, non-idempotent, non-retryable, and unavailable to Tool Programs.
+The transport `CoreRequest::LspPreviewApply` is authorized as `via_session` +
+`file.modify`, then reuses the canonical session/workspace binding helper
+before acquiring the daemon workspace lock. No preview data is persisted and
+no LSP command or opaque workspace edit is enabled.
 
 ### Tier 1 vs Tier 2 compatibility
 
@@ -1116,8 +1122,11 @@ Stale previews are flagged in the detail view with per-file stale evidence and i
 #### Preview-only boundary preserved
 
 - `LspTool` remains `ToolCategory::ReadOnly` — no disk writes.
+- `lsp_preview_apply` is a separate `ToolCategory::Mutating` tool with a
+  `DirectOnly`, non-idempotent, no-retry contract; Tool Programs cannot call it.
 - `workspace/executeCommand` is never invoked.
-- Applying a preview requires the separate mutating `apply_patch` tool.
+- Applying a preview requires the separate checked apply surface; neither the
+  model nor the TUI reconstructs raw patch authority.
 - Stale previews warn but do not block inspection.
 
 ## Phase 9: Lifecycle, Workspace, and Preview Apply Ergonomics
@@ -1144,16 +1153,20 @@ All lifecycle commands are read-only (restart/stop are safe mutations that do no
 
 ### Preview apply handoff
 
-`/lsp-preview-apply <id>` applies patches directly to disk with hash revalidation:
+`/lsp-preview-apply <id>` and `lsp_preview_apply({preview_id})` apply through
+the same checked mutation service with hash revalidation:
 
 1. Refreshes stale-base status by re-hashing on-disk files.
 2. If stale, blocks by default and instructs the user to recompute.
 3. If no patches, shows an informational message.
-4. For each patch: reads the file, recomputes SHA-256 hash, compares to `original_hash`, applies the unified diff via `apply_unified_diff`, writes the result.
-5. Tracks per-file successes/failures and reports results.
-6. On full success, marks the preview as applied in the registry.
+4. Constructs the host-owned `LspPreviewApplyRequestDto` and delegates to
+   `src/lsp/mutation.rs::apply_preview`, which reads each file, recomputes its
+   SHA-256 hash, applies the unified diff, writes atomically, checkpoints, and
+   synchronizes the LSP service.
+5. Reports the bounded typed result and, only on full success, marks the
+   preview as applied in the registry.
 
-Hash revalidation ensures patches are only applied when the file content matches what the preview was based on. File writes go through standard `std::fs` operations — `LspTool` remains read-only (no LSP `workspace/applyEdit`). The `export_preview_apply_candidate` function remains strictly read-only; the TUI handler orchestrates the apply flow externally.
+Hash revalidation ensures patches are only applied when the file content matches what the preview was based on. File writes are owned by the canonical mutation service — `LspTool` remains read-only (no LSP `workspace/applyEdit`). The `export_preview_apply_candidate` function remains strictly read-only; both the TUI handler and model adapter use it only to build a checked host-side request.
 
 **Write-side hardening:** The apply path uses
 `write_preview_apply_plan_atomically_enough()` in
@@ -4176,9 +4189,10 @@ Do not add parallel context packet types. All LSP evidence flows through `LspCon
 
 The LSP surface is preview-first. `renamePreview`, `formatPreview`,
 `sourceActionPreview`, and `codeActionPreview` produce bounded, read-only
-workspace-edit previews. A preview is applied only after an explicit user
-invocation of `/lsp-preview-apply`; the model-facing `LspTool` remains
-read-only and exposes no internal apply helper as a model operation.
+workspace-edit previews. A preview is applied only through the explicit human
+`/lsp-preview-apply` path or the separate direct-only `lsp_preview_apply`
+model tool; the model-facing `LspTool` remains read-only and exposes no
+internal apply arm.
 
 The controlled apply boundary currently supports this exact subset:
 
