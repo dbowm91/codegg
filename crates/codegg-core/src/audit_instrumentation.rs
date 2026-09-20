@@ -351,7 +351,7 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         scope: "via_job",
         decision: "job_retry",
         metadata: &["job.id", "run.id", "job.outcome", "decision.outcome"],
-        causation: "terminal for job; retry maps live as representative, full async completion chain via builders/fixtures",
+        causation: "terminal for job; scheduler terminal attempt transitions emit live with truthful outcome; retry maps as the retry request, not a surrogate completion",
         visibility: AuditVisibility::Project,
         live_mapped: true,
     },
@@ -1574,6 +1574,17 @@ impl ExecutionAuditEmitter {
     /// Whether a durable pool backs this emitter.
     pub fn has_pool(&self) -> bool {
         self.pool.is_some()
+    }
+
+    /// Clone the durable pool backing this emitter, if any.
+    ///
+    /// Identity / audit M003: the scheduler terminal hook uses this to
+    /// resolve the durable `OriginAttribution` row for the terminal job
+    /// from the same database that backs audit appends. Returns `None`
+    /// for pool-less emitters, in which case the caller falls back to
+    /// the explicit `legacy_local` attribution rule.
+    pub fn pool_snapshot(&self) -> Option<sqlx::SqlitePool> {
+        self.pool.clone()
     }
 
     /// Best-effort append of one already-built structural event.

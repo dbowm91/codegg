@@ -297,6 +297,42 @@ def check_m002_live_execution_hooks_present() -> bool:
     return ok
 
 
+def check_m003_scheduler_job_complete_present() -> bool:
+    """Pin the M003 scheduler terminal `job_complete` hook.
+
+    The true terminal owner is the durable scheduler attempt transition
+    (`persist_completion` + `mark_unschedulable` + queued
+    `request_cancel`), not the `job_retry` request mapping. This check
+    keeps the hook from silently regressing to builder-only status: the
+    scheduler must reference the terminal emit path, resolve durable
+    attribution with the explicit legacy fallback, scope terminals by
+    attempt, and bound outcome labels without payload content.
+    """
+    expected = (
+        ("src/scheduler/job_complete_audit.rs", "emit_terminal_completion"),
+        ("src/scheduler/job_complete_audit.rs", "trusted_context_for_terminal_job"),
+        ("src/scheduler/job_complete_audit.rs", "terminal_scope"),
+        ("src/scheduler/job_complete_audit.rs", "job_outcome_label"),
+        ("src/scheduler/job_complete_audit.rs", "legacy_local"),
+        ("src/scheduler/scheduler.rs", "emit_terminal_completion"),
+        ("src/scheduler/scheduler.rs", "mark_unschedulable"),
+        ("src/scheduler/scheduler.rs", "persist_completion"),
+        ("crates/codegg-core/src/transport_auth.rs", "reconstructed"),
+        ("crates/codegg-core/src/audit_instrumentation.rs", "pool_snapshot"),
+    )
+    ok = True
+    for rel, marker in expected:
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            print(f"  FAIL: job-complete owner missing: {rel}")
+            ok = False
+            continue
+        if marker not in path.read_text(encoding="utf-8"):
+            print(f"  FAIL: {rel} missing job-complete marker {marker}")
+            ok = False
+    return ok
+
+
 def check_audit_doc_has_matrix() -> bool:
     if not AUDIT_DOC.is_file():
         print("  FAIL: architecture/audit.md missing")
@@ -325,6 +361,7 @@ def main() -> int:
         ("live-mapped actions have operation mappings", check_live_mapped_actions_have_operation_mapping),
         ("instrumentation stays append-only and trusted", check_instrumentation_stays_append_only_and_trusted),
         ("M002 live execution hooks are present at canonical owners", check_m002_live_execution_hooks_present),
+        ("M003 scheduler job-complete hook is present at canonical owner", check_m003_scheduler_job_complete_present),
         ("audit operator matrix doc exists", check_audit_doc_has_matrix),
     ]
     results: list[tuple[str, bool]] = []

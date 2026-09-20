@@ -234,9 +234,18 @@ Explicit gaps (builders + store fixtures landed, no live single-host
 emission by design):
 
 - `node_enrollment`, `remote_execute` — future node protocol.
-- `job_complete` — async scheduler terminal transitions are proven
-  via builders/fixtures in M005; the live scheduler hook is the M003
-  follow-up.
+
+Live in scheduler M003: `job_complete` is emitted at the durable
+terminal attempt transition (`persist_completion` for executor
+success/failure/cancelled/timed_out/interrupted, `mark_unschedulable`
+for validation failure, queued `request_cancel` for pre-admission
+cancel) through the M001 seam (`src/scheduler/job_complete_audit.rs`).
+Attribution is resolved from the durable `OriginAttribution` row
+(scope `job`) with explicit `legacy-local` fallback; one deterministic
+event id per attempt/outcome dedupes replays; `job_retry` remains the
+retry-request event, not a surrogate completion. Guard:
+`check_m003_scheduler_job_complete_present`; matrix:
+`tests/identity_m003_scheduler_job_complete.rs`.
 
 Live in M003: `chat_triggered_action` is emitted by the daemon
 collaboration owner for every authorized structured chat action
@@ -349,6 +358,39 @@ canonical execution owners through the M001 seam
   lives in `tests/identity_m002_live_audit_hooks.rs`. Full
   live-vs-builder guard tightening (event samples,
   duplicate/secret negatives across trajectories) is M004 scope.
+
+## Scheduler terminal hook (M003)
+
+`job_complete` is emitted live at the durable scheduler terminal
+attempt transition through the M001 seam
+(`src/scheduler/job_complete_audit.rs`, `src/scheduler/scheduler.rs`).
+
+- Ownership — the canonical terminal transition persists first, then
+  emits: executor completions via `persist_completion`
+  (success/failure/cancelled/timed_out/interrupted), validation
+  rejections via `mark_unschedulable` (bounded `failure`), and queued
+  pre-admission cancels via `request_cancel` (bounded `cancelled`).
+  TUI polling, projection/event observers, retry requests, and
+  completion consumers never emit.
+- Attribution — resolved from the durable `OriginAttribution` row
+  (scope `job`, first-write-wins) and rebuilt losslessly via
+  `AuthenticatedPrincipal::reconstructed` plus the gate-copied decision
+  linkage; legacy rows without attribution use explicit
+  `legacy-local`/`LocalOwner`, never a fabricated team principal.
+- Correlation — project/session/turn/run/job locators from the
+  durably-accepted `JobRecord` where available; metadata carries ids,
+  bounded outcome/state labels, and `decision.outcome = allow` only.
+  No payload, tool output, command text, or secret material.
+- Idempotency — one terminal transition scopes one deterministic event
+  id (`attempt:outcome`, or `job:cancelled` for pre-admission cancel);
+  the failed prior attempt and its retry successor stay distinct while
+  replays reuse the stored row. `job_retry` remains the retry-request
+  event, not a surrogate completion.
+- Failure policy — shared bounded emitter: timeouts/failures increment
+  counters with a warn and never fail terminalization.
+- `scripts/check_audit_coverage.py` pins the hook
+  (`check_m003_scheduler_job_complete_present`); the regression matrix
+  lives in `tests/identity_m003_scheduler_job_complete.rs`.
 
 ## Verification
 

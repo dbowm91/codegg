@@ -1101,6 +1101,8 @@ impl JobScheduler {
         }
         let running_tasks = self.running_tasks.clone();
         let task_attempt_id = attempt_id.clone();
+        let audit_emitter_for_task = self.audit_emitter.lock().await.clone();
+        let job_for_task = job.clone();
         {
             let executor = Arc::clone(&exec);
             let store = self.store.clone();
@@ -1166,15 +1168,37 @@ impl JobScheduler {
                 }
                 // The permit is dropped when ctx is consumed
                 // above; we no longer hold it here.
-                // Persist terminal state.
-                if let Err(error) = persist_completion(&store, &attempt_id, &completion).await {
-                    tracing::error!(
-                        job_id = %job_id_for_task,
-                        attempt_id = %attempt_id,
-                        %error,
-                        "executor completed but durable completion persistence failed"
-                    );
+                // Persist terminal state. M003 owns the `job_complete`
+                // live audit event at this durable terminal transition:
+                // emit only after the terminal state is durably accepted
+                // so the event describes a real transition. Replayed
+                // completions fail at the store before any emit, so no
+                // duplicate terminal rows are produced.
+                match persist_completion(&store, &attempt_id, &completion).await {
+                    Ok(terminal_job) => {
+                        if let Some(emitter) = audit_emitter_for_task.as_ref() {
+                            super::job_complete_audit::emit_terminal_completion(
+                                emitter,
+                                &terminal_job,
+                                &attempt_id,
+                                &completion,
+                            )
+                            .await;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            job_id = %job_id_for_task,
+                            attempt_id = %attempt_id,
+                            %error,
+                            "executor completed but durable completion persistence failed"
+                        );
+                    }
                 }
+                // Fallback chain locators from the pre-terminal record are
+                // retained for diagnostics only; the audit event above uses
+                // the durably-accepted terminal record.
+                let _ = &job_for_task;
                 if !matches!(completion.status, ExecutorStatus::Completed) {
                     if let Some(stats) = &executor_stats {
                         stats.total_failures.fetch_add(1, Ordering::Relaxed);
@@ -1460,6 +1484,9 @@ impl JobScheduler {
     ) -> Result<(), JobSchedulerError> {
         // The job remains in JobStore; mark the attempt as failed.
         // We use begin_attempt to create the attempt if needed.
+        // M003 owns the `job_complete` event at this durable terminal
+        // transition as well (validation failure is a bounded terminal
+        // outcome); emit only after the terminal state is accepted.
         let attempt = self
             .store
             .begin_attempt(&job.job_id, &self.daemon_generation)
@@ -1475,7 +1502,24 @@ impl JobScheduler {
             }),
             run_id: None,
         };
-        self.store.finish_attempt(completion).await?;
+        let terminal_job = self.store.finish_attempt(completion).await?;
+        if let Some(emitter) = self.audit_emitter.lock().await.clone() {
+            let ctx = super::job_complete_audit::trusted_context_for_terminal_job(
+                &emitter,
+                &terminal_job,
+                None,
+            )
+            .await;
+            let scope = super::job_complete_audit::terminal_scope(&attempt.attempt_id, "failure");
+            super::job_complete_audit::emit_job_complete(
+                &emitter,
+                &ctx,
+                &terminal_job.job_id,
+                "failure",
+                &scope,
+            )
+            .await;
+        }
         Ok(())
     }
 
@@ -1507,8 +1551,10 @@ impl JobScheduler {
                     ..
                 }),
                 Some(agent_runs),
-            ) = (job_before_cancel, self.agent_runs.lock().await.clone())
-            {
+            ) = (
+                job_before_cancel.clone(),
+                self.agent_runs.lock().await.clone(),
+            ) {
                 let _ = agent_runs
                     .finish(
                         &run_id,
@@ -1518,6 +1564,33 @@ impl JobScheduler {
                         Some(reason.to_string()),
                     )
                     .await;
+            }
+            // M003: queued `request_cancel` terminalizes the job without an
+            // attempt. Emit the single `job_complete` terminal (outcome
+            // `cancelled`) only for this new terminal transition; running
+            // cancels (`Requested`) terminalize later via the executor
+            // completion path, and `AlreadyTerminal` replays emit nothing.
+            if let Some(emitter) = self.audit_emitter.lock().await.clone() {
+                if let Ok(Some(terminal_job)) = self.store.get_job(job_id).await {
+                    let ctx = super::job_complete_audit::trusted_context_for_terminal_job(
+                        &emitter,
+                        &terminal_job,
+                        None,
+                    )
+                    .await;
+                    let scope = super::job_complete_audit::terminal_scope_for_job(
+                        &terminal_job.job_id,
+                        "cancelled",
+                    );
+                    super::job_complete_audit::emit_job_complete(
+                        &emitter,
+                        &ctx,
+                        &terminal_job.job_id,
+                        "cancelled",
+                        &scope,
+                    )
+                    .await;
+                }
             }
         }
         // Remove from in-memory queue if present.
@@ -1672,7 +1745,7 @@ async fn persist_completion(
     store: &Arc<dyn JobStore>,
     attempt_id: &AttemptId,
     completion: &ExecutorCompletion,
-) -> Result<(), JobStoreError> {
+) -> Result<JobRecord, JobStoreError> {
     let state = match completion.status {
         ExecutorStatus::Completed => AttemptState::Completed,
         ExecutorStatus::Failed => AttemptState::Failed,
@@ -1695,7 +1768,7 @@ async fn persist_completion(
         error: err,
         run_id: completion.run_id.clone(),
     };
-    store.finish_attempt(ac).await.map(|_| ())
+    store.finish_attempt(ac).await
 }
 
 struct DurableProgressSink {

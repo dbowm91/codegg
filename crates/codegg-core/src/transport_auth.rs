@@ -206,6 +206,35 @@ impl AuthenticatedPrincipal {
         )
     }
 
+    /// Reconstruct a principal from durable first-write-wins attribution.
+    ///
+    /// Identity / audit M003: the scheduler terminal `job_complete` hook
+    /// rebuilds the bound principal from the stored `OriginAttribution`
+    /// row (which itself was built via `OriginAttribution::from_authority`
+    /// at the admission boundary). This is lossless restoration of already-
+    /// admitted durable attribution, not synthesis from a request payload,
+    /// tool input, or model output. The scheduler supplies a fixed
+    /// scheduler-owned `client_id` because the async terminal has no live
+    /// connection; only the principal/kind/method/transport are restored.
+    /// Callers must supply fields read from the durable store, never from
+    /// untrusted DTOs. No `serde` impls are added, so wire input still
+    /// cannot supply this value.
+    pub fn reconstructed(
+        principal_id: PrincipalId,
+        kind: PrincipalKind,
+        auth_method: AuthMethod,
+        transport_class: TransportClass,
+        client_id: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            principal_id,
+            kind,
+            auth_method,
+            transport_class,
+            client_id.into(),
+        )
+    }
+
     pub fn principal_id(&self) -> &PrincipalId {
         &self.principal_id
     }
