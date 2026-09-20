@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Corrective Roadmap
 
-Status: active
+Status: closed
 
 Repository audit baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6`
 
@@ -207,7 +207,7 @@ Objective: expose routine build/lint/typecheck/format-check verification as a bo
 
 ### M005 — Checked LSP preview application
 
-Status: active; M006 closed and runtime seam installed.
+Status: closed; closure evidence: `plans/closure/coding-agent-tool-surface-corrective/005-status.md`.
 
 Class: capability.
 
@@ -313,6 +313,6 @@ This campaign closes when registration, disclosure, discovery, category/capabili
 | M002 | closed | `plans/implementation/coding-agent-tool-surface-corrective/002-coding-profile-and-contextual-capability-exposure.md` | `plans/closure/coding-agent-tool-surface-corrective/002-status.md` | — |
 | M003 | closed | `plans/implementation/coding-agent-tool-surface-corrective/003-compact-discovery-and-multiplexed-tool-ergonomics.md` | `plans/closure/coding-agent-tool-surface-corrective/003-status.md` + `007-status.md` | M007 supplemental current-baseline qualification passed; historical closure unchanged. |
 | M004 | closed | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | `plans/closure/coding-agent-tool-surface-corrective/004-status.md` + `007-status.md` | M007 supplemental current-baseline qualification passed; historical closure unchanged. |
-| M005 | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | — | M001 and M006 closed; ready to implement the narrow model-facing adapter. |
+| M005 | closed | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | `plans/closure/coding-agent-tool-surface-corrective/005-status.md` | — |
 | M006 | closed | `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md` | `plans/closure/coding-agent-tool-surface-corrective/006-status.md` | — |
 | M007 | closed | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | `plans/closure/coding-agent-tool-surface-corrective/007-status.md` | — |
