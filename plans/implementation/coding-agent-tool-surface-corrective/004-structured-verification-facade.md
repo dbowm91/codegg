@@ -6,7 +6,7 @@ Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production base
 
 Source roadmap:
 
-- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#M004--structured-verification-facade`
+- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#m004--structured-verification-facade`
 
 Dependency:
 
