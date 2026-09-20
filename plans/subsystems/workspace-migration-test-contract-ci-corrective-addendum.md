@@ -1,6 +1,6 @@
 # Workspace Migration Test-Contract CI Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: working tree after `bba7b2a3`
 
@@ -46,13 +46,14 @@ One corrective milestone:
 
 ### C001 — Canonical storage-layout assertions
 
-Status: active.
+Status: closed; closure record:
+`plans/closure/workspace-migration-test-contract-ci-corrective/001-status.md`.
 
 Plan: `plans/implementation/workspace-migration-test-contract-ci-corrective/001-canonical-storage-layout-assertions.md`.
 
 ## 5. Completion definition
 
-The corrective closes only when the focused continuation/WorkPlan migration
-tests, the canonical quick and Clippy gates, the full workspace suite, and
-hosted `CI / verify` all pass on the closure revision. No future plan is
+The corrective is closed. The focused continuation/WorkPlan migration tests,
+the canonical quick and Clippy gates, the full workspace suite, and hosted
+`CI / verify` all pass on `c9c37cca` in run 35483642396. No future plan is
 unblocked by this test-only correction.

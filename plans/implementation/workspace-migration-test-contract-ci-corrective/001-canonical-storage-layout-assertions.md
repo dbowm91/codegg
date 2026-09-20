@@ -1,6 +1,6 @@
 # Workspace Migration Test-Contract C001 — Canonical Storage-Layout Assertions
 
-Status: active
+Status: implemented
 
 Repository baseline: working tree after `bba7b2a3`
 

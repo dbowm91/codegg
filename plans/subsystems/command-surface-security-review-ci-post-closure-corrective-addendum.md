@@ -1,6 +1,6 @@
 # Command Surface / Security Review — Post-Closure CI Corrective Addendum
 
-Status: conditionally closed
+Status: closed
 
 Repository baseline reviewed: `a996e20060a0103a152a80fb62463241c1fd1162`
 
@@ -51,15 +51,14 @@ No production change is expected. If implementation discovers that the current b
 
 ### C001 — Security Review command test-contract and CI closure
 
-Status: conditionally closed; local contract and quick-gate evidence are
-complete. Hosted workspace-test closure is blocked by unrelated failures
-transferred to separate corrective plans.
+Status: closed; closure record:
+`plans/closure/command-surface-security-review-ci-post-closure-corrective/001-status.md`.
 
 Plan: `plans/implementation/command-surface-security-review-ci-post-closure-corrective/001-security-review-show-contract-and-ci-closure.md`.
 
 ## 5. Completion definition
 
-The workstream closes only when:
+The workstream is closed because:
 
 - `/security-review-show` remains `Builtin(SecurityReviewShow)`;
 - registry metadata tests assert typed action, not obsolete `dialog` metadata;
@@ -68,10 +67,10 @@ The workstream closes only when:
 - `cargo test --test security_review_receipt` is green;
 - `cargo test --workspace --locked -- --test-threads=1` is green;
 - canonical quick verification is green; and
-- hosted `CI / verify` on the closure revision is green, or any unrelated failure is recorded as a new corrective before closing this one.
+- hosted `CI / verify` on the closure revision is green in run 35483642396.
 
 ## 6. Milestone status
 
 | Milestone | Status | Dependencies |
 |---|---|---|
-| C001 | conditionally closed | command-surface M001 closed; typed-action tests and local verification updated; hosted workspace-test evidence is blocked by unrelated WorkOrder/encryption failures transferred to separate plans |
+| C001 | closed | command-surface M001 closed; typed-action tests and hosted CI are green; the unrelated WorkOrder, managed-key, and migration-test correctives are separately closed |

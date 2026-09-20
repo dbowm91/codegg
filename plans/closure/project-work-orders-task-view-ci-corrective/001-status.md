@@ -1,6 +1,6 @@
 # Project Work Orders and Task View CI Corrective C001 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -10,11 +10,16 @@ Source subsystem roadmap:
 
 - `plans/subsystems/project-work-orders-task-view-ci-corrective-addendum.md`
 
-Repository baseline reviewed: `4ec46a9b`
+Repository baseline and closure revision: `c9c37cca`
 
-Implementation commit:
+Implementation commits:
 
 - `5c4e2966` — test: reconcile migration version closure
+- `c9c37cca` — hosted CI closure revision; also closes the separately owned managed-key and migration-fixture correctives
+
+Hosted evidence:
+
+- [CI / verify run 35483642396](https://github.com/dbowm91/codegg/actions/runs/35483642396)
 
 ## 1. Executive finding
 
@@ -30,16 +35,18 @@ migration behavior changed.
 |---|---|---|
 | Canonical version assertion | `tests/work_orders_m001_foundation.rs` compares with `STORAGE_LAYOUT_VERSION` | pass |
 | Focused WorkOrder suite | `cargo test --test work_orders_m001_foundation -- --test-threads=1` | pass — 12 tests |
-| Hosted canonical CI | Runs [35467200089](https://github.com/dbowm91/codegg/actions/runs/35467200089) and [35468898714](https://github.com/dbowm91/codegg/actions/runs/35468898714) | conditional | The corrected candidate passed all guards, formatting, and Clippy; workspace tests then exposed an unrelated encryption race, and the bounded retry hung in workspace tests until cancellation. |
+| Full local workspace suite | `cargo test --workspace --locked -- --test-threads=1` | pass — 11,540 passed, 3 ignored |
+| Hosted canonical CI | [run 35483642396](https://github.com/dbowm91/codegg/actions/runs/35483642396) | pass — guards, formatting, Clippy, workspace tests, cleanup, and completion all passed |
 
 ## 3. Unresolved findings
 
-None in this corrective's scope. The original stale assertion is corrected;
-the later managed-key encryption failure is unrelated and is registered under
-`plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`.
+None. The original stale assertion is corrected and the managed-key failure
+that initially prevented strict hosted closure was resolved by its separately
+owned corrective.
 
 ## 4. Roadmap and registry disposition
 
 This follow-up does not reopen the closed WorkOrder capability roadmap or
-change any migration. It is conditionally closed pending the separately owned
-managed-key CI corrective; no future plan is blocked on this correction.
+change any migration. It is formally closed on the green hosted run; no future
+plan is blocked on this correction. The historical WorkOrder capability
+closure records remain unchanged.

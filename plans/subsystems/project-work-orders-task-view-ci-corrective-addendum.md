@@ -1,6 +1,6 @@
 # Project Work Orders and Task View — CI Migration-Test Corrective Addendum
 
-Status: conditionally closed
+Status: closed
 
 Repository baseline reviewed: `4ec46a9b`
 
@@ -37,14 +37,14 @@ preservation and rebuilt constraints.
 
 ### C001 — WorkOrder remigration assertion convergence
 
-Status: conditionally closed; focused/local gates are complete, but hosted
-workspace-test closure is transferred to the managed-key corrective.
+Status: closed; closure record:
+`plans/closure/project-work-orders-task-view-ci-corrective/001-status.md`.
 
 Plan: `plans/implementation/project-work-orders-task-view-ci-corrective/001-migration-version-test-contract.md`.
 
 ## 5. Completion definition
 
-The corrective closes when the focused WorkOrder foundation suite passes, the
-canonical quick/clippy gates remain green, and hosted `CI / verify` passes on a
-revision containing this test-only correction. No future plan is unblocked by
-this stale assertion correction.
+The corrective is closed. The focused WorkOrder foundation suite, canonical
+quick/Clippy gates, full workspace suite, and hosted `CI / verify` all pass on
+the closure revision. No future plan is unblocked by this stale assertion
+correction.

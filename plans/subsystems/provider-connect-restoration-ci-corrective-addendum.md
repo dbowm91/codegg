@@ -1,6 +1,6 @@
 # Provider /connect Restoration — Managed-Key CI Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `5c4e2966`
 
@@ -47,16 +47,17 @@ One corrective milestone:
 
 ### C001 — Managed-key concurrent first-write CI corrective
 
-Status: active.
+Status: closed; closure record:
+`plans/closure/provider-connect-restoration-ci-corrective/001-status.md`.
 
 Plan: `plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`.
 
 ## 5. Completion definition
 
-The corrective closes only when the focused encryption and relevant credential
-store concurrency tests pass repeatedly, `scripts/verify.sh quick` and the
-repository-standard Clippy command remain green, the workspace suite completes
-without the managed-key race or hang, and hosted `CI / verify` passes on the
-closure revision.
+The corrective is closed. The focused encryption and relevant credential-store
+concurrency tests pass repeatedly, `scripts/verify.sh quick` and the
+repository-standard Clippy command are green, the workspace suite completes
+without the managed-key race or hang, and hosted `CI / verify` passes on
+`c9c37cca` in run 35483642396.
 
 No current downstream plan is unblocked by this corrective registration.

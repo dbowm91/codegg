@@ -1,6 +1,6 @@
 # Project Work Orders and Task View CI Corrective C001 — Migration Version Test Contract
 
-Status: conditionally closed — test correction complete; hosted strict closure is transferred to the managed-key corrective.
+Status: implemented
 
 Repository baseline: `4ec46a9b`
 
