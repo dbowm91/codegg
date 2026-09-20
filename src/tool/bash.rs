@@ -49,6 +49,7 @@ use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, S
 use crate::tool::backend::{StructuredToolResult, ToolExecutionContext};
 use crate::tool::{Tool, ToolCategory};
 
+#[derive(Clone)]
 pub struct BashTool {
     pub(crate) timeout: Duration,
     pub(crate) max_output_lines: usize,

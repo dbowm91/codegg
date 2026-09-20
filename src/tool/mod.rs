@@ -66,6 +66,7 @@ pub mod tool_program_result;
 pub mod tool_program_source;
 pub mod tool_search;
 pub mod util;
+pub mod verify;
 pub mod webfetch;
 pub mod websearch;
 pub mod work_order;
@@ -417,7 +418,9 @@ impl ToolRegistry {
                 }
             },
         };
+        let verify_bash = bash_tool.clone();
         registry.register(bash_tool);
+        registry.register(crate::tool::verify::VerifyTool::new(verify_bash));
         registry.register(match workspace_root.as_ref() {
             Some(root) => crate::tool::read::ReadTool::default().with_allowed_root(root.clone()),
             None => crate::tool::read::ReadTool::default(),
