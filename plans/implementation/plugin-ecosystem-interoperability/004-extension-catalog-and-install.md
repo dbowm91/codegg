@@ -1,6 +1,6 @@
 # Plugin Ecosystem Interoperability M004 — Extension Catalog, Discovery, and Host-Mediated Installation
 
-Status: blocked on M002 (Agent Plugins 1.0 import); soft dependency on M001 plugin tools
+Status: implemented
 
 Repository baseline: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -474,4 +474,3 @@ Stop and register a new ADR/plan if:
 - offline/restart evidence;
 - exact verification commands/outcomes;
 - explicit confirmation that no automatic update or remote trust root was introduced.
-

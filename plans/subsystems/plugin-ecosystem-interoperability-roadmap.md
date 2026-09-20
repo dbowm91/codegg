@@ -1,6 +1,6 @@
 # Plugin Ecosystem and Harness Interoperability Roadmap
 
-Status: active; M001-M003 closed, M004 ready for handoff
+Status: closed; M001-M004 closed
 
 Repository baseline reviewed: 2f64c9e16f9ee96ea4d47ed897201f4c24d4606f
 
@@ -208,7 +208,7 @@ Plan:
 
 - plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md
 
-Status: ready for handoff.
+Status: closed.
 
 Replace the empty official/repository marketplace tiers with a provenance-aware catalog abstraction and unified installer for supported CodeGG/Agent-Plugins packages. Add read-only model extension discovery, but keep install/enable as explicit host/user actions.
 
