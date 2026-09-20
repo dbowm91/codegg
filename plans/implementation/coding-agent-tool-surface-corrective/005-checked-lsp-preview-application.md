@@ -28,9 +28,11 @@ Predecessor capability already closed:
 - `plans/implementation/architecture-convergence-incomplete-verticals/007-controlled-lsp-mutation-application.md`
 - `plans/closure/architecture-convergence-incomplete-verticals/007-status.md`
 
-Applicable ADRs: none if this remains a thin agent-tool adapter over the existing daemon-owned LSP mutation service. Stop if implementation would create a second mutation/checkpoint/authorization owner.
+Applicable ADRs:
 
-Primary class: capability / invariant
+- `plans/adrs/ADR-0008-lsp-preview-apply-authorization-and-runtime-ownership.md` (accepted)
+
+Primary class: capability
 
 ## 1. Objective
 
