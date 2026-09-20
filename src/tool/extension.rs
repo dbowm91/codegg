@@ -12,6 +12,87 @@ pub struct ExtensionSearchTool {
     service: Arc<MarketplaceService>,
 }
 
+pub struct ExtensionInstallRequestTool {
+    service: Arc<MarketplaceService>,
+}
+
+impl ExtensionInstallRequestTool {
+    pub fn new(service: Arc<MarketplaceService>) -> Self {
+        Self { service }
+    }
+}
+
+#[async_trait]
+impl Tool for ExtensionInstallRequestTool {
+    fn name(&self) -> &str {
+        "extension_install_request"
+    }
+    fn description(&self) -> &str {
+        "Create a host-visible proposal to install one exact catalog extension; this never downloads or installs it."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        json!({"type":"object","properties":{"id":{"type":"string","maxLength":128},"version":{"type":"string","maxLength":64}},"required":["id","version"]})
+    }
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
+    }
+    fn defer_loading(&self) -> bool {
+        true
+    }
+    async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        Ok(self.execute_structured(input, None).await?.output)
+    }
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let object = input.as_object().ok_or_else(|| {
+            ToolError::Execution("extension install request must be an object".into())
+        })?;
+        let id = object
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolError::Execution("catalog entry id is required".into()))?;
+        let version = object
+            .get("version")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolError::Execution("catalog version is required".into()))?;
+        let entry = self
+            .service
+            .catalog_entries()
+            .await
+            .into_iter()
+            .find(|entry| entry.id == id && entry.version == version)
+            .ok_or_else(|| ToolError::NotFound(format!("catalog entry {id}@{version}")))?;
+        let value = json!({
+            "status": "pending_host_action",
+            "id": entry.id,
+            "version": entry.version,
+            "name": entry.name,
+            "source": {"id": entry.source_id, "tier": entry.tier.to_string()},
+            "components": entry.components,
+            "prerequisites": entry.prerequisites,
+            "security_notes": entry.security_notes,
+            "install_requires_explicit_user_confirmation": true,
+            "activation": "separate_explicit_action",
+        });
+        Ok(StructuredToolResult::with_value(
+            value.to_string(),
+            value,
+            true,
+            Some(crate::tool::ToolProvenance {
+                backend: "native".into(),
+                implementation: "extension-catalog-proposal".into(),
+                version: Some("1".into()),
+                elapsed_ms: None,
+                truncated: false,
+                trust: crate::tool::ToolTrust::ExternalUntrusted,
+            }),
+        ))
+    }
+}
+
 impl ExtensionSearchTool {
     pub fn new(service: Arc<MarketplaceService>) -> Self {
         Self { service }

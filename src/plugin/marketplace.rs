@@ -172,6 +172,41 @@ impl MarketplaceService {
         self.load_catalog_json(source, &raw).await
     }
 
+    pub async fn load_catalog_url(
+        &self,
+        source: ExtensionCatalogSource,
+        url: &str,
+    ) -> Result<usize, CatalogError> {
+        if !url.starts_with("https://") {
+            return Err(CatalogError::Parse("remote catalogs require HTTPS".into()));
+        }
+        let client =
+            crate::http_client::ordinary_http_client_builder(eggfetch_core::Timeout::from_secs(30))
+                .build();
+        let mut response = client
+            .get(url)
+            .map_err(|e| CatalogError::Download(e.to_string()))?
+            .send()
+            .await
+            .map_err(|e| CatalogError::Download(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(CatalogError::Download(format!(
+                "HTTP {}",
+                response.status()
+            )));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| CatalogError::Download(e.to_string()))?;
+        if bytes.len() > MAX_CATALOG_BYTES {
+            return Err(CatalogError::TooLarge);
+        }
+        let raw = std::str::from_utf8(&bytes)
+            .map_err(|e| CatalogError::Parse(format!("catalog is not UTF-8: {e}")))?;
+        self.load_catalog_json(source, raw).await
+    }
+
     pub async fn catalog_entries(&self) -> Vec<ExtensionCatalogEntry> {
         self.catalog.read().await.clone()
     }

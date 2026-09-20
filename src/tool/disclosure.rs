@@ -94,7 +94,8 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
         | "mcp_resource_read"
         | "memory_search"
         | "memory_get"
-        | "extension_search" => ToolDisclosure::Deferred,
+        | "extension_search"
+        | "extension_install_request" => ToolDisclosure::Deferred,
         // Eggsact deferred validators (already `defer_loading = true`).
         "text_inspect"
         | "config_preflight"

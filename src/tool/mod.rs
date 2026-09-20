@@ -559,7 +559,12 @@ impl ToolRegistry {
             registry.register(crate::tool::memory::MemoryGetTool::new(store, scope));
         }
         if let Some(catalog) = options.extension_catalog.clone() {
-            registry.register(crate::tool::extension::ExtensionSearchTool::new(catalog));
+            registry.register(crate::tool::extension::ExtensionSearchTool::new(
+                catalog.clone(),
+            ));
+            registry.register(crate::tool::extension::ExtensionInstallRequestTool::new(
+                catalog,
+            ));
         }
 
         // --- Todo tools (policy + persistence gated) ---
