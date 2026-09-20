@@ -150,6 +150,7 @@ fn ctx_for(effect: &str, key: Option<String>) -> BrokerInvocationContext {
         allowed_tools: None,
         current_policy_revision: None,
         execution_audit: None,
+        audit_emitter: None,
     }
 }
 

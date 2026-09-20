@@ -234,9 +234,9 @@ Explicit gaps (builders + store fixtures landed, no live single-host
 emission by design):
 
 - `node_enrollment`, `remote_execute` — future node protocol.
-- `command_execute`, `git_operation` — execution-surface chains are
-  proven via builders/fixtures in M005; the live tool-broker and
-  git-executor hooks are deferred follow-ups.
+- `job_complete` — async scheduler terminal transitions are proven
+  via builders/fixtures in M005; the live scheduler hook is the M003
+  follow-up.
 
 Live in M003: `chat_triggered_action` is emitted by the daemon
 collaboration owner for every authorized structured chat action
@@ -288,6 +288,67 @@ identity or giving ToolBroker/Git/scheduler direct store ownership.
   events; M002/M003 consume this seam. Seam tests pin principal
   preservation, correlation, no-secret shape, timeout/failure counters,
   and single-store policy.
+
+## Live execution hooks (M002)
+
+`command_execute` and `git_operation` are emitted live at the
+canonical execution owners through the M001 seam
+(`src/live_execution_audit.rs`, `src/git_mutations.rs`).
+
+- Ownership per family — one real dispatch emits at most one event,
+  and the broker itself never emits. `command_family_for_tool` is the
+  single ownership matrix: `bash` → `shell`, `terminal` → `process`,
+  `test` → `test`; every other tool (reads, chat, artifacts, `git`)
+  maps to no event. The Git route inside bash stays silent because
+  `GitMutationExecutor` owns that single `git_operation` event, so
+  native and bash-routed mutations converge on one audit event.
+- Shell/test/process emission: `BashTool`, `TerminalTool`, and
+  `TestTool` emit from their structured-execution path only when the
+  broker threaded BOTH the trusted context and the shared emitter
+  (`ToolExecutionContext::live_audit_hook`); legacy direct calls stay
+  silent. Success/failure come from the terminal exit status;
+  spawned-then-timed-out dispatches emit `timeout`; pre-dispatch
+  denials and errors emit nothing (the denial is audited as
+  `authorization_decision` elsewhere). Retries share the broker
+  `invocation_key` in the idempotency scope, so a replayed terminal
+  outcome reuses the deterministic event id while distinct
+  invocations and distinct outcomes scope separately.
+- Interactive create: `InteractiveProcessProtocol::create` emits one
+  `command_execute` (family `interactive`) on successful dispatch
+  using the daemon-built transport-bound hook
+  (`CoreDaemon::interactive_audit_hook`: registry-bound principal,
+  daemon-asserted `interactive_transport` provenance — this path
+  predates the M003 gate, so no gate decision exists to copy —
+  correlation bound to the requesting envelope). The digest covers
+  the argv only; terminal input, cwd, and env overrides never enter
+  audit metadata. Attach/detach/input/resize/list/resume/terminate/
+  remove emit nothing. Scope binds the fresh process handle: every
+  spawn is a distinct real execution.
+- Git mutations: `GitMutationExecutor::emit_git_operation` runs at the
+  end of `execute` (typed mutations, network `fetch`/`pull`/`push`,
+  remote/config, and recovery transitions via `run_recovery`, which
+  funnels through `execute`) and in `run_raw_mutation` (unparsed
+  variants like `git add -A`). Labels are bounded
+  (`stage`/`commit`/`branch_create`/`merge`/`rebase`/`push`/`pull`/
+  `fetch`/`recover_*`/…; read-only operations map to no event).
+  `git.ref_digest` covers target refs, remote NAMES, and refspecs
+  only — remote URLs (credential-bearing or not), commit messages,
+  path lists, and subprocess output never enter even the digest
+  preimage (defense-in-depth URL scrub before hashing). The outcome
+  is the terminal `MutationOutcome` label
+  (`completed`/`no-op`/`fast-forward`/`conflict`/`rejected`); spawn
+  and timeout errors emit nothing rather than a fabricated outcome.
+  The idempotency scope binds op, ref digest, outcome, and post-state
+  snapshot, so replays of one committed transition dedupe while
+  distinct real transitions stay distinct.
+- The tool raw-subcommand fallback (`GitTool` untyped mutations)
+  owns its single event with the sanitized subcommand token
+  (`unknown` for non-token input) and the empty ref digest.
+- `scripts/check_audit_coverage.py` pins every hook site
+  (`check_m002_live_execution_hooks_present`); the regression matrix
+  lives in `tests/identity_m002_live_audit_hooks.rs`. Full
+  live-vs-builder guard tightening (event samples,
+  duplicate/secret negatives across trajectories) is M004 scope.
 
 ## Verification
 

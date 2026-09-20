@@ -8,6 +8,7 @@ use crate::git_mutation_projector::project_mutation;
 use crate::git_mutations::{GitEnvPolicy, GitMutationError, GitMutationExecutor};
 use crate::git_mutations_ops as gm_ops;
 use crate::git_service::{GitExecutionService, GitPayload};
+use crate::tool::backend::{StructuredToolResult, ToolExecutionContext};
 use crate::tool::{Tool, ToolCategory};
 use codegg_git::parse_git_argv;
 
@@ -290,6 +291,30 @@ impl Tool for GitTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_inner(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let output = self.execute_inner(input, ctx.as_ref()).await?;
+        Ok(StructuredToolResult::legacy("git", output))
+    }
+}
+
+impl GitTool {
+    /// Shared execution body for [`Tool::execute`] (no audit context,
+    /// pre-M002 silent behavior) and [`Tool::execute_structured`]
+    /// (threads the M001 trusted context plus the M002 shared emitter
+    /// into the executor so each executed mutation emits the single
+    /// `git_operation` event; read-only paths never emit).
+    async fn execute_inner(
+        &self,
+        input: serde_json::Value,
+        audit_ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let workdir = input["workdir"]
             .as_str()
             .map(PathBuf::from)
@@ -308,7 +333,7 @@ impl Tool for GitTool {
         // Typed mutation API — preferred over raw argv for local mutations.
         if let Some(mutation) = input["mutation"].as_str() {
             return self
-                .dispatch_mutation(mutation, &input, &workdir, timeout_secs)
+                .dispatch_mutation(mutation, &input, &workdir, timeout_secs, audit_ctx)
                 .await;
         }
 
@@ -319,7 +344,9 @@ impl Tool for GitTool {
 
         // Operation-aware recovery — continue/abort/skip.
         if let Some(recover) = input["recover"].as_str() {
-            return self.dispatch_recover(recover, &workdir, timeout_secs).await;
+            return self
+                .dispatch_recover(recover, &workdir, timeout_secs, audit_ctx)
+                .await;
         }
 
         let subcommand = input["subcommand"]
@@ -377,13 +404,26 @@ impl Tool for GitTool {
             v
         };
 
-        let output = tokio::time::timeout(timeout, async {
+        let output = match tokio::time::timeout(timeout, async {
             let mut cmd = env_policy.apply(&argv_for_run, &workdir);
             cmd.output().await
         })
         .await
-        .map_err(|_| ToolError::Timeout(format!("git command timed out after {}s", timeout_secs)))?
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => return Err(ToolError::Execution(e.to_string())),
+            Err(_) => {
+                // M002: spawned then reaped by the deadline. Mutating
+                // subcommands describe the timeout once; read-only
+                // subcommands stay silent.
+                if !Self::is_read_only(subcommand) {
+                    emit_raw_git_audit(audit_ctx, subcommand, "timeout").await;
+                }
+                return Err(ToolError::Timeout(format!(
+                    "git command timed out after {timeout_secs}s"
+                )));
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -404,6 +444,18 @@ impl Tool for GitTool {
             output.status.code().unwrap_or(-1)
         ));
 
+        // M002: the raw fallback executes real mutations outside the
+        // typed executor, so it owns their single `git_operation`
+        // event here. Read-only subcommands never emit.
+        if !Self::is_read_only(subcommand) {
+            let terminal = if output.status.success() {
+                "completed"
+            } else {
+                "rejected"
+            };
+            emit_raw_git_audit(audit_ctx, subcommand, terminal).await;
+        }
+
         Ok(result)
     }
 }
@@ -411,13 +463,16 @@ impl Tool for GitTool {
 impl GitTool {
     /// Dispatch a typed mutation action. All branches run through the
     /// shared `GitMutationExecutor`, which captures snapshots, computes
-    /// state deltas, and applies env hardening.
+    /// state deltas, and applies env hardening. When `audit_ctx` carries
+    /// the threaded audit pair, the executor emits the single
+    /// `git_operation` event for the executed transition.
     async fn dispatch_mutation(
         &self,
         mutation: &str,
         input: &serde_json::Value,
         workdir: &std::path::Path,
         timeout_secs: u64,
+        audit_ctx: Option<&ToolExecutionContext>,
     ) -> Result<String, ToolError> {
         if matches!(self.child_policy, Some(ChildGitPolicy::LocalCommitOnly))
             && !matches!(
@@ -437,6 +492,15 @@ impl GitTool {
         let exec = GitMutationExecutor::new()
             .with_env_policy(GitEnvPolicy::default())
             .with_timeout(Duration::from_secs(timeout_secs.max(1)));
+        // M002: thread the daemon-built audit pair so the executed
+        // mutation emits the single executor-owned `git_operation`
+        // event. Absent in legacy/harness callers (silent).
+        let exec = match audit_ctx.and_then(|ctx| ctx.live_audit_hook()) {
+            Some((audit, emitter)) => exec
+                .with_execution_audit(audit.clone())
+                .with_audit_emitter(emitter.clone()),
+            None => exec,
+        };
         let paths = || -> Vec<String> {
             input["paths"]
                 .as_array()
@@ -808,11 +872,16 @@ impl GitTool {
     }
 
     /// Run an operation-aware recovery action (continue | abort | skip).
+    ///
+    /// Threads the audit pair like [`Self::dispatch_mutation`]: the
+    /// executed recovery transition emits one `git_operation` event
+    /// through the shared executor.
     async fn dispatch_recover(
         &self,
         action: &str,
         workdir: &std::path::Path,
         timeout_secs: u64,
+        audit_ctx: Option<&ToolExecutionContext>,
     ) -> Result<String, ToolError> {
         let parsed_action = match action {
             "continue" => egggit::RecoveryAction::Continue,
@@ -827,6 +896,14 @@ impl GitTool {
         let exec = GitMutationExecutor::new()
             .with_env_policy(GitEnvPolicy::default())
             .with_timeout(Duration::from_secs(timeout_secs.max(1)));
+        // M002: same audit pairing as mutations; the recovery
+        // transition emits one `git_operation` event.
+        let exec = match audit_ctx.and_then(|ctx| ctx.live_audit_hook()) {
+            Some((audit, emitter)) => exec
+                .with_execution_audit(audit.clone())
+                .with_audit_emitter(emitter.clone()),
+            None => exec,
+        };
         let result = match parsed_action {
             egggit::RecoveryAction::Continue => {
                 crate::git_recovery::continue_in_progress(&exec, workdir).await
@@ -866,6 +943,43 @@ impl GitTool {
 
 fn branch_param(label: &str) -> ToolError {
     ToolError::Execution(format!("mutation requires '{label}' parameter"))
+}
+
+/// M002: emit one structural `git_operation` event for a raw-fallback
+/// mutation, or stay silent.
+///
+/// The raw path executes without snapshots, so there is no post-state
+/// digest: the idempotency scope binds (label, empty ref digest,
+/// outcome). The label is the subcommand token only when it is a
+/// bounded `[a-z-]` token; anything else becomes `unknown` so caller
+/// input can never widen the audit vocabulary. Read-only subcommands
+/// never reach this function.
+async fn emit_raw_git_audit(
+    audit_ctx: Option<&ToolExecutionContext>,
+    subcommand: &str,
+    outcome_label: &str,
+) {
+    let Some(ctx) = audit_ctx else { return };
+    let Some((audit, emitter)) = ctx.live_audit_hook() else {
+        return;
+    };
+    let valid = !subcommand.is_empty()
+        && subcommand.len() <= 32
+        && subcommand
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '-');
+    let label = if valid { subcommand } else { "unknown" };
+    let ref_digest = codegg_core::audit_instrumentation::structural_digest(b"");
+    let scope = format!("{label}|{ref_digest}|{outcome_label}");
+    crate::git_mutations::emit_git_operation_parts(
+        audit,
+        emitter,
+        label,
+        &ref_digest,
+        outcome_label,
+        &scope,
+    )
+    .await;
 }
 
 /// Resolve the `scope` JSON parameter (local | global | worktree) into

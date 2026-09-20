@@ -122,7 +122,7 @@ async fn create_and_attach(
     controller: &mut InteractiveTerminalController,
 ) -> (String, String) {
     let handle = match protocol
-        .create(client, ctx, &create_cat(workspace_id))
+        .create(client, ctx, &create_cat(workspace_id), None)
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, metadata } => {

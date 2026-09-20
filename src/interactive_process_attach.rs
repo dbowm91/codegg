@@ -64,6 +64,24 @@ use crate::protocol::interactive_process::{
     MAX_INTERACTIVE_INPUT_BYTES, MAX_INTERACTIVE_LIST_ITEMS,
 };
 
+/// Daemon-built live-audit hook for interactive process creation.
+///
+/// Identity / audit live-execution M002: `InteractiveProcessCreate`
+/// is a real command-execution surface. The daemon builds this hook
+/// from transport evidence (the bound principal for `client_id`,
+/// never payload fields) plus the shared bounded emitter, and the
+/// successful create path emits one structural `command_execute`
+/// event with family `interactive` and a digest of the argv only.
+/// Terminal input bodies and keystrokes never enter audit metadata;
+/// attach/detach/resize/list/resume/terminate/remove emit nothing.
+#[derive(Debug, Clone)]
+pub struct InteractiveAuditHook {
+    /// Transport-bound execution-audit context for this request.
+    pub context: codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+    /// Shared bounded audit emitter.
+    pub emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+}
+
 /// Opaque caller-owned attachment to one interactive process.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AttachmentId(String);
@@ -470,6 +488,34 @@ fn snapshot_to_metadata(snapshot: &SessionSnapshot) -> InteractiveProcessMetadat
     }
 }
 
+/// M002: emit one structural `command_execute` event for a
+/// successfully dispatched interactive process.
+///
+/// The digest covers the normalized argv bytes only (NUL-joined, like
+/// the shell argv digest); argv text, cwd, env overrides, and terminal
+/// input never enter audit metadata. The idempotency scope binds the
+/// fresh process handle: every spawn is a distinct real execution, so
+/// replays of one create call cannot collapse distinct processes.
+async fn emit_interactive_create_audit(
+    audit: &codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+    emitter: &codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    dto: &InteractiveProcessCreateRequest,
+    handle: &InteractiveHandle,
+) {
+    let digest =
+        codegg_core::audit_instrumentation::structural_digest(dto.argv.join("\0").as_bytes());
+    let scope = format!("{}:success", handle.as_str());
+    crate::live_execution_audit::emit_command_execute(
+        emitter,
+        audit,
+        &digest,
+        "interactive",
+        crate::live_execution_audit::OUTCOME_SUCCESS,
+        &scope,
+    )
+    .await;
+}
+
 /// Daemon-owned attach/resume handler family over the M001 engine.
 ///
 /// Constructed once per execution node with the daemon's scheduler
@@ -532,11 +578,18 @@ impl InteractiveProcessProtocol {
 
     /// Create one scheduler-admitted process. Returns the handle only; the
     /// caller holds no attachment until [`Self::attach`].
+    ///
+    /// M002: when `audit` carries the daemon-built transport-bound hook,
+    /// a successful dispatch emits one structural `command_execute`
+    /// event (family `interactive`) with a digest of the argv only.
+    /// Failed validation/admission emits nothing; terminal input is
+    /// never audited here.
     pub async fn create(
         &self,
         client_id: &str,
         ctx: &Arc<ExecutionContext>,
         dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
+        audit: Option<InteractiveAuditHook>,
     ) -> CoreResponse {
         if let Err(error) = validate_client_id(client_id) {
             return error.response();
@@ -550,10 +603,16 @@ impl InteractiveProcessProtocol {
         };
         match self.service.spawn(ctx, spec).await {
             Ok(handle) => match self.service.snapshot(&handle).await {
-                Ok(snapshot) => CoreResponse::InteractiveProcessCreated {
-                    handle: handle.as_str().to_string(),
-                    metadata: snapshot_to_metadata(&snapshot),
-                },
+                Ok(snapshot) => {
+                    if let Some(hook) = audit.as_ref() {
+                        emit_interactive_create_audit(&hook.context, &hook.emitter, dto, &handle)
+                            .await;
+                    }
+                    CoreResponse::InteractiveProcessCreated {
+                        handle: handle.as_str().to_string(),
+                        metadata: snapshot_to_metadata(&snapshot),
+                    }
+                }
                 Err(error) => InteractiveAttachError::from(error).response(),
             },
             Err(error) => InteractiveAttachError::from(error).response(),

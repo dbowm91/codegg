@@ -41,6 +41,7 @@ fn accepted_context() -> ToolExecutionContext {
         program_contract_snapshot: None,
         sandbox_profile: None,
         execution_audit: None,
+        audit_emitter: None,
     }
 }
 

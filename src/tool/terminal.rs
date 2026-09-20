@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::ToolError;
+use crate::tool::backend::{StructuredToolResult, ToolExecutionContext};
 use crate::tool::{Tool, ToolCategory};
 
 const DANGEROUS_ENV_VARS: &[&str] = &[
@@ -114,6 +115,31 @@ impl TerminalTool {
     ) -> Result<(), ToolError> {
         self.check_command_security(&Self::effective_script(command, args))
     }
+
+    /// M002: emit one structural `command_execute` event (family
+    /// `process`) for a real spawn, or stay silent without the
+    /// threaded audit pair. Digests only; command text never enters
+    /// audit metadata.
+    async fn emit_command_audit(
+        &self,
+        audit_ctx: Option<&ToolExecutionContext>,
+        digest_hex: &str,
+        outcome: &str,
+    ) {
+        let Some(ctx) = audit_ctx else { return };
+        let Some((audit, emitter)) = ctx.live_audit_hook() else {
+            return;
+        };
+        let scope = crate::live_execution_audit::invocation_scope(
+            ctx.invocation_key.as_deref(),
+            digest_hex,
+            outcome,
+        );
+        crate::live_execution_audit::emit_command_execute(
+            emitter, audit, digest_hex, "process", outcome, &scope,
+        )
+        .await;
+    }
 }
 
 impl Default for TerminalTool {
@@ -168,6 +194,30 @@ impl Tool for TerminalTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_inner(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let output = self.execute_inner(input, ctx.as_ref()).await?;
+        Ok(StructuredToolResult::legacy("terminal", output))
+    }
+}
+
+impl TerminalTool {
+    /// Shared execution body for [`Tool::execute`] (no audit context,
+    /// pre-M002 silent behavior) and [`Tool::execute_structured`]
+    /// (emits one structural `command_execute` event with family
+    /// `process` per real spawn when the broker threaded the M001
+    /// trusted context plus the M002 shared emitter).
+    async fn execute_inner(
+        &self,
+        input: serde_json::Value,
+        audit_ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let command = input["command"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'command' parameter".to_string()))?;
@@ -215,7 +265,7 @@ impl Tool for TerminalTool {
             vec![
                 OsString::from("sh"),
                 OsString::from("-c"),
-                OsString::from(full_command),
+                OsString::from(full_command.clone()),
             ],
             cwd,
             crate::managed_process::ProcessProvenance::default(),
@@ -230,11 +280,33 @@ impl Tool for TerminalTool {
             output.termination,
             crate::managed_process::TerminationReason::TimedOut
         ) {
+            // M002: spawned then reaped by the deadline — emit the
+            // timeout outcome, then propagate the error.
+            self.emit_command_audit(
+                audit_ctx,
+                &crate::live_execution_audit::command_digest_str(&full_command),
+                crate::live_execution_audit::OUTCOME_TIMEOUT,
+            )
+            .await;
             return Err(ToolError::Timeout(format!(
                 "command timed out after {}s",
                 timeout_secs
             )));
         }
+
+        // M002: one structural event for the completed spawn; exit
+        // status decides success vs failure.
+        let terminal = if output.exit_status.success() {
+            crate::live_execution_audit::OUTCOME_SUCCESS
+        } else {
+            crate::live_execution_audit::OUTCOME_FAILURE
+        };
+        self.emit_command_audit(
+            audit_ctx,
+            &crate::live_execution_audit::command_digest_str(&full_command),
+            terminal,
+        )
+        .await;
 
         let stdout = output.stdout.to_string_lossy();
         let stderr = output.stderr.to_string_lossy();

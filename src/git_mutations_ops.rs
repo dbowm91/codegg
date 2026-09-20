@@ -771,6 +771,11 @@ pub(crate) async fn run_raw_mutation(
     let outcome = classify_outcome(&operation, &before, &after, raw.exit_code);
     let delta = compute_delta(&operation, &before, &after, &raw, &outcome);
 
+    // M002: raw argv variants (e.g. `git add -A`, `git fetch --prune`)
+    // emit through the same executor-owned `git_operation` hook as the
+    // typed path — one executed transition, one structural event.
+    exec.emit_git_operation(&operation, &outcome, &after).await;
+
     Ok(MutationResult {
         operation,
         subcommand,

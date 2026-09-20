@@ -120,7 +120,7 @@ impl Tool for TestTool {
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = parse_test_request(&input)?;
         let max_report_bytes = request.max_report_bytes;
-        let summary = self.run_scheduled_test(request).await?;
+        let (summary, _) = self.run_scheduled_test(request).await?;
         Ok(match max_report_bytes {
             Some(max_report_bytes) => truncate_report_text(&summary, max_report_bytes),
             None => summary,
@@ -132,6 +132,7 @@ impl Tool for TestTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
+        use crate::live_execution_audit as live;
         let start = Instant::now();
         let mut request = parse_test_request(&input)?;
         request.session_id = request
@@ -139,11 +140,39 @@ impl Tool for TestTool {
             .or_else(|| ctx.as_ref().and_then(|context| context.session_id.clone()))
             .or_else(|| self.session_id.clone());
         let max_report_bytes = request.max_report_bytes;
-        let output = self.run_scheduled_test(request).await?;
+        // Digest the normalized input: test selection (scope/package/
+        // command) only, never output bodies.
+        let digest = live::command_digest_str(
+            &serde_json::to_vec(&input)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default(),
+        );
+        let (output, status) = match self.run_scheduled_test(request).await {
+            Ok(pair) => pair,
+            Err(ToolError::Timeout(message)) => {
+                // M002: dispatched then reaped by the deadline — emit
+                // the timeout outcome, then propagate.
+                emit_test_audit(ctx.as_ref(), &digest, live::OUTCOME_TIMEOUT).await;
+                return Err(ToolError::Timeout(message));
+            }
+            Err(other) => return Err(other),
+        };
         let output = max_report_bytes
             .map(|cap| truncate_report_text(&output, cap))
             .unwrap_or(output);
         let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        // M002: one structural `command_execute` event (family `test`)
+        // for the real scheduler-owned dispatch. Denied/pre-dispatch
+        // failures return above without emitting.
+        let terminal = match status {
+            crate::scheduler::ExecutorStatus::Completed => live::OUTCOME_SUCCESS,
+            crate::scheduler::ExecutorStatus::Failed => live::OUTCOME_FAILURE,
+            crate::scheduler::ExecutorStatus::Cancelled => live::OUTCOME_CANCELLED,
+            crate::scheduler::ExecutorStatus::TimedOut => live::OUTCOME_TIMEOUT,
+            crate::scheduler::ExecutorStatus::Interrupted => live::OUTCOME_UNCERTAIN,
+        };
+        emit_test_audit(ctx.as_ref(), &digest, terminal).await;
 
         let success = !output.contains("FAILED") && !output.contains("error");
         let provenance = ToolProvenance {
@@ -162,7 +191,10 @@ impl Tool for TestTool {
 }
 
 impl TestTool {
-    async fn run_scheduled_test(&self, request: TestRunRequest) -> Result<String, ToolError> {
+    async fn run_scheduled_test(
+        &self,
+        request: TestRunRequest,
+    ) -> Result<(String, crate::scheduler::ExecutorStatus), ToolError> {
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
                 "test execution requires the daemon scheduler; standalone callers must provide a harness scheduler".into(),
@@ -225,8 +257,9 @@ impl TestTool {
             .wait_for_completion(&job.job_id, wait_for)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let status = completion.status;
         let summary = completion.summary;
-        let status = match completion.status {
+        let completion_status = match completion.status {
             crate::scheduler::ExecutorStatus::Completed => "passed",
             crate::scheduler::ExecutorStatus::Failed => "failed",
             crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
@@ -236,15 +269,37 @@ impl TestTool {
         let marker = serde_json::json!({
             "job_id": job.job_id.as_str(),
             "kind": "test",
-            "status": status,
+            "status": completion_status,
             "summary": summary,
         });
-        Ok(format!(
-            "{}\nCODEGG_VALIDATION_RESULT:{}",
-            marker["summary"].as_str().unwrap_or_default(),
-            marker
+        Ok((
+            format!(
+                "{}\nCODEGG_VALIDATION_RESULT:{}",
+                marker["summary"].as_str().unwrap_or_default(),
+                marker
+            ),
+            status,
         ))
     }
+}
+
+/// M002: emit one structural `command_execute` event (family `test`)
+/// for a real scheduler-owned test dispatch, or stay silent without
+/// the threaded audit pair.
+async fn emit_test_audit(ctx: Option<&ToolExecutionContext>, digest_hex: &str, outcome: &str) {
+    let Some(ctx) = ctx else { return };
+    let Some((audit, emitter)) = ctx.live_audit_hook() else {
+        return;
+    };
+    let scope = crate::live_execution_audit::invocation_scope(
+        ctx.invocation_key.as_deref(),
+        digest_hex,
+        outcome,
+    );
+    crate::live_execution_audit::emit_command_execute(
+        emitter, audit, digest_hex, "test", outcome, &scope,
+    )
+    .await;
 }
 
 fn truncate_report_text(text: &str, cap: usize) -> String {

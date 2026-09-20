@@ -179,6 +179,9 @@ impl AgentLoop {
             // when the turn boundary supplies one; never synthesized
             // from principal strings or tool payloads.
             execution_audit: None,
+            // M002: shared bounded emitter travels with the trusted
+            // context; tools emit only when both are present.
+            audit_emitter: None,
         }
     }
 
@@ -1471,6 +1474,11 @@ impl AgentLoop {
                                     // context carries one; never synthesize
                                     // from principal_ref or grant strings.
                                     execution_audit: exec_ctx.execution_audit.clone(),
+                                    // M002: thread the shared bounded
+                                    // emitter alongside the trusted
+                                    // context so canonical tool owners
+                                    // can emit structural events.
+                                    audit_emitter: exec_ctx.audit_emitter.clone(),
                                 };
                                 let broker_result = broker_for_exec
                                     .execute(registry, &tool_name_clone, exec_args, broker_ctx)

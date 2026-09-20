@@ -404,6 +404,9 @@ impl BrokerCallback for BrokerAdapter {
             // audit context yet; M003 will inject the job-attributed
             // context here. Never synthesize from grant strings.
             execution_audit: None,
+            // M002: shared bounded emitter travels with the trusted
+            // context; tools emit only when both are present.
+            audit_emitter: None,
         };
 
         if self

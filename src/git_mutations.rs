@@ -552,6 +552,47 @@ impl GitMutationExecutor {
         self.execution_audit.as_ref()
     }
 
+    /// Identity / audit live-execution M002: emit one structural
+    /// `git_operation` event for an executed mutation/network/recovery
+    /// transition.
+    ///
+    /// Best-effort through the shared bounded emitter and silent when
+    /// the daemon threaded no context/emitter pair. One executed
+    /// transition emits at most one event; retries/replays of the same
+    /// committed state reuse the deterministic event id so the store
+    /// returns the stored row instead of duplicating it.
+    pub async fn emit_git_operation(
+        &self,
+        operation: &GitOperation,
+        outcome: &MutationOutcome,
+        after: &RepoSnapshot,
+    ) {
+        let (Some(audit), Some(emitter)) =
+            (self.execution_audit.as_ref(), self.audit_emitter.as_ref())
+        else {
+            return;
+        };
+        let Some(op_label) = git_audit_op_label(operation) else {
+            return;
+        };
+        let ref_digest = git_audit_ref_digest(operation);
+        let outcome_label = outcome.label();
+        let state_digest = codegg_core::audit_instrumentation::structural_digest(
+            format!(
+                "{}|{}|{}|{}|{}",
+                after.head,
+                after.branch,
+                after.staged_count,
+                after.unstaged_count,
+                after.conflicted_count
+            )
+            .as_bytes(),
+        );
+        let scope = format!("{op_label}|{ref_digest}|{outcome_label}|{state_digest}");
+        emit_git_operation_parts(audit, emitter, op_label, &ref_digest, outcome_label, &scope)
+            .await;
+    }
+
     /// Capture a `RepoSnapshot` for the given repository root.
     pub async fn snapshot(&self, repo_root: &Path) -> Result<RepoSnapshot, GitMutationError> {
         capture_snapshot(repo_root).await
@@ -581,6 +622,13 @@ impl GitMutationExecutor {
 
         let outcome = classify_outcome(operation, &before, &after, raw.exit_code);
         let delta = compute_delta(operation, &before, &after, &raw, &outcome);
+
+        // M002: one executed transition emits at most one structural
+        // `git_operation` event (silent without a threaded context).
+        // Network (`fetch`/`pull`/`push`), local mutations, and recovery
+        // transitions all funnel through this method, so native and
+        // bash-routed invocations converge on one audit event.
+        self.emit_git_operation(operation, &outcome, &after).await;
 
         let stdout = sanitize_truncate_for_result(&raw.stdout, 64 * 1024);
         let stderr = sanitize_truncate_for_result(&raw.stderr, 64 * 1024);
@@ -680,6 +728,227 @@ fn truncate_for_result(s: &str, max_bytes: usize) -> String {
 /// `RedactedUrl::expose_secret` at the argv construction site.
 pub(crate) fn sanitize_truncate_for_result(s: &str, max_bytes: usize) -> String {
     truncate_for_result(&redact_url_credentials_in_text(s), max_bytes)
+}
+
+/// M002: emit one structural `git_operation` event from precomputed
+/// structural parts.
+///
+/// Shared tail for the executor-owned hook above and for dispatch
+/// paths that execute git without a [`MutationResult`] (the tool
+/// raw-subcommand fallback). All parts are bounded labels or digests;
+/// `scope` must already bind the logical invocation (op, ref digest,
+/// outcome, and — where available — post-state) so replays reuse the
+/// deterministic event id.
+pub async fn emit_git_operation_parts(
+    audit: &codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+    emitter: &codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    op_label: &str,
+    ref_digest_hex: &str,
+    outcome_label: &str,
+    scope: &str,
+) {
+    let correlation = audit
+        .chain()
+        .correlation_id
+        .as_deref()
+        .filter(|correlation| !correlation.is_empty())
+        .unwrap_or_else(|| audit.provenance().correlation_id());
+    let event_id = codegg_core::audit_instrumentation::deterministic_event_id(
+        audit.provenance().decision_id(),
+        &codegg_core::audit::AuditAction::GitOperation,
+        correlation,
+        scope,
+    );
+    emitter
+        .emit_with(audit, |principal, provenance, chain| {
+            codegg_core::audit_instrumentation::git_operation_event(
+                principal,
+                provenance,
+                chain,
+                op_label,
+                ref_digest_hex,
+                outcome_label,
+            )
+            .with_event_id(event_id.clone())
+        })
+        .await;
+}
+
+// ── M002 live `git_operation` audit labels ────────────────────────────
+
+/// Bounded audit label for one executed [`GitOperation`].
+///
+/// Returns `None` for read-only operations (status/diff/log/blame,
+/// listings, previews, config reads, operation-state probes): those
+/// are not `git_operation` events unless long-term policy explicitly
+/// changes. Recovery flag variants (`--continue`/`--abort`/`--skip`)
+/// keep their subcommand label — the executed git command — while the
+/// bare sequencer control ops use `recover_*` labels.
+pub fn git_audit_op_label(operation: &GitOperation) -> Option<&'static str> {
+    use codegg_git::GitOperation as Op;
+    Some(match operation {
+        Op::Add { .. } => "stage",
+        Op::Reset { .. }
+        | Op::ResetHard { .. }
+        | Op::ResetMixed { .. }
+        | Op::ResetSoft { .. }
+        | Op::ResetMerge { .. }
+        | Op::ResetKeep { .. } => "reset",
+        Op::Commit { .. } => "commit",
+        Op::StashPush { .. }
+        | Op::StashApply { .. }
+        | Op::StashPop { .. }
+        | Op::StashDrop { .. } => "stash",
+        Op::Checkout { .. } => "checkout",
+        Op::Switch { .. } => "switch",
+        Op::Restore { .. } => "restore",
+        Op::BranchCreate { .. } => "branch_create",
+        Op::BranchDelete { .. } => "branch_delete",
+        Op::BranchRename { .. } => "branch_rename",
+        Op::TagCreate { .. } => "tag_create",
+        Op::TagDelete { .. } | Op::TagForceDelete { .. } => "tag_delete",
+        Op::Merge { .. } => "merge",
+        Op::Rebase { .. } => "rebase",
+        Op::CherryPick { .. } => "cherry_pick",
+        Op::Revert { .. } => "revert",
+        Op::Fetch { .. } => "fetch",
+        Op::Pull { .. } => "pull",
+        Op::Push { .. } => "push",
+        Op::Clean { .. } => "clean",
+        Op::RemoteAdd { .. } => "remote_add",
+        Op::RemoteRemove { .. } => "remote_remove",
+        Op::RemoteSetUrl { .. } => "remote_set_url",
+        Op::ConfigSet { .. } => "config_set",
+        Op::ConfigUnset { .. } => "config_unset",
+        Op::Abort => "recover_abort",
+        Op::Continue => "recover_continue",
+        Op::Skip => "recover_skip",
+        Op::ManagedGitArgv { .. } => "managed",
+        // Read-only inspection, listings, previews, and raw-shell
+        // fallbacks carry no `git_operation` event by design.
+        _ => return None,
+    })
+}
+
+/// Secret-free digest source for one executed [`GitOperation`].
+///
+/// Returns the SHA-256 hex digest over the normalized target
+/// ref/remote-name/refspec material only. Remote URLs (which may embed
+/// credentials) contribute NOTHING — only the remote NAME is digested.
+/// Commit messages, path lists, patch bodies, and subprocess output
+/// are never digested: operations without ref material hash the empty
+/// string (the "empty structural digest").
+pub fn git_audit_ref_digest(operation: &GitOperation) -> String {
+    use codegg_core::audit_instrumentation::structural_digest;
+    use codegg_git::GitOperation as Op;
+    // Join with NUL so adjacent-field boundaries cannot collide, then
+    // strip anything URL-shaped before digesting as defense in depth:
+    // only names/refs/revs may contribute.
+    let mut parts: Vec<&str> = Vec::new();
+    match operation {
+        Op::BranchCreate {
+            name, start_point, ..
+        } => {
+            parts.push(name.as_str());
+            if let Some(start) = start_point {
+                parts.push(start.as_str());
+            }
+        }
+        Op::BranchDelete { name, .. } => parts.push(name.as_str()),
+        Op::BranchRename { old, new, .. } => {
+            parts.push(old.as_str());
+            parts.push(new.as_str());
+        }
+        Op::TagCreate { name, rev, .. } => {
+            parts.push(name.as_str());
+            if let Some(rev) = rev {
+                parts.push(rev.as_str());
+            }
+        }
+        Op::TagDelete { name } | Op::TagForceDelete { name } => parts.push(name.as_str()),
+        Op::Merge { revisions, .. }
+        | Op::CherryPick { revisions, .. }
+        | Op::Revert { revisions, .. } => {
+            for rev in revisions {
+                parts.push(rev.as_str());
+            }
+        }
+        Op::Rebase { upstream, onto, .. } => {
+            if let Some(upstream) = upstream {
+                parts.push(upstream.as_str());
+            }
+            if let Some(onto) = onto {
+                parts.push(onto.as_str());
+            }
+        }
+        Op::Fetch {
+            remote, refspecs, ..
+        } => {
+            if let Some(remote) = remote {
+                parts.push(remote.as_str());
+            }
+            for refspec in refspecs {
+                parts.push(refspec.as_str());
+            }
+        }
+        Op::Pull { remote, branch, .. } | Op::Push { remote, branch, .. } => {
+            if let Some(remote) = remote {
+                parts.push(remote.as_str());
+            }
+            if let Some(branch) = branch {
+                parts.push(branch.as_str());
+            }
+        }
+        Op::RemoteAdd { name, .. } | Op::RemoteRemove { name } | Op::RemoteSetUrl { name, .. } => {
+            // Remote NAME only: the URL (raw or redacted) never
+            // contributes, so embedded credentials cannot influence
+            // even the digest preimage.
+            parts.push(name.as_str());
+        }
+        Op::Checkout {
+            target: Some(target),
+            ..
+        } => {
+            parts.push(target.as_str());
+        }
+        Op::Switch { branch, .. } => parts.push(branch.as_str()),
+        Op::Restore {
+            source: Some(source),
+            ..
+        } => {
+            parts.push(source.as_str());
+        }
+        Op::Reset { rev: Some(rev), .. } => {
+            parts.push(rev.as_str());
+        }
+        Op::ResetHard { rev: Some(rev) }
+        | Op::ResetMixed { rev: Some(rev) }
+        | Op::ResetSoft { rev: Some(rev) }
+        | Op::ResetMerge { rev: Some(rev) }
+        | Op::ResetKeep { rev: Some(rev) } => {
+            parts.push(rev.as_str());
+        }
+        Op::ManagedGitArgv { argv, .. } => {
+            // Only the subcommand token (argv[1]) may contribute, and
+            // only when it is a bounded token; raw argv (paths, URLs,
+            // refspecs from unparsed input) never enters the preimage.
+            if let Some(subcommand) = argv.get(1) {
+                if subcommand
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '-')
+                    && subcommand.len() <= 32
+                {
+                    parts.push(subcommand.as_str());
+                }
+            }
+        }
+        // Stage/commit/stash/clean/config operations: no ref material.
+        // The empty structural digest proves "no ref" structurally.
+        _ => {}
+    }
+    let joined = parts.join("\0");
+    let scrubbed = redact_url_credentials_in_text(&joined);
+    structural_digest(scrubbed.as_bytes())
 }
 
 /// Classify the outcome of a mutation given before/after snapshots.
@@ -1033,5 +1302,187 @@ mod truncate_tests {
         let out = redact_url_credentials_in_text(s);
         assert!(!out.contains(":p@"), "leak: {out}");
         assert!(!out.contains(":token@"), "leak: {out}");
+    }
+}
+
+#[cfg(test)]
+mod m002_audit_label_tests {
+    use super::{git_audit_op_label, git_audit_ref_digest};
+    use codegg_core::audit_instrumentation::structural_digest;
+    use codegg_git::ref_name::{BranchName, RemoteName};
+    use codegg_git::sensitive::RedactedUrl;
+    use codegg_git::GitOperation;
+
+    fn branch(name: &str) -> BranchName {
+        BranchName::new(name).expect("valid branch")
+    }
+
+    fn remote(name: &str) -> RemoteName {
+        RemoteName::new(name).expect("valid remote")
+    }
+
+    #[test]
+    fn mutation_labels_are_bounded() {
+        let cases: Vec<(GitOperation, &str)> = vec![
+            (GitOperation::Add { paths: vec![] }, "stage"),
+            (
+                GitOperation::Commit {
+                    message: "x".to_owned(),
+                    amend: false,
+                    allow_empty: false,
+                },
+                "commit",
+            ),
+            (
+                GitOperation::BranchCreate {
+                    name: branch("feature"),
+                    start_point: None,
+                    force: false,
+                },
+                "branch_create",
+            ),
+            (
+                GitOperation::Merge {
+                    revisions: vec!["main".to_owned()],
+                    no_ff: false,
+                    strategy: None,
+                    abort: false,
+                },
+                "merge",
+            ),
+            (
+                GitOperation::Rebase {
+                    upstream: None,
+                    onto: None,
+                    interactive: false,
+                    abort: false,
+                    continue_op: true,
+                    skip: false,
+                },
+                "rebase",
+            ),
+            (
+                GitOperation::Fetch {
+                    remote: Some(remote("origin")),
+                    refspecs: vec![],
+                    all: false,
+                },
+                "fetch",
+            ),
+            (
+                GitOperation::Push {
+                    remote: Some(remote("origin")),
+                    branch: Some("main".to_owned()),
+                    set_upstream: false,
+                    force: false,
+                    force_with_lease: false,
+                    tags: false,
+                    delete: false,
+                },
+                "push",
+            ),
+            (GitOperation::Abort, "recover_abort"),
+            (GitOperation::Continue, "recover_continue"),
+            (GitOperation::Skip, "recover_skip"),
+        ];
+        for (op, expected) in cases {
+            assert_eq!(git_audit_op_label(&op), Some(expected));
+        }
+    }
+
+    #[test]
+    fn read_only_operations_emit_no_git_event() {
+        for op in [
+            GitOperation::Status { short: false },
+            GitOperation::Log {
+                oneline: true,
+                max_count: None,
+                paths: vec![],
+            },
+            GitOperation::BranchList {
+                remotes: false,
+                all: true,
+            },
+            GitOperation::RemoteList,
+            GitOperation::StashList,
+            GitOperation::ConfigGet {
+                key: "user.name".to_owned(),
+                global: false,
+                local: true,
+            },
+        ] {
+            assert_eq!(git_audit_op_label(&op), None, "read-only {op:?}");
+        }
+    }
+
+    #[test]
+    fn ref_digest_covers_names_and_never_urls() {
+        // Remote NAME contributes; the URL (even redacted) never does.
+        let with_url = GitOperation::RemoteAdd {
+            name: remote("origin"),
+            url: RedactedUrl::new("https://user:s3cret@example.com/repo.git"),
+        };
+        let without_url = GitOperation::RemoteRemove {
+            name: remote("origin"),
+        };
+        assert_eq!(git_audit_op_label(&with_url), Some("remote_add"));
+        // Same name + no other ref material: identical digests prove
+        // the URL contributed nothing.
+        assert_eq!(
+            git_audit_ref_digest(&with_url),
+            git_audit_ref_digest(&without_url)
+        );
+        // Push binds remote name + branch.
+        let push = GitOperation::Push {
+            remote: Some(remote("origin")),
+            branch: Some("main".to_owned()),
+            set_upstream: false,
+            force: false,
+            force_with_lease: false,
+            tags: false,
+            delete: false,
+        };
+        assert_ne!(
+            git_audit_ref_digest(&push),
+            structural_digest(b""),
+            "ref-bearing ops must not hash empty"
+        );
+        // Stage/commit carry no ref material: the empty structural
+        // digest proves "no ref" without storing paths or messages.
+        let empty = structural_digest(b"");
+        assert_eq!(
+            git_audit_ref_digest(&GitOperation::Add { paths: vec![] }),
+            empty
+        );
+        assert_eq!(
+            git_audit_ref_digest(&GitOperation::Commit {
+                message: "s3cret message".to_owned(),
+                amend: false,
+                allow_empty: false,
+            }),
+            empty,
+            "commit messages must never enter the digest preimage"
+        );
+    }
+
+    #[test]
+    fn managed_argv_digest_excludes_raw_argv() {
+        let op = GitOperation::ManagedGitArgv {
+            argv: vec![
+                "git".to_owned(),
+                "fetch".to_owned(),
+                "https://user:s3cret@example.com/repo.git".to_owned(),
+            ],
+            risk: codegg_git::RiskSet::new(vec![codegg_git::GitRiskClass::NetworkRead]),
+        };
+        assert_eq!(git_audit_op_label(&op), Some("managed"));
+        let digest = git_audit_ref_digest(&op);
+        assert_ne!(digest, structural_digest(b""), "subcommand binds");
+        // The digest binds only the bounded subcommand token.
+        assert_eq!(
+            digest,
+            structural_digest("fetch".as_bytes()),
+            "raw argv (URLs, paths) must never enter the preimage"
+        );
     }
 }

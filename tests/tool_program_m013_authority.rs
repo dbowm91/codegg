@@ -364,6 +364,7 @@ fn c06_session_mismatch_fails_scope() {
         allowed_tools: None,
         current_policy_revision: None,
         execution_audit: None,
+        audit_emitter: None,
     };
     let result = authority.verify_grant_scope("read", &contract, &ctx);
     assert!(
@@ -420,6 +421,7 @@ fn c06_permission_mode_mismatch_fails_scope() {
         allowed_tools: None,
         current_policy_revision: None,
         execution_audit: None,
+        audit_emitter: None,
     };
     let result = authority.verify_grant_scope("read", &contract, &ctx);
     assert!(

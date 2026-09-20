@@ -444,6 +444,44 @@ impl CoreDaemon {
         }
     }
 
+    /// Identity / audit live-execution M002: daemon-built live-audit
+    /// hook for interactive process creation.
+    ///
+    /// Attribution comes from the transport-bound principal for this
+    /// connection (registry-bound handshake evidence or the local
+    /// fallback), never from request payload fields. Provenance is
+    /// daemon-asserted transport linkage
+    /// (`interactive_process_create` / `interactive_transport`): this
+    /// path predates the M003 authorization gate, so no gate decision
+    /// exists to copy — the hook marks that explicitly instead of
+    /// fabricating a gate decision id. Correlation binds the
+    /// requesting envelope.
+    fn interactive_audit_hook(
+        &self,
+        client_id: &str,
+        request_id: &str,
+    ) -> crate::interactive_process_attach::InteractiveAuditHook {
+        let authority = self.request_authority_for_client(client_id);
+        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+            "interactive_process_create",
+            request_id,
+            "interactive_transport",
+            None,
+        );
+        let chain = codegg_core::audit_instrumentation::AuditChainContext {
+            correlation_id: Some(request_id.to_owned()),
+            ..Default::default()
+        };
+        crate::interactive_process_attach::InteractiveAuditHook {
+            context: codegg_core::audit_instrumentation::TrustedExecutionAuditContext::new(
+                authority.principal(),
+                &provenance,
+                chain,
+            ),
+            emitter: self.audit_emitter(),
+        }
+    }
+
     /// M003: server-side denial response for one authorization failure.
     ///
     /// Denied requests have zero side effect. A single-project read
@@ -3516,6 +3554,10 @@ impl CoreDaemon {
             let event_log = self.event_log.clone();
             let authority = self.interactive_authority_for(trusted_client_id);
             let owned_client = trusted_client_id.to_string();
+            // M002: daemon-built transport-bound audit hook for
+            // interactive create (principal from handshake evidence,
+            // never payload fields; correlation binds this envelope).
+            let audit_hook = self.interactive_audit_hook(trusted_client_id, &request.request_id);
             let join = tokio::spawn(async move {
                 let out = Self::run_interactive_request(
                     protocol,
@@ -3523,6 +3565,7 @@ impl CoreDaemon {
                     event_log,
                     authority,
                     owned_client,
+                    Some(audit_hook),
                     request,
                 )
                 .await;
@@ -3675,6 +3718,7 @@ impl CoreDaemon {
         event_log: Arc<super::event_log::EventLog>,
         authority: crate::interactive_process_attach::InteractiveAuthority,
         client_id: String,
+        audit_hook: Option<crate::interactive_process_attach::InteractiveAuditHook>,
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError> {
         let trusted_client_id = client_id.as_str();
@@ -3692,7 +3736,9 @@ impl CoreDaemon {
                         Ok(ctx) => ctx,
                         Err(response) => return Ok(*response),
                     };
-                Ok(protocol.create(trusted_client_id, &ctx, &request).await)
+                Ok(protocol
+                    .create(trusted_client_id, &ctx, &request, audit_hook)
+                    .await)
             }
             CoreRequest::InteractiveProcessList {
                 workspace_id,

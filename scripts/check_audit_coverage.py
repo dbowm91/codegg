@@ -253,6 +253,50 @@ def check_instrumentation_stays_append_only_and_trusted() -> bool:
     return True
 
 
+def check_m002_live_execution_hooks_present() -> bool:
+    """Pin the M002 live executor hooks at their canonical owners.
+
+    The coverage matrix above tracks daemon operation mappings; M002
+    hooks live one layer down (tool dispatch, Git executor, interactive
+    create). This check keeps those hooks from silently regressing to
+    builder-only declarations: every canonical owner must reference
+    its emit path, the deterministic idempotency helper must be used
+    outside the daemon seam, and the daemon must build the interactive
+    transport-bound hook. Full live-vs-builder guard tightening (event
+    samples, duplicate/secret negatives) is M004 scope.
+    """
+    expected = (
+        ("src/live_execution_audit.rs", "emit_command_execute"),
+        ("src/live_execution_audit.rs", "command_family_for_tool"),
+        ("src/live_execution_audit.rs", "invocation_scope"),
+        ("src/tool/bash.rs", "emit_command_audit"),
+        ("src/tool/terminal.rs", "emit_command_audit"),
+        ("src/tool/test.rs", "emit_test_audit"),
+        ("src/interactive_process_attach.rs", "emit_interactive_create_audit"),
+        ("src/interactive_process_attach.rs", "InteractiveAuditHook"),
+        ("src/git_mutations.rs", "emit_git_operation"),
+        ("src/git_mutations.rs", "git_audit_op_label"),
+        ("src/git_mutations.rs", "git_audit_ref_digest"),
+        ("src/git_mutations.rs", "emit_git_operation_parts"),
+        ("src/git_mutations_ops.rs", "emit_git_operation"),
+        ("src/tool/git.rs", "emit_raw_git_audit"),
+        ("src/tool/backend.rs", "live_audit_hook"),
+        ("src/tool/broker.rs", "audit_emitter"),
+        ("src/core/daemon.rs", "interactive_audit_hook"),
+    )
+    ok = True
+    for rel, marker in expected:
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            print(f"  FAIL: live-hook owner missing: {rel}")
+            ok = False
+            continue
+        if marker not in path.read_text(encoding="utf-8"):
+            print(f"  FAIL: {rel} missing live-hook marker {marker}")
+            ok = False
+    return ok
+
+
 def check_audit_doc_has_matrix() -> bool:
     if not AUDIT_DOC.is_file():
         print("  FAIL: architecture/audit.md missing")
@@ -280,6 +324,7 @@ def main() -> int:
         ("every daemon operation is classified", check_every_operation_is_classified),
         ("live-mapped actions have operation mappings", check_live_mapped_actions_have_operation_mapping),
         ("instrumentation stays append-only and trusted", check_instrumentation_stays_append_only_and_trusted),
+        ("M002 live execution hooks are present at canonical owners", check_m002_live_execution_hooks_present),
         ("audit operator matrix doc exists", check_audit_doc_has_matrix),
     ]
     results: list[tuple[str, bool]] = []

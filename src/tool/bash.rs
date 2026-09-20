@@ -46,6 +46,7 @@ use crate::config::schema::CommandIntentConfig;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
+use crate::tool::backend::{StructuredToolResult, ToolExecutionContext};
 use crate::tool::{Tool, ToolCategory};
 
 pub struct BashTool {
@@ -236,6 +237,37 @@ impl BashTool {
             ),
         }
     }
+
+    /// M002: emit one structural `command_execute` event for a real
+    /// dispatch, or stay silent.
+    ///
+    /// Emits only when `audit_ctx` carries BOTH the M001 trusted
+    /// execution-audit context and the shared bounded emitter. The
+    /// digest covers normalized command/argv bytes only; command text
+    /// never enters audit metadata. Retries of one logical invocation
+    /// reuse the deterministic event id via the invocation key so the
+    /// store returns the stored row instead of duplicating it.
+    pub(crate) async fn emit_command_audit(
+        &self,
+        audit_ctx: Option<&ToolExecutionContext>,
+        family: &str,
+        digest_hex: &str,
+        outcome: &str,
+    ) {
+        let Some(ctx) = audit_ctx else { return };
+        let Some((audit, emitter)) = ctx.live_audit_hook() else {
+            return;
+        };
+        let scope = crate::live_execution_audit::invocation_scope(
+            ctx.invocation_key.as_deref(),
+            digest_hex,
+            outcome,
+        );
+        crate::live_execution_audit::emit_command_execute(
+            emitter, audit, digest_hex, family, outcome, &scope,
+        )
+        .await;
+    }
 }
 
 impl Default for BashTool {
@@ -280,6 +312,30 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_inner(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let output = self.execute_inner(input, ctx.as_ref()).await?;
+        Ok(StructuredToolResult::legacy("bash", output))
+    }
+}
+
+impl BashTool {
+    /// Shared execution body for [`Tool::execute`] (no audit context,
+    /// pre-M002 silent behavior) and [`Tool::execute_structured`]
+    /// (emits one structural `command_execute` event per real process
+    /// dispatch when the broker threaded the M001 trusted context plus
+    /// the M002 shared emitter).
+    async fn execute_inner(
+        &self,
+        input: serde_json::Value,
+        audit_ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         use crate::command_intent::pipeline::CommandPipelineResult;
         use policy::{plan_family, plan_to_planned_backend, RoutingMetric};
 
@@ -449,6 +505,7 @@ impl Tool for BashTool {
                     canonical_workdir.as_deref(),
                     workdir.as_deref().map(std::path::Path::new),
                     execution_timeout,
+                    audit_ctx,
                 )
                 .await
             {
@@ -476,6 +533,20 @@ impl Tool for BashTool {
                             });
                         }
                     }
+                    // M002: one structural `command_execute` event for the
+                    // real dispatch. The Git route stays silent here: the
+                    // executor owns that single `git_operation` event.
+                    let terminal = if outcome.output.status.success() {
+                        crate::live_execution_audit::OUTCOME_SUCCESS
+                    } else {
+                        crate::live_execution_audit::OUTCOME_FAILURE
+                    };
+                    if let Some((family, digest)) =
+                        crate::live_execution_audit::audit_shape_for_executor(&outcome.executor)
+                    {
+                        self.emit_command_audit(audit_ctx, family, &digest, terminal)
+                            .await;
+                    }
                     let exec_outcome =
                         ExecutionOutcome::identity(planned_backend, outcome.executor.clone());
                     (
@@ -498,15 +569,62 @@ impl Tool for BashTool {
                             fallback: false,
                         });
                     }
+                    // M002: a timeout means the process was spawned and
+                    // then killed by the deadline — a real dispatch with
+                    // a distinguishable terminal outcome, never success.
+                    // All other errors precede dispatch: no event.
+                    if matches!(e, ToolError::Timeout(_)) {
+                        if let Some((family, digest)) =
+                            crate::live_execution_audit::planned_audit_shape(decision_ref)
+                        {
+                            self.emit_command_audit(
+                                audit_ctx,
+                                family,
+                                &digest,
+                                crate::live_execution_audit::OUTCOME_TIMEOUT,
+                            )
+                            .await;
+                        }
+                    }
                     return Err(e);
                 }
             }
         } else {
             // OBSERVE MODE: run via raw shell (existing behavior)
             let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
-            let (result, output) = self
+            let (result, output) = match self
                 .execute_via_raw_shell(command, canonical_workdir.as_deref(), execution_timeout)
-                .await?;
+                .await
+            {
+                Ok(pair) => pair,
+                Err(ToolError::Timeout(message)) => {
+                    // M002: spawned then reaped by the deadline — emit
+                    // the timeout outcome, then propagate the error.
+                    self.emit_command_audit(
+                        audit_ctx,
+                        "shell",
+                        &crate::live_execution_audit::command_digest_str(command),
+                        crate::live_execution_audit::OUTCOME_TIMEOUT,
+                    )
+                    .await;
+                    return Err(ToolError::Timeout(message));
+                }
+                Err(other) => return Err(other),
+            };
+            // M002: one structural event for the completed shell
+            // dispatch; exit status decides success vs failure.
+            let terminal = if output.status.success() {
+                crate::live_execution_audit::OUTCOME_SUCCESS
+            } else {
+                crate::live_execution_audit::OUTCOME_FAILURE
+            };
+            self.emit_command_audit(
+                audit_ctx,
+                "shell",
+                &crate::live_execution_audit::command_digest_str(command),
+                terminal,
+            )
+            .await;
             let planned = plan_to_planned_backend(plan.as_ref().map(|p| &p.backend));
             let actual = ActualExecutor::RawShell {
                 command: command.to_string(),

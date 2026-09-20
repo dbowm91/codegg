@@ -125,6 +125,14 @@ pub struct ToolExecutionContext {
     /// paths use explicit `legacy_local`/LocalOwner provenance when
     /// they need audit emission).
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+    /// Identity / audit live-execution M002: shared bounded audit
+    /// emitter paired with [`Self::execution_audit`]. Canonical
+    /// execution owners (shell/test/process tools, Git executor,
+    /// interactive create) emit structural events only when BOTH the
+    /// trusted context and this emitter are present; `None` preserves
+    /// the pre-M002 silent behavior. Threaded per-invocation from the
+    /// broker context, never constructed inside tools.
+    pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
     /// Caller class resolved by the permission boundary (agent/program/etc).
     pub caller_class: Option<String>,
     /// Maximum effect class the caller is authorized for.
@@ -188,6 +196,7 @@ impl ToolExecutionContext {
             program_contract_snapshot: None,
             sandbox_profile: None,
             execution_audit: None,
+            audit_emitter: None,
         }
     }
 
@@ -234,6 +243,44 @@ impl ToolExecutionContext {
         &self,
     ) -> Option<&codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
         self.execution_audit.as_ref()
+    }
+
+    /// Attach the M002 shared bounded audit emitter.
+    ///
+    /// Paired with [`Self::apply_execution_audit`]: tools emit only
+    /// when both are present. The emitter is cloned from the
+    /// broker/daemon seam per invocation; tools never construct one
+    /// from a pool or synthesize attribution.
+    pub fn apply_audit_emitter(
+        &mut self,
+        emitter: &codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    ) {
+        self.audit_emitter = Some(emitter.clone());
+    }
+
+    /// Shared bounded audit emitter, when the broker threaded one.
+    pub fn audit_emitter(
+        &self,
+    ) -> Option<&codegg_core::audit_instrumentation::ExecutionAuditEmitter> {
+        self.audit_emitter.as_ref()
+    }
+
+    /// M002 live-audit hook: the trusted context plus the shared
+    /// emitter, when both were threaded for this invocation.
+    ///
+    /// Canonical execution owners (shell/test/process tools, Git
+    /// executor, interactive create) emit structural events only
+    /// through this pair. `None` means pre-M002 silent behavior.
+    pub fn live_audit_hook(
+        &self,
+    ) -> Option<(
+        &codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+        &codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    )> {
+        match (self.execution_audit.as_ref(), self.audit_emitter.as_ref()) {
+            (Some(ctx), Some(emitter)) => Some((ctx, emitter)),
+            _ => None,
+        }
     }
 }
 

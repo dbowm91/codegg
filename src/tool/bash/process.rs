@@ -640,6 +640,11 @@ impl BashTool {
     /// share the same executor and projection; only the run-store
     /// `backend_detail` differs ("git_native" vs. "git_bash_translation").
     ///
+    /// When `audit_ctx` carries the M001 trusted context plus the M002
+    /// shared emitter, the executor emits the single `git_operation`
+    /// event for this transition (the shell layer stays silent for the
+    /// Git route so both origins converge on one audit event).
+    ///
     /// Errors are returned to the caller — `BashTool::execute` MUST NOT retry
     /// through raw shell after this method runs.
     pub(crate) async fn dispatch_to_git(
@@ -648,6 +653,7 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         input_workdir: Option<&Path>,
         timeout: Duration,
+        audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
         use crate::git_mutation_projector::project_mutation;
         use crate::git_mutations::{
@@ -701,6 +707,15 @@ impl BashTool {
         let exec = GitMutationExecutor::new()
             .with_env_policy(GitEnvPolicy::default())
             .with_timeout(timeout);
+        // M002: thread the daemon-built audit pair so this routed
+        // mutation emits the single executor-owned `git_operation`
+        // event. Absent in legacy/harness callers (silent).
+        let exec = match audit_ctx.and_then(|ctx| ctx.live_audit_hook()) {
+            Some((audit, emitter)) => exec
+                .with_execution_audit(audit.clone())
+                .with_audit_emitter(emitter.clone()),
+            None => exec,
+        };
 
         // Execute via the shared GitMutationExecutor. Errors include typed
         // context but never leak credentials (redaction happens inside
@@ -1018,6 +1033,7 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         input_workdir: Option<&Path>,
         timeout: Duration,
+        audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
@@ -1064,8 +1080,14 @@ impl BashTool {
                 // semantics as native-tool invocations. Managed/unknown
                 // plumbing falls through to the managed-argv path inside
                 // `dispatch_to_git` without snapshot/delta persistence.
-                self.dispatch_to_git(request, canonical_workdir, input_workdir, timeout)
-                    .await
+                self.dispatch_to_git(
+                    request,
+                    canonical_workdir,
+                    input_workdir,
+                    timeout,
+                    audit_ctx,
+                )
+                .await
             }
             CommandDispatchTarget::RouteToShell { command, .. } => {
                 self.dispatch_to_shell(command, canonical_workdir, timeout)

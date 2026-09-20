@@ -115,6 +115,12 @@ pub struct BrokerInvocationContext {
     /// `principal_ref`, tool input, model output, or a grant string.
     /// `None` for legacy/local callers without team attribution.
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+    /// Identity / audit live-execution M002: shared bounded audit
+    /// emitter paired with [`Self::execution_audit`]. The broker clones
+    /// it into every per-attempt [`ToolExecutionContext`](super::backend::ToolExecutionContext)
+    /// so canonical tool owners can emit structural events; tools never
+    /// construct an emitter themselves. `None` preserves silent behavior.
+    pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
 }
 
 impl BrokerInvocationContext {
@@ -132,6 +138,22 @@ impl BrokerInvocationContext {
         &self,
     ) -> Option<&codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
         self.execution_audit.as_ref()
+    }
+
+    /// Attach the M002 shared bounded audit emitter.
+    pub fn with_audit_emitter(
+        mut self,
+        emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    ) -> Self {
+        self.audit_emitter = Some(emitter);
+        self
+    }
+
+    /// Shared bounded audit emitter, when the daemon threaded one.
+    pub fn audit_emitter(
+        &self,
+    ) -> Option<&codegg_core::audit_instrumentation::ExecutionAuditEmitter> {
+        self.audit_emitter.as_ref()
     }
 }
 
@@ -169,6 +191,7 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             allowed_tools: None,
             current_policy_revision: None,
             execution_audit: ctx.execution_audit,
+            audit_emitter: ctx.audit_emitter,
         }
     }
 }
@@ -800,6 +823,7 @@ impl ToolBroker {
                 program_contract_snapshot: None,
                 sandbox_profile: None,
                 execution_audit: None,
+                audit_emitter: None,
             };
             // M001: preserve the daemon-threaded trusted execution-audit
             // context when supplied. Origin strings are projected from
@@ -807,6 +831,12 @@ impl ToolBroker {
             // model output, and grant strings never contribute.
             if let Some(audit) = ctx.execution_audit.clone() {
                 exec_ctx.apply_execution_audit(&audit);
+            }
+            // M002: thread the shared bounded emitter alongside the
+            // trusted context so canonical tool owners can emit
+            // structural events. Tools emit only when both are present.
+            if let Some(emitter) = ctx.audit_emitter.clone() {
+                exec_ctx.apply_audit_emitter(&emitter);
             }
             let attempt_input = input.clone();
             let result = match ctx.cancellation.clone() {
@@ -1386,6 +1416,7 @@ mod tests {
             allowed_tools: None,
             current_policy_revision: None,
             execution_audit: None,
+            audit_emitter: None,
         }
     }
 
@@ -1488,5 +1519,27 @@ mod tests {
             )
             .into();
         assert!(exec.execution_audit().is_none());
+    }
+
+    #[test]
+    fn broker_context_threads_emitter_alongside_trusted_audit() {
+        // M002: the shared bounded emitter travels with the trusted
+        // context into per-attempt execution contexts; tools emit only
+        // when both are present.
+        let emitter = codegg_core::audit_instrumentation::ExecutionAuditEmitter::new(None);
+        let ctx = make_ctx().with_audit_emitter(emitter);
+        assert!(ctx.audit_emitter().is_some());
+        let exec: BrokerInvocationContext =
+            super::super::backend::ToolExecutionContext::with_backend(
+                super::super::backend::ToolBackendKind::Native,
+            )
+            .into();
+        assert!(exec.audit_emitter().is_none());
+        let mut threaded = super::super::backend::ToolExecutionContext::with_backend(
+            super::super::backend::ToolBackendKind::Native,
+        );
+        threaded.apply_audit_emitter(ctx.audit_emitter().expect("emitter"));
+        assert!(threaded.audit_emitter().is_some());
+        assert!(threaded.live_audit_hook().is_none());
     }
 }

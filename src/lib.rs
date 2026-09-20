@@ -45,6 +45,7 @@ pub mod interactive_process;
 pub mod interactive_process_attach;
 pub mod job_dispatcher;
 pub mod job_recovery;
+pub mod live_execution_audit;
 pub mod lsp;
 pub mod managed_process;
 pub mod mcp;
