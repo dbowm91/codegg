@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Corrective M003 — Compact Discovery and Multiplexed-Tool Ergonomics
 
-Status: active
+Status: implemented
 
 Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production baseline)
 
