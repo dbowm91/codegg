@@ -23,6 +23,7 @@ pub mod disabled;
 pub mod disclosure;
 pub mod edit;
 pub mod evidence_bundle;
+pub mod extension;
 pub mod factory;
 pub mod formatter;
 pub mod git;
@@ -344,6 +345,8 @@ pub struct ToolRegistryOptions {
     pub memory_store: Option<Arc<codegg_core::memory::MemoryStore>>,
     /// Stable host-derived project identity used for memory scope.
     pub project_identity: Option<String>,
+    /// Host-owned resolved extension catalog used by read-only discovery.
+    pub extension_catalog: Option<Arc<crate::plugin::marketplace::MarketplaceService>>,
 }
 
 impl ToolRegistry {
@@ -554,6 +557,9 @@ impl ToolRegistry {
                 scope.clone(),
             ));
             registry.register(crate::tool::memory::MemoryGetTool::new(store, scope));
+        }
+        if let Some(catalog) = options.extension_catalog.clone() {
+            registry.register(crate::tool::extension::ExtensionSearchTool::new(catalog));
         }
 
         // --- Todo tools (policy + persistence gated) ---
@@ -1071,6 +1077,7 @@ impl ToolRegistry {
             sandbox_profile: None,
             memory_store: None,
             project_identity: None,
+            extension_catalog: None,
         })
     }
 
@@ -1116,6 +1123,7 @@ impl ToolRegistry {
             sandbox_profile: None,
             memory_store: None,
             project_identity: None,
+            extension_catalog: None,
         })
     }
 

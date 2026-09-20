@@ -15,6 +15,7 @@ pub mod manifest;
 pub mod marketplace;
 pub mod package;
 pub mod permission;
+pub mod playwright;
 pub mod policy;
 pub mod registry;
 pub mod runtime;
@@ -56,6 +57,7 @@ pub use permission::{
     check_invocation_allowed, check_lifecycle_hook_allowed, check_secret_access_allowed,
     check_ui_effect_allowed, PolicyDecision,
 };
+pub use playwright::PlaywrightSupportReport;
 pub use policy::{
     classify_hook, HookCategory, PluginInstallPolicy, PluginLifecyclePolicy,
     PluginPermissionPolicy, PluginPolicy, PluginRuntimePolicy, PluginUiPolicy,

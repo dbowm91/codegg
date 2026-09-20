@@ -307,6 +307,9 @@ impl TurnRuntime for DefaultTurnRuntime {
             }
         }
         let search_runtime = search_runtime_base.with_mcp_opt(mcp_service.clone());
+        let extension_catalog = Some(Arc::new(
+            crate::plugin::marketplace::MarketplaceService::new(),
+        ));
 
         // ── Tool registry ────────────────────────────────────────────
         let task_tool_runtime = subagent_pool
@@ -348,6 +351,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 sandbox_profile,
                 memory_store: memory_store.clone(),
                 project_identity: memory_project_identity,
+                extension_catalog,
             },
         );
 

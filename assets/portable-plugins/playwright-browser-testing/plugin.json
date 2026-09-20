@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "playwright-browser-testing",
+  "version": "1.0.0",
+  "description": "Token-efficient Playwright CLI browser testing guidance for coding agents.",
+  "author": "CodeGG",
+  "homepage": "https://playwright.dev/",
+  "license": "MIT",
+  "keywords": ["browser", "playwright", "testing", "frontend"]
+}

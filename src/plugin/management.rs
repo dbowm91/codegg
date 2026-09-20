@@ -711,7 +711,12 @@ impl PluginManager {
         });
 
         // Check: has at least one capability
-        let has_caps = !info.manifest.capabilities.is_empty() || !info.manifest.hooks.is_empty();
+        let has_caps = !info.manifest.capabilities.is_empty()
+            || !info.manifest.hooks.is_empty()
+            || !info.manifest.contributions.skills.is_empty()
+            || !info.manifest.contributions.agents.is_empty()
+            || !info.manifest.contributions.instructions.is_empty()
+            || !info.manifest.contributions.mcp_servers.is_empty();
         checks.push(PluginDoctorCheck {
             name: "has_capabilities".to_string(),
             passed: has_caps,
@@ -728,7 +733,9 @@ impl PluginManager {
         // Check: runtime is declared
         let runtime_declared = matches!(
             &info.manifest.runtime,
-            PluginRuntimeSpec::Process { .. } | PluginRuntimeSpec::Wasm { .. }
+            PluginRuntimeSpec::Passive
+                | PluginRuntimeSpec::Process { .. }
+                | PluginRuntimeSpec::Wasm { .. }
         ) || matches!(&info.manifest.runtime, PluginRuntimeSpec::Builtin { handler } if !handler.is_empty());
         checks.push(PluginDoctorCheck {
             name: "runtime_configured".to_string(),

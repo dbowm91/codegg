@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "entries": [
+    { "id": "playwright-browser-testing", "name": "playwright-browser-testing", "version": "1.0.0", "description": "Token-efficient Playwright CLI browser testing skill.", "author": "CodeGG", "homepage": "https://playwright.dev/", "license": "MIT", "format": "agent-plugins-v1", "artifact": { "path": "assets/portable-plugins/playwright-browser-testing" }, "components": ["skill", "browser"], "prerequisites": ["Node.js and an explicitly installed Playwright CLI"], "security_notes": ["Browser pages and downloads are untrusted data."] },
+    { "id": "playwright-mcp", "name": "playwright-mcp", "version": "1.0.0", "description": "Opt-in Playwright MCP configuration for persistent browser exploration.", "author": "CodeGG", "homepage": "https://github.com/microsoft/playwright-mcp", "license": "MIT", "format": "agent-plugins-v1", "artifact": { "path": "assets/portable-plugins/playwright-mcp" }, "components": ["mcp", "browser"], "prerequisites": ["Node.js and a user-installed @playwright/mcp package"], "security_notes": ["MCP navigation is opt-in and browser content is untrusted."] }
+  ]
+}

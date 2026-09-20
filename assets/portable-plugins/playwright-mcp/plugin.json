@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "playwright-mcp",
+  "version": "1.0.0",
+  "description": "Opt-in Playwright MCP configuration for persistent browser exploration.",
+  "author": "CodeGG",
+  "homepage": "https://github.com/microsoft/playwright-mcp",
+  "license": "MIT",
+  "keywords": ["browser", "playwright", "mcp", "exploration"]
+}
