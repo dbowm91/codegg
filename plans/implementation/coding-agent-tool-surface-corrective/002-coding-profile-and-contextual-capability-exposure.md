@@ -6,7 +6,7 @@ Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production base
 
 Source roadmap:
 
-- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#M002--coding-profile-and-contextual-capability-exposure`
+- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#m002--coding-profile-and-contextual-capability-exposure`
 
 Hard dependency:
 
