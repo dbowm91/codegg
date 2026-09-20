@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 use crate::error::ToolError;
 use crate::goal::model::*;
 use crate::goal::store::GoalStore;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use codegg_core::goal::{GoalCompletionProposal, GoalVerificationService, GoalVerificationVerdict};
 
 pub struct GoalGetTool {
@@ -34,6 +34,10 @@ impl Tool for GoalGetTool {
             "properties": {},
             "required": []
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, _input: serde_json::Value) -> Result<String, ToolError> {
@@ -102,6 +106,10 @@ impl Tool for GoalUpdateProgressTool {
                 "open_questions": { "type": "array", "items": { "type": "string" } }
             }
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
@@ -217,6 +225,10 @@ impl Tool for GoalRequestCompletionTool {
                 "remaining_risks": { "type": "array", "items": { "type": "string" } }
             }
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

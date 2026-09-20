@@ -18,7 +18,8 @@ prompt and schema construction.
 | `src/agent/request_preparation.rs` | `apply_tool_exposure_filter()` — applies mode + disabled_tools (palettes owned by disclosure) |
 | `src/tool/disclosure.rs` | **Canonical disclosure source (M002)**: `ToolDisclosure`, `CORE/CURATED/MINIMAL/PLAN` palettes, role overrides |
 | `src/tool/mod.rs` | `ToolRegistry` — canonical tool definitions |
-| `src/permission/mod.rs` | `tool_category_for_name()` — maps tool names to categories |
+| `src/tool/catalog.rs` | Live shared registration metadata, including native category/disclosure semantics |
+| `src/permission/mod.rs` | Conservative name fallback for permission checks when no native tool instance exists |
 
 ## How It Works
 
@@ -33,7 +34,7 @@ ToolRegistry::list()
         parent_ceiling, wire_to_canonical_aliases)
     → for each definition:
         → resolve canonical name (alias map or identity)
-        → determine category (ReadOnly/SafeMutating/Mutating/ShellExec)
+        → use the registered Tool::category() for native tools (external/MCP names use a conservative fallback)
         → determine backend (Native/Mcp/Shell)
         → check omission: Denied | PlanMode | DisabledByModel |
           NonCallable (task without spawner) | ParentCeiling
@@ -56,12 +57,12 @@ ToolRegistry::list()
 
 ### Capability System
 
-12 capability kinds model the execution authorities a tool grants:
+13 capability kinds model the execution authorities a tool grants:
 
 ```
 FilesystemRead, FilesystemWrite, ShellReadonly, ShellMutating,
 GitRead, GitWrite, NetworkResearch, Delegate, ManageTodos,
-ManageGoals, Terminal, Image
+ManageGoals, ManageWorkOrders, Terminal, Image
 ```
 
 Each tool maps to one or more capabilities:
@@ -74,6 +75,8 @@ Each tool maps to one or more capabilities:
 - `terminal` → `Terminal`
 - `image` → `Image`
 - `todowrite`/`todoread` → `ManageTodos`
+- Goal/WorkPlan state tools → `ManageGoals`
+- `work_order` → `ManageWorkOrders` (not filesystem write)
 
 ### Parent Ceiling
 
@@ -105,6 +108,14 @@ advertised   — in the immediate provider definitions for this turn
 discoverable — registered + policy-allowed, found via tool_search
 callable     — broker + permission + contract allow this caller/input
 ```
+
+`ToolCatalog::clone()` is a shared live view, not a snapshot. Session-late
+registrations such as `context_read`, Goal, WorkPlan, and WorkOrder therefore
+enter discovery as soon as the registry admits them. Curated and Minimal
+palettes only change initial advertisement; policy-allowed omissions are
+marked deferred and remain in the discovery universe. Denied, hidden,
+disabled, unavailable, plan-excluded, and parent-ceiling-ineligible tools are
+removed before this projection.
 
 | State | Meaning | Mechanism |
 |---|---|---|

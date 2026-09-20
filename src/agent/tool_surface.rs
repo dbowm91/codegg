@@ -23,6 +23,7 @@ pub enum Capability {
     Delegate,
     ManageTodos,
     ManageGoals,
+    ManageWorkOrders,
     Terminal,
     Image,
 }
@@ -41,6 +42,7 @@ pub struct AgentCapabilitySet {
     pub delegate: bool,
     pub manage_todos: bool,
     pub manage_goals: bool,
+    pub manage_work_orders: bool,
     pub terminal: bool,
     pub image: bool,
 }
@@ -58,6 +60,7 @@ impl AgentCapabilitySet {
             Capability::Delegate => self.delegate,
             Capability::ManageTodos => self.manage_todos,
             Capability::ManageGoals => self.manage_goals,
+            Capability::ManageWorkOrders => self.manage_work_orders,
             Capability::Terminal => self.terminal,
             Capability::Image => self.image,
         }
@@ -75,6 +78,7 @@ impl AgentCapabilitySet {
             delegate: self.delegate && ceiling.delegate,
             manage_todos: self.manage_todos && ceiling.manage_todos,
             manage_goals: self.manage_goals && ceiling.manage_goals,
+            manage_work_orders: self.manage_work_orders && ceiling.manage_work_orders,
             terminal: self.terminal && ceiling.terminal,
             image: self.image && ceiling.image,
         }
@@ -92,6 +96,7 @@ impl AgentCapabilitySet {
             Capability::Delegate,
             Capability::ManageTodos,
             Capability::ManageGoals,
+            Capability::ManageWorkOrders,
             Capability::Terminal,
             Capability::Image,
         ]
@@ -173,6 +178,11 @@ impl ResolvedToolSurface {
         parent_ceiling: Option<AgentCapabilitySet>,
         wire_to_canonical_aliases: &BTreeMap<String, String>,
     ) -> Result<Self, SurfaceError> {
+        let categories = registry
+            .list()
+            .into_iter()
+            .map(|tool| (tool.name().to_string(), tool.category()))
+            .collect::<BTreeMap<_, _>>();
         let definitions = registry
             .list()
             .into_iter()
@@ -189,7 +199,7 @@ impl ResolvedToolSurface {
             .into_iter()
             .find(|tool| tool.name() == "task")
             .is_some_and(|tool| tool.has_functional_backend());
-        Self::resolve_with_aliases(
+        Self::resolve_with_categories(
             definitions,
             denied,
             disabled,
@@ -197,6 +207,7 @@ impl ResolvedToolSurface {
             has_functional_spawner,
             parent_ceiling,
             wire_to_canonical_aliases,
+            &categories,
         )
     }
 
@@ -212,13 +223,14 @@ impl ResolvedToolSurface {
         has_functional_spawner: bool,
         parent_ceiling: Option<AgentCapabilitySet>,
     ) -> Result<Self, SurfaceError> {
-        Self::resolve_with_aliases(
+        Self::resolve_with_categories(
             definitions,
             denied,
             disabled,
             plan_mode,
             has_functional_spawner,
             parent_ceiling,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         )
     }
@@ -233,6 +245,31 @@ impl ResolvedToolSurface {
         has_functional_spawner: bool,
         parent_ceiling: Option<AgentCapabilitySet>,
         wire_to_canonical_aliases: &BTreeMap<String, String>,
+    ) -> Result<Self, SurfaceError> {
+        Self::resolve_with_categories(
+            definitions,
+            denied,
+            disabled,
+            plan_mode,
+            has_functional_spawner,
+            parent_ceiling,
+            wire_to_canonical_aliases,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// Resolve with canonical native category metadata. Definitions without
+    /// metadata (for example MCP tools) use the conservative external-name
+    /// fallback; native tools never need to be reclassified by name.
+    pub fn resolve_with_categories(
+        definitions: impl IntoIterator<Item = ToolDefinition>,
+        denied: &BTreeSet<String>,
+        disabled: &BTreeSet<String>,
+        plan_mode: bool,
+        has_functional_spawner: bool,
+        parent_ceiling: Option<AgentCapabilitySet>,
+        wire_to_canonical_aliases: &BTreeMap<String, String>,
+        categories: &BTreeMap<String, ToolCategory>,
     ) -> Result<Self, SurfaceError> {
         let mut tools = Vec::new();
         let mut omissions = Vec::new();
@@ -251,7 +288,10 @@ impl ResolvedToolSurface {
                 .get(&wire_name)
                 .cloned()
                 .unwrap_or_else(|| canonical_name(&wire_name));
-            let category = category_for_name(&canonical_name);
+            let category = categories
+                .get(&canonical_name)
+                .copied()
+                .unwrap_or_else(|| category_for_name(&canonical_name));
             let backend = if canonical_name.starts_with("mcp__") {
                 ToolBackendKind::Mcp
             } else if matches!(category, ToolCategory::ShellExec) {
@@ -384,6 +424,18 @@ fn tool_capabilities(name: &str, category: ToolCategory) -> Vec<Capability> {
         result.push(Capability::Delegate);
         return result;
     }
+    if name == "work_order" {
+        result.push(Capability::ManageWorkOrders);
+        return result;
+    }
+    if matches!(
+        name,
+        "goal_get" | "goal_update_progress" | "goal_request_completion"
+    ) || matches!(name, "work_plan_get" | "work_plan_update_item")
+    {
+        result.push(Capability::ManageGoals);
+        return result;
+    }
     match category {
         ToolCategory::ReadOnly => result.push(Capability::FilesystemRead),
         ToolCategory::SafeMutating => result.push(Capability::ManageTodos),
@@ -425,6 +477,7 @@ fn add_capabilities(set: &mut AgentCapabilitySet, name: &str, category: ToolCate
             Capability::Delegate => set.delegate = true,
             Capability::ManageTodos => set.manage_todos = true,
             Capability::ManageGoals => set.manage_goals = true,
+            Capability::ManageWorkOrders => set.manage_work_orders = true,
             Capability::Terminal => set.terminal = true,
             Capability::Image => set.image = true,
         }
@@ -529,5 +582,78 @@ mod tests {
         )
         .unwrap();
         assert_eq!(a.fingerprint, b.fingerprint);
+    }
+
+    #[test]
+    fn registry_surface_uses_native_tool_categories() {
+        let registry = crate::tool::ToolRegistry::with_defaults();
+        let surface = ResolvedToolSurface::from_registry(
+            &registry,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            false,
+            None,
+        )
+        .unwrap();
+
+        for resolved in &surface.tools {
+            let native = registry
+                .get(&resolved.canonical_name)
+                .expect("resolved native tool remains registered");
+            assert_eq!(
+                resolved.category,
+                native.category(),
+                "{}",
+                resolved.canonical_name
+            );
+        }
+    }
+
+    #[test]
+    fn state_tools_use_state_capabilities_not_filesystem_write() {
+        let categories = BTreeMap::from([
+            ("goal_get".to_string(), ToolCategory::ReadOnly),
+            (
+                "goal_update_progress".to_string(),
+                ToolCategory::SafeMutating,
+            ),
+            ("work_plan_get".to_string(), ToolCategory::ReadOnly),
+            (
+                "work_plan_update_item".to_string(),
+                ToolCategory::SafeMutating,
+            ),
+            ("work_order".to_string(), ToolCategory::Mutating),
+        ]);
+        let definitions = [
+            def("goal_get"),
+            def("goal_update_progress"),
+            def("work_plan_get"),
+            def("work_plan_update_item"),
+            def("work_order"),
+        ];
+        let surface = ResolvedToolSurface::resolve_with_categories(
+            definitions,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            false,
+            true,
+            None,
+            &BTreeMap::new(),
+            &categories,
+        )
+        .unwrap();
+
+        assert!(surface.capabilities.manage_goals);
+        assert!(surface.capabilities.manage_work_orders);
+        assert!(!surface.capabilities.filesystem_write);
+        assert_eq!(
+            surface
+                .tools
+                .iter()
+                .find(|tool| tool.canonical_name == "work_plan_update_item")
+                .unwrap()
+                .category,
+            ToolCategory::SafeMutating
+        );
     }
 }

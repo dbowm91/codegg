@@ -260,7 +260,7 @@ This campaign closes when registration, disclosure, discovery, category/capabili
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/coding-agent-tool-surface-corrective/001-surface-authority-and-discovery-correctness.md` | — | — |
+| M001 | active | `plans/implementation/coding-agent-tool-surface-corrective/001-surface-authority-and-discovery-correctness.md` | — | — |
 | M002 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/002-coding-profile-and-contextual-capability-exposure.md` | — | M001 |
 | M003 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/003-compact-discovery-and-multiplexed-tool-ergonomics.md` | — | M001, M002 |
 | M004 | blocked | `plans/implementation/coding-agent-tool-surface-corrective/004-structured-verification-facade.md` | — | M002 |

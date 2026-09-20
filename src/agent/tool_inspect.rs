@@ -16,8 +16,6 @@ pub(super) fn is_soft_stop_reason(stop_reason: Option<&str>) -> bool {
 
 #[derive(Copy, Clone)]
 pub(super) struct ModelFlags {
-    is_gpt: bool,
-    is_non_oss: bool,
     /// True if at least one search provider (key-based or no-key) is
     /// configured. Used as the gate for `websearch` (and `codesearch`).
     search_provider_available: bool,
@@ -235,7 +233,8 @@ pub(super) enum ToolPermissionOutcome {
 /// in `PermissionChecker::check_with_args()`.
 ///
 /// For regular mode:
-/// - apply_patch is restricted to models matching the current `is_gpt && is_non_oss` gate
+/// - native edit tools are governed by profile/permission policy, not model
+///   vendor-name heuristics
 /// - edit and write are allowed
 /// - codesearch and websearch require an enabled search backend; provider
 ///   credentials and provider selection belong to eggsearch
@@ -260,7 +259,6 @@ pub(super) fn filter_tools_for_model<'a>(
             }
 
             match t.name() {
-                "apply_patch" => flags.is_gpt && flags.is_non_oss,
                 "edit" | "write" => true,
                 "codesearch" | "websearch" => flags.search_provider_available,
                 "lsp" => lsp_enabled,
@@ -273,13 +271,9 @@ pub(super) fn filter_tools_for_model<'a>(
 }
 
 pub(super) fn compute_model_flags(
-    model: Option<&String>,
+    _model: Option<&String>,
     search_backend: crate::config::schema::SearchBackendConfig,
 ) -> ModelFlags {
-    let model_id = model.map(|s| s.to_lowercase()).unwrap_or_default();
-    let is_gpt = model_id.contains("gpt");
-    let is_non_oss =
-        model_id.contains("gpt") || model_id.contains("claude") || model_id.contains("gemini");
     // The new no-key websearch tool always has DuckDuckGo + Mojeek as
     // The backend owns provider availability and credentials. Keep the
     // model catalog independent of provider-specific environment variables;
@@ -291,8 +285,6 @@ pub(super) fn compute_model_flags(
         crate::config::schema::SearchBackendConfig::Disabled
     );
     ModelFlags {
-        is_gpt,
-        is_non_oss,
         search_provider_available,
     }
 }
@@ -451,8 +443,6 @@ mod tests {
         let tools: Vec<&dyn Tool> = registry.list();
 
         let flags = ModelFlags {
-            is_gpt: false,
-            is_non_oss: false,
             search_provider_available: true,
         };
 
@@ -491,8 +481,6 @@ mod tests {
         let tools: Vec<&dyn Tool> = registry.list();
 
         let flags = ModelFlags {
-            is_gpt: true,
-            is_non_oss: true,
             search_provider_available: true,
         };
 
@@ -514,6 +502,23 @@ mod tests {
         assert!(
             normal_names.contains(&"todowrite"),
             "normal mode must include todowrite"
+        );
+    }
+
+    #[test]
+    fn native_patch_is_not_gated_by_model_vendor_name() {
+        use crate::tool::Tool;
+
+        let registry = crate::tool::ToolRegistry::with_defaults();
+        let tools: Vec<&dyn Tool> = registry.list();
+        let flags = compute_model_flags(
+            Some(&"local-coder".to_string()),
+            crate::config::schema::SearchBackendConfig::Disabled,
+        );
+        let filtered = filter_tools_for_model(None, &tools, false, true, &flags);
+        assert!(
+            filtered.iter().any(|tool| tool.name() == "apply_patch"),
+            "unknown/local model names must not remove the native patch primitive"
         );
     }
 

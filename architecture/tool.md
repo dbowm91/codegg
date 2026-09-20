@@ -215,9 +215,11 @@ impl ToolCategory {
 }
 ```
 
-The lookup helper `tool_category_for_name()` in `src/permission/mod.rs:99`
-maps a tool name to a category for the permission checker, falling back
-to `Mutating` for unknown tools.
+Native surface resolution uses the category reported by each registered
+Tool; the catalog retains that semantic metadata for the lifetime of the
+shared registry. `tool_category_for_name()` in `src/permission/mod.rs` is a
+conservative fallback for paths that only have a name (for example an
+external/MCP definition), and falls back to `Mutating` for unknown names.
 
 ### ToolResult
 
@@ -260,9 +262,9 @@ Four questions have four different owners; do not conflate them.
 
 | Question | Owner | Notes |
 |---|---|---|
-| Registered? | `ToolRegistry::with_options` | Full capability set; includes deferred + hidden stubs. |
+| Registered? | `ToolRegistry::with_options` | Full capability set; includes deferred + hidden stubs. The live `ToolCatalog` shares this lifecycle. |
 | Advertised now? | Resolved surface + provider deferral | Immediate definitions for this turn; deferred flagged via `defer_loading`. See `src/tool/disclosure.rs`. |
-| Discoverable? | `ToolCatalog` + `tool_search` | Deferred but policy-allowed tools with canonical name, category, risk, disclosure metadata. Capped at 10; empty queries return none. |
+| Discoverable? | `ToolCatalog` + `tool_search` | Deferred but policy-allowed tools with canonical name, category, risk, disclosure metadata. The catalog is live for late registration, results are deterministic, capped at 10, and empty queries return none. |
 | Callable? | `ToolBroker` + permission + contracts | Disclosure never widens authority; denied/hidden tools stay non-callable. |
 
 Operator views (`/tool-backends`, diagnostics) report registered

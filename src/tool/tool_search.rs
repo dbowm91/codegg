@@ -103,7 +103,7 @@ impl Tool for ToolSearchTool {
         // Policy filtering first: only tools the current agent/session
         // policy allows are discoverable. When no allow-list is installed
         // (direct unit construction), still exclude hidden/internal tools.
-        let filtered: Vec<&crate::tool::catalog::ToolMetadata> = match &self.available_tools {
+        let filtered: Vec<crate::tool::catalog::ToolMetadata> = match &self.available_tools {
             Some(available) => results
                 .into_iter()
                 .filter(|m| available.iter().any(|a| a == &m.name))

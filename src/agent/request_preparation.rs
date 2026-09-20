@@ -10,8 +10,35 @@ use super::tool_inspect::{compute_model_flags, filter_tools_for_model, mcp_tool_
 use crate::bus::events::AppEvent;
 use crate::provider::{ChatRequest, ContentPart, Message};
 
+fn project_initial_tool_palette(
+    mode: crate::agent::policy::ToolExposureMode,
+    definitions: Vec<crate::provider::ToolDefinition>,
+) -> Vec<crate::provider::ToolDefinition> {
+    definitions
+        .into_iter()
+        .map(|mut definition| {
+            let initially_advertised = match mode {
+                crate::agent::policy::ToolExposureMode::Full => true,
+                crate::agent::policy::ToolExposureMode::Curated => {
+                    crate::tool::disclosure::CURATED_PALETTE.contains(&definition.name.as_str())
+                }
+                crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
+                    crate::tool::disclosure::MINIMAL_PALETTE.contains(&definition.name.as_str())
+                }
+            };
+            if !initially_advertised {
+                definition.defer_loading = Some(true);
+            }
+            definition
+        })
+        .collect()
+}
+
 impl AgentLoop {
-    /// Apply tool exposure filtering based on execution policy's initial_tool_mode.
+    /// Project the policy's initial palette without deleting the allowed
+    /// discovery universe.  Palette omission is represented as provider
+    /// deferral; deny/disable/callability filtering happens before this
+    /// projection and remains authoritative for both prompt and search.
     fn apply_tool_exposure_filter(
         &self,
         definitions: Vec<crate::provider::ToolDefinition>,
@@ -20,19 +47,7 @@ impl AgentLoop {
             return definitions;
         };
 
-        // First apply exposure mode filter. Palettes are owned by the
-        // canonical disclosure module (M002); no second list lives here.
-        let filtered = match policy.initial_tool_mode {
-            crate::agent::policy::ToolExposureMode::Full => definitions,
-            crate::agent::policy::ToolExposureMode::Curated => definitions
-                .into_iter()
-                .filter(|t| crate::tool::disclosure::CURATED_PALETTE.contains(&t.name.as_str()))
-                .collect(),
-            crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => definitions
-                .into_iter()
-                .filter(|t| crate::tool::disclosure::MINIMAL_PALETTE.contains(&t.name.as_str()))
-                .collect(),
-        };
+        let filtered = project_initial_tool_palette(policy.initial_tool_mode, definitions);
 
         // Then apply model profile disabled_tools filter
         if let Some(ref disabled) = policy.disabled_tools {
@@ -543,6 +558,10 @@ impl AgentLoop {
 
         let tools = self.services.tool_registry.list();
         let flags = compute_model_flags(model, self.services.search_runtime.backend());
+        let native_categories = tools
+            .iter()
+            .map(|tool| (tool.name().to_string(), tool.category()))
+            .collect::<std::collections::BTreeMap<_, _>>();
         // Hide tools that the registry marks as non-exposed
         // (e.g. `DisabledTool` stubs) so the model never sees a
         // tool whose every call is a guaranteed failure. This is
@@ -581,7 +600,7 @@ impl AgentLoop {
             .iter()
             .find(|tool| tool.name() == "task")
             .is_some_and(|tool| tool.has_functional_backend());
-        let surface = match crate::agent::tool_surface::ResolvedToolSurface::resolve(
+        let surface = match crate::agent::tool_surface::ResolvedToolSurface::resolve_with_categories(
             all_definitions,
             &self
                 .services
@@ -600,6 +619,8 @@ impl AgentLoop {
             self.state.plan_mode,
             has_functional_spawner,
             None,
+            &std::collections::BTreeMap::new(),
+            &native_categories,
         ) {
             Ok(surface) => surface,
             Err(error) => {
@@ -837,5 +858,30 @@ mod tests {
         };
 
         assert_eq!(AgentLoop::latest_user_prompt(&request), "Read src/main.rs");
+    }
+
+    #[test]
+    fn palette_projection_retains_deferred_discovery() {
+        let definitions = vec![
+            crate::provider::ToolDefinition {
+                name: "read".into(),
+                description: "read files".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                defer_loading: None,
+            },
+            crate::provider::ToolDefinition {
+                name: "security".into(),
+                description: "security analysis".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                defer_loading: None,
+            },
+        ];
+        let projected = project_initial_tool_palette(
+            crate::agent::policy::ToolExposureMode::Curated,
+            definitions,
+        );
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].defer_loading, None);
+        assert_eq!(projected[1].defer_loading, Some(true));
     }
 }

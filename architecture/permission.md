@@ -36,9 +36,10 @@ stuck-agent loops, and provide mode-based permission envelopes
 ### Tool-Category Short-Circuit
 
 Every `Tool` reports a `ToolCategory` (`ReadOnly | SafeMutating |
-Mutating | ShellExec`). The function `tool_category_for_name()` in
-`src/permission/mod.rs:107` maps tool names to categories without a
-`Tool` instance.
+Mutating | ShellExec`). Native model-surface resolution and catalog metadata
+use that instance-level category. The function `tool_category_for_name()` in
+`src/permission/mod.rs` is only the conservative name-based fallback for
+paths without a native instance; unknown names remain `Mutating`.
 
 Categories with `is_permission_free() == true` (`ReadOnly`,
 `SafeMutating`) short-circuit `PermissionChecker::check()` to `Allow`

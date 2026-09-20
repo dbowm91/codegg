@@ -5,6 +5,7 @@
 //! and BM25 ranking for improved search relevance.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -166,8 +167,12 @@ impl ToolMetadata {
 /// The catalog maintains a mapping of tool names to their metadata,
 /// and tracks which tools should be loaded on-demand (deferred).
 /// Supports keyword (substring) or BM25 ranking search modes.
-#[derive(Clone)]
 pub struct ToolCatalog {
+    inner: Arc<RwLock<ToolCatalogState>>,
+}
+
+#[derive(Clone)]
+struct ToolCatalogState {
     tools: HashMap<String, ToolMetadata>,
     deferred_load: Vec<String>,
     search_mode: SearchMode,
@@ -175,6 +180,14 @@ pub struct ToolCatalog {
     avg_doc_length: f64,
     doc_count: usize,
     idf_cache: HashMap<String, f64>,
+}
+
+impl Clone for ToolCatalog {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 impl ToolCatalog {
@@ -186,34 +199,47 @@ impl ToolCatalog {
     /// Create a new empty tool catalog with the specified search mode.
     pub fn with_search_mode(mode: SearchMode) -> Self {
         Self {
-            tools: HashMap::new(),
-            deferred_load: Vec::new(),
-            search_mode: mode,
-            avg_doc_length: 0.0,
-            doc_count: 0,
-            idf_cache: HashMap::new(),
+            inner: Arc::new(RwLock::new(ToolCatalogState {
+                tools: HashMap::new(),
+                deferred_load: Vec::new(),
+                search_mode: mode,
+                avg_doc_length: 0.0,
+                doc_count: 0,
+                idf_cache: HashMap::new(),
+            })),
         }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, ToolCatalogState> {
+        self.inner.read().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, ToolCatalogState> {
+        self.inner
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     /// Get the current search mode.
     pub fn search_mode(&self) -> SearchMode {
-        self.search_mode
+        self.read().search_mode
     }
 
     /// Set the search mode and recompute BM25 caches if switching to BM25.
     pub fn set_search_mode(&mut self, mode: SearchMode) {
-        self.search_mode = mode;
+        let mut state = self.write();
+        state.search_mode = mode;
         if mode == SearchMode::BM25 {
-            self.recompute_bm25_caches();
+            Self::recompute_bm25_caches(&mut state);
         }
     }
 
     /// Recompute BM25 IDF cache and average document length.
-    fn recompute_bm25_caches(&mut self) {
-        let tools: Vec<&ToolMetadata> = self.tools.values().collect();
-        self.doc_count = tools.len();
-        self.avg_doc_length = compute_avg_doc_length(&tools);
-        self.idf_cache = compute_idf(&tools);
+    fn recompute_bm25_caches(state: &mut ToolCatalogState) {
+        let tools: Vec<&ToolMetadata> = state.tools.values().collect();
+        state.doc_count = tools.len();
+        state.avg_doc_length = compute_avg_doc_length(&tools);
+        state.idf_cache = compute_idf(&tools);
     }
 
     /// Register a tool in the catalog.
@@ -221,94 +247,116 @@ impl ToolCatalog {
         let metadata = ToolMetadata::from_tool(tool);
         let name = metadata.name.clone();
 
-        if metadata.defer_load && !self.deferred_load.contains(&name) {
-            self.deferred_load.push(name.clone());
+        let mut state = self.write();
+        state.deferred_load.retain(|deferred| deferred != &name);
+        if metadata.defer_load {
+            state.deferred_load.push(name.clone());
         }
 
-        self.tools.insert(name, metadata);
+        state.tools.insert(name, metadata);
 
         // Recompute BM25 caches if in BM25 mode
-        if self.search_mode == SearchMode::BM25 {
-            self.recompute_bm25_caches();
+        if state.search_mode == SearchMode::BM25 {
+            Self::recompute_bm25_caches(&mut state);
         }
     }
 
     /// Search tools by name or description.
     ///
     /// Uses the configured search mode (keyword or BM25).
-    pub fn search(&self, query: &str) -> Vec<&ToolMetadata> {
-        match self.search_mode {
+    pub fn search(&self, query: &str) -> Vec<ToolMetadata> {
+        match self.search_mode() {
             SearchMode::Keyword => self.keyword_search(query),
             SearchMode::BM25 => self.bm25_search(query),
         }
     }
 
     /// Simple case-insensitive substring search (original behavior).
-    fn keyword_search(&self, query: &str) -> Vec<&ToolMetadata> {
+    fn keyword_search(&self, query: &str) -> Vec<ToolMetadata> {
         let query_lower = query.to_lowercase();
 
-        self.tools
+        let mut results: Vec<_> = self
+            .read()
+            .tools
             .values()
             .filter(|metadata| {
                 metadata.name.to_lowercase().contains(&query_lower)
                     || metadata.description.to_lowercase().contains(&query_lower)
             })
-            .collect()
+            .cloned()
+            .collect();
+        results.sort_by(|left, right| left.name.cmp(&right.name));
+        results
     }
 
     /// BM25 ranked search.
     ///
     /// Returns tools ranked by BM25 score, filtering out zero-score results.
-    fn bm25_search(&self, query: &str) -> Vec<&ToolMetadata> {
+    fn bm25_search(&self, query: &str) -> Vec<ToolMetadata> {
         if query.trim().is_empty() {
             return Vec::new();
         }
 
-        let tools: Vec<&ToolMetadata> = self.tools.values().collect();
-        let avg_dl = self.avg_doc_length;
+        let state = self.read();
+        let tools: Vec<&ToolMetadata> = state.tools.values().collect();
+        let avg_dl = state.avg_doc_length;
 
-        let mut scored: Vec<(&ToolMetadata, f64)> = tools
+        let mut scored: Vec<(ToolMetadata, f64)> = tools
             .iter()
             .map(|tool| {
                 let doc = format!("{} {}", tool.name, tool.description);
-                let score = bm25_score(query, &doc, avg_dl, &self.idf_cache);
-                (*tool, score)
+                let score = bm25_score(query, &doc, avg_dl, &state.idf_cache);
+                ((*tool).clone(), score)
             })
             .filter(|(_, score)| *score > 0.0)
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.name.cmp(&right.0.name))
+        });
         scored.into_iter().map(|(tool, _)| tool).collect()
     }
 
     /// Get a tool by name.
-    pub fn get(&self, name: &str) -> Option<&ToolMetadata> {
-        self.tools.get(name)
+    pub fn get(&self, name: &str) -> Option<ToolMetadata> {
+        self.read().tools.get(name).cloned()
     }
 
     /// List all tools marked for deferred loading.
-    pub fn deferred_tools(&self) -> Vec<&ToolMetadata> {
-        self.deferred_load
+    pub fn deferred_tools(&self) -> Vec<ToolMetadata> {
+        let state = self.read();
+        state
+            .deferred_load
             .iter()
-            .filter_map(|name| self.tools.get(name))
+            .filter_map(|name| state.tools.get(name).cloned())
             .collect()
     }
 
     /// List all tools in the catalog.
-    pub fn list(&self) -> Vec<&ToolMetadata> {
-        self.tools.values().collect()
+    pub fn list(&self) -> Vec<ToolMetadata> {
+        let mut tools: Vec<_> = self.read().tools.values().cloned().collect();
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        tools
     }
 
     /// Check if a tool is marked for deferred loading.
     pub fn is_deferred(&self, name: &str) -> bool {
-        self.deferred_load.contains(&name.to_string())
+        self.read()
+            .deferred_load
+            .iter()
+            .any(|deferred| deferred == name)
     }
 
     /// Register additional tool names as deferred (e.g., from config).
     pub fn register_deferred_names(&mut self, names: &[String]) {
+        let mut state = self.write();
         for name in names {
-            if !self.deferred_load.contains(name) {
-                self.deferred_load.push(name.clone());
+            if !state.deferred_load.contains(name) {
+                state.deferred_load.push(name.clone());
             }
         }
     }
@@ -508,6 +556,38 @@ mod tests {
         assert_eq!(deferred[0].name, "special_tool");
     }
 
+    #[test]
+    fn cloned_catalog_observes_late_registration_and_replacement() {
+        let mut catalog = ToolCatalog::new();
+        catalog.register(&MockTool::new("initial", "initial tool"));
+        let shared = catalog.clone();
+
+        catalog.register(&MockTool::deferred("late", "late discoverable tool"));
+        assert_eq!(
+            shared.get("late").expect("late tool is shared").name,
+            "late"
+        );
+        assert!(shared.is_deferred("late"));
+
+        catalog.register(&MockTool::new("late", "replacement tool"));
+        let replacement = shared.get("late").expect("replacement is current");
+        assert_eq!(replacement.description, "replacement tool");
+        assert!(!shared.is_deferred("late"));
+    }
+
+    #[test]
+    fn catalog_search_order_is_deterministic() {
+        let mut catalog = ToolCatalog::new();
+        catalog.register(&MockTool::new("zeta", "shared match"));
+        catalog.register(&MockTool::new("alpha", "shared match"));
+        let names: Vec<_> = catalog
+            .search("shared")
+            .into_iter()
+            .map(|metadata| metadata.name)
+            .collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
+    }
+
     // --- Search mode tests ---
 
     #[test]
@@ -527,10 +607,11 @@ mod tests {
 
         // Switch to BM25 mode
         catalog.set_search_mode(SearchMode::BM25);
-        assert_eq!(catalog.search_mode, SearchMode::BM25);
-        assert_eq!(catalog.doc_count, 2);
-        assert!(catalog.avg_doc_length > 0.0);
-        assert!(!catalog.idf_cache.is_empty());
+        assert_eq!(catalog.search_mode(), SearchMode::BM25);
+        let state = catalog.read();
+        assert_eq!(state.doc_count, 2);
+        assert!(state.avg_doc_length > 0.0);
+        assert!(!state.idf_cache.is_empty());
     }
 
     #[test]
@@ -538,11 +619,11 @@ mod tests {
         let mut catalog = ToolCatalog::with_search_mode(SearchMode::BM25);
         catalog.register(&MockTool::new("bash", "Execute shell commands"));
 
-        let old_count = catalog.doc_count;
+        let old_count = catalog.read().doc_count;
         catalog.register(&MockTool::new("read", "Read file contents"));
 
         // Cache should have been recomputed
-        assert_eq!(catalog.doc_count, old_count + 1);
+        assert_eq!(catalog.read().doc_count, old_count + 1);
     }
 
     // --- BM25 scoring tests ---
