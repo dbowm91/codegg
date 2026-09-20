@@ -149,6 +149,7 @@ fn ctx_for(effect: &str, key: Option<String>) -> BrokerInvocationContext {
         workspace_path_policy_id: None,
         allowed_tools: None,
         current_policy_revision: None,
+        execution_audit: None,
     }
 }
 

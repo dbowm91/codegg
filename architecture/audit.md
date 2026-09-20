@@ -251,6 +251,44 @@ durable identity skip the pre-side-effect emit and are recorded
 post-mutation with their durable ids; retried (duplicate) submissions
 emit nothing new.
 
+## Trusted execution audit seam (M001)
+
+One cloneable bounded emission service plus one trusted context carry
+audit attribution to canonical execution owners without fabricating
+identity or giving ToolBroker/Git/scheduler direct store ownership.
+
+- `codegg-core::audit_instrumentation::ExecutionAuditEmitter` owns the
+  bounded append timeout (`EXECUTION_AUDIT_EMIT_TIMEOUT`, 500 ms), the
+  existing emit counters/warn behavior, no separate queue/store/
+  schema, and no authorization decisions. `CoreDaemon::audit_emitter`
+  builds it from the same pool/store policy as
+  `CoreDaemon::append_audit_event`, which now delegates to it so family
+  handlers and injected owners share one policy.
+- `codegg-core::audit_instrumentation::TrustedExecutionAuditContext`
+  carries only the cloned transport-bound `AuthenticatedPrincipal`,
+  the gate-copied `AuditDecisionProvenance`, and the
+  `AuditChainContext` locators. No command/body/secret content. No
+  `serde` impls, so request DTOs, tool inputs, and model outputs cannot
+  supply it over the wire.
+- `CoreDaemon::execution_audit_context` copies the admitted
+  authority/decision/chain at the admission boundary. The value may
+  travel through `BrokerInvocationContext`/`ToolExecutionContext`
+  (`execution_audit: Option<...>`) and scheduler/Git composition
+  (`GitMutationExecutor::with_execution_audit/with_audit_emitter`,
+  `JobScheduler::set_audit_emitter`), but it is constructed only from
+  trusted daemon-owned state — never from `principal_ref`, tool input,
+  model output, or a grant string.
+- `ToolBroker::execute_with_retry` preserves the supplied context into
+  `ToolExecutionContext` via `apply_execution_audit`, projecting the
+  trusted origin strings without synthesis. Legacy/local callers pass
+  `None` and use `TrustedExecutionAuditContext::legacy_local` (explicit
+  `legacy-local` decision with `LocalOwner` binding) when they need
+  emission, never an invented human identity.
+- M001 emits no new `command_execute`/`git_operation`/`job_complete`
+  events; M002/M003 consume this seam. Seam tests pin principal
+  preservation, correlation, no-secret shape, timeout/failure counters,
+  and single-store policy.
+
 ## Verification
 
 `scripts/check_audit_coverage.py` parses the canonical authorization

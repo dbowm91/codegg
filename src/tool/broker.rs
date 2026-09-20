@@ -107,6 +107,32 @@ pub struct BrokerInvocationContext {
     pub allowed_tools: Option<Vec<String>>,
     /// M013-C-05: Current system policy revision for stale-revision detection.
     pub current_policy_revision: Option<String>,
+    /// Identity / audit live-execution M001: trusted execution-audit
+    /// context threaded from the daemon admission boundary. Cloned
+    /// transport-bound principal plus gate-copied decision provenance
+    /// and chain locators for structural audit builders. Constructed
+    /// only from daemon-owned state; never synthesized from
+    /// `principal_ref`, tool input, model output, or a grant string.
+    /// `None` for legacy/local callers without team attribution.
+    pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+}
+
+impl BrokerInvocationContext {
+    /// Attach the daemon-built trusted execution-audit context.
+    pub fn with_execution_audit(
+        mut self,
+        ctx: codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+    ) -> Self {
+        self.execution_audit = Some(ctx);
+        self
+    }
+
+    /// Trusted execution-audit context, when the daemon threaded one.
+    pub fn execution_audit(
+        &self,
+    ) -> Option<&codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
+        self.execution_audit.as_ref()
+    }
 }
 
 /// Authority proof attached to a broker invocation.
@@ -142,6 +168,7 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             workspace_path_policy_id: None,
             allowed_tools: None,
             current_policy_revision: None,
+            execution_audit: ctx.execution_audit,
         }
     }
 }
@@ -741,7 +768,7 @@ impl ToolBroker {
                 break;
             }
 
-            let exec_ctx = ToolExecutionContext {
+            let mut exec_ctx = ToolExecutionContext {
                 backend: super::backend::ToolBackendKind::Native,
                 session_id: ctx.session_id.clone(),
                 cwd: ctx.cwd.clone(),
@@ -772,7 +799,15 @@ impl ToolBroker {
                 decision_revoked_at: None,
                 program_contract_snapshot: None,
                 sandbox_profile: None,
+                execution_audit: None,
             };
+            // M001: preserve the daemon-threaded trusted execution-audit
+            // context when supplied. Origin strings are projected from
+            // the trusted context only; `principal_ref`, tool input,
+            // model output, and grant strings never contribute.
+            if let Some(audit) = ctx.execution_audit.clone() {
+                exec_ctx.apply_execution_audit(&audit);
+            }
             let attempt_input = input.clone();
             let result = match ctx.cancellation.clone() {
                 Some(token) => {
@@ -1350,6 +1385,7 @@ mod tests {
             workspace_path_policy_id: None,
             allowed_tools: None,
             current_policy_revision: None,
+            execution_audit: None,
         }
     }
 
@@ -1396,5 +1432,61 @@ mod tests {
             contract.effect_class,
             super::super::contract::ToolEffectClass::NonIdempotent
         );
+    }
+
+    #[test]
+    fn broker_context_preserves_trusted_audit_when_supplied() {
+        use codegg_core::audit_instrumentation::{AuditChainContext, TrustedExecutionAuditContext};
+        use codegg_core::transport_auth::AuthenticatedPrincipal;
+        let principal = AuthenticatedPrincipal::local_owner("client-m001");
+        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+            "decision-m001",
+            "corr-m001",
+            "local_owner_broad",
+            None,
+        );
+        let chain = AuditChainContext {
+            correlation_id: Some("corr-m001".to_owned()),
+            session_id: Some("session-m001".to_owned()),
+            ..AuditChainContext::default()
+        };
+        let trusted = TrustedExecutionAuditContext::new(&principal, &provenance, chain);
+        let ctx = make_ctx().with_execution_audit(trusted.clone());
+        assert_eq!(
+            ctx.execution_audit().expect("audit").principal(),
+            &principal
+        );
+        assert_eq!(
+            ctx.execution_audit()
+                .expect("audit")
+                .provenance()
+                .decision_id(),
+            "decision-m001"
+        );
+        // ToolExecutionContext projection preserves the trusted origin.
+        let mut exec = super::super::backend::ToolExecutionContext::with_backend(
+            super::super::backend::ToolBackendKind::Native,
+        );
+        exec.apply_execution_audit(ctx.execution_audit().expect("audit"));
+        assert_eq!(
+            exec.origin_principal.as_deref(),
+            Some(principal.principal_id().as_str())
+        );
+        assert_eq!(exec.origin_decision_id.as_deref(), Some("decision-m001"));
+        assert_eq!(exec.execution_audit().expect("audit"), &trusted);
+    }
+
+    #[test]
+    fn broker_context_does_not_synthesize_audit_from_principal_ref() {
+        // A bare principal_ref must never become trusted audit context.
+        let mut ctx = make_ctx();
+        ctx.principal_ref = Some("attacker-human".to_owned());
+        assert!(ctx.execution_audit().is_none());
+        let exec: BrokerInvocationContext =
+            super::super::backend::ToolExecutionContext::with_backend(
+                super::super::backend::ToolBackendKind::Native,
+            )
+            .into();
+        assert!(exec.execution_audit().is_none());
     }
 }

@@ -163,6 +163,7 @@ fn program_ctx(
         workspace_path_policy_id: None,
         allowed_tools: None,
         current_policy_revision: None,
+        execution_audit: None,
     }
 }
 
@@ -210,6 +211,7 @@ fn agent_ctx(workspace: &Path) -> BrokerInvocationContext {
         workspace_path_policy_id: None,
         allowed_tools: None,
         current_policy_revision: None,
+        execution_audit: None,
     }
 }
 

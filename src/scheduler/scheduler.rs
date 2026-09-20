@@ -179,6 +179,12 @@ pub struct JobScheduler {
     /// for queued cancellation and generation recovery so a run cannot
     /// remain live after its authoritative job has become terminal.
     agent_runs: Arc<AsyncMutex<Option<Arc<dyn AgentRunStore>>>>,
+    /// Identity / audit live-execution M001: shared bounded audit
+    /// emitter injected by the daemon boundary. M001 threads the seam
+    /// only; M003 emits `job_complete` through it at the durable
+    /// terminal attempt transition. `None` in standalone/test mode.
+    audit_emitter:
+        Arc<AsyncMutex<Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>>>,
 }
 
 impl JobScheduler {
@@ -228,7 +234,26 @@ impl JobScheduler {
             daemon_generation,
             event_tx,
             agent_runs: Arc::new(AsyncMutex::new(None)),
+            audit_emitter: Arc::new(AsyncMutex::new(None)),
         })
+    }
+
+    /// Install the daemon-owned bounded audit emitter after construction.
+    /// M003 consumes this at the durable terminal attempt transition.
+    /// The emitter shares one bounded policy with the daemon seam; the
+    /// scheduler never owns the audit store directly.
+    pub async fn set_audit_emitter(
+        &self,
+        emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    ) {
+        *self.audit_emitter.lock().await = Some(emitter);
+    }
+
+    /// Snapshot the injected audit emitter, if any.
+    pub async fn audit_emitter_snapshot(
+        &self,
+    ) -> Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter> {
+        self.audit_emitter.lock().await.clone()
     }
 
     /// Install the daemon-owned delegated-run store after construction.

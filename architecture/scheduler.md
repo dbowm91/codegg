@@ -94,7 +94,8 @@ Core fields: `store`, `workspaces`, `executors`, `admission`, `queue`,
 `running`, `completions`, `running_per_workspace`, `ready_counts`,
 `running_total`, `admission_blocks`, `queue_overflows`,
 `oldest_queued_age_secs`, `notify`, `shutdown`, `config`,
-`daemon_generation`, `event_tx`.
+`daemon_generation`, `event_tx`, `audit_emitter` (M001 injected bounded
+emitter for future `job_complete`; no direct store ownership).
 
 Key methods:
 - `spawn_run()` — spawn the main loop on the Tokio runtime
@@ -108,6 +109,8 @@ Key methods:
 - `snapshot()` — compose `SchedulerSnapshot` from queue, admission,
   running, and registry
 - `shutdown(mode)` — drain, stop-accepting, or immediate-interrupt
+- `set_audit_emitter()` / `audit_emitter_snapshot()` — M001 injection
+  for the shared bounded audit seam (see `architecture/audit.md`).
 
 #### JobSubmissionService (`submission.rs:86`)
 

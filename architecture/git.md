@@ -228,7 +228,7 @@ then re-run recover: continue").
 |------|------|---------|
 | `GitExecutionService` | `git_service.rs:232` | Unified read+raw executor |
 | `GitPayload` (13 variants) | `git_service.rs:42` | Structured read payloads |
-| `GitMutationExecutor` | `git_mutations.rs:471` | Mutation executor with snapshot/delta |
+| `GitMutationExecutor` | `git_mutations.rs:471` | Mutation executor with snapshot/delta; M001 holds optional injected `execution_audit` + `audit_emitter` (no emission yet; M002 emits `git_operation`) |
 | `GitEnvPolicy` | `git_mutations.rs:51` | `apply()` (async) / `apply_sync()` (sync) |
 | `RepoSnapshot` | `codegg-git/src/workflow.rs:15` | Pre/post state capture |
 | `StateDelta` | `codegg-git/src/workflow.rs:30` | Diff between snapshots |

@@ -467,6 +467,12 @@ fn update_xy_counts(xy: &str, staged: &mut usize, unstaged: &mut usize, conflict
 
 /// Reusable executor for local Git mutations. One executor instance
 /// is shared by every typed mutation operation; cloning is cheap.
+///
+/// Identity / audit live-execution M001: the executor can hold an
+/// optional daemon-injected trusted execution-audit context plus the
+/// shared bounded emitter. M001 threads the seam only; M002 emits
+/// `git_operation` through it. The context is never synthesized from
+/// URLs, refs, or subprocess output.
 #[derive(Clone)]
 pub struct GitMutationExecutor {
     /// Read service used for snapshots and read-only preconditions.
@@ -475,6 +481,10 @@ pub struct GitMutationExecutor {
     pub env_policy: GitEnvPolicy,
     /// Per-operation timeout. Defaults to 30s.
     pub timeout: Duration,
+    /// Trusted execution-audit context injected by the daemon boundary.
+    pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
+    /// Shared bounded audit emitter injected by the daemon boundary.
+    pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
 }
 
 // Manual Debug impl because `GitExecutionService` does not derive Debug.
@@ -499,6 +509,8 @@ impl GitMutationExecutor {
             read_service: GitExecutionService::new(),
             env_policy: GitEnvPolicy::default(),
             timeout: Duration::from_secs(30),
+            execution_audit: None,
+            audit_emitter: None,
         }
     }
 
@@ -511,6 +523,33 @@ impl GitMutationExecutor {
     pub fn with_env_policy(mut self, env_policy: GitEnvPolicy) -> Self {
         self.env_policy = env_policy;
         self
+    }
+
+    /// Inject the daemon-built trusted execution-audit context.
+    /// M002 consumes this for `git_operation` emission.
+    pub fn with_execution_audit(
+        mut self,
+        ctx: codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+    ) -> Self {
+        self.execution_audit = Some(ctx);
+        self
+    }
+
+    /// Inject the shared bounded audit emitter.
+    /// M002 consumes this for `git_operation` emission.
+    pub fn with_audit_emitter(
+        mut self,
+        emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+    ) -> Self {
+        self.audit_emitter = Some(emitter);
+        self
+    }
+
+    /// Trusted execution-audit context, when the daemon threaded one.
+    pub fn execution_audit(
+        &self,
+    ) -> Option<&codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
+        self.execution_audit.as_ref()
     }
 
     /// Capture a `RepoSnapshot` for the given repository root.

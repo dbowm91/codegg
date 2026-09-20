@@ -206,6 +206,9 @@ def check_instrumentation_stays_append_only_and_trusted() -> bool:
         "deterministic_event_id",
         "AuditChainContext",
         "operation_to_audit_action",
+        "TrustedExecutionAuditContext",
+        "ExecutionAuditEmitter",
+        "EXECUTION_AUDIT_EMIT_TIMEOUT",
     ):
         if required not in source:
             print(f"  FAIL: instrumentation missing trusted-attribution marker {required}")
@@ -226,9 +229,26 @@ def check_instrumentation_stays_append_only_and_trusted() -> bool:
         "emit_audit_for_denial",
         "append_audit_event",
         "audit_chain_for_request",
+        "audit_emitter",
+        "execution_audit_context",
     ):
         if required not in daemon:
             print(f"  FAIL: daemon seam missing {required}")
+            return False
+    # M001: execution owners receive the trusted context by injection;
+    # they must never reconstruct it from principal_ref or payloads.
+    for path_name, marker in (
+        ("src/tool/broker.rs", "execution_audit"),
+        ("src/tool/backend.rs", "execution_audit"),
+        ("src/git_mutations.rs", "execution_audit"),
+        ("src/scheduler/scheduler.rs", "audit_emitter"),
+    ):
+        path = REPO_ROOT / path_name
+        if not path.is_file():
+            print(f"  FAIL: execution owner missing: {path_name}")
+            return False
+        if marker not in path.read_text(encoding="utf-8"):
+            print(f"  FAIL: {path_name} missing M001 seam marker {marker}")
             return False
     return True
 

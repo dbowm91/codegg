@@ -128,6 +128,13 @@ This ensures existing tools work without modification.
    denied to `Agent` callers, and invisible to model disclosure.
 5. **Workspace artifacts**: `with_artifact_store()` attaches the
    canonical artifact store for large output spillover.
+6. **Trusted audit preservation (M001)**: `BrokerInvocationContext`
+   carries `execution_audit: Option<TrustedExecutionAuditContext>`
+   threaded only from daemon-owned admission. `execute_with_retry`
+   preserves it into `ToolExecutionContext` via `apply_execution_audit`
+   without synthesizing from `principal_ref`, tool input, model output,
+   or grant strings. See `architecture/audit.md` "Trusted execution
+   audit seam".
 
 ## Testing
 

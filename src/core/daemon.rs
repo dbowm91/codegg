@@ -2905,30 +2905,49 @@ impl CoreDaemon {
         }
     }
 
+    /// M001: daemon-owned bounded audit emitter sharing one policy.
+    ///
+    /// Constructed from the same pool/store policy as
+    /// [`Self::append_audit_event`]. Family handlers and injected
+    /// execution owners (ToolBroker, scheduler, Git) emit only through
+    /// this seam: one bounded timeout, existing counters/warn behavior,
+    /// no separate queue/store/schema, no authorization decisions.
+    pub(crate) fn audit_emitter(
+        &self,
+    ) -> codegg_core::audit_instrumentation::ExecutionAuditEmitter {
+        codegg_core::audit_instrumentation::ExecutionAuditEmitter::new(self.pool.clone())
+    }
+
+    /// M001: trusted execution-audit context for canonical executors.
+    ///
+    /// Copies the transport-bound principal, the gate-copied decision
+    /// provenance, and the request-derived chain locators. Only the
+    /// daemon admission boundary calls this; execution layers receive
+    /// the value by injection and never reconstruct it from
+    /// `principal_ref`, tool input, model output, or grant strings.
+    pub fn execution_audit_context(
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        request: &CoreRequest,
+    ) -> codegg_core::audit_instrumentation::TrustedExecutionAuditContext {
+        let provenance = codegg_core::authorization::audit_provenance(decision);
+        let chain = Self::audit_chain_for_request(request, decision);
+        codegg_core::audit_instrumentation::TrustedExecutionAuditContext::new(
+            authority.principal(),
+            &provenance,
+            chain,
+        )
+    }
+
     /// M005: best-effort append of one structural audit event.
     ///
     /// Bounded: one per-write timeout, no unbounded queue, never fails
     /// the operation. Outcomes are observable via
     /// `audit_instrumentation::emit_counters_snapshot` plus warn logs.
+    /// Delegates to the shared [`ExecutionAuditEmitter`](codegg_core::audit_instrumentation::ExecutionAuditEmitter)
+    /// policy so family handlers and injected owners share one seam.
     pub(crate) async fn append_audit_event(&self, builder: codegg_core::audit::AuditEventBuilder) {
-        let Some(pool) = self.pool.clone() else {
-            codegg_core::audit_instrumentation::record_emit_dropped_no_pool();
-            return;
-        };
-        let store = codegg_core::audit::AuditStore::new(pool);
-        match tokio::time::timeout(std::time::Duration::from_millis(500), store.append(builder))
-            .await
-        {
-            Ok(Ok(_)) => codegg_core::audit_instrumentation::record_emit_appended(),
-            Ok(Err(error)) => {
-                codegg_core::audit_instrumentation::record_emit_failed();
-                tracing::warn!(error = %error, "audit event append failed");
-            }
-            Err(_) => {
-                codegg_core::audit_instrumentation::record_emit_failed();
-                tracing::warn!("audit event append timed out");
-            }
-        }
+        self.audit_emitter().emit(builder).await;
     }
 
     /// M005: causal chain locators for one request.

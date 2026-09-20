@@ -115,6 +115,16 @@ pub struct ToolExecutionContext {
     /// M003: authorization decision id that admitted the owning
     /// request. Links tool receipts to the daemon decision context.
     pub origin_decision_id: Option<String>,
+    /// Identity / audit live-execution M001: trusted execution-audit
+    /// context threaded from the daemon admission boundary. Carries the
+    /// cloned transport-bound principal, gate-copied decision
+    /// provenance, and chain locators for structural audit builders.
+    /// Set only from daemon-owned state; never synthesized from
+    /// `principal_ref`, tool input, model output, or a grant string.
+    /// `None` for legacy/local callers without team attribution (those
+    /// paths use explicit `legacy_local`/LocalOwner provenance when
+    /// they need audit emission).
+    pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
     /// Caller class resolved by the permission boundary (agent/program/etc).
     pub caller_class: Option<String>,
     /// Maximum effect class the caller is authorized for.
@@ -177,6 +187,7 @@ impl ToolExecutionContext {
             decision_revoked_at: None,
             program_contract_snapshot: None,
             sandbox_profile: None,
+            execution_audit: None,
         }
     }
 
@@ -196,9 +207,33 @@ impl ToolExecutionContext {
         self.origin_decision_id = Some(decision.decision_id.clone());
     }
 
+    /// Attach the M001 trusted execution-audit context.
+    ///
+    /// Clones the daemon-owned context and projects its trusted origin
+    /// into the legacy `origin_*` string fields so existing receipts
+    /// keep working. Never synthesizes from `principal_ref`, tool
+    /// input, model output, or a grant string: the caller must supply
+    /// the daemon-built context.
+    pub fn apply_execution_audit(
+        &mut self,
+        ctx: &codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+    ) {
+        self.origin_principal = Some(ctx.principal().principal_id().as_str().to_owned());
+        self.origin_auth_method = Some(ctx.principal().auth_method().as_str().to_owned());
+        self.origin_decision_id = Some(ctx.provenance().decision_id().to_owned());
+        self.execution_audit = Some(ctx.clone());
+    }
+
     /// Canonical origin principal, when attributed.
     pub fn origin_principal_id(&self) -> Option<&str> {
         self.origin_principal.as_deref()
+    }
+
+    /// Trusted execution-audit context, when the daemon threaded one.
+    pub fn execution_audit(
+        &self,
+    ) -> Option<&codegg_core::audit_instrumentation::TrustedExecutionAuditContext> {
+        self.execution_audit.as_ref()
     }
 }
 

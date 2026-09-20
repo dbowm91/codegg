@@ -400,6 +400,10 @@ impl BrokerCallback for BrokerAdapter {
                 .as_ref()
                 .map(|s| s.iter().cloned().collect()),
             current_policy_revision: self.grant.as_ref().map(|g| g.policy_revision.clone()),
+            // M001: scheduler/program path has no daemon-threaded trusted
+            // audit context yet; M003 will inject the job-attributed
+            // context here. Never synthesize from grant strings.
+            execution_audit: None,
         };
 
         if self

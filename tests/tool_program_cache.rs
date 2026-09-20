@@ -136,6 +136,7 @@ fn program_ctx() -> BrokerInvocationContext {
         workspace_path_policy_id: None,
         allowed_tools: None,
         current_policy_revision: None,
+        execution_audit: None,
     }
 }
 

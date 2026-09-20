@@ -39,6 +39,7 @@
 //!   out of scope (single-host coordinator sequence).
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::audit::{
     sha256_hex, AuditAction, AuditDecisionProvenance, AuditEventBuilder, AuditVisibility,
@@ -1416,6 +1417,206 @@ pub fn emit_counters_snapshot() -> AuditEmitCounters {
     }
 }
 
+// --- Trusted execution audit seam (M001) ---------------------------------
+
+/// Bounded per-write timeout shared by the daemon seam and every injected
+/// execution owner. One policy, no separate queue/store/schema.
+pub const EXECUTION_AUDIT_EMIT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Trusted execution-audit context for canonical execution owners.
+///
+/// Carries only what typed builders need: the cloned immutable
+/// transport-bound [`AuthenticatedPrincipal`], the gate-copied
+/// [`AuditDecisionProvenance`], and the [`AuditChainContext`] locators.
+/// It carries no command text, argv, terminal input, Git URLs, file
+/// bodies, or tool output.
+///
+/// Construction is daemon-owned: the admission/turn/job boundary copies
+/// the already-admitted principal/decision/chain into this value and
+/// threads it through [`BrokerInvocationContext`](`crate::jobs`)/
+/// tool-execution and scheduler/Git composition. Execution layers must
+/// never synthesize it from `principal_ref`, tool input, model output,
+/// or a grant string. Legacy/local callers that genuinely lack team
+/// attribution must use [`Self::legacy_local`], which records the
+/// explicit `legacy-local`/`LocalOwner` provenance rather than an
+/// invented human identity.
+///
+/// The struct deliberately has no `serde` impls: request DTOs, tool
+/// inputs, and model outputs are JSON and therefore cannot supply this
+/// value over the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedExecutionAuditContext {
+    principal: AuthenticatedPrincipal,
+    provenance: AuditDecisionProvenance,
+    chain: AuditChainContext,
+}
+
+impl TrustedExecutionAuditContext {
+    /// Copy trusted daemon-owned state into an immutable context.
+    ///
+    /// `principal` is the transport-bound principal; `provenance` is the
+    /// gate-copied decision linkage; `chain` carries the session/turn/
+    /// run/job correlation for this execution.
+    pub fn new(
+        principal: &AuthenticatedPrincipal,
+        provenance: &AuditDecisionProvenance,
+        chain: AuditChainContext,
+    ) -> Self {
+        Self {
+            principal: principal.clone(),
+            provenance: provenance.clone(),
+            chain,
+        }
+    }
+
+    /// Explicit legacy provenance for pre-attribution local execution.
+    ///
+    /// Uses the literal `"legacy-local"` decision marker with a
+    /// `LocalOwner` principal and `local_owner_broad` policy, mirroring
+    /// `OriginAttribution::legacy_local`. Never fabricates a team
+    /// identity.
+    pub fn legacy_local(correlation_id: impl Into<String>) -> Self {
+        let correlation = correlation_id.into();
+        let principal = AuthenticatedPrincipal::local_owner("legacy-local");
+        let provenance = AuditDecisionProvenance::new(
+            "legacy-local",
+            correlation.clone(),
+            "local_owner_broad",
+            None,
+        );
+        let chain = AuditChainContext {
+            correlation_id: Some(correlation),
+            ..AuditChainContext::default()
+        };
+        Self {
+            principal,
+            provenance,
+            chain,
+        }
+    }
+
+    /// Transport-bound actor for typed builders. Cloned, never rewritten.
+    pub fn principal(&self) -> &AuthenticatedPrincipal {
+        &self.principal
+    }
+
+    /// Gate-copied decision linkage for typed builders.
+    pub fn provenance(&self) -> &AuditDecisionProvenance {
+        &self.provenance
+    }
+
+    /// Correlation/causation locators for typed builders.
+    pub fn chain(&self) -> &AuditChainContext {
+        &self.chain
+    }
+
+    /// Start one structural builder bound to this trusted context.
+    ///
+    /// Applies the stored chain (correlation, causation parent, event
+    /// id, project/session/turn/run/job/worktree/provider locators) so
+    /// execution owners cannot drop correlation silently.
+    pub fn builder(&self, action: AuditAction) -> AuditEventBuilder {
+        let base = AuditEventBuilder::new(action, &self.principal, &self.provenance);
+        apply_chain(base, &self.chain, self.provenance.project())
+    }
+
+    /// Derive a child context that preserves correlation and points
+    /// causation at `parent_event_id`, keeping the same actor/provenance.
+    pub fn child_with_parent(&self, parent_event_id: &AuditEventId) -> Self {
+        let mut chain = self.chain.clone();
+        if chain.correlation_id.as_ref().is_none_or(|c| c.is_empty()) {
+            chain.correlation_id = Some(self.provenance.correlation_id().to_owned());
+        }
+        chain.causation_parent = Some(parent_event_id.as_str().to_owned());
+        Self {
+            principal: self.principal.clone(),
+            provenance: self.provenance.clone(),
+            chain,
+        }
+    }
+}
+
+/// One cloneable bounded audit-emission service.
+///
+/// Constructed by the daemon/coordinator from the same pool/store policy
+/// as `CoreDaemon::append_audit_event`. It owns the bounded append
+/// timeout, the existing emit counters/warn behavior, no separate
+/// queue/store/schema, and no authorization decisions of its own.
+/// Execution owners (ToolBroker, scheduler, Git) receive a clone via
+/// injection and emit only through this seam.
+#[derive(Debug, Clone)]
+pub struct ExecutionAuditEmitter {
+    pool: Option<sqlx::SqlitePool>,
+    timeout: Duration,
+}
+
+impl ExecutionAuditEmitter {
+    /// Build an emitter over `pool`. `None` preserves the legacy
+    /// in-memory-daemon behavior: emits are dropped with a counter.
+    pub fn new(pool: Option<sqlx::SqlitePool>) -> Self {
+        Self {
+            pool,
+            timeout: EXECUTION_AUDIT_EMIT_TIMEOUT,
+        }
+    }
+
+    /// Override the bounded per-write timeout (tests only).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Bounded timeout for one append.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Whether a durable pool backs this emitter.
+    pub fn has_pool(&self) -> bool {
+        self.pool.is_some()
+    }
+
+    /// Best-effort append of one already-built structural event.
+    ///
+    /// Same policy as the daemon seam: one bounded timeout, counters
+    /// plus warn on failure, never fails the owning operation.
+    pub async fn emit(&self, builder: AuditEventBuilder) {
+        let Some(pool) = self.pool.clone() else {
+            record_emit_dropped_no_pool();
+            return;
+        };
+        let store = crate::audit::AuditStore::new(pool);
+        match tokio::time::timeout(self.timeout, store.append(builder)).await {
+            Ok(Ok(_)) => record_emit_appended(),
+            Ok(Err(error)) => {
+                record_emit_failed();
+                tracing::warn!(error = %error, "audit event append failed");
+            }
+            Err(_) => {
+                record_emit_failed();
+                tracing::warn!("audit event append timed out");
+            }
+        }
+    }
+
+    /// Build via `build` from a trusted context and emit with one policy.
+    ///
+    /// `build` receives the context's principal/provenance/chain so the
+    /// typed instrumentation builders bind attribution losslessly.
+    pub async fn emit_with(
+        &self,
+        ctx: &TrustedExecutionAuditContext,
+        build: impl FnOnce(
+            &AuthenticatedPrincipal,
+            &AuditDecisionProvenance,
+            &AuditChainContext,
+        ) -> AuditEventBuilder,
+    ) {
+        let builder = build(ctx.principal(), ctx.provenance(), ctx.chain());
+        self.emit(builder).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1633,5 +1834,200 @@ mod tests {
         });
         assert_eq!(stored.session_id.as_deref(), Some("session-1"));
         assert!(stored.project_id.is_some());
+    }
+
+    // --- M001 trusted execution audit seam ---------------------------
+
+    #[test]
+    fn trusted_context_preserves_principal_provenance_chain() {
+        let (principal, provenance) = local_context("corr-m001");
+        let chain = AuditChainContext {
+            correlation_id: Some("corr-m001".to_owned()),
+            session_id: Some("session-m001".to_owned()),
+            turn_id: Some("turn-m001".to_owned()),
+            job_id: Some("job-m001".to_owned()),
+            ..AuditChainContext::default()
+        };
+        let ctx = TrustedExecutionAuditContext::new(&principal, &provenance, chain.clone());
+        assert_eq!(ctx.principal(), &principal);
+        assert_eq!(ctx.provenance(), &provenance);
+        assert_eq!(ctx.chain(), &chain);
+        // Builder binds the same attribution losslessly.
+        let builder = ctx.builder(AuditAction::ToolInvoke);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        let stored = rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("pool");
+            crate::session::schema::migrate(&pool)
+                .await
+                .expect("migrate");
+            let store = crate::audit::AuditStore::new(pool);
+            store.append(builder).await.expect("append")
+        });
+        assert_eq!(
+            stored.actor_principal.as_str(),
+            principal.principal_id().as_str()
+        );
+        assert_eq!(stored.decision_id, "decision-test");
+        assert_eq!(stored.correlation_id, "corr-m001");
+        assert_eq!(stored.session_id.as_deref(), Some("session-m001"));
+        assert_eq!(stored.turn_id.as_deref(), Some("turn-m001"));
+        assert_eq!(stored.job_id.as_deref(), Some("job-m001"));
+    }
+
+    #[test]
+    fn trusted_context_child_preserves_correlation() {
+        let (principal, provenance) = local_context("corr-child");
+        let chain = AuditChainContext {
+            correlation_id: Some("corr-child".to_owned()),
+            session_id: Some("session-child".to_owned()),
+            ..AuditChainContext::default()
+        };
+        let ctx = TrustedExecutionAuditContext::new(&principal, &provenance, chain);
+        let parent = AuditEventId::new();
+        let child = ctx.child_with_parent(&parent);
+        assert_eq!(child.principal(), &principal);
+        assert_eq!(child.provenance(), &provenance);
+        assert_eq!(
+            child.chain().causation_parent.as_deref(),
+            Some(parent.as_str())
+        );
+        assert_eq!(child.chain().correlation_id.as_deref(), Some("corr-child"));
+        assert_eq!(child.chain().session_id.as_deref(), Some("session-child"));
+    }
+
+    #[test]
+    fn trusted_context_legacy_local_uses_explicit_provenance() {
+        let ctx = TrustedExecutionAuditContext::legacy_local("corr-legacy-m001");
+        // Explicit local-owner binding, never an invented team identity.
+        assert_eq!(ctx.principal().principal_id().as_str(), "local-owner");
+        assert_eq!(ctx.provenance().decision_id(), "legacy-local");
+        assert_eq!(ctx.provenance().policy(), "local_owner_broad");
+        assert_eq!(ctx.provenance().correlation_id(), "corr-legacy-m001");
+        assert_eq!(
+            ctx.chain().correlation_id.as_deref(),
+            Some("corr-legacy-m001")
+        );
+    }
+
+    #[test]
+    fn trusted_context_carries_no_secret_or_body_fields() {
+        // Compile-time shape: only principal/provenance/chain. Debug
+        // rendering must not leak payload-shaped fields.
+        let ctx = TrustedExecutionAuditContext::legacy_local("corr-shape");
+        let rendered = format!("{ctx:?}");
+        for forbidden in [
+            "command", "argv", "secret", "token", "password", "body", "output", "prompt",
+        ] {
+            assert!(
+                !rendered.to_lowercase().contains(forbidden),
+                "trusted context debug must not carry {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn emitter_without_pool_drops_with_counter() {
+        let before = emit_counters_snapshot();
+        let emitter = ExecutionAuditEmitter::new(None);
+        assert!(!emitter.has_pool());
+        assert_eq!(emitter.timeout(), EXECUTION_AUDIT_EMIT_TIMEOUT);
+        let ctx = TrustedExecutionAuditContext::legacy_local("corr-drop");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            emitter
+                .emit_with(&ctx, |principal, provenance, chain| {
+                    session_create_event(principal, provenance, chain, "session-drop", "allow")
+                })
+                .await;
+        });
+        let after = emit_counters_snapshot();
+        assert_eq!(after.dropped_no_pool, before.dropped_no_pool + 1);
+        assert_eq!(after.appended, before.appended);
+    }
+
+    #[test]
+    fn emitter_appends_with_shared_policy_and_counters() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("pool");
+            crate::session::schema::migrate(&pool)
+                .await
+                .expect("migrate");
+            let before = emit_counters_snapshot();
+            let emitter = ExecutionAuditEmitter::new(Some(pool.clone()));
+            assert!(emitter.has_pool());
+            let ctx = TrustedExecutionAuditContext::legacy_local("corr-emit");
+            emitter
+                .emit_with(&ctx, |principal, provenance, chain| {
+                    session_create_event(principal, provenance, chain, "session-emit", "allow")
+                })
+                .await;
+            let after = emit_counters_snapshot();
+            assert_eq!(after.appended, before.appended + 1);
+            // One policy, one store: the event is queryable once.
+            let store = crate::audit::AuditStore::new(pool);
+            let page = store
+                .query(&crate::audit::AuditQueryFilter {
+                    project_id: None,
+                    action: Some(AuditAction::SessionCreate.as_str().to_owned()),
+                    principal: None,
+                    from_seq: None,
+                    limit: 100,
+                })
+                .await
+                .expect("query");
+            assert!(
+                page.events.iter().any(|e| e.correlation_id == "corr-emit"),
+                "emitted event must be stored once"
+            );
+        });
+    }
+
+    #[test]
+    fn emitter_timeout_surfaces_failure_counter() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+        rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("pool");
+            crate::session::schema::migrate(&pool)
+                .await
+                .expect("migrate");
+            // Drop the pool so the write fails fast; the emitter must
+            // record failure rather than silent success.
+            drop(pool);
+            let closed = sqlx::SqlitePool::connect("sqlite::memory:")
+                .await
+                .expect("pool");
+            closed.close().await;
+            let before = emit_counters_snapshot();
+            let emitter = ExecutionAuditEmitter::new(Some(closed))
+                .with_timeout(std::time::Duration::from_millis(50));
+            let ctx = TrustedExecutionAuditContext::legacy_local("corr-fail");
+            emitter
+                .emit_with(&ctx, |principal, provenance, chain| {
+                    session_create_event(principal, provenance, chain, "session-fail", "allow")
+                })
+                .await;
+            let after = emit_counters_snapshot();
+            assert_eq!(after.failed, before.failed + 1);
+            assert_eq!(after.appended, before.appended);
+        });
     }
 }

@@ -175,6 +175,10 @@ impl AgentLoop {
             } else {
                 None
             },
+            // M001: daemon-threaded trusted audit context travels here
+            // when the turn boundary supplies one; never synthesized
+            // from principal strings or tool payloads.
+            execution_audit: None,
         }
     }
 
@@ -1462,6 +1466,11 @@ impl AgentLoop {
                                     )),
                                     allowed_tools: None,
                                     current_policy_revision: Some(policy_revision_for_ctx),
+                                    // M001: preserve daemon-threaded trusted
+                                    // audit context when the execution
+                                    // context carries one; never synthesize
+                                    // from principal_ref or grant strings.
+                                    execution_audit: exec_ctx.execution_audit.clone(),
                                 };
                                 let broker_result = broker_for_exec
                                     .execute(registry, &tool_name_clone, exec_args, broker_ctx)
