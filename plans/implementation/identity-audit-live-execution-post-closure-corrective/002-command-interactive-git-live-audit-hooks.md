@@ -1,8 +1,8 @@
 # Identity / Audit Live Execution Corrective M002 — Command, Interactive, and Git Live Audit Hooks
 
-Status: blocked
+Status: ready
 
-Hard dependency: M001 trusted execution audit context/emitter closed.
+Hard dependency: M001 trusted execution audit context/emitter closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/001-status.md`).
 
 Repository baseline: `a996e20060a0103a152a80fb62463241c1fd1162`
 
