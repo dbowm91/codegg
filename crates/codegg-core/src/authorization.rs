@@ -568,7 +568,7 @@ mod tests {
             find("lsp_preview_apply"),
             (
                 "lsp_preview_apply".to_owned(),
-                "opaque".to_owned(),
+                "via_session".to_owned(),
                 "file.modify".to_owned()
             )
         );

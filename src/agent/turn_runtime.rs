@@ -312,6 +312,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 turn_id: Some(turn_id.clone()),
                 notification_service: Some(notification_service.clone()),
                 workspace_locks,
+                lsp_service: lsp_service.clone(),
                 runtime_assets: crate::tool::factory::RuntimeAssetContext {
                     snapshot: asset_snapshot.clone(),
                     pin: asset_pin.clone(),

@@ -607,7 +607,7 @@ pub struct LspTool {
     /// a preview by ID and detect staleness. Behind a `Mutex` so
     /// the async tool path can register without `await` holding
     /// the lock.
-    preview_registry: parking_lot::Mutex<egglsp::preview_registry::PreviewArtifactRegistry>,
+    preview_registry: crate::tool::LspPreviewRegistryHandle,
     semantic_cache: parking_lot::Mutex<egglsp::cache::LspSemanticCache>,
 }
 
@@ -662,13 +662,24 @@ impl LspTool {
         Self {
             service,
             allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            preview_registry: parking_lot::Mutex::new(
+            preview_registry: Arc::new(parking_lot::Mutex::new(
                 egglsp::preview_registry::PreviewArtifactRegistry::new(),
-            ),
+            )),
             semantic_cache: parking_lot::Mutex::new(egglsp::cache::LspSemanticCache::new(
                 cache_config.unwrap_or_default(),
             )),
         }
+    }
+
+    /// Construct the tool over an explicit turn-local preview registry.
+    /// Production factories use this to let a future sibling apply adapter
+    /// consume exactly the candidate produced by this instance.
+    pub fn with_preview_registry(
+        mut self,
+        registry: crate::tool::LspPreviewRegistryHandle,
+    ) -> Self {
+        self.preview_registry = registry;
+        self
     }
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
@@ -8086,6 +8097,33 @@ diff --git a/src/lib.rs b/src/lib.rs
         let tool = LspTool::new(service).with_allowed_root(PathBuf::from("/tmp"));
         assert!(tool.preview_registry().is_empty());
         assert_eq!(tool.preview_registry().len(), 0);
+    }
+
+    #[test]
+    fn explicit_preview_registry_is_shared_but_default_tools_are_isolated() {
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
+        let shared = std::sync::Arc::new(parking_lot::Mutex::new(
+            egglsp::preview_registry::PreviewArtifactRegistry::new(),
+        ));
+        let shared_tool = LspTool::new(service.clone()).with_preview_registry(shared.clone());
+        shared.lock().register(
+            egglsp::context::LspPreviewArtifact::Formatting {
+                description: "shared".to_owned(),
+                content_hash: None,
+                edit_count: 0,
+                patches: Vec::new(),
+            },
+            vec!["src/lib.rs".to_owned()],
+            std::collections::HashMap::new(),
+            "test".to_owned(),
+        );
+        assert_eq!(shared_tool.preview_registry().len(), 1);
+        let isolated_tool = LspTool::new(service.clone());
+        assert!(isolated_tool.preview_registry().is_empty());
+        let another_isolated_tool = LspTool::new(service);
+        assert!(another_isolated_tool.preview_registry().is_empty());
     }
 
     #[test]

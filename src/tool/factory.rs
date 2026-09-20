@@ -35,6 +35,10 @@ pub struct SessionToolContext {
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
+    /// Daemon-resolved LSP service shared by prompt context collection and
+    /// the model-facing LSP tool. `None` preserves explicit unavailable
+    /// behavior for runtimes without LSP.
+    pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
     /// Explicit runtime-owned search/MCP context (M005). When `Some`,
     /// search/evidence wrappers execute against this context instead of
     /// any process-global slot. Turn construction bootstraps this
@@ -88,6 +92,7 @@ pub fn build_session_tool_registry(
         runtime_assets: asset_context,
         notification_service,
         workspace_locks,
+        lsp_service,
         search_runtime,
         sandbox_profile,
     } = session_context;
@@ -131,7 +136,8 @@ pub fn build_session_tool_registry(
         todo_policy: Some(task_state_policy),
         pool: pool.clone(),
         session_id: Some(session_id.to_string()),
-        lsp_service: None,
+        lsp_service,
+        lsp_preview_registry: None,
         tool_backends: crate::tool::ToolBackendConfig::from_config(config),
         context_artifact_store: if context_read_enabled {
             Some(artifact_store.clone())

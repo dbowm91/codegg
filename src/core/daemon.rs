@@ -2831,6 +2831,7 @@ impl CoreDaemon {
             | CoreRequest::EditCheckpointUndoLatest { session_id, .. }
             | CoreRequest::EditCheckpointReapply { session_id, .. }
             | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
+            CoreRequest::LspPreviewApply { request } => Some(request.session_id.as_str()),
             CoreRequest::SessionSelectionUpdate { request } => Some(request.session_id.as_str()),
             CoreRequest::GoalSet { session_id, .. }
             | CoreRequest::GoalFromFile { session_id, .. }

@@ -22,6 +22,12 @@ process routing, sandboxing, audit, and bounded output therefore keep their
 existing owners. It accepts no command, package, path, installation, or
 auto-fix field. Unsupported project families return a resolver miss.
 
+Session tool construction threads the daemon-resolved LSP service and a
+bounded turn-local preview-registry handle through `SessionToolContext` into
+`ToolRegistryOptions`. The model-facing `lsp` and hidden `lsp_read` adapters
+share the supplied service; a future checked preview-apply adapter can consume
+the same explicit preview handle without a global registry or downcast.
+
 The `tool` module provides the built-in tools that the agent can use to
 interact with the filesystem, shell, and external services. It owns the
 tool registry, the execution pipeline, and the backend/diagnostics

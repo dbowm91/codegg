@@ -930,19 +930,30 @@ impl CoreDaemon {
                         message: format!("workspace {} not found", request.workspace_id),
                     });
                 };
-                let session_workspace = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT workspace_id FROM session WHERE id = ?",
+                if let Err(error) = crate::lsp::mutation::validate_session_workspace_binding(
+                    &pool,
+                    &request.session_id,
+                    &request.workspace_id,
                 )
-                .bind(&request.session_id)
-                .fetch_optional(&pool)
                 .await
-                .map_err(|error| AppError::Other(anyhow::anyhow!(error)))?;
-                if session_workspace.as_ref().and_then(|id| id.as_deref())
-                    != Some(request.workspace_id.as_str())
                 {
+                    let code = match &error {
+                        crate::lsp::mutation::LspSessionWorkspaceBindingError::Mismatch => {
+                            "session_workspace_mismatch"
+                        }
+                        crate::lsp::mutation::LspSessionWorkspaceBindingError::Missing => {
+                            "session_not_found"
+                        }
+                        crate::lsp::mutation::LspSessionWorkspaceBindingError::Invalid(_) => {
+                            "invalid_lsp_preview_apply"
+                        }
+                        crate::lsp::mutation::LspSessionWorkspaceBindingError::Storage(_) => {
+                            "session_workspace_binding_failed"
+                        }
+                    };
                     return Ok(CoreResponse::Error {
-                        code: "session_workspace_mismatch".into(),
-                        message: "session is not bound to the requested workspace".into(),
+                        code: code.into(),
+                        message: error.to_string(),
                     });
                 }
                 let lease = match self.workspace_services.acquire(&workspace_id).await {

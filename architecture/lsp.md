@@ -34,6 +34,22 @@ that re-exports `egglsp::*` and bridges:
 
 The crate uses a client-per-root pattern: `LspService` maintains a `HashMap<String, ClientEntry>` where the key is `"{project_root}:{server_id}"`.
 
+### Preview runtime ownership and checked apply
+
+The daemon-resolved `Arc<LspService>` is threaded from `TurnRunInput` through
+`SessionToolContext` into the session `ToolRegistry`; prompt-context collection,
+the model-facing `lsp`, and hidden `lsp_read` therefore share one service
+identity for the turn. The registry also owns one bounded, turn-local
+`Arc<Mutex<PreviewArtifactRegistry>>`. A preview-producing `lsp` tool and a
+future sibling apply adapter can share that explicit handle, while independent
+registries remain isolated and teardown/restart drops previews.
+
+Preview application remains solely owned by `src/lsp/mutation.rs::apply_preview`.
+The transport `CoreRequest::LspPreviewApply` is authorized as
+`via_session` + `file.modify`, then reuses the canonical session/workspace
+binding helper before acquiring the daemon workspace lock. No preview data is
+persisted and no LSP command or opaque workspace edit is enabled.
+
 ### Tier 1 vs Tier 2 compatibility
 
 The `compatibility.rs` module defines explicit, data-driven profiles per

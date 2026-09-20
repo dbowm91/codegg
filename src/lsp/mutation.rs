@@ -29,6 +29,47 @@ pub enum LspMutationApplyError {
     Apply(String),
 }
 
+/// Failure taxonomy for the trusted session/workspace binding seam used by
+/// both transport apply and the future agent adapter.
+#[derive(Debug, thiserror::Error)]
+pub enum LspSessionWorkspaceBindingError {
+    #[error("invalid session/workspace identity: {0}")]
+    Invalid(String),
+    #[error("session binding was not found")]
+    Missing,
+    #[error("session is not bound to the requested workspace")]
+    Mismatch,
+    #[error("session/workspace binding lookup failed: {0}")]
+    Storage(String),
+}
+
+/// Validate that a trusted session locator is durably bound to the requested
+/// workspace. This performs no authorization and acquires no workspace lock;
+/// callers retain their existing authorization and lock owners.
+pub async fn validate_session_workspace_binding(
+    pool: &sqlx::SqlitePool,
+    session_id: &str,
+    workspace_id: &str,
+) -> Result<(), LspSessionWorkspaceBindingError> {
+    codegg_core::context::SessionId::parse(session_id)
+        .map_err(|error| LspSessionWorkspaceBindingError::Invalid(error.to_string()))?;
+    codegg_core::workspace::WorkspaceId::parse(workspace_id)
+        .map_err(|error| LspSessionWorkspaceBindingError::Invalid(error.to_string()))?;
+    let bound_workspace =
+        sqlx::query_scalar::<_, Option<String>>("SELECT workspace_id FROM session WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| LspSessionWorkspaceBindingError::Storage(error.to_string()))?;
+    let Some(bound_workspace) = bound_workspace else {
+        return Err(LspSessionWorkspaceBindingError::Missing);
+    };
+    if bound_workspace.as_deref() != Some(workspace_id) {
+        return Err(LspSessionWorkspaceBindingError::Mismatch);
+    }
+    Ok(())
+}
+
 /// Apply a reviewed LSP preview under the daemon's workspace authority.
 pub async fn apply_preview(
     request: LspPreviewApplyRequestDto,
@@ -529,5 +570,31 @@ mod tests {
         .expect_err("cross-workspace preview must fail closed");
         assert!(matches!(error, LspMutationApplyError::Invalid(_)));
         assert_eq!(std::fs::read_to_string(&outside_path).unwrap(), "outside\n");
+    }
+
+    #[tokio::test]
+    async fn session_workspace_binding_helper_is_fail_closed_and_reusable() {
+        let pool = pool().await;
+        sqlx::query("UPDATE session SET workspace_id = ? WHERE id = ?")
+            .bind("workspace-test")
+            .bind("session-test")
+            .execute(&pool)
+            .await
+            .expect("bind session");
+        validate_session_workspace_binding(&pool, "session-test", "workspace-test")
+            .await
+            .expect("valid binding");
+        assert!(matches!(
+            validate_session_workspace_binding(&pool, "session-test", "other-workspace").await,
+            Err(LspSessionWorkspaceBindingError::Mismatch)
+        ));
+        assert!(matches!(
+            validate_session_workspace_binding(&pool, "unknown-session", "workspace-test").await,
+            Err(LspSessionWorkspaceBindingError::Missing)
+        ));
+        assert!(matches!(
+            validate_session_workspace_binding(&pool, "bad/session", "workspace-test").await,
+            Err(LspSessionWorkspaceBindingError::Invalid(_))
+        ));
     }
 }

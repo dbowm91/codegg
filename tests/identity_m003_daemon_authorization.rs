@@ -167,7 +167,14 @@ async fn matrix_covers_native_surface_without_duplicates() {
     assert_eq!(find("project_get").2, "project.read");
     assert_eq!(find("session_create").2, "session.create");
     assert_eq!(find("job_submit").2, "job.submit");
-    assert_eq!(find("lsp_preview_apply").2, "file.modify");
+    assert_eq!(
+        find("lsp_preview_apply"),
+        (
+            "lsp_preview_apply".to_owned(),
+            "via_session".to_owned(),
+            "file.modify".to_owned()
+        )
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

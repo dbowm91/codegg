@@ -66,7 +66,8 @@ in-memory daemons without a pool decide under the same broad policy.
 - `direct_project` — `project_id` locator in the DTO.
 - `via_session` — `session_id` locator resolved through the session row
   (includes `JobSubmit`/`ScheduleCreate`/`RunRerun` when they carry a
-  session).
+  session). `lsp_preview_apply` uses this scope so team authorization
+  resolves through the owning session project before checked mutation.
 - `via_job` — `job_id` locator resolved through the job's session.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
@@ -382,7 +383,7 @@ gates (firing is not a Core operation):
 | `job_retry` | via_job | `job.cancel` |
 | `job_submit` | via_session | `job.submit` |
 | `job_wait` | via_job | `session.read` |
-| `lsp_preview_apply` | opaque | `file.modify` |
+| `lsp_preview_apply` | via_session | `file.modify` |
 | `managed_worktree_archive` | opaque | `worktree.remove` |
 | `managed_worktree_cleanup` | opaque | `worktree.remove` |
 | `managed_worktree_get` | opaque | `git.read` |

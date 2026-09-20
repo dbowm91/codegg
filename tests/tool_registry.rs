@@ -53,6 +53,64 @@ fn default_registry_includes_required_native_tools() {
 }
 
 #[test]
+fn supplied_lsp_service_and_preview_registry_are_retained_by_registry() {
+    let service = codegg::lsp::service::LspService::new_arc(codegg::lsp::config_lsp_to_egglsp(
+        codegg::config::schema::LspConfig::default(),
+    ));
+    let preview_registry = std::sync::Arc::new(parking_lot::Mutex::new(
+        egglsp::preview_registry::PreviewArtifactRegistry::new(),
+    ));
+    let expected_service = std::sync::Arc::as_ptr(&service) as usize;
+    let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        lsp_service: Some(service),
+        lsp_preview_registry: Some(preview_registry.clone()),
+        ..Default::default()
+    });
+    assert_eq!(registry.lsp_service_identity(), Some(expected_service));
+    let retained = registry
+        .lsp_preview_registry()
+        .expect("turn-local preview handle retained");
+    assert!(std::sync::Arc::ptr_eq(&retained, &preview_registry));
+}
+
+#[test]
+fn session_factory_threads_daemon_lsp_service_into_registry() {
+    let service = codegg::lsp::service::LspService::new_arc(codegg::lsp::config_lsp_to_egglsp(
+        codegg::config::schema::LspConfig::default(),
+    ));
+    let expected_service = std::sync::Arc::as_ptr(&service) as usize;
+    let root = tempfile::tempdir().expect("workspace root");
+    let record = std::sync::Arc::new(codegg_core::workspace::WorkspaceRecord {
+        id: codegg_core::workspace::WorkspaceId::new(),
+        canonical_root: root.path().to_path_buf(),
+        display_name: "factory-test".to_owned(),
+        created_at: chrono::Utc::now(),
+        last_opened_at: chrono::Utc::now(),
+        archived_at: None,
+    });
+    let execution = codegg_core::workspace::ExecutionContext::new(
+        record,
+        Some("session-factory-test".to_owned()),
+        Default::default(),
+    );
+    let (registry, _) = codegg::tool::factory::build_session_tool_registry(
+        &codegg::config::schema::Config::default(),
+        None,
+        "session-factory-test",
+        None,
+        codegg::model_profile::types::TaskStatePolicy::explicit_todo(),
+        None,
+        execution,
+        codegg::tool::factory::SessionToolContext {
+            lsp_service: Some(service),
+            ..Default::default()
+        },
+    );
+    assert_eq!(registry.lsp_service_identity(), Some(expected_service));
+    assert!(registry.lsp_preview_registry().is_some());
+}
+
+#[test]
 fn default_tool_categories_are_consistent() {
     let registry = ToolRegistry::with_defaults();
     let read_only_expected = [

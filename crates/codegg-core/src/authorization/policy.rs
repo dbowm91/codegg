@@ -722,7 +722,7 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         ),
         R::LspPreviewApply { .. } => OperationDescriptor::new(
             "lsp_preview_apply",
-            ScopeKind::Opaque,
+            ScopeKind::ViaSession,
             Some(Capability::FileModify),
         ),
         R::AuditQuery { .. } => OperationDescriptor::new(

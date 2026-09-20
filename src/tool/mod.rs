@@ -104,6 +104,12 @@ pub use contract::{
     ToolTerminalStatus, ToolValue,
 };
 
+/// Turn-local, explicitly owned preview registry shared by the model-facing
+/// LSP tool and a future sibling adapter. The handle is never global or
+/// persisted; dropping the owning tool registry drops the preview state.
+pub type LspPreviewRegistryHandle =
+    Arc<parking_lot::Mutex<egglsp::preview_registry::PreviewArtifactRegistry>>;
+
 static DEFAULT_REGISTRY: Lazy<ToolRegistry> = Lazy::new(ToolRegistry::with_defaults);
 
 #[inline]
@@ -224,6 +230,8 @@ pub struct ToolRegistry {
     integrated_config: integrated_config::IntegratedToolRuntimeConfig,
     search_runtime: crate::search_backend::SearchRuntimeContext,
     sandbox_profile: codegg_core::approval::SandboxProfile,
+    lsp_preview_registry: Option<LspPreviewRegistryHandle>,
+    lsp_service: Option<Arc<crate::lsp::service::LspService>>,
 }
 
 impl Default for ToolRegistry {
@@ -258,6 +266,9 @@ pub struct ToolRegistryOptions {
     /// Optional pre-built LSP service. When `None`, a default
     /// `Arc<LspService>` is constructed from `LspConfig::default()`.
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Optional turn-local preview registry. When absent, the registry
+    /// creates one isolated handle for this tool registry.
+    pub lsp_preview_registry: Option<LspPreviewRegistryHandle>,
     /// Resolved per-domain backend configuration. The registry does
     /// not consume this directly today, but exposing it lets future
     /// wrappers consult the resolved backend without re-parsing
@@ -336,6 +347,8 @@ impl ToolRegistry {
             integrated_config: integrated_config::IntegratedToolRuntimeConfig::default(),
             search_runtime: crate::search_backend::SearchRuntimeContext::default(),
             sandbox_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            lsp_preview_registry: None,
+            lsp_service: None,
         }
     }
 
@@ -682,12 +695,20 @@ impl ToolRegistry {
                 crate::config::schema::LspConfig::default(),
             ))
         });
+        let lsp_preview_registry = options.lsp_preview_registry.unwrap_or_else(|| {
+            Arc::new(parking_lot::Mutex::new(
+                egglsp::preview_registry::PreviewArtifactRegistry::new(),
+            ))
+        });
+        registry.lsp_service = Some(lsp_service_shared.clone());
+        registry.lsp_preview_registry = Some(lsp_preview_registry.clone());
         match lsp_backend {
             ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
                 let tool = crate::tool::lsp::LspTool::with_cache_config(
                     lsp_service_shared.clone(),
                     options.lsp_cache_config,
-                );
+                )
+                .with_preview_registry(lsp_preview_registry.clone());
                 registry.register(match workspace_root.as_ref() {
                     Some(root) => tool.with_allowed_root(root.clone()),
                     None => tool,
@@ -708,7 +729,8 @@ impl ToolRegistry {
                     let tool = crate::tool::lsp::LspTool::with_cache_config(
                         lsp_service_shared.clone(),
                         options.lsp_cache_config,
-                    );
+                    )
+                    .with_preview_registry(lsp_preview_registry.clone());
                     registry.register(match workspace_root.as_ref() {
                         Some(root) => tool.with_allowed_root(root.clone()),
                         None => tool,
@@ -1002,6 +1024,7 @@ impl ToolRegistry {
             pool,
             session_id,
             lsp_service: None,
+            lsp_preview_registry: None,
             tool_backends: ToolBackendConfig::from_config(config),
             context_artifact_store: None,
             context_session_id: None,
@@ -1046,6 +1069,7 @@ impl ToolRegistry {
             pool,
             session_id,
             lsp_service: None,
+            lsp_preview_registry: None,
             tool_backends: ToolBackendConfig::default(),
             context_artifact_store: None,
             context_session_id: None,
@@ -1078,6 +1102,20 @@ impl ToolRegistry {
     /// consult the runtime-resolved backend at call time.
     pub fn tool_backends(&self) -> &ToolBackendConfig {
         &self.tool_backends
+    }
+
+    /// Identity of the daemon-resolved LSP service used by this registry.
+    /// This is diagnostic evidence for service reuse, not an authority
+    /// locator and not a process-global service slot.
+    pub fn lsp_service_identity(&self) -> Option<usize> {
+        self.lsp_service
+            .as_ref()
+            .map(|service| Arc::as_ptr(service) as usize)
+    }
+
+    /// Clone the turn-local preview handle for a sibling host-owned adapter.
+    pub fn lsp_preview_registry(&self) -> Option<LspPreviewRegistryHandle> {
+        self.lsp_preview_registry.clone()
     }
 
     /// Resolved integrated tool backend config (evidence, deterministic,
