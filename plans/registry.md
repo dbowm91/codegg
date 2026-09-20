@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Coding-agent tool surface corrective | active | `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md` | M006 closure review + M007 ready; M005 blocked on M006 | M006 implementation landed; closure evidence is being reviewed. M007 owns missing strict closure evidence for M003/M004. M005 remains blocked until M006 closes. |
+| Coding-agent tool surface corrective | active | `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md` | M005 + M007 ready; M003/M004 conditionally closed pending M007 | M006 is closed; M005 is unblocked and must consume its trusted runtime seam. M007 owns missing strict closure evidence for M003/M004. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -34,6 +34,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Coding-agent tool surface corrective | M005 checked LSP preview application | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | M001 and M006 closed; ADR-0008 accepted. Consume the daemon-owned LSP service, shared turn-local preview registry, workspace locks, host-bound session/workspace identity, and reusable binding seam; add only the narrow model-facing adapter. |
 | Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | ready | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | Production implementations exist. Run and record the required broad verification missing from the historical M003/M004 closure records; no production refactor unless a separate corrective is registered. |
 
 ## Current execution order and dependency gates
@@ -60,14 +61,11 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Coding-agent tool surface corrective | M005 checked LSP preview application | Blocked on strict M006 closure. M005 may consume only the daemon-owned LSP service, shared turn-local preview registry, canonical workspace locks, host-bound session/workspace identity, and reusable binding seam established by M006; do not bypass with a fake CoreRequest, global registry, or duplicate mutation owner. |
 | Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific (hardening landed; see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
 ## Closure work and current control points
-
-| Coding-agent tool surface corrective | M006 closing | `plans/closure/coding-agent-tool-surface-corrective/006-status.md` | Runtime ownership, preview lifetime, authorization scope, binding seam, and M005 unblock audit are under review. |
 
 Detailed historical milestone history is intentionally not duplicated here. Current foundation/control evidence relevant to active work includes:
 
@@ -107,6 +105,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Coding-agent tool surface corrective | M002 coding profile and contextual capability exposure | closed | `plans/closure/coding-agent-tool-surface-corrective/002-status.md` | `32d152a` |
 | Coding-agent tool surface corrective | M003 compact discovery and multiplexed-tool ergonomics | conditionally closed | `plans/closure/coding-agent-tool-surface-corrective/003-status.md` | `94cdaaf`; strict status pending M007 supplemental qualification |
 | Coding-agent tool surface corrective | M004 structured verification facade | conditionally closed | `plans/closure/coding-agent-tool-surface-corrective/004-status.md` | `a978484`; strict status pending M007 supplemental qualification |
+| Coding-agent tool surface corrective | M006 LSP preview runtime and authority seam | closed | `plans/closure/coding-agent-tool-surface-corrective/006-status.md` | `4cf35238` |
 | Team collaboration corrective | M006 multi-user trajectory/security qualification | closed | `plans/closure/team-collaboration-corrective/006-status.md` | harness-only (see closure) |
 | Team collaboration corrective | M005 Workspace selected-project chat view | closed | `plans/closure/team-collaboration-corrective/005-status.md` | `86217a7d` |
 | Team collaboration corrective | M004 shared-session controller lease | closed | `plans/closure/team-collaboration-corrective/004-status.md` | `1bc967c1` |

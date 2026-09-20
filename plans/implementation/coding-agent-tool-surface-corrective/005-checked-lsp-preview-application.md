@@ -1,8 +1,8 @@
 # Coding-Agent Tool Surface Corrective M005 — Agent-Facing Checked LSP Preview Application
 
-Status: blocked
+Status: ready for handoff
 
-Blocker: M006 must close first. The re-audit at `5447e3bc62114cf91992690e26f3a09b897802c5` found that the required trusted state already exists above the tool factory, but is not composed there: the daemon LSP service is dropped from model-tool construction, `LspTool` owns a private preview registry, and the existing transport apply is misclassified as opaque rather than session-scoped. M006 owns those seams; M005 must consume them rather than bypass or duplicate authority.
+Blocker: cleared by closed M006. M005 must consume the daemon-owned LSP service, shared turn-local preview registry, canonical workspace locks, host-bound session/workspace identity, and reusable binding seam established by M006; it must not bypass or duplicate authority.
 
 Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (original production audit baseline)
 
@@ -72,7 +72,7 @@ The preferred model contract is intentionally tiny:
 
 All revision/digest/patch/path/provenance data must be resolved from the host-owned preview registry, not accepted from the model.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
 M001 is no longer the blocker. It closed successfully.
 
@@ -86,7 +86,9 @@ The post-M004 re-audit found a narrower construction/authority seam:
 - `CoreRequest::LspPreviewApply` is currently `ScopeKind::Opaque` despite carrying a session ID, so team principals cannot traverse the normal session-owned-project `file.modify` authorization path.
 - The daemon handler's session/workspace binding SQL check is not yet a reusable internal seam.
 
-M006 owns exactly those prerequisites and does not add the model mutation tool. M005 remains blocked until M006 proves the runtime composition and authorization scope are correct.
+M006 closed with the required runtime composition, shared preview handle,
+session-scoped authorization, and reusable session/workspace binding seam. M005
+can now add only the model-facing adapter over those installed owners.
 
 ## 3. Current implementation evidence
 
