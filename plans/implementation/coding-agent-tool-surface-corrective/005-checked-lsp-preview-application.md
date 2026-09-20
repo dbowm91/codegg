@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Corrective M005 — Agent-Facing Checked LSP Preview Application
 
-Status: ready for handoff
+Status: active
 
 Blocker: cleared by closed M006. M005 must consume the daemon-owned LSP service, shared turn-local preview registry, canonical workspace locks, host-bound session/workspace identity, and reusable binding seam established by M006; it must not bypass or duplicate authority.
 

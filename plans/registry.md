@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Coding-agent tool surface corrective | active | `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md` | M005 ready; M003/M004/M006/M007 closed | M005 is unblocked and must consume the trusted M006 runtime seam. The M003/M004 evidence gap is closed by M007. |
+| Coding-agent tool surface corrective | active | `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md` | M005 active; M003/M004/M006/M007 closed | M005 is in implementation against the trusted M006 runtime seam. The M003/M004 evidence gap is closed by M007. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M006 closed; M005 blocked (execution-path hardening landed; adoption blocked) | M001-M004 closed; M006 closed with accepted closure evidence; M005 blocked on a generalized external updater interface. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -34,7 +34,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Coding-agent tool surface corrective | M005 checked LSP preview application | ready | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | M001 and M006 closed; ADR-0008 accepted. Consume the daemon-owned LSP service, shared turn-local preview registry, workspace locks, host-bound session/workspace identity, and reusable binding seam; add only the narrow model-facing adapter. |
+| Coding-agent tool surface corrective | M005 checked LSP preview application | active | `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md` | M001 and M006 closed; ADR-0008 accepted. Consume the daemon-owned LSP service, shared turn-local preview registry, workspace locks, host-bound session/workspace identity, and reusable binding seam; add only the narrow model-facing adapter. |
 
 ## Current execution order and dependency gates
 

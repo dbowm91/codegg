@@ -207,6 +207,8 @@ Objective: expose routine build/lint/typecheck/format-check verification as a bo
 
 ### M005 — Checked LSP preview application
 
+Status: active; M006 closed and runtime seam installed.
+
 Class: capability.
 
 Implementation: `plans/implementation/coding-agent-tool-surface-corrective/005-checked-lsp-preview-application.md`
