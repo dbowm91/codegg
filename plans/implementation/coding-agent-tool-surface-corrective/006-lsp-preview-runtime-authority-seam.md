@@ -1,6 +1,6 @@
 # Coding-Agent Tool Surface Corrective M006 — LSP Preview Runtime and Authority Seam
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `5447e3bc62114cf91992690e26f3a09b897802c5`
 

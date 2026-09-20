@@ -34,7 +34,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Coding-agent tool surface corrective | M006 LSP preview runtime and authority seam | ready | `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md` | M001 closed; ADR-0008 accepted. Thread the daemon-owned LSP service and turn-local shared preview registry into tool construction, correct `LspPreviewApply` to session-resolved `file.modify`, and expose the reusable host binding seam without adding the model mutation tool. |
+| Coding-agent tool surface corrective | M006 LSP preview runtime and authority seam | active | `plans/implementation/coding-agent-tool-surface-corrective/006-lsp-preview-runtime-authority-seam.md` | M001 closed; ADR-0008 accepted. Thread the daemon-owned LSP service and turn-local shared preview registry into tool construction, correct `LspPreviewApply` to session-resolved `file.modify`, and expose the reusable host binding seam without adding the model mutation tool. |
 | Coding-agent tool surface corrective | M007 M003/M004 closure evidence reconciliation | ready | `plans/implementation/coding-agent-tool-surface-corrective/007-m003-m004-closure-evidence-reconciliation.md` | Production implementations exist. Run and record the required broad verification missing from the historical M003/M004 closure records; no production refactor unless a separate corrective is registered. |
 
 ## Current execution order and dependency gates
