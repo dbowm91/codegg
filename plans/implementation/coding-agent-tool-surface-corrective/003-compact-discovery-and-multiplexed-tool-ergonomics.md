@@ -6,7 +6,7 @@ Repository baseline: `99f198293a56a3e190fa83241eeeaaa0e82a3ea6` (production base
 
 Source roadmap:
 
-- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#M003--compact-discovery-and-multiplexed-tool-ergonomics`
+- `plans/subsystems/coding-agent-tool-surface-corrective-roadmap.md#m003--compact-discovery-and-multiplexed-tool-ergonomics`
 
 Dependencies:
 
