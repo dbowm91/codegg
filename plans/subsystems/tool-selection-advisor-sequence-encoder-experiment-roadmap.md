@@ -233,15 +233,18 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/004-sequence-encoder-ranking-experiment.md`
 
-Status: ready (all three training stages authorized via the M001B
-differentiable path).
+Status: closed (packed-marker head-only variant selected; top-layer attempt
+stopped at the measured local resource bound).
 
 Implement pairwise and packed-marker ranking heads over the qualified
 local pretrained MiniLM encoder with the encoder frozen, train the
 ranking/abstention head, calibrate on dev only, and compare on clean
 held-out slices. Pooling strategy (`cls` vs `mean`) is an explicit
 per-run parameter following the M001A finding. Top-layer/full unfreeze
-stages run through the M001B composite-norm encoder.
+stages run through the M001B composite-norm encoder. M003 selected the
+packed-marker head-only artifact: dev MRR 0.823 versus pairwise 0.595 and
+BM25 0.515. The top-layer attempt exceeded the local ten-minute resource
+bound without producing an artifact, so full fine-tuning was not justified.
 
 ### M004 — Hybrid semantic/BM25 candidate retrieval
 
