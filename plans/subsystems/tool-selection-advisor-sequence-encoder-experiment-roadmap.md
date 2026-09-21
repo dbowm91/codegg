@@ -169,7 +169,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/003-current-state-advisor-context-v2.md`
 
-Status: active.
+Status: closed.
 
 Replace original-session-prompt-only advisor context with a versioned bounded projection of the current objective/task state while preserving privacy and no-history-service constraints.
 
@@ -179,7 +179,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/004-sequence-encoder-ranking-experiment.md`
 
-Status: blocked on M001 reference-asset evidence + M002.
+Status: blocked on M001 reference-asset evidence.
 
 Implement pairwise and packed-marker ranking heads over the selected local pretrained encoder, train in staged freeze/unfreeze modes, calibrate on dev only, and compare on clean held-out slices.
 

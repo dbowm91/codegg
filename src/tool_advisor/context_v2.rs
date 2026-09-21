@@ -197,8 +197,10 @@ mod tests {
 
     #[test]
     fn fallback_and_unresolved_projection_are_bounded() {
-        let mut no_state = ContextFrame::default();
-        no_state.unresolved_errors = vec!["é".repeat(20_000)];
+        let no_state = ContextFrame {
+            unresolved_errors: vec!["é".repeat(20_000)],
+            ..ContextFrame::default()
+        };
         let context = AdvisorContextV2::from_context_frame(
             Some("current objective"),
             Some("origin"),
@@ -215,9 +217,11 @@ mod tests {
 
     #[test]
     fn secret_like_fields_never_enter_projection() {
-        let mut secret = ContextFrame::default();
-        secret.user_goal = Some("deploy api_key=do-not-leak".into());
-        secret.unresolved_errors = vec!["password=do-not-leak".into()];
+        let secret = ContextFrame {
+            user_goal: Some("deploy api_key=do-not-leak".into()),
+            unresolved_errors: vec!["password=do-not-leak".into()],
+            ..ContextFrame::default()
+        };
         let serialized =
             AdvisorContextV2::from_context_frame(None, None, &secret, None, &[], None).serialize();
         assert!(!serialized.contains("do-not-leak"));
