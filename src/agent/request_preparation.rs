@@ -1163,6 +1163,7 @@ mod tests {
 
     struct PreturnAdvisor {
         names: Vec<String>,
+        abstain: f64,
     }
 
     impl crate::tool_advisor::ToolAdvisor for PreturnAdvisor {
@@ -1182,7 +1183,7 @@ mod tests {
                         score: 1.0 - index as f64 * 0.1,
                     })
                     .collect(),
-                abstain_probability: Some(0.0),
+                abstain_probability: Some(self.abstain),
                 mode: "test".into(),
             })
         }
@@ -1219,6 +1220,7 @@ mod tests {
             .collect::<Vec<_>>();
         let advisor = PreturnAdvisor {
             names: vec!["lsp_definition".into(), "not_on_surface".into()],
+            abstain: 0.0,
         };
         assert!(project_preturn_promotions(
             &surface,
@@ -1252,5 +1254,52 @@ mod tests {
             std::collections::BTreeSet::from(["lsp_definition".into()])
         );
         assert!(!promoted.contains("not_on_surface"));
+
+        assert!(project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            PreturnDisclosureConfig {
+                advisor: &advisor,
+                mode: crate::tool_advisor::AdvisorMode::Observe,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 16 * 1024,
+                max_candidates: 16,
+            },
+        )
+        .is_empty());
+        assert!(project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            PreturnDisclosureConfig {
+                advisor: &advisor,
+                mode: crate::tool_advisor::AdvisorMode::Promote,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 1,
+                max_candidates: 16,
+            },
+        )
+        .is_empty());
+        let abstaining_advisor = PreturnAdvisor {
+            names: vec!["lsp_definition".into()],
+            abstain: 0.9,
+        };
+        assert!(project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            PreturnDisclosureConfig {
+                advisor: &abstaining_advisor,
+                mode: crate::tool_advisor::AdvisorMode::Promote,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 16 * 1024,
+                max_candidates: 16,
+            },
+        )
+        .is_empty());
     }
 }
