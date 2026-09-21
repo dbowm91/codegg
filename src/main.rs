@@ -500,6 +500,35 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Train and evaluate an experiment-only sequence-encoder ranker on the
+    /// C001 train/dev partitions. No final-test labels are read.
+    SequenceEncoderRank {
+        #[arg(long)]
+        config: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Measure deterministic BM25/semantic/hybrid retrieval over deferred
+    /// descriptors. Query context is never persisted in the cache.
+    SequenceEncoderRetrieve {
+        #[arg(long)]
+        manifest: String,
+        #[arg(long)]
+        dataset: Option<String>,
+        #[arg(long, default_value = "rrf")]
+        mode: String,
+        #[arg(long, value_delimiter = ',', default_values_t = [16, 24, 32])]
+        k: Vec<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run the frozen two-commit offline sequence-encoder qualification.
+    SequenceEncoderQualify {
+        #[arg(long)]
+        prereg: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare keyword, BM25, and learned discovery on a qualification suite.
     Qualify {
         #[arg(long)]
@@ -1960,6 +1989,138 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 let _ = (manifest, json);
                 return Err(AppError::Other(anyhow::anyhow!(
                     "sequence-encoder probes require the tool-advisor-encoder-experiment feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderRank { config, json } => {
+            #[cfg(feature = "tool-advisor-encoder-training")]
+            {
+                let config = codegg::tool_advisor::sequence_ranking::load_config(
+                    std::path::Path::new(config),
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let report = codegg::tool_advisor::sequence_ranking::train(
+                    &config,
+                    &candle_core::Device::Cpu,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!(
+                        "sequence ranker {} dev MRR {:.3} (baseline {:.3})",
+                        report.architecture,
+                        report
+                            .selected_dev
+                            .as_ref()
+                            .map(|eval| eval.metrics.mrr)
+                            .unwrap_or(0.0),
+                        report.baseline_dev.mrr
+                    );
+                    println!("artifact: {:?}", report.selected_artifact);
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-training"))]
+            {
+                let _ = (config, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence ranking requires the tool-advisor-encoder-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderRetrieve {
+            manifest,
+            dataset,
+            mode,
+            k,
+            json,
+        } => {
+            #[cfg(feature = "tool-advisor-encoder-experiment")]
+            {
+                let encoder =
+                    codegg::tool_advisor::sequence_encoder::CandleBertSequenceEncoder::load(
+                        std::path::Path::new(manifest),
+                        &candle_core::Device::Cpu,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let cases =
+                    codegg::tool_advisor::load_cases(dataset.as_deref().map(std::path::Path::new))
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let mode = codegg::tool_advisor::sequence_retrieval::parse_mode(mode)
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let mut retriever =
+                    codegg::tool_advisor::sequence_retrieval::HybridRetriever::new(&encoder);
+                let surface = codegg::tool_advisor::dataset_fingerprint(&cases)
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let report = codegg::tool_advisor::sequence_retrieval::frontier(
+                    &mut retriever,
+                    &cases,
+                    &surface,
+                    k,
+                    &[mode],
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    for point in &report.points {
+                        println!(
+                            "{} K={} recall {:.3} mean latency {:.1}ms",
+                            point.mode, point.k, point.recall, point.mean_latency_ms
+                        );
+                    }
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-experiment"))]
+            {
+                let _ = (manifest, dataset, mode, k, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence retrieval requires the tool-advisor-encoder-experiment feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderQualify { prereg, json } => {
+            #[cfg(feature = "tool-advisor-encoder-training")]
+            {
+                let report = codegg::tool_advisor::sequence_qualification::qualify(
+                    std::path::Path::new(prereg),
+                    &candle_core::Device::Cpu,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!("sequence qualification: {}", report.disposition);
+                    for gate in &report.gates {
+                        println!(
+                            "{}: {} — {}",
+                            gate.id,
+                            if gate.passed { "pass" } else { "FAIL" },
+                            gate.detail
+                        );
+                    }
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-training"))]
+            {
+                let _ = (prereg, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence qualification requires the tool-advisor-encoder-training feature"
                 )));
             }
         }

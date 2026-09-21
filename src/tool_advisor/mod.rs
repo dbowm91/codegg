@@ -36,6 +36,12 @@ pub mod contextual;
 pub mod requalify;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
 pub mod sequence_encoder;
+#[cfg(feature = "tool-advisor-encoder-training")]
+pub mod sequence_qualification;
+#[cfg(feature = "tool-advisor-encoder-experiment")]
+pub mod sequence_ranking;
+#[cfg(feature = "tool-advisor-encoder-experiment")]
+pub mod sequence_retrieval;
 #[cfg(feature = "tool-advisor-training")]
 pub mod training;
 pub mod training_data;

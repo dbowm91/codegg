@@ -138,3 +138,28 @@ deterministic forward (max delta 0.0) with pooling CLS +0.11 / mean
 +0.26 reproducing M001A. M003 stages 2–3 are authorized through this
 path. Full evidence:
 `plans/closure/tool-selection-advisor-sequence-encoder-experiment/008-status.md`.
+
+## Sequence ranking and retrieval experiment — 2026-09-22 (M003/M004)
+
+The experiment-gated ranker supports two explicit architectures:
+`sequence-encoder-pairwise-v1` scores one AdvisorContextV2/descriptor pair at
+a time, while `sequence-encoder-packed-marker-v1` scores bounded descriptor
+markers in one encoder forward. Both use the same local MiniLM asset and
+write a versioned head artifact containing encoder/tokenizer/source hashes,
+partition fingerprints, pooling choice, fine-tuning stage, calibration, and
+final head hash. Packed layouts report their token budget and dropped
+candidates; they never silently score a truncated list.
+
+M003 train/dev evidence selected the packed marker head-only variant on the
+qualified MiniLM asset: dev MRR 0.823 versus pairwise 0.595 and BM25 0.515.
+The top-layer differentiable path was attempted after the stage-1 signal but
+did not produce an artifact within the local ten-minute resource budget; no
+deployment claim depends on that stage. Full fine-tuning was not justified.
+
+M004 adds a deferred-only hybrid retriever. Descriptor embeddings are kept in
+an in-memory cache keyed by surface fingerprint, canonical name, normalized
+descriptor hash, and encoder/tokenizer version. Query embeddings are turn
+local. BM25, semantic cosine, reciprocal-rank fusion, and normalized union
+are deterministic modes; encoder/cache errors fall back to BM25. The
+retrieval CLI reports K=16/24/32, cache size, query/retrieval timing, and
+recall without introducing authority or a download path.

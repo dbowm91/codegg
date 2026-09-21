@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "manifest_path": "target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json",
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "output_artifact": "target/tool-advisor/sequence-ranking-minilm-packed-head.json",
+  "architecture": "packed",
+  "pooling": "mean",
+  "stage": "head-only",
+  "epochs": 1,
+  "learning_rate": 0.001,
+  "max_candidates": 16,
+  "max_tokens": 256,
+  "seed": 17
+}

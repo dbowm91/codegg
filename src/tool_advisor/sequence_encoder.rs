@@ -22,6 +22,7 @@ use std::time::Instant;
 pub const ASSET_MANIFEST_SCHEMA_VERSION: u16 = 1;
 pub const ENCODER_ARCHITECTURE: &str = "bert-sequence-encoder-candle-v1";
 pub const MAX_PAIR_TOKENS: usize = 256;
+pub const MAX_PACKED_TOKENS: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssetManifest {
@@ -165,6 +166,14 @@ impl WordPieceTokenizer {
         }
     }
 
+    pub fn tokenize_text(&self, text: &str) -> Vec<u32> {
+        self.tokenize(text)
+    }
+
+    pub fn token_id(&self, token: &str) -> Option<u32> {
+        self.ids.get(token).copied()
+    }
+
     fn tokenize(&self, text: &str) -> Vec<u32> {
         text.split_whitespace()
             .flat_map(|word| self.wordpiece(&word.to_lowercase()))
@@ -217,6 +226,17 @@ pub struct EncodedPair {
     pub attention_mask: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PackedEncoding {
+    pub input_ids: Vec<u32>,
+    pub token_type_ids: Vec<u32>,
+    pub attention_mask: Vec<u32>,
+    pub marker_positions: Vec<usize>,
+    pub candidate_indices: Vec<usize>,
+    pub dropped_candidate_indices: Vec<usize>,
+    pub token_budget: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FineTuneStage {
     HeadOnly,
@@ -235,6 +255,12 @@ pub enum FineTuneStage {
 pub enum PoolingStrategy {
     Cls,
     Mean,
+}
+
+impl Default for PoolingStrategy {
+    fn default() -> Self {
+        Self::Mean
+    }
 }
 
 /// Pinned M001A reference-checkpoint facts for
@@ -940,6 +966,106 @@ impl CandleBertSequenceEncoder {
 
     pub fn encode_mean_pooled(&self, context: &str, candidate: &str) -> Result<Vec<f32>> {
         self.encode_with_pooling(context, candidate, PoolingStrategy::Mean)
+    }
+
+    pub fn encode_context(&self, context: &str, strategy: PoolingStrategy) -> Result<Vec<f32>> {
+        self.encode_with_pooling(context, "", strategy)
+    }
+
+    pub fn forward_ids(
+        &self,
+        input_ids: &[u32],
+        token_type_ids: &[u32],
+        attention_mask: &[u32],
+    ) -> Result<Tensor> {
+        if input_ids.is_empty()
+            || input_ids.len() != token_type_ids.len()
+            || input_ids.len() != attention_mask.len()
+        {
+            return Err(anyhow!(
+                "encoder inputs must be non-empty and have equal lengths"
+            ));
+        }
+        let input_ids = Tensor::new(input_ids, &self.device)?.unsqueeze(0)?;
+        let token_type_ids = Tensor::new(token_type_ids, &self.device)?.unsqueeze(0)?;
+        let attention_mask = Tensor::new(attention_mask, &self.device)?.unsqueeze(0)?;
+        Ok(self
+            .model
+            .forward(&input_ids, &token_type_ids, Some(&attention_mask))?)
+    }
+
+    /// Build a single bounded context-plus-marked-descriptors input. Marker
+    /// ids are existing `[unusedN]` vocabulary entries; no tokenizer
+    /// vocabulary mutation is permitted. Candidates that do not fit are
+    /// reported explicitly and never silently scored.
+    pub fn packed_encoding(
+        &self,
+        context: &str,
+        candidates: &[String],
+        max_tokens: usize,
+    ) -> Result<PackedEncoding> {
+        let budget = max_tokens.clamp(8, MAX_PACKED_TOKENS);
+        let cls = self
+            .tokenizer
+            .token_id("[CLS]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [CLS]"))?;
+        let sep = self
+            .tokenizer
+            .token_id("[SEP]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [SEP]"))?;
+        let markers = (0..candidates.len().max(1))
+            .map(|index| format!("[unused{}]", index % 100))
+            .map(|token| {
+                self.tokenizer
+                    .token_id(&token)
+                    .ok_or_else(|| anyhow!("vocabulary is missing packed marker {token}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut context_tokens = self.tokenizer.tokenize_text(context);
+        while context_tokens.len() + 2 > budget {
+            context_tokens.pop();
+        }
+        let mut input_ids = vec![cls];
+        let mut token_type_ids = vec![0];
+        input_ids.extend(&context_tokens);
+        token_type_ids.extend(std::iter::repeat_n(0, context_tokens.len()));
+        input_ids.push(sep);
+        token_type_ids.push(0);
+        let mut marker_positions = Vec::new();
+        let mut candidate_indices = Vec::new();
+        let mut dropped_candidate_indices = Vec::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            let descriptor = self.tokenizer.tokenize_text(candidate);
+            if input_ids.len() + descriptor.len() + 2 > budget {
+                dropped_candidate_indices.extend(index..candidates.len());
+                break;
+            }
+            marker_positions.push(input_ids.len());
+            candidate_indices.push(index);
+            input_ids.push(markers[index]);
+            token_type_ids.push(1);
+            input_ids.extend(&descriptor);
+            token_type_ids.extend(std::iter::repeat_n(1, descriptor.len()));
+        }
+        input_ids.push(sep);
+        token_type_ids.push(1);
+        Ok(PackedEncoding {
+            attention_mask: vec![1; input_ids.len()],
+            input_ids,
+            token_type_ids,
+            marker_positions,
+            candidate_indices,
+            dropped_candidate_indices,
+            token_budget: budget,
+        })
+    }
+
+    pub fn packed_hidden(&self, packed: &PackedEncoding) -> Result<Tensor> {
+        self.forward_ids(
+            &packed.input_ids,
+            &packed.token_type_ids,
+            &packed.attention_mask,
+        )
     }
 
     /// Compare first-token and mean pooling on a fixed train/dev-only
