@@ -224,7 +224,7 @@ Plan:
 
 Objective: move the useful `promote` behavior to the request-preparation palette seam so a primary model can see a relevant deferred tool without first invoking `tool_search`.
 
-Status: ready.
+Status: active.
 
 Exit conditions include promotion before provider definitions are finalized, strict subset-of-allowed-surface evidence, bounded token/schema budget, failure/off equivalence, and a regression proving a promoted deferred tool is initially visible even when no `tool_search` call occurs.
 
