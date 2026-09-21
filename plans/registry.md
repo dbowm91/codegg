@@ -30,6 +30,7 @@ Canonical direction remains in:
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Agent context and discovery surface | closed | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 + M002 closed | Context discovery workstream closed with MCP projection and scoped curated-memory evidence. |
 | Plugin ecosystem and harness interoperability | closed | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001-M004 closed | Plugin interoperability workstream closed with portable import, browser bundle, catalog, and host-install evidence. |
+| Tool-selection advisor | active | `plans/subsystems/tool-selection-advisor-roadmap.md` | M001 ready; M002-M005 dependency-gated | Accepted ADR-0009; M001 establishes benchmark/data contracts without ML/runtime behavior change. |
 
 ## Dependency-ready implementation plans
 
@@ -41,12 +42,15 @@ Canonical direction remains in:
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
 | Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | closed | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/003-status.md`. |
 | Plugin ecosystem and harness interoperability | M004 extension catalog/install | closed | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/004-status.md`. |
+| Tool-selection advisor | M001 evaluation corpus and deterministic baselines | ready | `plans/implementation/tool-selection-advisor/001-evaluation-corpus-and-baselines.md` | Closed coding-agent tool-surface work is the stable input; no ML dependency or behavior change. |
 
 ## Current execution order and dependency gates
 
 **Team collaboration corrective gate:** Historical M001-M006 remain closed with their original closure records. The post-closure follow-up `plans/subsystems/team-collaboration-post-closure-corrective-addendum.md` is complete: M001 registration authority boundary is `closed`; M002 Workspace task-cancellation ownership is `closed`; M003 verification-guard convergence is `closed` (`plans/closure/team-collaboration-post-closure-corrective/003-status.md`; implementation `23ad6937`). The predecessor closure records remain immutable historical evidence; final correctness for the three post-closure findings is controlled by the post-closure corrective.
 
 **Post-closure cleanup gates:** Command-surface/Security-Review C001 and its separately registered WorkOrder, managed-key, and migration-test correctives are formally closed with hosted `CI / verify` run 35483642396. `plans/subsystems/identity-audit-live-execution-post-closure-corrective-addendum.md` M001+M002+M003+M004 are closed (`plans/closure/identity-audit-live-execution-post-closure-corrective/001-status.md` + `002-status.md` + `003-status.md` + `004-status.md`; implementations `7c75c009` + `e0cc7f05` + `591cb4de` + `42b8f9ec`). The workstream is complete. These plans do not reopen closed collaboration scope or distributed node/remote audit.
+
+**Tool-selection advisor execution gate:** Accepted `plans/adrs/ADR-0009-local-tool-advisor-boundaries.md` establishes an optional local advisory-only model: disabled/no-model operation remains canonical, inference/training stay pure Rust/local-first, advisor output cannot widen authority, and remote training telemetry is separately explicit opt-in with no default endpoint. `plans/subsystems/tool-selection-advisor-roadmap.md` is active. M001 is ready and intentionally adds only benchmark/data contracts and keyword/BM25 baselines. M002 waits on M001; M003 waits on M001+M002; M004 waits on M001; M005 waits on M002+M003+M004. No learned reranking or promotion is authorized before M005 qualification, and no milestone makes the advisor or telemetry default-on.
 
 **Agent extension/interoperability closure state:** `plans/subsystems/agent-context-discovery-surface-roadmap.md` is closed with M001 MCP resource/prompt projection and M002 bounded curated-memory retrieval closed. `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` is closed with M001 first-class plugin tools, M002 Agent Plugins 1.0 import, M003 Playwright browser-testing integration, and M004 extension catalog/install closed. Closure evidence is recorded under `plans/closure/agent-context-discovery-surface/` and `plans/closure/plugin-ecosystem-interoperability/`. No milestone in either workstream remains ready or blocked. This closure does not reopen the closed context-continuity transcript/vector-search scope or the closed coding-agent tool-surface corrective milestones.
 
@@ -71,6 +75,10 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 | Dependency security and workspace consolidation | M005 generic updater interface and CodeGG adoption | M002 accepted closure satisfied; blocked on a generalized external updater package/interface that is not Gregg/greggd-specific (hardening landed; see `plans/closure/dependency-security-workspace-consolidation/005-status.md`). |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
+| Tool-selection advisor | M002 optional pure-Rust runtime | M001 benchmark/data-contract closure is a hard dependency. |
+| Tool-selection advisor | M003 local Rust training/model lifecycle | M001 + M002 closure; trainer must emit the accepted runtime artifact contract. |
+| Tool-selection advisor | M004 consent-gated training telemetry | M001 event/case schema closure; no remote destination may be introduced by default. |
+| Tool-selection advisor | M005 advisor integration/qualification | M002 + M003 + M004 closure and their runtime/training/data-lifecycle evidence. |
 
 ## Closure work and current control points
 
