@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Milestone 002 — Optional Pure-Rust Runtime
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `ed960f2ae7043acd816970f7d06e74dc69b09ae8`
 
