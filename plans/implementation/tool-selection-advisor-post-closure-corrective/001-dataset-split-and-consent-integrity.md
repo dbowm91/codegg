@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Post-Closure Corrective M001 — Dataset, Split, and Consent Integrity
 
-Status: closing
+Status: closed
 
 Repository baseline: `c9087346620988a7c793fb2687732a62e481103a`
 
