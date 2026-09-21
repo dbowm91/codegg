@@ -210,7 +210,7 @@ Plan:
 
 Objective: implement and train the intended contextual decision model in the approximately 5M-25M range with a pure-Rust train/infer path, truthful feature isolation, and direct comparison against `hashed-linear-v1`.
 
-Status: closing.
+Status: closed.
 
 Exit conditions include learned task/candidate interaction, contextual counterfactual tests, unknown-tool generalization, local Rust training, versioned artifacts, default-build dependency isolation, and resource/quality comparisons across at least two small capacity points.
 
