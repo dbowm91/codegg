@@ -1035,6 +1035,45 @@ mod tests {
         let mut corrupt = artifact;
         corrupt.manifest.weights_sha256 = "bad".into();
         assert!(validate_artifact(&corrupt).is_err());
+        corrupt.manifest.weights_sha256 = "".into();
+        corrupt.manifest.artifact_schema_version = 99;
+        assert!(validate_artifact(&corrupt).is_err());
+    }
+
+    #[test]
+    fn artifact_install_is_atomic_and_loads_only_valid_artifacts() {
+        let directory = tempfile::tempdir().expect("temporary artifact directory");
+        let path = directory.path().join("advisor.json");
+        let artifact = artifact();
+        write_artifact_atomic(&path, &artifact).expect("install artifact");
+        assert_eq!(load_artifact(&path).expect("load artifact"), artifact);
+    }
+
+    #[test]
+    fn scoring_has_a_bounded_cpu_path() {
+        let advisor = LinearAdvisor::new(artifact()).expect("valid artifact");
+        let input = ToolAdvisorInput {
+            case_id: "latency".into(),
+            context: "find a symbol definition".into(),
+            candidates: vec![ToolAdvisorCandidate {
+                name: "lsp_definition".into(),
+                description: "Jump to a symbol definition".into(),
+                category: "ReadOnly".into(),
+                disclosure: "deferred".into(),
+                synthetic_identity: false,
+            }],
+            surface_fingerprint: "surface".into(),
+        };
+        let started = Instant::now();
+        for _ in 0..1000 {
+            advisor.score(&input).expect("bounded score");
+        }
+        let elapsed = started.elapsed();
+        eprintln!("tool advisor 1000-score CPU sample: {elapsed:?}");
+        assert!(
+            elapsed.as_secs() < 1,
+            "scoring exceeded local CPU budget: {elapsed:?}"
+        );
     }
 
     #[test]
