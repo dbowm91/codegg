@@ -1,6 +1,6 @@
 # Tool-Selection Advisor — Post-Closure Model and Disclosure Corrective Addendum
 
-Status: active
+Status: closing
 
 Repository audit baseline: `c9087346620988a7c793fb2687732a62e481103a`
 
@@ -196,7 +196,7 @@ Plan:
 
 Objective: replace smoke-scale evaluation as the qualification basis with a larger provenance-aware corpus, tool-family/generalization holdouts, and one authoritative consent-snapshot boundary for training events.
 
-Status: active.
+Status: closing.
 
 Exit conditions include a materially expanded reviewed corpus, leakage-resistant splits, explicit unknown-tool/tool-family holdouts, locally importable synthetic/teacher data without automatic remote calls, and remote sink tests proving an event cannot be transmitted under stale/absent effective consent.
 
