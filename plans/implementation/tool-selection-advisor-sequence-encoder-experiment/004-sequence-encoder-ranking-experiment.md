@@ -1,13 +1,13 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment M003 — Sequence-Encoder Ranking Experiment
 
-Status: blocked
+Status: blocked on M001A
 
 Repository baseline: `8487967d9cc2605c398d3c608e353c8871289a7d`
 
 Hard dependencies:
 
-- M001 framework/local-asset spike;
-- M002 AdvisorContextV2.
+- positive M001A reference-checkpoint materialization/qualification;
+- M002 AdvisorContextV2 (closed).
 
 Source roadmap:
 
@@ -21,7 +21,7 @@ Test whether a real pretrained bidirectional sequence encoder can outperform the
 
 ## Model candidates
 
-Use the M001-qualified local assets. Target at least two capacity points when available:
+Use only the M001A-qualified real pretrained local asset(s). Generated tiny fixtures are wiring tests and MUST NOT be used as M003 model candidates. Target at least two capacity points when available:
 
 - approximately 14–15M TinyBERT-class;
 - approximately 22M MiniLM/XtremeDistil-class.

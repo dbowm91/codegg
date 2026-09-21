@@ -120,9 +120,11 @@ Any larger training-only corpus must be separate from frozen C001 dev/test and p
 ```text
 P001 evidence/preregistration polish ----+
                                          |
-M001 framework + local asset spike --+   |
-                                     |   |
-M002 current-state context v2 -------+---+--> M003 sequence encoder experiment
+M001 framework spike (conditional) --+
+                                     |
+M001A real reference checkpoint -----+---+
+                                         |
+M002 current-state context v2 -----------+--> M003 sequence encoder experiment
                                                 |
                                                 v
                                       M004 hybrid retrieval experiment
@@ -135,8 +137,9 @@ M002 current-state context v2 -------+---+--> M003 sequence encoder experiment
                               existing live-primary-model M004
 ```
 
-- P001, M001, and M002 are independently ready.
-- M003 requires M001 + M002.
+- P001 and M002 are closed.
+- M001 is conditionally closed; M001A is the explicit operational prerequisite that must supply real pretrained reference-asset evidence.
+- M003 requires positive M001A closure + closed M002.
 - M004 requires M003 because it reuses the selected encoder/tokenizer contract.
 - M005 requires P001 + M002 + M003 + M004.
 - Existing post-closure M004 remains blocked until M005 records a positive disposition.
@@ -161,7 +164,17 @@ Plan:
 
 Status: conditionally closed (Candle selected; reference assets outstanding).
 
-Empirically qualify Candle and Burn for BERT-class loading/training on CodeGG targets using explicit local TinyBERT/MiniLM-class assets. Select one experimental stack or record that neither qualifies.
+Candle 0.11 and the local manifest/forward/backward contract are implemented. Final closure is controlled by M001A rather than reopening the framework spike.
+
+### M001A — Reference checkpoint materialization and qualification
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/007-reference-checkpoint-materialization-and-qualification.md`
+
+Status: ready.
+
+Materialize one pinned real MiniLM-class safetensors checkpoint outside Git, record immutable provenance/license/file hashes, prove complete Candle load and staged backward behavior, characterize CLS versus mean pooling, and close the remaining M001 condition. Positive M001A closure unblocks M003.
 
 ### M002 — Current-state advisor context projection v2
 
@@ -179,7 +192,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/004-sequence-encoder-ranking-experiment.md`
 
-Status: blocked on M001 reference-asset evidence.
+Status: blocked on positive M001A reference-checkpoint qualification.
 
 Implement pairwise and packed-marker ranking heads over the selected local pretrained encoder, train in staged freeze/unfreeze modes, calibrate on dev only, and compare on clean held-out slices.
 
