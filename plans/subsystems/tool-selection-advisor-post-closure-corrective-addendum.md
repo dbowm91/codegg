@@ -319,7 +319,7 @@ A negative A/B result is acceptable closure evidence. In that case the contextua
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/tool-selection-advisor-post-closure-corrective/001-dataset-split-and-consent-integrity.md` | — | none |
-| M002 | blocked | `plans/implementation/tool-selection-advisor-post-closure-corrective/002-contextual-encoder-runtime-and-training.md` | — | M001 closure |
-| M003 | ready | `plans/implementation/tool-selection-advisor-post-closure-corrective/003-pre-turn-proactive-tool-disclosure.md` | — | none; consumes closed predecessor runtime/surface |
-| M004 | blocked | `plans/implementation/tool-selection-advisor-post-closure-corrective/004-small-model-trajectory-qualification.md` | — | M001 + M002 + M003 closure |
+| M001 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/001-dataset-split-and-consent-integrity.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/001-status.md` | Historical closure retained; later evidence-integrity corrective supersedes its qualification claims where noted. |
+| M002 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/002-contextual-encoder-runtime-and-training.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/002-status.md` | Historical closure retained; training/evaluation claims require the later evidence-integrity corrective. |
+| M003 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/003-pre-turn-proactive-tool-disclosure.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/003-status.md` | Authority placement remains valid; candidate-shortlisting quality is corrected separately. |
+| M004 | blocked | `plans/implementation/tool-selection-advisor-post-closure-corrective/004-small-model-trajectory-qualification.md` | — | Requires positive C004 closure from `tool-selection-advisor-evidence-integrity-corrective-addendum.md` plus original live-provider/resource evidence. |
