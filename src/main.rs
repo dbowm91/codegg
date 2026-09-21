@@ -470,6 +470,15 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Compare keyword, BM25, and learned discovery on a qualification suite.
+    Qualify {
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        suite: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect and validate an artifact manifest.
     Inspect {
         #[arg(long)]
@@ -1790,6 +1799,40 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 return Err(AppError::Other(anyhow::anyhow!(
                     "evaluation commands require the tool-advisor-training feature"
                 )));
+            }
+        }
+        ToolAdvisorCommand::Qualify { model, suite, json } => {
+            let report = codegg::tool_advisor::run_qualification(
+                std::path::Path::new(model),
+                std::path::Path::new(suite),
+            )
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                println!("qualification suite: {}", report.suite_fingerprint);
+                println!("model: {}", report.model_version);
+                for comparison in &report.comparisons {
+                    println!(
+                        "{} ({} cases): BM25 MRR {:.3}; learned rerank MRR {:.3}; promote MRR {:.3}",
+                        comparison.tier,
+                        comparison.cases,
+                        comparison.bm25.mrr,
+                        comparison.learned_rerank.mrr,
+                        comparison.learned_promote.mrr
+                    );
+                }
+                println!(
+                    "unknown-tool MRR: {:.3}; score time: {} ms; max candidates: {}; max prompt bytes: {}",
+                    report.unknown_tool.mrr,
+                    report.score_elapsed_millis,
+                    report.max_candidate_count,
+                    report.max_candidate_bytes
+                );
             }
         }
         ToolAdvisorCommand::Inspect { model } => {

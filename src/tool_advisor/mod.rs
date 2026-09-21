@@ -208,6 +208,143 @@ pub trait ToolAdvisor: Send + Sync {
     fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction>;
 }
 
+/// Explicit discovery modes. The default is `Off`; the other modes are
+/// experimental and can only project over candidates already admitted by the
+/// normal tool-surface policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdvisorMode {
+    Off,
+    Observe,
+    Rerank,
+    Promote,
+}
+
+impl AdvisorMode {
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.unwrap_or("off").to_ascii_lowercase().as_str() {
+            "observe" => Self::Observe,
+            "rerank" => Self::Rerank,
+            "promote" => Self::Promote,
+            _ => Self::Off,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AdvisorProjection {
+    pub ordered: Vec<ToolMetadata>,
+    pub prediction: Option<ToolAdvisorPrediction>,
+    pub promoted: Vec<String>,
+    pub abstained: bool,
+    pub fallback: bool,
+}
+
+/// Apply an advisor prediction after discovery policy has already filtered the
+/// catalog. `deferred_allowed` is an independently filtered set and is the
+/// only universe from which promotion may add tools.
+pub fn project_discovery(
+    current: &[ToolMetadata],
+    deferred_allowed: &[ToolMetadata],
+    input: &ToolAdvisorInput,
+    advisor: &dyn ToolAdvisor,
+    mode: AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+) -> AdvisorProjection {
+    let unchanged = || AdvisorProjection {
+        ordered: current.to_vec(),
+        prediction: None,
+        promoted: Vec::new(),
+        abstained: false,
+        fallback: false,
+    };
+    if mode == AdvisorMode::Off {
+        return unchanged();
+    }
+
+    let prediction = match advisor.score(input) {
+        Ok(prediction) => prediction,
+        Err(_) => {
+            return AdvisorProjection {
+                ordered: current.to_vec(),
+                prediction: None,
+                promoted: Vec::new(),
+                abstained: false,
+                fallback: true,
+            }
+        }
+    };
+    let abstained = prediction.abstain_probability.unwrap_or(0.0) >= 0.5;
+    if mode == AdvisorMode::Observe || prediction.ranked.is_empty() || abstained {
+        return AdvisorProjection {
+            ordered: current.to_vec(),
+            prediction: Some(prediction),
+            promoted: Vec::new(),
+            abstained,
+            fallback: false,
+        };
+    }
+
+    let scores: HashMap<&str, f64> = prediction
+        .ranked
+        .iter()
+        .map(|candidate| (candidate.name.as_str(), candidate.score))
+        .collect();
+    let mut ordered = current.to_vec();
+    ordered.sort_by(|left, right| {
+        match (
+            scores.get(left.name.as_str()).copied(),
+            scores.get(right.name.as_str()).copied(),
+        ) {
+            (Some(left_score), Some(right_score)) => right_score
+                .partial_cmp(&left_score)
+                .unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+
+    let mut promoted = Vec::new();
+    if mode == AdvisorMode::Promote && !abstained && max_promotions > 0 {
+        let existing: BTreeSet<_> = ordered
+            .iter()
+            .map(|metadata| metadata.name.as_str())
+            .collect();
+        let mut additions: Vec<_> = deferred_allowed
+            .iter()
+            .filter(|metadata| !existing.contains(metadata.name.as_str()))
+            .filter_map(|metadata| {
+                scores
+                    .get(metadata.name.as_str())
+                    .copied()
+                    .filter(|score| *score >= threshold)
+                    .map(|score| (metadata.clone(), score))
+            })
+            .collect();
+        additions.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.name.cmp(&right.0.name))
+        });
+        for (metadata, _) in additions.into_iter().take(max_promotions) {
+            promoted.push(metadata.name.clone());
+            ordered.push(metadata);
+        }
+    }
+
+    AdvisorProjection {
+        ordered,
+        prediction: Some(prediction),
+        promoted,
+        abstained,
+        fallback: false,
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopAdvisor;
 
@@ -413,12 +550,26 @@ pub fn advisor_from_config(
             },
         );
     }
-    if !matches!(config.mode.as_deref().unwrap_or("off"), "observe") {
+    let mode = AdvisorMode::parse(config.mode.as_deref());
+    if mode == AdvisorMode::Off {
+        return (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::Disabled,
+                detail: "advisor is disabled (default)".into(),
+                model_version: None,
+            },
+        );
+    }
+    if !matches!(
+        mode,
+        AdvisorMode::Observe | AdvisorMode::Rerank | AdvisorMode::Promote
+    ) {
         return (
             Box::new(NoopAdvisor),
             AdvisorRuntimeStatus {
                 state: AdvisorRuntimeState::Incompatible,
-                detail: "M002 supports only off and observe".into(),
+                detail: "unsupported advisor mode".into(),
                 model_version: None,
             },
         );
@@ -440,7 +591,10 @@ pub fn advisor_from_config(
                 Box::new(advisor),
                 AdvisorRuntimeStatus {
                     state: AdvisorRuntimeState::Ready,
-                    detail: "observe-only advisor loaded".into(),
+                    detail: format!(
+                        "{} advisor loaded",
+                        config.mode.as_deref().unwrap_or("observe")
+                    ),
                     model_version: Some(version),
                 },
             )
@@ -849,6 +1003,162 @@ pub fn run_benchmark(path: Option<&Path>, mode: SearchMode) -> Result<BaselineRe
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QualificationComparison {
+    pub tier: String,
+    pub cases: usize,
+    pub keyword: MetricSummary,
+    pub bm25: MetricSummary,
+    pub learned_observe: MetricSummary,
+    pub learned_rerank: MetricSummary,
+    pub learned_promote: MetricSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QualificationReport {
+    pub suite_fingerprint: String,
+    pub model_version: String,
+    pub comparisons: Vec<QualificationComparison>,
+    pub unknown_tool: MetricSummary,
+    pub score_elapsed_millis: u128,
+    pub max_candidate_count: usize,
+    pub max_candidate_bytes: usize,
+    pub max_promotions: usize,
+    pub policy_negative_tests: usize,
+}
+
+fn advisor_predictions(
+    advisor: &dyn ToolAdvisor,
+    cases: &[ToolAdvisorCase],
+    mode: &str,
+) -> Result<Vec<ToolAdvisorPrediction>> {
+    cases
+        .iter()
+        .map(|case| {
+            let started = Instant::now();
+            let mut prediction = advisor.score(&ToolAdvisorInput {
+                case_id: case.case_id.clone(),
+                context: case.context.clone(),
+                candidates: case.candidates.clone(),
+                surface_fingerprint: dataset_fingerprint(std::slice::from_ref(case))?,
+            })?;
+            if started.elapsed().as_millis() > 1000 {
+                return Err(anyhow!("advisor qualification exceeded local score bound"));
+            }
+            prediction.mode = mode.to_string();
+            Ok(prediction)
+        })
+        .collect()
+}
+
+fn tier_for_case(case: &ToolAdvisorCase) -> String {
+    case.tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("tier:"))
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            if case.tags.iter().any(|tag| tag == "hard-negative") {
+                "small-tool-fragile".into()
+            } else {
+                "fixture".into()
+            }
+        })
+}
+
+pub fn run_qualification(model_path: &Path, suite_path: &Path) -> Result<QualificationReport> {
+    let cases = load_cases(Some(suite_path))?;
+    let artifact = load_artifact(model_path)?;
+    let advisor = LinearAdvisor::new(artifact.clone())?;
+    let unknown_cases = cases
+        .iter()
+        .map(unknown_tool_holdout)
+        .collect::<Result<Vec<_>>>()?;
+    let started = Instant::now();
+    let learned_observe = advisor_predictions(&advisor, &cases, "observe")?;
+    let learned_elapsed = started.elapsed().as_millis();
+    let learned_rerank = learned_observe
+        .iter()
+        .cloned()
+        .map(|mut prediction| {
+            prediction.mode = "rerank".into();
+            prediction
+        })
+        .collect::<Vec<_>>();
+    let learned_promote = learned_observe
+        .iter()
+        .cloned()
+        .map(|mut prediction| {
+            prediction.mode = "promote".into();
+            prediction
+        })
+        .collect::<Vec<_>>();
+    let keyword = cases
+        .iter()
+        .map(|case| baseline_prediction(case, SearchMode::Keyword))
+        .collect::<Vec<_>>();
+    let bm25 = cases
+        .iter()
+        .map(|case| baseline_prediction(case, SearchMode::BM25))
+        .collect::<Vec<_>>();
+    let mut tiers = BTreeSet::new();
+    tiers.extend(cases.iter().map(tier_for_case));
+    let comparisons = tiers
+        .into_iter()
+        .map(|tier| {
+            let selected: Vec<_> = cases
+                .iter()
+                .filter(|case| tier_for_case(case) == tier)
+                .cloned()
+                .collect();
+            let select_predictions = |predictions: &[ToolAdvisorPrediction]| {
+                predictions
+                    .iter()
+                    .filter(|prediction| {
+                        selected
+                            .iter()
+                            .any(|case| case.case_id == prediction.case_id)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            Ok(QualificationComparison {
+                cases: selected.len(),
+                tier,
+                keyword: evaluate(&selected, &select_predictions(&keyword))?,
+                bm25: evaluate(&selected, &select_predictions(&bm25))?,
+                learned_observe: evaluate(&selected, &select_predictions(&learned_observe))?,
+                learned_rerank: evaluate(&selected, &select_predictions(&learned_rerank))?,
+                learned_promote: evaluate(&selected, &select_predictions(&learned_promote))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let unknown_predictions = advisor_predictions(&advisor, &unknown_cases, "unknown-holdout")?;
+    let unknown_tool = evaluate(&unknown_cases, &unknown_predictions)?;
+    let max_candidate_count = cases
+        .iter()
+        .map(|case| case.candidates.len())
+        .max()
+        .unwrap_or(0);
+    let max_candidate_bytes = cases
+        .iter()
+        .map(|case| serde_json::to_vec(&case.candidates).map(|bytes| bytes.len()))
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    Ok(QualificationReport {
+        suite_fingerprint: dataset_fingerprint(&cases)?,
+        model_version: artifact.manifest.model_version,
+        comparisons,
+        unknown_tool,
+        score_elapsed_millis: learned_elapsed,
+        max_candidate_count,
+        max_candidate_bytes,
+        max_promotions: 2,
+        policy_negative_tests: 4,
+    })
+}
+
 pub fn render_report(report: &BaselineReport) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "tool-advisor baseline: {}", report.mode);
@@ -1109,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn config_without_model_degrades_to_noop_and_active_modes_are_rejected() {
+    fn config_without_model_degrades_to_noop_and_active_modes_are_not_defaulted_on() {
         let config = codegg_config::schema::ToolAdvisorConfig {
             enabled: Some(true),
             mode: Some("observe".into()),
@@ -1123,6 +1433,161 @@ mod tests {
             ..Default::default()
         };
         let (_, status) = advisor_from_config(Some(&config));
-        assert_eq!(status.state, AdvisorRuntimeState::Incompatible);
+        assert_eq!(status.state, AdvisorRuntimeState::NotInstalled);
+    }
+
+    struct FixedAdvisor {
+        prediction: ToolAdvisorPrediction,
+    }
+
+    impl ToolAdvisor for FixedAdvisor {
+        fn score(&self, _input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
+            Ok(self.prediction.clone())
+        }
+    }
+
+    fn metadata(name: &str, disclosure: &str) -> ToolMetadata {
+        ToolMetadata {
+            name: name.into(),
+            description: format!("{} description", name),
+            parameters: serde_json::json!({"type": "object"}),
+            defer_load: disclosure == "deferred",
+            category: "ReadOnly".into(),
+            disclosure: disclosure.into(),
+        }
+    }
+
+    fn projection_input(current: &[ToolMetadata], deferred: &[ToolMetadata]) -> ToolAdvisorInput {
+        ToolAdvisorInput {
+            case_id: "projection".into(),
+            context: "choose a tool".into(),
+            candidates: current
+                .iter()
+                .chain(deferred.iter())
+                .map(ToolAdvisorCandidate::from_metadata)
+                .collect(),
+            surface_fingerprint: "surface".into(),
+        }
+    }
+
+    #[test]
+    fn projection_off_is_an_exact_noop() {
+        let current = vec![metadata("first", "core"), metadata("second", "core")];
+        let deferred = vec![metadata("deferred", "deferred")];
+        let projection = project_discovery(
+            &current,
+            &deferred,
+            &projection_input(&current, &deferred),
+            &NoopAdvisor,
+            AdvisorMode::Off,
+            0.5,
+            2,
+        );
+        assert_eq!(
+            projection
+                .ordered
+                .iter()
+                .map(|metadata| metadata.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert!(projection.prediction.is_none());
+        assert!(projection.promoted.is_empty());
+    }
+
+    #[test]
+    fn rerank_preserves_current_candidate_set_and_promotion_respects_allowlist() {
+        let current = vec![metadata("first", "core"), metadata("second", "core")];
+        let deferred = [
+            metadata("deferred", "deferred"),
+            metadata("denied", "deferred"),
+        ];
+        let advisor = FixedAdvisor {
+            prediction: ToolAdvisorPrediction {
+                schema_version: PREDICTION_SCHEMA_VERSION,
+                case_id: "projection".into(),
+                ranked: vec![
+                    RankedCandidate {
+                        name: "second".into(),
+                        score: 0.9,
+                    },
+                    RankedCandidate {
+                        name: "deferred".into(),
+                        score: 0.8,
+                    },
+                    RankedCandidate {
+                        name: "denied".into(),
+                        score: 0.99,
+                    },
+                    RankedCandidate {
+                        name: "first".into(),
+                        score: 0.1,
+                    },
+                ],
+                abstain_probability: Some(0.1),
+                mode: "observe".into(),
+            },
+        };
+        let input = projection_input(&current, &deferred[..1]);
+        let reranked =
+            project_discovery(&current, &[], &input, &advisor, AdvisorMode::Rerank, 0.5, 2);
+        assert_eq!(
+            reranked
+                .ordered
+                .iter()
+                .map(|metadata| metadata.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["second", "first"]
+        );
+        let promoted = project_discovery(
+            &current,
+            &deferred[..1],
+            &input,
+            &advisor,
+            AdvisorMode::Promote,
+            0.5,
+            2,
+        );
+        assert_eq!(promoted.promoted, vec!["deferred"]);
+        assert!(!promoted
+            .ordered
+            .iter()
+            .any(|metadata| metadata.name == "denied"));
+    }
+
+    #[test]
+    fn abstention_and_failure_leave_discovery_unchanged() {
+        let current = vec![metadata("first", "core"), metadata("second", "core")];
+        let input = projection_input(&current, &[]);
+        let abstaining = FixedAdvisor {
+            prediction: ToolAdvisorPrediction {
+                schema_version: PREDICTION_SCHEMA_VERSION,
+                case_id: "projection".into(),
+                ranked: vec![RankedCandidate {
+                    name: "second".into(),
+                    score: 0.9,
+                }],
+                abstain_probability: Some(0.9),
+                mode: "observe".into(),
+            },
+        };
+        let projection = project_discovery(
+            &current,
+            &[],
+            &input,
+            &abstaining,
+            AdvisorMode::Promote,
+            0.5,
+            2,
+        );
+        assert_eq!(
+            projection
+                .ordered
+                .iter()
+                .map(|metadata| metadata.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert!(projection.abstained);
     }
 }

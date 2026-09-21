@@ -253,6 +253,9 @@ impl Default for ToolRegistry {
 /// `with_options`.
 #[derive(Default)]
 pub struct ToolRegistryOptions {
+    /// Optional local advisor configuration. `None` keeps tool discovery
+    /// behaviorally identical to the default-off path.
+    pub tool_advisor: Option<codegg_config::schema::ToolAdvisorConfig>,
     /// Optional shared todo state. When `None`, a `TodoWriteTool` with
     /// default in-memory state and the explicit-todo policy is registered
     /// (no session persistence).
@@ -885,8 +888,20 @@ impl ToolRegistry {
         registry.register(crate::tool::invalid::InvalidTool);
 
         // Register tool_search with catalog for on-demand tool discovery.
-        let search_tool =
+        let mut search_tool =
             crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
+        if let Some(config) = options.tool_advisor.as_ref() {
+            let mode = crate::tool_advisor::AdvisorMode::parse(config.mode.as_deref());
+            let (advisor, status) = crate::tool_advisor::advisor_from_config(Some(config));
+            tracing::info!(
+                state = ?status.state,
+                mode = ?mode,
+                model_version = ?status.model_version,
+                "tool advisor discovery configuration"
+            );
+            search_tool.set_advisor(Arc::from(advisor), mode);
+            search_tool.set_advisor_policy(0.5, 2);
+        }
         registry.register(search_tool);
 
         // Stash the resolved backend configuration for diagnostics
@@ -1054,6 +1069,7 @@ impl ToolRegistry {
     ) -> Self {
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
+            tool_advisor: config.tool_advisor.clone(),
             todo_state: Some(todo_state),
             todo_policy: Some(policy),
             pool,
@@ -1102,6 +1118,7 @@ impl ToolRegistry {
         session_id: Option<String>,
     ) -> Self {
         Self::with_options(ToolRegistryOptions {
+            tool_advisor: None,
             todo_state: Some(todo_state),
             todo_policy: Some(policy),
             pool,

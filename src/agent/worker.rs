@@ -1170,6 +1170,7 @@ async fn execute_agent_task(
 
     let mut tool_registry = ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
         workspace_root: request.workspace_root.clone(),
+        tool_advisor: config.tool_advisor.clone(),
         command_intent: config.command_intent.clone(),
         child_git_policy: request
             .workspace_root

@@ -140,6 +140,7 @@ pub fn build_session_tool_registry(
     };
 
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
+        tool_advisor: config.tool_advisor.clone(),
         todo_state: Some(todo_state),
         todo_policy: Some(task_state_policy),
         pool: pool.clone(),

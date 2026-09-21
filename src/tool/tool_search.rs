@@ -17,6 +17,10 @@ use serde_json::json;
 use crate::error::ToolError;
 use crate::tool::catalog::ToolCatalog;
 use crate::tool::{Tool, ToolCategory};
+use crate::tool_advisor::{
+    project_discovery, AdvisorMode, NoopAdvisor, ToolAdvisor, ToolAdvisorCandidate,
+    ToolAdvisorInput,
+};
 
 /// Maximum tools returned per search so a broad query cannot move prompt
 /// bloat into the search result.
@@ -31,6 +35,10 @@ pub const MAX_SEARCH_RESULTS: usize = 10;
 pub struct ToolSearchTool {
     catalog: Arc<ToolCatalog>,
     available_tools: Option<Vec<String>>,
+    advisor: Arc<dyn ToolAdvisor>,
+    advisor_mode: AdvisorMode,
+    advisor_threshold: f64,
+    advisor_max_promotions: usize,
 }
 
 impl ToolSearchTool {
@@ -39,6 +47,10 @@ impl ToolSearchTool {
         Self {
             catalog,
             available_tools: None,
+            advisor: Arc::new(NoopAdvisor),
+            advisor_mode: AdvisorMode::Off,
+            advisor_threshold: 0.5,
+            advisor_max_promotions: 2,
         }
     }
 
@@ -46,6 +58,29 @@ impl ToolSearchTool {
     /// When set, search results are restricted to these tools.
     pub fn set_available_tools(&mut self, tools: Vec<String>) {
         self.available_tools = Some(tools);
+    }
+
+    /// Configure the optional advisory projection. The caller is responsible
+    /// for constructing the advisor only after the normal policy surface is
+    /// known; this method never changes that surface itself.
+    pub fn set_advisor(&mut self, advisor: Arc<dyn ToolAdvisor>, mode: AdvisorMode) {
+        self.advisor = advisor;
+        self.advisor_mode = mode;
+    }
+
+    pub fn set_advisor_policy(&mut self, threshold: f64, max_promotions: usize) {
+        self.advisor_threshold = threshold.clamp(0.0, 1.0);
+        self.advisor_max_promotions = max_promotions.min(4);
+    }
+
+    fn policy_allows(&self, metadata: &crate::tool::catalog::ToolMetadata) -> bool {
+        if crate::tool::disclosure::is_hidden(&metadata.name) {
+            return false;
+        }
+        self.available_tools
+            .as_ref()
+            .map(|available| available.iter().any(|name| name == &metadata.name))
+            .unwrap_or(true)
     }
 }
 
@@ -125,19 +160,12 @@ impl Tool for ToolSearchTool {
         // Policy filtering first: only tools the current agent/session
         // policy allows are discoverable. When no allow-list is installed
         // (direct unit construction), still exclude hidden/internal tools.
-        let filtered: Vec<crate::tool::catalog::ToolMetadata> = match &self.available_tools {
-            Some(available) => results
-                .into_iter()
-                .filter(|m| available.iter().any(|a| a == &m.name))
-                .filter(|m| !crate::tool::disclosure::is_hidden(&m.name))
-                .collect(),
-            None => results
-                .into_iter()
-                .filter(|m| !crate::tool::disclosure::is_hidden(&m.name))
-                .collect(),
-        };
+        let filtered: Vec<crate::tool::catalog::ToolMetadata> = results
+            .into_iter()
+            .filter(|metadata| self.policy_allows(metadata))
+            .collect();
 
-        if filtered.is_empty() {
+        if filtered.is_empty() && self.advisor_mode != AdvisorMode::Promote {
             return Ok(json!({
                 "status": "no_results",
                 "query": query,
@@ -178,12 +206,43 @@ impl Tool for ToolSearchTool {
             .to_string());
         }
 
-        // Cap results so discovery stays a selection aid, not a catalog dump.
-        // `total_matches` preserves honesty about truncation.
+        // Cap the current shortlist before advice so reranking cannot expand
+        // the normal discovery result set. Promotion gets a separate,
+        // policy-filtered deferred universe below.
         let total_matches = filtered.len();
-        let tools: Vec<serde_json::Value> = filtered
+        let current: Vec<_> = filtered.into_iter().take(MAX_SEARCH_RESULTS).collect();
+        let deferred_allowed: Vec<_> = if self.advisor_mode == AdvisorMode::Promote {
+            self.catalog
+                .deferred_tools()
+                .into_iter()
+                .filter(|metadata| self.policy_allows(metadata))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let candidates = current
+            .iter()
+            .chain(deferred_allowed.iter())
+            .map(ToolAdvisorCandidate::from_metadata)
+            .collect();
+        let projection = project_discovery(
+            &current,
+            &deferred_allowed,
+            &ToolAdvisorInput {
+                case_id: "tool-search".to_string(),
+                context: query.to_string(),
+                candidates,
+                surface_fingerprint: format!("query:{}", query),
+            },
+            self.advisor.as_ref(),
+            self.advisor_mode,
+            self.advisor_threshold,
+            self.advisor_max_promotions,
+        );
+        let total_matches = total_matches + projection.promoted.len();
+        let tools: Vec<serde_json::Value> = projection
+            .ordered
             .into_iter()
-            .take(MAX_SEARCH_RESULTS)
             .map(|metadata| {
                 // Selection metadata only: canonical name, purpose,
                 // category/risk/disclosure for correct choice among related
@@ -209,6 +268,12 @@ impl Tool for ToolSearchTool {
             "query": query,
             "count": tools.len(),
             "total_matches": total_matches,
+            "advisor": {
+                "mode": format!("{:?}", self.advisor_mode).to_lowercase(),
+                "promoted": projection.promoted,
+                "abstained": projection.abstained,
+                "fallback": projection.fallback,
+            },
             "tools": tools
         })
         .to_string())
@@ -223,6 +288,7 @@ mod tests {
     struct MockTool {
         name: &'static str,
         hidden: bool,
+        deferred: bool,
     }
 
     #[async_trait]
@@ -253,6 +319,47 @@ mod tests {
         fn expose_in_definitions(&self) -> bool {
             !self.hidden
         }
+
+        fn defer_loading(&self) -> bool {
+            self.deferred
+        }
+    }
+
+    struct FixedSearchAdvisor;
+
+    impl ToolAdvisor for FixedSearchAdvisor {
+        fn score(
+            &self,
+            input: &ToolAdvisorInput,
+        ) -> anyhow::Result<crate::tool_advisor::ToolAdvisorPrediction> {
+            let mut ranked = input
+                .candidates
+                .iter()
+                .map(|candidate| crate::tool_advisor::RankedCandidate {
+                    name: candidate.name.clone(),
+                    score: if candidate.name == "git_diff" {
+                        0.9
+                    } else if candidate.name == "git_deferred" {
+                        0.8
+                    } else {
+                        0.1
+                    },
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            Ok(crate::tool_advisor::ToolAdvisorPrediction {
+                schema_version: crate::tool_advisor::PREDICTION_SCHEMA_VERSION,
+                case_id: input.case_id.clone(),
+                ranked,
+                abstain_probability: Some(0.1),
+                mode: "test".into(),
+            })
+        }
     }
 
     fn test_search() -> ToolSearchTool {
@@ -260,13 +367,30 @@ mod tests {
         catalog.register(&MockTool {
             name: "git_query",
             hidden: false,
+            deferred: false,
+        });
+        catalog.register(&MockTool {
+            name: "git_diff",
+            hidden: false,
+            deferred: false,
+        });
+        catalog.register(&MockTool {
+            name: "git_deferred",
+            hidden: false,
+            deferred: true,
         });
         catalog.register(&MockTool {
             name: "git_read",
             hidden: true,
+            deferred: false,
         });
         let mut search = ToolSearchTool::new(Arc::new(catalog));
-        search.set_available_tools(vec!["git_query".to_string(), "git_read".to_string()]);
+        search.set_available_tools(vec![
+            "git_query".to_string(),
+            "git_diff".to_string(),
+            "git_deferred".to_string(),
+            "git_read".to_string(),
+        ]);
         search
     }
 
@@ -315,6 +439,37 @@ mod tests {
             .expect("denied search");
         let denied: serde_json::Value = serde_json::from_str(&denied).expect("json");
         assert_eq!(denied["status"], "no_results");
+    }
+
+    #[tokio::test]
+    async fn rerank_is_opt_in_and_promotion_is_bounded_to_allowed_deferred_tools() {
+        let mut search = test_search();
+        let baseline = search
+            .execute(json!({"query": "git"}))
+            .await
+            .expect("baseline search");
+        let baseline: serde_json::Value = serde_json::from_str(&baseline).expect("baseline json");
+        assert_eq!(baseline["advisor"]["mode"], "off");
+
+        search.set_advisor(Arc::new(FixedSearchAdvisor), AdvisorMode::Rerank);
+        let reranked = search
+            .execute(json!({"query": "git"}))
+            .await
+            .expect("reranked search");
+        let reranked: serde_json::Value = serde_json::from_str(&reranked).expect("reranked json");
+        assert_eq!(reranked["tools"][0]["name"], "git_diff");
+        assert_eq!(reranked["count"], baseline["count"]);
+
+        search.set_advisor(Arc::new(FixedSearchAdvisor), AdvisorMode::Promote);
+        search.set_advisor_policy(0.7, 1);
+        let promoted = search
+            .execute(json!({"query": "unmatched"}))
+            .await
+            .expect("promoted search");
+        let promoted: serde_json::Value = serde_json::from_str(&promoted).expect("promoted json");
+        assert_eq!(promoted["count"], 1);
+        assert_eq!(promoted["tools"][0]["name"], "git_deferred");
+        assert_eq!(promoted["advisor"]["promoted"][0], "git_deferred");
     }
 
     #[test]

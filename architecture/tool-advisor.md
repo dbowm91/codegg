@@ -28,8 +28,8 @@ JSON artifact manifest. Manifest schema, tokenizer/context/candidate versions,
 limits, calibration, provenance, and a SHA-256 weight digest are checked before
 scoring. A missing, corrupt, incompatible, or repeatedly failing artifact
 returns a diagnostic status and uses `NoopAdvisor`; it cannot fail an agent
-turn. M002 accepts only `off` and `observe`, with `off` as the configuration
-default. Reranking and promotion are reserved for M005.
+turn. `off` is the configuration default. Reranking and promotion are
+available only as explicitly configured experimental M005 modes.
 
 `candidates_from_surface` projects only the already resolved policy-allowed
 surface, so denied, disabled, plan-ineligible, and parent-ceiling tools cannot
@@ -62,3 +62,21 @@ export. Remote transport requires an explicit HTTPS endpoint and is never
 created by advisor enablement or local capture. The HTTP adapter reuses the
 existing Eggfetch client-construction seam; tests inject a fake transport so a
 default/off configuration cannot make a network attempt.
+
+## Integration and qualification (M005)
+
+`tool_search` has four explicit modes: `off` (exact current behavior),
+`observe` (score without changing the model-facing result), `rerank`
+(reorder only the existing bounded shortlist), and `promote` (add at most two
+high-confidence tools from the already policy-filtered deferred set). An
+abstention probability of at least 0.5, a score below the configured
+threshold, an advisor error, or a timeout leaves discovery unchanged.
+Promotion is turn-local and never supplies execution arguments or widens
+authority. Advisor mode does not enable telemetry.
+
+`codegg tool-advisor qualify --model <artifact> --suite <jsonl>` emits the
+pre-registered keyword/BM25/learned matrix by fixture tier, an unknown-tool
+holdout, score-time and prompt-size bounds, and policy-negative coverage.
+The suite must be held out from training; thresholds are selected from
+development data only. The command is deterministic and offline, and its
+results are qualification evidence rather than a default-on recommendation.
