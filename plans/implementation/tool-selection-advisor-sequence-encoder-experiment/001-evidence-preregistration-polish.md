@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment P001 — Evidence-State and Preregistration Polish
 
-Status: active
+Status: closed
 
 Repository baseline: `8487967d9cc2605c398d3c608e353c8871289a7d`
 
