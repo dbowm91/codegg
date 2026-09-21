@@ -79,6 +79,11 @@ pub(super) struct AgentLoopServices {
     pub(super) prompt_compiler_fingerprint: Option<String>,
     pub(super) base_request_tools: Vec<ToolDefinition>,
     pub(super) context_policy_runtime: ContextPolicyRuntimeState,
+    pub(super) tool_advisor: Arc<dyn crate::tool_advisor::ToolAdvisor>,
+    pub(super) tool_advisor_mode: crate::tool_advisor::AdvisorMode,
+    pub(super) tool_advisor_threshold: f64,
+    pub(super) tool_advisor_max_promotions: usize,
+    pub(super) tool_advisor_schema_budget: usize,
     pub(super) runtime_asset_pin:
         Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     pub(super) tool_broker: Arc<crate::tool::ToolBroker>,

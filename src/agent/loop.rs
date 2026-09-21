@@ -235,6 +235,39 @@ impl AgentLoop {
             .map(|p| Arc::new(crate::session::UsageStore::new(p)));
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
+        let tool_advisor_mode = crate::tool_advisor::AdvisorMode::parse(
+            config
+                .tool_advisor
+                .as_ref()
+                .and_then(|advisor| advisor.mode.as_deref()),
+        );
+        let (tool_advisor, advisor_status) =
+            crate::tool_advisor::advisor_from_config(config.tool_advisor.as_ref());
+        tracing::debug!(
+            mode = ?tool_advisor_mode,
+            state = ?advisor_status.state,
+            model_version = ?advisor_status.model_version,
+            "tool advisor turn projection configuration"
+        );
+        let tool_advisor: Arc<dyn crate::tool_advisor::ToolAdvisor> = Arc::from(tool_advisor);
+        let tool_advisor_threshold = config
+            .tool_advisor
+            .as_ref()
+            .and_then(|advisor| advisor.disclosure_threshold)
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0);
+        let tool_advisor_max_promotions = config
+            .tool_advisor
+            .as_ref()
+            .and_then(|advisor| advisor.max_promotions)
+            .unwrap_or(2)
+            .min(2);
+        let tool_advisor_schema_budget = config
+            .tool_advisor
+            .as_ref()
+            .and_then(|advisor| advisor.max_disclosure_schema_bytes)
+            .unwrap_or(16 * 1024)
+            .clamp(256, 64 * 1024);
 
         let mut tool_registry = tool_registry;
         if let Some(deferred) = config
@@ -325,6 +358,11 @@ impl AgentLoop {
                 prompt_compiler_fingerprint: None,
                 base_request_tools: Vec::new(),
                 context_policy_runtime: ContextPolicyRuntimeState::default(),
+                tool_advisor,
+                tool_advisor_mode,
+                tool_advisor_threshold,
+                tool_advisor_max_promotions,
+                tool_advisor_schema_budget,
                 runtime_asset_pin: None,
                 tool_broker,
                 notification_service: None,

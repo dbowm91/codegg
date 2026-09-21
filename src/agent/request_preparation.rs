@@ -61,6 +61,154 @@ fn contextual_tool_names(
     tools
 }
 
+fn bounded_advisor_context(prompt: Option<&str>) -> String {
+    let mut context = prompt.unwrap_or_default().trim().to_string();
+    let max_bytes = crate::tool_advisor::MAX_CONTEXT_BYTES;
+    if context.len() > max_bytes {
+        let mut end = max_bytes;
+        while !context.is_char_boundary(end) {
+            end -= 1;
+        }
+        context.truncate(end);
+    }
+    context
+}
+
+struct PreturnDisclosureConfig<'a> {
+    advisor: &'a dyn crate::tool_advisor::ToolAdvisor,
+    mode: crate::tool_advisor::AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+    schema_budget: usize,
+    max_candidates: usize,
+}
+
+/// Project proactive disclosure over the final resolved surface. The return
+/// value is canonical-name-only; the caller revalidates it against each wire
+/// definition immediately before provider palette construction.
+fn project_preturn_promotions(
+    surface: &crate::agent::tool_surface::ResolvedToolSurface,
+    deferred: &[crate::provider::ToolDefinition],
+    context: &str,
+    config: PreturnDisclosureConfig<'_>,
+) -> std::collections::BTreeSet<String> {
+    if matches!(
+        config.mode,
+        crate::tool_advisor::AdvisorMode::Off | crate::tool_advisor::AdvisorMode::Rerank
+    ) || context.is_empty()
+        || (config.mode == crate::tool_advisor::AdvisorMode::Promote && config.max_promotions == 0)
+    {
+        return std::collections::BTreeSet::new();
+    }
+    let deferred_names: std::collections::BTreeSet<String> = deferred
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect();
+    let candidates = crate::tool_advisor::candidates_from_surface(
+        surface,
+        config
+            .max_candidates
+            .min(crate::tool_advisor::MAX_CANDIDATES),
+    )
+    .into_iter()
+    .filter(|candidate| {
+        deferred_names.contains(&candidate.name)
+            || surface
+                .canonical_to_wire
+                .get(&candidate.name)
+                .is_some_and(|wire| deferred_names.contains(wire))
+    })
+    .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return std::collections::BTreeSet::new();
+    }
+    let input = crate::tool_advisor::ToolAdvisorInput {
+        case_id: "preturn-disclosure".into(),
+        context: context.into(),
+        candidates,
+        surface_fingerprint: surface.fingerprint.clone(),
+    };
+    let prediction = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        config.advisor.score(&input)
+    })) {
+        Ok(Ok(prediction)) => prediction,
+        Ok(Err(_)) | Err(_) => {
+            tracing::debug!(
+                scope = "preturn_disclosure",
+                "advisor scoring failed; palette unchanged"
+            );
+            return std::collections::BTreeSet::new();
+        }
+    };
+    if prediction.abstain_probability.unwrap_or(0.0) >= 0.5 {
+        tracing::debug!(scope = "preturn_disclosure", "advisor abstained");
+        return std::collections::BTreeSet::new();
+    }
+    if config.mode == crate::tool_advisor::AdvisorMode::Observe {
+        tracing::debug!(
+            scope = "preturn_disclosure",
+            predictions = prediction.ranked.len(),
+            "recorded pre-turn advisor observation"
+        );
+        return std::collections::BTreeSet::new();
+    }
+    let scores: std::collections::BTreeMap<_, _> = prediction
+        .ranked
+        .iter()
+        .map(|candidate| (candidate.name.as_str(), candidate.score))
+        .collect();
+    let mut selected = std::collections::BTreeSet::new();
+    let mut bytes = 0usize;
+    let mut ranked = deferred
+        .iter()
+        .filter_map(|definition| {
+            let canonical = surface
+                .wire_to_canonical
+                .get(&definition.name)
+                .map(String::as_str)
+                .unwrap_or(&definition.name);
+            let eligible = surface.tools.iter().any(|tool| {
+                tool.canonical_name == canonical && !tool.required && !tool.never_reduce
+            });
+            if !eligible {
+                return None;
+            }
+            scores
+                .get(canonical)
+                .copied()
+                .filter(|score| *score >= config.threshold)
+                .map(|score| (canonical.to_string(), score, definition))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for (canonical, _, definition) in ranked {
+        let definition_bytes = serde_json::to_vec(definition)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        if bytes.saturating_add(definition_bytes) > config.schema_budget {
+            continue;
+        }
+        bytes = bytes.saturating_add(definition_bytes);
+        selected.insert(canonical);
+        if selected.len() >= config.max_promotions {
+            break;
+        }
+    }
+    tracing::debug!(
+        scope = "preturn_disclosure",
+        promoted = selected.len(),
+        schema_bytes = bytes,
+        "projected proactive advisor disclosure"
+    );
+    selected
+}
+
 impl AgentLoop {
     async fn contextual_immediate_tools(&self) -> std::collections::BTreeSet<String> {
         let context_read_available = self.services.tool_registry.contains("context_read")
@@ -589,6 +737,7 @@ impl AgentLoop {
                 && cache_contextual_revision == &contextual_revision
                 && cache_expose_raw == expose_raw_search
                 && cache_tool_deferral == &self.services.config.tool_deferral
+                && self.services.tool_advisor_mode != crate::tool_advisor::AdvisorMode::Promote
             {
                 let mut definitions = cached_defs.clone();
                 self.services.deferred_tool_definitions = cached_deferred.clone();
@@ -702,6 +851,32 @@ impl AgentLoop {
         );
         let all_definitions = surface.definitions();
 
+        let candidate_deferred: Vec<_> = all_definitions
+            .iter()
+            .filter(|definition| definition.defer_loading == Some(true))
+            .cloned()
+            .collect();
+        let advisor_context = bounded_advisor_context(self.original_user_prompt.as_deref());
+        let promoted_names = project_preturn_promotions(
+            &surface,
+            &candidate_deferred,
+            &advisor_context,
+            PreturnDisclosureConfig {
+                advisor: self.services.tool_advisor.as_ref(),
+                mode: self.services.tool_advisor_mode,
+                threshold: self.services.tool_advisor_threshold,
+                max_promotions: self.services.tool_advisor_max_promotions,
+                schema_budget: self.services.tool_advisor_schema_budget,
+                max_candidates: self
+                    .services
+                    .config
+                    .tool_advisor
+                    .as_ref()
+                    .and_then(|advisor| advisor.max_candidates)
+                    .unwrap_or(16),
+            },
+        );
+
         // Partition tools into immediate vs deferred based on provider capabilities
         let provider_id = self.services.provider.id();
         let caps = crate::provider::ProviderCapabilities::for_provider(provider_id);
@@ -740,13 +915,34 @@ impl AgentLoop {
             for def in all_definitions {
                 let is_always_loaded = always_loaded.iter().any(|n| n == &def.name)
                     || crate::tool::disclosure::immediate_for_agent(&def.name, &agent_name);
-                let should_defer = !is_always_loaded && def.defer_loading == Some(true);
+                let canonical_name = surface
+                    .wire_to_canonical
+                    .get(&def.name)
+                    .map(String::as_str)
+                    .unwrap_or(&def.name);
+                let is_advisor_promoted = promoted_names.contains(canonical_name);
+                let should_defer =
+                    !is_always_loaded && !is_advisor_promoted && def.defer_loading == Some(true);
 
                 if should_defer {
                     deferred_tools.push(def);
                 } else {
                     immediate.push(def);
                 }
+            }
+
+            if !promoted_names.is_empty() {
+                immediate.sort_by_key(|definition| {
+                    let canonical_name = surface
+                        .wire_to_canonical
+                        .get(&definition.name)
+                        .map(String::as_str)
+                        .unwrap_or(&definition.name);
+                    (
+                        !promoted_names.contains(canonical_name),
+                        definition.name.clone(),
+                    )
+                });
             }
 
             // Apply max_initial_tools cap if configured
@@ -963,5 +1159,98 @@ mod tests {
         assert!(active.contains("goal_update_progress"));
         assert!(active.contains("work_plan_update_item"));
         assert!(!active.contains("work_order"));
+    }
+
+    struct PreturnAdvisor {
+        names: Vec<String>,
+    }
+
+    impl crate::tool_advisor::ToolAdvisor for PreturnAdvisor {
+        fn score(
+            &self,
+            input: &crate::tool_advisor::ToolAdvisorInput,
+        ) -> anyhow::Result<crate::tool_advisor::ToolAdvisorPrediction> {
+            Ok(crate::tool_advisor::ToolAdvisorPrediction {
+                schema_version: crate::tool_advisor::PREDICTION_SCHEMA_VERSION,
+                case_id: input.case_id.clone(),
+                ranked: self
+                    .names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| crate::tool_advisor::RankedCandidate {
+                        name: name.clone(),
+                        score: 1.0 - index as f64 * 0.1,
+                    })
+                    .collect(),
+                abstain_probability: Some(0.0),
+                mode: "test".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn proactive_disclosure_promotes_only_final_deferred_surface_without_search() {
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            vec![
+                crate::provider::ToolDefinition {
+                    name: "read".into(),
+                    description: "Read files".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    defer_loading: None,
+                },
+                crate::provider::ToolDefinition {
+                    name: "lsp_definition".into(),
+                    description: "Jump to a symbol definition".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    defer_loading: Some(true),
+                },
+            ],
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = surface
+            .definitions()
+            .into_iter()
+            .filter(|definition| definition.defer_loading == Some(true))
+            .collect::<Vec<_>>();
+        let advisor = PreturnAdvisor {
+            names: vec!["lsp_definition".into(), "not_on_surface".into()],
+        };
+        assert!(project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            PreturnDisclosureConfig {
+                advisor: &advisor,
+                mode: crate::tool_advisor::AdvisorMode::Off,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 16 * 1024,
+                max_candidates: 16,
+            },
+        )
+        .is_empty());
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            PreturnDisclosureConfig {
+                advisor: &advisor,
+                mode: crate::tool_advisor::AdvisorMode::Promote,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 16 * 1024,
+                max_candidates: 16,
+            },
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["lsp_definition".into()])
+        );
+        assert!(!promoted.contains("not_on_surface"));
     }
 }

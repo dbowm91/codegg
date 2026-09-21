@@ -2047,6 +2047,12 @@ pub struct ToolAdvisorConfig {
     pub model_path: Option<String>,
     pub max_candidates: Option<usize>,
     pub timeout_ms: Option<u64>,
+    /// Minimum advisor score for pre-turn experimental disclosure.
+    pub disclosure_threshold: Option<f64>,
+    /// Hard cap on tools made initially visible by proactive disclosure.
+    pub max_promotions: Option<usize>,
+    /// Maximum serialized schema bytes added by proactive disclosure.
+    pub max_disclosure_schema_bytes: Option<usize>,
     pub training_data: Option<ToolAdvisorTrainingDataConfig>,
     pub remote: Option<ToolAdvisorRemoteConfig>,
 }
@@ -2059,6 +2065,9 @@ impl Default for ToolAdvisorConfig {
             model_path: None,
             max_candidates: Some(16),
             timeout_ms: Some(25),
+            disclosure_threshold: Some(0.5),
+            max_promotions: Some(2),
+            max_disclosure_schema_bytes: Some(16 * 1024),
             training_data: None,
             remote: None,
         }

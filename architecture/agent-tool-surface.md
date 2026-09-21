@@ -301,6 +301,15 @@ pub enum SurfaceError {
   cargo test -p codegg --lib tool_surface
   ```
 
+## Advisor visibility projection
+
+An explicitly configured advisor `promote` mode adds a bounded pre-turn
+visibility projection after `ResolvedToolSurface` and before provider
+definitions are finalized. It can remove deferral from at most two tools
+already present in the resolved deferred universe; it never registers tools,
+changes schemas, grants permissions, or replaces `tool_search`. Off, observe,
+failure, abstention, and budget overflow preserve the existing palette.
+
 ## Related Docs
 
 - [agent.md](agent.md) — AgentLoop, execution policy, tool exposure

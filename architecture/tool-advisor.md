@@ -92,16 +92,26 @@ local capture. The HTTP adapter reuses the existing Eggfetch
 client-construction seam; tests inject a fake transport so a default/off
 configuration cannot make a network attempt.
 
-## Integration and qualification (M005)
+## Integration and qualification (M003/M005)
 
 `tool_search` has four explicit modes: `off` (exact current behavior),
 `observe` (score without changing the model-facing result), `rerank`
 (reorder only the existing bounded shortlist), and `promote` (add at most two
-high-confidence tools from the already policy-filtered deferred set). An
-abstention probability of at least 0.5, a score below the configured
-threshold, an advisor error, or a timeout leaves discovery unchanged.
+high-confidence tools from the already policy-filtered deferred set). In
+addition, configured `promote` mode performs a turn-local pre-turn disclosure
+projection after ResolvedToolSurface and before provider definitions are
+finalized; it does not require a prior tool_search call. An abstention
+probability of at least 0.5, a score below the configured threshold, an
+advisor error, or a schema-budget overflow leaves the palette unchanged.
 Promotion is turn-local and never supplies execution arguments or widens
 authority. Advisor mode does not enable telemetry.
+
+Pre-turn disclosure is bounded by max_promotions (hard-capped at 2),
+max_disclosure_schema_bytes, and the configured candidate count. The host
+revalidates every predicted name against the final surface and excludes
+required/never-reduce tools from learned visibility decisions. Denied,
+disabled, plan-ineligible, non-callable, and parent-ceiling tools never enter
+the advisor input.
 
 `codegg tool-advisor qualify --model <artifact> --suite <jsonl>` emits the
 pre-registered keyword/BM25/learned matrix by fixture tier, an unknown-tool
