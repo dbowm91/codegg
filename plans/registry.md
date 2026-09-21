@@ -30,7 +30,7 @@ Canonical direction remains in:
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Agent context and discovery surface | closed | `plans/subsystems/agent-context-discovery-surface-roadmap.md` | M001 + M002 closed | Context discovery workstream closed with MCP projection and scoped curated-memory evidence. |
 | Plugin ecosystem and harness interoperability | closed | `plans/subsystems/plugin-ecosystem-interoperability-roadmap.md` | M001-M004 closed | Plugin interoperability workstream closed with portable import, browser bundle, catalog, and host-install evidence. |
-| Tool-selection advisor | active | `plans/subsystems/tool-selection-advisor-roadmap.md` | M001 ready; M002-M005 dependency-gated | Accepted ADR-0009; M001 establishes benchmark/data contracts without ML/runtime behavior change. |
+| Tool-selection advisor | closing | `plans/subsystems/tool-selection-advisor-roadmap.md` | M001 closure review; M002/M004 pending M001 close | Accepted ADR-0009; M001 implementation landed and closure evidence is being reviewed. |
 
 ## Dependency-ready implementation plans
 
@@ -42,7 +42,7 @@ Canonical direction remains in:
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
 | Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | closed | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/003-status.md`. |
 | Plugin ecosystem and harness interoperability | M004 extension catalog/install | closed | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/004-status.md`. |
-| Tool-selection advisor | M001 evaluation corpus and deterministic baselines | active | `plans/implementation/tool-selection-advisor/001-evaluation-corpus-and-baselines.md` | Implementation in progress; closed coding-agent tool-surface work is the stable input; no ML dependency or behavior change. |
+| Tool-selection advisor | M001 evaluation corpus and deterministic baselines | closing | `plans/implementation/tool-selection-advisor/001-evaluation-corpus-and-baselines.md` | Implementation landed in `c2881fa`; closure evidence review in progress. |
 
 ## Current execution order and dependency gates
 
