@@ -42,7 +42,7 @@ Canonical direction remains in:
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
 | Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | closed | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/003-status.md`. |
 | Plugin ecosystem and harness interoperability | M004 extension catalog/install | closed | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/004-status.md`. |
-| Tool-selection advisor | M004 consent-gated training telemetry | ready | `plans/implementation/tool-selection-advisor/004-consent-gated-training-telemetry.md` | M001-M003 closed; event/capture contract is next. |
+| Tool-selection advisor | M004 consent-gated training telemetry | active | `plans/implementation/tool-selection-advisor/004-consent-gated-training-telemetry.md` | Implementation in progress; M001-M003 are closed. |
 
 ## Current execution order and dependency gates
 
