@@ -174,3 +174,21 @@ holdout, score-time and prompt-size bounds, and policy-negative coverage.
 The suite must be held out from training; thresholds are selected from
 development data only. The command is deterministic and offline, and its
 results are qualification evidence rather than a default-on recommendation.
+
+## Clean offline requalification (C004 disposition B)
+
+The frozen C004 protocol (`assets/tool-advisor/c004-requalification.json`,
+run with `codegg tool-advisor requalify --prereg …`) re-ran every baseline
+and contextual variant on content-derived frozen partitions, true
+family-excluded retraining runs, counterfactual/unknown/hard-negative/
+no-tool slices, and a 64-tool candidate-recall fixture. Verdict: **B —
+mechanically correct but no useful gain**. The corrected contextual variants
+trail `hashed-linear-v1` on aggregate test MRR (0.46–0.60 vs 0.71), show no
+context-sensitive slice gain without regression, abstain worse than the
+trivial keyword baseline on no-tool cases, and transfer dev calibration
+poorly to test abstention; preselector recall is 0.83 against a 0.98 gate.
+The contextual scorer therefore remains a research/observe baseline: no
+live-provider budget is spent on it, and the live M004 trajectory study
+stays blocked pending a new model-architecture experiment. This demotion is
+a verdict on the architecture, not on the corrected training mechanism,
+which stays in place for any future experiment.

@@ -1,6 +1,6 @@
 # Tool-Selection Advisor — Evidence Integrity and Training Corrective Addendum
 
-Status: active
+Status: closed (C001 + C002 + C003 + C004 closed; C004 disposition B — contextual scorer demoted to research baseline, live M004 still blocked)
 
 Repository audit baseline: `71460c0cb1421f33a62d57123ac562c8a7c4bf1c`
 
@@ -125,10 +125,14 @@ C003 deferred-first shortlist -----> C004 clean offline requalification
 - C001 is closed (`plans/closure/tool-selection-advisor-evidence-integrity-corrective/001-status.md`).
 - C002 is closed (`plans/closure/tool-selection-advisor-evidence-integrity-corrective/002-status.md`).
 - C003 is closed (`plans/closure/tool-selection-advisor-evidence-integrity-corrective/003-status.md`).
-- C004 is ready: C001+C002+C003 accepted closures satisfy its hard
-  dependencies with frozen partitions, corrected calibrated artifacts, and
-  deferred-first shortlisting plus recall instrumentation.
-- Existing post-closure M004 is blocked on a **positive C004 qualification disposition plus its original live-provider prerequisites**.
+- C004 is closed with disposition B (`plans/closure/tool-selection-advisor-evidence-integrity-corrective/004-status.md`):
+  clean offline evidence is complete but shows no useful gain, so the
+  contextual scorer stays a research baseline and the live M004 study stays
+  blocked pending a new model-architecture experiment.
+- Existing post-closure M004 remains blocked: C004 closed without a
+  positive disposition, so the live study requires a new model-architecture
+  experiment (plus its original live-provider prerequisites) before it can
+  proceed.
 
 ## 7. Corrective milestones
 
@@ -206,4 +210,4 @@ This corrective closes when:
 | C001 | closed | `plans/implementation/tool-selection-advisor-evidence-integrity-corrective/001-content-derived-corpus-split-integrity.md` | none |
 | C002 | closed | `plans/implementation/tool-selection-advisor-evidence-integrity-corrective/002-contextual-training-math-calibration.md` | none |
 | C003 | closed | `plans/implementation/tool-selection-advisor-evidence-integrity-corrective/003-deferred-first-candidate-shortlisting.md` | none |
-| C004 | ready | `plans/implementation/tool-selection-advisor-evidence-integrity-corrective/004-clean-offline-requalification.md` | none |
+| C004 | closed (disposition B) | `plans/implementation/tool-selection-advisor-evidence-integrity-corrective/004-clean-offline-requalification.md` | none |

@@ -1,0 +1,76 @@
+{
+  "protocol": "c004-clean-offline-requalification-v1",
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "train_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+  "dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
+  "holdout_families": ["plugin", "lsp", "research", "structured"],
+  "unknown_transform": "unknown_tool_holdout v1 (synthetic rename into ::unknown lineage namespace)",
+  "artifacts": [
+    {
+      "label": "contextual-small",
+      "path": "target/tool-advisor/contextual-small.bin",
+      "sha256": "194896b8fc1c196fb5b626a69a8753682a2b29943b6d2a4d0840e61a6556bd97",
+      "kind": "contextual",
+      "excluded_tool_families": []
+    },
+    {
+      "label": "contextual-medium",
+      "path": "target/tool-advisor/contextual-medium.bin",
+      "sha256": "2543d33cc5c1c47b88f6a5f849305540fb36d6cc83c8c6e8290e39bf7fadb7e3",
+      "kind": "contextual",
+      "excluded_tool_families": []
+    },
+    {
+      "label": "contextual-compact",
+      "path": "target/tool-advisor/contextual-compact.bin",
+      "sha256": "470c77af21db27027e533eb69e4c33d583efbe83d2111d2c4bdb25e4e108b55c",
+      "kind": "contextual",
+      "excluded_tool_families": []
+    },
+    {
+      "label": "hashed-linear-v1",
+      "path": "target/tool-advisor-smoke/model.json",
+      "sha256": "23b4b1648c48ab0b9cebfc4d046db5955dcf87a7de719c6cc22955e1502e4edc",
+      "kind": "linear",
+      "excluded_tool_families": []
+    }
+  ],
+  "expected_calibration": {
+    "contextual-small": {"abstain_bias": -1.2851145, "temperature": 0.25},
+    "contextual-medium": {"abstain_bias": -1.2851146, "temperature": 0.25},
+    "contextual-compact": {"abstain_bias": -1.2851154, "temperature": 0.25}
+  },
+  "exclusion_training": {
+    "contextual": {"capacity": "small", "vocab_buckets": 65536, "epochs": 3, "learning_rate": 0.03, "seed": 17, "max_candidates": 32},
+    "linear": {"epochs": 2, "learning_rate": 0.05, "seed": 42, "max_context_bytes": 8192, "max_candidates": 16, "calibration_temperature": 1.0},
+    "work_dir": "target/tool-advisor/c004-run"
+  },
+  "promotion": {
+    "max_candidates": 16,
+    "max_promotions": 2,
+    "schema_budget_bytes": 16384,
+    "margin": 0.0,
+    "threshold_grid": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
+    "selection_rule": "shared threshold maximizing mean dev promotion-F1 over the four learned models; ties resolve to the higher (conservative) threshold"
+  },
+  "gates": {
+    "preselect_recall_min": 0.98,
+    "aggregate_mrr_tolerance_vs_linear": 0.01,
+    "slice_gain_min": 0.02,
+    "slice_regression_max": 0.02,
+    "no_tool_f1_tolerance_vs_best_baseline": 0.02
+  },
+  "resource_targets": {
+    "max_artifact_bytes": 134217728,
+    "max_cold_load_millis": 10000,
+    "max_score_p95_micros": 10000,
+    "max_preselect_millis": 100
+  },
+  "notes": [
+    "No tuning after frozen-test inspection: threshold selection uses dev only; all configs frozen before the run.",
+    "Aggregate test MRRs were observed descriptively during C002 verification (recorded in the C002 closure); no config, threshold, or calibration choice changed afterwards. Slice-level gates are evaluated fresh here.",
+    "Family-holdout slices are measured with in-run exclusion retraining (optimizer and calibration exclude the held-out family); standard artifacts are shown on those slices for reference only."
+  ]
+}

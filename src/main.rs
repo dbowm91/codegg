@@ -481,6 +481,16 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Run the frozen C004 offline requalification protocol and emit a
+    /// machine-readable verdict (no live calls, no tuning on test).
+    Requalify {
+        /// Pre-registration file freezing inputs, artifacts, and gates.
+        #[arg(long)]
+        prereg: String,
+        /// Emit the complete machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare keyword, BM25, and learned discovery on a qualification suite.
     Qualify {
         #[arg(long)]
@@ -1843,6 +1853,41 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 let _ = (model, dataset, partition, json);
                 return Err(AppError::Other(anyhow::anyhow!(
                     "evaluation commands require the tool-advisor-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::Requalify { prereg, json } => {
+            #[cfg(feature = "tool-advisor-training")]
+            {
+                let report =
+                    codegg::tool_advisor::requalify::run(std::path::Path::new(prereg), None)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!("requalification disposition: {:?}", report.disposition);
+                    for gate in &report.gates {
+                        println!(
+                            "{}: {} — {}",
+                            gate.id,
+                            if gate.passed { "pass" } else { "FAIL" },
+                            gate.detail
+                        );
+                    }
+                    println!("selected artifact: {:?}", report.selected_artifact);
+                    println!("{}", report.live_m004_transition);
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-training"))]
+            {
+                let _ = (prereg, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "requalification commands require the tool-advisor-training feature"
                 )));
             }
         }

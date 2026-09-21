@@ -92,6 +92,12 @@ pub struct ContextualTrainingConfig {
     /// capacity comparison: the corpus touches only a few hundred buckets.
     #[serde(default)]
     pub vocab_buckets: Option<usize>,
+    /// Tool families excluded from optimizer AND calibration input for true
+    /// holdout evaluation runs. Splits stay frozen (computed on the full
+    /// corpus first); excluded cases are dropped from train/dev index lists.
+    /// Recorded in the manifest; empty for standard runs.
+    #[serde(default)]
+    pub exclude_tool_families: Vec<String>,
     /// Test-only escape hatch for fitting without C001 partitions (tiny
     /// fixtures, smoke wiring). Output is permanently marked
     /// `unpartitioned-fallback` and can never qualify.
@@ -137,6 +143,11 @@ pub struct ContextualArtifactManifest {
     /// behavior (`sigmoid(-top_score)`); the runtime reports that honestly.
     #[serde(default)]
     pub calibration: Option<ContextualCalibration>,
+    /// Families excluded from train/dev input for this artifact. Empty for
+    /// standard runs; non-empty only on true-holdout retraining runs whose
+    /// frozen splits are otherwise identical.
+    #[serde(default)]
+    pub excluded_tool_families: Vec<String>,
 }
 
 fn default_discipline() -> String {
@@ -464,6 +475,8 @@ pub struct ContextualTrainingReport {
     pub train_partition_fingerprint: String,
     pub dev_partition_fingerprint: String,
     pub test_partition_fingerprint: String,
+    /// Families excluded from this run's optimizer/calibration input.
+    pub excluded_tool_families: Vec<String>,
     /// True only for the explicit test-only fallback path. Such artifacts
     /// are permanently marked `unpartitioned-fallback` and never qualify.
     pub unqualified_fallback: bool,
@@ -510,6 +523,18 @@ pub fn train(
     let mut train_indices = partition.train_cases.clone();
     let mut dev_indices = partition.dev_cases.clone();
     let test_indices = partition.test_cases.clone();
+    // True-holdout exclusion: drop excluded-family cases from optimizer and
+    // calibration input AFTER frozen partitioning, so the test split (counted
+    // but never scored here) keeps its C001 identity.
+    let mut excluded_families: Vec<String> = config.exclude_tool_families.clone();
+    excluded_families.sort();
+    excluded_families.dedup();
+    if !excluded_families.is_empty() {
+        let excluded: std::collections::BTreeSet<&str> =
+            excluded_families.iter().map(String::as_str).collect();
+        train_indices.retain(|&index| !excluded.contains(cases[index].tool_family.as_str()));
+        dev_indices.retain(|&index| !excluded.contains(cases[index].tool_family.as_str()));
+    }
     let unqualified_fallback = train_indices.is_empty() || dev_indices.is_empty();
     if unqualified_fallback && !config.allow_unpartitioned_fallback {
         return Err(anyhow!(
@@ -627,6 +652,7 @@ pub fn train(
         license_notice: "MIT; trained from repository-local advisor fixtures".into(),
         training_discipline: discipline.into(),
         calibration: Some(calibration.clone()),
+        excluded_tool_families: excluded_families.clone(),
     };
     let artifact = ContextualArtifact {
         manifest,
@@ -704,6 +730,7 @@ pub fn train(
         test_partition_fingerprint: fingerprint_of(&test_indices),
         unqualified_fallback,
         training_discipline: discipline.into(),
+        excluded_tool_families: excluded_families,
         train_metrics,
         dev_metrics,
         calibration,
@@ -1627,6 +1654,7 @@ mod tests {
             max_candidates: 8,
             model_version: None,
             vocab_buckets: Some(64),
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
         };
         let directory = tempfile::tempdir().expect("temp directory");
@@ -1670,6 +1698,7 @@ mod tests {
             max_candidates: 8,
             model_version: None,
             vocab_buckets: Some(128),
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
         };
         let directory = tempfile::tempdir().expect("temp directory");
@@ -1738,6 +1767,7 @@ mod tests {
             license_notice: "legacy".into(),
             training_discipline: DISCIPLINE_LEGACY.into(),
             calibration: None,
+            excluded_tool_families: Vec::new(),
         };
         let artifact = ContextualArtifact {
             manifest,
@@ -1799,6 +1829,7 @@ mod tests {
             license_notice: "bogus".into(),
             training_discipline: DISCIPLINE_PARTITIONED.into(),
             calibration: None,
+            excluded_tool_families: Vec::new(),
         };
         let weights = vec![0.0; 16];
         manifest.weights_sha256 = hex::encode(sha2::Sha256::digest(weights_bytes(&weights)));
@@ -1826,6 +1857,7 @@ mod tests {
             max_candidates: 8,
             model_version: None,
             vocab_buckets: Some(128),
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
         };
         let directory = tempfile::tempdir().expect("temp directory");
@@ -1843,6 +1875,43 @@ mod tests {
     }
 
     #[test]
+    fn family_exclusion_marks_manifest_and_preserves_frozen_test() {
+        let cases = crate::tool_advisor::builtin_cases().expect("builtin corpus");
+        let fingerprint = crate::tool_advisor::dataset_fingerprint(&cases).expect("fingerprint");
+        let config = ContextualTrainingConfig {
+            capacity: Capacity::Small,
+            epochs: 1,
+            learning_rate: 0.05,
+            seed: 5,
+            max_candidates: 8,
+            model_version: None,
+            vocab_buckets: Some(256),
+            exclude_tool_families: vec!["plugin".into()],
+            allow_unpartitioned_fallback: false,
+        };
+        let directory = tempfile::tempdir().expect("temp directory");
+        let output = directory.path().join("excluded.bin");
+        let report = train(&cases, &fingerprint, &config, &output).expect("train");
+        assert_eq!(report.excluded_tool_families, vec!["plugin".to_string()]);
+        assert_eq!(report.test_cases, 62);
+        assert_eq!(
+            report.test_partition_fingerprint,
+            "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035"
+        );
+        // Plugin contributes train/dev cases, so exclusion strictly shrinks
+        // optimizer and calibration input while the frozen test is untouched.
+        assert!(report.train_cases < 132);
+        assert!(report.dev_cases < 62);
+        assert!(!report.unqualified_fallback);
+        let artifact = load(&output).expect("load excluded artifact");
+        assert_eq!(
+            artifact.manifest.excluded_tool_families,
+            vec!["plugin".to_string()]
+        );
+        assert!(artifact.is_qualified());
+    }
+
+    #[test]
     fn capacity_report_distinguishes_allocated_from_trained_parameters() {
         let cases = dev_tuning_corpus();
         let fingerprint = crate::tool_advisor::dataset_fingerprint(&cases).expect("fingerprint");
@@ -1854,6 +1923,7 @@ mod tests {
             max_candidates: 8,
             model_version: None,
             vocab_buckets: Some(128),
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
         };
         let directory = tempfile::tempdir().expect("temp directory");

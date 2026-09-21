@@ -22,6 +22,11 @@ pub struct TrainingConfig {
     /// Output is permanently marked unqualified.
     #[serde(default)]
     pub allow_unpartitioned_fallback: bool,
+    /// Tool families excluded from optimizer AND calibration input for true
+    /// holdout retraining. Splits stay frozen; excluded cases are dropped
+    /// from train/dev index lists and recorded in the report.
+    #[serde(default)]
+    pub exclude_tool_families: Vec<String>,
     #[serde(default)]
     pub dataset: Option<String>,
     pub output_artifact: String,
@@ -94,10 +99,13 @@ pub struct TrainingReport {
     /// the requested `train`/`dev`/`test`/`all` for evaluation output.
     #[serde(default = "default_evaluation_partition")]
     pub evaluation_partition: String,
-    /// True only for the `all` diagnostic evaluation, which must never back
+    /// True by design only for the `all` diagnostic evaluation, which must never back
     /// qualification evidence.
     #[serde(default)]
     pub evaluation_diagnostic_all: bool,
+    /// Families excluded from this run's optimizer/calibration input.
+    #[serde(default)]
+    pub excluded_tool_families: Vec<String>,
 }
 
 fn default_evaluation_partition() -> String {
@@ -197,15 +205,21 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
         }
     };
     let layout = partition_cases(&cases);
+    let mut excluded_families = config.exclude_tool_families.clone();
+    excluded_families.sort();
+    excluded_families.dedup();
+    let excluded: BTreeSet<&str> = excluded_families.iter().map(String::as_str).collect();
     let train_cases: Vec<_> = layout
         .train_cases
         .iter()
         .map(|&index| cases[index].clone())
+        .filter(|case| !excluded.contains(case.tool_family.as_str()))
         .collect();
     let dev_cases: Vec<_> = layout
         .dev_cases
         .iter()
         .map(|&index| cases[index].clone())
+        .filter(|case| !excluded.contains(case.tool_family.as_str()))
         .collect();
     let test_cases: Vec<_> = layout
         .test_cases
@@ -258,7 +272,12 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
     }
     calibrate_abstention(&mut checkpoint, &dev_cases);
     write_checkpoint_atomic(&checkpoint_path, &checkpoint)?;
-    let artifact = artifact_from_checkpoint(&checkpoint, config, &dataset_fingerprint)?;
+    let artifact = artifact_from_checkpoint(
+        &checkpoint,
+        config,
+        &dataset_fingerprint,
+        &excluded_families,
+    )?;
     write_artifact_atomic(&output, &artifact)?;
     let runtime = LinearAdvisor::new(artifact.clone())?;
     let train_metrics = evaluate_cases(&runtime, &learning_cases, config)?;
@@ -282,6 +301,7 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
         test_metrics: None,
         evaluation_partition: default_evaluation_partition(),
         evaluation_diagnostic_all: false,
+        excluded_tool_families: excluded_families,
     })
 }
 
@@ -301,6 +321,7 @@ fn train_contextual(
         max_candidates: config.max_candidates,
         model_version: None,
         vocab_buckets: config.vocab_buckets,
+        exclude_tool_families: config.exclude_tool_families.clone(),
         allow_unpartitioned_fallback: config.allow_unpartitioned_fallback,
     };
     let output = PathBuf::from(&config.output_artifact);
@@ -326,6 +347,7 @@ fn train_contextual(
         test_metrics: None,
         evaluation_partition: default_evaluation_partition(),
         evaluation_diagnostic_all: false,
+        excluded_tool_families: report.excluded_tool_families.clone(),
     })
 }
 
@@ -399,6 +421,7 @@ pub fn evaluate_artifact(
             test_metrics: Some(metrics),
             evaluation_partition: partition.to_string(),
             evaluation_diagnostic_all: partition == "all",
+            excluded_tool_families: Vec::new(),
         });
     }
     let artifact = load_artifact(path)?;
@@ -428,6 +451,7 @@ pub fn evaluate_artifact(
             architecture: None,
             capacity: None,
             vocab_buckets: None,
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
             dataset: None,
             output_artifact: path.display().to_string(),
@@ -459,6 +483,7 @@ pub fn evaluate_artifact(
         test_metrics: Some(metrics),
         evaluation_partition: partition.to_string(),
         evaluation_diagnostic_all: partition == "all",
+        excluded_tool_families: Vec::new(),
     })
 }
 
@@ -494,6 +519,7 @@ fn artifact_from_checkpoint(
     checkpoint: &Checkpoint,
     config: &TrainingConfig,
     dataset_fingerprint: &str,
+    excluded_tool_families: &[String],
 ) -> Result<ToolAdvisorArtifact> {
     let weights_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&checkpoint.weights)?));
     Ok(ToolAdvisorArtifact {
@@ -513,6 +539,7 @@ fn artifact_from_checkpoint(
             weights_sha256,
             provenance_fingerprint: dataset_fingerprint.into(),
             license_notice: "CodeGG-generated local artifact".into(),
+            excluded_tool_families: excluded_tool_families.to_vec(),
         },
         bias: checkpoint.bias,
         abstain_bias: checkpoint.abstain_bias,
@@ -640,6 +667,7 @@ mod tests {
             architecture: None,
             capacity: None,
             vocab_buckets: None,
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
             dataset: None,
             output_artifact: artifact.display().to_string(),
@@ -667,6 +695,7 @@ mod tests {
             architecture: None,
             capacity: None,
             vocab_buckets: None,
+            exclude_tool_families: Vec::new(),
             allow_unpartitioned_fallback: false,
             dataset: Some(directory.path().join("missing.jsonl").display().to_string()),
             output_artifact: directory.path().join("model.json").display().to_string(),

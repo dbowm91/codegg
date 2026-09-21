@@ -32,6 +32,8 @@ const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.json
 #[cfg(feature = "tool-advisor")]
 pub mod contextual;
 #[cfg(feature = "tool-advisor-training")]
+pub mod requalify;
+#[cfg(feature = "tool-advisor-training")]
 pub mod training;
 pub mod training_data;
 
@@ -243,6 +245,10 @@ pub struct ToolAdvisorArtifactManifest {
     pub weights_sha256: String,
     pub provenance_fingerprint: String,
     pub license_notice: String,
+    /// Families excluded from this artifact's train/dev input (true-holdout
+    /// retraining). Empty for standard runs.
+    #[serde(default)]
+    pub excluded_tool_families: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2639,6 +2645,7 @@ mod tests {
                 weights_sha256,
                 provenance_fingerprint: "test-data".into(),
                 license_notice: "test".into(),
+                excluded_tool_families: Vec::new(),
             },
             bias: 0.0,
             abstain_bias: 0.0,
