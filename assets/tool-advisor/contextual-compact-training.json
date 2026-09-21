@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "architecture": "contextual-embedding-v1",
+  "capacity": "Small",
+  "vocab_buckets": 4096,
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "output_artifact": "target/tool-advisor/contextual-compact.bin",
+  "run_dir": "target/tool-advisor/contextual-compact-run",
+  "epochs": 3,
+  "learning_rate": 0.03,
+  "seed": 17,
+  "max_candidates": 32,
+  "calibration_temperature": 1.0,
+  "resume": false
+}

@@ -702,11 +702,17 @@ pub fn advisor_from_config(
         match contextual::ContextualAdvisor::new(artifact) {
             Ok(advisor) => {
                 let version = advisor.artifact().manifest.model_version.clone();
+                let qualified = advisor.artifact().is_qualified();
                 return (
                     Box::new(advisor),
                     AdvisorRuntimeStatus {
                         state: AdvisorRuntimeState::Ready,
-                        detail: "contextual encoder loaded".into(),
+                        detail: if qualified {
+                            "calibrated contextual encoder loaded".into()
+                        } else {
+                            "legacy unqualified contextual encoder loaded (research baseline only)"
+                                .into()
+                        },
                         model_version: Some(version),
                     },
                 );

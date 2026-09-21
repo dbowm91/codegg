@@ -64,28 +64,58 @@ enter the advisor input. The scorer has no broker, permission, registry, or
 execution handle.
 
 With the optional `tool-advisor` feature, a separate
-`contextual-embedding-v1` artifact can be loaded by the same advisor
-abstraction. It is a pure-Rust hashed-token embedding encoder with a learned
-context/candidate interaction score, not a renamed linear artifact. The small
-and medium capacity points are 5,242,881 and 15,728,641 parameters. Binary
-artifacts carry an explicit manifest, tokenizer/version, dataset fingerprint,
-weight digest, provenance, and license notice. A missing, corrupt, or
+`contextual-embedding-v2` artifact can be loaded by the same advisor
+abstraction. It is a pure-Rust hashed-token embedding interaction scorer
+with a learned context/candidate interaction score, not a renamed linear
+artifact: mean-pooled hashed-token embeddings interact through a scaled dot
+product plus bias. Until clean requalification says otherwise, documentation
+must not claim more than that. The small and medium capacity points allocate
+5,242,881 and 15,728,641 parameters, but the corpus touches only a few
+hundred embedding buckets, so qualification reports trained/touched rows and
+effective trained parameters rather than headline allocation; a compact
+table configuration may match quality at a fraction of the bytes. Binary
+artifacts carry an explicit manifest, tokenizer/version, dataset
+fingerprint, weight digest, training discipline, dev-selected abstention
+calibration, provenance, and license notice. Version 1 artifacts remain
+loadable for compatibility but are always reported as legacy/unqualified;
+only schema-v2 artifacts with partitioned discipline and `dev-grid-search-v1`
+calibration may back qualification evidence. A missing, corrupt, or
 incompatible contextual artifact falls back to `NoopAdvisor` for the turn.
-See `architecture/tool-advisor-framework-spike.md` for the bounded framework
-comparison and selection rationale.
+Runtime abstention uses the serialized calibration
+(`sigmoid((abstain_bias - max_score) / temperature)`); uncalibrated legacy
+artifacts keep the exact historical `sigmoid(-top_score)` formula while
+reporting their status. See `architecture/tool-advisor-framework-spike.md`
+for the bounded framework comparison and selection rationale.
 
 ## Local training (baseline and contextual corrective)
 
 The opt-in `tool-advisor-training` feature adds `codegg tool-advisor train`,
 `eval`, and `inspect`. Training uses the same `hashed-linear-v1` scorer and
-artifact writer as inference, with stable case-group splits and dataset/config
-fingerprints. Each epoch writes an atomic checkpoint under a distinct run
-directory; the selected artifact is replaced only after the run completes.
-The repository includes `assets/tool-advisor/tiny-training.json` as a bounded
-smoke configuration. The contextual configs in
-`assets/tool-advisor/contextual-small-training.json` and
-`contextual-medium-training.json` exercise the two capacity points through the
+artifact writer as inference, with C001 leakage-group splits and
+dataset/config fingerprints. Each epoch writes an atomic checkpoint under a
+distinct run directory; the selected artifact is replaced only after the run
+completes. Empty train or dev partitions are hard errors: the old all-case
+training and calibration fallbacks are removed, and final-test metrics are
+never computed during tuning. `codegg tool-advisor eval --partition
+train|dev|test` (default `test`) scores one frozen partition explicitly;
+`--partition all` is labeled diagnostic and must never back qualification
+evidence. The repository includes `assets/tool-advisor/tiny-training.json`
+as a bounded smoke configuration. The contextual configs in
+`assets/tool-advisor/contextual-small-training.json`,
+`contextual-medium-training.json`, and `contextual-compact-training.json`
+exercise the two historical capacity points plus a compact table through the
 same Rust-only command. Ordinary builds do not require the training feature.
+
+Contextual training applies corrected binary-cross-entropy gradients
+(sign and mean-pooling `1/n` factors pinned by finite-difference tests and a
+tiny-overfit gate), consumes only the C001 train partition in the optimizer,
+fits the abstention head on the dev partition only through a deterministic
+temperature/bias grid search, and records per-split metrics (train/dev, never
+test), the serialized calibration with uncalibrated reference values, and an
+effective-capacity report (distinct buckets touched, rows changed, trained
+parameter estimate, cold load, score latency). Each run writes a
+machine-readable `<artifact>.training-report.json` sidecar next to the
+artifact for review and requalification.
 
 ## Training-data lifecycle (M004)
 

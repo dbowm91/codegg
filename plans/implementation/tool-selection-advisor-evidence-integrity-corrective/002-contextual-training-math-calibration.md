@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Evidence Corrective C002 — Contextual Training Math, Calibration, and Capacity Truthfulness
 
-Status: ready for handoff (unblocked by C001 closure)
+Status: implemented (closed; see `plans/closure/tool-selection-advisor-evidence-integrity-corrective/002-status.md`)
 
 Repository baseline: `71460c0cb1421f33a62d57123ac562c8a7c4bf1c`
 

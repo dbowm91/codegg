@@ -468,12 +468,16 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Evaluate a compatible artifact against a dataset.
+    /// Evaluate a compatible artifact against a frozen dataset partition.
     Eval {
         #[arg(long)]
         model: String,
         #[arg(long)]
         dataset: Option<String>,
+        /// Partition to score: train, dev, test (default), or all.
+        /// `all` is diagnostic only and is flagged in the report.
+        #[arg(long, default_value = "test")]
+        partition: String,
         #[arg(long)]
         json: bool,
     },
@@ -1782,7 +1786,11 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                         report.parameter_count, report.artifact_path
                     );
                     println!("dataset: {}", report.dataset_fingerprint);
-                    println!("test MRR: {:.3}", report.test_metrics.mrr);
+                    println!("train MRR: {:.3}", report.train_metrics.mrr);
+                    if let Some(dev_metrics) = &report.dev_metrics {
+                        println!("dev MRR: {:.3}", dev_metrics.mrr);
+                    }
+                    println!("final-test metrics are not computed during tuning; use eval --partition test");
                 }
             }
             #[cfg(not(feature = "tool-advisor-training"))]
@@ -1796,6 +1804,7 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
         ToolAdvisorCommand::Eval {
             model,
             dataset,
+            partition,
             json,
         } => {
             #[cfg(feature = "tool-advisor-training")]
@@ -1803,6 +1812,7 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 let report = codegg::tool_advisor::training::evaluate_artifact(
                     std::path::Path::new(model),
                     dataset.as_deref().map(std::path::Path::new),
+                    partition,
                 )
                 .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
                 if *json {
@@ -1813,15 +1823,24 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                         })?
                     );
                 } else {
+                    if report.evaluation_diagnostic_all {
+                        println!(
+                            "diagnostic all-partition evaluation (not qualification evidence)"
+                        );
+                    }
+                    let metrics = report
+                        .test_metrics
+                        .as_ref()
+                        .unwrap_or(&report.train_metrics);
                     println!(
-                        "evaluated {} cases; MRR: {:.3}",
-                        report.test_cases, report.test_metrics.mrr
+                        "evaluated {} cases (partition {}); MRR: {:.3}",
+                        report.test_cases, report.evaluation_partition, metrics.mrr
                     );
                 }
             }
             #[cfg(not(feature = "tool-advisor-training"))]
             {
-                let _ = (model, dataset, json);
+                let _ = (model, dataset, partition, json);
                 return Err(AppError::Other(anyhow::anyhow!(
                     "evaluation commands require the tool-advisor-training feature"
                 )));

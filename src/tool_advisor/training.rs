@@ -14,6 +14,14 @@ pub struct TrainingConfig {
     pub architecture: Option<String>,
     #[serde(default)]
     pub capacity: Option<crate::tool_advisor::contextual::Capacity>,
+    /// Variable embedding-table size for contextual training. `None`
+    /// preserves the historical 65,536 buckets.
+    #[serde(default)]
+    pub vocab_buckets: Option<usize>,
+    /// Test-only escape hatch for fitting without C001 partitions.
+    /// Output is permanently marked unqualified.
+    #[serde(default)]
+    pub allow_unpartitioned_fallback: bool,
     #[serde(default)]
     pub dataset: Option<String>,
     pub output_artifact: String,
@@ -75,7 +83,25 @@ pub struct TrainingReport {
     pub artifact_bytes: u64,
     pub parameter_count: u64,
     pub train_metrics: MetricSummary,
-    pub test_metrics: MetricSummary,
+    /// Dev metrics for tuning. Final-test metrics are never computed during
+    /// training; they are `None` here and only populated by the explicit
+    /// `evaluate_artifact` qualification path (C004).
+    #[serde(default)]
+    pub dev_metrics: Option<MetricSummary>,
+    #[serde(default)]
+    pub test_metrics: Option<MetricSummary>,
+    /// Which split this report covers: `train+dev` for training output, or
+    /// the requested `train`/`dev`/`test`/`all` for evaluation output.
+    #[serde(default = "default_evaluation_partition")]
+    pub evaluation_partition: String,
+    /// True only for the `all` diagnostic evaluation, which must never back
+    /// qualification evidence.
+    #[serde(default)]
+    pub evaluation_diagnostic_all: bool,
+}
+
+fn default_evaluation_partition() -> String {
+    "train+dev".into()
 }
 
 pub fn load_config(path: &Path) -> Result<TrainingConfig> {
@@ -170,26 +196,36 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
             abstain_bias: 0.0,
         }
     };
-    let train_cases: Vec<_> = cases
+    let layout = partition_cases(&cases);
+    let train_cases: Vec<_> = layout
+        .train_cases
         .iter()
-        .filter(|case| split_for(case.split_group()) == "train")
-        .cloned()
+        .map(|&index| cases[index].clone())
         .collect();
-    let dev_cases: Vec<_> = cases
+    let dev_cases: Vec<_> = layout
+        .dev_cases
         .iter()
-        .filter(|case| split_for(case.split_group()) == "dev")
-        .cloned()
+        .map(|&index| cases[index].clone())
         .collect();
-    let test_cases: Vec<_> = cases
+    let test_cases: Vec<_> = layout
+        .test_cases
         .iter()
-        .filter(|case| split_for(case.split_group()) == "test")
-        .cloned()
+        .map(|&index| cases[index].clone())
         .collect();
-    let learning_cases = if train_cases.is_empty() {
-        cases.clone()
-    } else {
-        train_cases.clone()
-    };
+    // Qualification discipline: the optimizer sees train only, calibration
+    // sees dev only, and the final test split is never scored during tuning.
+    // The old all-case fallbacks are removed; degenerate corpora fail loudly.
+    if train_cases.is_empty() {
+        return Err(anyhow!(
+            "training requires a non-empty C001 train partition; refusing all-case fallback"
+        ));
+    }
+    if dev_cases.is_empty() {
+        return Err(anyhow!(
+            "training requires a non-empty C001 dev partition for calibration"
+        ));
+    }
+    let learning_cases = train_cases.clone();
     while checkpoint.epoch < config.epochs {
         for case in &learning_cases {
             for candidate in &case.candidates {
@@ -220,26 +256,13 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
         checkpoint.epoch += 1;
         write_checkpoint_atomic(&checkpoint_path, &checkpoint)?;
     }
-    let calibration_cases = if dev_cases.is_empty() {
-        &learning_cases
-    } else {
-        &dev_cases
-    };
-    calibrate_abstention(&mut checkpoint, calibration_cases);
+    calibrate_abstention(&mut checkpoint, &dev_cases);
     write_checkpoint_atomic(&checkpoint_path, &checkpoint)?;
     let artifact = artifact_from_checkpoint(&checkpoint, config, &dataset_fingerprint)?;
     write_artifact_atomic(&output, &artifact)?;
     let runtime = LinearAdvisor::new(artifact.clone())?;
     let train_metrics = evaluate_cases(&runtime, &learning_cases, config)?;
-    let test_metrics = evaluate_cases(
-        &runtime,
-        if test_cases.is_empty() {
-            &cases
-        } else {
-            &test_cases
-        },
-        config,
-    )?;
+    let dev_metrics = evaluate_cases(&runtime, &dev_cases, config)?;
     let artifact_bytes = fs::metadata(&output)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
@@ -255,7 +278,10 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
         artifact_bytes,
         parameter_count: artifact.manifest.parameter_count,
         train_metrics,
-        test_metrics,
+        dev_metrics: Some(dev_metrics),
+        test_metrics: None,
+        evaluation_partition: default_evaluation_partition(),
+        evaluation_diagnostic_all: false,
     })
 }
 
@@ -274,6 +300,8 @@ fn train_contextual(
         seed: config.seed,
         max_candidates: config.max_candidates,
         model_version: None,
+        vocab_buckets: config.vocab_buckets,
+        allow_unpartitioned_fallback: config.allow_unpartitioned_fallback,
     };
     let output = PathBuf::from(&config.output_artifact);
     let report = crate::tool_advisor::contextual::train(
@@ -282,36 +310,6 @@ fn train_contextual(
         &contextual_config,
         &output,
     )?;
-    let artifact = crate::tool_advisor::contextual::load(&output)?;
-    let advisor = crate::tool_advisor::contextual::ContextualAdvisor::new(artifact)?;
-    let predictions = cases
-        .iter()
-        .map(|case| {
-            advisor.score(&ToolAdvisorInput {
-                case_id: case.case_id.clone(),
-                context: case.context.clone(),
-                candidates: case.candidates.clone(),
-                surface_fingerprint: dataset_fingerprint.to_string(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let select = |split: &str| {
-        let selected = cases
-            .iter()
-            .filter(|case| split_for(case.split_group()) == split)
-            .cloned()
-            .collect::<Vec<_>>();
-        let selected_predictions = predictions
-            .iter()
-            .filter(|prediction| {
-                selected
-                    .iter()
-                    .any(|case| case.case_id == prediction.case_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        evaluate(&selected, &selected_predictions)
-    };
     Ok(TrainingReport {
         config_fingerprint: config_fingerprint.to_string(),
         dataset_fingerprint: dataset_fingerprint.to_string(),
@@ -319,57 +317,118 @@ fn train_contextual(
         dev_cases: report.dev_cases,
         test_cases: report.test_cases,
         epochs_completed: config.epochs,
-        calibration_temperature: config.calibration_temperature,
+        calibration_temperature: report.calibration.temperature,
         artifact_path: report.artifact_path,
         artifact_bytes: report.artifact_bytes,
         parameter_count: report.parameter_count,
-        train_metrics: select("train")?,
-        test_metrics: select("test")?,
+        train_metrics: report.train_metrics,
+        dev_metrics: Some(report.dev_metrics),
+        test_metrics: None,
+        evaluation_partition: default_evaluation_partition(),
+        evaluation_diagnostic_all: false,
     })
 }
 
-pub fn evaluate_artifact(path: &Path, dataset: Option<&Path>) -> Result<TrainingReport> {
+/// Explicit-partition evaluation. Qualification requires naming one frozen
+/// partition (default `test` at the CLI); `all` exists only for diagnostics
+/// and its report is flagged so C004 can never mistake it for evidence.
+pub fn evaluate_artifact(
+    path: &Path,
+    dataset: Option<&Path>,
+    partition: &str,
+) -> Result<TrainingReport> {
+    let valid = matches!(partition, "train" | "dev" | "test" | "all");
+    if !valid {
+        return Err(anyhow!(
+            "evaluation partition must be one of train, dev, test, all"
+        ));
+    }
     #[cfg(feature = "tool-advisor")]
     if let Ok(artifact) = crate::tool_advisor::contextual::load(path) {
         let cases = load_cases(dataset)?;
         let advisor = crate::tool_advisor::contextual::ContextualAdvisor::new(artifact)?;
-        let predictions = cases
+        let selected: Vec<ToolAdvisorCase> = if partition == "all" {
+            cases.clone()
+        } else {
+            let layout = partition_cases(&cases);
+            let indices = match partition {
+                "train" => &layout.train_cases,
+                "dev" => &layout.dev_cases,
+                _ => &layout.test_cases,
+            };
+            indices.iter().map(|&index| cases[index].clone()).collect()
+        };
+        if selected.is_empty() {
+            return Err(anyhow!(
+                "evaluation partition {partition} is empty; refusing to score nothing"
+            ));
+        }
+        let predictions = selected
             .iter()
             .map(|case| {
-                advisor.score(&ToolAdvisorInput {
+                let mut prediction = advisor.score(&ToolAdvisorInput {
                     case_id: case.case_id.clone(),
                     context: case.context.clone(),
                     candidates: case.candidates.clone(),
                     surface_fingerprint: dataset_fingerprint(std::slice::from_ref(case))?,
-                })
+                })?;
+                prediction.mode = format!("contextual-eval-{partition}");
+                Ok(prediction)
             })
             .collect::<Result<Vec<_>>>()?;
-        let test_metrics = evaluate(&cases, &predictions)?;
+        let metrics = evaluate(&selected, &predictions)?;
         return Ok(TrainingReport {
             config_fingerprint: "contextual-evaluation-only".into(),
             dataset_fingerprint: dataset_fingerprint(&cases)?,
             train_cases: 0,
             dev_cases: 0,
-            test_cases: cases.len(),
+            test_cases: selected.len(),
             epochs_completed: 0,
-            calibration_temperature: 1.0,
+            calibration_temperature: advisor
+                .artifact()
+                .manifest
+                .calibration
+                .as_ref()
+                .map(|calibration| calibration.temperature)
+                .unwrap_or(1.0),
             artifact_path: path.display().to_string(),
             artifact_bytes: fs::metadata(path)?.len(),
             parameter_count: advisor.artifact().manifest.parameter_count,
-            train_metrics: test_metrics.clone(),
-            test_metrics,
+            train_metrics: metrics.clone(),
+            dev_metrics: None,
+            test_metrics: Some(metrics),
+            evaluation_partition: partition.to_string(),
+            evaluation_diagnostic_all: partition == "all",
         });
     }
     let artifact = load_artifact(path)?;
     let runtime = LinearAdvisor::new(artifact.clone())?;
     let cases = load_cases(dataset)?;
+    let selected: Vec<ToolAdvisorCase> = if partition == "all" {
+        cases.clone()
+    } else {
+        let layout = partition_cases(&cases);
+        let indices = match partition {
+            "train" => &layout.train_cases,
+            "dev" => &layout.dev_cases,
+            _ => &layout.test_cases,
+        };
+        indices.iter().map(|&index| cases[index].clone()).collect()
+    };
+    if selected.is_empty() {
+        return Err(anyhow!(
+            "evaluation partition {partition} is empty; refusing to score nothing"
+        ));
+    }
     let metrics = evaluate_cases(
         &runtime,
-        &cases,
+        &selected,
         &TrainingConfig {
             schema_version: TRAINING_CONFIG_VERSION,
             architecture: None,
             capacity: None,
+            vocab_buckets: None,
+            allow_unpartitioned_fallback: false,
             dataset: None,
             output_artifact: path.display().to_string(),
             run_dir: None,
@@ -387,7 +446,7 @@ pub fn evaluate_artifact(path: &Path, dataset: Option<&Path>) -> Result<Training
         dataset_fingerprint: dataset_fingerprint(&cases)?,
         train_cases: 0,
         dev_cases: 0,
-        test_cases: cases.len(),
+        test_cases: selected.len(),
         epochs_completed: 0,
         calibration_temperature: artifact.temperature,
         artifact_path: path.display().to_string(),
@@ -396,7 +455,10 @@ pub fn evaluate_artifact(path: &Path, dataset: Option<&Path>) -> Result<Training
             .unwrap_or(0),
         parameter_count: artifact.manifest.parameter_count,
         train_metrics: metrics.clone(),
-        test_metrics: metrics,
+        dev_metrics: None,
+        test_metrics: Some(metrics),
+        evaluation_partition: partition.to_string(),
+        evaluation_diagnostic_all: partition == "all",
     })
 }
 
@@ -577,6 +639,8 @@ mod tests {
             schema_version: TRAINING_CONFIG_VERSION,
             architecture: None,
             capacity: None,
+            vocab_buckets: None,
+            allow_unpartitioned_fallback: false,
             dataset: None,
             output_artifact: artifact.display().to_string(),
             run_dir: Some(directory.path().join("run").display().to_string()),
@@ -602,6 +666,8 @@ mod tests {
             schema_version: TRAINING_CONFIG_VERSION,
             architecture: None,
             capacity: None,
+            vocab_buckets: None,
+            allow_unpartitioned_fallback: false,
             dataset: Some(directory.path().join("missing.jsonl").display().to_string()),
             output_artifact: directory.path().join("model.json").display().to_string(),
             run_dir: None,
