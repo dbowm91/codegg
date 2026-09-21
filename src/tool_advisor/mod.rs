@@ -30,6 +30,7 @@ const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.json
 
 #[cfg(feature = "tool-advisor-training")]
 pub mod training;
+pub mod training_data;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolAdvisorCandidate {
@@ -877,6 +878,34 @@ fn validate_text(field: &str, value: &str, max_bytes: usize) -> Result<()> {
         return Err(anyhow!("{field} exceeds {max_bytes} bytes"));
     }
     Ok(())
+}
+
+pub(crate) fn redact_sensitive(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut words = value.split_whitespace().peekable();
+    while let Some(word) = words.next() {
+        let sensitive = word.starts_with("sk-")
+            || word.starts_with("ghp_")
+            || word.starts_with("xoxb-")
+            || word.eq_ignore_ascii_case("bearer");
+        if sensitive {
+            output.push_str("[REDACTED]");
+            if word.eq_ignore_ascii_case("bearer") {
+                let _ = words.next();
+            }
+        } else if word.contains("token=") || word.contains("api_key=") || word.contains("password=")
+        {
+            let key = word.split('=').next().unwrap_or("secret");
+            output.push_str(key);
+            output.push_str("=[REDACTED]");
+        } else {
+            output.push_str(word);
+        }
+        if words.peek().is_some() {
+            output.push(' ');
+        }
+    }
+    output
 }
 
 #[cfg(test)]

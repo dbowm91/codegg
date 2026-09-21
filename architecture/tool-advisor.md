@@ -45,3 +45,20 @@ fingerprints. Each epoch writes an atomic checkpoint under a distinct run
 directory; the selected artifact is replaced only after the run completes.
 The repository includes `assets/tool-advisor/tiny-training.json` as a bounded
 smoke configuration. Ordinary builds do not require the training feature.
+
+## Training-data lifecycle (M004)
+
+`ToolAdvisorTrainingEvent` is separate from security/audit records. Capture is
+`off` by default; explicit `local` capture writes one versioned, atomically
+installed JSON record per event under the bounded local spool. `codegg
+tool-advisor data status|inspect|export|purge` provides operator visibility and
+retention control. Invalid records are quarantined rather than blocking the
+agent.
+
+Metadata consent, local content consent, remote consent, and remote content
+consent are independent. Content is absent from metadata-only events and passes
+defense-in-depth redaction for common bearer/API-key forms before persistence or
+export. Remote transport requires an explicit HTTPS endpoint and is never
+created by advisor enablement or local capture. The HTTP adapter reuses the
+existing Eggfetch client-construction seam; tests inject a fake transport so a
+default/off configuration cannot make a network attempt.

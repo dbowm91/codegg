@@ -475,6 +475,37 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         model: String,
     },
+    /// Inspect or manage explicitly captured local training data.
+    Data {
+        #[command(subcommand)]
+        command: ToolAdvisorDataCommand,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum ToolAdvisorDataCommand {
+    /// Show the effective capture state and spool location.
+    Status {
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// List locally captured events as JSON.
+    Inspect {
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// Export locally captured events to a JSONL file.
+    Export {
+        #[arg(long)]
+        root: Option<String>,
+        #[arg(long)]
+        output: String,
+    },
+    /// Purge locally captured events.
+    Purge {
+        #[arg(long)]
+        root: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -1769,6 +1800,73 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 serde_json::to_string_pretty(&artifact.manifest)
                     .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
             );
+        }
+        ToolAdvisorCommand::Data { command } => {
+            let root_path = |root: &Option<String>| {
+                root.clone()
+                    .map(std::path::PathBuf::from)
+                    .or_else(codegg::tool_advisor::training_data::default_spool_root)
+                    .ok_or_else(|| {
+                        AppError::Other(anyhow::anyhow!("cannot resolve local data directory"))
+                    })
+            };
+            match command {
+                ToolAdvisorDataCommand::Status { root } => {
+                    let policy =
+                        codegg::tool_advisor::training_data::TrainingDataPolicy::from_config(
+                            Config::load_or_default().tool_advisor.as_ref(),
+                        )
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "state: {:?}",
+                        codegg::tool_advisor::training_data::status(&policy)
+                    );
+                    println!("root: {}", root_path(root)?.display());
+                }
+                ToolAdvisorDataCommand::Inspect { root } => {
+                    let policy = codegg::tool_advisor::training_data::TrainingDataPolicy::default();
+                    let spool = codegg::tool_advisor::training_data::LocalSpoolSink::new(
+                        root_path(root)?,
+                        &policy,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&spool.inspect().map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                    );
+                }
+                ToolAdvisorDataCommand::Export { root, output } => {
+                    let policy = codegg::tool_advisor::training_data::TrainingDataPolicy::default();
+                    let spool = codegg::tool_advisor::training_data::LocalSpoolSink::new(
+                        root_path(root)?,
+                        &policy,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "exported {} events",
+                        spool
+                            .export(std::path::Path::new(output))
+                            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                    );
+                }
+                ToolAdvisorDataCommand::Purge { root } => {
+                    let policy = codegg::tool_advisor::training_data::TrainingDataPolicy::default();
+                    let spool = codegg::tool_advisor::training_data::LocalSpoolSink::new(
+                        root_path(root)?,
+                        &policy,
+                    )
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                    println!(
+                        "purged {} events",
+                        spool
+                            .purge()
+                            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                    );
+                }
+            }
         }
     }
     Ok(())
