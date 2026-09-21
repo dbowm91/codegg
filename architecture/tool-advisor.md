@@ -20,3 +20,18 @@ To add a case, use a new group and ID, describe the semantic distinction being
 tested in tags, avoid private repository content, and run the fixture validator
 and benchmark tests. Future advisor runtime and training work must consume
 these contracts rather than define incompatible parallel labels.
+
+## Optional runtime (M002)
+
+The runtime is an in-process `hashed-linear-v1` Rust scorer with a versioned
+JSON artifact manifest. Manifest schema, tokenizer/context/candidate versions,
+limits, calibration, provenance, and a SHA-256 weight digest are checked before
+scoring. A missing, corrupt, incompatible, or repeatedly failing artifact
+returns a diagnostic status and uses `NoopAdvisor`; it cannot fail an agent
+turn. M002 accepts only `off` and `observe`, with `off` as the configuration
+default. Reranking and promotion are reserved for M005.
+
+`candidates_from_surface` projects only the already resolved policy-allowed
+surface, so denied, disabled, plan-ineligible, and parent-ceiling tools cannot
+enter the advisor input. The scorer has no broker, permission, registry, or
+execution handle.

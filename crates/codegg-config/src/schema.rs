@@ -271,6 +271,8 @@ pub struct Config {
     /// Explicit, opt-in project discovery configuration.
     pub discovery: Option<DiscoveryConfig>,
     pub tool_deferral: Option<ToolDeferralConfig>,
+    /// Optional local tool-selection advisor. Disabled unless explicitly enabled.
+    pub tool_advisor: Option<ToolAdvisorConfig>,
     pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
     pub research: Option<ResearchConfig>,
@@ -2035,6 +2037,70 @@ pub struct ToolDeferralConfig {
     pub search_mode: Option<String>,
     /// Maximum number of tools sent in the initial request.
     pub max_initial_tools: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ToolAdvisorConfig {
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,
+    pub model_path: Option<String>,
+    pub max_candidates: Option<usize>,
+    pub timeout_ms: Option<u64>,
+    pub training_data: Option<ToolAdvisorTrainingDataConfig>,
+    pub remote: Option<ToolAdvisorRemoteConfig>,
+}
+
+impl Default for ToolAdvisorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(false),
+            mode: Some("off".to_string()),
+            model_path: None,
+            max_candidates: Some(16),
+            timeout_ms: Some(25),
+            training_data: None,
+            remote: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ToolAdvisorTrainingDataConfig {
+    pub capture: Option<String>,
+    pub include_content: Option<bool>,
+    pub max_bytes: Option<u64>,
+    pub max_age_days: Option<u32>,
+}
+
+impl Default for ToolAdvisorTrainingDataConfig {
+    fn default() -> Self {
+        Self {
+            capture: Some("off".to_string()),
+            include_content: Some(false),
+            max_bytes: Some(16 * 1024 * 1024),
+            max_age_days: Some(30),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ToolAdvisorRemoteConfig {
+    pub enabled: Option<bool>,
+    pub endpoint: Option<String>,
+    pub include_content: Option<bool>,
+}
+
+impl Default for ToolAdvisorRemoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(false),
+            endpoint: None,
+            include_content: Some(false),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

@@ -17,6 +17,7 @@ pub use schema::{
     AuthConfig, Config, DiscoveryConfig, DiscoveryMode, DiscoveryRootConfig, ModelProfileConfig,
     ModelRouteConfig, ModelRouterConfig, OrchestrationConfig, OrchestrationTier, SchedulerConfig,
     SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig,
-    SymlinkPolicy, VIRTUAL_MODEL_PREFIX,
+    SymlinkPolicy, ToolAdvisorConfig, ToolAdvisorRemoteConfig, ToolAdvisorTrainingDataConfig,
+    VIRTUAL_MODEL_PREFIX,
 };
 pub use watcher::ConfigWatcher;

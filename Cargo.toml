@@ -286,6 +286,8 @@ server = [
 image = ["dep:ratatui-image", "dep:image"]
 lsp-test-support = ["egglsp/lsp-test-support"]
 lsp-real-server-tests = ["egglsp/lsp-real-server-tests"]
+tool-advisor = []
+tool-advisor-training = ["tool-advisor"]
 
 [[test]]
 name = "lsp_composite_stdio"

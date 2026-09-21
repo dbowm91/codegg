@@ -12,6 +12,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 pub const CASE_SCHEMA_VERSION: u16 = 1;
 pub const PREDICTION_SCHEMA_VERSION: u16 = 1;
@@ -20,6 +23,8 @@ pub const MAX_CASE_BYTES: usize = 128 * 1024;
 pub const MAX_CONTEXT_BYTES: usize = 8 * 1024;
 pub const MAX_CANDIDATES: usize = 128;
 pub const MAX_CANDIDATE_TEXT_BYTES: usize = 8 * 1024;
+pub const ARTIFACT_SCHEMA_VERSION: u16 = 1;
+pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
 const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.jsonl");
 
@@ -111,6 +116,352 @@ pub struct BaselineReport {
     pub mode: String,
     pub summary: MetricSummary,
     pub by_tag: Vec<DomainMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolAdvisorArtifactManifest {
+    pub artifact_schema_version: u16,
+    pub model_version: String,
+    pub architecture: String,
+    pub parameter_count: u64,
+    pub precision: String,
+    pub tokenizer_version: String,
+    pub tokenizer_hash: String,
+    pub candidate_schema_version: u16,
+    pub context_schema_version: u16,
+    pub calibration_version: String,
+    pub max_context_bytes: usize,
+    pub max_candidates: usize,
+    pub weights_sha256: String,
+    pub provenance_fingerprint: String,
+    pub license_notice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolAdvisorArtifact {
+    pub manifest: ToolAdvisorArtifactManifest,
+    #[serde(default)]
+    pub bias: f32,
+    #[serde(default)]
+    pub abstain_bias: f32,
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+    #[serde(default)]
+    pub weights: BTreeMap<String, f32>,
+}
+
+fn default_temperature() -> f32 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AdvisorRuntimeState {
+    Disabled,
+    NotInstalled,
+    Incompatible,
+    Ready,
+    Degraded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdvisorRuntimeStatus {
+    pub state: AdvisorRuntimeState,
+    pub detail: String,
+    pub model_version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolAdvisorInput {
+    pub case_id: String,
+    pub context: String,
+    pub candidates: Vec<ToolAdvisorCandidate>,
+    pub surface_fingerprint: String,
+}
+
+/// Build advisor candidates only from a surface that has already passed the
+/// normal policy, plan-mode, disabled-tool, and parent-ceiling filters.
+pub fn candidates_from_surface(
+    surface: &crate::agent::tool_surface::ResolvedToolSurface,
+    max_candidates: usize,
+) -> Vec<ToolAdvisorCandidate> {
+    surface
+        .tools
+        .iter()
+        .take(max_candidates.min(MAX_CANDIDATES))
+        .map(|tool| ToolAdvisorCandidate {
+            name: tool.canonical_name.clone(),
+            description: tool.definition.description.clone(),
+            category: format!("{:?}", tool.category),
+            disclosure: crate::tool::disclosure::disclosure_for(&tool.canonical_name)
+                .as_str()
+                .to_string(),
+            synthetic_identity: tool.canonical_name.starts_with("mcp__"),
+        })
+        .collect()
+}
+
+pub trait ToolAdvisor: Send + Sync {
+    fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopAdvisor;
+
+impl ToolAdvisor for NoopAdvisor {
+    fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
+        Ok(ToolAdvisorPrediction {
+            schema_version: PREDICTION_SCHEMA_VERSION,
+            case_id: input.case_id.clone(),
+            ranked: Vec::new(),
+            abstain_probability: Some(1.0),
+            mode: "off".to_string(),
+        })
+    }
+}
+
+pub struct LinearAdvisor {
+    artifact: Arc<ToolAdvisorArtifact>,
+    failures: AtomicU8,
+    max_failures: u8,
+}
+
+impl LinearAdvisor {
+    pub fn new(artifact: ToolAdvisorArtifact) -> Result<Self> {
+        validate_artifact(&artifact)?;
+        Ok(Self {
+            artifact: Arc::new(artifact),
+            failures: AtomicU8::new(0),
+            max_failures: 3,
+        })
+    }
+
+    pub fn artifact(&self) -> &ToolAdvisorArtifact {
+        &self.artifact
+    }
+
+    fn score_inner(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
+        if input.context.len() > self.artifact.manifest.max_context_bytes {
+            return Err(anyhow!("advisor context exceeds artifact limit"));
+        }
+        if input.candidates.len() > self.artifact.manifest.max_candidates {
+            return Err(anyhow!("advisor candidate set exceeds artifact limit"));
+        }
+        let context_terms = tokenize(&input.context);
+        let mut ranked = input
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let candidate_terms =
+                    tokenize(&format!("{} {}", candidate.name, candidate.description));
+                let overlap = candidate_terms
+                    .iter()
+                    .filter(|term| context_terms.contains(term))
+                    .count() as f32;
+                let learned = candidate_terms
+                    .iter()
+                    .filter_map(|term| self.artifact.weights.get(term))
+                    .copied()
+                    .sum::<f32>();
+                let score = self.artifact.bias + learned + overlap * 0.1;
+                (candidate.name.clone(), score as f64)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let abstain_probability = sigmoid(
+            (self.artifact.abstain_bias
+                - ranked
+                    .first()
+                    .map(|(_, score)| *score as f32)
+                    .unwrap_or(0.0))
+                / self.artifact.temperature.max(0.001),
+        );
+        Ok(ToolAdvisorPrediction {
+            schema_version: PREDICTION_SCHEMA_VERSION,
+            case_id: input.case_id.clone(),
+            ranked: ranked
+                .into_iter()
+                .map(|(name, score)| RankedCandidate { name, score })
+                .collect(),
+            abstain_probability: Some(abstain_probability as f64),
+            mode: "observe".to_string(),
+        })
+    }
+}
+
+impl ToolAdvisor for LinearAdvisor {
+    fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
+        if self.failures.load(Ordering::Relaxed) >= self.max_failures {
+            return Err(anyhow!("advisor circuit breaker is open"));
+        }
+        let started = Instant::now();
+        let result = self.score_inner(input);
+        if result.is_err() {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+        }
+        if started.elapsed().as_millis() > 1000 {
+            return Err(anyhow!("advisor scoring exceeded local bound"));
+        }
+        result
+    }
+}
+
+pub fn validate_artifact(artifact: &ToolAdvisorArtifact) -> Result<()> {
+    let manifest = &artifact.manifest;
+    if manifest.artifact_schema_version != ARTIFACT_SCHEMA_VERSION {
+        return Err(anyhow!(
+            "unsupported advisor artifact schema version {}",
+            manifest.artifact_schema_version
+        ));
+    }
+    if manifest.candidate_schema_version != CASE_SCHEMA_VERSION
+        || manifest.context_schema_version != CASE_SCHEMA_VERSION
+    {
+        return Err(anyhow!(
+            "advisor artifact schema does not match case/context schema"
+        ));
+    }
+    if manifest.architecture != "hashed-linear-v1"
+        || manifest.max_candidates == 0
+        || manifest.max_candidates > MAX_CANDIDATES
+        || manifest.max_context_bytes == 0
+        || manifest.max_context_bytes > MAX_CONTEXT_BYTES
+    {
+        return Err(anyhow!(
+            "advisor artifact manifest has unsupported architecture or limits"
+        ));
+    }
+    if artifact.temperature <= 0.0
+        || !artifact.temperature.is_finite()
+        || !artifact.bias.is_finite()
+        || !artifact.abstain_bias.is_finite()
+    {
+        return Err(anyhow!(
+            "advisor artifact contains invalid calibration values"
+        ));
+    }
+    let encoded = serde_json::to_vec(&artifact.weights).context("serialize advisor weights")?;
+    let digest = hex::encode(Sha256::digest(encoded));
+    if digest != manifest.weights_sha256 {
+        return Err(anyhow!("advisor artifact weights hash mismatch"));
+    }
+    Ok(())
+}
+
+pub fn load_artifact(path: &Path) -> Result<ToolAdvisorArtifact> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("stat advisor artifact {}", path.display()))?;
+    if metadata.len() > MAX_ARTIFACT_BYTES {
+        return Err(anyhow!(
+            "advisor artifact exceeds {} bytes",
+            MAX_ARTIFACT_BYTES
+        ));
+    }
+    let bytes =
+        fs::read(path).with_context(|| format!("read advisor artifact {}", path.display()))?;
+    let artifact: ToolAdvisorArtifact =
+        serde_json::from_slice(&bytes).context("parse advisor artifact")?;
+    validate_artifact(&artifact)?;
+    Ok(artifact)
+}
+
+pub fn write_artifact_atomic(path: &Path, artifact: &ToolAdvisorArtifact) -> Result<()> {
+    validate_artifact(artifact)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("advisor artifact has no parent directory"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create artifact directory {}", parent.display()))?;
+    let temp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(artifact).context("serialize advisor artifact")?;
+    fs::write(&temp, bytes)
+        .with_context(|| format!("write temporary advisor artifact {}", temp.display()))?;
+    fs::rename(&temp, path)
+        .with_context(|| format!("install advisor artifact {}", path.display()))?;
+    Ok(())
+}
+
+pub fn advisor_from_config(
+    config: Option<&codegg_config::schema::ToolAdvisorConfig>,
+) -> (Box<dyn ToolAdvisor>, AdvisorRuntimeStatus) {
+    let Some(config) = config else {
+        return (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::Disabled,
+                detail: "no advisor configuration".into(),
+                model_version: None,
+            },
+        );
+    };
+    if !config.enabled.unwrap_or(false) || config.mode.as_deref().unwrap_or("off") == "off" {
+        return (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::Disabled,
+                detail: "advisor is disabled (default)".into(),
+                model_version: None,
+            },
+        );
+    }
+    if !matches!(config.mode.as_deref().unwrap_or("off"), "observe") {
+        return (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::Incompatible,
+                detail: "M002 supports only off and observe".into(),
+                model_version: None,
+            },
+        );
+    }
+    let Some(path) = config.model_path.as_deref().map(Path::new) else {
+        return (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::NotInstalled,
+                detail: "observe mode has no model artifact".into(),
+                model_version: None,
+            },
+        );
+    };
+    match load_artifact(path).and_then(LinearAdvisor::new) {
+        Ok(advisor) => {
+            let version = advisor.artifact().manifest.model_version.clone();
+            (
+                Box::new(advisor),
+                AdvisorRuntimeStatus {
+                    state: AdvisorRuntimeState::Ready,
+                    detail: "observe-only advisor loaded".into(),
+                    model_version: Some(version),
+                },
+            )
+        }
+        Err(error) => (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::Degraded,
+                detail: format!("advisor fallback: {error}"),
+                model_version: None,
+            },
+        ),
+    }
+}
+
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn sigmoid(value: f32) -> f32 {
+    1.0 / (1.0 + (-value).exp())
 }
 
 impl ToolAdvisorCase {
@@ -630,5 +981,77 @@ mod tests {
             .candidates
             .iter()
             .any(|candidate| candidate.synthetic_identity)));
+    }
+
+    fn artifact() -> ToolAdvisorArtifact {
+        let weights =
+            BTreeMap::from([("definition".to_string(), 1.0), ("symbol".to_string(), 0.5)]);
+        let weights_sha256 = hex::encode(Sha256::digest(
+            serde_json::to_vec(&weights).expect("weights"),
+        ));
+        ToolAdvisorArtifact {
+            manifest: ToolAdvisorArtifactManifest {
+                artifact_schema_version: ARTIFACT_SCHEMA_VERSION,
+                model_version: "test-1".into(),
+                architecture: "hashed-linear-v1".into(),
+                parameter_count: weights.len() as u64 + 2,
+                precision: "f32".into(),
+                tokenizer_version: "unicode-alnum-v1".into(),
+                tokenizer_hash: "test-tokenizer".into(),
+                candidate_schema_version: CASE_SCHEMA_VERSION,
+                context_schema_version: CASE_SCHEMA_VERSION,
+                calibration_version: "temperature-v1".into(),
+                max_context_bytes: MAX_CONTEXT_BYTES,
+                max_candidates: 16,
+                weights_sha256,
+                provenance_fingerprint: "test-data".into(),
+                license_notice: "test".into(),
+            },
+            bias: 0.0,
+            abstain_bias: 0.0,
+            temperature: 1.0,
+            weights,
+        }
+    }
+
+    #[test]
+    fn artifact_validation_and_scoring_are_fail_closed() {
+        let artifact = artifact();
+        let advisor = LinearAdvisor::new(artifact.clone()).expect("valid artifact");
+        let input = ToolAdvisorInput {
+            case_id: "runtime-case".into(),
+            context: "find a symbol definition".into(),
+            candidates: vec![ToolAdvisorCandidate {
+                name: "lsp_definition".into(),
+                description: "Jump to a symbol definition".into(),
+                category: "ReadOnly".into(),
+                disclosure: "deferred".into(),
+                synthetic_identity: false,
+            }],
+            surface_fingerprint: "surface".into(),
+        };
+        let prediction = advisor.score(&input).expect("score");
+        assert_eq!(prediction.ranked[0].name, "lsp_definition");
+        let mut corrupt = artifact;
+        corrupt.manifest.weights_sha256 = "bad".into();
+        assert!(validate_artifact(&corrupt).is_err());
+    }
+
+    #[test]
+    fn config_without_model_degrades_to_noop_and_active_modes_are_rejected() {
+        let config = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("observe".into()),
+            ..Default::default()
+        };
+        let (_, status) = advisor_from_config(Some(&config));
+        assert_eq!(status.state, AdvisorRuntimeState::NotInstalled);
+        let config = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("rerank".into()),
+            ..Default::default()
+        };
+        let (_, status) = advisor_from_config(Some(&config));
+        assert_eq!(status.state, AdvisorRuntimeState::Incompatible);
     }
 }
