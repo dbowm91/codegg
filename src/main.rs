@@ -1862,11 +1862,12 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
             }
         }
         ToolAdvisorCommand::Inspect { model } => {
-            let artifact = codegg::tool_advisor::load_artifact(std::path::Path::new(model))
-                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            let manifest =
+                codegg::tool_advisor::inspect_artifact_manifest(std::path::Path::new(model))
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&artifact.manifest)
+                serde_json::to_string_pretty(&manifest)
                     .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
             );
         }

@@ -28,6 +28,8 @@ pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
 const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.jsonl");
 
+#[cfg(feature = "tool-advisor")]
+pub mod contextual;
 #[cfg(feature = "tool-advisor-training")]
 pub mod training;
 pub mod training_data;
@@ -555,6 +557,15 @@ pub fn load_artifact(path: &Path) -> Result<ToolAdvisorArtifact> {
     Ok(artifact)
 }
 
+pub fn inspect_artifact_manifest(path: &Path) -> Result<serde_json::Value> {
+    #[cfg(feature = "tool-advisor")]
+    if let Ok(artifact) = contextual::load(path) {
+        return serde_json::to_value(artifact.manifest).context("serialize contextual manifest");
+    }
+    let artifact = load_artifact(path)?;
+    serde_json::to_value(artifact.manifest).context("serialize advisor manifest")
+}
+
 pub fn write_artifact_atomic(path: &Path, artifact: &ToolAdvisorArtifact) -> Result<()> {
     validate_artifact(artifact)?;
     let parent = path
@@ -628,6 +639,32 @@ pub fn advisor_from_config(
             },
         );
     };
+    #[cfg(feature = "tool-advisor")]
+    if let Ok(artifact) = contextual::load(path) {
+        match contextual::ContextualAdvisor::new(artifact) {
+            Ok(advisor) => {
+                let version = advisor.artifact().manifest.model_version.clone();
+                return (
+                    Box::new(advisor),
+                    AdvisorRuntimeStatus {
+                        state: AdvisorRuntimeState::Ready,
+                        detail: "contextual encoder loaded".into(),
+                        model_version: Some(version),
+                    },
+                );
+            }
+            Err(error) => {
+                return (
+                    Box::new(NoopAdvisor),
+                    AdvisorRuntimeStatus {
+                        state: AdvisorRuntimeState::Degraded,
+                        detail: format!("contextual advisor fallback: {error}"),
+                        model_version: None,
+                    },
+                );
+            }
+        }
+    }
     match load_artifact(path).and_then(LinearAdvisor::new) {
         Ok(advisor) => {
             let version = advisor.artifact().manifest.model_version.clone();

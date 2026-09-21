@@ -31,7 +31,7 @@ tested in tags, avoid private repository content, and run the fixture validator
 and benchmark tests. Future advisor runtime and training work must consume
 these contracts rather than define incompatible parallel labels.
 
-## Optional runtime (M002)
+## Optional runtime (linear baseline and contextual corrective)
 
 The runtime is an in-process `hashed-linear-v1` Rust scorer with a versioned
 JSON artifact manifest. Manifest schema, tokenizer/context/candidate versions,
@@ -46,7 +46,18 @@ surface, so denied, disabled, plan-ineligible, and parent-ceiling tools cannot
 enter the advisor input. The scorer has no broker, permission, registry, or
 execution handle.
 
-## Local training (M003)
+With the optional `tool-advisor` feature, a separate
+`contextual-embedding-v1` artifact can be loaded by the same advisor
+abstraction. It is a pure-Rust hashed-token embedding encoder with a learned
+context/candidate interaction score, not a renamed linear artifact. The small
+and medium capacity points are 5,242,881 and 15,728,641 parameters. Binary
+artifacts carry an explicit manifest, tokenizer/version, dataset fingerprint,
+weight digest, provenance, and license notice. A missing, corrupt, or
+incompatible contextual artifact falls back to `NoopAdvisor` for the turn.
+See `architecture/tool-advisor-framework-spike.md` for the bounded framework
+comparison and selection rationale.
+
+## Local training (baseline and contextual corrective)
 
 The opt-in `tool-advisor-training` feature adds `codegg tool-advisor train`,
 `eval`, and `inspect`. Training uses the same `hashed-linear-v1` scorer and
@@ -54,7 +65,10 @@ artifact writer as inference, with stable case-group splits and dataset/config
 fingerprints. Each epoch writes an atomic checkpoint under a distinct run
 directory; the selected artifact is replaced only after the run completes.
 The repository includes `assets/tool-advisor/tiny-training.json` as a bounded
-smoke configuration. Ordinary builds do not require the training feature.
+smoke configuration. The contextual configs in
+`assets/tool-advisor/contextual-small-training.json` and
+`contextual-medium-training.json` exercise the two capacity points through the
+same Rust-only command. Ordinary builds do not require the training feature.
 
 ## Training-data lifecycle (M004)
 

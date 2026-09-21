@@ -11,6 +11,10 @@ pub const TRAINING_CONFIG_VERSION: u16 = 1;
 pub struct TrainingConfig {
     pub schema_version: u16,
     #[serde(default)]
+    pub architecture: Option<String>,
+    #[serde(default)]
+    pub capacity: Option<crate::tool_advisor::contextual::Capacity>,
+    #[serde(default)]
     pub dataset: Option<String>,
     pub output_artifact: String,
     #[serde(default)]
@@ -128,6 +132,9 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
     let cases = load_cases(config.dataset.as_deref().map(Path::new))?;
     let dataset_fingerprint = dataset_fingerprint(&cases)?;
     let config_fingerprint = fingerprint_config(config)?;
+    if config.architecture.as_deref() == Some("contextual-embedding-v1") {
+        return train_contextual(config, &cases, &dataset_fingerprint, &config_fingerprint);
+    }
     let output = PathBuf::from(&config.output_artifact);
     let run_dir = config
         .run_dir
@@ -252,7 +259,107 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
     })
 }
 
+fn train_contextual(
+    config: &TrainingConfig,
+    cases: &[ToolAdvisorCase],
+    dataset_fingerprint: &str,
+    config_fingerprint: &str,
+) -> Result<TrainingReport> {
+    let contextual_config = crate::tool_advisor::contextual::ContextualTrainingConfig {
+        capacity: config
+            .capacity
+            .unwrap_or(crate::tool_advisor::contextual::Capacity::Small),
+        epochs: config.epochs,
+        learning_rate: config.learning_rate,
+        seed: config.seed,
+        max_candidates: config.max_candidates,
+        model_version: None,
+    };
+    let output = PathBuf::from(&config.output_artifact);
+    let report = crate::tool_advisor::contextual::train(
+        cases,
+        dataset_fingerprint,
+        &contextual_config,
+        &output,
+    )?;
+    let artifact = crate::tool_advisor::contextual::load(&output)?;
+    let advisor = crate::tool_advisor::contextual::ContextualAdvisor::new(artifact)?;
+    let predictions = cases
+        .iter()
+        .map(|case| {
+            advisor.score(&ToolAdvisorInput {
+                case_id: case.case_id.clone(),
+                context: case.context.clone(),
+                candidates: case.candidates.clone(),
+                surface_fingerprint: dataset_fingerprint.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let select = |split: &str| {
+        let selected = cases
+            .iter()
+            .filter(|case| split_for(case.split_group()) == split)
+            .cloned()
+            .collect::<Vec<_>>();
+        let selected_predictions = predictions
+            .iter()
+            .filter(|prediction| {
+                selected
+                    .iter()
+                    .any(|case| case.case_id == prediction.case_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        evaluate(&selected, &selected_predictions)
+    };
+    Ok(TrainingReport {
+        config_fingerprint: config_fingerprint.to_string(),
+        dataset_fingerprint: dataset_fingerprint.to_string(),
+        train_cases: report.train_cases,
+        dev_cases: report.dev_cases,
+        test_cases: report.test_cases,
+        epochs_completed: config.epochs,
+        calibration_temperature: config.calibration_temperature,
+        artifact_path: report.artifact_path,
+        artifact_bytes: report.artifact_bytes,
+        parameter_count: report.parameter_count,
+        train_metrics: select("train")?,
+        test_metrics: select("test")?,
+    })
+}
+
 pub fn evaluate_artifact(path: &Path, dataset: Option<&Path>) -> Result<TrainingReport> {
+    #[cfg(feature = "tool-advisor")]
+    if let Ok(artifact) = crate::tool_advisor::contextual::load(path) {
+        let cases = load_cases(dataset)?;
+        let advisor = crate::tool_advisor::contextual::ContextualAdvisor::new(artifact)?;
+        let predictions = cases
+            .iter()
+            .map(|case| {
+                advisor.score(&ToolAdvisorInput {
+                    case_id: case.case_id.clone(),
+                    context: case.context.clone(),
+                    candidates: case.candidates.clone(),
+                    surface_fingerprint: dataset_fingerprint(std::slice::from_ref(case))?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let test_metrics = evaluate(&cases, &predictions)?;
+        return Ok(TrainingReport {
+            config_fingerprint: "contextual-evaluation-only".into(),
+            dataset_fingerprint: dataset_fingerprint(&cases)?,
+            train_cases: 0,
+            dev_cases: 0,
+            test_cases: cases.len(),
+            epochs_completed: 0,
+            calibration_temperature: 1.0,
+            artifact_path: path.display().to_string(),
+            artifact_bytes: fs::metadata(path)?.len(),
+            parameter_count: advisor.artifact().manifest.parameter_count,
+            train_metrics: test_metrics.clone(),
+            test_metrics,
+        });
+    }
     let artifact = load_artifact(path)?;
     let runtime = LinearAdvisor::new(artifact.clone())?;
     let cases = load_cases(dataset)?;
@@ -261,6 +368,8 @@ pub fn evaluate_artifact(path: &Path, dataset: Option<&Path>) -> Result<Training
         &cases,
         &TrainingConfig {
             schema_version: TRAINING_CONFIG_VERSION,
+            architecture: None,
+            capacity: None,
             dataset: None,
             output_artifact: path.display().to_string(),
             run_dir: None,
@@ -466,6 +575,8 @@ mod tests {
         let artifact = directory.path().join("model.json");
         let config = TrainingConfig {
             schema_version: TRAINING_CONFIG_VERSION,
+            architecture: None,
+            capacity: None,
             dataset: None,
             output_artifact: artifact.display().to_string(),
             run_dir: Some(directory.path().join("run").display().to_string()),
@@ -489,6 +600,8 @@ mod tests {
         let directory = tempfile::tempdir().expect("training temp directory");
         let config = TrainingConfig {
             schema_version: TRAINING_CONFIG_VERSION,
+            architecture: None,
+            capacity: None,
             dataset: Some(directory.path().join("missing.jsonl").display().to_string()),
             output_artifact: directory.path().join("model.json").display().to_string(),
             run_dir: None,
