@@ -35,3 +35,13 @@ default. Reranking and promotion are reserved for M005.
 surface, so denied, disabled, plan-ineligible, and parent-ceiling tools cannot
 enter the advisor input. The scorer has no broker, permission, registry, or
 execution handle.
+
+## Local training (M003)
+
+The opt-in `tool-advisor-training` feature adds `codegg tool-advisor train`,
+`eval`, and `inspect`. Training uses the same `hashed-linear-v1` scorer and
+artifact writer as inference, with stable case-group splits and dataset/config
+fingerprints. Each epoch writes an atomic checkpoint under a distinct run
+directory; the selected artifact is replaced only after the run completes.
+The repository includes `assets/tool-advisor/tiny-training.json` as a bounded
+smoke configuration. Ordinary builds do not require the training feature.

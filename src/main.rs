@@ -454,6 +454,27 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Train a local artifact from a versioned Rust dataset.
+    Train {
+        #[arg(long)]
+        config: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Evaluate a compatible artifact against a dataset.
+    Eval {
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        dataset: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect and validate an artifact manifest.
+    Inspect {
+        #[arg(long)]
+        model: String,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -1673,6 +1694,81 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
             } else {
                 print!("{}", codegg::tool_advisor::render_report(&report));
             }
+        }
+        ToolAdvisorCommand::Train { config, json } => {
+            #[cfg(feature = "tool-advisor-training")]
+            {
+                let training_config =
+                    codegg::tool_advisor::training::load_config(std::path::Path::new(config))
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                let report = codegg::tool_advisor::training::train(&training_config)
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!(
+                        "trained {} parameters into {}",
+                        report.parameter_count, report.artifact_path
+                    );
+                    println!("dataset: {}", report.dataset_fingerprint);
+                    println!("test MRR: {:.3}", report.test_metrics.mrr);
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-training"))]
+            {
+                let _ = (config, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "training commands require the tool-advisor-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::Eval {
+            model,
+            dataset,
+            json,
+        } => {
+            #[cfg(feature = "tool-advisor-training")]
+            {
+                let report = codegg::tool_advisor::training::evaluate_artifact(
+                    std::path::Path::new(model),
+                    dataset.as_deref().map(std::path::Path::new),
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!(
+                        "evaluated {} cases; MRR: {:.3}",
+                        report.test_cases, report.test_metrics.mrr
+                    );
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-training"))]
+            {
+                let _ = (model, dataset, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "evaluation commands require the tool-advisor-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::Inspect { model } => {
+            let artifact = codegg::tool_advisor::load_artifact(std::path::Path::new(model))
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&artifact.manifest)
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+            );
         }
     }
     Ok(())

@@ -28,6 +28,9 @@ pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
 const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.jsonl");
 
+#[cfg(feature = "tool-advisor-training")]
+pub mod training;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolAdvisorCandidate {
     pub name: String,
