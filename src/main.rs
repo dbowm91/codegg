@@ -261,6 +261,11 @@ struct Cli {
 
 #[derive(Subcommand, Clone, Debug)]
 enum Commands {
+    /// Run offline tool-selection advisor benchmarks and diagnostics
+    ToolAdvisor {
+        #[command(subcommand)]
+        command: ToolAdvisorCommand,
+    },
     /// List available providers
     Providers,
     /// List available models
@@ -433,6 +438,22 @@ enum Commands {
     },
     /// Run an ACP v1 agent over newline-delimited JSON-RPC on stdio.
     Acp,
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum ToolAdvisorCommand {
+    /// Evaluate the keyword/BM25 discovery baseline over a JSONL corpus.
+    Bench {
+        /// Optional JSONL dataset; defaults to the reviewed repository corpus.
+        #[arg(long)]
+        dataset: Option<String>,
+        /// Use BM25 instead of the keyword baseline.
+        #[arg(long)]
+        bm25: bool,
+        /// Emit the complete machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -1059,6 +1080,7 @@ async fn main() -> Result<(), AppError> {
 
     if let Some(command) = &cli.command {
         match command {
+            Commands::ToolAdvisor { command } => cmd_tool_advisor(command).await?,
             Commands::Providers => cmd_providers().await?,
             Commands::Models { provider } => cmd_models(provider.clone()).await?,
             Commands::Sessions { archived } => cmd_sessions(*archived).await?,
@@ -1622,6 +1644,37 @@ async fn cmd_upgrade() -> Result<(), AppError> {
     println!("Run the following to upgrade:");
     println!("  curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh");
 
+    Ok(())
+}
+
+async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> {
+    match command {
+        ToolAdvisorCommand::Bench {
+            dataset,
+            bm25,
+            json,
+        } => {
+            let mode = if *bm25 {
+                codegg::tool::catalog::SearchMode::BM25
+            } else {
+                codegg::tool::catalog::SearchMode::Keyword
+            };
+            let report = codegg::tool_advisor::run_benchmark(
+                dataset.as_deref().map(std::path::Path::new),
+                mode,
+            )
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                print!("{}", codegg::tool_advisor::render_report(&report));
+            }
+        }
+    }
     Ok(())
 }
 

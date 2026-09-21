@@ -68,6 +68,7 @@ pub(crate) mod test_failpoint;
 pub mod test_runner;
 pub mod theme;
 pub mod tool;
+pub mod tool_advisor;
 pub mod tts;
 pub mod tui;
 pub mod upgrade;

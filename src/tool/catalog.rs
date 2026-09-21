@@ -191,6 +191,56 @@ impl Clone for ToolCatalog {
 }
 
 impl ToolCatalog {
+    /// Rank a bounded set of descriptors using the same keyword/BM25
+    /// implementation as the live catalog. This is used by the offline
+    /// advisor benchmark and intentionally does not register or execute tools.
+    pub fn rank_descriptors(
+        query: &str,
+        metadata: &[ToolMetadata],
+        mode: SearchMode,
+    ) -> Vec<ToolMetadata> {
+        if mode == SearchMode::Keyword {
+            let query_lower = query.to_lowercase();
+            let mut results: Vec<_> = metadata
+                .iter()
+                .filter(|metadata| {
+                    metadata.name.to_lowercase().contains(&query_lower)
+                        || metadata.description.to_lowercase().contains(&query_lower)
+                })
+                .cloned()
+                .collect();
+            results.sort_by(|left, right| left.name.cmp(&right.name));
+            return results;
+        }
+        if query.trim().is_empty() || metadata.is_empty() {
+            return Vec::new();
+        }
+        let refs: Vec<&ToolMetadata> = metadata.iter().collect();
+        let idf = compute_idf(&refs);
+        let avg_dl = compute_avg_doc_length(&refs);
+        let mut scored: Vec<(ToolMetadata, f64)> = metadata
+            .iter()
+            .map(|tool| {
+                let score = bm25_score(
+                    query,
+                    &format!("{} {}", tool.name, tool.description),
+                    avg_dl,
+                    &idf,
+                );
+                (tool.clone(), score)
+            })
+            .filter(|(_, score)| *score > 0.0)
+            .collect();
+        scored.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.name.cmp(&right.0.name))
+        });
+        scored.into_iter().map(|(tool, _)| tool).collect()
+    }
+
     /// Create a new empty tool catalog with default keyword search.
     pub fn new() -> Self {
         Self::with_search_mode(SearchMode::default())
