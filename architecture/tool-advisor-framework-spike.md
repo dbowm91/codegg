@@ -51,3 +51,46 @@ The sequence-encoder workstream is recorded in
 It must select and qualify an actual pure-Rust pretrained sequence encoder
 before any production claim is made; the historical hashed scorer is not
 silently reinterpreted as that architecture.
+
+## Sequence-encoder asset spike — 2026-09-21
+
+M001 selected Candle 0.11.0 for the experiment-only stack. The exact optional
+dependencies are `candle-core = 0.11.0`, `candle-nn = 0.11.0`, and
+`candle-transformers = 0.11.0`, all with default features disabled. The
+experiment features are `tool-advisor-encoder-experiment` and
+`tool-advisor-encoder-training`; neither is enabled by the default build.
+Candle is MIT OR Apache-2.0. Asset manifests require explicit config,
+WordPiece vocabulary, safetensors weights, and license/provenance files with
+SHA-256 hashes. The probe has no Hub, HTTP, or implicit download path.
+
+The local spike verified the following on macOS CPU using a generated tiny
+two-layer BERT fixture (8 hidden dimensions, 16 vocabulary slots):
+
+| Probe | Result |
+|---|---|
+| local config/vocabulary/weights/license manifest | pass; all four hashes are checked before load |
+| deterministic WordPiece pair encoding | pass; bounded `[CLS] context [SEP] candidate [SEP]` layout |
+| repeated forward output | pass; maximum delta `0.0` |
+| head-only backward/optimizer step | pass; finite loss |
+| top-one-layer backward/optimizer step | pass; finite loss |
+| artifact/manifest tamper rejection | pass; changed vocabulary is rejected |
+| default build isolation | pass; Candle appears only behind the two experiment features |
+
+The repository does not contain redistributable TinyBERT or MiniLM-class
+pretrained files. The probe accepts those assets when an operator supplies a
+local manifest and records their exact source/license hashes; no reference
+checkpoint was silently downloaded or committed by this spike. Burn was not
+selected for a parallel implementation because Candle already met the
+required local loading and staged-autograd contract with a smaller change
+surface; a Burn comparison remains a research follow-up, not a production
+dependency.
+
+Run the probe with:
+
+```text
+cargo run --features tool-advisor-encoder-experiment -- tool-advisor sequence-encoder-probe --manifest /path/to/manifest.json --json
+```
+
+This is an experiment/infrastructure decision only. It does not qualify a
+pretrained model, enable advisor ranking, or unblock M003 until M002's context
+contract and real local reference-asset evidence are available.

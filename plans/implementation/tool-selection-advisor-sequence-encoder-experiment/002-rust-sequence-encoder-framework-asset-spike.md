@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment M001 — Rust Sequence-Encoder Framework and Local-Asset Spike
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `8487967d9cc2605c398d3c608e353c8871289a7d`
 

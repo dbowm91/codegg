@@ -491,6 +491,15 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Probe explicit local BERT config/vocabulary/weights and run the
+    /// deterministic forward plus staged head/top-layer training checks.
+    SequenceEncoderProbe {
+        /// Local CodeGG-owned sequence-encoder asset manifest.
+        #[arg(long)]
+        manifest: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare keyword, BM25, and learned discovery on a qualification suite.
     Qualify {
         #[arg(long)]
@@ -1888,6 +1897,46 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 let _ = (prereg, json);
                 return Err(AppError::Other(anyhow::anyhow!(
                     "requalification commands require the tool-advisor-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderProbe { manifest, json } => {
+            #[cfg(feature = "tool-advisor-encoder-experiment")]
+            {
+                let report = codegg::tool_advisor::sequence_encoder::probe_local_assets(
+                    std::path::Path::new(manifest),
+                    &candle_core::Device::Cpu,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!(
+                        "{}: {} layers, hidden {}, {} parameters",
+                        report.architecture,
+                        report.layers,
+                        report.hidden_size,
+                        report.parameter_count
+                    );
+                    println!(
+                        "deterministic max delta: {}",
+                        report.deterministic_max_delta
+                    );
+                    println!("head-only loss: {}", report.head_only_loss);
+                    println!("top-layer loss: {}", report.top_layer_loss);
+                    println!("weights sha256: {}", report.weight_sha256);
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-experiment"))]
+            {
+                let _ = (manifest, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence-encoder probes require the tool-advisor-encoder-experiment feature"
                 )));
             }
         }

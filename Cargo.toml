@@ -268,6 +268,13 @@ codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
+# Optional sequence-encoder experiment. These dependencies are never part of
+# the default advisor/runtime graph; the feature boundary is intentionally
+# explicit until offline qualification selects a production architecture.
+candle-core = { version = "0.11", default-features = false, optional = true }
+candle-nn = { version = "0.11", default-features = false, optional = true }
+candle-transformers = { version = "0.11", default-features = false, optional = true }
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
@@ -290,6 +297,13 @@ lsp-test-support = ["egglsp/lsp-test-support"]
 lsp-real-server-tests = ["egglsp/lsp-real-server-tests"]
 tool-advisor = []
 tool-advisor-training = ["tool-advisor"]
+tool-advisor-encoder-experiment = [
+    "tool-advisor",
+    "dep:candle-core",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+]
+tool-advisor-encoder-training = ["tool-advisor-encoder-experiment", "tool-advisor-training"]
 
 [[test]]
 name = "lsp_composite_stdio"

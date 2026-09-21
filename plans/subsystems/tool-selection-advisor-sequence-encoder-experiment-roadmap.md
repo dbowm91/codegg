@@ -159,7 +159,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/002-rust-sequence-encoder-framework-asset-spike.md`
 
-Status: ready.
+Status: active.
 
 Empirically qualify Candle and Burn for BERT-class loading/training on CodeGG targets using explicit local TinyBERT/MiniLM-class assets. Select one experimental stack or record that neither qualifies.
 
