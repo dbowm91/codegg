@@ -252,9 +252,11 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/005-hybrid-retrieval-shortlist-experiment.md`
 
-Status: blocked on M003.
+Status: closed (deterministic hybrid retriever implemented; C001 corpus
+frontier did not improve on BM25, so the best frontier is carried honestly
+into M005).
 
-Use the selected encoder as a cached semantic coarse retriever and combine it with BM25 over the complete allowed deferred universe. Search the K=16/24/32 quality/latency frontier rather than hard-coding K=16.
+Use the selected encoder as a cached semantic coarse retriever and combine it with BM25 over the complete allowed deferred universe. Search the K=16/24/32 quality/latency frontier rather than hard-coding K=16. The implementation preserves the authority and fallback contract; on the current 256-case C001 corpus, BM25 and RRF both recovered all 181 relevant deferred tools, so no unsupported material-gain claim is made.
 
 ### M005 — Clean offline sequence-encoder qualification
 
@@ -262,7 +264,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/006-clean-offline-sequence-encoder-qualification.md`
 
-Status: blocked on P001 + M002 + M003 + M004.
+Status: ready (P001, M002, M003, and M004 are closed).
 
 Pre-register in a separate commit, then run final frozen evaluation comparing baselines, sequence-encoder variants, hybrid retrieval, calibration, resources, and authority invariants. Only a positive result may unblock live M004.
 

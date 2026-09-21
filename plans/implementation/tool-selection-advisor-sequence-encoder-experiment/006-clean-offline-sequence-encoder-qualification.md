@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment M005 — Clean Offline Sequence-Encoder Qualification
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `8487967d9cc2605c398d3c608e353c8871289a7d`
 
