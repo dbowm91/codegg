@@ -42,7 +42,7 @@ Canonical direction remains in:
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
 | Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | closed | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/003-status.md`. |
 | Plugin ecosystem and harness interoperability | M004 extension catalog/install | closed | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/004-status.md`. |
-| Tool-selection advisor | M002 optional pure-Rust runtime | active | `plans/implementation/tool-selection-advisor/002-optional-pure-rust-runtime.md` | Implementation in progress; M001 closure is accepted. |
+| Tool-selection advisor | M002 optional pure-Rust runtime | closing | `plans/implementation/tool-selection-advisor/002-optional-pure-rust-runtime.md` | Implementation landed in `bc66f35`; closure evidence review in progress. |
 | Tool-selection advisor | M004 consent-gated training telemetry | ready | `plans/implementation/tool-selection-advisor/004-consent-gated-training-telemetry.md` | M001 closed at `plans/closure/tool-selection-advisor/001-status.md`; event/capture contract is next. |
 
 ## Current execution order and dependency gates
