@@ -124,9 +124,9 @@ M001 framework spike (closed) --+
                                 |
 M001A real reference checkpoint (conditional) --+
                                                 |
-M001B encoder fine-tuning corrective -----------+--> M003 sequence encoder experiment
-                                                |       (ready: frozen-encoder/head-only;
-                                                |        unfreeze gated on M001B)
+M001B encoder fine-tuning corrective (closed) --+--> M003 sequence encoder experiment
+                                                 |       (ready: all stages via
+                                                 |        the M001B path)
 M002 current-state context v2 ------------------+--> M003 sequence encoder experiment
                                                     |
                                                     v
@@ -147,10 +147,11 @@ M002 current-state context v2 ------------------+--> M003 sequence encoder exper
 - M001A is conditionally closed: provenance, complete load, deterministic
   forward, head-only training, and pooling are qualified; encoder
   unfreezing is the named outstanding condition.
-- M001B is the narrow framework corrective that must restore encoder
-  fine-tuning (or formally scope M003 to frozen-encoder work).
-- M003 is ready for its frozen-encoder + ranking/abstention-head stage;
-  its top-layer/full unfreeze stages additionally require M001B closure.
+- M001B is the narrow framework corrective that restored differentiable
+  encoder fine-tuning (closed positively via the composite-norm path with
+  forward parity and correctly-scoped update evidence).
+- M003 is ready for all three training stages; its top-layer/full
+  unfreeze stages run through the M001B differentiable path.
 - M004 requires M003 because it reuses the selected encoder/tokenizer contract.
 - M005 requires P001 + M002 + M003 + M004.
 - Existing post-closure M004 remains blocked until M005 records a positive disposition.
@@ -207,13 +208,14 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/008-encoder-finetuning-framework-corrective.md`
 
-Status: ready.
+Status: closed (positive option-1 disposition in
+`plans/closure/tool-selection-advisor-sequence-encoder-experiment/008-status.md`).
 
 Restore differentiable encoder fine-tuning on the qualified MiniLM asset
-(composite-norm forward, custom kernel backward, or equivalent narrow
-path with forward parity and correctly-scoped update evidence), or
-record a formal frozen-encoder-only disposition and rescope M003 stages
-2–3 out. Positive M001B closure unblocks M003 unfreeze stages.
+(composite-norm forward with forward parity and correctly-scoped update
+evidence): CodeGG-owned composite-norm encoder, 101/101 weights, parity
+max 2.3e-06, correctly-scoped top-layer updates. M003 stages 2–3 are
+authorized through this path.
 
 ### M002 — Current-state advisor context projection v2
 
@@ -231,13 +233,15 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/004-sequence-encoder-ranking-experiment.md`
 
-Status: ready (frozen-encoder/head-only stage; top-layer unfreeze gated on M001B).
+Status: ready (all three training stages authorized via the M001B
+differentiable path).
 
 Implement pairwise and packed-marker ranking heads over the qualified
 local pretrained MiniLM encoder with the encoder frozen, train the
 ranking/abstention head, calibrate on dev only, and compare on clean
 held-out slices. Pooling strategy (`cls` vs `mean`) is an explicit
-per-run parameter following the M001A finding.
+per-run parameter following the M001A finding. Top-layer/full unfreeze
+stages run through the M001B composite-norm encoder.
 
 ### M004 — Hybrid semantic/BM25 candidate retrieval
 

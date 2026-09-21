@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment M003 — Sequence-Encoder Ranking Experiment
 
-Status: ready for handoff (frozen-encoder/head-only stages; top-layer unfreeze gated on M001B)
+Status: ready for handoff
 
 Repository baseline: `8487967d9cc2605c398d3c608e353c8871289a7d`
 
@@ -8,14 +8,18 @@ Hard dependencies:
 
 - M001A reference-checkpoint materialization/qualification (conditionally
   closed: asset/load/head-training/pooling qualified; encoder unfreezing
-  outstanding — see M001B);
+  restored by M001B — see `008-status.md`);
+- M001B encoder fine-tuning framework corrective (closed positively via
+  the composite-norm differentiable path);
 - M002 AdvisorContextV2 (closed).
 
-Constraint: only the frozen-encoder + ranking/abstention-head stage is
-authorized until M001B closes. The top-layer/full unfreeze stages below
-additionally require M001B closure; do not attempt encoder unfreezing on
-Candle 0.11 (its fused `layer_norm` has no backward — see
-`plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`).
+Constraint: all three training stages below are authorized. Stages 2–3
+run through the M001B CodeGG-owned composite-norm encoder
+(`DifferentiableBertModel`; parity max 2.3e-06 on the qualified MiniLM
+asset — see
+`plans/closure/tool-selection-advisor-sequence-encoder-experiment/008-status.md`).
+Do not use upstream `BertModel` for any unfreezing work (its fused
+`layer_norm` has no backward).
 
 Source roadmap:
 
@@ -69,10 +73,10 @@ The packed layout must record exact token-budget allocation and dropped-candidat
 For each viable architecture/capacity:
 
 1. encoder frozen, train ranking/abstention head only;
-2. unfreeze top 1–2 encoder layers if stage 1 has dev signal AND M001B
-   (encoder fine-tuning framework corrective) has closed;
+2. unfreeze top 1–2 encoder layers if stage 1 has dev signal (runs
+   through the M001B differentiable path);
 3. full fine-tune only if justified by dev results and overfitting controls
-   (also gated on M001B).
+   (same differentiable path).
 
 Use deterministic seeds and early stopping on dev metrics only.
 

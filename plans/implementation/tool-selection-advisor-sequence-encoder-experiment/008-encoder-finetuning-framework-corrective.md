@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment M001B — Encoder Fine-Tuning Framework Corrective
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `ab3e9dfd`
 

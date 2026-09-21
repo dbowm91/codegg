@@ -118,3 +118,23 @@ encoder weight and top-layer unfreezing silently does nothing. The M001
 update. Frozen-encoder/head-only work is unaffected; encoder unfreezing
 is gated on the M001B framework corrective. Full evidence:
 `plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`.
+
+## Differentiable encoder restoration — 2026-09-22 (M001B)
+
+M001B restores unfreezing through a CodeGG-owned composite-norm BERT
+forward (`DifferentiableBertModel` in the experiment-gated
+`sequence_encoder.rs`). Variable creation still delegates to
+`candle_nn::layer_norm`/`embedding`/`linear` (identical tensor names,
+so the qualified MiniLM safetensors loads 101/101 with zero missing);
+only the LayerNorm forward kernel is substituted (composite
+`layer_norm_slow` instead of fused `apply_op3_no_bwd`). No Candle crate
+is forked or patched and no dependency version changed.
+
+Measured on the unchanged M001A manifest: parity max 2.3e-06 / mean
+3.9e-07 against upstream `BertModel::forward` (tolerance 1e-4);
+correctly-scoped top-layer update (head-only leaves the encoder
+unchanged; top stage changes head + top layer, lower layers unchanged);
+deterministic forward (max delta 0.0) with pooling CLS +0.11 / mean
++0.26 reproducing M001A. M003 stages 2–3 are authorized through this
+path. Full evidence:
+`plans/closure/tool-selection-advisor-sequence-encoder-experiment/008-status.md`.
