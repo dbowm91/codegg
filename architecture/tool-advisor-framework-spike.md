@@ -94,3 +94,27 @@ cargo run --features tool-advisor-encoder-experiment -- tool-advisor sequence-en
 This is an experiment/infrastructure decision only. It does not qualify a
 pretrained model, enable advisor ranking, or unblock M003 until M002's context
 contract and real local reference-asset evidence are available.
+
+## Sequence-encoder reference qualification — 2026-09-21 (M001A)
+
+The pinned `sentence-transformers/all-MiniLM-L6-v2@1110a24…` checkpoint
+(Apache-2.0) is materialized under the ignored
+`target/tool-advisor/reference-assets/all-minilm-l6-v2/` path with a
+metadata-only receipt at
+`assets/tool-advisor/reference-models/all-minilm-l6-v2.json` (file
+hashes, 91,102,259 total bytes, manifest fingerprint). The probe reports:
+101/101 expected variables loaded with zero missing (pooler + position
+ids correctly ignored; 22,565,376 loaded of 22,713,728 source params),
+repeated-forward max delta `0.0`, finite embeddings, finite head-only
+loss with encoder-unchanged/head-changed scoping, and pooling separation
+(CLS margin +0.11, mean margin +0.26) on hand-written train/dev-only
+pairs. macOS CPU dev-profile timings: load ~17s, forward ~180ms,
+training steps ~130ms, max RSS ~478 MiB.
+
+Framework limitation found by this qualification: Candle 0.11 fused
+`layer_norm` records `BackpropOp::none`, so no gradient reaches any
+encoder weight and top-layer unfreezing silently does nothing. The M001
+"top-layer backward" evidence (finite loss only) never proved a weight
+update. Frozen-encoder/head-only work is unaffected; encoder unfreezing
+is gated on the M001B framework corrective. Full evidence:
+`plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`.

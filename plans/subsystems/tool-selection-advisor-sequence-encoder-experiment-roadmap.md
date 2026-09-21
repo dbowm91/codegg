@@ -120,26 +120,37 @@ Any larger training-only corpus must be separate from frozen C001 dev/test and p
 ```text
 P001 evidence/preregistration polish ----+
                                          |
-M001 framework spike (conditional) --+
-                                     |
-M001A real reference checkpoint -----+---+
-                                         |
-M002 current-state context v2 -----------+--> M003 sequence encoder experiment
+M001 framework spike (closed) --+
+                                |
+M001A real reference checkpoint (conditional) --+
                                                 |
-                                                v
-                                      M004 hybrid retrieval experiment
-                                                |
-                                                v
-                                      M005 clean offline qualification
-                                                |
-                                     positive only
-                                                v
-                              existing live-primary-model M004
+M001B encoder fine-tuning corrective -----------+--> M003 sequence encoder experiment
+                                                |       (ready: frozen-encoder/head-only;
+                                                |        unfreeze gated on M001B)
+M002 current-state context v2 ------------------+--> M003 sequence encoder experiment
+                                                    |
+                                                    v
+                                          M004 hybrid retrieval experiment
+                                                    |
+                                                    v
+                                          M005 clean offline qualification
+                                                    |
+                                         positive only
+                                                    v
+                                  existing live-primary-model M004
 ```
 
 - P001 and M002 are closed.
-- M001 is conditionally closed; M001A is the explicit operational prerequisite that must supply real pretrained reference-asset evidence.
-- M003 requires positive M001A closure + closed M002.
+- M001 is closed: Candle 0.11 selected and the real MiniLM reference asset
+  is qualified. A newly discovered staged-backward weakness (fused
+  `layer_norm` has no backward) is owned by M001B, not M001.
+- M001A is conditionally closed: provenance, complete load, deterministic
+  forward, head-only training, and pooling are qualified; encoder
+  unfreezing is the named outstanding condition.
+- M001B is the narrow framework corrective that must restore encoder
+  fine-tuning (or formally scope M003 to frozen-encoder work).
+- M003 is ready for its frozen-encoder + ranking/abstention-head stage;
+  its top-layer/full unfreeze stages additionally require M001B closure.
 - M004 requires M003 because it reuses the selected encoder/tokenizer contract.
 - M005 requires P001 + M002 + M003 + M004.
 - Existing post-closure M004 remains blocked until M005 records a positive disposition.
@@ -162,9 +173,13 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/002-rust-sequence-encoder-framework-asset-spike.md`
 
-Status: conditionally closed (Candle selected; reference assets outstanding).
+Status: closed (Candle selected; MiniLM reference asset qualified by M001A).
 
-Candle 0.11 and the local manifest/forward/backward contract are implemented. Final closure is controlled by M001A rather than reopening the framework spike.
+Candle 0.11 and the local manifest/forward/backward contract are
+implemented, and the M001A reference checkpoint loads completely with
+deterministic forward and scoped head-only training. A newly discovered
+framework weakness — Candle 0.11 fused `layer_norm` records no backward,
+so no encoder weight can be trained — is owned by M001B, not M001.
 
 ### M001A — Reference checkpoint materialization and qualification
 
@@ -172,9 +187,33 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/007-reference-checkpoint-materialization-and-qualification.md`
 
+Status: conditionally closed.
+
+One pinned real MiniLM-class safetensors checkpoint
+(`sentence-transformers/all-MiniLM-L6-v2@1110a24…`) is materialized
+outside Git with recorded provenance/license/hashes, loads completely
+into Candle (101/101 variables, zero missing), runs deterministically,
+trains a scoped ranking head, and shows CLS/mean pooling separation
+(mean margin +0.26 vs CLS +0.11 on the train/dev-only sanity set).
+Closure: `plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`.
+
+Named condition: encoder unfreezing is impossible on Candle 0.11 (fused
+`layer_norm` has no backward). M003 stage 1 is unblocked; unfreeze
+stages are gated on M001B.
+
+### M001B — Encoder fine-tuning framework corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/008-encoder-finetuning-framework-corrective.md`
+
 Status: ready.
 
-Materialize one pinned real MiniLM-class safetensors checkpoint outside Git, record immutable provenance/license/file hashes, prove complete Candle load and staged backward behavior, characterize CLS versus mean pooling, and close the remaining M001 condition. Positive M001A closure unblocks M003.
+Restore differentiable encoder fine-tuning on the qualified MiniLM asset
+(composite-norm forward, custom kernel backward, or equivalent narrow
+path with forward parity and correctly-scoped update evidence), or
+record a formal frozen-encoder-only disposition and rescope M003 stages
+2–3 out. Positive M001B closure unblocks M003 unfreeze stages.
 
 ### M002 — Current-state advisor context projection v2
 
@@ -192,9 +231,13 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/004-sequence-encoder-ranking-experiment.md`
 
-Status: blocked on positive M001A reference-checkpoint qualification.
+Status: ready (frozen-encoder/head-only stage; top-layer unfreeze gated on M001B).
 
-Implement pairwise and packed-marker ranking heads over the selected local pretrained encoder, train in staged freeze/unfreeze modes, calibrate on dev only, and compare on clean held-out slices.
+Implement pairwise and packed-marker ranking heads over the qualified
+local pretrained MiniLM encoder with the encoder frozen, train the
+ranking/abstention head, calibrate on dev only, and compare on clean
+held-out slices. Pooling strategy (`cls` vs `mean`) is an explicit
+per-run parameter following the M001A finding.
 
 ### M004 — Hybrid semantic/BM25 candidate retrieval
 

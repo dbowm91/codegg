@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence-Encoder Experiment M001A — Reference Checkpoint Materialization and Qualification
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `1d9f4b9952083954145d6b2459b0b6717c2375c3`
 
