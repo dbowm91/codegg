@@ -472,6 +472,14 @@ mod tests {
     fn default_policy_is_off_and_rejects_remote_without_explicit_https() {
         let policy = TrainingDataPolicy::default();
         assert_eq!(status(&policy), TrainingDataStatus::Disabled);
+        let directory = tempfile::tempdir().expect("noop directory");
+        NoopSink.submit(&event()).expect("noop capture");
+        assert!(directory
+            .path()
+            .read_dir()
+            .expect("noop files")
+            .next()
+            .is_none());
         let mut remote = policy.clone();
         remote.remote_enabled = true;
         assert!(remote.validate().is_err());
@@ -496,6 +504,28 @@ mod tests {
         assert_eq!(spool.export(&export).expect("export"), 1);
         assert_eq!(spool.purge().expect("purge"), 1);
         assert!(spool.inspect().expect("empty").is_empty());
+    }
+
+    #[test]
+    fn local_spool_prunes_to_size_bound() {
+        let directory = tempfile::tempdir().expect("spool directory");
+        let policy = TrainingDataPolicy {
+            capture: "local".into(),
+            max_bytes: 2 * MAX_EVENT_BYTES as u64,
+            ..Default::default()
+        };
+        let spool = LocalSpoolSink::new(directory.path(), &policy).expect("spool");
+        for _ in 0..8 {
+            spool.submit(&event()).expect("capture");
+        }
+        let total: u64 = directory
+            .path()
+            .read_dir()
+            .expect("read spool")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.metadata().ok().map(|metadata| metadata.len()))
+            .sum();
+        assert!(total <= policy.max_bytes);
     }
 
     #[test]
