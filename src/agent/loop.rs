@@ -112,6 +112,7 @@ pub struct AgentLoop {
     /// same normalized action so Automatic cannot loop unboundedly.
     pub(super) reviewer_denial_counts: HashMap<String, usize>,
     pub(super) original_user_prompt: Option<String>,
+    pub(super) current_user_prompt: Option<String>,
     pub(super) subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub(super) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Immutable workspace authority captured during construction.
@@ -403,6 +404,7 @@ impl AgentLoop {
             workspace_service_lease: None,
             recent_findings: Vec::new(),
             original_user_prompt: None,
+            current_user_prompt: None,
             subagent_pool: None,
             submission: None,
             workspace_root,
@@ -783,6 +785,8 @@ impl AgentLoop {
         // Re-project the loop's canonical identity here so body/history
         // transformations and every continuation retain the same metadata.
         request.context.session_id = Some(canonical_session_id.as_str().into());
+        let initial_turn_prompt = Self::latest_user_prompt(&request);
+        self.current_user_prompt = (!initial_turn_prompt.is_empty()).then_some(initial_turn_prompt);
 
         let session_start_ctx = crate::hooks::HookContext {
             event: crate::hooks::HookEvent::SessionStart,

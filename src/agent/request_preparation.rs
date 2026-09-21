@@ -61,19 +61,6 @@ fn contextual_tool_names(
     tools
 }
 
-fn bounded_advisor_context(prompt: Option<&str>) -> String {
-    let mut context = prompt.unwrap_or_default().trim().to_string();
-    let max_bytes = crate::tool_advisor::MAX_CONTEXT_BYTES;
-    if context.len() > max_bytes {
-        let mut end = max_bytes;
-        while !context.is_char_boundary(end) {
-            end -= 1;
-        }
-        context.truncate(end);
-    }
-    context
-}
-
 struct PreturnDisclosureConfig<'a> {
     advisor: &'a dyn crate::tool_advisor::ToolAdvisor,
     mode: crate::tool_advisor::AdvisorMode,
@@ -217,6 +204,50 @@ fn project_preturn_promotions(
 }
 
 impl AgentLoop {
+    async fn current_advisor_context_v2(&self) -> String {
+        let frame = self.build_context_frame().await;
+        let mut work_plan_task: Option<String> = None;
+        let mut work_plan_next_steps = Vec::new();
+        if let Some(pool) = self.services.todo_pool.clone() {
+            let store = codegg_core::work_plan::WorkPlanStore::new(pool);
+            if let Ok(Some(plan)) = store.active_for_session(&self.session_id).await {
+                if let Ok(items) = store.list_items(&plan.id).await {
+                    work_plan_task = plan
+                        .current_item_id
+                        .as_ref()
+                        .and_then(|id| items.iter().find(|item| &item.id == id))
+                        .or_else(|| {
+                            items.iter().find(|item| {
+                                item.status == codegg_core::work_plan::WorkItemStatus::InProgress
+                            })
+                        })
+                        .map(|item| item.description.clone());
+                    work_plan_next_steps = items
+                        .iter()
+                        .filter(|item| {
+                            matches!(
+                                item.status,
+                                codegg_core::work_plan::WorkItemStatus::Pending
+                                    | codegg_core::work_plan::WorkItemStatus::Actionable
+                            )
+                        })
+                        .take(2)
+                        .map(|item| item.description.clone())
+                        .collect();
+                }
+            }
+        }
+        crate::tool_advisor::context_v2::AdvisorContextV2::from_context_frame(
+            self.current_user_prompt.as_deref(),
+            self.original_user_prompt.as_deref(),
+            &frame,
+            work_plan_task.as_deref(),
+            &work_plan_next_steps,
+            None,
+        )
+        .serialize()
+    }
+
     async fn contextual_immediate_tools(&self) -> std::collections::BTreeSet<String> {
         let context_read_available = self.services.tool_registry.contains("context_read")
             && !self.context_ledger.artifact_handles.is_empty();
@@ -863,7 +894,7 @@ impl AgentLoop {
             .filter(|definition| definition.defer_loading == Some(true))
             .cloned()
             .collect();
-        let advisor_context = bounded_advisor_context(self.original_user_prompt.as_deref());
+        let advisor_context = self.current_advisor_context_v2().await;
         let promoted_names = project_preturn_promotions(
             &surface,
             &candidate_deferred,

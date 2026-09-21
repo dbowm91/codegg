@@ -169,7 +169,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/003-current-state-advisor-context-v2.md`
 
-Status: ready.
+Status: active.
 
 Replace original-session-prompt-only advisor context with a versioned bounded projection of the current objective/task state while preserving privacy and no-history-service constraints.
 

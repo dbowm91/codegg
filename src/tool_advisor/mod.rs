@@ -29,6 +29,7 @@ pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
 const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.jsonl");
 
+pub mod context_v2;
 #[cfg(feature = "tool-advisor")]
 pub mod contextual;
 #[cfg(feature = "tool-advisor-training")]
