@@ -6,20 +6,37 @@ in `assets/tool-advisor/corpus.jsonl`; the fixture is reviewed seed data, not
 user telemetry and not an execution authority.
 
 Cases contain bounded task text, textual candidate descriptors, graded
-relevance labels or an explicit `none` label, a leakage-prevention group,
-semantic/task/tool-family metadata, generated-variant identity, and provenance.
-`split_for(semantic_group)` assigns the complete semantic group to one stable
-train/dev/test partition. Counterfactual variants share a candidate set while
-changing the task/relevance labels, so a candidate-only memorizer cannot pass
-the contextual gate. The frozen corpus also reports a tool-family holdout and
-unknown-tool cases use synthetic names so a canonical-name memorizer cannot
-satisfy the benchmark.
+relevance labels or an explicit `none` label, content-derived leakage
+identity, semantic/task/tool-family metadata, generated-variant lineage, and
+provenance. Split membership is derived from connected leakage components,
+not from caller-supplied group strings: cases sharing a normalized
+model-visible input signature, a generator/template lineage, a declared
+semantic family, or an explicit manual leakage family join one component
+(`build_leakage_groups`), and whole components are assigned to one stable
+train/dev/test partition (`partition_cases`). True tool-family holdouts
+(`family_holdout_partition`) exclude every component containing the held-out
+family from optimizer and calibration input. Counterfactual variants share
+an ordered candidate set while changing the task/relevance labels, so a
+candidate-only memorizer cannot pass the contextual gate. The frozen corpus
+also carries unknown-tool cases whose synthetic renames join a separate
+`::unknown` lineage namespace that never enters training input.
+`scripts/generate_tool_advisor_corpus.py` (frozen seed documented in the
+C001 closure record) regenerates the 256-case fixture deterministically;
+every context is unique, so group-count floors alone are never accepted as
+leakage protection.
 
 `codegg tool-advisor lint --dataset <jsonl> --json` validates the qualification
-floors, duplicate/leakage metadata, counterfactual pairs, provenance, split
-counts, and holdout fingerprint. The repository corpus is generated from
+floors (256 cases, 128 leakage groups, 192 unique normalized inputs, 40
+final-test leakage groups, no-tool/multi-tool/hard-negative/unknown-tool and
+counterfactual minimums, 10 task families, 4 true family holdouts),
+duplicate/leakage metadata, exact and normalized cross-split overlap (both
+must be zero), template-lineage overlap (zero), same-input contradictory
+labels, provenance, split counts, partition fingerprints, and the
+family-exclusion matrix. The machine-readable `leakage` section of the lint
+report is the C001 closure evidence. The repository corpus is generated from
 reviewed local templates and contains no private repository text or automatic
-teacher output.
+teacher output. `split_for` remains only as a stable single-key hash for
+legacy callers; qualification paths must use leakage-group partitions.
 
 `codegg tool-advisor bench` reports the current keyword or BM25 ranking
 baseline. It uses the same `ToolCatalog` scoring implementation as live

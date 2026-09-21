@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use unicode_normalization::UnicodeNormalization;
 
 pub const CASE_SCHEMA_VERSION: u16 = 1;
 pub const PREDICTION_SCHEMA_VERSION: u16 = 1;
@@ -80,6 +81,10 @@ pub struct ToolAdvisorCase {
     /// in the same split even when their case ids differ.
     #[serde(default)]
     pub semantic_group: String,
+    /// Explicit manually assigned leakage family. When present it joins the
+    /// content/template-derived leakage component; it never splits one.
+    #[serde(default)]
+    pub leakage_group: String,
     #[serde(default)]
     pub task_family: String,
     #[serde(default)]
@@ -150,9 +155,61 @@ pub struct BaselineReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossSplitOverlap {
+    /// `exact-input`, `normalized-input`, or `template-family`.
+    pub kind: String,
+    /// Signature hex or normalized template-family name.
+    pub key: String,
+    pub splits: Vec<String>,
+    /// Case ids involved, capped at [`MAX_OVERLAP_DETAIL_CASES`].
+    pub case_ids: Vec<String>,
+}
+
+pub const MAX_OVERLAP_DETAIL_CASES: usize = 8;
+pub const MAX_OVERLAP_DETAILS: usize = 16;
+
+/// A tool family that can serve as a true optimizer-excluded holdout.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FamilyHoldoutSummary {
+    pub family: String,
+    pub holdout_cases: usize,
+    pub excluded_leakage_groups: usize,
+    pub train_cases_after_exclusion: usize,
+    pub dev_cases_after_exclusion: usize,
+    /// Cases of this family remaining in optimizer/calibration input.
+    /// A true holdout always reports zero here.
+    pub train_dev_family_cases: usize,
+}
+
+/// Machine-readable leakage evidence for `tool-advisor lint --json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeakageReport {
+    pub cases: usize,
+    pub leakage_groups: usize,
+    pub unique_exact_inputs: usize,
+    pub unique_normalized_inputs: usize,
+    pub exact_cross_split_overlaps: usize,
+    pub normalized_cross_split_overlaps: usize,
+    pub template_family_cross_split_overlaps: usize,
+    pub contradictory_label_groups: usize,
+    pub cross_split_details: Vec<CrossSplitOverlap>,
+    pub details_truncated: bool,
+    pub partition_leakage_groups: BTreeMap<String, usize>,
+    pub partition_fingerprints: BTreeMap<String, String>,
+    pub family_holdouts: Vec<FamilyHoldoutSummary>,
+    pub supported_family_holdouts: usize,
+    pub counterfactual_pairs: usize,
+    pub unknown_tool_cases: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CorpusCoverageReport {
     pub cases: usize,
     pub semantic_groups: usize,
+    pub leakage_groups: usize,
+    pub unique_normalized_inputs: usize,
+    pub final_test_leakage_groups: usize,
+    pub supported_family_holdouts: usize,
     pub hard_negative_cases: usize,
     pub no_tool_cases: usize,
     pub multi_tool_cases: usize,
@@ -166,6 +223,7 @@ pub struct CorpusCoverageReport {
     pub tool_family_holdout_fingerprint: String,
     pub counterfactual_pairs: usize,
     pub passes_declared_floors: bool,
+    pub leakage: LeakageReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -720,6 +778,9 @@ impl ToolAdvisorCase {
         if !self.semantic_group.is_empty() {
             validate_text("semantic_group", &self.semantic_group, 256)?;
         }
+        if !self.leakage_group.is_empty() {
+            validate_text("leakage_group", &self.leakage_group, 256)?;
+        }
         if !self.task_family.is_empty() {
             validate_text("task_family", &self.task_family, 128)?;
         }
@@ -872,12 +933,317 @@ pub fn load_cases(path: Option<&Path>) -> Result<Vec<ToolAdvisorCase>> {
 
 /// Stable, group-aware split. The group id is the only input so variants
 /// cannot leak across train/dev/test partitions.
+///
+/// Qualification paths must pass content-derived leakage-group ids from
+/// [`build_leakage_groups`] rather than raw caller-supplied group strings.
+/// The helper itself remains a pure deterministic hash so existing single-key
+/// callers keep stable behavior.
 pub fn split_for(group_id: &str) -> &'static str {
-    let digest = Sha256::digest(group_id.as_bytes());
+    split_for_key(group_id)
+}
+
+/// Split assignment for a content-derived leakage-group id. Identical rule to
+/// [`split_for`], but the argument contract is explicit: only ids produced by
+/// [`build_leakage_groups`] carry leakage protection.
+pub fn split_for_leakage_group(group_id: &str) -> &'static str {
+    split_for_key(group_id)
+}
+
+fn split_for_key(key: &str) -> &'static str {
+    let digest = Sha256::digest(key.as_bytes());
     match digest[0] % 10 {
         0..=1 => "dev",
         2..=3 => "test",
         _ => "train",
+    }
+}
+
+/// Deterministic fixture canonicalization for leakage validation only.
+/// Runtime tokenizer semantics are unchanged. Canonicalization applies NFKC,
+/// full Unicode case mapping, and whitespace collapsing; candidate ordering
+/// is handled by sorting descriptor strings at the call site.
+pub fn normalize_text(value: &str) -> String {
+    value
+        .nfkc()
+        .flat_map(|character| character.to_lowercase())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Normalized descriptor text for every advisor-visible candidate field.
+/// `synthetic_identity` participates so renamed unknown-tool descriptors keep
+/// a stable synthetic identity instead of colliding with concrete names.
+pub fn normalized_candidate_descriptor(candidate: &ToolAdvisorCandidate) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        normalize_text(&candidate.name),
+        normalize_text(&candidate.description),
+        normalize_text(&candidate.category),
+        normalize_text(&candidate.disclosure),
+        if candidate.synthetic_identity {
+            "synthetic"
+        } else {
+            "concrete"
+        },
+    )
+}
+
+fn exact_candidate_descriptor(candidate: &ToolAdvisorCandidate) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        candidate.name,
+        candidate.description,
+        candidate.category,
+        candidate.disclosure,
+        if candidate.synthetic_identity {
+            "synthetic"
+        } else {
+            "concrete"
+        },
+    )
+}
+
+/// Deterministic hash of the normalized model-visible input. Relevance labels
+/// are deliberately excluded so identical inputs with conflicting labels
+/// surface as a validation problem instead of hiding behind distinct hashes.
+pub fn input_signature(case: &ToolAdvisorCase) -> String {
+    let mut descriptors: Vec<_> = case
+        .candidates
+        .iter()
+        .map(normalized_candidate_descriptor)
+        .collect();
+    descriptors.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(normalize_text(&case.context).as_bytes());
+    hasher.update(b"\n");
+    for descriptor in descriptors {
+        hasher.update(descriptor.as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Byte-exact counterpart to [`input_signature`]: raw context plus raw
+/// candidate descriptors in sorted order. Both hashes are reported so closure
+/// evidence distinguishes byte-identical duplication from canonicalization
+/// collisions.
+pub fn exact_input_signature(case: &ToolAdvisorCase) -> String {
+    let mut descriptors: Vec<_> = case
+        .candidates
+        .iter()
+        .map(exact_candidate_descriptor)
+        .collect();
+    descriptors.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(case.context.as_bytes());
+    hasher.update(b"\n");
+    for descriptor in descriptors {
+        hasher.update(descriptor.as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Diagnostic hash of the label side (graded relevance plus abstention flag).
+/// Used to detect same-input contradictory labels, never to split inputs.
+pub fn label_signature(case: &ToolAdvisorCase) -> String {
+    let mut hasher = Sha256::new();
+    if case.none {
+        hasher.update(b"none");
+    } else {
+        hasher.update(b"labeled");
+    }
+    hasher.update(b"\n");
+    for (name, relevance) in &case.relevance {
+        hasher.update(name.as_bytes());
+        hasher.update(b"=");
+        hasher.update(relevance.to_string().as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
+}
+
+struct DisjointSets {
+    parent: Vec<usize>,
+}
+
+impl DisjointSets {
+    fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+        }
+    }
+
+    fn find(&mut self, index: usize) -> usize {
+        if self.parent[index] != index {
+            let root = self.find(self.parent[index]);
+            self.parent[index] = root;
+        }
+        self.parent[index]
+    }
+
+    fn union(&mut self, left: usize, right: usize) {
+        let left_root = self.find(left);
+        let right_root = self.find(right);
+        if left_root != right_root {
+            self.parent[left_root] = right_root;
+        }
+    }
+}
+
+/// Authoritative split units derived from content/template lineage.
+///
+/// Cases sharing any of these relations join one connected leakage component
+/// before partitioning, so the grouping cannot be bypassed by renaming
+/// `semantic_group` strings:
+///
+/// - identical normalized model-visible input ([`input_signature`]);
+/// - the same generator/template lineage (`generated_variant_family`);
+/// - the same declared semantic/counterfactual family (`semantic_group`);
+/// - an explicitly assigned manual leakage family (`leakage_group`).
+///
+/// The returned vector holds one canonical group id per case index. Group ids
+/// are deterministic content-derived fingerprints (`leak-<hex>` over the
+/// sorted member input signatures).
+pub fn build_leakage_groups(cases: &[ToolAdvisorCase]) -> Vec<String> {
+    let mut sets = DisjointSets::new(cases.len());
+    let mut first_by_key: HashMap<String, usize> = HashMap::new();
+    for (index, case) in cases.iter().enumerate() {
+        let mut keys = vec![format!("input:{}", input_signature(case))];
+        if !case.generated_variant_family.is_empty() {
+            keys.push(format!(
+                "variant:{}",
+                normalize_text(&case.generated_variant_family)
+            ));
+        }
+        if !case.semantic_group.is_empty() {
+            keys.push(format!("semantic:{}", normalize_text(&case.semantic_group)));
+        }
+        if !case.leakage_group.is_empty() {
+            keys.push(format!("manual:{}", normalize_text(&case.leakage_group)));
+        }
+        for key in keys {
+            if let Some(&first) = first_by_key.get(&key) {
+                sets.union(first, index);
+            } else {
+                first_by_key.insert(key, index);
+            }
+        }
+    }
+    let mut members: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for index in 0..cases.len() {
+        let root = sets.find(index);
+        members.entry(root).or_default().push(index);
+    }
+    let mut group_of = vec![String::new(); cases.len()];
+    for member_indices in members.values() {
+        // Content-derived identity: the canonical id hashes the sorted member
+        // input signatures, so renaming case or group strings cannot move a
+        // payload to a different partition or bypass the split.
+        let mut signatures: Vec<String> = member_indices
+            .iter()
+            .map(|&index| input_signature(&cases[index]))
+            .collect();
+        signatures.sort();
+        let digest = Sha256::digest(signatures.join("\n").as_bytes());
+        let group_id = format!("leak-{}", hex::encode(&digest[..6]));
+        for &index in member_indices {
+            group_of[index] = group_id.clone();
+        }
+    }
+    group_of
+}
+
+/// Leakage-group partition of a case slice. Whole leakage components stay in
+/// one split; fingerprints are recorded per split for C002/C004.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DatasetPartition {
+    pub group_of_case: Vec<String>,
+    pub split_of_group: BTreeMap<String, String>,
+    pub split_of_case: Vec<String>,
+    pub train_cases: Vec<usize>,
+    pub dev_cases: Vec<usize>,
+    pub test_cases: Vec<usize>,
+}
+
+pub fn partition_cases(cases: &[ToolAdvisorCase]) -> DatasetPartition {
+    let group_of_case = build_leakage_groups(cases);
+    let mut split_of_group: BTreeMap<String, String> = BTreeMap::new();
+    for group in &group_of_case {
+        split_of_group
+            .entry(group.clone())
+            .or_insert_with(|| split_for_leakage_group(group).to_string());
+    }
+    let mut partition = DatasetPartition {
+        split_of_case: group_of_case
+            .iter()
+            .map(|group| {
+                split_of_group
+                    .get(group)
+                    .cloned()
+                    .unwrap_or_else(|| "train".to_string())
+            })
+            .collect(),
+        group_of_case,
+        split_of_group,
+        train_cases: Vec::new(),
+        dev_cases: Vec::new(),
+        test_cases: Vec::new(),
+    };
+    for (index, split) in partition.split_of_case.iter().enumerate() {
+        match split.as_str() {
+            "dev" => partition.dev_cases.push(index),
+            "test" => partition.test_cases.push(index),
+            _ => partition.train_cases.push(index),
+        }
+    }
+    partition
+}
+
+/// True tool-family holdout: training/dev data built with every leakage
+/// component containing the held-out family excluded, plus the held-out slice
+/// itself. Reporting a fingerprint over training-visible examples is not a
+/// holdout; this partition proves optimizer/calibration exclusion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FamilyHoldoutPartition {
+    pub family: String,
+    pub train_cases: Vec<usize>,
+    pub dev_cases: Vec<usize>,
+    pub holdout_cases: Vec<usize>,
+    pub excluded_leakage_groups: Vec<String>,
+}
+
+pub fn family_holdout_partition(cases: &[ToolAdvisorCase], family: &str) -> FamilyHoldoutPartition {
+    let partition = partition_cases(cases);
+    let group_of_case = partition.group_of_case;
+    let mut tainted: BTreeSet<String> = BTreeSet::new();
+    let mut holdout_cases = Vec::new();
+    for (index, case) in cases.iter().enumerate() {
+        if case.tool_family == family {
+            tainted.insert(group_of_case[index].clone());
+            holdout_cases.push(index);
+        }
+    }
+    let mut train_cases = Vec::new();
+    let mut dev_cases = Vec::new();
+    for &index in &partition.train_cases {
+        if !tainted.contains(&group_of_case[index]) {
+            train_cases.push(index);
+        }
+    }
+    for &index in &partition.dev_cases {
+        if !tainted.contains(&group_of_case[index]) {
+            dev_cases.push(index);
+        }
+    }
+    FamilyHoldoutPartition {
+        family: family.to_string(),
+        train_cases,
+        dev_cases,
+        holdout_cases,
+        excluded_leakage_groups: tainted.into_iter().collect(),
     }
 }
 
@@ -892,50 +1258,203 @@ pub fn dataset_fingerprint(cases: &[ToolAdvisorCase]) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport> {
-    let mut semantic_groups = BTreeSet::new();
-    let mut task_families = BTreeSet::new();
-    let mut tool_families = BTreeSet::new();
-    let mut provenance = BTreeSet::new();
-    let mut split_cases: BTreeMap<String, Vec<&ToolAdvisorCase>> = BTreeMap::new();
-    let mut variant_groups: BTreeMap<&str, Vec<&ToolAdvisorCase>> = BTreeMap::new();
-    let mut hard_negative_cases = 0;
-    let mut no_tool_cases = 0;
-    let mut multi_tool_cases = 0;
-    let mut unknown_tool_cases = 0;
-
+pub fn leakage_report(cases: &[ToolAdvisorCase]) -> Result<LeakageReport> {
     for case in cases {
         case.validate()?;
-        semantic_groups.insert(case.split_group().to_string());
-        if !case.task_family.is_empty() {
-            task_families.insert(case.task_family.clone());
+    }
+    let partition = partition_cases(cases);
+    let mut exact_inputs = BTreeSet::new();
+    let mut normalized_inputs = BTreeSet::new();
+    let mut exact_splits: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut normalized_splits: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut template_splits: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut exact_cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut normalized_cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut template_cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // Same normalized input carrying conflicting labels is a corpus defect:
+    // counterfactual variation must differ in context/state, not hide behind
+    // an identical model-visible input.
+    let mut labels_by_input: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (index, case) in cases.iter().enumerate() {
+        let split = partition.split_of_case[index].clone();
+        let exact = exact_input_signature(case);
+        let normalized = input_signature(case);
+        exact_inputs.insert(exact.clone());
+        normalized_inputs.insert(normalized.clone());
+        exact_splits
+            .entry(exact.clone())
+            .or_default()
+            .insert(split.clone());
+        normalized_splits
+            .entry(normalized.clone())
+            .or_default()
+            .insert(split.clone());
+        exact_cases
+            .entry(exact)
+            .or_default()
+            .push(case.case_id.clone());
+        normalized_cases
+            .entry(normalized.clone())
+            .or_default()
+            .push(case.case_id.clone());
+        labels_by_input
+            .entry(normalized)
+            .or_default()
+            .insert(label_signature(case));
+        if !case.generated_variant_family.is_empty() {
+            let family = normalize_text(&case.generated_variant_family);
+            template_splits
+                .entry(family.clone())
+                .or_default()
+                .insert(split);
+            template_cases
+                .entry(family)
+                .or_default()
+                .push(case.case_id.clone());
         }
+    }
+    let mut details = Vec::new();
+    let mut truncated = false;
+    let push_details = |kind: &str,
+                        table: &BTreeMap<String, BTreeSet<String>>,
+                        case_table: &BTreeMap<String, Vec<String>>,
+                        details: &mut Vec<CrossSplitOverlap>,
+                        truncated: &mut bool| {
+        for (key, splits) in table {
+            if splits.len() > 1 {
+                let mut case_ids = case_table.get(key).cloned().unwrap_or_default();
+                case_ids.sort();
+                case_ids.truncate(MAX_OVERLAP_DETAIL_CASES);
+                if details.len() >= MAX_OVERLAP_DETAILS {
+                    *truncated = true;
+                    continue;
+                }
+                let mut split_list: Vec<String> = splits.iter().cloned().collect();
+                split_list.sort();
+                details.push(CrossSplitOverlap {
+                    kind: kind.to_string(),
+                    key: key.clone(),
+                    splits: split_list,
+                    case_ids,
+                });
+            }
+        }
+    };
+    let exact_cross_split_overlaps = exact_splits
+        .values()
+        .filter(|splits| splits.len() > 1)
+        .count();
+    let normalized_cross_split_overlaps = normalized_splits
+        .values()
+        .filter(|splits| splits.len() > 1)
+        .count();
+    let template_family_cross_split_overlaps = template_splits
+        .values()
+        .filter(|splits| splits.len() > 1)
+        .count();
+    push_details(
+        "exact-input",
+        &exact_splits,
+        &exact_cases,
+        &mut details,
+        &mut truncated,
+    );
+    push_details(
+        "normalized-input",
+        &normalized_splits,
+        &normalized_cases,
+        &mut details,
+        &mut truncated,
+    );
+    push_details(
+        "template-family",
+        &template_splits,
+        &template_cases,
+        &mut details,
+        &mut truncated,
+    );
+    details.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    let contradictory_label_groups = labels_by_input
+        .values()
+        .filter(|labels| labels.len() > 1)
+        .count();
+
+    let mut partition_cases: BTreeMap<String, Vec<ToolAdvisorCase>> = BTreeMap::new();
+    for (index, case) in cases.iter().enumerate() {
+        let split = partition.split_of_case[index].clone();
+        partition_cases.entry(split).or_default().push(case.clone());
+    }
+    let mut partition_leakage_groups: BTreeMap<String, usize> = BTreeMap::new();
+    let mut seen_groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (index, group) in partition.group_of_case.iter().enumerate() {
+        seen_groups
+            .entry(partition.split_of_case[index].clone())
+            .or_default()
+            .insert(group.clone());
+    }
+    for (split, groups) in &seen_groups {
+        partition_leakage_groups.insert(split.clone(), groups.len());
+    }
+    let partition_fingerprints = partition_cases
+        .iter()
+        .map(|(split, selected)| {
+            (
+                split.clone(),
+                dataset_fingerprint(selected).unwrap_or_default(),
+            )
+        })
+        .collect();
+
+    let mut tool_family_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for case in cases {
         if !case.tool_family.is_empty() {
-            tool_families.insert(case.tool_family.clone());
+            *tool_family_counts
+                .entry(case.tool_family.clone())
+                .or_insert(0) += 1;
         }
-        provenance.insert(case.provenance.clone());
-        let split = split_for(case.split_group()).to_string();
-        split_cases.entry(split).or_default().push(case);
-        if case.tags.iter().any(|tag| tag == "hard-negative") {
-            hard_negative_cases += 1;
-        }
-        if case.none || case.tags.iter().any(|tag| tag == "no-tool") {
-            no_tool_cases += 1;
-        }
-        if case.tags.iter().any(|tag| tag == "multi-tool") {
-            multi_tool_cases += 1;
-        }
-        if case.tags.iter().any(|tag| tag == "unknown-tool") {
-            unknown_tool_cases += 1;
-        }
+    }
+    let mut family_holdouts = Vec::new();
+    for family in tool_family_counts.keys() {
+        let holdout = family_holdout_partition(cases, family);
+        let residual = holdout
+            .train_cases
+            .iter()
+            .chain(holdout.dev_cases.iter())
+            .filter(|&&index| cases[index].tool_family == *family)
+            .count();
+        family_holdouts.push(FamilyHoldoutSummary {
+            family: family.clone(),
+            holdout_cases: holdout.holdout_cases.len(),
+            excluded_leakage_groups: holdout.excluded_leakage_groups.len(),
+            train_cases_after_exclusion: holdout.train_cases.len(),
+            dev_cases_after_exclusion: holdout.dev_cases.len(),
+            train_dev_family_cases: residual,
+        });
+    }
+    family_holdouts.sort_by(|left, right| left.family.cmp(&right.family));
+    // A reportable holdout needs enough held-out cases to measure and a
+    // non-empty excluded leakage component. Small families remain listed but
+    // do not count toward the qualification floor.
+    let supported_family_holdouts = family_holdouts
+        .iter()
+        .filter(|summary| {
+            summary.holdout_cases >= MIN_FAMILY_HOLDOUT_CASES && summary.train_dev_family_cases == 0
+        })
+        .count();
+
+    let mut variant_groups: BTreeMap<String, Vec<&ToolAdvisorCase>> = BTreeMap::new();
+    for case in cases {
         if !case.generated_variant_family.is_empty() {
             variant_groups
-                .entry(case.generated_variant_family.as_str())
+                .entry(case.generated_variant_family.clone())
                 .or_default()
                 .push(case);
         }
     }
-
     let counterfactual_pairs = variant_groups
         .values()
         .filter(|variants| {
@@ -961,7 +1480,78 @@ pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport
                     >= 2
         })
         .count();
+    let unknown_tool_cases = cases
+        .iter()
+        .filter(|case| case.tags.iter().any(|tag| tag == "unknown-tool"))
+        .count();
 
+    Ok(LeakageReport {
+        cases: cases.len(),
+        leakage_groups: partition.split_of_group.len(),
+        unique_exact_inputs: exact_inputs.len(),
+        unique_normalized_inputs: normalized_inputs.len(),
+        exact_cross_split_overlaps,
+        normalized_cross_split_overlaps,
+        template_family_cross_split_overlaps,
+        contradictory_label_groups,
+        cross_split_details: details,
+        details_truncated: truncated,
+        partition_leakage_groups,
+        partition_fingerprints,
+        family_holdouts,
+        supported_family_holdouts,
+        counterfactual_pairs,
+        unknown_tool_cases,
+    })
+}
+
+/// Minimum held-out cases for a tool family to count as a reportable true
+/// holdout evaluation.
+pub const MIN_FAMILY_HOLDOUT_CASES: usize = 16;
+
+pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport> {
+    let mut semantic_groups = BTreeSet::new();
+    let mut task_families = BTreeSet::new();
+    let mut tool_families = BTreeSet::new();
+    let mut provenance = BTreeSet::new();
+    let mut hard_negative_cases = 0;
+    let mut no_tool_cases = 0;
+    let mut multi_tool_cases = 0;
+    let mut unknown_tool_cases = 0;
+
+    for case in cases {
+        case.validate()?;
+        semantic_groups.insert(case.split_group().to_string());
+        if !case.task_family.is_empty() {
+            task_families.insert(case.task_family.clone());
+        }
+        if !case.tool_family.is_empty() {
+            tool_families.insert(case.tool_family.clone());
+        }
+        provenance.insert(case.provenance.clone());
+        if case.tags.iter().any(|tag| tag == "hard-negative") {
+            hard_negative_cases += 1;
+        }
+        if case.none || case.tags.iter().any(|tag| tag == "no-tool") {
+            no_tool_cases += 1;
+        }
+        if case.tags.iter().any(|tag| tag == "multi-tool") {
+            multi_tool_cases += 1;
+        }
+        if case.tags.iter().any(|tag| tag == "unknown-tool") {
+            unknown_tool_cases += 1;
+        }
+    }
+
+    let leakage = leakage_report(cases)?;
+    let partition = partition_cases(cases);
+    let mut split_cases: BTreeMap<String, Vec<ToolAdvisorCase>> = BTreeMap::new();
+    for (index, case) in cases.iter().enumerate() {
+        split_cases
+            .entry(partition.split_of_case[index].clone())
+            .or_default()
+            .push(case.clone());
+    }
     let split_case_counts = split_cases
         .iter()
         .map(|(split, selected)| (split.clone(), selected.len()))
@@ -969,13 +1559,9 @@ pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport
     let split_fingerprints = split_cases
         .iter()
         .map(|(split, selected)| {
-            let owned = selected
-                .iter()
-                .map(|case| (*case).clone())
-                .collect::<Vec<_>>();
             (
                 split.clone(),
-                dataset_fingerprint(&owned).unwrap_or_default(),
+                dataset_fingerprint(selected).unwrap_or_default(),
             )
         })
         .collect();
@@ -991,9 +1577,18 @@ pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport
         .collect::<Vec<_>>();
     let tool_family_holdout_fingerprint = dataset_fingerprint(&holdout_cases).unwrap_or_default();
     let task_family_count = task_families.len();
+    let final_test_leakage_groups = leakage
+        .partition_leakage_groups
+        .get("test")
+        .copied()
+        .unwrap_or(0);
     let report = CorpusCoverageReport {
         cases: cases.len(),
         semantic_groups: semantic_groups.len(),
+        leakage_groups: leakage.leakage_groups,
+        unique_normalized_inputs: leakage.unique_normalized_inputs,
+        final_test_leakage_groups,
+        supported_family_holdouts: leakage.supported_family_holdouts,
         hard_negative_cases,
         no_tool_cases,
         multi_tool_cases,
@@ -1005,14 +1600,18 @@ pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport
         split_fingerprints,
         tool_family_holdout_family: holdout_family,
         tool_family_holdout_fingerprint,
-        counterfactual_pairs,
+        counterfactual_pairs: leakage.counterfactual_pairs,
         passes_declared_floors: cases.len() >= 256
-            && semantic_groups.len() >= 128
+            && leakage.leakage_groups >= 128
+            && leakage.unique_normalized_inputs >= 192
+            && final_test_leakage_groups >= 40
             && hard_negative_cases >= 64
             && no_tool_cases >= 32
             && multi_tool_cases >= 32
             && unknown_tool_cases >= 32
-            && task_family_count >= 10,
+            && task_family_count >= 10
+            && leakage.supported_family_holdouts >= 4,
+        leakage,
     };
     Ok(report)
 }
@@ -1021,14 +1620,17 @@ pub fn validate_qualification_corpus(cases: &[ToolAdvisorCase]) -> Result<Corpus
     let report = coverage_report(cases)?;
     if !report.passes_declared_floors {
         return Err(anyhow!(
-            "qualification corpus floors not met: {} cases, {} semantic groups, {} hard-negative, {} no-tool, {} multi-tool, {} unknown-tool, {} task families",
+            "qualification corpus floors not met: {} cases, {} leakage groups (need >=128), {} unique normalized inputs (need >=192), {} final-test leakage groups (need >=40), {} hard-negative, {} no-tool, {} multi-tool, {} unknown-tool, {} task families, {} supported family holdouts (need >=4)",
             report.cases,
-            report.semantic_groups,
+            report.leakage_groups,
+            report.unique_normalized_inputs,
+            report.final_test_leakage_groups,
             report.hard_negative_cases,
             report.no_tool_cases,
             report.multi_tool_cases,
             report.unknown_tool_cases,
-            report.task_families.len()
+            report.task_families.len(),
+            report.supported_family_holdouts
         ));
     }
     if report.counterfactual_pairs < 32 {
@@ -1036,6 +1638,33 @@ pub fn validate_qualification_corpus(cases: &[ToolAdvisorCase]) -> Result<Corpus
             "qualification corpus needs at least 32 counterfactual pairs; found {}",
             report.counterfactual_pairs
         ));
+    }
+    let leakage = &report.leakage;
+    if leakage.exact_cross_split_overlaps > 0
+        || leakage.normalized_cross_split_overlaps > 0
+        || leakage.template_family_cross_split_overlaps > 0
+    {
+        return Err(anyhow!(
+            "content-derived split integrity violated: {} exact, {} normalized, {} template-family cross-split overlaps",
+            leakage.exact_cross_split_overlaps,
+            leakage.normalized_cross_split_overlaps,
+            leakage.template_family_cross_split_overlaps
+        ));
+    }
+    if leakage.contradictory_label_groups > 0 {
+        return Err(anyhow!(
+            "corpus contains {} same-input contradictory label groups; counterfactual variation must differ in context",
+            leakage.contradictory_label_groups
+        ));
+    }
+    for summary in &leakage.family_holdouts {
+        if summary.train_dev_family_cases > 0 {
+            return Err(anyhow!(
+                "tool-family holdout {0} leaks {1} cases into optimizer/calibration input",
+                summary.family,
+                summary.train_dev_family_cases
+            ));
+        }
     }
     Ok(report)
 }
@@ -1049,8 +1678,24 @@ pub fn unknown_tool_holdout(case: &ToolAdvisorCase) -> Result<ToolAdvisorCase> {
     let mut transformed = case.clone();
     transformed.case_id = format!("{}::unknown", case.case_id);
     transformed.group_id = format!("{}::unknown", case.group_id);
-    transformed.semantic_group = format!("{}::unknown", case.split_group());
-    transformed.generated_variant_family = format!("{}::unknown", case.generated_variant_family);
+    // Suffix non-empty lineage keys so the transformed case joins its own
+    // `::unknown` lineage namespace instead of the source leakage component.
+    // Empty lineage keys stay empty: the renamed candidate descriptors already
+    // give the transformed case a distinct input signature, and a constant
+    // suffix on an empty key would incorrectly merge every transformed case
+    // into one component. The `::unknown` namespace never enters optimizer or
+    // calibration input because training consumes only corpus cases while
+    // transforms are constructed at evaluation time.
+    if !case.split_group().is_empty() {
+        transformed.semantic_group = format!("{}::unknown", case.split_group());
+    }
+    if !case.generated_variant_family.is_empty() {
+        transformed.generated_variant_family =
+            format!("{}::unknown", case.generated_variant_family);
+    }
+    if !case.leakage_group.is_empty() {
+        transformed.leakage_group = format!("{}::unknown", case.leakage_group);
+    }
     for candidate in &mut transformed.candidates {
         candidate.name = format!("synthetic_{}", short_hash(&candidate.name));
         candidate.synthetic_identity = true;
@@ -1519,6 +2164,7 @@ mod tests {
             group_id: "group-1".into(),
             provenance: "reviewed-seed".into(),
             semantic_group: "group-1".into(),
+            leakage_group: String::new(),
             task_family: "lsp".into(),
             tool_family: "lsp".into(),
             generated_variant_family: String::new(),
@@ -1591,8 +2237,239 @@ mod tests {
         assert_eq!(ids.len(), cases.len());
         let coverage = validate_qualification_corpus(&cases).expect("qualification floors");
         assert_eq!(coverage.cases, 256);
-        assert_eq!(coverage.semantic_groups, 128);
-        assert_eq!(coverage.counterfactual_pairs, 112);
+        assert_eq!(coverage.leakage_groups, 216);
+        assert_eq!(coverage.unique_normalized_inputs, 256);
+        assert!(coverage.final_test_leakage_groups >= 40);
+        assert_eq!(coverage.counterfactual_pairs, 40);
+        assert_eq!(coverage.leakage.exact_cross_split_overlaps, 0);
+        assert_eq!(coverage.leakage.normalized_cross_split_overlaps, 0);
+        assert_eq!(coverage.leakage.template_family_cross_split_overlaps, 0);
+        assert_eq!(coverage.leakage.contradictory_label_groups, 0);
+        assert!(coverage.leakage.supported_family_holdouts >= 4);
+    }
+
+    fn leakage_case(
+        case_id: &str,
+        context: &str,
+        semantic_group: &str,
+        variant_family: &str,
+        tool_family: &str,
+        relevance: BTreeMap<String, u8>,
+        none: bool,
+    ) -> ToolAdvisorCase {
+        ToolAdvisorCase {
+            schema_version: CASE_SCHEMA_VERSION,
+            case_id: case_id.into(),
+            context: context.into(),
+            candidates: vec![
+                ToolAdvisorCandidate {
+                    name: "lsp_definition".into(),
+                    description: "Jump to a symbol definition using language server semantics"
+                        .into(),
+                    category: "ReadOnly".into(),
+                    disclosure: "deferred".into(),
+                    synthetic_identity: false,
+                },
+                ToolAdvisorCandidate {
+                    name: "grep".into(),
+                    description: "Search literal text in files".into(),
+                    category: "ReadOnly".into(),
+                    disclosure: "core".into(),
+                    synthetic_identity: false,
+                },
+            ],
+            relevance,
+            preferred_order: vec!["lsp_definition".into()],
+            none,
+            tags: vec!["lsp".into()],
+            group_id: format!("{case_id}-group"),
+            provenance: "leakage-fixture".into(),
+            semantic_group: semantic_group.into(),
+            leakage_group: String::new(),
+            task_family: "lsp".into(),
+            tool_family: tool_family.into(),
+            generated_variant_family: variant_family.into(),
+            teacher_probabilities: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn byte_identical_examples_with_different_group_ids_share_a_leakage_group() {
+        let left = leakage_case(
+            "identical-a",
+            "find the definition of a Rust symbol",
+            "semantic-alpha",
+            "",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        let mut right = leakage_case(
+            "identical-b",
+            "find the definition of a Rust symbol",
+            "semantic-beta",
+            "",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        right.group_id = "other-group".into();
+        let cases = vec![left, right];
+        let groups = build_leakage_groups(&cases);
+        assert_eq!(groups[0], groups[1]);
+        assert_eq!(
+            partition_cases(&cases).split_of_case[0],
+            partition_cases(&cases).split_of_case[1]
+        );
+    }
+
+    #[test]
+    fn normalized_whitespace_case_variants_cannot_cross_partitions() {
+        let left = leakage_case(
+            "variant-a",
+            "find the definition of a Rust symbol",
+            "semantic-gamma",
+            "",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        let right = leakage_case(
+            "variant-b",
+            "  FIND   the Definition\nof a rust SYMBOL ",
+            "semantic-delta",
+            "",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        assert_eq!(input_signature(&left), input_signature(&right));
+        assert_ne!(exact_input_signature(&left), exact_input_signature(&right));
+        let cases = vec![left, right];
+        let groups = build_leakage_groups(&cases);
+        assert_eq!(groups[0], groups[1]);
+    }
+
+    #[test]
+    fn shared_template_lineage_cannot_cross_partitions() {
+        let left = leakage_case(
+            "template-a",
+            "find the definition of alpha in snapshot one",
+            "semantic-epsilon",
+            "template-lineage-1",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        let right = leakage_case(
+            "template-b",
+            "find the definition of beta in snapshot two",
+            "semantic-zeta",
+            "template-lineage-1",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        assert_ne!(input_signature(&left), input_signature(&right));
+        let cases = vec![left, right];
+        let groups = build_leakage_groups(&cases);
+        assert_eq!(groups[0], groups[1]);
+    }
+
+    #[test]
+    fn same_input_contradictory_labels_fail_validation() {
+        let left = leakage_case(
+            "contradiction-a",
+            "find the definition of a Rust symbol",
+            "semantic-eta",
+            "",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        let mut right = leakage_case(
+            "contradiction-b",
+            "find the definition of a Rust symbol",
+            "semantic-theta",
+            "",
+            "lsp",
+            BTreeMap::new(),
+            true,
+        );
+        right.preferred_order.clear();
+        let cases = vec![left, right];
+        assert_eq!(input_signature(&cases[0]), input_signature(&cases[1]));
+        assert_ne!(label_signature(&cases[0]), label_signature(&cases[1]));
+        let report = leakage_report(&cases).expect("leakage report");
+        assert_eq!(report.contradictory_label_groups, 1);
+        assert!(validate_qualification_corpus(&cases).is_err());
+    }
+
+    #[test]
+    fn counterfactual_pair_stays_in_one_leakage_group() {
+        let mut left = leakage_case(
+            "counterfactual-a",
+            "in workspace snapshot one, jump to the definition of alpha",
+            "semantic-pair",
+            "pair-lineage",
+            "lsp",
+            BTreeMap::from([("lsp_definition".into(), 3)]),
+            false,
+        );
+        left.group_id = "pair-group-a".into();
+        let mut right = leakage_case(
+            "counterfactual-b",
+            "from the quoted paragraph alone, restate what beta means in prose",
+            "semantic-pair",
+            "pair-lineage",
+            "lsp",
+            BTreeMap::new(),
+            true,
+        );
+        right.group_id = "pair-group-b".into();
+        right.preferred_order.clear();
+        let cases = vec![left, right];
+        let groups = build_leakage_groups(&cases);
+        assert_eq!(groups[0], groups[1]);
+        assert_ne!(input_signature(&cases[0]), input_signature(&cases[1]));
+    }
+
+    #[test]
+    fn held_out_tool_family_is_excluded_from_optimizer_and_calibration() {
+        let cases = builtin_cases().expect("builtin corpus");
+        for summary in [&"plugin", &"lsp", &"research", &"structured"] {
+            let holdout = family_holdout_partition(&cases, summary);
+            assert!(
+                !holdout.holdout_cases.is_empty(),
+                "family {summary} has no holdout cases"
+            );
+            assert!(
+                holdout
+                    .train_cases
+                    .iter()
+                    .chain(holdout.dev_cases.iter())
+                    .all(|&index| cases[index].tool_family != **summary),
+                "family {summary} leaks into optimizer/calibration input"
+            );
+            // Exclusion is by leakage component, not by fingerprint subset.
+            assert!(!holdout.excluded_leakage_groups.is_empty());
+        }
+    }
+
+    #[test]
+    fn unknown_name_transform_leaves_the_source_leakage_component() {
+        let cases = builtin_cases().expect("builtin corpus");
+        for case in cases.iter().take(24) {
+            let transformed = unknown_tool_holdout(case).expect("transform");
+            assert_ne!(input_signature(case), input_signature(&transformed));
+            let pair = vec![case.clone(), transformed];
+            let groups = build_leakage_groups(&pair);
+            assert_ne!(
+                groups[0], groups[1],
+                "unknown transform of {} stayed in its source component",
+                case.case_id
+            );
+        }
     }
 
     fn artifact() -> ToolAdvisorArtifact {

@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Evidence Corrective C001 — Content-Derived Corpus and Split Integrity
 
-Status: ready for handoff
+Status: implemented (closed; see `plans/closure/tool-selection-advisor-evidence-integrity-corrective/001-status.md`)
 
 Repository baseline: `71460c0cb1421f33a62d57123ac562c8a7c4bf1c`
 
