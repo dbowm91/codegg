@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Milestone 005 — Advisor Integration and Qualification
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `ed960f2ae7043acd816970f7d06e74dc69b09ae8`
 
