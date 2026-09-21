@@ -149,7 +149,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/001-evidence-preregistration-polish.md`
 
-Status: ready.
+Status: active.
 
 Reconcile stale C004/framework documentation, add the now-successful hosted CI evidence as a supplemental record without rewriting historical closure, and make separate-commit preregistration a closure requirement for future qualification.
 

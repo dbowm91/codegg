@@ -172,7 +172,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-evidence-integrity-corrective/004-clean-offline-requalification.md`
 
-Status: ready (unblocked by C001+C002+C003 closures).
+Status: closed (disposition B; C004 closed after C001+C002+C003).
 
 Rerun baselines and contextual models on clean frozen partitions, true family/unknown-tool holdouts, counterfactual slices, and candidate-recall tests. Only a positive pre-registered disposition may unblock paid/live M004 trajectories.
 

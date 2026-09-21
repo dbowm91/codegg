@@ -106,6 +106,10 @@ pub struct ResourceTargetSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preregistration {
+    /// Version 1 is the historical C004 schema. Version 2 adds an
+    /// independently hashed protocol/provenance envelope for future runs.
+    #[serde(default = "default_preregistration_schema_version")]
+    pub schema_version: u16,
     pub protocol: String,
     pub dataset: String,
     pub dataset_fingerprint: String,
@@ -120,12 +124,65 @@ pub struct Preregistration {
     pub promotion: PromotionSection,
     pub gates: GateSection,
     pub resource_targets: ResourceTargetSection,
+    /// SHA-256 of the canonical preregistration with this field and the
+    /// operator-supplied commit provenance omitted. Empty is accepted only
+    /// for the historical v1 C004 manifest.
+    #[serde(default)]
+    pub protocol_hash: String,
+    /// Stable hashes for model/config inputs not represented by an artifact
+    /// payload hash. The harness echoes these values into its report.
+    #[serde(default)]
+    pub model_config_hashes: BTreeMap<String, String>,
+    /// Explicit gate identifiers frozen by the operator. This is separate
+    /// from the measured gate results in the report.
+    #[serde(default)]
+    pub declared_gate_set: Vec<String>,
+    /// The commit containing the frozen preregistration, supplied by the
+    /// operator or closure process. It is provenance, not protocol content.
+    #[serde(default)]
+    pub preregistration_commit_sha: Option<String>,
+}
+
+fn default_preregistration_schema_version() -> u16 {
+    1
+}
+
+/// Compute the canonical protocol hash used by schema-v2 preregistrations.
+/// JSON field order is stable because all maps are ordered and serde emits
+/// struct fields in declaration order.
+pub fn protocol_hash_for(preregistration: &Preregistration) -> Result<String> {
+    let mut canonical = preregistration.clone();
+    canonical.protocol_hash.clear();
+    canonical.preregistration_commit_sha = None;
+    let bytes = serde_json::to_vec(&canonical).context("serialize canonical preregistration")?;
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 pub fn load_preregistration(path: &Path) -> Result<Preregistration> {
     let bytes =
         fs::read(path).with_context(|| format!("read preregistration {}", path.display()))?;
-    serde_json::from_slice(&bytes).context("parse preregistration")
+    let preregistration: Preregistration =
+        serde_json::from_slice(&bytes).context("parse preregistration")?;
+    if preregistration.schema_version >= 2 {
+        if preregistration.protocol_hash.is_empty() {
+            return Err(anyhow!(
+                "schema-v2 preregistration is missing protocol_hash"
+            ));
+        }
+        let actual = protocol_hash_for(&preregistration)?;
+        if actual != preregistration.protocol_hash {
+            return Err(anyhow!(
+                "preregistration protocol hash mismatch: expected {}, found {actual}",
+                preregistration.protocol_hash
+            ));
+        }
+        if preregistration.declared_gate_set.is_empty() {
+            return Err(anyhow!(
+                "schema-v2 preregistration must declare at least one gate"
+            ));
+        }
+    }
+    Ok(preregistration)
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +288,12 @@ pub enum Disposition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RequalificationReport {
+    pub schema_version: u16,
     pub protocol: String,
+    pub protocol_hash: String,
+    pub model_config_hashes: BTreeMap<String, String>,
+    pub declared_gate_set: Vec<String>,
+    pub preregistration_commit_sha: Option<String>,
     pub dataset: String,
     pub dataset_fingerprint: String,
     pub train_partition_fingerprint: String,
@@ -1136,7 +1198,12 @@ pub fn run(prereg_path: &Path, work_dir_override: Option<&Path>) -> Result<Requa
     };
 
     Ok(RequalificationReport {
+        schema_version: prereg.schema_version,
         protocol: prereg.protocol.clone(),
+        protocol_hash: prereg.protocol_hash.clone(),
+        model_config_hashes: prereg.model_config_hashes.clone(),
+        declared_gate_set: prereg.declared_gate_set.clone(),
+        preregistration_commit_sha: prereg.preregistration_commit_sha.clone(),
         dataset: prereg.dataset.clone(),
         dataset_fingerprint: dataset_fp,
         train_partition_fingerprint: split_fp("train"),
@@ -1879,6 +1946,7 @@ mod tests {
 
     fn prereg() -> Preregistration {
         Preregistration {
+            schema_version: 1,
             protocol: "test".into(),
             dataset: "test.jsonl".into(),
             dataset_fingerprint: "abc".into(),
@@ -1929,6 +1997,10 @@ mod tests {
                 max_score_p95_micros: 100_000,
                 max_preselect_millis: 1000,
             },
+            protocol_hash: String::new(),
+            model_config_hashes: BTreeMap::new(),
+            declared_gate_set: Vec::new(),
+            preregistration_commit_sha: None,
         }
     }
 
@@ -2019,6 +2091,20 @@ mod tests {
         assert!(ece(&pairs) >= 0.0 && ece(&pairs) <= 1.0);
         assert_eq!(brier(&[]), 0.0);
         assert_eq!(nll(&[]), 0.0);
+    }
+
+    #[test]
+    fn protocol_hash_is_stable_and_excludes_operator_commit_provenance() {
+        let mut preregistration = prereg();
+        preregistration.schema_version = 2;
+        preregistration.declared_gate_set = vec!["leakage-zero".into(), "authority-zero".into()];
+        preregistration.model_config_hashes = BTreeMap::from([("encoder".into(), "abc".into())]);
+        let first = protocol_hash_for(&preregistration).expect("hash");
+        preregistration.preregistration_commit_sha = Some("operator-supplied-sha".into());
+        let second = protocol_hash_for(&preregistration).expect("hash");
+        assert_eq!(first, second);
+        preregistration.gates.slice_gain_min += 0.01;
+        assert_ne!(first, protocol_hash_for(&preregistration).expect("hash"));
     }
 
     #[test]
