@@ -1930,6 +1930,29 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                     println!("head-only loss: {}", report.head_only_loss);
                     println!("top-layer loss: {}", report.top_layer_loss);
                     println!("weights sha256: {}", report.weight_sha256);
+                    println!(
+                        "load coverage: {}/{} variables, {} missing",
+                        report.load_coverage.loaded_variables,
+                        report.load_coverage.expected_variables,
+                        report.load_coverage.missing_variables.len()
+                    );
+                    println!(
+                        "scoping: head-only encoder unchanged: {}; top-layer changed: {}; lower unchanged: {}",
+                        report.head_only_encoder_unchanged,
+                        report.top_layer_changed,
+                        report.lower_layers_unchanged
+                    );
+                    println!(
+                        "pooling margins: cls {:.4}, mean {:.4}",
+                        report.pooling.cls_margin, report.pooling.mean_margin
+                    );
+                    println!(
+                        "timings ms: load {}, forward {}, head {}, top {}",
+                        report.load_ms,
+                        report.forward_ms,
+                        report.head_step_ms,
+                        report.top_layer_step_ms
+                    );
                 }
             }
             #[cfg(not(feature = "tool-advisor-encoder-experiment"))]

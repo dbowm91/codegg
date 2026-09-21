@@ -1,0 +1,39 @@
+{
+  "asset": "all-minilm-l6-v2",
+  "upstream_repository": "sentence-transformers/all-MiniLM-L6-v2",
+  "upstream_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+  "source_files": {
+    "config.json": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json",
+    "model.safetensors": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/model.safetensors",
+    "vocab.txt": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/vocab.txt",
+    "tokenizer_config.json": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json",
+    "special_tokens_map.json": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/special_tokens_map.json"
+  },
+  "upstream_license": "Apache-2.0",
+  "model_card_facts": {
+    "architecture": "BERT-compatible MiniLM, 6 layers, hidden size 384, 12 attention heads",
+    "parameter_class": "approximately 22M",
+    "measured_source_parameters": 22713728,
+    "measured_loaded_parameters": 22565376,
+    "base_model": "nreimers/MiniLM-L6-H384-uncased",
+    "sentence_transformers_pooling": "mean pooling over token embeddings",
+    "tokenizer_class": "BertTokenizer, WordPiece vocab 30522, do_lower_case true"
+  },
+  "local_files_sha256": {
+    "config.json": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+    "model.safetensors": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+    "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    "LICENSE.provenance.json": "2b7ad9bc15837fe26e1962704abbdc415034141f9f17c24fcef83af9c9142e75"
+  },
+  "local_total_bytes": 91102259,
+  "acquisition_date": "2026-09-21",
+  "acquisition_method": "explicit operator exact-revision HTTPS download outside CodeGG; no model-download path added to the binary",
+  "codegg_asset_manifest": {
+    "schema_version": 1,
+    "architecture": "bert-sequence-encoder-candle-v1",
+    "framework": "candle-0.11",
+    "manifest_path": "target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json"
+  },
+  "manifest_sha256": "a74faa957b57b1e41651a8067b3cb1fc0a2d65d98f96a54b37e9fc79e783a4ed",
+  "probe_evidence_sha256": "82cc5f45a7c6066890d26b5ffc4da27f0797c32244c639905646b0c03c3cfecb"
+}
