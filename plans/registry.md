@@ -42,7 +42,7 @@ Canonical direction remains in:
 | Plugin ecosystem and harness interoperability | M002 portable Agent Plugins import | closed | `plans/implementation/plugin-ecosystem-interoperability/002-portable-agent-plugin-import.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/002-status.md`. |
 | Plugin ecosystem and harness interoperability | M003 Playwright browser-testing integration | closed | `plans/implementation/plugin-ecosystem-interoperability/003-playwright-browser-integration-bundle.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/003-status.md`. |
 | Plugin ecosystem and harness interoperability | M004 extension catalog/install | closed | `plans/implementation/plugin-ecosystem-interoperability/004-extension-catalog-and-install.md` | Closure: `plans/closure/plugin-ecosystem-interoperability/004-status.md`. |
-| Tool-selection advisor | M001 evaluation corpus and deterministic baselines | ready | `plans/implementation/tool-selection-advisor/001-evaluation-corpus-and-baselines.md` | Closed coding-agent tool-surface work is the stable input; no ML dependency or behavior change. |
+| Tool-selection advisor | M001 evaluation corpus and deterministic baselines | active | `plans/implementation/tool-selection-advisor/001-evaluation-corpus-and-baselines.md` | Implementation in progress; closed coding-agent tool-surface work is the stable input; no ML dependency or behavior change. |
 
 ## Current execution order and dependency gates
 
