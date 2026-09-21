@@ -159,7 +159,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/002-rust-sequence-encoder-framework-asset-spike.md`
 
-Status: active.
+Status: conditionally closed (Candle selected; reference assets outstanding).
 
 Empirically qualify Candle and Burn for BERT-class loading/training on CodeGG targets using explicit local TinyBERT/MiniLM-class assets. Select one experimental stack or record that neither qualifies.
 
@@ -179,7 +179,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/004-sequence-encoder-ranking-experiment.md`
 
-Status: blocked on M001 + M002.
+Status: blocked on M001 reference-asset evidence + M002.
 
 Implement pairwise and packed-marker ranking heads over the selected local pretrained encoder, train in staged freeze/unfreeze modes, calibrate on dev only, and compare on clean held-out slices.
 
