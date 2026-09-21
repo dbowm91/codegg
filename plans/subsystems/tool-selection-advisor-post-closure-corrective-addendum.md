@@ -224,7 +224,7 @@ Plan:
 
 Objective: move the useful `promote` behavior to the request-preparation palette seam so a primary model can see a relevant deferred tool without first invoking `tool_search`.
 
-Status: closing.
+Status: closed.
 
 Exit conditions include promotion before provider definitions are finalized, strict subset-of-allowed-surface evidence, bounded token/schema budget, failure/off equivalence, and a regression proving a promoted deferred tool is initially visible even when no `tool_search` call occurs.
 
@@ -238,7 +238,7 @@ Plan:
 
 Objective: run pre-registered end-to-end A/B trajectories with representative smaller/tool-fragile primary models and determine whether contextual rerank/proactive promotion materially improve tool use.
 
-Status: blocked on M001 + M002 + M003 closure.
+Status: blocked on live primary-model/provider qualification evidence after M001 + M002 + M003 closure.
 
 Exit conditions include real primary-model trajectories, held-out task fixtures, cost/latency/tool-use measurements, resource evidence on representative local targets, and truthful mode disposition. Default remains off regardless of outcome.
 

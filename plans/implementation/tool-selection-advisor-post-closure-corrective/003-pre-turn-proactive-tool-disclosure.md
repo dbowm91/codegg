@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Post-Closure Corrective M003 — Pre-Turn Proactive Tool Disclosure
 
-Status: closing
+Status: closed
 
 Repository baseline: `c9087346620988a7c793fb2687732a62e481103a`
 
