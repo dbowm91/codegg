@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Post-Closure Corrective M002 — Contextual Encoder Runtime and Local Rust Training
 
-Status: active
+Status: closing
 
 Repository baseline: `c9087346620988a7c793fb2687732a62e481103a`
 
