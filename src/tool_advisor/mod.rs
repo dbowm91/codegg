@@ -56,7 +56,7 @@ impl ToolAdvisorCandidate {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolAdvisorCase {
     pub schema_version: u16,
     pub case_id: String,
@@ -74,6 +74,30 @@ pub struct ToolAdvisorCase {
     pub tags: Vec<String>,
     pub group_id: String,
     pub provenance: String,
+    /// Semantic leakage boundary. All generated variants in this group stay
+    /// in the same split even when their case ids differ.
+    #[serde(default)]
+    pub semantic_group: String,
+    #[serde(default)]
+    pub task_family: String,
+    #[serde(default)]
+    pub tool_family: String,
+    #[serde(default)]
+    pub generated_variant_family: String,
+    /// Optional probabilities emitted by an explicitly local teacher/export
+    /// workflow. They are labels, never a network or runtime dependency.
+    #[serde(default)]
+    pub teacher_probabilities: BTreeMap<String, f32>,
+}
+
+impl ToolAdvisorCase {
+    pub fn split_group(&self) -> &str {
+        if self.semantic_group.is_empty() {
+            &self.group_id
+        } else {
+            &self.semantic_group
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -120,6 +144,26 @@ pub struct BaselineReport {
     pub mode: String,
     pub summary: MetricSummary,
     pub by_tag: Vec<DomainMetric>,
+    pub coverage: CorpusCoverageReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CorpusCoverageReport {
+    pub cases: usize,
+    pub semantic_groups: usize,
+    pub hard_negative_cases: usize,
+    pub no_tool_cases: usize,
+    pub multi_tool_cases: usize,
+    pub unknown_tool_cases: usize,
+    pub task_families: Vec<String>,
+    pub tool_families: Vec<String>,
+    pub provenance: Vec<String>,
+    pub split_case_counts: BTreeMap<String, usize>,
+    pub split_fingerprints: BTreeMap<String, String>,
+    pub tool_family_holdout_family: String,
+    pub tool_family_holdout_fingerprint: String,
+    pub counterfactual_pairs: usize,
+    pub passes_declared_floors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -636,6 +680,22 @@ impl ToolAdvisorCase {
         validate_text("context", &self.context, MAX_CONTEXT_BYTES)?;
         validate_text("group_id", &self.group_id, 256)?;
         validate_text("provenance", &self.provenance, 256)?;
+        if !self.semantic_group.is_empty() {
+            validate_text("semantic_group", &self.semantic_group, 256)?;
+        }
+        if !self.task_family.is_empty() {
+            validate_text("task_family", &self.task_family, 128)?;
+        }
+        if !self.tool_family.is_empty() {
+            validate_text("tool_family", &self.tool_family, 128)?;
+        }
+        if !self.generated_variant_family.is_empty() {
+            validate_text(
+                "generated_variant_family",
+                &self.generated_variant_family,
+                256,
+            )?;
+        }
         if self.candidates.is_empty() || self.candidates.len() > MAX_CANDIDATES {
             return Err(anyhow!(
                 "case {} must contain 1..={} candidates",
@@ -680,6 +740,20 @@ impl ToolAdvisorCase {
             if !names.contains(name.as_str()) || !self.relevance.contains_key(name) {
                 return Err(anyhow!(
                     "case {} preferred order contains an unlabeled candidate {name}",
+                    self.case_id
+                ));
+            }
+        }
+        for (name, probability) in &self.teacher_probabilities {
+            if !names.contains(name.as_str()) {
+                return Err(anyhow!(
+                    "case {} teacher label references unknown candidate {name}",
+                    self.case_id
+                ));
+            }
+            if !probability.is_finite() || !(0.0..=1.0).contains(probability) {
+                return Err(anyhow!(
+                    "case {} teacher probability for {name} must be between 0 and 1",
                     self.case_id
                 ));
             }
@@ -781,10 +855,165 @@ pub fn dataset_fingerprint(cases: &[ToolAdvisorCase]) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+pub fn coverage_report(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport> {
+    let mut semantic_groups = BTreeSet::new();
+    let mut task_families = BTreeSet::new();
+    let mut tool_families = BTreeSet::new();
+    let mut provenance = BTreeSet::new();
+    let mut split_cases: BTreeMap<String, Vec<&ToolAdvisorCase>> = BTreeMap::new();
+    let mut variant_groups: BTreeMap<&str, Vec<&ToolAdvisorCase>> = BTreeMap::new();
+    let mut hard_negative_cases = 0;
+    let mut no_tool_cases = 0;
+    let mut multi_tool_cases = 0;
+    let mut unknown_tool_cases = 0;
+
+    for case in cases {
+        case.validate()?;
+        semantic_groups.insert(case.split_group().to_string());
+        if !case.task_family.is_empty() {
+            task_families.insert(case.task_family.clone());
+        }
+        if !case.tool_family.is_empty() {
+            tool_families.insert(case.tool_family.clone());
+        }
+        provenance.insert(case.provenance.clone());
+        let split = split_for(case.split_group()).to_string();
+        split_cases.entry(split).or_default().push(case);
+        if case.tags.iter().any(|tag| tag == "hard-negative") {
+            hard_negative_cases += 1;
+        }
+        if case.none || case.tags.iter().any(|tag| tag == "no-tool") {
+            no_tool_cases += 1;
+        }
+        if case.tags.iter().any(|tag| tag == "multi-tool") {
+            multi_tool_cases += 1;
+        }
+        if case.tags.iter().any(|tag| tag == "unknown-tool") {
+            unknown_tool_cases += 1;
+        }
+        if !case.generated_variant_family.is_empty() {
+            variant_groups
+                .entry(case.generated_variant_family.as_str())
+                .or_default()
+                .push(case);
+        }
+    }
+
+    let counterfactual_pairs = variant_groups
+        .values()
+        .filter(|variants| {
+            variants.len() >= 2
+                && variants.windows(2).all(|window| {
+                    let left = window[0]
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.name.as_str())
+                        .collect::<Vec<_>>();
+                    let right = window[1]
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.name.as_str())
+                        .collect::<Vec<_>>();
+                    left == right
+                })
+                && variants
+                    .iter()
+                    .map(|case| case.relevance.clone())
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    >= 2
+        })
+        .count();
+
+    let split_case_counts = split_cases
+        .iter()
+        .map(|(split, selected)| (split.clone(), selected.len()))
+        .collect();
+    let split_fingerprints = split_cases
+        .iter()
+        .map(|(split, selected)| {
+            let owned = selected
+                .iter()
+                .map(|case| (*case).clone())
+                .collect::<Vec<_>>();
+            (
+                split.clone(),
+                dataset_fingerprint(&owned).unwrap_or_default(),
+            )
+        })
+        .collect();
+    let holdout_family = ["plugin", "lsp", "research", "structured"]
+        .into_iter()
+        .find(|family| tool_families.contains(*family))
+        .unwrap_or_default()
+        .to_string();
+    let holdout_cases = cases
+        .iter()
+        .filter(|case| case.tool_family == holdout_family)
+        .cloned()
+        .collect::<Vec<_>>();
+    let tool_family_holdout_fingerprint = dataset_fingerprint(&holdout_cases).unwrap_or_default();
+    let task_family_count = task_families.len();
+    let report = CorpusCoverageReport {
+        cases: cases.len(),
+        semantic_groups: semantic_groups.len(),
+        hard_negative_cases,
+        no_tool_cases,
+        multi_tool_cases,
+        unknown_tool_cases,
+        task_families: task_families.into_iter().collect(),
+        tool_families: tool_families.into_iter().collect(),
+        provenance: provenance.into_iter().collect(),
+        split_case_counts,
+        split_fingerprints,
+        tool_family_holdout_family: holdout_family,
+        tool_family_holdout_fingerprint,
+        counterfactual_pairs,
+        passes_declared_floors: cases.len() >= 256
+            && semantic_groups.len() >= 128
+            && hard_negative_cases >= 64
+            && no_tool_cases >= 32
+            && multi_tool_cases >= 32
+            && unknown_tool_cases >= 32
+            && task_family_count >= 10,
+    };
+    Ok(report)
+}
+
+pub fn validate_qualification_corpus(cases: &[ToolAdvisorCase]) -> Result<CorpusCoverageReport> {
+    let report = coverage_report(cases)?;
+    if !report.passes_declared_floors {
+        return Err(anyhow!(
+            "qualification corpus floors not met: {} cases, {} semantic groups, {} hard-negative, {} no-tool, {} multi-tool, {} unknown-tool, {} task families",
+            report.cases,
+            report.semantic_groups,
+            report.hard_negative_cases,
+            report.no_tool_cases,
+            report.multi_tool_cases,
+            report.unknown_tool_cases,
+            report.task_families.len()
+        ));
+    }
+    if report.counterfactual_pairs < 32 {
+        return Err(anyhow!(
+            "qualification corpus needs at least 32 counterfactual pairs; found {}",
+            report.counterfactual_pairs
+        ));
+    }
+    Ok(report)
+}
+
+pub fn lint_dataset(path: &Path) -> Result<CorpusCoverageReport> {
+    let cases = load_cases(Some(path))?;
+    validate_qualification_corpus(&cases)
+}
+
 pub fn unknown_tool_holdout(case: &ToolAdvisorCase) -> Result<ToolAdvisorCase> {
     let mut transformed = case.clone();
     transformed.case_id = format!("{}::unknown", case.case_id);
     transformed.group_id = format!("{}::unknown", case.group_id);
+    transformed.semantic_group = format!("{}::unknown", case.split_group());
+    transformed.generated_variant_family = format!("{}::unknown", case.generated_variant_family);
     for candidate in &mut transformed.candidates {
         candidate.name = format!("synthetic_{}", short_hash(&candidate.name));
         candidate.synthetic_identity = true;
@@ -957,6 +1186,7 @@ pub fn evaluate(
 
 pub fn run_benchmark(path: Option<&Path>, mode: SearchMode) -> Result<BaselineReport> {
     let cases = load_cases(path)?;
+    let coverage = validate_qualification_corpus(&cases)?;
     let predictions = cases
         .iter()
         .map(|case| baseline_prediction(case, mode))
@@ -1000,6 +1230,7 @@ pub fn run_benchmark(path: Option<&Path>, mode: SearchMode) -> Result<BaselineRe
         .to_string(),
         summary,
         by_tag,
+        coverage,
     })
 }
 
@@ -1250,6 +1481,11 @@ mod tests {
             tags: vec!["lsp".into()],
             group_id: "group-1".into(),
             provenance: "reviewed-seed".into(),
+            semantic_group: "group-1".into(),
+            task_family: "lsp".into(),
+            tool_family: "lsp".into(),
+            generated_variant_family: String::new(),
+            teacher_probabilities: BTreeMap::new(),
         }
     }
 
@@ -1314,15 +1550,12 @@ mod tests {
     #[test]
     fn builtin_corpus_is_valid_and_group_unique() {
         let cases = builtin_cases().expect("builtin corpus");
-        assert!(cases.len() >= 12);
-        assert!(cases.iter().any(|case| case.none));
-        assert!(cases
-            .iter()
-            .any(|case| case.tags.iter().any(|tag| tag == "hard-negative")));
-        assert!(cases.iter().any(|case| case
-            .candidates
-            .iter()
-            .any(|candidate| candidate.synthetic_identity)));
+        let ids: BTreeSet<_> = cases.iter().map(|case| case.case_id.as_str()).collect();
+        assert_eq!(ids.len(), cases.len());
+        let coverage = validate_qualification_corpus(&cases).expect("qualification floors");
+        assert_eq!(coverage.cases, 256);
+        assert_eq!(coverage.semantic_groups, 128);
+        assert_eq!(coverage.counterfactual_pairs, 112);
     }
 
     fn artifact() -> ToolAdvisorArtifact {

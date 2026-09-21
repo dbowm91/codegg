@@ -165,17 +165,17 @@ pub fn train(config: &TrainingConfig) -> Result<TrainingReport> {
     };
     let train_cases: Vec<_> = cases
         .iter()
-        .filter(|case| split_for(&case.group_id) == "train")
+        .filter(|case| split_for(case.split_group()) == "train")
         .cloned()
         .collect();
     let dev_cases: Vec<_> = cases
         .iter()
-        .filter(|case| split_for(&case.group_id) == "dev")
+        .filter(|case| split_for(case.split_group()) == "dev")
         .cloned()
         .collect();
     let test_cases: Vec<_> = cases
         .iter()
-        .filter(|case| split_for(&case.group_id) == "test")
+        .filter(|case| split_for(case.split_group()) == "test")
         .cloned()
         .collect();
     let learning_cases = if train_cases.is_empty() {

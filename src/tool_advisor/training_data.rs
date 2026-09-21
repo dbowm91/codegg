@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use url::Url;
 
-pub const EVENT_SCHEMA_VERSION: u16 = 1;
+pub const EVENT_SCHEMA_VERSION: u16 = 2;
+pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
 const MAX_EVENT_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -29,13 +30,63 @@ pub struct ToolAdvisorTrainingEvent {
     pub latency_ms: u64,
     #[serde(default)]
     pub context: Option<String>,
+    /// Kept as an audit field for v1 readers; transport authority comes from
+    /// `consent` and the current host policy, never from these booleans.
+    #[serde(default)]
     pub metadata_consent: bool,
+    #[serde(default)]
     pub content_consent: bool,
+    #[serde(default)]
+    pub consent: Option<TrainingConsentSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrainingConsentSnapshot {
+    pub local_capture: bool,
+    pub local_content: bool,
+    pub metadata_remote: bool,
+    pub content_remote: bool,
+    pub policy_fingerprint: String,
+}
+
+impl TrainingConsentSnapshot {
+    pub fn disabled() -> Self {
+        Self {
+            local_capture: false,
+            local_content: false,
+            metadata_remote: false,
+            content_remote: false,
+            policy_fingerprint: "disabled".into(),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.local_content && !self.local_capture {
+            return Err(anyhow!(
+                "local content consent requires local capture consent"
+            ));
+        }
+        if self.content_remote && !self.metadata_remote {
+            return Err(anyhow!(
+                "remote content consent requires remote metadata consent"
+            ));
+        }
+        if self.policy_fingerprint.trim().is_empty() {
+            return Err(anyhow!(
+                "training consent snapshot has no policy fingerprint"
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl ToolAdvisorTrainingEvent {
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != EVENT_SCHEMA_VERSION || self.event_id.trim().is_empty() {
+        if !matches!(
+            self.schema_version,
+            LEGACY_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
+        ) || self.event_id.trim().is_empty()
+        {
             return Err(anyhow!(
                 "unsupported or missing training event identity/version"
             ));
@@ -49,7 +100,19 @@ impl ToolAdvisorTrainingEvent {
         if encoded.len() > MAX_EVENT_BYTES {
             return Err(anyhow!("training event exceeds {} bytes", MAX_EVENT_BYTES));
         }
-        if self.context.is_some() && !self.content_consent {
+        if self.schema_version == EVENT_SCHEMA_VERSION {
+            self.consent
+                .as_ref()
+                .ok_or_else(|| anyhow!("v2 training events require a consent snapshot"))?
+                .validate()?;
+        }
+        if self.context.is_some()
+            && !(self.content_consent
+                && self
+                    .consent
+                    .as_ref()
+                    .is_none_or(|consent| consent.local_content))
+        {
             return Err(anyhow!(
                 "training content requires explicit content consent"
             ));
@@ -59,7 +122,13 @@ impl ToolAdvisorTrainingEvent {
 
     fn sanitized_for(&self, include_content: bool) -> Result<Self> {
         let mut event = self.clone();
-        if !include_content || !event.content_consent {
+        if !include_content
+            || !event.content_consent
+            || !event
+                .consent
+                .as_ref()
+                .is_some_and(|consent| consent.local_content || consent.content_remote)
+        {
             event.context = None;
         } else if let Some(context) = &event.context {
             event.context = Some(redact_sensitive(context));
@@ -156,6 +225,20 @@ impl TrainingDataPolicy {
     pub fn remote_can_send(&self) -> bool {
         self.remote_enabled && self.remote_endpoint.is_some()
     }
+
+    pub fn consent_snapshot(&self) -> TrainingConsentSnapshot {
+        let policy_fingerprint = format!(
+            "capture={};local_content={};remote={};remote_content={}",
+            self.capture, self.include_content, self.remote_enabled, self.remote_include_content
+        );
+        TrainingConsentSnapshot {
+            local_capture: self.capture == "local",
+            local_content: self.capture == "local" && self.include_content,
+            metadata_remote: self.remote_can_send(),
+            content_remote: self.remote_can_send() && self.remote_include_content,
+            policy_fingerprint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +266,7 @@ pub struct LocalSpoolSink {
     max_bytes: u64,
     max_age: Duration,
     include_content: bool,
+    consent: TrainingConsentSnapshot,
 }
 
 impl LocalSpoolSink {
@@ -196,6 +280,7 @@ impl LocalSpoolSink {
             max_bytes: policy.max_bytes,
             max_age: Duration::from_secs(policy.max_age_days as u64 * 86_400),
             include_content: policy.include_content,
+            consent: policy.consent_snapshot(),
         })
     }
 
@@ -305,6 +390,13 @@ impl LocalSpoolSink {
 
 impl TrainingSink for LocalSpoolSink {
     fn submit(&self, event: &ToolAdvisorTrainingEvent) -> Result<()> {
+        let event_consent = event
+            .consent
+            .as_ref()
+            .ok_or_else(|| anyhow!("training event has no host-owned consent snapshot"))?;
+        if !self.consent.local_capture || !event_consent.local_capture {
+            return Err(anyhow!("local capture is not granted by effective consent"));
+        }
         let event = event.sanitized_for(self.include_content)?;
         let bytes = serde_json::to_vec_pretty(&event)?;
         let path = self.root.join(format!("{}.json", event.event_id));
@@ -373,6 +465,7 @@ pub struct RemoteSink<T> {
     endpoint: String,
     bearer_token: Option<String>,
     include_content: bool,
+    consent: TrainingConsentSnapshot,
 }
 
 impl<T> RemoteSink<T>
@@ -394,11 +487,41 @@ where
             endpoint,
             bearer_token,
             include_content: policy.remote_include_content,
+            consent: policy.consent_snapshot(),
         })
     }
 
     pub async fn submit(&self, event: &ToolAdvisorTrainingEvent) -> Result<()> {
-        let event = event.sanitized_for(self.include_content)?;
+        self.submit_with_snapshot(event, &self.consent).await
+    }
+
+    /// Re-check current host policy before every send. This is the revocation
+    /// boundary for queued or previously captured events.
+    pub async fn submit_with_policy(
+        &self,
+        event: &ToolAdvisorTrainingEvent,
+        policy: &TrainingDataPolicy,
+    ) -> Result<()> {
+        policy.validate()?;
+        self.submit_with_snapshot(event, &policy.consent_snapshot())
+            .await
+    }
+
+    async fn submit_with_snapshot(
+        &self,
+        event: &ToolAdvisorTrainingEvent,
+        current: &TrainingConsentSnapshot,
+    ) -> Result<()> {
+        let event_consent = event
+            .consent
+            .as_ref()
+            .ok_or_else(|| anyhow!("training event has no host-owned consent snapshot"))?;
+        if !current.metadata_remote || !event_consent.metadata_remote {
+            return Err(anyhow!("effective remote metadata consent is absent"));
+        }
+        let include_content =
+            self.include_content && current.content_remote && event_consent.content_remote;
+        let event = event.sanitized_for(include_content)?;
         self.transport
             .send(
                 &self.endpoint,
@@ -426,7 +549,15 @@ pub fn status(policy: &TrainingDataPolicy) -> TrainingDataStatus {
 pub fn new_event(
     candidates: Vec<ToolAdvisorCandidate>,
     context: Option<String>,
-    content_consent: bool,
+    consent: TrainingConsentSnapshot,
+) -> ToolAdvisorTrainingEvent {
+    new_event_with_consent(candidates, context, consent)
+}
+
+pub fn new_event_with_consent(
+    candidates: Vec<ToolAdvisorCandidate>,
+    context: Option<String>,
+    consent: TrainingConsentSnapshot,
 ) -> ToolAdvisorTrainingEvent {
     ToolAdvisorTrainingEvent {
         schema_version: EVENT_SCHEMA_VERSION,
@@ -445,7 +576,8 @@ pub fn new_event(
         latency_ms: 0,
         context,
         metadata_consent: true,
-        content_consent,
+        content_consent: consent.local_content,
+        consent: Some(consent),
     }
 }
 
@@ -464,7 +596,13 @@ mod tests {
                 synthetic_identity: false,
             }],
             Some("token=secret sk-abc123".into()),
-            true,
+            TrainingConsentSnapshot {
+                local_capture: true,
+                local_content: true,
+                metadata_remote: false,
+                content_remote: false,
+                policy_fingerprint: "test-local".into(),
+            },
         )
     }
 
@@ -586,8 +724,48 @@ mod tests {
             Some("token".into()),
         )
         .expect("remote sink");
-        sink.submit(&event()).await.expect("send");
+        let mut remote_event = event();
+        remote_event.consent = Some(TrainingConsentSnapshot {
+            local_capture: true,
+            local_content: false,
+            metadata_remote: true,
+            content_remote: false,
+            policy_fingerprint: "remote-test".into(),
+        });
+        remote_event.content_consent = false;
+        sink.submit(&remote_event).await.expect("send");
         assert_eq!(calls.lock().expect("calls").len(), 1);
         assert!(calls.lock().expect("calls")[0].contains("telemetry.example.invalid"));
+
+        let mut revoked = policy.clone();
+        revoked.remote_enabled = false;
+        assert!(sink
+            .submit_with_policy(&remote_event, &revoked)
+            .await
+            .is_err());
+        assert_eq!(calls.lock().expect("calls").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn event_booleans_cannot_self_authorize_remote_transport() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let policy = TrainingDataPolicy {
+            remote_enabled: true,
+            remote_endpoint: Some("https://telemetry.example.invalid/events".into()),
+            ..Default::default()
+        };
+        let sink = RemoteSink::new(
+            FakeTransport {
+                calls: calls.clone(),
+            },
+            &policy,
+            None,
+        )
+        .expect("remote sink");
+        let mut forged = event();
+        forged.metadata_consent = true;
+        forged.consent = Some(TrainingConsentSnapshot::disabled());
+        assert!(sink.submit(&forged).await.is_err());
+        assert!(calls.lock().expect("calls").is_empty());
     }
 }

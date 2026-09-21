@@ -454,6 +454,13 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Validate corpus floors, leakage metadata, and frozen split coverage.
+    Lint {
+        #[arg(long)]
+        dataset: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Train a local artifact from a versioned Rust dataset.
     Train {
         #[arg(long)]
@@ -1733,6 +1740,25 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 );
             } else {
                 print!("{}", codegg::tool_advisor::render_report(&report));
+            }
+        }
+        ToolAdvisorCommand::Lint { dataset, json } => {
+            let report = codegg::tool_advisor::lint_dataset(std::path::Path::new(dataset))
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                println!(
+                    "{} cases across {} semantic groups; tool-family holdout={} ({})",
+                    report.cases,
+                    report.semantic_groups,
+                    report.tool_family_holdout_family,
+                    report.tool_family_holdout_fingerprint
+                );
             }
         }
         ToolAdvisorCommand::Train { config, json } => {

@@ -6,10 +6,20 @@ in `assets/tool-advisor/corpus.jsonl`; the fixture is reviewed seed data, not
 user telemetry and not an execution authority.
 
 Cases contain bounded task text, textual candidate descriptors, graded
-relevance labels or an explicit `none` label, a leakage-prevention group, and
-provenance. `split_for(group_id)` assigns the complete group to one stable
-train/dev/test partition. Unknown-tool cases use synthetic names so a name-only
-memorizer cannot satisfy the benchmark.
+relevance labels or an explicit `none` label, a leakage-prevention group,
+semantic/task/tool-family metadata, generated-variant identity, and provenance.
+`split_for(semantic_group)` assigns the complete semantic group to one stable
+train/dev/test partition. Counterfactual variants share a candidate set while
+changing the task/relevance labels, so a candidate-only memorizer cannot pass
+the contextual gate. The frozen corpus also reports a tool-family holdout and
+unknown-tool cases use synthetic names so a canonical-name memorizer cannot
+satisfy the benchmark.
+
+`codegg tool-advisor lint --dataset <jsonl> --json` validates the qualification
+floors, duplicate/leakage metadata, counterfactual pairs, provenance, split
+counts, and holdout fingerprint. The repository corpus is generated from
+reviewed local templates and contains no private repository text or automatic
+teacher output.
 
 `codegg tool-advisor bench` reports the current keyword or BM25 ranking
 baseline. It uses the same `ToolCatalog` scoring implementation as live
@@ -55,13 +65,18 @@ tool-advisor data status|inspect|export|purge` provides operator visibility and
 retention control. Invalid records are quarantined rather than blocking the
 agent.
 
-Metadata consent, local content consent, remote consent, and remote content
-consent are independent. Content is absent from metadata-only events and passes
-defense-in-depth redaction for common bearer/API-key forms before persistence or
-export. Remote transport requires an explicit HTTPS endpoint and is never
-created by advisor enablement or local capture. The HTTP adapter reuses the
-existing Eggfetch client-construction seam; tests inject a fake transport so a
-default/off configuration cannot make a network attempt.
+Metadata consent, local content consent, remote metadata consent, and remote
+content consent are independent. New events carry a host-owned
+`TrainingConsentSnapshot`; legacy v1 booleans remain readable as audit fields
+but cannot authorize transport. Content is absent from metadata-only events
+and passes defense-in-depth redaction for common bearer/API-key forms before
+persistence or export. Remote transport requires an explicit HTTPS endpoint,
+an effective current host policy, and an event snapshot that grants the same
+scope. Revocation is checked again at send time, so queued events cannot use
+stale consent. Remote transport is never created by advisor enablement or
+local capture. The HTTP adapter reuses the existing Eggfetch
+client-construction seam; tests inject a fake transport so a default/off
+configuration cannot make a network attempt.
 
 ## Integration and qualification (M005)
 
