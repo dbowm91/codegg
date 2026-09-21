@@ -104,21 +104,28 @@ fn project_preturn_promotions(
         .iter()
         .map(|definition| definition.name.clone())
         .collect();
-    let candidates = crate::tool_advisor::candidates_from_surface(
-        surface,
+    // Deferred-first shortlisting: build the full eligible deferred universe
+    // from the resolved surface before applying any candidate limit, so a
+    // relevant deferred tool past the first-N surface window still reaches
+    // the advisor. Authority filtering stays upstream in `ResolvedToolSurface`;
+    // required/never-reduce entries are excluded here and revalidated again
+    // at promotion time.
+    let eligible = crate::tool_advisor::candidates_from_deferred_surface(surface, &deferred_names);
+    let (candidates, preselection) = crate::tool_advisor::preselect_candidates(
+        eligible,
+        context,
         config
             .max_candidates
             .min(crate::tool_advisor::MAX_CANDIDATES),
-    )
-    .into_iter()
-    .filter(|candidate| {
-        deferred_names.contains(&candidate.name)
-            || surface
-                .canonical_to_wire
-                .get(&candidate.name)
-                .is_some_and(|wire| deferred_names.contains(wire))
-    })
-    .collect::<Vec<_>>();
+    );
+    tracing::debug!(
+        scope = "preturn_disclosure",
+        eligible_deferred = preselection.eligible_deferred,
+        shortlisted = preselection.shortlisted,
+        truncated = preselection.truncated,
+        preselect_millis = preselection.elapsed_millis,
+        "projected deferred-first advisor shortlist"
+    );
     if candidates.is_empty() {
         return std::collections::BTreeSet::new();
     }
@@ -1161,32 +1168,527 @@ mod tests {
         assert!(!active.contains("work_order"));
     }
 
-    struct PreturnAdvisor {
-        names: Vec<String>,
+    struct RecordingAdvisor {
+        seen: std::sync::Mutex<Vec<String>>,
+        calls: std::sync::atomic::AtomicUsize,
+        promote_first: Vec<String>,
         abstain: f64,
+        fail: bool,
     }
 
-    impl crate::tool_advisor::ToolAdvisor for PreturnAdvisor {
+    impl RecordingAdvisor {
+        fn new(promote_first: Vec<String>) -> Self {
+            Self {
+                seen: std::sync::Mutex::new(Vec::new()),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                promote_first,
+                abstain: 0.0,
+                fail: false,
+            }
+        }
+
+        fn seen_names(&self) -> Vec<String> {
+            self.seen.lock().expect("seen names").clone()
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl crate::tool_advisor::ToolAdvisor for RecordingAdvisor {
         fn score(
             &self,
             input: &crate::tool_advisor::ToolAdvisorInput,
         ) -> anyhow::Result<crate::tool_advisor::ToolAdvisorPrediction> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *self.seen.lock().expect("record input") = input
+                .candidates
+                .iter()
+                .map(|candidate| candidate.name.clone())
+                .collect();
+            if self.fail {
+                return Err(anyhow::anyhow!("injected advisor failure"));
+            }
+            let mut ranked = Vec::new();
+            for name in &self.promote_first {
+                if input
+                    .candidates
+                    .iter()
+                    .any(|candidate| &candidate.name == name)
+                {
+                    ranked.push(crate::tool_advisor::RankedCandidate {
+                        name: name.clone(),
+                        score: 1.0 - ranked.len() as f64 * 0.1,
+                    });
+                }
+            }
+            for candidate in &input.candidates {
+                if !ranked.iter().any(|item| item.name == candidate.name) {
+                    ranked.push(crate::tool_advisor::RankedCandidate {
+                        name: candidate.name.clone(),
+                        score: 0.05,
+                    });
+                }
+            }
             Ok(crate::tool_advisor::ToolAdvisorPrediction {
                 schema_version: crate::tool_advisor::PREDICTION_SCHEMA_VERSION,
                 case_id: input.case_id.clone(),
-                ranked: self
-                    .names
-                    .iter()
-                    .enumerate()
-                    .map(|(index, name)| crate::tool_advisor::RankedCandidate {
-                        name: name.clone(),
-                        score: 1.0 - index as f64 * 0.1,
-                    })
-                    .collect(),
+                ranked,
                 abstain_probability: Some(self.abstain),
                 mode: "test".into(),
             })
         }
+    }
+
+    fn tool_definition(
+        name: &str,
+        description: &str,
+        deferred: bool,
+    ) -> crate::provider::ToolDefinition {
+        crate::provider::ToolDefinition {
+            name: name.into(),
+            description: description.into(),
+            parameters: serde_json::json!({"type": "object"}),
+            defer_loading: deferred.then_some(true),
+        }
+    }
+
+    fn deferred_from_surface(
+        surface: &crate::agent::tool_surface::ResolvedToolSurface,
+    ) -> Vec<crate::provider::ToolDefinition> {
+        surface
+            .definitions()
+            .into_iter()
+            .filter(|definition| definition.defer_loading == Some(true))
+            .collect()
+    }
+
+    fn promote_config<'a>(
+        advisor: &'a dyn crate::tool_advisor::ToolAdvisor,
+        max_candidates: usize,
+    ) -> PreturnDisclosureConfig<'a> {
+        PreturnDisclosureConfig {
+            advisor,
+            mode: crate::tool_advisor::AdvisorMode::Promote,
+            threshold: 0.5,
+            max_promotions: 2,
+            schema_budget: 16 * 1024,
+            max_candidates,
+        }
+    }
+
+    #[test]
+    fn late_position_deferred_tool_reaches_the_advisor() {
+        // Nine immediate tools sort before the deferred target; the old
+        // first-N truncation would have hidden it from the advisor.
+        let mut definitions = Vec::new();
+        for index in 0..9 {
+            definitions.push(tool_definition(
+                &format!("core_{index:02}"),
+                "Unrelated scaffold maintenance",
+                false,
+            ));
+        }
+        definitions.push(tool_definition(
+            "zzz_lsp_definition",
+            "Jump to a symbol definition using language server semantics",
+            true,
+        ));
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            definitions,
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        let advisor = RecordingAdvisor::new(vec!["zzz_lsp_definition".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&advisor, 4),
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["zzz_lsp_definition".into()])
+        );
+        assert_eq!(advisor.seen_names(), vec!["zzz_lsp_definition".to_string()]);
+    }
+
+    #[test]
+    fn immediate_tools_do_not_consume_neural_candidate_slots() {
+        let mut definitions = Vec::new();
+        for index in 0..8 {
+            definitions.push(tool_definition(
+                &format!("core_{index:02}"),
+                "Unrelated scaffold maintenance",
+                false,
+            ));
+        }
+        definitions.push(tool_definition(
+            "deferred_a",
+            "Unrelated scaffold maintenance",
+            true,
+        ));
+        definitions.push(tool_definition(
+            "deferred_b",
+            "Unrelated scaffold maintenance",
+            true,
+        ));
+        definitions.push(tool_definition(
+            "zzz_relevant",
+            "Jump to a symbol definition using language server semantics",
+            true,
+        ));
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            definitions,
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        let advisor = RecordingAdvisor::new(vec!["zzz_relevant".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&advisor, 2),
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["zzz_relevant".into()])
+        );
+        let seen = advisor.seen_names();
+        assert!(seen.contains(&"zzz_relevant".to_string()));
+        assert!(seen.iter().all(|name| !name.starts_with("core_")));
+        assert!(seen.len() <= 2);
+    }
+
+    #[test]
+    fn large_deferred_catalog_preselects_the_relevant_late_candidate() {
+        let mut definitions = vec![
+            tool_definition("read", "Read files", false),
+            tool_definition("grep", "Search literal text", false),
+        ];
+        for index in 0..10 {
+            definitions.push(tool_definition(
+                &format!("deferred_{index:02}"),
+                "Unrelated scaffold maintenance",
+                true,
+            ));
+        }
+        definitions.push(tool_definition(
+            "zzz_target",
+            "Jump to a symbol definition using language server semantics",
+            true,
+        ));
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            definitions,
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        let advisor = RecordingAdvisor::new(vec!["zzz_target".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&advisor, 3),
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["zzz_target".into()])
+        );
+        let seen = advisor.seen_names();
+        assert!(seen.contains(&"zzz_target".to_string()));
+        assert!(seen.len() <= 3);
+    }
+
+    #[test]
+    fn preselection_tie_ordering_is_stable() {
+        let definitions = vec![
+            tool_definition("aaa_dup", "Jump to a symbol definition", true),
+            tool_definition("zzz_dup", "Jump to a symbol definition", true),
+        ];
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            definitions,
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        let first_advisor = RecordingAdvisor::new(vec!["aaa_dup".into(), "zzz_dup".into()]);
+        project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&first_advisor, 1),
+        );
+        let second_advisor = RecordingAdvisor::new(vec!["aaa_dup".into(), "zzz_dup".into()]);
+        project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&second_advisor, 1),
+        );
+        assert_eq!(first_advisor.seen_names(), second_advisor.seen_names());
+        assert_eq!(first_advisor.seen_names().len(), 1);
+    }
+
+    #[test]
+    fn denied_and_disabled_tools_never_enter_the_eligible_set() {
+        for (denied, disabled) in [
+            (
+                std::collections::BTreeSet::from(["lsp_definition".to_string()]),
+                std::collections::BTreeSet::new(),
+            ),
+            (
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::from(["lsp_definition".to_string()]),
+            ),
+        ] {
+            let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+                vec![
+                    tool_definition("read", "Read files", false),
+                    tool_definition("lsp_definition", "Jump to a symbol definition", true),
+                ],
+                &denied,
+                &disabled,
+                false,
+                true,
+                None,
+            )
+            .expect("resolved surface");
+            assert!(surface
+                .omissions
+                .iter()
+                .any(|omission| omission.canonical_name == "lsp_definition"));
+            let deferred = deferred_from_surface(&surface);
+            assert!(deferred
+                .iter()
+                .all(|definition| definition.name != "lsp_definition"));
+            // Even an adversarial advisor ranking the denied tool first
+            // cannot promote it: it never reaches the scorer.
+            let advisor = RecordingAdvisor::new(vec!["lsp_definition".into()]);
+            let promoted = project_preturn_promotions(
+                &surface,
+                &deferred,
+                "find the symbol definition",
+                promote_config(&advisor, 16),
+            );
+            assert!(promoted.is_empty());
+            assert!(
+                !advisor.seen_names().contains(&"lsp_definition".to_string()),
+                "denied/disabled tool reached the advisor input"
+            );
+        }
+    }
+
+    #[test]
+    fn required_tools_are_excluded_from_learned_promotion_candidates() {
+        // `read` is required/never-reduce by surface construction.
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            vec![
+                tool_definition("read", "Read files", true),
+                tool_definition("lsp_definition", "Jump to a symbol definition", true),
+            ],
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        assert!(surface
+            .tools
+            .iter()
+            .find(|tool| tool.canonical_name == "read")
+            .is_some_and(|tool| tool.required && tool.never_reduce));
+        let deferred = deferred_from_surface(&surface);
+        let advisor = RecordingAdvisor::new(vec!["read".into(), "lsp_definition".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&advisor, 16),
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["lsp_definition".into()])
+        );
+        assert!(!advisor.seen_names().contains(&"read".to_string()));
+    }
+
+    #[test]
+    fn plugin_wire_alias_mapping_survives_preselection() {
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve_with_aliases(
+            vec![
+                tool_definition("read", "Read files", false),
+                tool_definition("mcp__docs_search", "Search documentation pages", true),
+            ],
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+            &std::collections::BTreeMap::from([(
+                "mcp__docs_search".to_string(),
+                "docs_search".to_string(),
+            )]),
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].name, "mcp__docs_search");
+        let advisor = RecordingAdvisor::new(vec!["docs_search".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "search the documentation pages",
+            promote_config(&advisor, 16),
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["docs_search".into()])
+        );
+        assert_eq!(advisor.seen_names(), vec!["docs_search".to_string()]);
+    }
+
+    #[test]
+    fn unknown_textual_tool_enters_via_descriptor_relevance() {
+        let mut definitions = Vec::new();
+        for index in 0..6 {
+            definitions.push(tool_definition(
+                &format!("deferred_{index:02}"),
+                "Unrelated scaffold maintenance",
+                true,
+            ));
+        }
+        definitions.push(tool_definition(
+            "zorg_lattice",
+            "Jump to a symbol definition using language server semantics",
+            true,
+        ));
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            definitions,
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        let advisor = RecordingAdvisor::new(vec!["zorg_lattice".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&advisor, 3),
+        );
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["zorg_lattice".into()])
+        );
+    }
+
+    #[test]
+    fn empty_and_failed_preselection_leave_the_palette_unchanged() {
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            vec![
+                tool_definition("read", "Read files", false),
+                tool_definition("lsp_definition", "Jump to a symbol definition", true),
+            ],
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        // Empty context short-circuits before the advisor is consulted.
+        let advisor = RecordingAdvisor::new(vec!["lsp_definition".into()]);
+        assert!(
+            project_preturn_promotions(&surface, &deferred, "", promote_config(&advisor, 16),)
+                .is_empty()
+        );
+        assert_eq!(advisor.call_count(), 0);
+        // Advisor failure also leaves the palette unchanged.
+        let failing = RecordingAdvisor {
+            fail: true,
+            ..RecordingAdvisor::new(vec!["lsp_definition".into()])
+        };
+        assert!(project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&failing, 16),
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn candidate_and_schema_budgets_apply_independently() {
+        let definitions = vec![
+            tool_definition(
+                "aaa_first",
+                "Jump to a symbol definition using language server semantics",
+                true,
+            ),
+            tool_definition(
+                "zzz_second",
+                "Jump to a symbol definition using language server semantics",
+                true,
+            ),
+        ];
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            definitions,
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        // The neural budget admits one candidate even though promotion would
+        // allow two: at most one promotion is possible.
+        let advisor = RecordingAdvisor::new(vec!["aaa_first".into(), "zzz_second".into()]);
+        let promoted = project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            promote_config(&advisor, 1),
+        );
+        assert_eq!(promoted.len(), 1);
+        // A starved schema budget independently blocks promotion.
+        let starved = PreturnDisclosureConfig {
+            schema_budget: 1,
+            ..promote_config(&advisor, 16)
+        };
+        assert!(project_preturn_promotions(
+            &surface,
+            &deferred,
+            "find the symbol definition",
+            starved,
+        )
+        .is_empty());
     }
 
     #[test]
@@ -1218,10 +1720,7 @@ mod tests {
             .into_iter()
             .filter(|definition| definition.defer_loading == Some(true))
             .collect::<Vec<_>>();
-        let advisor = PreturnAdvisor {
-            names: vec!["lsp_definition".into(), "not_on_surface".into()],
-            abstain: 0.0,
-        };
+        let advisor = RecordingAdvisor::new(vec!["lsp_definition".into()]);
         assert!(project_preturn_promotions(
             &surface,
             &deferred,
@@ -1283,10 +1782,8 @@ mod tests {
             },
         )
         .is_empty());
-        let abstaining_advisor = PreturnAdvisor {
-            names: vec!["lsp_definition".into()],
-            abstain: 0.9,
-        };
+        let mut abstaining_advisor = RecordingAdvisor::new(vec!["lsp_definition".into()]);
+        abstaining_advisor.abstain = 0.9;
         assert!(project_preturn_promotions(
             &surface,
             &deferred,

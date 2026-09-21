@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Evidence Corrective C004 — Clean Offline Requalification and Live-M004 Gate
 
-Status: blocked
+Status: ready for handoff (unblocked by C001+C002+C003 closures)
 
 Repository baseline: `71460c0cb1421f33a62d57123ac562c8a7c4bf1c`
 

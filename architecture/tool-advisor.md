@@ -154,11 +154,19 @@ Promotion is turn-local and never supplies execution arguments or widens
 authority. Advisor mode does not enable telemetry.
 
 Pre-turn disclosure is bounded by max_promotions (hard-capped at 2),
-max_disclosure_schema_bytes, and the configured candidate count. The host
-revalidates every predicted name against the final surface and excludes
-required/never-reduce tools from learned visibility decisions. Denied,
-disabled, plan-ineligible, non-callable, and parent-ceiling tools never enter
-the advisor input.
+max_disclosure_schema_bytes, and the configured candidate count. Candidate
+construction is deferred-first: the full eligible deferred universe is built
+from the resolved surface before any limit applies, and only then does a
+deterministic BM25 preselection over the advisor-visible descriptor fields
+narrow oversized universes to the neural budget
+(`candidates_from_deferred_surface` + `preselect_candidates`; measured
+preselection cost is single-digit milliseconds at 128 candidates, far below
+provider latency). Resolved-surface position is never a ranking signal, so a
+relevant deferred tool past the first-N surface window still reaches the
+learned scorer. The host revalidates every predicted name against the final
+surface and excludes required/never-reduce tools from learned visibility
+decisions. Denied, disabled, plan-ineligible, non-callable, and parent-ceiling
+tools never enter the advisor input.
 
 `codegg tool-advisor qualify --model <artifact> --suite <jsonl>` emits the
 pre-registered keyword/BM25/learned matrix by fixture tier, an unknown-tool

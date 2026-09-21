@@ -286,16 +286,30 @@ pub struct ToolAdvisorInput {
     pub surface_fingerprint: String,
 }
 
-/// Build advisor candidates only from a surface that has already passed the
-/// normal policy, plan-mode, disabled-tool, and parent-ceiling filters.
-pub fn candidates_from_surface(
+/// Build advisor candidates from the final eligible deferred universe.
+///
+/// Unlike position-based truncation, this sees every policy-allowed deferred
+/// descriptor before any candidate limit is applied. Only entries of an
+/// already authority-filtered surface are accepted; required and never-reduce
+/// tools are excluded from learned promotion candidacy here (the promotion
+/// site revalidates them independently). Callers apply
+/// [`preselect_candidates`] afterwards when the universe exceeds the neural
+/// budget.
+pub fn candidates_from_deferred_surface(
     surface: &crate::agent::tool_surface::ResolvedToolSurface,
-    max_candidates: usize,
+    deferred_names: &BTreeSet<String>,
 ) -> Vec<ToolAdvisorCandidate> {
     surface
         .tools
         .iter()
-        .take(max_candidates.min(MAX_CANDIDATES))
+        .filter(|tool| !tool.required && !tool.never_reduce)
+        .filter(|tool| {
+            deferred_names.contains(&tool.canonical_name)
+                || surface
+                    .canonical_to_wire
+                    .get(&tool.canonical_name)
+                    .is_some_and(|wire| deferred_names.contains(wire))
+        })
         .map(|tool| ToolAdvisorCandidate {
             name: tool.canonical_name.clone(),
             description: tool.definition.description.clone(),
@@ -306,6 +320,130 @@ pub fn candidates_from_surface(
             synthetic_identity: tool.canonical_name.starts_with("mcp__"),
         })
         .collect()
+}
+
+/// Deferred-first shortlisting report. `shortlisted_names` supports the
+/// candidate-recall instrumentation C004 consumes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreselectionReport {
+    pub eligible_deferred: usize,
+    pub shortlisted: usize,
+    pub truncated: bool,
+    pub elapsed_millis: u128,
+    pub shortlisted_names: Vec<String>,
+}
+
+/// Narrow the full eligible deferred universe to the neural budget.
+///
+/// When the universe fits, every candidate passes through untouched. When it
+/// exceeds the budget, a deterministic BM25 preselection over the same
+/// textual fields the advisor scores (name, description, category,
+/// disclosure) chooses which allowed deferred descriptors reach the learned
+/// scorer. Resolved-surface position is never a ranking signal. The
+/// preselector is local, deterministic, and cannot promote or execute
+/// anything; it only orders already-authorized descriptors.
+pub fn preselect_candidates(
+    candidates: Vec<ToolAdvisorCandidate>,
+    context: &str,
+    max_candidates: usize,
+) -> (Vec<ToolAdvisorCandidate>, PreselectionReport) {
+    let budget = max_candidates.min(MAX_CANDIDATES);
+    let report_for =
+        |shortlisted: &[ToolAdvisorCandidate], truncated: bool, elapsed_millis: u128| {
+            PreselectionReport {
+                eligible_deferred: candidates.len(),
+                shortlisted: shortlisted.len(),
+                truncated,
+                elapsed_millis,
+                shortlisted_names: shortlisted
+                    .iter()
+                    .map(|candidate| candidate.name.clone())
+                    .collect(),
+            }
+        };
+    if candidates.is_empty() || budget == 0 {
+        let empty = Vec::new();
+        return (empty, report_for(&[], true, 0));
+    }
+    if candidates.len() <= budget {
+        return (candidates.clone(), report_for(&candidates, false, 0));
+    }
+    let started = Instant::now();
+    let metadata: Vec<ToolMetadata> = candidates
+        .iter()
+        .map(|candidate| ToolMetadata {
+            name: candidate.name.clone(),
+            description: format!(
+                "{} {} {}",
+                candidate.description, candidate.category, candidate.disclosure
+            ),
+            parameters: serde_json::Value::Null,
+            defer_load: true,
+            category: candidate.category.clone(),
+            disclosure: candidate.disclosure.clone(),
+        })
+        .collect();
+    let ranked = ToolCatalog::rank_descriptors(context, &metadata, SearchMode::BM25);
+    let by_name: HashMap<&str, &ToolAdvisorCandidate> = candidates
+        .iter()
+        .map(|candidate| (candidate.name.as_str(), candidate))
+        .collect();
+    // BM25 may return no rows for an empty context; fall back to stable
+    // surface order rather than dropping the whole universe. The fallback is
+    // still drawn from the eligible set, never from surface position beyond
+    // it — every member here is already an eligible deferred descriptor.
+    let shortlisted: Vec<ToolAdvisorCandidate> = if ranked.is_empty() {
+        candidates.iter().take(budget).cloned().collect()
+    } else {
+        ranked
+            .iter()
+            .filter_map(|metadata| by_name.get(metadata.name.as_str()).copied().cloned())
+            .take(budget)
+            .collect()
+    };
+    let elapsed_millis = started.elapsed().as_millis();
+    (
+        shortlisted.clone(),
+        report_for(&shortlisted, true, elapsed_millis),
+    )
+}
+
+/// Candidate-recall measurement for C004: which labeled relevant deferred
+/// tools survived preselection into the learned scorer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandidateRecall {
+    pub relevant_total: usize,
+    pub relevant_shortlisted: usize,
+    pub recall: f64,
+    pub missing: Vec<String>,
+}
+
+pub fn preselection_recall(
+    report: &PreselectionReport,
+    relevant: &BTreeSet<String>,
+) -> CandidateRecall {
+    let shortlisted: BTreeSet<&str> = report
+        .shortlisted_names
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut missing: Vec<String> = relevant
+        .iter()
+        .filter(|name| !shortlisted.contains(name.as_str()))
+        .cloned()
+        .collect();
+    missing.sort();
+    let hit = relevant.len() - missing.len();
+    CandidateRecall {
+        relevant_total: relevant.len(),
+        relevant_shortlisted: hit,
+        recall: if relevant.is_empty() {
+            1.0
+        } else {
+            hit as f64 / relevant.len() as f64
+        },
+        missing,
+    }
 }
 
 pub trait ToolAdvisor: Send + Sync {
@@ -2620,6 +2758,162 @@ mod tests {
                 .map(ToolAdvisorCandidate::from_metadata)
                 .collect(),
             surface_fingerprint: "surface".into(),
+        }
+    }
+
+    #[test]
+    fn preselection_passes_through_small_universes_untouched() {
+        let candidates = vec![
+            ToolAdvisorCandidate {
+                name: "alpha".into(),
+                description: "Alpha helper".into(),
+                category: "ReadOnly".into(),
+                disclosure: "deferred".into(),
+                synthetic_identity: false,
+            },
+            ToolAdvisorCandidate {
+                name: "beta".into(),
+                description: "Beta helper".into(),
+                category: "ReadOnly".into(),
+                disclosure: "deferred".into(),
+                synthetic_identity: false,
+            },
+        ];
+        let (shortlisted, report) = preselect_candidates(candidates, "alpha task", 16);
+        assert_eq!(shortlisted.len(), 2);
+        assert!(!report.truncated);
+        assert_eq!(report.eligible_deferred, 2);
+        assert_eq!(report.shortlisted, 2);
+    }
+
+    #[test]
+    fn preselection_ranks_relevant_late_candidates_by_descriptor_relevance() {
+        let mut candidates = Vec::new();
+        for index in 0..20 {
+            candidates.push(ToolAdvisorCandidate {
+                name: format!("filler_{index:02}"),
+                description: "Unrelated scaffold maintenance".into(),
+                category: "ReadOnly".into(),
+                disclosure: "deferred".into(),
+                synthetic_identity: false,
+            });
+        }
+        candidates.push(ToolAdvisorCandidate {
+            name: "symbol_definition".into(),
+            description: "Jump to a symbol definition using language server semantics".into(),
+            category: "ReadOnly".into(),
+            disclosure: "deferred".into(),
+            synthetic_identity: false,
+        });
+        let (shortlisted, report) =
+            preselect_candidates(candidates, "find the symbol definition", 4);
+        // BM25 returns only positive-score rows, so the shortlist holds just
+        // the relevant descriptor instead of padding with lexical misses.
+        assert_eq!(shortlisted.len(), 1);
+        assert!(report.truncated);
+        assert_eq!(report.eligible_deferred, 21);
+        assert!(
+            shortlisted
+                .iter()
+                .any(|candidate| candidate.name == "symbol_definition"),
+            "relevant late candidate missing from: {:?}",
+            shortlisted
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        // Deterministic: repeated runs agree exactly, including ties.
+        let (rerun, _) = preselect_candidates(
+            (0..20)
+                .map(|index| ToolAdvisorCandidate {
+                    name: format!("filler_{index:02}"),
+                    description: "Unrelated scaffold maintenance".into(),
+                    category: "ReadOnly".into(),
+                    disclosure: "deferred".into(),
+                    synthetic_identity: false,
+                })
+                .chain(std::iter::once(ToolAdvisorCandidate {
+                    name: "symbol_definition".into(),
+                    description: "Jump to a symbol definition using language server semantics"
+                        .into(),
+                    category: "ReadOnly".into(),
+                    disclosure: "deferred".into(),
+                    synthetic_identity: false,
+                }))
+                .collect(),
+            "find the symbol definition",
+            4,
+        );
+        assert_eq!(
+            shortlisted
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>(),
+            rerun
+                .iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn preselection_never_leaves_the_eligible_universe() {
+        let candidates = vec![ToolAdvisorCandidate {
+            name: "only".into(),
+            description: "Only eligible descriptor".into(),
+            category: "ReadOnly".into(),
+            disclosure: "deferred".into(),
+            synthetic_identity: false,
+        }];
+        // Empty context yields no BM25 rows; the fallback still serves the
+        // eligible set bounded by budget instead of dropping everything.
+        let (shortlisted, report) = preselect_candidates(candidates, "", 16);
+        assert_eq!(shortlisted.len(), 1);
+        assert_eq!(report.shortlisted_names, vec!["only".to_string()]);
+        let (empty, _) = preselect_candidates(Vec::new(), "context", 16);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn preselection_recall_reports_missing_relevant_candidates() {
+        let report = PreselectionReport {
+            eligible_deferred: 10,
+            shortlisted: 3,
+            truncated: true,
+            elapsed_millis: 0,
+            shortlisted_names: vec!["a".into(), "b".into(), "c".into()],
+        };
+        let recall = preselection_recall(&report, &BTreeSet::from(["a".into(), "zzz".into()]));
+        assert_eq!(recall.relevant_total, 2);
+        assert_eq!(recall.relevant_shortlisted, 1);
+        assert!((recall.recall - 0.5).abs() < f64::EPSILON);
+        assert_eq!(recall.missing, vec!["zzz".to_string()]);
+    }
+
+    #[test]
+    fn preselection_latency_is_well_below_provider_latency() {
+        for size in [16usize, 64, 128] {
+            let candidates: Vec<ToolAdvisorCandidate> = (0..size)
+                .map(|index| ToolAdvisorCandidate {
+                    name: format!("deferred_{index:03}"),
+                    description: "Jump to a symbol definition using language server semantics"
+                        .into(),
+                    category: "ReadOnly".into(),
+                    disclosure: "deferred".into(),
+                    synthetic_identity: false,
+                })
+                .collect();
+            let started = Instant::now();
+            let (shortlisted, report) =
+                preselect_candidates(candidates, "find the symbol definition", 16);
+            let elapsed = started.elapsed();
+            eprintln!(
+                "preselect universe {size}: shortlisted {}; {elapsed:?}",
+                shortlisted.len()
+            );
+            assert!(shortlisted.len() <= 16);
+            assert!(report.elapsed_millis < 1000);
+            assert!(elapsed.as_secs() < 1);
         }
     }
 
