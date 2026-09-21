@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Milestone 004 — Consent-Gated Training Telemetry
 
-Status: active
+Status: implemented
 
 Repository baseline: `ed960f2ae7043acd816970f7d06e74dc69b09ae8`
 

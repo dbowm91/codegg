@@ -331,5 +331,5 @@ The roadmap closes only when CodeGG has a qualified optional local advisor path,
 | M001 | closed | `plans/implementation/tool-selection-advisor/001-evaluation-corpus-and-baselines.md` | `plans/closure/tool-selection-advisor/001-status.md` | none |
 | M002 | closed | `plans/implementation/tool-selection-advisor/002-optional-pure-rust-runtime.md` | `plans/closure/tool-selection-advisor/002-status.md` | none |
 | M003 | closed | `plans/implementation/tool-selection-advisor/003-local-rust-training-and-model-lifecycle.md` | `plans/closure/tool-selection-advisor/003-status.md` | none |
-| M004 | active | `plans/implementation/tool-selection-advisor/004-consent-gated-training-telemetry.md` | — | none |
+| M004 | closing | `plans/implementation/tool-selection-advisor/004-consent-gated-training-telemetry.md` | — | closure evidence review |
 | M005 | blocked | `plans/implementation/tool-selection-advisor/005-advisor-integration-and-qualification.md` | — | M002 + M003 + M004 closure |
