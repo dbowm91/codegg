@@ -7,8 +7,10 @@
 //! and does not receive policy or execution authority.
 
 use anyhow::{anyhow, Context, Result};
-use candle_core::{DType, Device, Tensor, Var};
-use candle_nn::{AdamW, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap};
+use candle_core::{DType, Device, Tensor, Var, D};
+use candle_nn::{
+    embedding, linear, AdamW, Embedding, Linear, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap,
+};
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -405,13 +407,453 @@ pub fn load_coverage(weights_path: &Path, varmap: &VarMap) -> Result<LoadCoverag
     })
 }
 
+/// Documented forward-parity tolerance between the CodeGG-owned
+/// differentiable encoder and upstream `BertModel::forward`.
+///
+/// Both paths compute the same BERT mathematics in `f32`; the only
+/// difference is the LayerNorm kernel (composite `layer_norm_slow` vs the
+/// fused `apply_op3_no_bwd` kernel). Measured max abs deltas are ~1e-6 on
+/// the tiny fixture and ~1e-6 on the MiniLM reference checkpoint, so 1e-4
+/// leaves two orders of magnitude of headroom without hiding a real
+/// implementation divergence.
+pub const DIFFERENTIABLE_PARITY_TOLERANCE: f32 = 1e-4;
+
+/// LayerNorm with Candle-owned variables but a composite differentiable
+/// forward.
+///
+/// Variable creation is delegated verbatim to `candle_nn::layer_norm`
+/// (same `weight`/`bias` names, same `Const(1)`/`Const(0)` inits), so the
+/// qualified MiniLM safetensors load by tensor name with zero missing
+/// variables. Only the forward kernel is substituted: instead of
+/// `ops::layer_norm` (which records `BackpropOp::none` on Candle 0.11 and
+/// silently severs encoder autograd) this calls the composite
+/// `ops::layer_norm_slow`, which the M001A premise test already proves
+/// propagates gradients. No Candle crate is forked or patched.
+#[derive(Clone, Debug)]
+pub struct DifferentiableLayerNorm {
+    inner: candle_nn::LayerNorm,
+}
+
+impl DifferentiableLayerNorm {
+    pub fn load(size: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
+        Ok(Self {
+            inner: candle_nn::layer_norm(size, eps, vb)?,
+        })
+    }
+
+    pub fn forward(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
+        let bias = self.inner.bias().ok_or_else(|| {
+            candle_core::Error::Msg("differentiable LayerNorm is missing bias".into())
+        })?;
+        candle_nn::ops::layer_norm_slow(xs, self.inner.weight(), bias, self.inner.eps() as f32)
+    }
+}
+
+#[derive(Clone)]
+struct DiffHiddenActLayer {
+    act: HiddenAct,
+}
+
+impl DiffHiddenActLayer {
+    fn new(act: HiddenAct) -> Self {
+        Self { act }
+    }
+
+    fn forward(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
+        match self.act {
+            HiddenAct::Gelu => xs.gelu_erf(),
+            HiddenAct::GeluApproximate => xs.gelu(),
+            HiddenAct::Relu => xs.relu(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DiffDropout;
+
+impl Module for DiffDropout {
+    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        Ok(x.clone())
+    }
+}
+
+#[derive(Clone)]
+struct DiffBertEmbeddings {
+    word_embeddings: Embedding,
+    position_embeddings: Embedding,
+    token_type_embeddings: Embedding,
+    layer_norm: DifferentiableLayerNorm,
+    dropout: DiffDropout,
+}
+
+impl DiffBertEmbeddings {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            word_embeddings: embedding(
+                config.vocab_size,
+                config.hidden_size,
+                vb.pp("word_embeddings"),
+            )?,
+            position_embeddings: embedding(
+                config.max_position_embeddings,
+                config.hidden_size,
+                vb.pp("position_embeddings"),
+            )?,
+            token_type_embeddings: embedding(
+                config.type_vocab_size,
+                config.hidden_size,
+                vb.pp("token_type_embeddings"),
+            )?,
+            layer_norm: DifferentiableLayerNorm::load(
+                config.hidden_size,
+                config.layer_norm_eps,
+                vb.pp("LayerNorm"),
+            )?,
+            dropout: DiffDropout,
+        })
+    }
+
+    fn forward(&self, input_ids: &Tensor, token_type_ids: &Tensor) -> candle_core::Result<Tensor> {
+        let (_bsize, seq_len) = input_ids.dims2()?;
+        let input_embeddings = self.word_embeddings.forward(input_ids)?;
+        let token_type_embeddings = self.token_type_embeddings.forward(token_type_ids)?;
+        let mut embeddings = (&input_embeddings + token_type_embeddings)?;
+        let position_ids = Tensor::new(
+            &(0..seq_len as u32).collect::<Vec<_>>()[..],
+            input_ids.device(),
+        )?;
+        embeddings = embeddings.broadcast_add(&self.position_embeddings.forward(&position_ids)?)?;
+        let embeddings = self.layer_norm.forward(&embeddings)?;
+        self.dropout.forward(&embeddings)
+    }
+}
+
+#[derive(Clone)]
+struct DiffBertSelfAttention {
+    query: Linear,
+    key: Linear,
+    value: Linear,
+    dropout: DiffDropout,
+    num_attention_heads: usize,
+    attention_head_size: usize,
+}
+
+impl DiffBertSelfAttention {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        let attention_head_size = config.hidden_size / config.num_attention_heads;
+        let all_head_size = config.num_attention_heads * attention_head_size;
+        Ok(Self {
+            query: linear(config.hidden_size, all_head_size, vb.pp("query"))?,
+            key: linear(config.hidden_size, all_head_size, vb.pp("key"))?,
+            value: linear(config.hidden_size, all_head_size, vb.pp("value"))?,
+            dropout: DiffDropout,
+            num_attention_heads: config.num_attention_heads,
+            attention_head_size,
+        })
+    }
+
+    fn transpose_for_scores(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
+        let mut new_x_shape = xs.dims().to_vec();
+        new_x_shape.pop();
+        new_x_shape.push(self.num_attention_heads);
+        new_x_shape.push(self.attention_head_size);
+        let xs = xs.reshape(new_x_shape.as_slice())?.transpose(1, 2)?;
+        xs.contiguous()
+    }
+
+    fn forward(
+        &self,
+        hidden_states: &Tensor,
+        attention_mask: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let query_layer = self.query.forward(hidden_states)?;
+        let key_layer = self.key.forward(hidden_states)?;
+        let value_layer = self.value.forward(hidden_states)?;
+        let query_layer = self.transpose_for_scores(&query_layer)?;
+        let key_layer = self.transpose_for_scores(&key_layer)?;
+        let value_layer = self.transpose_for_scores(&value_layer)?;
+        let attention_scores = query_layer.matmul(&key_layer.t()?)?;
+        let attention_scores = (attention_scores / (self.attention_head_size as f64).sqrt())?;
+        let attention_scores = attention_scores.broadcast_add(attention_mask)?;
+        let attention_probs = candle_nn::ops::softmax(&attention_scores, D::Minus1)?;
+        let attention_probs = self.dropout.forward(&attention_probs)?;
+        let context_layer = attention_probs.matmul(&value_layer)?;
+        let context_layer = context_layer.transpose(1, 2)?.contiguous()?;
+        context_layer.flatten_from(D::Minus2)
+    }
+}
+
+#[derive(Clone)]
+struct DiffBertSelfOutput {
+    dense: Linear,
+    layer_norm: DifferentiableLayerNorm,
+    dropout: DiffDropout,
+}
+
+impl DiffBertSelfOutput {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            dense: linear(config.hidden_size, config.hidden_size, vb.pp("dense"))?,
+            layer_norm: DifferentiableLayerNorm::load(
+                config.hidden_size,
+                config.layer_norm_eps,
+                vb.pp("LayerNorm"),
+            )?,
+            dropout: DiffDropout,
+        })
+    }
+
+    fn forward(
+        &self,
+        hidden_states: &Tensor,
+        input_tensor: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let hidden_states = self.dense.forward(hidden_states)?;
+        let hidden_states = self.dropout.forward(&hidden_states)?;
+        self.layer_norm.forward(&(hidden_states + input_tensor)?)
+    }
+}
+
+#[derive(Clone)]
+struct DiffBertAttention {
+    self_attention: DiffBertSelfAttention,
+    self_output: DiffBertSelfOutput,
+}
+
+impl DiffBertAttention {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            self_attention: DiffBertSelfAttention::load(vb.pp("self"), config)?,
+            self_output: DiffBertSelfOutput::load(vb.pp("output"), config)?,
+        })
+    }
+
+    fn forward(
+        &self,
+        hidden_states: &Tensor,
+        attention_mask: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let self_outputs = self.self_attention.forward(hidden_states, attention_mask)?;
+        self.self_output.forward(&self_outputs, hidden_states)
+    }
+}
+
+#[derive(Clone)]
+struct DiffBertIntermediate {
+    dense: Linear,
+    intermediate_act: DiffHiddenActLayer,
+}
+
+impl DiffBertIntermediate {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            dense: linear(config.hidden_size, config.intermediate_size, vb.pp("dense"))?,
+            intermediate_act: DiffHiddenActLayer::new(config.hidden_act),
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor) -> candle_core::Result<Tensor> {
+        self.intermediate_act
+            .forward(&self.dense.forward(hidden_states)?)
+    }
+}
+
+#[derive(Clone)]
+struct DiffBertOutput {
+    dense: Linear,
+    layer_norm: DifferentiableLayerNorm,
+    dropout: DiffDropout,
+}
+
+impl DiffBertOutput {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            dense: linear(config.intermediate_size, config.hidden_size, vb.pp("dense"))?,
+            layer_norm: DifferentiableLayerNorm::load(
+                config.hidden_size,
+                config.layer_norm_eps,
+                vb.pp("LayerNorm"),
+            )?,
+            dropout: DiffDropout,
+        })
+    }
+
+    fn forward(
+        &self,
+        hidden_states: &Tensor,
+        input_tensor: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let hidden_states = self.dense.forward(hidden_states)?;
+        let hidden_states = self.dropout.forward(&hidden_states)?;
+        self.layer_norm.forward(&(hidden_states + input_tensor)?)
+    }
+}
+
+#[derive(Clone)]
+pub struct DiffBertLayer {
+    attention: DiffBertAttention,
+    intermediate: DiffBertIntermediate,
+    output: DiffBertOutput,
+}
+
+impl DiffBertLayer {
+    fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            attention: DiffBertAttention::load(vb.pp("attention"), config)?,
+            intermediate: DiffBertIntermediate::load(vb.pp("intermediate"), config)?,
+            output: DiffBertOutput::load(vb.pp("output"), config)?,
+        })
+    }
+
+    fn forward(
+        &self,
+        hidden_states: &Tensor,
+        attention_mask: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let attention_output = self.attention.forward(hidden_states, attention_mask)?;
+        let intermediate_output = self.intermediate.forward(&attention_output)?;
+        self.output.forward(&intermediate_output, &attention_output)
+    }
+}
+
+#[derive(Clone)]
+pub struct DiffBertEncoder {
+    pub layers: Vec<DiffBertLayer>,
+}
+
+impl DiffBertEncoder {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        Ok(Self {
+            layers: (0..config.num_hidden_layers)
+                .map(|index| DiffBertLayer::load(vb.pp(format!("layer.{index}")), config))
+                .collect::<Result<Vec<_>>>()?,
+        })
+    }
+
+    pub fn forward(
+        &self,
+        hidden_states: &Tensor,
+        attention_mask: &Tensor,
+    ) -> candle_core::Result<Tensor> {
+        let mut hidden_states = hidden_states.clone();
+        for layer in self.layers.iter() {
+            hidden_states = layer.forward(&hidden_states, attention_mask)?;
+        }
+        Ok(hidden_states)
+    }
+}
+
+/// CodeGG-owned BERT model with a differentiable normalization path.
+///
+/// Variable names mirror `candle_transformers::models::bert::BertModel`
+/// exactly (`embeddings.*`, `encoder.layer.N.*`, plus the
+/// `<model_type>.` prefix fallback), so the M001A-qualified safetensors
+/// loads with zero missing variables and `load_coverage` stays 101/101.
+/// Only the LayerNorm kernel differs (composite vs fused); attention,
+/// embeddings, linear, softmax, and gelu reuse the same Candle ops.
+pub struct DifferentiableBertModel {
+    embeddings: DiffBertEmbeddings,
+    encoder: DiffBertEncoder,
+    pub device: Device,
+}
+
+impl DifferentiableBertModel {
+    pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
+        let (embeddings, encoder) = match (
+            DiffBertEmbeddings::load(vb.pp("embeddings"), config),
+            DiffBertEncoder::load(vb.pp("encoder"), config),
+        ) {
+            (Ok(embeddings), Ok(encoder)) => (embeddings, encoder),
+            (Err(first_err), _) | (_, Err(first_err)) => {
+                if let Some(model_type) = &config.model_type {
+                    if let (Ok(embeddings), Ok(encoder)) = (
+                        DiffBertEmbeddings::load(vb.pp(format!("{model_type}.embeddings")), config),
+                        DiffBertEncoder::load(vb.pp(format!("{model_type}.encoder")), config),
+                    ) {
+                        (embeddings, encoder)
+                    } else {
+                        return Err(first_err);
+                    }
+                } else {
+                    return Err(first_err);
+                }
+            }
+        };
+        Ok(Self {
+            embeddings,
+            encoder,
+            device: vb.device().clone(),
+        })
+    }
+
+    pub fn forward(
+        &self,
+        input_ids: &Tensor,
+        token_type_ids: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> candle_core::Result<Tensor> {
+        let embedding_output = self.embeddings.forward(input_ids, token_type_ids)?;
+        let attention_mask = match attention_mask {
+            Some(attention_mask) => attention_mask.clone(),
+            None => input_ids.ones_like()?,
+        };
+        let dtype = embedding_output.dtype();
+        let attention_mask = get_diff_extended_attention_mask(&attention_mask, dtype)?;
+        self.encoder.forward(&embedding_output, &attention_mask)
+    }
+}
+
+fn get_diff_extended_attention_mask(
+    attention_mask: &Tensor,
+    dtype: DType,
+) -> candle_core::Result<Tensor> {
+    let attention_mask = match attention_mask.rank() {
+        3 => attention_mask.unsqueeze(1)?,
+        2 => attention_mask.unsqueeze(1)?.unsqueeze(1)?,
+        _ => candle_core::bail!("Wrong shape for input_ids or attention_mask"),
+    };
+    let attention_mask = attention_mask.to_dtype(dtype)?;
+    (attention_mask.ones_like()? - &attention_mask)?.broadcast_mul(
+        &Tensor::try_from(f32::MIN)?
+            .to_device(attention_mask.device())?
+            .to_dtype(dtype)?,
+    )
+}
+
+/// Max/mean abs delta between the differentiable encoder and upstream
+/// `BertModel::forward` on one tokenized input. Both models must already
+/// hold the same weights (same manifest); the comparison is pure forward
+/// parity with no training.
+pub fn differentiable_forward_parity(
+    diff: &DifferentiableBertModel,
+    reference: &BertModel,
+    input_ids: &Tensor,
+    token_type_ids: &Tensor,
+    attention_mask: &Tensor,
+) -> Result<(f32, f32)> {
+    let diff_out = diff.forward(input_ids, token_type_ids, Some(attention_mask))?;
+    let ref_out = reference.forward(input_ids, token_type_ids, Some(attention_mask))?;
+    let delta = (&diff_out - &ref_out)?;
+    let abs = delta.abs()?;
+    let flat = abs.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+    if flat.is_empty() {
+        return Err(anyhow!("parity comparison saw an empty output"));
+    }
+    let max = flat.iter().copied().fold(0.0f32, f32::max);
+    let mean = flat.iter().sum::<f32>() / flat.len() as f32;
+    if !max.is_finite() || !mean.is_finite() {
+        return Err(anyhow!("parity deltas must be finite"));
+    }
+    Ok((max, mean))
+}
+
 pub struct CandleBertSequenceEncoder {
     pub assets: ResolvedAssets,
     pub config: Config,
     pub tokenizer: WordPieceTokenizer,
     pub device: Device,
     pub varmap: VarMap,
-    model: BertModel,
+    model: DifferentiableBertModel,
 }
 
 impl CandleBertSequenceEncoder {
@@ -423,7 +865,7 @@ impl CandleBertSequenceEncoder {
         let tokenizer = WordPieceTokenizer::from_vocab(&assets.vocabulary_path)?;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
-        let model = BertModel::load(vb, &config).context("construct BERT model")?;
+        let model = DifferentiableBertModel::load(vb, &config).context("construct BERT model")?;
         varmap
             .clone()
             .load(&assets.weights_path)
@@ -436,6 +878,47 @@ impl CandleBertSequenceEncoder {
             varmap,
             model,
         })
+    }
+
+    /// Tokenized model inputs for one context/candidate pair, reused by the
+    /// differentiable forward and by the upstream-reference parity check so
+    /// both models score bit-identical inputs.
+    fn tokenized_pair(&self, context: &str, candidate: &str) -> Result<(Tensor, Tensor, Tensor)> {
+        let encoded = self
+            .tokenizer
+            .encode_pair(context, candidate, MAX_PAIR_TOKENS);
+        let input_ids = Tensor::new(encoded.input_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let token_type_ids =
+            Tensor::new(encoded.token_type_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let attention_mask =
+            Tensor::new(encoded.attention_mask.as_slice(), &self.device)?.unsqueeze(0)?;
+        Ok((input_ids, token_type_ids, attention_mask))
+    }
+
+    /// Forward parity of the differentiable encoder against upstream
+    /// `BertModel::forward` on the same weights and inputs.
+    ///
+    /// Loads a separate upstream reference model from the same manifest
+    /// (own `VarMap`, same safetensors) and compares one representative
+    /// pair. Positive M001B closure requires the max delta to stay within
+    /// [`DIFFERENTIABLE_PARITY_TOLERANCE`].
+    pub fn forward_parity_against_reference(&self) -> Result<(f32, f32)> {
+        let ref_varmap = VarMap::new();
+        let ref_vb = VarBuilder::from_varmap(&ref_varmap, DType::F32, &self.device);
+        let reference = BertModel::load(ref_vb, &self.config).context("load reference BERT")?;
+        ref_varmap
+            .clone()
+            .load(&self.assets.weights_path)
+            .context("load reference BERT safetensors")?;
+        let (input_ids, token_type_ids, attention_mask) =
+            self.tokenized_pair("inspect the project", "read repository files")?;
+        differentiable_forward_parity(
+            &self.model,
+            &reference,
+            &input_ids,
+            &token_type_ids,
+            &attention_mask,
+        )
     }
 
     pub fn encode(&self, context: &str, candidate: &str) -> Result<Vec<f32>> {
@@ -714,6 +1197,31 @@ impl ScalarRankingHead {
         Ok(Self { varmap, linear })
     }
 
+    /// Reset head parameters to fixed probe constants so training losses
+    /// are deterministic and every step carries a gradient.
+    ///
+    /// Weight is filled with 0.01 and bias with 0.0: scores differ by a
+    /// small non-zero margin, so the margin loss is ~1.0 (never the flaky
+    /// zero of a lucky random init), and the non-zero head weight lets the
+    /// loss gradient reach the encoder. A zeroed head would block encoder
+    /// grads entirely; a random head makes the probe flaky.
+    pub fn deterministic_probe_weights(&self) -> Result<()> {
+        let data = self.varmap.data().lock().expect("varmap lock");
+        for (name, var) in data.iter() {
+            let shape = var.as_tensor().shape().clone();
+            let count = shape.elem_count();
+            let fill = if name.contains("weight") {
+                0.01f32
+            } else {
+                0.0f32
+            };
+            let values = vec![fill; count];
+            let tensor = Tensor::new(values, var.device())?.reshape(shape)?;
+            var.set(&tensor)?;
+        }
+        Ok(())
+    }
+
     fn score(&self, embedding: &Tensor) -> Result<Tensor> {
         Ok(self.linear.forward(embedding)?)
     }
@@ -723,12 +1231,14 @@ impl ScalarRankingHead {
 ///
 /// Beyond the M001 forward/backward checks this also records the
 /// safetensors load coverage (zero missing encoder variables required),
+/// differentiable-forward parity against upstream `BertModel::forward`,
 /// staged-optimizer scoping facts (which variable sets each training stage
 /// actually changed), CLS/mean pooling separation on a fixed train/dev-only
 /// sanity set, and wall-clock timings plus asset sizes for the resource
 /// evidence. The probe reports facts; stage verdicts belong to the closure
-/// record, because Candle 0.11 cannot train encoder weights (see the
-/// `top_layer_changed` field documentation).
+/// record. M001B restores encoder training through the CodeGG-owned
+/// composite-norm path: `top_layer_changed` is now expected to be true
+/// (head + top layer change, lower layers stay unchanged).
 pub fn probe_local_assets(manifest_path: &Path, device: &Device) -> Result<ProbeReport> {
     let load_started = Instant::now();
     let encoder = CandleBertSequenceEncoder::load(manifest_path, device)?;
@@ -752,7 +1262,28 @@ pub fn probe_local_assets(manifest_path: &Path, device: &Device) -> Result<Probe
         .fold(0.0f32, f32::max);
     let embeddings_finite =
         first.iter().all(|value| value.is_finite()) && second.iter().all(|v| v.is_finite());
+    // Parity on pristine weights, before any optimizer step mutates the
+    // encoder. The reference model loads the same safetensors fresh, so a
+    // post-training comparison would measure the update, not the forward.
+    let (parity_max_delta, parity_mean_delta) = encoder.forward_parity_against_reference()?;
+    if parity_max_delta > DIFFERENTIABLE_PARITY_TOLERANCE {
+        return Err(anyhow!(
+            "differentiable forward parity {parity_max_delta} exceeds tolerance {}",
+            DIFFERENTIABLE_PARITY_TOLERANCE
+        ));
+    }
+    // Pooling on pristine weights, before training mutates the top
+    // layer. M001A reproduced margins to four decimals because the top
+    // layer never changed; with the differentiable path the top layer
+    // does change, so post-training pooling would vary with the random
+    // head init.
+    let pooling = encoder.pooling_separation()?;
+    // Deterministic probe heads so both staged losses are ~1.0 and every
+    // step carries a gradient (see `deterministic_probe_weights`). Each
+    // stage uses a fresh head so the top-layer evidence is independent of
+    // the head-only update.
     let head = ScalarRankingHead::new(encoder.config.hidden_size, device)?;
+    head.deterministic_probe_weights()?;
     let encoder_before_head = snapshot_varmap(&encoder.varmap)?;
     let head_before = snapshot_varmap(&head.varmap)?;
     let head_started = Instant::now();
@@ -768,13 +1299,15 @@ pub fn probe_local_assets(manifest_path: &Path, device: &Device) -> Result<Probe
     let head_vars_changed = snapshot_varmap(&head.varmap)? != head_before;
     let top_layer = encoder.config.num_hidden_layers.saturating_sub(1);
     let top_marker = format!("encoder.layer.{top_layer}.");
+    let top_head = ScalarRankingHead::new(encoder.config.hidden_size, device)?;
+    top_head.deterministic_probe_weights()?;
     let encoder_before_top = snapshot_varmap(&encoder.varmap)?;
-    let head_before_top = snapshot_varmap(&head.varmap)?;
+    let head_before_top = snapshot_varmap(&top_head.varmap)?;
     let top_started = Instant::now();
     let mut top_optimizer =
-        encoder.optimizer_for_stage(&head, FineTuneStage::TopLayers(1), 0.001)?;
+        encoder.optimizer_for_stage(&top_head, FineTuneStage::TopLayers(1), 0.001)?;
     let top_layer_loss = encoder.train_step(
-        &head,
+        &top_head,
         &mut top_optimizer,
         ("inspect", "read files"),
         ("inspect", "send email"),
@@ -789,11 +1322,10 @@ pub fn probe_local_assets(manifest_path: &Path, device: &Device) -> Result<Probe
         .iter()
         .filter(|(name, _)| name.contains(&top_marker))
         .any(|(name, values)| encoder_before_top.get(name.as_str()) != Some(values));
-    let head_changed_in_top_stage = snapshot_varmap(&head.varmap)? != head_before_top;
+    let head_changed_in_top_stage = snapshot_varmap(&top_head.varmap)? != head_before_top;
     if !head_loss.is_finite() || !top_layer_loss.is_finite() {
         return Err(anyhow!("probe training losses must be finite"));
     }
-    let pooling = encoder.pooling_separation()?;
     let reference_config = check_reference_config(&encoder.config);
     let weights_bytes = fs::metadata(&encoder.assets.weights_path)
         .with_context(|| "stat encoder weights")?
@@ -822,6 +1354,11 @@ pub fn probe_local_assets(manifest_path: &Path, device: &Device) -> Result<Probe
         top_layer_changed,
         head_changed_in_top_stage,
         lower_layers_unchanged,
+        differentiable_parity_max_delta: parity_max_delta,
+        differentiable_parity_mean_delta: parity_mean_delta,
+        differentiable_parity_tolerance: DIFFERENTIABLE_PARITY_TOLERANCE,
+        differentiable_parity_matches_reference: parity_max_delta
+            <= DIFFERENTIABLE_PARITY_TOLERANCE,
         pooling,
         load_ms,
         forward_ms,
@@ -849,14 +1386,24 @@ pub struct ProbeReport {
     pub head_vars_changed: bool,
     /// Whether the top-layer optimizer step changed top-layer variables.
     ///
-    /// This is false on Candle 0.11: the fused `layer_norm` kernel used by
-    /// `BertModel` records `BackpropOp::none`, so no gradient reaches any
-    /// encoder weight and the optimizer silently skips them. The M001A
-    /// closure record owns this framework limitation; encoder unfreezing
-    /// stays gated on a narrow framework corrective.
+    /// M001A reported false here: the fused `layer_norm` kernel used by
+    /// upstream `BertModel` records `BackpropOp::none`, so no gradient
+    /// reached any encoder weight. M001B restores the path through the
+    /// CodeGG-owned composite-norm encoder, so this is now expected to be
+    /// true while `lower_layers_unchanged` stays true (correctly-scoped
+    /// top-layer update).
     pub top_layer_changed: bool,
     pub head_changed_in_top_stage: bool,
     pub lower_layers_unchanged: bool,
+    /// Max abs element delta between the differentiable encoder and
+    /// upstream `BertModel::forward` on the same weights/inputs.
+    pub differentiable_parity_max_delta: f32,
+    /// Mean abs element delta for the same parity comparison.
+    pub differentiable_parity_mean_delta: f32,
+    /// Documented acceptance tolerance ([`DIFFERENTIABLE_PARITY_TOLERANCE`]).
+    pub differentiable_parity_tolerance: f32,
+    /// Whether the parity max delta stays within tolerance.
+    pub differentiable_parity_matches_reference: bool,
     pub pooling: PoolingSeparationReport,
     pub load_ms: u128,
     pub forward_ms: u128,
@@ -1057,14 +1604,59 @@ mod tests {
         assert!(report.embeddings_finite);
         assert!(report.head_only_encoder_unchanged);
         assert!(report.head_vars_changed);
-        // Encoder weights cannot change on Candle 0.11: see
-        // `candle_fused_layer_norm_has_no_backward` and the M001A closure
-        // record. The probe facts below lock the honest outcome.
-        assert!(!report.top_layer_changed);
+        // M001B: the CodeGG-owned composite-norm encoder restores
+        // correctly-scoped encoder updates (head + top layer change, lower
+        // layers stay unchanged). The upstream fused premise is still
+        // locked by `candle_fused_layer_norm_has_no_backward`.
+        assert!(report.top_layer_changed);
         assert!(report.head_changed_in_top_stage);
         assert!(report.lower_layers_unchanged);
+        assert!(report.differentiable_parity_matches_reference);
+        assert!(report.differentiable_parity_max_delta <= DIFFERENTIABLE_PARITY_TOLERANCE);
         assert!(report.pooling.all_finite_and_distinct);
         assert!(report.weights_bytes > 0);
+    }
+
+    /// M001B regression: the CodeGG-owned normalization propagates
+    /// gradients where the fused kernel does not.
+    #[test]
+    fn differentiable_layer_norm_has_backward() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let norm = DifferentiableLayerNorm::load(4, 1e-5, vb).expect("diff LN");
+        let input = Var::zeros((2usize, 4usize), DType::F32, &device).expect("var");
+        let out = norm.forward(input.as_tensor()).expect("forward");
+        let grads = out.mean_all().expect("mean").backward().expect("bwd");
+        assert!(grads.get(input.as_tensor()).is_some());
+        assert!(grads.get(norm.inner.weight()).is_some());
+        let bias = norm.inner.bias().expect("bias");
+        assert!(grads.get(bias).is_some());
+    }
+
+    /// M001B regression: the differentiable encoder matches upstream
+    /// `BertModel::forward` on identical tiny-fixture weights within the
+    /// documented tolerance, proving weight-name compatibility and
+    /// numerical parity (option 1 acceptance).
+    #[test]
+    fn differentiable_encoder_matches_reference_forward() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        // Weight-name compatibility: the differentiable model loads the
+        // exact variable set the upstream model created (zero missing).
+        let coverage =
+            load_coverage(&encoder.assets.weights_path, &encoder.varmap).expect("coverage");
+        assert!(coverage.missing_variables.is_empty());
+        let (max_delta, mean_delta) = encoder.forward_parity_against_reference().expect("parity");
+        assert!(
+            max_delta <= DIFFERENTIABLE_PARITY_TOLERANCE,
+            "parity {max_delta} exceeds tolerance {}",
+            DIFFERENTIABLE_PARITY_TOLERANCE
+        );
+        assert!(mean_delta <= max_delta);
+        assert!(mean_delta.is_finite());
     }
 
     fn minilm_like_config() -> Config {
