@@ -1,0 +1,50 @@
+{
+  "case_count": 128,
+  "construction": "deterministic local labels; no selected-model inference; no remote teacher",
+  "dataset": "assets/tool-advisor/qualification-v2-holdout.jsonl",
+  "dataset_fingerprint": "ffb0287b96a5006b38f97d93d00fc772b7d4566e5a1e670f25f02287837377af",
+  "family_counts": {
+    "data": 12,
+    "git": 16,
+    "lsp": 20,
+    "plugin": 20,
+    "research": 20,
+    "search": 20,
+    "structured": 20
+  },
+  "minimum_leakage_groups": 96,
+  "provenance": "generated-local-qualification-v2-template-v1",
+  "raw_sha256": "0d238dbdf8eaffea7cbd96b64297b33ba0d2912bfe7025383a7860a8b7d0adf7",
+  "required_families": [
+    "plugin",
+    "lsp",
+    "research/search",
+    "structured/data"
+  ],
+  "required_slices": [
+    "hard-negative",
+    "unknown-renamed",
+    "no-tool",
+    "multi-tool",
+    "context-v2-long-session"
+  ],
+  "schema_version": 1,
+  "tag_counts": {
+    "abstention": 16,
+    "context-v2-long-session": 22,
+    "contextual": 22,
+    "counterfactual": 16,
+    "data": 12,
+    "git": 16,
+    "hard-negative": 32,
+    "lsp": 20,
+    "multi-tool": 16,
+    "no-tool": 16,
+    "plugin": 20,
+    "qualification-v2": 128,
+    "research": 20,
+    "search": 20,
+    "structured": 20,
+    "unknown-renamed": 26
+  }
+}

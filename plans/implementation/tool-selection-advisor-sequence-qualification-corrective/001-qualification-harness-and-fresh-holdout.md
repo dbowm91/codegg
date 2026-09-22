@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence Qualification Corrective C001 — Qualification Harness and Fresh Holdout
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `c5fa1a0850d88744984a2aba445a1e4ba2b9958f`
 

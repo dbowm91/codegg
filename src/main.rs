@@ -529,6 +529,21 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Load the frozen sequence artifact once for release-mode resource probes.
+    #[command(hide = true)]
+    SequenceEncoderResourceProbe {
+        #[arg(long)]
+        artifact: String,
+    },
+    /// Run the separately preregistered release-mode sequence qualification.
+    SequenceEncoderQualifyV2 {
+        #[arg(long)]
+        prereg: String,
+        #[arg(long)]
+        prereg_commit: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare keyword, BM25, and learned discovery on a qualification suite.
     Qualify {
         #[arg(long)]
@@ -2121,6 +2136,55 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 let _ = (prereg, json);
                 return Err(AppError::Other(anyhow::anyhow!(
                     "sequence qualification requires the tool-advisor-encoder-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderResourceProbe { artifact } => {
+            #[cfg(feature = "tool-advisor-encoder-training")]
+            {
+                codegg::tool_advisor::sequence_qualification::resource_probe(
+                    std::path::Path::new(artifact),
+                    &candle_core::Device::Cpu,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-training"))]
+            {
+                let _ = artifact;
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence resource probe requires the tool-advisor-encoder-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderQualifyV2 {
+            prereg,
+            prereg_commit,
+            json,
+        } => {
+            #[cfg(feature = "tool-advisor-encoder-training")]
+            {
+                let report = codegg::tool_advisor::sequence_qualification::qualify_v2(
+                    std::path::Path::new(prereg),
+                    prereg_commit,
+                    &candle_core::Device::Cpu,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!("sequence qualification v2: {}", report.disposition);
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-training"))]
+            {
+                let _ = (prereg, prereg_commit, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence qualification v2 requires the tool-advisor-encoder-training feature"
                 )));
             }
         }
