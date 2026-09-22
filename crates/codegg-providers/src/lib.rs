@@ -54,12 +54,11 @@ pub use eggpool::{
 pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
 pub use provider_core::{
     assistant_text_content_value, builtin_registration_order, create_http_client,
-    credential_capability_for, non_streaming_timeout, openai_tool_arguments_value,
-    project_tool_call_history, register_builtin, register_builtin_with_config, ChatEvent,
-    ChatRequest, ContentPart, EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider,
-    ProviderCapabilities, ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext,
-    ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
-    MAX_REASONING_BYTES, NON_STREAMING_PROVIDER_TOTAL,
+    credential_capability_for, openai_tool_arguments_value, project_tool_call_history,
+    register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
+    EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
+    ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ReasoningVisibility,
+    ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE, MAX_REASONING_BYTES,
 };
 pub use responses_api::{
     filter_artifacts_for_provider, validate_arguments, validate_call_count, validate_result_size,

@@ -23,6 +23,10 @@ pub const MAX_BUFFER_SIZE: usize = 1024 * 1024;
 /// Finite total deadline for bounded non-streaming provider operations
 /// (model discovery/listing and other ordinary provider metadata calls).
 ///
+/// This is crate-internal transport-construction policy: sibling provider
+/// modules apply it per request via `crate::provider_core::non_streaming_timeout()`.
+/// It is not part of the supported external `codegg-providers` API.
+///
 /// The shared streaming-capable client deliberately carries no
 /// client-level absolute `total`: Eggfetch 0.2.0 enforces `Timeout.total`
 /// as one absolute deadline through response-body EOF (including
@@ -30,15 +34,16 @@ pub const MAX_BUFFER_SIZE: usize = 1024 * 1024;
 /// long model streams. Long-stream liveness is owned by the agent layer
 /// (`STREAM_SETUP_TIMEOUT = 120s`, `STREAM_IDLE_TIMEOUT = 90s`,
 /// cancellation, retry-chain budget). Non-streaming call sites apply this
-/// bound explicitly per request via [`non_streaming_timeout()`].
-pub const NON_STREAMING_PROVIDER_TOTAL: Duration = Duration::from_secs(60);
+/// bound explicitly per request via `non_streaming_timeout()`.
+pub(crate) const NON_STREAMING_PROVIDER_TOTAL: Duration = Duration::from_secs(60);
 
 /// Request-level timeout for finite non-streaming provider operations.
 ///
-/// Returns a `Timeout` carrying only `total = 60s`; all other phases are
-/// `None` so the shared client's connect/pool policy is inherited via
-/// Eggfetch's per-field merge (request `None` keeps the client value).
-pub fn non_streaming_timeout() -> eggfetch_core::Timeout {
+/// Crate-internal policy helper. Returns a `Timeout` carrying only
+/// `total = 60s`; all other phases are `None` so the shared client's
+/// connect/pool policy is inherited via Eggfetch's per-field merge
+/// (request `None` keeps the client value).
+pub(crate) fn non_streaming_timeout() -> eggfetch_core::Timeout {
     eggfetch_core::Timeout {
         total: Some(NON_STREAMING_PROVIDER_TOTAL),
         ..eggfetch_core::Timeout::default()
@@ -1077,14 +1082,35 @@ mod tests {
     }
 
     fn read_http_request(stream: &mut TcpStream) {
+        // C001: bounded WouldBlock-aware header reader. The redirect
+        // listener is nonblocking, so the accepted stream can report
+        // `WouldBlock` when the client has connected but not yet written
+        // (the transient M001-closure flake). Retry transient readiness
+        // within a local deadline; fail loudly on terminal I/O or expiry.
+        // Production Eggfetch I/O and socket modes are untouched.
+        let deadline = Duration::from_secs(2);
+        let start = std::time::Instant::now();
         let mut bytes = Vec::new();
         let mut chunk = [0_u8; 1024];
-        while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-            let count = stream.read(&mut chunk).expect("read HTTP request");
-            if count == 0 {
+        loop {
+            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
                 break;
             }
-            bytes.extend_from_slice(&chunk[..count]);
+            if start.elapsed() >= deadline {
+                panic!(
+                    "redirect fixture timed out waiting for HTTP headers after {:?}",
+                    start.elapsed()
+                );
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => panic!("redirect fixture request read failed: {error:?}"),
+            }
         }
     }
 
@@ -1102,6 +1128,11 @@ mod tests {
                     thread::sleep(Duration::from_millis(1));
                     continue;
                 };
+                // Accept inheritance of nonblocking mode is platform-specific;
+                // force it so the WouldBlock-aware reader path is explicit.
+                stream
+                    .set_nonblocking(true)
+                    .expect("set redirect stream nonblocking");
                 read_http_request(&mut stream);
                 let response = if requests < redirects {
                     format!(
@@ -1147,6 +1178,52 @@ mod tests {
             eggfetch_core::Error::TooManyRedirects { max: 10, .. }
         ));
         assert_eq!(server.join().expect("join bounded redirect server"), 11);
+    }
+
+    #[test]
+    fn read_http_request_tolerates_transient_wouldblock() {
+        // C001 regression: prove the hardened reader survives the transient
+        // not-ready condition that panicked the old
+        // `stream.read(...).expect("read HTTP request")` helper (M001
+        // closure). Coordination (not chance): the client withholds bytes
+        // until the server has proven `WouldBlock` on the accepted
+        // nonblocking stream, so the old helper would panic here.
+        use std::sync::mpsc::channel;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind WouldBlock fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let (ready_tx, ready_rx) = channel::<()>();
+        let (done_tx, done_rx) = channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept WouldBlock fixture");
+            stream
+                .set_nonblocking(true)
+                .expect("fixture stream nonblocking");
+            let mut probe = [0_u8; 1];
+            match stream.read(&mut probe) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Ok(0) => panic!("WouldBlock fixture: unexpected EOF before client write"),
+                Ok(_) => panic!("WouldBlock fixture: bytes arrived before induced wait"),
+                Err(error) => panic!("WouldBlock fixture: unexpected probe error: {error:?}"),
+            }
+            ready_tx.send(()).expect("signal reader ready");
+            read_http_request(&mut stream);
+            done_tx.send(()).expect("signal headers consumed");
+        });
+        let mut client = TcpStream::connect(address).expect("connect WouldBlock fixture");
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("server ready");
+        // Withhold bytes briefly so the hardened reader also observes at
+        // least one `WouldBlock` retry before headers arrive.
+        thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("write fixture request");
+        done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("headers consumed without panic");
+        server.join().expect("join WouldBlock fixture");
     }
 
     #[tokio::test]

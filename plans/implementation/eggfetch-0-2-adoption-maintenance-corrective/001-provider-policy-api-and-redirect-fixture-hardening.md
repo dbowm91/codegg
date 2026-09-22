@@ -1,6 +1,6 @@
 # Eggfetch 0.2 Adoption Maintenance Corrective C001 — Provider Policy API and Redirect-Fixture Hardening
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline reviewed: `926a6e5bac8e3b2968679ec9e1fbf6242798ebde`
 
