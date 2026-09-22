@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment M004 — Retrieval and Promotion Operating Point
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `c96fbdfa75996187f725289890ccaaf5b140d180`
 
