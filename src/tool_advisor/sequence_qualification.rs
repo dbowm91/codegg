@@ -3262,6 +3262,24 @@ mod tests {
     }
 
     #[test]
+    fn repository_v3_preregistration_protocol_hash_matches_rust_canonicalization() {
+        let prereg: QualificationV3Preregistration = serde_json::from_slice(
+            &fs::read("assets/tool-advisor/sequence-qualification-v3-preregistration.json")
+                .expect("v3 preregistration"),
+        )
+        .expect("parse v3 preregistration");
+        assert_eq!(
+            protocol_hash_v3(&prereg).expect("hash"),
+            prereg.protocol_hash
+        );
+        assert_eq!(prereg.candidate_universe_sizes, vec![64, 128]);
+        assert_eq!(
+            prereg.candidate.sequence_artifact_sha256,
+            FROZEN_V3_SEQUENCE_ARTIFACT_SHA256
+        );
+    }
+
+    #[test]
     fn holdout_constructor_has_no_sequence_inference_path() {
         let script = fs::read_to_string("scripts/generate_tool_advisor_qualification_holdout.py")
             .expect("holdout generator");

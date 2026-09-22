@@ -1,0 +1,137 @@
+{
+  "baseline_artifact_hashes": {
+    "target/tool-advisor-smoke/model.json": "20a7927ee0199e5f3fa191035bbf1e3a52a6aebb31ef285dc78c2cee0441444e"
+  },
+  "candidate": {
+    "abstention_threshold": 0.4782007038593292,
+    "architecture": "sequence-encoder-packed-marker-v1",
+    "calibration_method": "dev-abstention-threshold-v1",
+    "encoder_config_sha256": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+    "encoder_manifest_sha256": "a74faa957b57b1e41651a8067b3cb1fc0a2d65d98f96a54b37e9fc79e783a4ed",
+    "pooling": "mean",
+    "sequence_artifact_sha256": "01b5c368b4e762dbe6ca284694b290b72e17ec64606e1f26a21510721f9a10e8",
+    "source_weights_sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+    "tokenizer_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    "training_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf"
+  },
+  "candidate_universe_sizes": [
+    64,
+    128
+  ],
+  "fresh_holdout": "assets/tool-advisor/qualification-v3-holdout.jsonl",
+  "fresh_holdout_fingerprint": "fafdecb5a9d91e368e81e686ea5afc9d4232cff04101904e7b79974b126a1c54",
+  "fresh_holdout_manifest_sha256": "54a3f47b7ecb31275a35da9d2d9864c6bec44a25163c2f6b43f0f4edcbbad065",
+  "gates": {
+    "aggregate_mrr_tolerance": 0.01,
+    "calibration_tolerance": 0.01,
+    "contextual_gain_min": 0.02,
+    "irrelevant_promotion_rate_max": 0.15,
+    "max_promotions": 2,
+    "no_tool_f1_tolerance": 0.02,
+    "no_tool_promotion_rate_max": 0.1,
+    "promotion_recall_min": 0.5,
+    "recall_128_min": 0.95,
+    "recall_64_min": 0.98,
+    "schema_budget_bytes": 16384,
+    "slice_regression_max": 0.02
+  },
+  "historical_dataset": "assets/tool-advisor/corpus.jsonl",
+  "historical_dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "historical_dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "historical_test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
+  "historical_train_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+  "output_path": "assets/tool-advisor/sequence-qualification-v3-result.json",
+  "promotion_max_candidates": 16,
+  "promotion_threshold": 0.4782007038593292,
+  "protocol": "c002-preregistered-release-sequence-qualification-v3",
+  "protocol_hash": "e46286568ba37088b3849a24ffd2fb67b9cf573569e49583f816897a8dfdf6bc",
+  "release_command": "cargo build --release --locked --features tool-advisor-encoder-training --bin codegg && ./target/release/codegg tool-advisor sequence-encoder-qualify-v3 --prereg assets/tool-advisor/sequence-qualification-v3-preregistration.json --prereg-commit <commit-a-sha> --json",
+  "resource_limits": {
+    "max_encoder_weight_bytes": 134217728,
+    "max_process_cold_load_ms": 10000,
+    "max_total_rank_ms": 600000
+  },
+  "retrieval_k": 16,
+  "retrieval_mode": "rrf",
+  "schema_version": 3,
+  "slices": [
+    {
+      "any_families": [],
+      "any_tags": [],
+      "id": "aggregate",
+      "minimum_cases": 170
+    },
+    {
+      "any_tags": [
+        "hard-negative"
+      ],
+      "id": "hard-negative",
+      "minimum_cases": 24
+    },
+    {
+      "any_tags": [
+        "counterfactual"
+      ],
+      "id": "counterfactual",
+      "minimum_cases": 24
+    },
+    {
+      "any_tags": [
+        "unknown-renamed"
+      ],
+      "id": "unknown-renamed",
+      "minimum_cases": 24
+    },
+    {
+      "any_tags": [
+        "no-tool"
+      ],
+      "id": "no-tool",
+      "minimum_cases": 24
+    },
+    {
+      "any_tags": [
+        "multi-tool"
+      ],
+      "id": "multi-tool",
+      "minimum_cases": 24
+    },
+    {
+      "any_tags": [
+        "context-v2-long-session"
+      ],
+      "id": "context-v2-long-session",
+      "minimum_cases": 24
+    },
+    {
+      "any_families": [
+        "plugin/MCP"
+      ],
+      "id": "plugin/MCP",
+      "minimum_cases": 16
+    },
+    {
+      "any_families": [
+        "lsp"
+      ],
+      "id": "LSP",
+      "minimum_cases": 16
+    },
+    {
+      "any_families": [
+        "research/search"
+      ],
+      "id": "research/search",
+      "minimum_cases": 16
+    },
+    {
+      "any_families": [
+        "structured/data"
+      ],
+      "id": "structured/data",
+      "minimum_cases": 16
+    }
+  ],
+  "target_hardware_os": "Apple Silicon macOS (M4 Pro); CPU device; process-cold filesystem cache uncontrolled and reported as process_cold_load",
+  "threshold_source": "selected-artifact-dev-abstention-threshold-v1; frozen before C002 final evaluation"
+}
