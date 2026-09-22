@@ -93,8 +93,8 @@ C002 fresh-v3 preregistered qualification
 existing live-primary-model M004
 ```
 
-- C001 is ready.
-- C002 is blocked on positive C001 closure.
+- C001 is closed positively with `plans/closure/tool-selection-advisor-qualification-evidence-corrective/001-status.md`.
+- C002 is ready; its separate preregistration freeze and final-run discipline remain mandatory.
 - Live M004 remains blocked unless C002 records A.
 
 ## 5. Milestones
@@ -105,7 +105,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-qualification-evidence-corrective/001-semantic-holdout-and-retrieval-gate-correctness.md`
 
-Status: ready.
+Status: closed.
 
 Repair the frontier identity bug, add semantic-fixture validators, and freeze a genuinely new v3 holdout whose labels and slice tags are behaviorally true. The selected model MUST NOT be evaluated on v3 during C001.
 
@@ -115,7 +115,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-qualification-evidence-corrective/002-fresh-v3-preregistered-qualification.md`
 
-Status: blocked on C001.
+Status: ready.
 
 Freeze the unchanged model plus v3 holdout and corrected gates in a separate commit, require CI, then perform one release-mode final run.
 

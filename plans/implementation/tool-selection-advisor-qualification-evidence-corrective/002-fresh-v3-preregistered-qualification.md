@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Qualification Evidence Corrective C002 — Fresh V3 Preregistered Qualification
 
-Status: blocked on C001
+Status: ready for handoff
 
 Repository baseline: `739bf5060690fa71dffd25ffeb1b28e444a00681`
 
