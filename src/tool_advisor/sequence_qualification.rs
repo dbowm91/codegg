@@ -1797,4 +1797,19 @@ mod tests {
             prereg.protocol_hash
         );
     }
+
+    #[test]
+    fn repository_preregistration_holdout_fingerprint_matches_loader() {
+        let prereg: QualificationV2Preregistration = serde_json::from_slice(
+            &fs::read("assets/tool-advisor/sequence-qualification-v2-preregistration.json")
+                .expect("preregistration"),
+        )
+        .expect("parse preregistration");
+        let holdout = super::super::load_cases(Some(Path::new(&prereg.fresh_holdout)))
+            .expect("fresh holdout");
+        assert_eq!(
+            dataset_fingerprint(&holdout).expect("fingerprint"),
+            prereg.fresh_holdout_fingerprint
+        );
+    }
 }

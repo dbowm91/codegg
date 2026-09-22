@@ -7,7 +7,7 @@
   "historical_dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
   "historical_test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
   "fresh_holdout": "assets/tool-advisor/qualification-v2-holdout.jsonl",
-  "fresh_holdout_fingerprint": "ffb0287b96a5006b38f97d93d00fc772b7d4566e5a1e670f25f02287837377af",
+  "fresh_holdout_fingerprint": "9da9c6abae05b121e6af159b75d10980ec328d4ca300c6b8308b59f6f182b0b7",
   "fresh_holdout_manifest_sha256": "63bac276394b1d6548829f514119f1b70214e80112f1e205c3120f5236a610ba",
   "candidate": {
     "sequence_artifact_sha256": "01b5c368b4e762dbe6ca284694b290b72e17ec64606e1f26a21510721f9a10e8",
@@ -64,5 +64,5 @@
   "release_command": "cargo build --release --locked --features tool-advisor-encoder-training --bin codegg && ./target/release/codegg tool-advisor sequence-encoder-qualify-v2 --prereg assets/tool-advisor/sequence-qualification-v2-preregistration.json --prereg-commit <commit-a-sha> --json",
   "target_hardware_os": "Apple Silicon macOS; CPU device; process-cold filesystem cache uncontrolled and reported as process_cold_load",
   "output_path": "assets/tool-advisor/sequence-qualification-v2-result.json",
-  "protocol_hash": "250b0eaeb7cf1c73e43df9eb42e148ca8e7b8861705d57abb0d787abaa5978eb"
+  "protocol_hash": "2fc132c1c180a56b0dc7b1aca6533ca3744e3b6f2598ebc0f6ccec7340845e2b"
 }
