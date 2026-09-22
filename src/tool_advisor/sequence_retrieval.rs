@@ -67,6 +67,10 @@ impl DescriptorEmbeddingCache {
         self.entries.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn clear_for_surface(&mut self, surface_fingerprint: &str) {
         if self.surface_fingerprint.as_deref() != Some(surface_fingerprint) {
             self.entries.clear();
@@ -500,8 +504,10 @@ mod tests {
 
     #[test]
     fn cache_invalidates_on_surface_change() {
-        let mut cache = DescriptorEmbeddingCache::default();
-        cache.surface_fingerprint = Some("one".into());
+        let mut cache = DescriptorEmbeddingCache {
+            surface_fingerprint: Some("one".into()),
+            ..Default::default()
+        };
         cache.entries.insert(
             RetrievalCacheKey {
                 surface_fingerprint: "one".into(),

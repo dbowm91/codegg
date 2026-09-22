@@ -26,17 +26,12 @@ pub const RANKING_SCHEMA_VERSION: u16 = 1;
 pub const RANKING_ARCHITECTURE_PAIRWISE: &str = "sequence-encoder-pairwise-v1";
 pub const RANKING_ARCHITECTURE_PACKED: &str = "sequence-encoder-packed-marker-v1";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RankingArchitecture {
+    #[default]
     Pairwise,
     Packed,
-}
-
-impl Default for RankingArchitecture {
-    fn default() -> Self {
-        Self::Pairwise
-    }
 }
 
 impl RankingArchitecture {

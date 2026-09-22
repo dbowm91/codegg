@@ -250,17 +250,12 @@ pub enum FineTuneStage {
 /// returns the attention-mask-aware mean over token hidden states. M001A
 /// characterizes both on a train/dev-only sanity set; M003 selects the
 /// strategy explicitly per run instead of inheriting a hard-coded default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PoolingStrategy {
     Cls,
+    #[default]
     Mean,
-}
-
-impl Default for PoolingStrategy {
-    fn default() -> Self {
-        Self::Mean
-    }
 }
 
 /// Pinned M001A reference-checkpoint facts for
