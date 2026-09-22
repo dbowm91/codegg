@@ -1,6 +1,6 @@
 # Eggfetch 0.2 Adoption — Post-Closure Maintenance Corrective Addendum
 
-Status: active; C001 ready for handoff
+Status: closed; C001 closed
 
 Repository baseline reviewed: `926a6e5bac8e3b2968679ec9e1fbf6242798ebde`
 
@@ -27,11 +27,15 @@ Neither finding invalidates M001's functional closure. This addendum owns a narr
 
 ### C001 — Provider policy API and redirect-fixture hardening
 
-Status: ready.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/eggfetch-0-2-adoption-maintenance-corrective/001-provider-policy-api-and-redirect-fixture-hardening.md`
+
+Closure record:
+
+- `plans/closure/eggfetch-0-2-adoption-maintenance-corrective/001-status.md` (implementation `7c505d1f`)
 
 Primary class: polish.
 
@@ -105,4 +109,4 @@ C001 closes when:
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 Provider policy API and redirect-fixture hardening | ready | `plans/implementation/eggfetch-0-2-adoption-maintenance-corrective/001-provider-policy-api-and-redirect-fixture-hardening.md` | pending `plans/closure/eggfetch-0-2-adoption-maintenance-corrective/001-status.md` | — |
+| C001 Provider policy API and redirect-fixture hardening | closed | `plans/implementation/eggfetch-0-2-adoption-maintenance-corrective/001-provider-policy-api-and-redirect-fixture-hardening.md` | `plans/closure/eggfetch-0-2-adoption-maintenance-corrective/001-status.md` | — |
