@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence Qualification Corrective C002 — Preregistered Release Qualification
 
-Status: active
+Status: implemented
 
 Repository baseline: `c5fa1a0850d88744984a2aba445a1e4ba2b9958f`
 

@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Sequence Qualification — Post-Closure Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository planning baseline: `c5fa1a0850d88744984a2aba445a1e4ba2b9958f`
 
@@ -72,8 +72,8 @@ existing live-primary-model M004
 ```
 
 - C001 is closed positively with `plans/closure/tool-selection-advisor-sequence-qualification-corrective/001-status.md`.
-- C002 is active; its separate preregistration freeze and final-run discipline remain mandatory.
-- Existing live-primary-model M004 remains blocked unless C002 records disposition A.
+- C002 is closed with disposition D; its separate preregistration freeze and final-run evidence are recorded in `plans/closure/tool-selection-advisor-sequence-qualification-corrective/002-status.md`.
+- Existing live-primary-model M004 remains blocked because C002 recorded disposition D; only a future separately approved positive qualification could revisit it.
 
 ## 4. Milestones
 
@@ -93,9 +93,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-qualification-corrective/002-preregistered-release-qualification.md`
 
-Status: ready.
+Status: closed.
 
-Freeze all artifacts/gates/configuration in a separate commit, wait for hosted CI when available, then run exactly one final qualification on the fresh holdout plus historical diagnostic slices. Compute a truthful A/B/C/D/E disposition. Only A can unblock live M004.
+Freeze all artifacts/gates/configuration in a separate commit, then run exactly one final qualification on the fresh holdout plus historical diagnostic slices. C002 produced a truthful D disposition in release mode. Only A could unblock live M004; it remains blocked.
 
 ## 5. Exit conditions
 
