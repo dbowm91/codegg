@@ -235,6 +235,83 @@ pub struct PackedEncoding {
     pub candidate_indices: Vec<usize>,
     pub dropped_candidate_indices: Vec<usize>,
     pub token_budget: usize,
+    /// Half-open descriptor token spans `(start, end)` parallel to
+    /// `candidate_indices`. Empty for artifacts encoded before the
+    /// order-invariance contract.
+    #[serde(default)]
+    pub descriptor_spans: Vec<(usize, usize)>,
+    /// Marker identity strategy used for this encoding.
+    #[serde(default)]
+    pub marker_strategy: MarkerStrategy,
+}
+
+/// Marker identity strategy for packed candidate encodings.
+///
+/// `DistinctOrdinal` reproduces the historical v1 behavior (candidate N
+/// is introduced by `[unusedN]`) and is retained only as the M002
+/// negative control. `Shared` uses one reserved token (`[unused0]`)
+/// before every descriptor so marker-token choice carries no ordinal
+/// information; marker *positions* still map candidates to identities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkerStrategy {
+    #[default]
+    Shared,
+    DistinctOrdinal,
+}
+
+impl MarkerStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared-marker-v1",
+            Self::DistinctOrdinal => "distinct-ordinal-v1",
+        }
+    }
+}
+
+/// One-forward result of the batched pairwise cross-encoder.
+#[derive(Debug, Clone)]
+pub struct BatchPairVectors {
+    /// One pooled vector per candidate, in input order.
+    pub vectors: Vec<Vec<f32>>,
+    /// Encoder forwards consumed (always 1; the reference semantic is
+    /// one batch forward no matter how Candle shapes the call).
+    pub forwards: usize,
+    pub batch_rows: usize,
+    pub batch_cols: usize,
+    pub total_tokens: usize,
+}
+
+/// Order-independent candidate selection under a count/token budget.
+///
+/// Drops are chosen by descriptor token length (longest first) with
+/// candidate-name ascending as the deterministic tie-break, so the
+/// surviving set never depends on presentation order. Relevance labels
+/// never influence truncation. Returns `(kept_source_indices,
+/// dropped_source_indices)` with dropped indices sorted ascending for
+/// stable reporting.
+pub fn order_independent_selection(
+    descriptor_lengths: &[usize],
+    candidate_names: &[String],
+    max_candidates: usize,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut order: Vec<usize> = (0..descriptor_lengths.len()).collect();
+    // Shortest first; name ascending breaks ties deterministically. The
+    // first `max_candidates` survive, so drops always remove the
+    // longest descriptors regardless of presentation order.
+    order.sort_by(|left, right| {
+        descriptor_lengths[*left]
+            .cmp(&descriptor_lengths[*right])
+            .then_with(|| candidate_names[*left].cmp(&candidate_names[*right]))
+    });
+    let keep_count = max_candidates.min(descriptor_lengths.len());
+    let mut kept: Vec<usize> = order[..keep_count].to_vec();
+    kept.sort_unstable();
+    let kept_set: std::collections::BTreeSet<usize> = kept.iter().copied().collect();
+    let dropped: Vec<usize> = (0..descriptor_lengths.len())
+        .filter(|index| !kept_set.contains(index))
+        .collect();
+    (kept, dropped)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1052,6 +1129,10 @@ impl CandleBertSequenceEncoder {
             candidate_indices,
             dropped_candidate_indices,
             token_budget: budget,
+            // v1 predates descriptor spans; the marker strategy is
+            // implicitly distinct-ordinal.
+            descriptor_spans: Vec::new(),
+            marker_strategy: MarkerStrategy::DistinctOrdinal,
         })
     }
 
@@ -1061,6 +1142,247 @@ impl CandleBertSequenceEncoder {
             &packed.token_type_ids,
             &packed.attention_mask,
         )
+    }
+
+    /// Strategy-parameterized packed encoding for the order-invariance
+    /// experiment (M002).
+    ///
+    /// Unlike the historical v1 path above, candidate drops use the
+    /// order-independent longest-descriptor-first policy (descriptor
+    /// bytes break ties), so the surviving candidate set never depends
+    /// on presentation order and relevance labels never influence
+    /// truncation. Descriptor spans are recorded for span-pooled
+    /// representations. The v1 entry point is untouched so frozen
+    /// artifacts keep bit-identical inputs.
+    pub fn packed_encoding_with_strategy(
+        &self,
+        context: &str,
+        candidates: &[String],
+        max_tokens: usize,
+        strategy: MarkerStrategy,
+    ) -> Result<PackedEncoding> {
+        let budget = max_tokens.clamp(8, MAX_PACKED_TOKENS);
+        let cls = self
+            .tokenizer
+            .token_id("[CLS]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [CLS]"))?;
+        let sep = self
+            .tokenizer
+            .token_id("[SEP]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [SEP]"))?;
+        let shared_marker = self
+            .tokenizer
+            .token_id("[unused0]")
+            .ok_or_else(|| anyhow!("vocabulary is missing shared packed marker [unused0]"))?;
+        let mut context_tokens = self.tokenizer.tokenize_text(context);
+        while context_tokens.len() + 2 > budget {
+            context_tokens.pop();
+        }
+        let descriptors: Vec<Vec<u32>> = candidates
+            .iter()
+            .map(|candidate| self.tokenizer.tokenize_text(candidate))
+            .collect();
+        // Greedy longest-first drops until the fixed overhead plus one
+        // marker per surviving candidate fits. The drop set depends only
+        // on the descriptor multiset, never on presentation order.
+        let mut kept: Vec<usize> = (0..descriptors.len()).collect();
+        loop {
+            let total: usize = 1
+                + context_tokens.len()
+                + 1
+                + kept
+                    .iter()
+                    .map(|i| descriptors[*i].len() + 1)
+                    .sum::<usize>()
+                + 1;
+            if total <= budget || kept.is_empty() {
+                break;
+            }
+            // Longest descriptor first; descriptor bytes break ties so
+            // the choice is deterministic without touching labels.
+            let mut victim = kept[0];
+            for index in kept.iter().skip(1) {
+                let (victim_len, index_len) =
+                    (descriptors[victim].len(), descriptors[*index].len());
+                if index_len > victim_len
+                    || (index_len == victim_len && candidates[*index] < candidates[victim])
+                {
+                    victim = *index;
+                }
+            }
+            kept.retain(|index| *index != victim);
+        }
+        kept.sort_unstable();
+        let kept_set: std::collections::BTreeSet<usize> = kept.iter().copied().collect();
+        let dropped_candidate_indices: Vec<usize> = (0..descriptors.len())
+            .filter(|index| !kept_set.contains(index))
+            .collect();
+        // Ordinal markers are resolved lazily: shared-marker encodings
+        // must not require the full [unusedN] range in the vocabulary.
+        let ordinal_marker = |position: usize| {
+            self.tokenizer
+                .token_id(&format!("[unused{}]", position % 100))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "vocabulary is missing packed marker [unused{}]",
+                        position % 100
+                    )
+                })
+        };
+        let mut input_ids = vec![cls];
+        let mut token_type_ids = vec![0];
+        input_ids.extend(&context_tokens);
+        token_type_ids.extend(std::iter::repeat_n(0, context_tokens.len()));
+        input_ids.push(sep);
+        token_type_ids.push(0);
+        let mut marker_positions = Vec::new();
+        let mut candidate_indices = Vec::new();
+        let mut descriptor_spans = Vec::new();
+        for (position, source) in kept.iter().enumerate() {
+            marker_positions.push(input_ids.len());
+            candidate_indices.push(*source);
+            let marker = match strategy {
+                MarkerStrategy::Shared => shared_marker,
+                MarkerStrategy::DistinctOrdinal => ordinal_marker(position)?,
+            };
+            input_ids.push(marker);
+            token_type_ids.push(1);
+            let start = input_ids.len();
+            input_ids.extend(&descriptors[*source]);
+            token_type_ids.extend(std::iter::repeat_n(1, descriptors[*source].len()));
+            descriptor_spans.push((start, input_ids.len()));
+        }
+        input_ids.push(sep);
+        token_type_ids.push(1);
+        Ok(PackedEncoding {
+            attention_mask: vec![1; input_ids.len()],
+            input_ids,
+            token_type_ids,
+            marker_positions,
+            candidate_indices,
+            dropped_candidate_indices,
+            token_budget: budget,
+            descriptor_spans,
+            marker_strategy: strategy,
+        })
+    }
+
+    /// Mean-pool each recorded descriptor span of a packed encoding.
+    ///
+    /// The pool is attention-mask-aware (packed masks are all ones, but
+    /// the implementation stays general). One entry per
+    /// `candidate_indices`, in encoding order.
+    pub fn packed_span_vectors(&self, packed: &PackedEncoding) -> Result<Vec<Vec<f32>>> {
+        if packed.candidate_indices.len() != packed.descriptor_spans.len() {
+            return Err(anyhow!(
+                "packed encoding has {} candidates but {} descriptor spans",
+                packed.candidate_indices.len(),
+                packed.descriptor_spans.len()
+            ));
+        }
+        let hidden = self.packed_hidden(packed)?;
+        let hidden = hidden.squeeze(0)?.to_dtype(DType::F32)?;
+        let rows = hidden.to_vec2::<f32>()?;
+        let mut vectors = Vec::with_capacity(packed.descriptor_spans.len());
+        for (start, end) in &packed.descriptor_spans {
+            if start > end || *end > rows.len() || start == end {
+                return Err(anyhow!("packed descriptor span is out of bounds"));
+            }
+            let width = rows.first().map(Vec::len).unwrap_or(0);
+            let mut mean = vec![0.0f32; width];
+            for row in &rows[*start..*end] {
+                for (acc, value) in mean.iter_mut().zip(row.iter()) {
+                    *acc += *value;
+                }
+            }
+            let count = (*end - *start) as f32;
+            for acc in mean.iter_mut() {
+                *acc /= count;
+            }
+            vectors.push(mean);
+        }
+        Ok(vectors)
+    }
+
+    /// Batched pairwise cross-encoder forward (M002 order-equivariant
+    /// reference).
+    ///
+    /// Each candidate is encoded as `[CLS] context [SEP] descriptor
+    /// [SEP]`; rows are padded into one `[batch, seq]` batch and scored
+    /// with a single encoder forward. Candidate scores therefore depend
+    /// on context+descriptor only: permuting candidates only reorders
+    /// batch rows, and mapped-back scores are invariant within floating
+    /// tolerance.
+    pub fn batch_encode_pairs(
+        &self,
+        context: &str,
+        candidates: &[String],
+        strategy: PoolingStrategy,
+    ) -> Result<BatchPairVectors> {
+        if candidates.is_empty() {
+            return Err(anyhow!("batched pairwise encoding needs a candidate"));
+        }
+        let pad = self
+            .tokenizer
+            .token_id("[PAD]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [PAD]"))?;
+        let pairs: Vec<EncodedPair> = candidates
+            .iter()
+            .map(|candidate| {
+                self.tokenizer
+                    .encode_pair(context, candidate, MAX_PAIR_TOKENS)
+            })
+            .collect();
+        let cols = pairs
+            .iter()
+            .map(|pair| pair.input_ids.len())
+            .max()
+            .unwrap_or(0);
+        let mut input_ids = Vec::with_capacity(candidates.len() * cols);
+        let mut token_type_ids = Vec::with_capacity(candidates.len() * cols);
+        let mut attention_mask = Vec::with_capacity(candidates.len() * cols);
+        let mut total_tokens = 0usize;
+        for pair in &pairs {
+            total_tokens += pair.input_ids.len();
+            let pad_len = cols - pair.input_ids.len();
+            input_ids.extend_from_slice(&pair.input_ids);
+            input_ids.extend(std::iter::repeat_n(pad, pad_len));
+            token_type_ids.extend_from_slice(&pair.token_type_ids);
+            token_type_ids.extend(std::iter::repeat_n(0, pad_len));
+            attention_mask.extend_from_slice(&pair.attention_mask);
+            attention_mask.extend(std::iter::repeat_n(0, pad_len));
+        }
+        let rows = candidates.len();
+        let input_ids = Tensor::new(input_ids, &self.device)?.reshape((rows, cols))?;
+        let token_type_ids = Tensor::new(token_type_ids, &self.device)?.reshape((rows, cols))?;
+        let attention_mask =
+            Tensor::new(attention_mask.clone(), &self.device)?.reshape((rows, cols))?;
+        let hidden = self
+            .model
+            .forward(&input_ids, &token_type_ids, Some(&attention_mask))?;
+        let hidden = hidden.to_dtype(DType::F32)?;
+        let width = self.config.hidden_size;
+        let mut vectors = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let mask: Vec<u32> = attention_mask
+                .narrow(0, row, 1)?
+                .squeeze(0)?
+                .to_vec1::<u32>()?;
+            let sequence = hidden.narrow(0, row, 1)?;
+            let vector = match strategy {
+                PoolingStrategy::Cls => first_token_vector(&sequence)?,
+                PoolingStrategy::Mean => mean_pooled_batched_row(&sequence, &mask)?,
+            };
+            debug_assert_eq!(vector.len(), width);
+            vectors.push(vector);
+        }
+        Ok(BatchPairVectors {
+            vectors,
+            forwards: 1,
+            batch_rows: rows,
+            batch_cols: cols,
+            total_tokens,
+        })
     }
 
     /// Compare first-token and mean pooling on a fixed train/dev-only
@@ -1253,6 +1575,37 @@ fn mean_pooled_vector(sequence: &Tensor, mask: &[u32]) -> Result<Vec<f32>> {
     }
     if count <= 0.0 {
         return Err(anyhow!("mean pooling saw an empty attention mask"));
+    }
+    for acc in mean.iter_mut() {
+        *acc /= count;
+    }
+    Ok(mean)
+}
+
+fn mean_pooled_batched_row(sequence: &Tensor, mask: &[u32]) -> Result<Vec<f32>> {
+    let rows = sequence
+        .squeeze(0)?
+        .to_dtype(DType::F32)?
+        .to_vec2::<f32>()?;
+    if rows.len() != mask.len() {
+        return Err(anyhow!(
+            "batched pooling mask length does not match sequence length"
+        ));
+    }
+    let width = rows.first().map(Vec::len).unwrap_or(0);
+    let mut mean = vec![0.0f32; width];
+    let mut count = 0.0f32;
+    for (row, keep) in rows.iter().zip(mask.iter()) {
+        if *keep == 0 {
+            continue;
+        }
+        for (acc, value) in mean.iter_mut().zip(row.iter()) {
+            *acc += *value;
+        }
+        count += 1.0;
+    }
+    if count <= 0.0 {
+        return Err(anyhow!("batched mean pooling saw an empty attention mask"));
     }
     for acc in mean.iter_mut() {
         *acc /= count;
@@ -1574,7 +1927,7 @@ mod tests {
         let vocabulary_path = dir.join("vocab.txt");
         fs::write(
             &vocabulary_path,
-            "[PAD]\n[UNK]\n[CLS]\n[SEP]\ninspect\nproject\nread\nfiles\nsend\nemail\n",
+            "[PAD]\n[UNK]\n[CLS]\n[SEP]\ninspect\nproject\nread\nfiles\nsend\nemail\n[unused0]\n[unused1]\n[unused2]\n[unused3]\n[unused4]\n",
         )
         .expect("vocab");
         let license_path = dir.join("LICENSE.json");
@@ -1865,5 +2218,252 @@ mod tests {
         }
         let separation = encoder.pooling_separation().expect("separation");
         assert!(separation.all_finite_and_distinct);
+    }
+
+    /// M002: shared-marker encodings use one token id for every
+    /// candidate, while the distinct-ordinal control keeps per-position
+    /// identities.
+    #[test]
+    fn shared_marker_uses_one_token_id_for_every_candidate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let descriptors = vec![
+            "read files".to_string(),
+            "send email".to_string(),
+            "inspect project".to_string(),
+            "read files".to_string(),
+            "send email".to_string(),
+        ];
+        let shared = encoder
+            .packed_encoding_with_strategy(
+                "inspect project",
+                &descriptors,
+                MAX_PACKED_TOKENS,
+                MarkerStrategy::Shared,
+            )
+            .expect("shared encoding");
+        assert_eq!(shared.marker_strategy, MarkerStrategy::Shared);
+        assert_eq!(shared.marker_positions.len(), 5);
+        let marker_ids: Vec<u32> = shared
+            .marker_positions
+            .iter()
+            .map(|position| shared.input_ids[*position])
+            .collect();
+        assert!(
+            marker_ids.windows(2).all(|pair| pair[0] == pair[1]),
+            "shared markers must be one token id: {marker_ids:?}"
+        );
+        assert_eq!(
+            marker_ids[0],
+            encoder
+                .tokenizer
+                .token_id("[unused0]")
+                .expect("shared marker")
+        );
+        let distinct = encoder
+            .packed_encoding_with_strategy(
+                "inspect project",
+                &descriptors,
+                MAX_PACKED_TOKENS,
+                MarkerStrategy::DistinctOrdinal,
+            )
+            .expect("distinct encoding");
+        let distinct_ids: Vec<u32> = distinct
+            .marker_positions
+            .iter()
+            .map(|position| distinct.input_ids[*position])
+            .collect();
+        assert!(
+            distinct_ids.windows(2).any(|pair| pair[0] != pair[1]),
+            "distinct control must vary marker identity by ordinal"
+        );
+    }
+
+    /// M002: descriptor spans map back to the exact tokenized
+    /// descriptor of the candidate at the paired index.
+    #[test]
+    fn descriptor_spans_map_back_to_correct_candidate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let descriptors = vec![
+            "read files".to_string(),
+            "send email to the customer".to_string(),
+            "inspect project".to_string(),
+        ];
+        let packed = encoder
+            .packed_encoding_with_strategy(
+                "inspect project",
+                &descriptors,
+                MAX_PACKED_TOKENS,
+                MarkerStrategy::Shared,
+            )
+            .expect("encoding");
+        assert_eq!(packed.candidate_indices, vec![0, 1, 2]);
+        assert!(packed.dropped_candidate_indices.is_empty());
+        assert_eq!(packed.descriptor_spans.len(), 3);
+        for (position, source) in packed.candidate_indices.iter().enumerate() {
+            let (start, end) = packed.descriptor_spans[position];
+            let expected = encoder.tokenizer.tokenize_text(&descriptors[*source]);
+            assert_eq!(&packed.input_ids[start..end], expected.as_slice());
+        }
+        let vectors = encoder.packed_span_vectors(&packed).expect("span vectors");
+        assert_eq!(vectors.len(), 3);
+        for vector in &vectors {
+            assert_eq!(vector.len(), 8);
+            assert!(vector.iter().all(|value| value.is_finite()));
+        }
+    }
+
+    /// M002: the order-independent selection drops longest descriptors
+    /// first with a deterministic tie-break, ignoring input order.
+    #[test]
+    fn order_independent_selection_ignores_presentation_order() {
+        let lengths = vec![4usize, 40, 12, 40, 7];
+        let names: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let (kept, dropped) = order_independent_selection(&lengths, &names, 3);
+        // Drops the two length-40 descriptors (both go; the name
+        // tie-break only orders them), keeps 4/12/7.
+        assert_eq!(dropped.len(), 2);
+        assert!(dropped.contains(&1) && dropped.contains(&3));
+        assert_eq!(kept, vec![0, 2, 4]);
+        // Reversed presentation order yields the same surviving set.
+        let rev_lengths = vec![7usize, 40, 12, 40, 4];
+        let rev_names: Vec<String> = ["e", "d", "c", "b", "a"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let (rev_kept, _) = order_independent_selection(&rev_lengths, &rev_names, 3);
+        let mut rev_kept_names: Vec<&str> = rev_kept
+            .iter()
+            .map(|index| rev_names[*index].as_str())
+            .collect();
+        rev_kept_names.sort_unstable();
+        assert_eq!(rev_kept_names, vec!["a", "c", "e"]);
+    }
+
+    /// M002: strategy-packed truncation around the token budget is
+    /// deterministic under permutation — the surviving candidate set
+    /// never depends on presentation order.
+    #[test]
+    fn strategy_packed_truncation_is_order_independent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let descriptors = vec![
+            "read files".to_string(),
+            "send email to the customer about the invoice".to_string(),
+            "inspect project".to_string(),
+            "read files from disk and print contents".to_string(),
+            "send email".to_string(),
+        ];
+        // Tiny budget forces drops on the 5-candidate set.
+        let first = encoder
+            .packed_encoding_with_strategy(
+                "inspect project",
+                &descriptors,
+                24,
+                MarkerStrategy::Shared,
+            )
+            .expect("encoding");
+        assert!(
+            !first.dropped_candidate_indices.is_empty(),
+            "tiny budget must drop candidates"
+        );
+        let mut reversed = descriptors.clone();
+        reversed.reverse();
+        let second = encoder
+            .packed_encoding_with_strategy("inspect project", &reversed, 24, MarkerStrategy::Shared)
+            .expect("encoding");
+        let surviving: std::collections::BTreeSet<&str> = first
+            .candidate_indices
+            .iter()
+            .map(|index| descriptors[*index].as_str())
+            .collect();
+        let surviving_reversed: std::collections::BTreeSet<&str> = second
+            .candidate_indices
+            .iter()
+            .map(|index| reversed[*index].as_str())
+            .collect();
+        assert_eq!(
+            surviving, surviving_reversed,
+            "surviving set must not depend on presentation order"
+        );
+        // Span/vector accounting stays consistent under drops.
+        assert_eq!(first.descriptor_spans.len(), first.candidate_indices.len());
+        let vectors = encoder.packed_span_vectors(&first).expect("spans");
+        assert_eq!(vectors.len(), first.candidate_indices.len());
+    }
+
+    /// M002: batched pairwise padding never loses a candidate identity
+    /// and one batch forward scores every row deterministically.
+    #[test]
+    fn batched_pairwise_padding_preserves_every_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        // Varying lengths force real padding; duplicate-like
+        // descriptions with distinct names stress identity mapping.
+        let descriptors = vec![
+            "read".to_string(),
+            "read files from disk".to_string(),
+            "read files from disk and print contents verbosely".to_string(),
+            "send email".to_string(),
+            "send email".to_string(),
+        ];
+        for strategy in [PoolingStrategy::Cls, PoolingStrategy::Mean] {
+            let first = encoder
+                .batch_encode_pairs("inspect project", &descriptors, strategy)
+                .expect("batch");
+            let second = encoder
+                .batch_encode_pairs("inspect project", &descriptors, strategy)
+                .expect("batch");
+            assert_eq!(first.forwards, 1);
+            assert_eq!(first.vectors.len(), 5);
+            assert_eq!(first.batch_rows, 5);
+            assert!(first.batch_cols > 0);
+            assert_eq!(first.vectors, second.vectors);
+            for vector in &first.vectors {
+                assert_eq!(vector.len(), 8);
+                assert!(vector.iter().all(|value| value.is_finite()));
+            }
+        }
+    }
+
+    /// M002: unknown synthetic identities and near-budget descriptors
+    /// encode without identity loss on the tiny fixture.
+    #[test]
+    fn synthetic_and_long_descriptors_keep_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let descriptors = vec![
+            "synthetic_a1b2c3 read files".to_string(),
+            "read files read files read files read files read files read files".to_string(),
+        ];
+        let batch = encoder
+            .batch_encode_pairs("inspect project", &descriptors, PoolingStrategy::Mean)
+            .expect("batch");
+        assert_eq!(batch.vectors.len(), 2);
+        assert_ne!(batch.vectors[0], batch.vectors[1]);
+        let packed = encoder
+            .packed_encoding_with_strategy(
+                "inspect project",
+                &descriptors,
+                MAX_PACKED_TOKENS,
+                MarkerStrategy::Shared,
+            )
+            .expect("packed");
+        assert_eq!(packed.candidate_indices, vec![0, 1]);
+        assert!(packed.dropped_candidate_indices.is_empty());
     }
 }
