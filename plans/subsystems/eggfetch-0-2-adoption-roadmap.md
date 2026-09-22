@@ -1,6 +1,6 @@
 # Eggfetch 0.2 Adoption Roadmap
 
-Status: active; M001 ready for handoff
+Status: closed; M001 closed
 
 Repository baseline reviewed: `198524aa4ff8656928c86cf36168892532f2e29c`
 
@@ -111,11 +111,15 @@ After M001 closes:
 
 ### M001 — Eggfetch 0.2.0 adoption and provider stream-deadline correctness
 
-Status: ready.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/eggfetch-0-2-adoption/001-eggfetch-0.2.0-adoption-and-provider-stream-deadline-correctness.md`
+
+Closure record:
+
+- `plans/closure/eggfetch-0-2-adoption/001-status.md` (implementation `653e7abb`)
 
 Class: infrastructure + invariant.
 
@@ -189,4 +193,4 @@ This workstream closes when M001 has accepted closure evidence proving:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 Eggfetch 0.2.0 adoption and provider stream-deadline correctness | ready | `plans/implementation/eggfetch-0-2-adoption/001-eggfetch-0.2.0-adoption-and-provider-stream-deadline-correctness.md` | pending `plans/closure/eggfetch-0-2-adoption/001-status.md` | — |
+| M001 Eggfetch 0.2.0 adoption and provider stream-deadline correctness | closed | `plans/implementation/eggfetch-0-2-adoption/001-eggfetch-0.2.0-adoption-and-provider-stream-deadline-correctness.md` | `plans/closure/eggfetch-0-2-adoption/001-status.md` | — |

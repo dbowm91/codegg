@@ -1,6 +1,8 @@
 # Eggfetch 0.2 Adoption M001 — Eggfetch 0.2.0 Adoption and Provider Stream-Deadline Correctness
 
-Status: ready for handoff
+Status: implemented
+
+Closure: `plans/closure/eggfetch-0-2-adoption/001-status.md` (implementation `653e7abb`)
 
 Repository baseline reviewed: `198524aa4ff8656928c86cf36168892532f2e29c`
 
