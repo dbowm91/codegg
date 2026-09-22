@@ -32,6 +32,7 @@ const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.json
 pub mod context_v2;
 #[cfg(feature = "tool-advisor")]
 pub mod contextual;
+pub mod order_invariance;
 #[cfg(feature = "tool-advisor-training")]
 pub mod requalify;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
