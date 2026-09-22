@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment M001 — Candidate-Order Diagnostics and Permutation Contract
 
-Status: active
+Status: implemented
 
 Repository baseline: `198524aa4ff8656928c86cf36168892532f2e29c`
 

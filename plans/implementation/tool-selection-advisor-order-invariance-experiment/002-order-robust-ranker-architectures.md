@@ -1,8 +1,8 @@
 # Tool-Selection Advisor Order-Invariance Experiment M002 — Order-Robust Ranker Architectures
 
-Status: blocked on M001
+Status: ready for handoff
 
-Repository baseline: `198524aa4ff8656928c86cf36168892532f2e29c`
+Repository baseline: `79045a4c683151e06d1f998b080f41c7c8e84567`
 
 Hard dependency:
 

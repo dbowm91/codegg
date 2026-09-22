@@ -131,8 +131,8 @@ M005 fresh v4 preregistered qualification
 existing live-primary-model M004
 ```
 
-- M001 is ready.
-- M002 is blocked on M001.
+- M001 is closed (`plans/closure/tool-selection-advisor-order-invariance-experiment/001-status.md`).
+- M002 is ready.
 - M003 is blocked on M002.
 - M004 is blocked on positive M003 selection.
 - M005 is blocked on positive M004 closure.
@@ -145,7 +145,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/001-candidate-order-diagnostics-and-permutation-contract.md`
 
-Status: ready.
+Status: closed.
 
 Make positional shortcut evidence reproducible, add permutation-invariance metrics, and define deterministic train/dev-only permutation augmentation without changing historical corpora.
 
@@ -155,7 +155,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/002-order-robust-ranker-architectures.md`
 
-Status: blocked on M001.
+Status: ready (M001 closed).
 
 Implement shared-marker/span-pooled packed variants and a batched pairwise cross-encoder reference with architecture-level permutation property tests.
 
