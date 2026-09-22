@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Qualification Evidence — Narrow Post-Closure Corrective
 
-Status: active
+Status: closed
 
 Repository planning baseline: `739bf5060690fa71dffd25ffeb1b28e444a00681`
 
@@ -94,8 +94,8 @@ existing live-primary-model M004
 ```
 
 - C001 is closed positively with `plans/closure/tool-selection-advisor-qualification-evidence-corrective/001-status.md`.
-- C002 is ready; its separate preregistration freeze and final-run discipline remain mandatory.
-- Live M004 remains blocked unless C002 records A.
+- C002 is closed with disposition D at `plans/closure/tool-selection-advisor-qualification-evidence-corrective/002-status.md`.
+- Live M004 remains blocked: only disposition A could have unblocked it.
 
 ## 5. Milestones
 
@@ -115,7 +115,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-qualification-evidence-corrective/002-fresh-v3-preregistered-qualification.md`
 
-Status: ready.
+Status: closed.
 
 Freeze the unchanged model plus v3 holdout and corrected gates in a separate commit, require CI, then perform one release-mode final run.
 
