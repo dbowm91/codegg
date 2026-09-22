@@ -1,8 +1,8 @@
 # Tool-Selection Advisor Order-Invariance Experiment M003 — Balanced Training and Dev Selection
 
-Status: blocked on M002
+Status: ready for handoff
 
-Repository baseline: `198524aa4ff8656928c86cf36168892532f2e29c`
+Repository baseline: `722d8e7c874f5ccdb134c8359077004c3f27cd86`
 
 Hard dependencies:
 

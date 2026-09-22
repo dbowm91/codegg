@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment M002 — Order-Robust Ranker Architectures
 
-Status: active
+Status: implemented
 
 Repository baseline: `79045a4c683151e06d1f998b080f41c7c8e84567`
 
