@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "protocol": "c002-preregistered-release-sequence-qualification-v2",
+  "historical_dataset": "assets/tool-advisor/corpus.jsonl",
+  "historical_dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "historical_train_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+  "historical_dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "historical_test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
+  "fresh_holdout": "assets/tool-advisor/qualification-v2-holdout.jsonl",
+  "fresh_holdout_fingerprint": "ffb0287b96a5006b38f97d93d00fc772b7d4566e5a1e670f25f02287837377af",
+  "fresh_holdout_manifest_sha256": "63bac276394b1d6548829f514119f1b70214e80112f1e205c3120f5236a610ba",
+  "candidate": {
+    "sequence_artifact_sha256": "01b5c368b4e762dbe6ca284694b290b72e17ec64606e1f26a21510721f9a10e8",
+    "encoder_manifest_sha256": "a74faa957b57b1e41651a8067b3cb1fc0a2d65d98f96a54b37e9fc79e783a4ed",
+    "encoder_config_sha256": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+    "tokenizer_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    "source_weights_sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+    "architecture": "sequence-encoder-packed-marker-v1",
+    "pooling": "mean",
+    "calibration_method": "dev-abstention-threshold-v1",
+    "abstention_threshold": 0.4782007038593292,
+    "training_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf"
+  },
+  "baseline_artifact_hashes": {
+    "target/tool-advisor-smoke/model.json": "20a7927ee0199e5f3fa191035bbf1e3a52a6aebb31ef285dc78c2cee0441444e"
+  },
+  "retrieval_mode": "rrf",
+  "retrieval_k": 16,
+  "promotion_max_candidates": 16,
+  "promotion_threshold": 0.4782007038593292,
+  "threshold_source": "selected-artifact-dev-abstention-threshold-v1; frozen before C002 final evaluation",
+  "slices": [
+    {"id": "aggregate", "minimum_cases": 128},
+    {"id": "hard-negative", "any_tags": ["hard-negative"], "minimum_cases": 24},
+    {"id": "counterfactual", "any_tags": ["counterfactual"], "minimum_cases": 16},
+    {"id": "unknown-renamed", "any_tags": ["unknown-renamed"], "minimum_cases": 24},
+    {"id": "no-tool", "any_tags": ["no-tool"], "minimum_cases": 16},
+    {"id": "multi-tool", "any_tags": ["multi-tool"], "minimum_cases": 16},
+    {"id": "context-v2-long-session", "any_tags": ["context-v2-long-session"], "minimum_cases": 16},
+    {"id": "plugin/MCP", "any_families": ["plugin/MCP"], "minimum_cases": 12},
+    {"id": "LSP", "any_families": ["lsp"], "minimum_cases": 12},
+    {"id": "research/search", "any_families": ["research/search"], "minimum_cases": 12},
+    {"id": "structured/data", "any_families": ["structured/data"], "minimum_cases": 12}
+  ],
+  "gates": {
+    "aggregate_mrr_tolerance": 0.01,
+    "contextual_gain_min": 0.02,
+    "slice_regression_max": 0.02,
+    "no_tool_f1_tolerance": 0.02,
+    "recall_64_min": 0.98,
+    "recall_128_min": 0.95,
+    "promotion_recall_min": 0.5,
+    "no_tool_promotion_rate_max": 0.1,
+    "irrelevant_promotion_rate_max": 0.15,
+    "calibration_tolerance": 0.01,
+    "max_promotions": 2,
+    "schema_budget_bytes": 16384
+  },
+  "resource_limits": {
+    "max_process_cold_load_ms": 10000,
+    "max_total_rank_ms": 600000,
+    "max_encoder_weight_bytes": 134217728
+  },
+  "release_command": "cargo build --release --locked --features tool-advisor-encoder-training --bin codegg && ./target/release/codegg tool-advisor sequence-encoder-qualify-v2 --prereg assets/tool-advisor/sequence-qualification-v2-preregistration.json --prereg-commit <commit-a-sha> --json",
+  "target_hardware_os": "Apple Silicon macOS; CPU device; process-cold filesystem cache uncontrolled and reported as process_cold_load",
+  "output_path": "assets/tool-advisor/sequence-qualification-v2-result.json",
+  "protocol_hash": "2b63da36d757a419fb90c329c5fabdfb822123c7a02ce03506d3c50a4f3717d7"
+}

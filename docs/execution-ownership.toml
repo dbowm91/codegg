@@ -333,3 +333,8 @@ reason = "M002 bounded attach/resume protocol over the M001 PTY engine; delegate
 path = "src/install.rs"
 owner = "standalone_compat"
 reason = "Bounded installation diagnostics only: --version identity probe of the managed codegg-eggsearch sibling for doctor/install reports; not scheduler work, never spawns per-turn"
+
+[[site]]
+path = "src/tool_advisor/sequence_qualification.rs"
+owner = "standalone_compat"
+reason = "Experiment-only release qualification owns five bounded child-process model-load probes and bounded ps RSS observation; no user-turn or daemon execution path"

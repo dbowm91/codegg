@@ -72,7 +72,7 @@ existing live-primary-model M004
 ```
 
 - C001 is closed positively with `plans/closure/tool-selection-advisor-sequence-qualification-corrective/001-status.md`.
-- C002 is ready; its separate preregistration freeze and final-run discipline remain mandatory.
+- C002 is active; its separate preregistration freeze and final-run discipline remain mandatory.
 - Existing live-primary-model M004 remains blocked unless C002 records disposition A.
 
 ## 4. Milestones

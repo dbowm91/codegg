@@ -1122,6 +1122,8 @@ fn process_cold_loads(artifact: &Path) -> Result<(Vec<u128>, u64)> {
     let mut peak_rss = 0u64;
     for _ in 0..5 {
         let started = Instant::now();
+        // execution-ownership: standalone_compat — bounded release-mode
+        // qualification probes launch only the current binary's load helper.
         let mut child = Command::new(&executable)
             .args([
                 "tool-advisor",
@@ -1136,6 +1138,8 @@ fn process_cold_loads(artifact: &Path) -> Result<(Vec<u128>, u64)> {
             .spawn()
             .context("spawn release resource probe")?;
         while child.try_wait()?.is_none() {
+            // execution-ownership: standalone_compat — bounded RSS observation
+            // for the qualification child; not a user-turn execution path.
             if let Ok(output) = Command::new("ps")
                 .args(["-o", "rss=", "-p", &child.id().to_string()])
                 .output()
