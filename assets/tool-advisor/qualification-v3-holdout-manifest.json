@@ -1,0 +1,50 @@
+{
+  "case_count": 170,
+  "construction": "deterministic local labels; no selected-model inference; no scoring-based label choice; no remote teacher",
+  "counterfactual_pairs": 13,
+  "dataset": "assets/tool-advisor/qualification-v3-holdout.jsonl",
+  "dataset_fingerprint": "fafdecb5a9d91e368e81e686ea5afc9d4232cff04101904e7b79974b126a1c54",
+  "family_counts": {
+    "data": 16,
+    "filesystem": 12,
+    "git": 20,
+    "lsp": 26,
+    "mcp": 8,
+    "plugin": 14,
+    "research": 16,
+    "search": 18,
+    "shell": 18,
+    "structured": 22
+  },
+  "minimum_leakage_groups": 120,
+  "minimum_skeletons": 64,
+  "provenance": "generated-local-qualification-v3-template-v1",
+  "raw_sha256": "91e702747b7f1c38ac695373a16aebd0c3ca3776def5fa4c0e9d94457a3c8f54",
+  "required_families": [
+    "plugin",
+    "lsp",
+    "research/search",
+    "structured/data"
+  ],
+  "required_slices": [
+    "hard-negative",
+    "counterfactual",
+    "unknown-renamed",
+    "no-tool",
+    "multi-tool",
+    "context-v2-long-session"
+  ],
+  "schema_version": 1,
+  "skeleton_count": 157,
+  "tag_counts": {
+    "abstention": 24,
+    "context-v2-long-session": 28,
+    "contextual": 28,
+    "counterfactual": 26,
+    "hard-negative": 28,
+    "multi-tool": 24,
+    "no-tool": 24,
+    "qualification-v3": 170,
+    "unknown-renamed": 24
+  }
+}

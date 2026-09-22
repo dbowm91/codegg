@@ -104,6 +104,23 @@ pub struct RetrievalFrontierPoint {
     pub recall: f64,
     pub mean_latency_ms: f64,
     pub max_latency_ms: u128,
+    /// Corrected identity: number of deferred candidates in the measured
+    /// universe. Historical v1/v2 artifacts only carry `k` (the shortlist
+    /// size); they deserialize with `candidate_universe_size == 0`, which
+    /// never matches an expanded-universe gate and therefore fails closed
+    /// instead of being mistaken for a 64/128-tool measurement.
+    #[serde(default)]
+    pub candidate_universe_size: usize,
+    /// Explicit shortlist size. Always equals `k`; `k` is retained only so
+    /// historical result artifacts keep deserializing.
+    #[serde(default)]
+    pub shortlist_k: usize,
+    /// Explicit relevant/recovered counts under the corrected names. They
+    /// duplicate `relevant_tools`/`recovered_tools` for gate readability.
+    #[serde(default)]
+    pub eligible_relevant_tools: usize,
+    #[serde(default)]
+    pub recovered_relevant_tools: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,7 +429,10 @@ pub fn frontier(
             let mut recovered = 0usize;
             let mut total_latency = 0u128;
             let mut max_latency = 0u128;
+            let mut universe_size = 0usize;
             for case in cases {
+                let eligible_count = eligible(case).len();
+                universe_size = universe_size.max(eligible_count);
                 let expected = case
                     .relevance
                     .keys()
@@ -454,6 +474,10 @@ pub fn frontier(
                     total_latency as f64 / cases.len() as f64
                 },
                 max_latency_ms: max_latency,
+                candidate_universe_size: universe_size,
+                shortlist_k: *k,
+                eligible_relevant_tools: relevant,
+                recovered_relevant_tools: recovered,
             });
         }
     }
@@ -464,6 +488,103 @@ pub fn frontier(
         cache_warm_entries: retriever.cache.len(),
         cache_contains_context: false,
     })
+}
+
+/// Select the single frontier point measuring `universe_size` deferred
+/// candidates with shortlist `shortlist_k` under `mode.
+///
+/// A missing or duplicated point is a correctness failure: the caller must
+/// fail closed instead of defaulting the recall to zero.
+pub fn select_retrieval_point<'a>(
+    points: &'a [RetrievalFrontierPoint],
+    universe_size: usize,
+    shortlist_k: usize,
+    mode: &str,
+) -> Result<&'a RetrievalFrontierPoint> {
+    let matches = points
+        .iter()
+        .filter(|point| {
+            point.candidate_universe_size == universe_size
+                && point.shortlist_k == shortlist_k
+                && point.k == shortlist_k
+                && point.mode == mode
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [point] => Ok(point),
+        [] => Err(anyhow!(
+            "retrieval frontier has no point for universe {universe_size}, \
+             shortlist K={shortlist_k}, mode={mode}"
+        )),
+        _ => Err(anyhow!(
+            "retrieval frontier has {} points for universe {universe_size}, \
+             shortlist K={shortlist_k}, mode={mode}; expected exactly one",
+            matches.len()
+        )),
+    }
+}
+
+/// Fixture validity for an expanded retrieval universe.
+///
+/// Every non-no-tool case must keep at least one labeled relevant tool inside
+/// the expanded universe, names must be unique after canonicalization, the
+/// requested universe size must actually be reached, and the shortlist must
+/// fit inside the universe. Violations fail closed.
+pub fn validate_expanded_fixture(
+    cases: &[ToolAdvisorCase],
+    expected_universe_size: usize,
+    shortlist_k: usize,
+) -> Result<()> {
+    if shortlist_k == 0 || shortlist_k > expected_universe_size {
+        return Err(anyhow!(
+            "shortlist K={shortlist_k} does not fit universe {expected_universe_size}"
+        ));
+    }
+    for case in cases {
+        let deferred = eligible(case);
+        if deferred.len() != expected_universe_size {
+            return Err(anyhow!(
+                "fixture case {} has {} deferred candidates; expected universe {expected_universe_size}",
+                case.case_id,
+                deferred.len()
+            ));
+        }
+        let mut canonical = std::collections::BTreeSet::new();
+        for candidate in &deferred {
+            if !canonical.insert(super::normalize_text(&candidate.name)) {
+                return Err(anyhow!(
+                    "fixture case {} has a duplicate candidate name after canonicalization",
+                    case.case_id
+                ));
+            }
+            if candidate.disclosure != "deferred" {
+                return Err(anyhow!(
+                    "fixture case {} candidate {} escaped deferred eligibility",
+                    case.case_id,
+                    candidate.name
+                ));
+            }
+        }
+        if !case.none {
+            let missing = case
+                .relevance
+                .keys()
+                .filter(|name| !deferred.iter().any(|candidate| &candidate.name == *name))
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                let names = missing
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow!(
+                    "fixture case {} lost relevant tools during universe expansion: {names}",
+                    case.case_id,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -548,5 +669,83 @@ mod tests {
                 ("b".into(), 0.03252247488101534)
             ]
         );
+    }
+
+    fn frontier_point(universe: usize, k: usize, mode: &str) -> RetrievalFrontierPoint {
+        RetrievalFrontierPoint {
+            mode: mode.into(),
+            k,
+            cases: 1,
+            relevant_tools: 1,
+            recovered_tools: 1,
+            recall: 1.0,
+            mean_latency_ms: 0.0,
+            max_latency_ms: 0,
+            candidate_universe_size: universe,
+            shortlist_k: k,
+            eligible_relevant_tools: 1,
+            recovered_relevant_tools: 1,
+        }
+    }
+
+    #[test]
+    fn retrieval_point_identity_uses_universe_not_shortlist_k() {
+        let points = vec![
+            frontier_point(4, 16, "rrf"),
+            frontier_point(64, 16, "rrf"),
+            frontier_point(128, 16, "rrf"),
+        ];
+        let selected = select_retrieval_point(&points, 64, 16, "rrf").expect("universe 64 point");
+        assert_eq!(selected.candidate_universe_size, 64);
+        assert_eq!(selected.shortlist_k, 16);
+        let selected = select_retrieval_point(&points, 128, 16, "rrf").expect("universe 128 point");
+        assert_eq!(selected.candidate_universe_size, 128);
+    }
+
+    #[test]
+    fn missing_universe_point_fails_closed_instead_of_zero() {
+        let points = vec![frontier_point(4, 16, "rrf")];
+        let error = select_retrieval_point(&points, 64, 16, "rrf").expect_err("missing point");
+        assert!(error.to_string().contains("no point for universe 64"));
+    }
+
+    #[test]
+    fn duplicate_universe_point_fails_closed() {
+        let points = vec![frontier_point(64, 16, "rrf"), frontier_point(64, 16, "rrf")];
+        let error = select_retrieval_point(&points, 64, 16, "rrf").expect_err("duplicate");
+        assert!(error.to_string().contains("expected exactly one"));
+    }
+
+    #[test]
+    fn historical_point_without_universe_never_matches_expanded_gate() {
+        let legacy = RetrievalFrontierPoint {
+            mode: "rrf".into(),
+            k: 16,
+            cases: 1,
+            relevant_tools: 1,
+            recovered_tools: 1,
+            recall: 1.0,
+            mean_latency_ms: 0.0,
+            max_latency_ms: 0,
+            candidate_universe_size: 0,
+            shortlist_k: 0,
+            eligible_relevant_tools: 0,
+            recovered_relevant_tools: 0,
+        };
+        assert!(select_retrieval_point(&[legacy], 64, 16, "rrf").is_err());
+    }
+
+    #[test]
+    fn expanded_fixture_losing_relevant_tool_fails_closed() {
+        let mut broken = case();
+        broken.candidates = vec![candidate("other", "deferred")];
+        broken.relevance = BTreeMap::from([(String::from("hidden"), 3)]);
+        let error = validate_expanded_fixture(&[broken], 1, 1).expect_err("lost relevant");
+        assert!(error.to_string().contains("lost relevant tools"));
+    }
+
+    #[test]
+    fn expanded_fixture_rejects_oversized_shortlist() {
+        assert!(validate_expanded_fixture(&[case()], 2, 16).is_err());
     }
 }

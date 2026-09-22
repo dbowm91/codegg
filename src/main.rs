@@ -544,6 +544,16 @@ enum ToolAdvisorCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Run the corrected v3 preregistered release-mode qualification with
+    /// candidate-universe retrieval identity and semantic holdout validators.
+    SequenceEncoderQualifyV3 {
+        #[arg(long)]
+        prereg: String,
+        #[arg(long)]
+        prereg_commit: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare keyword, BM25, and learned discovery on a qualification suite.
     Qualify {
         #[arg(long)]
@@ -2090,8 +2100,12 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 } else {
                     for point in &report.points {
                         println!(
-                            "{} K={} recall {:.3} mean latency {:.1}ms",
-                            point.mode, point.k, point.recall, point.mean_latency_ms
+                            "{} universe={} K={} recall {:.3} mean latency {:.1}ms",
+                            point.mode,
+                            point.candidate_universe_size,
+                            point.shortlist_k,
+                            point.recall,
+                            point.mean_latency_ms
                         );
                     }
                 }
@@ -2185,6 +2199,38 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
                 let _ = (prereg, prereg_commit, json);
                 return Err(AppError::Other(anyhow::anyhow!(
                     "sequence qualification v2 requires the tool-advisor-encoder-training feature"
+                )));
+            }
+        }
+        ToolAdvisorCommand::SequenceEncoderQualifyV3 {
+            prereg,
+            prereg_commit,
+            json,
+        } => {
+            #[cfg(feature = "tool-advisor-encoder-training")]
+            {
+                let report = codegg::tool_advisor::sequence_qualification::qualify_v3(
+                    std::path::Path::new(prereg),
+                    prereg_commit,
+                    &candle_core::Device::Cpu,
+                )
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|error| {
+                            AppError::Other(anyhow::anyhow!(error.to_string()))
+                        })?
+                    );
+                } else {
+                    println!("sequence qualification v3: {}", report.disposition);
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-encoder-training"))]
+            {
+                let _ = (prereg, prereg_commit, json);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "sequence qualification v3 requires the tool-advisor-encoder-training feature"
                 )));
             }
         }
