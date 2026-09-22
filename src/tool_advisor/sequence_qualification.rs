@@ -69,8 +69,19 @@ pub struct QualificationPreregistration {
     pub test_partition_fingerprint: String,
     pub sequence_artifact: String,
     pub sequence_artifact_sha256: String,
+    pub selected_encoder_manifest_sha256: String,
+    pub selected_encoder_config_sha256: String,
+    pub selected_tokenizer_sha256: String,
+    pub selected_source_weights_sha256: String,
+    #[serde(default)]
+    pub training_config_hashes: BTreeMap<String, String>,
     pub retrieval_mode: String,
     pub retrieval_k: usize,
+    pub promotion_max_candidates: usize,
+    pub promotion_max_promotions: usize,
+    pub promotion_schema_budget_bytes: usize,
+    pub evaluation_command: String,
+    pub resource_limits: ResourceLimits,
     pub preregistration_commit_sha: String,
     pub protocol_hash: String,
     #[serde(default)]
@@ -79,6 +90,26 @@ pub struct QualificationPreregistration {
     pub contextual_artifact: Option<String>,
     #[serde(default)]
     pub gates: QualificationGates,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    #[serde(default = "default_max_cold_load_ms")]
+    pub max_cold_load_ms: u128,
+    #[serde(default = "default_max_rank_ms")]
+    pub max_rank_ms: u128,
+    #[serde(default = "default_max_encoder_weight_bytes")]
+    pub max_encoder_weight_bytes: u64,
+}
+
+fn default_max_cold_load_ms() -> u128 {
+    10_000
+}
+fn default_max_rank_ms() -> u128 {
+    600_000
+}
+fn default_max_encoder_weight_bytes() -> u64 {
+    128 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +315,16 @@ pub fn qualify(prereg_path: &Path, device: &Device) -> Result<QualificationRepor
     let cold_started = Instant::now();
     let sequence = load_artifact(Path::new(&prereg.sequence_artifact), device)?;
     let cold_load_ms = cold_started.elapsed().as_millis();
+    let encoder_manifest_path = Path::new(&sequence.encoder.assets.manifest_path);
+    if artifact_sha256(encoder_manifest_path)? != prereg.selected_encoder_manifest_sha256
+        || sequence.encoder.assets.manifest.hashes["config"]
+            != prereg.selected_encoder_config_sha256
+        || sequence.encoder.assets.manifest.hashes["vocabulary"] != prereg.selected_tokenizer_sha256
+        || sequence.encoder.assets.manifest.hashes["weights"]
+            != prereg.selected_source_weights_sha256
+    {
+        return Err(anyhow!("selected encoder asset hash mismatch"));
+    }
     let sequence_started = Instant::now();
     let sequence_evaluation = sequence.evaluate_cases(&test_cases)?;
     let test_rank_ms = sequence_started.elapsed().as_millis();
@@ -493,8 +534,19 @@ pub fn qualify(prereg_path: &Path, device: &Device) -> Result<QualificationRepor
         },
         QualificationGate {
             id: "resource-budget".into(),
-            passed: cold_load_ms <= 10_000,
-            detail: format!("cold load {}ms", cold_load_ms),
+            passed: cold_load_ms <= prereg.resource_limits.max_cold_load_ms
+                && test_rank_ms <= prereg.resource_limits.max_rank_ms
+                && fs::metadata(&sequence.encoder.assets.weights_path)?.len()
+                    <= prereg.resource_limits.max_encoder_weight_bytes,
+            detail: format!(
+                "cold load {}ms/{}ms, rank {}ms/{}ms, weights {}B/{}B",
+                cold_load_ms,
+                prereg.resource_limits.max_cold_load_ms,
+                test_rank_ms,
+                prereg.resource_limits.max_rank_ms,
+                fs::metadata(&sequence.encoder.assets.weights_path)?.len(),
+                prereg.resource_limits.max_encoder_weight_bytes
+            ),
         },
     ];
     let disposition = if gates.iter().all(|gate| gate.passed) {

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "protocol": "m005-clean-offline-sequence-encoder-qualification-v1",
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "train_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+  "dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
+  "sequence_artifact": "target/tool-advisor/sequence-ranking-minilm-packed-head.json",
+  "sequence_artifact_sha256": "01b5c368b4e762dbe6ca284694b290b72e17ec64606e1f26a21510721f9a10e8",
+  "selected_encoder_manifest_sha256": "a74faa957b57b1e41651a8067b3cb1fc0a2d65d98f96a54b37e9fc79e783a4ed",
+  "selected_encoder_config_sha256": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+  "selected_tokenizer_sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+  "selected_source_weights_sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+  "training_config_hashes": {
+    "assets/tool-advisor/sequence-ranking-minilm-packed.json": "38d34b5ec22119c1312c65e96c59a5a68c8eaa8e72fd133a180e9283f5f61ffc",
+    "assets/tool-advisor/sequence-ranking-minilm-packed-top1.json": "306dbd71de756e630cb6b45a500245ca29cb6f1c6fc54170cd2b52806a1bc0eb"
+  },
+  "retrieval_mode": "rrf",
+  "retrieval_k": 16,
+  "promotion_max_candidates": 16,
+  "promotion_max_promotions": 2,
+  "promotion_schema_budget_bytes": 16384,
+  "evaluation_command": "cargo run --locked --features tool-advisor-encoder-training --bin codegg -- tool-advisor sequence-encoder-qualify --prereg assets/tool-advisor/sequence-encoder-m005-preregistration.json --json",
+  "resource_limits": {
+    "max_cold_load_ms": 10000,
+    "max_rank_ms": 600000,
+    "max_encoder_weight_bytes": 134217728
+  },
+  "preregistration_commit_sha": "commit-added-with-this-preregistration",
+  "protocol_hash": "f13124a53656d3da7256d707e9e6a3ec15abd0e551ad2b779976c33219cd3c24",
+  "linear_artifact": "target/tool-advisor-smoke/model.json",
+  "contextual_artifact": null,
+  "gates": {
+    "recall_64_min": 0.98,
+    "recall_128_min": 0.95,
+    "aggregate_mrr_tolerance": 0.01,
+    "slice_gain_min": 0.02,
+    "slice_regression_max": 0.02,
+    "no_tool_f1_tolerance": 0.02
+  }
+}
