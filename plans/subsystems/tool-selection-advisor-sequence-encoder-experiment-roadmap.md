@@ -1,6 +1,6 @@
 # Tool-Selection Advisor — Sequence Encoder and Retrieval Experiment Roadmap
 
-Status: active
+Status: closed (M005 disposition D — no useful gain)
 
 Repository planning baseline: `8487967d9cc2605c398d3c608e353c8871289a7d`
 
@@ -264,9 +264,15 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-encoder-experiment/006-clean-offline-sequence-encoder-qualification.md`
 
-Status: ready (P001, M002, M003, and M004 are closed).
+Status: closed (disposition D — no useful gain; live-primary-model M004 remains blocked).
 
-Pre-register in a separate commit, then run final frozen evaluation comparing baselines, sequence-encoder variants, hybrid retrieval, calibration, resources, and authority invariants. Only a positive result may unblock live M004.
+The separate preregistration freeze and final offline evaluation are complete.
+The selected packed-marker ranker reached test MRR 0.831 versus hashed-linear
+0.707 and recovered 1.000 of the relevant tools on both 64- and 128-tool
+retrieval fixtures. The contextual-slice gate was not available because no
+contextual comparison artifact was preregistered, and the measured cold load
+was 16.784s against the 10s budget. The explicit disposition is D; the
+research artifacts remain offline-only and live M004 stays blocked.
 
 ## 8. Completion definition
 

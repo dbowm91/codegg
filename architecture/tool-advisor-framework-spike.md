@@ -163,3 +163,19 @@ local. BM25, semantic cosine, reciprocal-rank fusion, and normalized union
 are deterministic modes; encoder/cache errors fall back to BM25. The
 retrieval CLI reports K=16/24/32, cache size, query/retrieval timing, and
 recall without introducing authority or a download path.
+
+## Clean offline qualification — 2026-09-22 (M005)
+
+The final qualification is frozen by
+`assets/tool-advisor/sequence-encoder-m005-preregistration.json` and its
+machine-readable receipt is
+`assets/tool-advisor/sequence-qualification-result.json`. The selected
+packed-marker ranker reaches test MRR 0.831 versus hashed-linear 0.707, and
+RRF K=16 recovers 1.000 recall on the 64-tool and 128-tool deterministic
+fixtures. Leakage and authority-negative gates pass.
+
+The workstream closes with disposition D — no useful gain for live promotion:
+the contextual-slice gate has no declared contextual artifact, and cold load
+is 16.723s against the preregistered 10s limit (test ranking is 75.816s within
+the 600s limit). The sequence ranker, hybrid retriever, and local assets remain
+offline research infrastructure; no live-primary-model wiring is enabled.

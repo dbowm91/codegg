@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "protocol": "m005-clean-offline-sequence-encoder-qualification-v1",
+  "preregistration_commit_sha": "ad98cf8b46222d2d5a49ec2c1ee1dbb9731d3623",
+  "protocol_hash": "4d7f437b886cf221d9d9b50ed0c3270e4606326c3d50b227964ab77145db2b76",
+  "dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
+  "disposition": "D — no useful gain",
+  "gates": [
+    {
+      "id": "zero-leakage",
+      "passed": true,
+      "detail": "exact=0 normalized=0 template=0"
+    },
+    {
+      "id": "zero-authority-negative-promotions",
+      "passed": true,
+      "detail": "0 unauthorized retrieved descriptors"
+    },
+    {
+      "id": "candidate-recall-64",
+      "passed": true,
+      "detail": "recall 1.0000, required 0.9800"
+    },
+    {
+      "id": "candidate-recall-128",
+      "passed": true,
+      "detail": "recall 1.0000, required 0.9500"
+    },
+    {
+      "id": "aggregate-mrr-vs-linear",
+      "passed": true,
+      "detail": "sequence 0.8306, linear 0.7070"
+    },
+    {
+      "id": "contextual-slice-gain",
+      "passed": false,
+      "detail": "requires a predeclared contextual slice gain"
+    },
+    {
+      "id": "resource-budget",
+      "passed": false,
+      "detail": "cold load 16723ms/10000ms, rank 75816ms/600000ms, weights 90868376B/134217728B"
+    }
+  ],
+  "arms": [
+    {
+      "label": "keyword",
+      "metrics": {
+        "cases": 62,
+        "candidate_coverage": 0.0,
+        "recall_at_1": 0.0,
+        "recall_at_3": 0.0,
+        "recall_at_5": 0.0,
+        "mrr": 0.0,
+        "ndcg_at_5": 0.0,
+        "no_tool_precision": 0.14516129032258066,
+        "no_tool_recall": 1.0,
+        "no_tool_f1": 0.2535211267605634
+      },
+      "detail": "deterministic keyword baseline"
+    },
+    {
+      "label": "bm25",
+      "metrics": {
+        "cases": 62,
+        "candidate_coverage": 1.0,
+        "recall_at_1": 0.4838709677419355,
+        "recall_at_3": 0.7741935483870968,
+        "recall_at_5": 0.8225806451612904,
+        "mrr": 0.6384408602150536,
+        "ndcg_at_5": 0.6370819982572095,
+        "no_tool_precision": null,
+        "no_tool_recall": 0.0,
+        "no_tool_f1": null
+      },
+      "detail": "deterministic BM25 baseline"
+    },
+    {
+      "label": "hashed-linear-v1",
+      "metrics": {
+        "cases": 62,
+        "candidate_coverage": 1.0,
+        "recall_at_1": 0.6290322580645161,
+        "recall_at_3": 0.7580645161290323,
+        "recall_at_5": 0.8548387096774194,
+        "mrr": 0.7069892473118279,
+        "ndcg_at_5": 0.7355168376672102,
+        "no_tool_precision": 0.7142857142857143,
+        "no_tool_recall": 0.5555555555555556,
+        "no_tool_f1": 0.6250000000000001
+      },
+      "detail": "frozen artifact"
+    },
+    {
+      "label": "contextual-embedding-v2",
+      "metrics": null,
+      "detail": "historical rejected research baseline"
+    },
+    {
+      "label": "sequence-encoder-packed-marker-v1",
+      "metrics": {
+        "cases": 62,
+        "candidate_coverage": 1.0,
+        "recall_at_1": 0.8064516129032258,
+        "recall_at_3": 0.8548387096774194,
+        "recall_at_5": 0.8548387096774194,
+        "mrr": 0.8306451612903226,
+        "ndcg_at_5": 0.8330959940025634,
+        "no_tool_precision": 1.0,
+        "no_tool_recall": 0.3333333333333333,
+        "no_tool_f1": 0.5
+      },
+      "detail": "selected sequence ranker"
+    },
+    {
+      "label": "hybrid-rrf-k16",
+      "metrics": null,
+      "detail": "retrieval frontier is reported separately"
+    },
+    {
+      "label": "no-advisor-disclosure",
+      "metrics": {
+        "cases": 62,
+        "candidate_coverage": 0.0,
+        "recall_at_1": 0.0,
+        "recall_at_3": 0.0,
+        "recall_at_5": 0.0,
+        "mrr": 0.0,
+        "ndcg_at_5": 0.0,
+        "no_tool_precision": 0.14516129032258066,
+        "no_tool_recall": 1.0,
+        "no_tool_f1": 0.2535211267605634
+      },
+      "detail": "empty promotion baseline"
+    }
+  ],
+  "sequence_evaluation": {
+    "metrics": {
+      "cases": 62,
+      "candidate_coverage": 1.0,
+      "recall_at_1": 0.8064516129032258,
+      "recall_at_3": 0.8548387096774194,
+      "recall_at_5": 0.8548387096774194,
+      "mrr": 0.8306451612903226,
+      "ndcg_at_5": 0.8330959940025634,
+      "no_tool_precision": 1.0,
+      "no_tool_recall": 0.3333333333333333,
+      "no_tool_f1": 0.5
+    },
+    "calibration": {
+      "brier": 0.17425294680099734,
+      "ece": 0.5698638635296975,
+      "nll": 0.538947218902753
+    },
+    "dropped_candidates": 0,
+    "forwards": 124,
+    "elapsed_ms": 75816
+  },
+  "retrieval_frontier": {
+    "schema_version": 1,
+    "surface_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+    "points": [
+      {
+        "mode": "rrf",
+        "k": 16,
+        "cases": 62,
+        "relevant_tools": 41,
+        "recovered_tools": 41,
+        "recall": 1.0,
+        "mean_latency_ms": 257.01612903225805,
+        "max_latency_ms": 1060
+      },
+      {
+        "mode": "rrf",
+        "k": 16,
+        "cases": 62,
+        "relevant_tools": 7,
+        "recovered_tools": 7,
+        "recall": 1.0,
+        "mean_latency_ms": 282.7741935483871,
+        "max_latency_ms": 15613
+      },
+      {
+        "mode": "rrf",
+        "k": 16,
+        "cases": 62,
+        "relevant_tools": 7,
+        "recovered_tools": 7,
+        "recall": 1.0,
+        "mean_latency_ms": 551.7903225806451,
+        "max_latency_ms": 32199
+      }
+    ],
+    "cache_warm_entries": 23,
+    "cache_contains_context": false
+  },
+  "resource_report": {
+    "encoder_weight_bytes": 90868376,
+    "ranking_head_bytes": 1505,
+    "cold_load_ms": 16723,
+    "test_rank_ms": 75816,
+    "sequence_forwards": 124,
+    "retrieval_cache_entries": 25,
+    "selected_k": 16
+  },
+  "result_artifact_path": "assets/tool-advisor/sequence-qualification-result.json"
+}
