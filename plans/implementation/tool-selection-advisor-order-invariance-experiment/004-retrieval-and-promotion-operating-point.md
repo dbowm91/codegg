@@ -1,8 +1,8 @@
 # Tool-Selection Advisor Order-Invariance Experiment M004 — Retrieval and Promotion Operating Point
 
-Status: blocked on M003
+Status: ready for handoff
 
-Repository baseline: `198524aa4ff8656928c86cf36168892532f2e29c`
+Repository baseline: `c96fbdfa75996187f725289890ccaaf5b140d180`
 
 Hard dependency:
 

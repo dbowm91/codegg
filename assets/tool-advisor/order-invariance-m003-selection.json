@@ -1,0 +1,475 @@
+{
+ "schema_version": 1,
+ "protocol": "m003-preregistered-dev-selection-v1",
+ "sweep_fingerprint": "011daa5dace90830a3124cfa403302bbbbac6a83493e6d205233a20a91a50af0",
+ "dataset": "assets/tool-advisor/corpus.jsonl",
+ "dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+ "train_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+ "dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+ "train_cases_canonical": 132,
+ "train_views": 477,
+ "dev_cases": 62,
+ "sweep": {
+  "seed": 7,
+  "epochs": 3,
+  "learning_rate": 0.001,
+  "stage": "head-only",
+  "pooling": "mean",
+  "objective": {
+   "listwise": 1.0,
+   "binary_relevance": 1.0,
+   "abstention": 1.0,
+   "consistency": 0.0
+  },
+  "training_views": "balanced-permutation",
+  "dev_permutation_sample": 16,
+  "dev_permutations_per_case": 8,
+  "linear_baseline_artifact": "target/tool-advisor-smoke/model.json"
+ },
+ "arms": [
+  {
+   "arm": "v1-control",
+   "architecture": "sequence-encoder-packed-marker-v1",
+   "artifact": "/Users/davidbowman/projects/codegg/target/tool-advisor/order-invariance/m003-arms/v1-control.json",
+   "artifact_sha256": "10818a8db209e33895be6f4a66fb25bb9d1594fd879b164c2460abf0c78962e3",
+   "head_weights_sha256": "5367b71f057e3aeb07d2ca258e8746a52243dcd1f4c917c181322c59eab97ec5",
+   "head_bytes_sha256": "5367b71f057e3aeb07d2ca258e8746a52243dcd1f4c917c181322c59eab97ec5",
+   "marker_strategy": "distinct-ordinal-v1",
+   "candidate_representation": "marker-hidden-v1",
+   "permutation_contract_version": 1,
+   "training_objective_version": "graded-listwise-binary-v1",
+   "training_input_fingerprint": "f51a386e2916a2ca9e9e92117cf96887111cd23811aa1b61802d128fa91a55af",
+   "abstention_threshold": 0.6475118398666382,
+   "candidate_temperature": 1.0,
+   "candidate_bias": -1.0,
+   "dev": {
+    "mrr": 0.692741935483871,
+    "recall_at_1": 0.5967741935483871,
+    "recall_at_3": 0.7741935483870968,
+    "recall_at_5": 0.8387096774193549,
+    "ndcg_at_5": 0.7176215679020491,
+    "no_tool_f1": 0.8181818181818182,
+    "binary_brier": 0.19850488042849948,
+    "binary_ece": 0.1292332949591618,
+    "binary_nll": 0.5853400887343208,
+    "binary_observations": 255,
+    "multi_tool_ndcg": 0.8579502980307515,
+    "multi_tool_cases": 20,
+    "unknown_mrr": 0.84375,
+    "unknown_cases": 8,
+    "hard_negative_mrr": 0.8802083333333333,
+    "hard_negative_recall_at_1": 0.8125,
+    "hard_negative_cases": 16,
+    "context_sensitive_mrr": 0.585,
+    "context_sensitive_recall_at_1": 0.5,
+    "context_sensitive_cases": 20,
+    "position_buckets": [
+     {
+      "target_position": 0,
+      "cases": 50,
+      "mrr": 0.8190000000000001,
+      "recall_at_1": 0.7
+     },
+     {
+      "target_position": 1,
+      "cases": 2,
+      "mrr": 1.0,
+      "recall_at_1": 1.0
+     }
+    ],
+    "permutation": {
+     "sampled_cases": 16,
+     "permutations_per_case": 8,
+     "mean_top1_consistency": 0.38020833333333337,
+     "mean_max_score_drift": 0.21445456170476973,
+     "worst_mrr": 0.0,
+     "best_mrr": 1.0,
+     "max_regret": 0.8
+    }
+   },
+   "verdict": {
+    "eligible": false,
+    "gates": [
+     {
+      "id": "permutation-consistency",
+      "passed": false,
+      "detail": "top-1 identity consistency 0.380 >= 0.95"
+     },
+     {
+      "id": "position-stratified-recall",
+      "passed": true,
+      "detail": "position 0: 50 cases, R1 gap -0.103"
+     },
+     {
+      "id": "aggregate-mrr",
+      "passed": true,
+      "detail": "dev MRR 0.693 vs frozen-linear 0.633 - 0.01"
+     },
+     {
+      "id": "hard-slice-gain",
+      "passed": true,
+      "detail": "hard-negative 16/0.880/0.812, context-sensitive 20/0.585/0.500, unknown Some(0.84375)"
+     },
+     {
+      "id": "no-tool-f1",
+      "passed": true,
+      "detail": "dev Some(0.8181818181818182) vs frozen-linear Some(0.5714285714285715)"
+     },
+     {
+      "id": "multi-tool-ndcg",
+      "passed": false,
+      "detail": "multi-tool nDCG 0.858 (20 cases) vs frozen-linear 0.884 - 0.02"
+     },
+     {
+      "id": "relevance-calibration",
+      "passed": true,
+      "detail": "Brier 0.1985 NLL 0.5853 over 255 observations"
+     },
+     {
+      "id": "authority-runtime-invariant",
+      "passed": true,
+      "detail": "ranker holds no authority path by construction; retrieval/promotion unchanged in M003"
+     }
+    ]
+   },
+   "baseline_label": "frozen-linear",
+   "baseline_mrr": 0.6330645161290323
+  },
+  {
+   "arm": "shared-packed",
+   "architecture": "sequence-encoder-packed-shared-marker-v1",
+   "artifact": "/Users/davidbowman/projects/codegg/target/tool-advisor/order-invariance/m003-arms/shared-packed.json",
+   "artifact_sha256": "38c2ce32f3b5f041c3b0aa8a318530ffab066b3aa3eaaf5a37faeb076a35f9fd",
+   "head_weights_sha256": "4c9029b7c138860f7e7d19c89a10cfa0789cdbc2c5cc0aca898714a45cc31181",
+   "head_bytes_sha256": "4c9029b7c138860f7e7d19c89a10cfa0789cdbc2c5cc0aca898714a45cc31181",
+   "marker_strategy": "shared-marker-v1",
+   "candidate_representation": "marker-hidden-v1",
+   "permutation_contract_version": 1,
+   "training_objective_version": "graded-listwise-binary-v1",
+   "training_input_fingerprint": "f51a386e2916a2ca9e9e92117cf96887111cd23811aa1b61802d128fa91a55af",
+   "abstention_threshold": 0.6422520279884338,
+   "candidate_temperature": 1.0,
+   "candidate_bias": -1.0,
+   "dev": {
+    "mrr": 0.6021505376344085,
+    "recall_at_1": 0.4032258064516129,
+    "recall_at_3": 0.8387096774193549,
+    "recall_at_5": 0.8387096774193549,
+    "ndcg_at_5": 0.6477152156038601,
+    "no_tool_f1": 0.8181818181818182,
+    "binary_brier": 0.19988253062243053,
+    "binary_ece": 0.08996567398894068,
+    "binary_nll": 0.5885527752498068,
+    "binary_observations": 255,
+    "multi_tool_ndcg": 0.8716268778362274,
+    "multi_tool_cases": 20,
+    "unknown_mrr": 0.6458333333333333,
+    "unknown_cases": 8,
+    "hard_negative_mrr": 0.71875,
+    "hard_negative_recall_at_1": 0.5,
+    "hard_negative_cases": 16,
+    "context_sensitive_mrr": 0.5083333333333334,
+    "context_sensitive_recall_at_1": 0.3,
+    "context_sensitive_cases": 20,
+    "position_buckets": [
+     {
+      "target_position": 0,
+      "cases": 50,
+      "mrr": 0.7266666666666666,
+      "recall_at_1": 0.5
+     },
+     {
+      "target_position": 1,
+      "cases": 2,
+      "mrr": 0.5,
+      "recall_at_1": 0.0
+     }
+    ],
+    "permutation": {
+     "sampled_cases": 16,
+     "permutations_per_case": 8,
+     "mean_top1_consistency": 0.41927083333333337,
+     "mean_max_score_drift": 0.23484673257917166,
+     "worst_mrr": 0.0,
+     "best_mrr": 1.0,
+     "max_regret": 0.8
+    }
+   },
+   "verdict": {
+    "eligible": false,
+    "gates": [
+     {
+      "id": "permutation-consistency",
+      "passed": false,
+      "detail": "top-1 identity consistency 0.419 >= 0.95"
+     },
+     {
+      "id": "position-stratified-recall",
+      "passed": true,
+      "detail": "position 0: 50 cases, R1 gap -0.097"
+     },
+     {
+      "id": "aggregate-mrr",
+      "passed": false,
+      "detail": "dev MRR 0.602 vs frozen-linear 0.633 - 0.01"
+     },
+     {
+      "id": "hard-slice-gain",
+      "passed": true,
+      "detail": "hard-negative 16/0.719/0.500, context-sensitive 20/0.508/0.300, unknown Some(0.6458333333333333)"
+     },
+     {
+      "id": "no-tool-f1",
+      "passed": true,
+      "detail": "dev Some(0.8181818181818182) vs frozen-linear Some(0.5714285714285715)"
+     },
+     {
+      "id": "multi-tool-ndcg",
+      "passed": true,
+      "detail": "multi-tool nDCG 0.872 (20 cases) vs frozen-linear 0.884 - 0.02"
+     },
+     {
+      "id": "relevance-calibration",
+      "passed": true,
+      "detail": "Brier 0.1999 NLL 0.5886 over 255 observations"
+     },
+     {
+      "id": "authority-runtime-invariant",
+      "passed": true,
+      "detail": "ranker holds no authority path by construction; retrieval/promotion unchanged in M003"
+     }
+    ]
+   },
+   "baseline_label": "frozen-linear",
+   "baseline_mrr": 0.6330645161290323
+  },
+  {
+   "arm": "span-packed",
+   "architecture": "sequence-encoder-packed-shared-span-v1",
+   "artifact": "/Users/davidbowman/projects/codegg/target/tool-advisor/order-invariance/m003-arms/span-packed.json",
+   "artifact_sha256": "dee4afbbb1a5ed2ba06291ce978d8d0f251979e8ce8da1b343188d6412525ede",
+   "head_weights_sha256": "a2ed16399549cc0d4cef64c2579246880ee42ae34618904b4bfa4dcfb2692daf",
+   "head_bytes_sha256": "a2ed16399549cc0d4cef64c2579246880ee42ae34618904b4bfa4dcfb2692daf",
+   "marker_strategy": "shared-marker-v1",
+   "candidate_representation": "descriptor-span-mean-v1",
+   "permutation_contract_version": 1,
+   "training_objective_version": "graded-listwise-binary-v1",
+   "training_input_fingerprint": "f51a386e2916a2ca9e9e92117cf96887111cd23811aa1b61802d128fa91a55af",
+   "abstention_threshold": 0.627373218536377,
+   "candidate_temperature": 1.0,
+   "candidate_bias": -1.0,
+   "dev": {
+    "mrr": 0.6255376344086023,
+    "recall_at_1": 0.46774193548387094,
+    "recall_at_3": 0.8064516129032258,
+    "recall_at_5": 0.8387096774193549,
+    "ndcg_at_5": 0.6776266296133214,
+    "no_tool_f1": 0.8571428571428572,
+    "binary_brier": 0.18852486016808775,
+    "binary_ece": 0.14386225027196547,
+    "binary_nll": 0.5595330040037455,
+    "binary_observations": 255,
+    "multi_tool_ndcg": 0.8658350346538404,
+    "multi_tool_cases": 20,
+    "unknown_mrr": 0.6666666666666667,
+    "unknown_cases": 8,
+    "hard_negative_mrr": 0.7864583333333333,
+    "hard_negative_recall_at_1": 0.625,
+    "hard_negative_cases": 16,
+    "context_sensitive_mrr": 0.4766666666666667,
+    "context_sensitive_recall_at_1": 0.3,
+    "context_sensitive_cases": 20,
+    "position_buckets": [
+     {
+      "target_position": 0,
+      "cases": 50,
+      "mrr": 0.7556666666666668,
+      "recall_at_1": 0.58
+     },
+     {
+      "target_position": 1,
+      "cases": 2,
+      "mrr": 0.5,
+      "recall_at_1": 0.0
+     }
+    ],
+    "permutation": {
+     "sampled_cases": 16,
+     "permutations_per_case": 8,
+     "mean_top1_consistency": 0.9505208333333334,
+     "mean_max_score_drift": 0.1761679369956255,
+     "worst_mrr": 0.0,
+     "best_mrr": 1.0,
+     "max_regret": 0.6666666666666667
+    }
+   },
+   "verdict": {
+    "eligible": true,
+    "gates": [
+     {
+      "id": "permutation-consistency",
+      "passed": true,
+      "detail": "top-1 identity consistency 0.951 >= 0.95"
+     },
+     {
+      "id": "position-stratified-recall",
+      "passed": true,
+      "detail": "position 0: 50 cases, R1 gap -0.112"
+     },
+     {
+      "id": "aggregate-mrr",
+      "passed": true,
+      "detail": "dev MRR 0.626 vs frozen-linear 0.633 - 0.01"
+     },
+     {
+      "id": "hard-slice-gain",
+      "passed": true,
+      "detail": "hard-negative 16/0.786/0.625, context-sensitive 20/0.477/0.300, unknown Some(0.6666666666666667)"
+     },
+     {
+      "id": "no-tool-f1",
+      "passed": true,
+      "detail": "dev Some(0.8571428571428572) vs frozen-linear Some(0.5714285714285715)"
+     },
+     {
+      "id": "multi-tool-ndcg",
+      "passed": true,
+      "detail": "multi-tool nDCG 0.866 (20 cases) vs frozen-linear 0.884 - 0.02"
+     },
+     {
+      "id": "relevance-calibration",
+      "passed": true,
+      "detail": "Brier 0.1885 NLL 0.5595 over 255 observations"
+     },
+     {
+      "id": "authority-runtime-invariant",
+      "passed": true,
+      "detail": "ranker holds no authority path by construction; retrieval/promotion unchanged in M003"
+     }
+    ]
+   },
+   "baseline_label": "frozen-linear",
+   "baseline_mrr": 0.6330645161290323
+  },
+  {
+   "arm": "batched-pairwise",
+   "architecture": "sequence-encoder-batched-pairwise-v1",
+   "artifact": "/Users/davidbowman/projects/codegg/target/tool-advisor/order-invariance/m003-arms/batched-pairwise.json",
+   "artifact_sha256": "05ed4dab036f737650cb1be0c633036847cf72ebfc27581ddf2ace23e08c80b4",
+   "head_weights_sha256": "96e169cd1eb90106a152b370436fb9fb16611f2d0bb6d96560bb62d7badd357c",
+   "head_bytes_sha256": "96e169cd1eb90106a152b370436fb9fb16611f2d0bb6d96560bb62d7badd357c",
+   "marker_strategy": "no-marker-pair-v1",
+   "candidate_representation": "pair-cls-or-mean-v1",
+   "permutation_contract_version": 1,
+   "training_objective_version": "graded-listwise-binary-v1",
+   "training_input_fingerprint": "f51a386e2916a2ca9e9e92117cf96887111cd23811aa1b61802d128fa91a55af",
+   "abstention_threshold": 0.6412246823310852,
+   "candidate_temperature": 2.0,
+   "candidate_bias": -1.0,
+   "dev": {
+    "mrr": 0.621505376344086,
+    "recall_at_1": 0.45161290322580644,
+    "recall_at_3": 0.7903225806451613,
+    "recall_at_5": 0.8387096774193549,
+    "ndcg_at_5": 0.672732438627629,
+    "no_tool_f1": 0.8181818181818182,
+    "binary_brier": 0.19212482668907205,
+    "binary_ece": 0.12419681841251896,
+    "binary_nll": 0.5705088406149741,
+    "binary_observations": 255,
+    "multi_tool_ndcg": 0.8475827270159513,
+    "multi_tool_cases": 20,
+    "unknown_mrr": 0.6666666666666666,
+    "unknown_cases": 8,
+    "hard_negative_mrr": 0.7552083333333334,
+    "hard_negative_recall_at_1": 0.5625,
+    "hard_negative_cases": 16,
+    "context_sensitive_mrr": 0.48916666666666664,
+    "context_sensitive_recall_at_1": 0.3,
+    "context_sensitive_cases": 20,
+    "position_buckets": [
+     {
+      "target_position": 0,
+      "cases": 50,
+      "mrr": 0.76,
+      "recall_at_1": 0.56
+     },
+     {
+      "target_position": 1,
+      "cases": 2,
+      "mrr": 0.26666666666666666,
+      "recall_at_1": 0.0
+     }
+    ],
+    "permutation": {
+     "sampled_cases": 16,
+     "permutations_per_case": 8,
+     "mean_top1_consistency": 1.0,
+     "mean_max_score_drift": 0.0,
+     "worst_mrr": 0.0,
+     "best_mrr": 1.0,
+     "max_regret": 0.0
+    }
+   },
+   "verdict": {
+    "eligible": false,
+    "gates": [
+     {
+      "id": "permutation-consistency",
+      "passed": true,
+      "detail": "top-1 identity consistency 1.000 >= 0.95"
+     },
+     {
+      "id": "position-stratified-recall",
+      "passed": true,
+      "detail": "position 0: 50 cases, R1 gap -0.108"
+     },
+     {
+      "id": "aggregate-mrr",
+      "passed": false,
+      "detail": "dev MRR 0.622 vs frozen-linear 0.633 - 0.01"
+     },
+     {
+      "id": "hard-slice-gain",
+      "passed": true,
+      "detail": "hard-negative 16/0.755/0.562, context-sensitive 20/0.489/0.300, unknown Some(0.6666666666666666)"
+     },
+     {
+      "id": "no-tool-f1",
+      "passed": true,
+      "detail": "dev Some(0.8181818181818182) vs frozen-linear Some(0.5714285714285715)"
+     },
+     {
+      "id": "multi-tool-ndcg",
+      "passed": false,
+      "detail": "multi-tool nDCG 0.848 (20 cases) vs frozen-linear 0.884 - 0.02"
+     },
+     {
+      "id": "relevance-calibration",
+      "passed": true,
+      "detail": "Brier 0.1921 NLL 0.5705 over 255 observations"
+     },
+     {
+      "id": "authority-runtime-invariant",
+      "passed": true,
+      "detail": "ranker holds no authority path by construction; retrieval/promotion unchanged in M003"
+     }
+    ]
+   },
+   "baseline_label": "frozen-linear",
+   "baseline_mrr": 0.6330645161290323
+  }
+ ],
+ "failures": [],
+ "selected_arm": "span-packed",
+ "selected_artifact": "/Users/davidbowman/projects/codegg/target/tool-advisor/order-invariance/m003-arms/span-packed.json",
+ "v3_diagnostic": {
+  "cases": 170,
+  "sequence_mrr": 0.6253921568627449,
+  "sequence_recall_at_1": 0.4647058823529412,
+  "baseline_mrr": 0.5114705882352941,
+  "baseline_recall_at_1": 0.31176470588235294,
+  "non_gating": true
+ },
+ "note": "Full per-arm train reports: target/tool-advisor/order-invariance/m003-arms/m003-selection.json (local, gitignored). Artifacts loadable only where local reference assets exist; hashes above bind the exact bytes."
+}

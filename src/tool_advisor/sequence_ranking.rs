@@ -398,7 +398,7 @@ pub fn dev_relevance_observations(
             .map(|item| (item.name.as_str(), item.score))
             .collect();
         for candidate in &case.candidates {
-            if candidate.name.as_str().is_empty() {
+            if candidate.name.is_empty() {
                 continue;
             }
             let Some(score) = by_name.get(candidate.name.as_str()).copied() else {
@@ -1812,7 +1812,7 @@ pub fn dev_selection_metrics(
         binary_ece: calibration.ece,
         binary_nll: calibration.nll,
         binary_observations: calibration.observations,
-        multi_tool_ndcg: multi_tool_ndcg,
+        multi_tool_ndcg,
         multi_tool_cases: multi_tool.len(),
         unknown_mrr: unknown.as_ref().map(|(metrics, _)| metrics.mrr),
         unknown_cases: unknown.as_ref().map(|(_, count)| *count).unwrap_or(0),

@@ -133,8 +133,8 @@ existing live-primary-model M004
 
 - M001 is closed (`plans/closure/tool-selection-advisor-order-invariance-experiment/001-status.md`).
 - M002 is closed (`plans/closure/tool-selection-advisor-order-invariance-experiment/002-status.md`).
-- M003 is ready.
-- M004 is blocked on positive M003 selection.
+- M003 is closed positively (`plans/closure/tool-selection-advisor-order-invariance-experiment/003-status.md`).
+- M004 is ready.
 - M005 is blocked on positive M004 closure.
 
 ## 7. Milestones
@@ -165,7 +165,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/003-balanced-training-and-dev-selection.md`
 
-Status: ready (M002 closed).
+Status: closed (positive selection).
 
 Train on balanced permutation views using graded/listwise + candidate-relevance + abstention objectives; select one model using dev quality plus permutation robustness, never v3.
 
@@ -175,7 +175,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/004-retrieval-and-promotion-operating-point.md`
 
-Status: blocked on M003.
+Status: ready (M003 closed positively).
 
 Choose K/mode and a promotion-specific calibrated confidence threshold on train/dev-only fixtures. Keep abstention calibration separate.
 
