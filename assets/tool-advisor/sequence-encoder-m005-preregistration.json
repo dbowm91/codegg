@@ -27,7 +27,7 @@
     "max_rank_ms": 600000,
     "max_encoder_weight_bytes": 134217728
   },
-  "preregistration_commit_sha": "commit-added-with-this-preregistration",
+  "preregistration_commit_sha": "ad98cf8b46222d2d5a49ec2c1ee1dbb9731d3623",
   "protocol_hash": "4d7f437b886cf221d9d9b50ed0c3270e4606326c3d50b227964ab77145db2b76",
   "linear_artifact": "target/tool-advisor-smoke/model.json",
   "contextual_artifact": null,
