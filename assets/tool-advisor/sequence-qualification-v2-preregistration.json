@@ -64,5 +64,5 @@
   "release_command": "cargo build --release --locked --features tool-advisor-encoder-training --bin codegg && ./target/release/codegg tool-advisor sequence-encoder-qualify-v2 --prereg assets/tool-advisor/sequence-qualification-v2-preregistration.json --prereg-commit <commit-a-sha> --json",
   "target_hardware_os": "Apple Silicon macOS; CPU device; process-cold filesystem cache uncontrolled and reported as process_cold_load",
   "output_path": "assets/tool-advisor/sequence-qualification-v2-result.json",
-  "protocol_hash": "2b63da36d757a419fb90c329c5fabdfb822123c7a02ce03506d3c50a4f3717d7"
+  "protocol_hash": "250b0eaeb7cf1c73e43df9eb42e148ca8e7b8861705d57abb0d787abaa5978eb"
 }

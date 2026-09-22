@@ -1784,4 +1784,17 @@ mod tests {
         assert_eq!(evidence.template_overlap, 0);
         assert_eq!(evidence.explicit_family_overlap, 0);
     }
+
+    #[test]
+    fn repository_preregistration_protocol_hash_matches_rust_canonicalization() {
+        let prereg: QualificationV2Preregistration = serde_json::from_slice(
+            &fs::read("assets/tool-advisor/sequence-qualification-v2-preregistration.json")
+                .expect("preregistration"),
+        )
+        .expect("parse preregistration");
+        assert_eq!(
+            protocol_hash_v2(&prereg).expect("hash"),
+            prereg.protocol_hash
+        );
+    }
 }
