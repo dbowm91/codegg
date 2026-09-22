@@ -1222,7 +1222,6 @@ impl ResponsesTransport {
             .timeout(
                 eggfetch_core::Timeout::builder()
                     .connect(Duration::from_secs(10))
-                    .total(config.request_timeout)
                     .build(),
             )
             .max_idle_connections_per_host(32)
@@ -1266,10 +1265,15 @@ impl ResponsesTransport {
         let body = serde_json::to_vec(request)
             .map_err(|e| crate::error::ProviderError::api("serialization", e.to_string()))?;
 
+        let request_timeout = self.config.request_timeout;
         let mut response = self
             .http_client
             .post(&url)
             .map_err(crate::error::ProviderError::from)?
+            .timeout(eggfetch_core::Timeout {
+                total: Some(request_timeout),
+                ..eggfetch_core::Timeout::default()
+            })
             .header("authorization", &format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .body(body)
@@ -1311,6 +1315,11 @@ impl ResponsesTransport {
     ///
     /// Supports cancellation via `cancel()` and enforces stream-idle
     /// timeout to detect stalled connections.
+    ///
+    /// No request-level `total` is attached: the shared transport carries
+    /// no absolute total so healthy long streams are governed by the
+    /// agent-level setup/idle/cancellation policy, not by a fixed
+    /// transport lifetime.
     pub async fn create_response_stream(
         &self,
         request: &ResponsesRequest,

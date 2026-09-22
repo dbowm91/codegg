@@ -312,6 +312,7 @@ impl Provider for OpencodeZenProvider {
         let mut resp = client
             .get(&url)
             .map_err(ProviderError::from)?
+            .timeout(crate::provider_core::non_streaming_timeout())
             .send()
             .await
             .map_err(ProviderError::from)?;

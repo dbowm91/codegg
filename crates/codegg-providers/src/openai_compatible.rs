@@ -662,6 +662,7 @@ impl Provider for OpenAiCompatibleProvider {
             .client
             .get(&url)
             .map_err(ProviderError::from)?
+            .timeout(crate::provider_core::non_streaming_timeout())
             .header(
                 &self.config.auth_header,
                 &self.config.credential.authorization_header_value(),

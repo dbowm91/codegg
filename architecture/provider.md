@@ -499,12 +499,16 @@ argument schema. Unconfigured adapters never scan assistant prose.
 
 ```rust
 pub fn create_http_client() -> eggfetch_core::Client {
-    // 60s total, 10s connect, 32 idle per host, 30s idle-pool timeout,
+    // 10s connect, 32 idle per host, 30s idle-pool timeout,
     // explicit ordinary-client redirect following capped at 10 hops.
+    // No client-global absolute total: long model streams are bounded by
+    // the agent-level 120s setup / 90s idle / cancellation policy.
+    // Bounded metadata calls apply `non_streaming_timeout()` (60s total)
+    // per request.
 }
 ```
 
-Provider HTTP transport is owned by `eggfetch-core 0.1.5` with the explicit
+Provider HTTP transport is owned by `eggfetch-core 0.2.0` with the explicit
 `http1`, `tls-rustls`, and `json` feature profile. Provider modules retain
 request formatting, authentication, status classification, SSE framing,
 stream-idle bounds, and cancellation. The transport migration does not

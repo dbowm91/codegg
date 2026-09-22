@@ -20,12 +20,36 @@ pub use crate::error::ProviderError;
 
 pub const MAX_BUFFER_SIZE: usize = 1024 * 1024;
 
+/// Finite total deadline for bounded non-streaming provider operations
+/// (model discovery/listing and other ordinary provider metadata calls).
+///
+/// The shared streaming-capable client deliberately carries no
+/// client-level absolute `total`: Eggfetch 0.2.0 enforces `Timeout.total`
+/// as one absolute deadline through response-body EOF (including
+/// `bytes_stream()`), so a client-global 60s total would terminate healthy
+/// long model streams. Long-stream liveness is owned by the agent layer
+/// (`STREAM_SETUP_TIMEOUT = 120s`, `STREAM_IDLE_TIMEOUT = 90s`,
+/// cancellation, retry-chain budget). Non-streaming call sites apply this
+/// bound explicitly per request via [`non_streaming_timeout()`].
+pub const NON_STREAMING_PROVIDER_TOTAL: Duration = Duration::from_secs(60);
+
+/// Request-level timeout for finite non-streaming provider operations.
+///
+/// Returns a `Timeout` carrying only `total = 60s`; all other phases are
+/// `None` so the shared client's connect/pool policy is inherited via
+/// Eggfetch's per-field merge (request `None` keeps the client value).
+pub fn non_streaming_timeout() -> eggfetch_core::Timeout {
+    eggfetch_core::Timeout {
+        total: Some(NON_STREAMING_PROVIDER_TOTAL),
+        ..eggfetch_core::Timeout::default()
+    }
+}
+
 pub fn create_http_client() -> eggfetch_core::Client {
     eggfetch_core::Client::builder()
         .timeout(
             eggfetch_core::Timeout::builder()
                 .connect(Duration::from_secs(10))
-                .total(Duration::from_secs(60))
                 .build(),
         )
         .max_idle_connections_per_host(32)
@@ -1123,6 +1147,213 @@ mod tests {
             eggfetch_core::Error::TooManyRedirects { max: 10, .. }
         ));
         assert_eq!(server.join().expect("join bounded redirect server"), 11);
+    }
+
+    #[tokio::test]
+    async fn absolute_total_deadline_terminates_healthy_stream() {
+        // M001 WP3 qualification: Eggfetch 0.2.0 `Timeout.total` is one
+        // absolute deadline through response-body EOF, including
+        // `bytes_stream()`. A server that keeps emitting chunks inside the
+        // read/idle bound must still observe `TimeoutPhase::Total` once the
+        // short test total elapses. This justifies removing the
+        // client-global 60s total from the shared streaming-capable
+        // provider client (WP4).
+        use futures_util::StreamExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind streaming fixture");
+        let addr = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept fixture");
+            let mut buf = vec![0_u8; 4096];
+            let mut acc = Vec::new();
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                    .await
+                    .expect("read fixture request");
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            tokio::io::AsyncWriteExt::write_all(&mut stream, headers.as_bytes())
+                .await
+                .expect("write fixture headers");
+            tokio::io::AsyncWriteExt::flush(&mut stream)
+                .await
+                .expect("flush fixture headers");
+            for i in 0..30 {
+                let payload = format!("data: chunk-{i}\n\n");
+                let chunk = format!("{:X}\r\n{}\r\n", payload.len(), payload);
+                if tokio::io::AsyncWriteExt::write_all(&mut stream, chunk.as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::io::AsyncWriteExt::flush(&mut stream).await.ok();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, b"0\r\n\r\n").await;
+        });
+
+        let client = eggfetch_core::Client::builder()
+            .timeout(
+                eggfetch_core::Timeout::builder()
+                    .connect(Duration::from_secs(5))
+                    .total(Duration::from_millis(250))
+                    .build(),
+            )
+            .follow_redirects(false)
+            .build();
+        let url = format!("http://{addr}/stream");
+        let mut resp = client
+            .get(&url)
+            .expect("build fixture request")
+            .send()
+            .await
+            .expect("fixture headers succeed");
+        assert!(resp.status().is_success());
+        let mut stream = resp.bytes_stream().expect("fixture bytes_stream");
+        let mut chunks = 0_usize;
+        let mut saw_total = false;
+        loop {
+            match stream.next().await {
+                None => break,
+                Some(Ok(_)) => chunks += 1,
+                Some(Err(e)) => {
+                    saw_total = matches!(
+                        e,
+                        eggfetch_core::Error::Timeout {
+                            phase: eggfetch_core::TimeoutPhase::Total,
+                            ..
+                        }
+                    );
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_total,
+            "healthy chunked stream must terminate with TimeoutPhase::Total (chunks={chunks})"
+        );
+        assert!(
+            chunks >= 1,
+            "fixture must yield at least one chunk before the total deadline"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn shared_streaming_client_permits_long_active_stream() {
+        // M001 WP4/WP5: the corrected shared client carries no absolute
+        // total, so a healthy stream that keeps emitting inside idle bounds
+        // must complete past the short WP3 total interval (250ms). The
+        // fixture streams ~600ms of 30ms-spaced chunks; under the legacy
+        // client-global 60s-equivalent policy this duration would already
+        // exceed a short total, while the corrected client must succeed.
+        use futures_util::StreamExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind long-stream fixture");
+        let addr = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept fixture");
+            let mut buf = vec![0_u8; 4096];
+            let mut acc = Vec::new();
+            loop {
+                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                    .await
+                    .expect("read fixture request");
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            tokio::io::AsyncWriteExt::write_all(&mut stream, headers.as_bytes())
+                .await
+                .expect("write fixture headers");
+            tokio::io::AsyncWriteExt::flush(&mut stream)
+                .await
+                .expect("flush fixture headers");
+            for i in 0..20 {
+                let payload = format!("data: long-{i}\n\n");
+                let chunk = format!("{:X}\r\n{}\r\n", payload.len(), payload);
+                if tokio::io::AsyncWriteExt::write_all(&mut stream, chunk.as_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::io::AsyncWriteExt::flush(&mut stream).await.ok();
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, b"0\r\n\r\n").await;
+        });
+
+        let url = format!("http://{addr}/stream");
+        let mut resp = create_http_client()
+            .get(&url)
+            .expect("build fixture request")
+            .send()
+            .await
+            .expect("long-stream headers succeed");
+        assert!(resp.status().is_success());
+        let mut stream = resp.bytes_stream().expect("long-stream bytes_stream");
+        let mut chunks = 0_usize;
+        while let Some(item) = stream.next().await {
+            item.expect("long active stream must not fail before EOF");
+            chunks += 1;
+        }
+        assert_eq!(chunks, 20, "all 20 chunks (~600ms) must arrive");
+        server.abort();
+    }
+
+    #[test]
+    fn non_streaming_timeout_carries_sixty_second_total() {
+        // M001 WP4: bounded metadata operations retain an explicit finite
+        // total. The helper carries only `total`; connect/pool inherit from
+        // the shared client via per-field merge.
+        let timeout = non_streaming_timeout();
+        assert_eq!(timeout.total, Some(NON_STREAMING_PROVIDER_TOTAL));
+        assert_eq!(
+            NON_STREAMING_PROVIDER_TOTAL,
+            Duration::from_secs(60),
+            "historical 60s bound is preserved for metadata requests"
+        );
+        assert!(timeout.connect.is_none());
+        assert!(timeout.read.is_none());
+        assert!(timeout.pool.is_none());
+        assert!(timeout.write.is_none());
+    }
+
+    #[test]
+    fn provider_timeout_is_transient_before_visible_output() {
+        // M001 WP5: a transport timeout before visible output stays
+        // eligible only for bounded CodeGG retry (Transient), never
+        // permanent. Post-visible no-replay is owned by
+        // `src/agent/provider_turn.rs` (visible-output gate, covered by
+        // `agent_loop_harness` midstream-failure tests) and must not be
+        // weakened here.
+        let timeout: ProviderError = eggfetch_core::Error::Timeout {
+            phase: eggfetch_core::TimeoutPhase::Total,
+            elapsed: Duration::from_millis(250),
+        }
+        .into();
+        assert!(matches!(
+            timeout.retry_disposition(),
+            crate::error::RetryDisposition::Transient
+        ));
     }
 
     #[test]

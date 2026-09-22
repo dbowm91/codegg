@@ -32,7 +32,7 @@ The accepted dependency baseline keeps feature ownership explicit:
 
 - `eggfetch-core` consumers disable defaults and select only `http1`,
   `tls-rustls`, and (where needed) `json`; its packaged WebPKI trust set is
-  preferred over native roots. The supported floor is `0.1.5`; generic
+  preferred over native roots. The supported floor is `0.2.0`; generic
   decoded-body limiting is Eggfetch-owned via request-scoped
   `max_decoded_body_size()` and CodeGG owns only SSRF policy, static
   resolved routing, and secret-safe error projection;
