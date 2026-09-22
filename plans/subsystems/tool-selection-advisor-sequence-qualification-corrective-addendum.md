@@ -71,8 +71,8 @@ C002 separately preregistered release qualification
 existing live-primary-model M004
 ```
 
-- C001 is ready.
-- C002 is blocked on positive C001 closure.
+- C001 is closed positively with `plans/closure/tool-selection-advisor-sequence-qualification-corrective/001-status.md`.
+- C002 is ready; its separate preregistration freeze and final-run discipline remain mandatory.
 - Existing live-primary-model M004 remains blocked unless C002 records disposition A.
 
 ## 4. Milestones
@@ -83,7 +83,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-qualification-corrective/001-qualification-harness-and-fresh-holdout.md`
 
-Status: ready.
+Status: closed.
 
 Repair the qualification semantics, implement the omitted evidence slices/gates, establish release-mode resource measurement, and freeze a new evaluation-only holdout that has zero content/template leakage into prior train/dev/test data. C001 MUST NOT run the new holdout through the selected model.
 
@@ -93,7 +93,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-sequence-qualification-corrective/002-preregistered-release-qualification.md`
 
-Status: blocked on C001.
+Status: ready.
 
 Freeze all artifacts/gates/configuration in a separate commit, wait for hosted CI when available, then run exactly one final qualification on the fresh holdout plus historical diagnostic slices. Compute a truthful A/B/C/D/E disposition. Only A can unblock live M004.
 
