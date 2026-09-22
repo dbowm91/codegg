@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment M003 — Balanced Training and Dev Selection
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `722d8e7c874f5ccdb134c8359077004c3f27cd86`
 
