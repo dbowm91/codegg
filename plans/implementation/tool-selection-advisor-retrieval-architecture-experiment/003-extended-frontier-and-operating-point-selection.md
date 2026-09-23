@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Experiment M003 — Extended Frontier and Operating-Point Selection
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `cde81715`
 

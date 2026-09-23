@@ -208,4 +208,4 @@ The workstream closes when M003 closes. Positive M003 freezes one operating poin
 | M001 | closed | `plans/implementation/tool-selection-advisor-retrieval-architecture-experiment/001-retrieval-miss-diagnostics-and-preregistration.md` | `plans/closure/tool-selection-advisor-retrieval-architecture-experiment/001-status.md` | none |
 | M002 | closed | `plans/implementation/tool-selection-advisor-retrieval-architecture-experiment/002-retriever-and-fusion-variants.md` | `plans/closure/tool-selection-advisor-retrieval-architecture-experiment/002-status.md` | none |
 | M002 | not started | — | — | M001 |
-| M003 | ready for handoff | `plans/implementation/tool-selection-advisor-retrieval-architecture-experiment/003-extended-frontier-and-operating-point-selection.md` | — | M002 |
+| M003 | active | `plans/implementation/tool-selection-advisor-retrieval-architecture-experiment/003-extended-frontier-and-operating-point-selection.md` | — | M002 |

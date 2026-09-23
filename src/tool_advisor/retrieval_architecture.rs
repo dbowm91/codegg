@@ -19,8 +19,15 @@
 //! --ignored --nocapture`
 
 use super::context_v2::AdvisorContextV2;
+use super::operating_point::{
+    expand_universe, promotion_case_views, promotion_order_evidence,
+    promotion_outcome_for_threshold, promotion_threshold_grid, select_promotion_threshold,
+    PromotionOrderEvidence, PromotionOutcome,
+};
 use super::sequence_encoder::{CandleBertSequenceEncoder, PoolingStrategy};
-use super::sequence_ranking::{SequenceRanker, RANKING_ARCHITECTURE_SPAN_PACKED};
+use super::sequence_ranking::{
+    load_artifact as load_ranker_artifact, SequenceRanker, RANKING_ARCHITECTURE_SPAN_PACKED,
+};
 use super::sequence_retrieval::RETRIEVAL_SCHEMA_VERSION;
 use super::{
     baseline_prediction, dataset_fingerprint, load_cases, partition_cases, RankedCandidate,
@@ -28,10 +35,12 @@ use super::{
 };
 use crate::tool::catalog::SearchMode;
 use anyhow::{anyhow, Context, Result};
+use candle_core::Device;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 // ---- preregistered selection contract ----
@@ -1204,6 +1213,1275 @@ pub fn rerank_pool<S: ChunkRankScorer>(
     })
 }
 
+// ---- M003 extended frontier sweep ----
+//
+// One-shot adjudication of the preregistered variant grid on dev. The
+// sweep measures every M002 variant path over the universe/K grid,
+// selects the smallest/cheapest point clearing the M004 gates, and
+// re-attaches the unchanged M004 promotion separator at the frozen
+// point. Measurement strategy (explicit, no silent subsampling):
+// - Coarse: all 180 grid `VariantSelection`s are retrieved directly
+//   per case at [`SWEEP_FULL_K`]; every smaller cut derives from the
+//   measured ordering. `rerank_n` is inert for coarse orderings
+//   (`retrieve` never reads it) but both values are looped, so every
+//   coarse mode record is a direct measurement.
+// - Re-rank: 36 distinct arms (9 fusion-settings x 2 poolings x 2 pool
+//   sizes) are measured through [`rerank_pool`]. Inert-axis duplicates
+//   (alpha outside weighted-union, `rrf_k` outside rrf) share the
+//   identical deterministic pool and ranker path, so their records fan
+//   out from the arm measurement with explicit `rerank_arm`
+//   provenance instead of re-running tens of thousands of identical
+//   ranker forwards. `rerank_pool` is deterministic (name-sorted
+//   chunking, CPU ranker forwards), so fan-out is exact, not sampled.
+// - Latency is measured at the full-ordering call: BM25, query
+//   encoding, descriptor encoding, and fusion are all K-independent,
+//   so the full-K timing fairly bounds every smaller cut of the same
+//   ordering. This is conservative in the budget-safe direction and is
+//   recorded as such, never silently attributed per-K.
+
+/// Every K the sweep cuts orderings at: primary gates first, bounded
+/// extended shortlists only with all budgets met.
+pub const SWEEP_KS: [usize; 5] = [16, 24, 32, 48, 64];
+/// Full-ordering retrieval K: the largest sweep cut, so every smaller
+/// cut derives from one measured ordering per (case, variant).
+pub const SWEEP_FULL_K: usize = 64;
+/// M004 promotion-evidence sample, reused unchanged with the separator.
+pub const PROMOTION_EVIDENCE_SAMPLE_CASES: usize = 12;
+pub const PROMOTION_EVIDENCE_PERMUTATIONS: usize = 8;
+
+/// All 180 grid variant selections in deterministic order
+/// (fusion x alpha x rrf_k x pooling x rerank_n). Cannot fail: every
+/// value comes from the preregistered M001 constants.
+pub fn all_variant_selections() -> Vec<VariantSelection> {
+    let mut selections = Vec::with_capacity(180);
+    for fusion in FUSION_VARIANTS {
+        for alpha in FUSION_ALPHAS {
+            for rrf_k in RRF_KS {
+                for pooling in POOLING_VARIANTS {
+                    for rerank_n in RERANK_CANDIDATE_NS {
+                        selections.push(
+                            VariantSelection::new(fusion, alpha, rrf_k, pooling, rerank_n)
+                                .expect("preregistered grid value"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    selections
+}
+
+/// The 9 distinct coarse orderings per pooling: 5 weighted-union
+/// alphas at the M004 RRF constant, 3 RRF constants at alpha 0.5, and
+/// max at both defaults. Returned as (fusion, alpha, rrf_k).
+pub fn fusion_settings() -> Vec<(String, f64, f64)> {
+    let mut settings = Vec::with_capacity(9);
+    for alpha in FUSION_ALPHAS {
+        settings.push(("weighted-union".to_string(), alpha, 60.0));
+    }
+    for rrf_k in RRF_KS {
+        settings.push(("rrf".to_string(), 0.5, rrf_k));
+    }
+    settings.push(("max".to_string(), 0.5, 60.0));
+    settings
+}
+
+/// Short id for a fusion-setting under a pooling (no rerank axis).
+pub fn setting_id(fusion: &str, alpha: f64, rrf_k: f64, pooling: &str) -> String {
+    format!("{fusion}-a{alpha}-k{rrf_k}-p{pooling}")
+}
+
+/// Canonical grid member measuring a setting: inert axes take
+/// preregistered defaults (alpha 0.5 outside weighted-union, RRF 60.0
+/// outside rrf), so the member is a real grid point whose ordering the
+/// whole equivalence class shares by construction.
+pub fn setting_canonical(
+    fusion: &str,
+    alpha: f64,
+    rrf_k: f64,
+    pooling: &str,
+    rerank_n: usize,
+) -> Result<VariantSelection> {
+    let (alpha, rrf_k) = match fusion {
+        "weighted-union" => (alpha, 60.0),
+        "rrf" => (0.5, rrf_k),
+        "max" => (0.5, 60.0),
+        other => return Err(anyhow!("unpreregistered fusion variant {other}")),
+    };
+    VariantSelection::new(fusion, alpha, rrf_k, pooling, rerank_n)
+}
+
+/// True exactly for canonical members: the (alpha, rrf_k) pair a
+/// setting measures directly.
+pub fn is_setting_canonical(selection: &VariantSelection) -> bool {
+    match selection.fusion.as_str() {
+        "weighted-union" => selection.rrf_k == 60.0,
+        "rrf" => selection.alpha == 0.5,
+        "max" => selection.alpha == 0.5 && selection.rrf_k == 60.0,
+        _ => false,
+    }
+}
+
+/// Every (alpha, rrf_k) pair sharing a setting's ordering: the inert
+/// axis varies over its full preregistered grid. Across the 9 settings
+/// this partitions the 180 grid modes exactly (5x3 + 3x5 + 1x15 = 45
+/// pairs x 2 poolings x 2 pool sizes).
+pub fn setting_members(fusion: &str, alpha: f64, rrf_k: f64) -> Vec<(f64, f64)> {
+    match fusion {
+        "weighted-union" => RRF_KS.iter().map(|r| (alpha, *r)).collect(),
+        "rrf" => FUSION_ALPHAS.iter().map(|a| (*a, rrf_k)).collect(),
+        "max" => FUSION_ALPHAS
+            .iter()
+            .flat_map(|a| RRF_KS.iter().map(|r| (*a, *r)))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// One measured R001 frontier point: a grid mode at one universe and
+/// shortlist K. Coarse records are direct per-(case, variant)
+/// measurements; reranked records fan out from their distinct arm
+/// (see `rerank_arm`) with identical values by determinism.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001FrontierPoint {
+    pub schema_version: u16,
+    pub mode: String,
+    pub fusion: String,
+    pub alpha: f64,
+    pub rrf_k: f64,
+    pub pooling: String,
+    pub rerank_n: usize,
+    pub reranked: bool,
+    /// Distinct-arm id for fanned-out rerank records (`None` for
+    /// coarse records, which are all direct measurements).
+    pub rerank_arm: Option<String>,
+    pub universe_size: usize,
+    pub k: usize,
+    pub cases: usize,
+    pub eligible_relevant: usize,
+    pub recovered_relevant: usize,
+    pub recall: f64,
+    pub mean_latency_ms: f64,
+    pub p95_latency_ms: f64,
+    pub max_latency_ms: u128,
+    pub mean_rerank_ms_per_case: f64,
+    pub mean_forwards_per_case: f64,
+    pub fallback_cases: usize,
+    pub cache_entries: usize,
+}
+
+/// One measured distinct re-rank arm: a fusion-setting under one
+/// pooling and pool size at one universe, with honest chunk/forward
+/// accounting summed over cases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001RerankArm {
+    pub arm: String,
+    pub universe_size: usize,
+    pub fusion: String,
+    pub alpha: f64,
+    pub rrf_k: f64,
+    pub pooling: String,
+    pub pool_n: usize,
+    pub cases: usize,
+    pub mean_rerank_ms_per_case: f64,
+    pub mean_forwards_per_case: f64,
+    pub total_chunks: usize,
+    pub total_forwards: usize,
+    pub total_dropped: usize,
+    pub member_modes: Vec<String>,
+}
+
+/// Fingerprint-bound checkpoint for one retrieval universe (M004
+/// pattern: resume only on fingerprint and universe match).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001UniverseCheckpoint {
+    pub sweep_fingerprint: String,
+    pub universe_size: usize,
+    pub fixture_fingerprint: String,
+    pub points: Vec<R001FrontierPoint>,
+    pub arms: Vec<R001RerankArm>,
+    pub authority_violations: usize,
+}
+
+/// Frozen R001 operating-point selection: at most one of these exists
+/// per sweep, primary (K<=32) preferred over extended.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001Selection {
+    pub mode: String,
+    pub fusion: String,
+    pub alpha: f64,
+    pub rrf_k: f64,
+    pub pooling: String,
+    pub rerank_n: usize,
+    pub k: usize,
+    pub extended: bool,
+    pub reranked: bool,
+    pub recall_64: f64,
+    pub recall_128: f64,
+    pub recall_256: f64,
+    pub mean_latency_ms: f64,
+    pub max_latency_ms: u128,
+    pub authority_violations: usize,
+    pub budget_evidence: BudgetEvidence,
+}
+
+/// Residual miss attribution at the frozen point, per universe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001Attribution {
+    pub universe_size: usize,
+    pub attribution: MissAttribution,
+}
+
+/// Promotion separator evidence re-attached at the frozen point: the
+/// unchanged M004 threshold machinery run on the frozen ranker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001PromotionEvidence {
+    pub outcome: PromotionOutcome,
+    pub order: PromotionOrderEvidence,
+}
+
+/// Sweep resource accounting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001ResourceEvidence {
+    pub cold_load_s: f64,
+    pub encoder_weights_mib: u64,
+    pub sweep_wallclock_s: u64,
+    pub coarse_seconds: f64,
+    pub rerank_seconds: f64,
+    pub promotion_seconds: f64,
+    pub universes_measured: Vec<usize>,
+    pub universes_resumed: Vec<usize>,
+}
+
+/// Frozen R001 operating-point receipt (positive close only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001FrozenPoint {
+    pub protocol: String,
+    pub sweep_fingerprint: String,
+    pub fixture_fingerprint: String,
+    pub dev_partition_fingerprint: String,
+    pub implementation_commit: String,
+    pub selection: R001Selection,
+    pub promotion: R001PromotionEvidence,
+    pub attribution: Vec<R001Attribution>,
+}
+
+/// Full M003 sweep report: frontier tables plus at most one frozen
+/// point, or a plan-literal negative summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001SweepReport {
+    pub schema_version: u16,
+    pub protocol: String,
+    pub sweep_fingerprint: String,
+    pub fixture_fingerprint: String,
+    pub dev_partition_fingerprint: String,
+    pub dataset_fingerprint: String,
+    pub implementation_commit: String,
+    pub cases_per_universe: usize,
+    pub eligible_relevant_per_universe: usize,
+    pub points: Vec<R001FrontierPoint>,
+    pub arms: Vec<R001RerankArm>,
+    pub selection: Option<R001Selection>,
+    pub negative_summary: Option<String>,
+    pub promotion: Option<R001PromotionEvidence>,
+    pub attribution: Vec<R001Attribution>,
+    pub resources: R001ResourceEvidence,
+}
+
+/// Feasible R001 candidate before evidence attachment: the mode clears
+/// the gates at one K across all three universes.
+#[derive(Debug, Clone)]
+pub struct R001Candidate {
+    pub mode: String,
+    pub fusion: String,
+    pub alpha: f64,
+    pub rrf_k: f64,
+    pub pooling: String,
+    pub rerank_n: usize,
+    pub k: usize,
+    pub reranked: bool,
+    pub recall_64: f64,
+    pub recall_128: f64,
+    pub recall_256: f64,
+    pub mean_latency_ms: f64,
+    pub max_latency_ms: u128,
+}
+
+fn r001_point_lookup<'a>(
+    points: &'a [R001FrontierPoint],
+    mode: &str,
+    k: usize,
+) -> Option<&'a R001FrontierPoint> {
+    points
+        .iter()
+        .find(|point| point.mode == mode && point.k == k)
+}
+
+/// Feasible candidates over `ks`, ordered smallest/cheapest: K first,
+/// then the 256-universe mean latency, then mode name
+/// (deterministic). Modes missing any universe/K are skipped, never
+/// defaulted.
+fn r001_feasible_candidates(
+    points_64: &[R001FrontierPoint],
+    points_128: &[R001FrontierPoint],
+    points_256: &[R001FrontierPoint],
+    ks: &[usize],
+) -> Vec<R001Candidate> {
+    let mut modes = BTreeSet::new();
+    for point in points_64 {
+        modes.insert(point.mode.clone());
+    }
+    let mut feasible = Vec::new();
+    for mode in modes {
+        for k in ks {
+            let (Some(point_64), Some(point_128), Some(point_256)) = (
+                r001_point_lookup(points_64, &mode, *k),
+                r001_point_lookup(points_128, &mode, *k),
+                r001_point_lookup(points_256, &mode, *k),
+            ) else {
+                continue;
+            };
+            if point_64.recall >= GATE_RECALL_64
+                && point_128.recall >= GATE_RECALL_128
+                && point_256.recall >= GATE_RECALL_256
+            {
+                feasible.push(R001Candidate {
+                    mode: mode.clone(),
+                    fusion: point_256.fusion.clone(),
+                    alpha: point_256.alpha,
+                    rrf_k: point_256.rrf_k,
+                    pooling: point_256.pooling.clone(),
+                    rerank_n: point_256.rerank_n,
+                    k: *k,
+                    reranked: point_256.reranked,
+                    recall_64: point_64.recall,
+                    recall_128: point_128.recall,
+                    recall_256: point_256.recall,
+                    mean_latency_ms: point_256.mean_latency_ms,
+                    max_latency_ms: point_256.max_latency_ms,
+                });
+            }
+        }
+    }
+    feasible.sort_by(|left, right| {
+        left.k
+            .cmp(&right.k)
+            .then_with(|| {
+                left.mean_latency_ms
+                    .partial_cmp(&right.mean_latency_ms)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.mode.cmp(&right.mode))
+    });
+    feasible
+}
+
+/// Primary R001 selection: smallest/cheapest clearing point at K<=32
+/// with zero authority violations. Budgets are recorded as evidence,
+/// not gated, on the primary branch.
+pub fn select_r001_primary(
+    points_64: &[R001FrontierPoint],
+    points_128: &[R001FrontierPoint],
+    points_256: &[R001FrontierPoint],
+    authority_violations: usize,
+) -> Result<R001Candidate> {
+    if authority_violations > 0 {
+        return Err(anyhow!(
+            "r001 frontier has {authority_violations} authority violations"
+        ));
+    }
+    r001_feasible_candidates(points_64, points_128, points_256, &PREREG_PRIMARY_KS)
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("no r001 operating point clears 0.99/0.98/0.95 at K<=32"))
+}
+
+/// Aggregated latency for one (mode, K) across universes: worst p95,
+/// worst max, worst mean re-rank cost. Conservative by construction.
+#[derive(Debug, Clone)]
+pub struct R001CandidateLatency {
+    pub p95_ms: f64,
+    pub max_ms: u128,
+    pub mean_rerank_ms: f64,
+}
+
+/// Aggregate worst-case latencies per (mode, K) over the measured
+/// universes for extended-K budget evidence.
+pub fn aggregate_candidate_latencies(
+    points: &[R001FrontierPoint],
+) -> BTreeMap<(String, usize), R001CandidateLatency> {
+    let mut aggregated: BTreeMap<(String, usize), R001CandidateLatency> = BTreeMap::new();
+    for point in points {
+        let entry =
+            aggregated
+                .entry((point.mode.clone(), point.k))
+                .or_insert(R001CandidateLatency {
+                    p95_ms: 0.0,
+                    max_ms: 0,
+                    mean_rerank_ms: 0.0,
+                });
+        entry.p95_ms = entry.p95_ms.max(point.p95_latency_ms);
+        entry.max_ms = entry.max_ms.max(point.max_latency_ms);
+        entry.mean_rerank_ms = entry.mean_rerank_ms.max(point.mean_rerank_ms_per_case);
+    }
+    aggregated
+}
+
+/// Budget evidence for one (mode, K) from aggregated measured
+/// latencies plus run-level costs.
+pub fn evidence_for_candidate(
+    latency: &R001CandidateLatency,
+    cold_load_s: f64,
+    weights_mib: u64,
+    wallclock_s: u64,
+    schema_p95: usize,
+) -> BudgetEvidence {
+    BudgetEvidence {
+        retrieval_p95_ms: latency.p95_ms,
+        retrieval_max_ms: latency.max_ms,
+        rerank_per_case_ms: latency.mean_rerank_ms,
+        cold_load_p95_s: cold_load_s,
+        encoder_weights_mib: weights_mib,
+        sweep_wallclock_s: wallclock_s,
+        schema_p95_bytes: schema_p95,
+    }
+}
+
+/// Extended-K R001 selection: gate-clearing candidates at K=48/64
+/// admitted only with every budget met. Returns the winner with the
+/// evidence that admitted it. Primary selection must be attempted
+/// first by the driver; this function never promotes an extended
+/// point over a feasible primary one.
+#[allow(clippy::too_many_arguments)]
+pub fn select_r001_extended(
+    points_64: &[R001FrontierPoint],
+    points_128: &[R001FrontierPoint],
+    points_256: &[R001FrontierPoint],
+    authority_violations: usize,
+    latencies: &BTreeMap<(String, usize), R001CandidateLatency>,
+    cold_load_s: f64,
+    weights_mib: u64,
+    wallclock_s: u64,
+    schema_p95: usize,
+    limits: &BudgetLimits,
+) -> Result<(R001Candidate, BudgetEvidence)> {
+    if authority_violations > 0 {
+        return Err(anyhow!(
+            "r001 frontier has {authority_violations} authority violations"
+        ));
+    }
+    for candidate in
+        r001_feasible_candidates(points_64, points_128, points_256, &PREREG_EXTENDED_KS)
+    {
+        let Some(latency) = latencies.get(&(candidate.mode.clone(), candidate.k)) else {
+            continue;
+        };
+        let evidence =
+            evidence_for_candidate(latency, cold_load_s, weights_mib, wallclock_s, schema_p95);
+        if extended_selection_allowed(
+            candidate.recall_64,
+            candidate.recall_128,
+            candidate.recall_256,
+            &evidence,
+            limits,
+        )
+        .is_ok()
+        {
+            return Ok((candidate, evidence));
+        }
+    }
+    Err(anyhow!(
+        "no r001 extended-K point clears 0.99/0.98/0.95 with all budgets met"
+    ))
+}
+
+fn percentile_of(sorted: &[f64], quantile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted[(quantile * (sorted.len() as f64 - 1.0)).round() as usize % sorted.len()]
+}
+
+fn dir_size_bytes(path: &Path) -> Result<u64> {
+    if path.is_file() {
+        return Ok(std::fs::metadata(path)?.len());
+    }
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            total += dir_size_bytes(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
+/// Implementation commit SHA for sweep receipts. Resolved once at
+/// sweep start so a provenance failure fails fast, never after hours
+/// of measurement.
+fn resolve_implementation_commit(root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .context("resolve implementation commit")?;
+    if !output.status.success() {
+        return Err(anyhow!("git rev-parse HEAD failed"));
+    }
+    let sha = String::from_utf8(output.stdout)
+        .context("implementation commit is not UTF-8")?
+        .trim()
+        .to_string();
+    if sha.is_empty() {
+        return Err(anyhow!("empty implementation commit"));
+    }
+    Ok(sha)
+}
+
+/// Sweep fingerprint over preregistration, live fixtures, and
+/// implementation commit. Checkpoints bind this value: any input or
+/// code change recomputes instead of resuming stale receipts.
+fn r001_sweep_fingerprint(
+    prereg_fp: &str,
+    fixture_fp: &str,
+    implementation_commit: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"r001-sweep-v1\n");
+    hasher.update(prereg_fp.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(fixture_fp.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(implementation_commit.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Measure one universe: all 180 coarse grid modes directly per case,
+/// then the 36 distinct re-rank arms fanned out to member modes.
+/// Returns frontier points, distinct arm measurements, and the
+/// authority violation count (which must be zero at selection).
+#[allow(clippy::too_many_arguments)]
+fn measure_universe<S: SemanticScorer>(
+    retrievers: &mut BTreeMap<String, VariantRetriever<S>>,
+    ranker_scorer: &FrozenRankerScorer<'_>,
+    dev_cases: &[ToolAdvisorCase],
+    dataset_fp: &str,
+    universe_size: usize,
+) -> Result<(Vec<R001FrontierPoint>, Vec<R001RerankArm>, usize)> {
+    let fixture = expand_universe(dev_cases, universe_size)?;
+    if fixture.len() != M004_DEV_CASES {
+        return Err(anyhow!(
+            "universe {universe_size} has {} cases; expected {M004_DEV_CASES}",
+            fixture.len()
+        ));
+    }
+    let mut expected_per_case: Vec<BTreeSet<String>> = Vec::with_capacity(fixture.len());
+    let mut eligible_total = 0usize;
+    for case in &fixture {
+        let allowed = eligible_deferred_names(case);
+        let expected: BTreeSet<String> = case
+            .relevance
+            .keys()
+            .filter(|name| allowed.contains(*name))
+            .cloned()
+            .collect();
+        eligible_total += expected.len();
+        expected_per_case.push(expected);
+    }
+    if eligible_total != M004_ELIGIBLE_RELEVANT {
+        return Err(anyhow!(
+            "universe {universe_size} has {eligible_total} eligible relevant tools; \
+             expected {M004_ELIGIBLE_RELEVANT}"
+        ));
+    }
+    let mut points = Vec::new();
+    let mut violations = 0usize;
+    // Canonical coarse orderings and timings for the re-rank pools,
+    // keyed by setting id: the N=48 grid member is measured first in
+    // grid order and N is inert for coarse retrieval.
+    let mut canonical_names: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+    let mut canonical_ms: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let coarse_started = Instant::now();
+    for selection in all_variant_selections() {
+        let retriever = retrievers
+            .get_mut(selection.pooling.as_str())
+            .ok_or_else(|| anyhow!("no retriever for pooling {}", selection.pooling))?;
+        let surface = format!(
+            "r001-sweep:{dataset_fp}:{}:{universe_size}",
+            selection.pooling
+        );
+        let mut latencies_ms: Vec<f64> = Vec::with_capacity(fixture.len());
+        let mut orderings: Vec<Vec<String>> = Vec::with_capacity(fixture.len());
+        let mut fallbacks = 0usize;
+        let mut cache_entries = 0usize;
+        for case in &fixture {
+            let result = retriever.retrieve(case, &surface, &selection, SWEEP_FULL_K)?;
+            let allowed = eligible_deferred_names(case);
+            for name in &result.names {
+                if !allowed.contains(name) {
+                    violations += 1;
+                }
+            }
+            if result.fallback_to_bm25 {
+                fallbacks += 1;
+            }
+            cache_entries = cache_entries.max(result.cache_entries);
+            latencies_ms.push(result.retrieval_ms as f64);
+            orderings.push(result.names);
+        }
+        if fallbacks > 0 {
+            return Err(anyhow!(
+                "variant {} fell back to BM25 on {fallbacks} cases; measurement invalid",
+                selection.point_mode()
+            ));
+        }
+        let mut sorted_latencies = latencies_ms.clone();
+        sorted_latencies
+            .sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+        let mean_ms = sorted_latencies.iter().sum::<f64>() / sorted_latencies.len() as f64;
+        let p95_ms = percentile_of(&sorted_latencies, 0.95);
+        let max_ms = sorted_latencies.last().copied().unwrap_or(0.0) as u128;
+        for k in SWEEP_KS {
+            let mut recovered = 0usize;
+            for (ordering, expected) in orderings.iter().zip(expected_per_case.iter()) {
+                let top: BTreeSet<&String> = ordering.iter().take(k.min(ordering.len())).collect();
+                recovered += expected.iter().filter(|name| top.contains(name)).count();
+            }
+            points.push(R001FrontierPoint {
+                schema_version: RETRIEVAL_SCHEMA_VERSION,
+                mode: selection.point_mode(),
+                fusion: selection.fusion.clone(),
+                alpha: selection.alpha,
+                rrf_k: selection.rrf_k,
+                pooling: selection.pooling.clone(),
+                rerank_n: selection.rerank_n,
+                reranked: false,
+                rerank_arm: None,
+                universe_size,
+                k,
+                cases: fixture.len(),
+                eligible_relevant: eligible_total,
+                recovered_relevant: recovered,
+                recall: recovered as f64 / eligible_total as f64,
+                mean_latency_ms: mean_ms,
+                p95_latency_ms: p95_ms,
+                max_latency_ms: max_ms,
+                mean_rerank_ms_per_case: 0.0,
+                mean_forwards_per_case: 0.0,
+                fallback_cases: 0,
+                cache_entries,
+            });
+        }
+        if is_setting_canonical(&selection)
+            && !canonical_names.contains_key(&setting_id(
+                &selection.fusion,
+                selection.alpha,
+                selection.rrf_k,
+                &selection.pooling,
+            ))
+        {
+            canonical_names.insert(
+                setting_id(
+                    &selection.fusion,
+                    selection.alpha,
+                    selection.rrf_k,
+                    &selection.pooling,
+                ),
+                orderings,
+            );
+            canonical_ms.insert(
+                setting_id(
+                    &selection.fusion,
+                    selection.alpha,
+                    selection.rrf_k,
+                    &selection.pooling,
+                ),
+                latencies_ms,
+            );
+        }
+    }
+    let coarse_seconds = coarse_started.elapsed().as_secs_f64();
+    eprintln!(
+        "r001 universe {universe_size}: coarse grid measured in {coarse_seconds:.0}s \
+         ({} points, {violations} violations)",
+        points.len(),
+    );
+    // Distinct re-rank arms fanned out to member modes.
+    let rerank_started = Instant::now();
+    let mut arms = Vec::new();
+    for (fusion, alpha, rrf_k) in fusion_settings() {
+        for pooling in POOLING_VARIANTS {
+            let key = setting_id(&fusion, alpha, rrf_k, pooling);
+            let Some(coarse_orderings) = canonical_names.get(&key) else {
+                return Err(anyhow!("missing canonical ordering for setting {key}"));
+            };
+            let Some(coarse_ms) = canonical_ms.get(&key) else {
+                return Err(anyhow!("missing canonical timings for setting {key}"));
+            };
+            for pool_n in RERANK_CANDIDATE_NS {
+                let arm = format!("{key}-n{pool_n}-u{universe_size}");
+                let mut rerank_ms: Vec<f64> = Vec::with_capacity(fixture.len());
+                let mut promoted_per_case: Vec<Vec<RankedCandidate>> =
+                    Vec::with_capacity(fixture.len());
+                let mut total_chunks = 0usize;
+                let mut total_forwards = 0usize;
+                let mut total_dropped = 0usize;
+                for ((case, ordering), case_ms) in fixture
+                    .iter()
+                    .zip(coarse_orderings.iter())
+                    .zip(coarse_ms.iter())
+                {
+                    let pool: Vec<String> = ordering
+                        .iter()
+                        .take(pool_n.min(ordering.len()))
+                        .cloned()
+                        .collect();
+                    let report = rerank_pool(ranker_scorer, case, &pool, SWEEP_FULL_K)?;
+                    total_chunks += report.chunks;
+                    total_forwards += report.forwards;
+                    total_dropped += report.dropped;
+                    rerank_ms.push(case_ms + report.elapsed_ms as f64);
+                    promoted_per_case.push(report.promoted);
+                }
+                let mut sorted_rerank = rerank_ms.clone();
+                sorted_rerank.sort_by(|left, right| {
+                    left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let mean_ms = sorted_rerank.iter().sum::<f64>() / sorted_rerank.len() as f64;
+                let mean_rerank_only = (sorted_rerank.iter().sum::<f64>()
+                    - coarse_ms.iter().sum::<f64>())
+                    / sorted_rerank.len() as f64;
+                let mean_forwards = total_forwards as f64 / fixture.len() as f64;
+                let mut member_modes = Vec::new();
+                for (member_alpha, member_rrf) in setting_members(&fusion, alpha, rrf_k) {
+                    let member =
+                        VariantSelection::new(&fusion, member_alpha, member_rrf, pooling, pool_n)?;
+                    member_modes.push(member.point_mode());
+                    for k in SWEEP_KS {
+                        let mut recovered = 0usize;
+                        for (promoted, expected) in
+                            promoted_per_case.iter().zip(expected_per_case.iter())
+                        {
+                            let top: BTreeSet<&String> = promoted
+                                .iter()
+                                .take(k.min(promoted.len()))
+                                .map(|entry| &entry.name)
+                                .collect();
+                            recovered += expected.iter().filter(|name| top.contains(name)).count();
+                        }
+                        points.push(R001FrontierPoint {
+                            schema_version: RETRIEVAL_SCHEMA_VERSION,
+                            mode: member.point_mode(),
+                            fusion: member.fusion.clone(),
+                            alpha: member.alpha,
+                            rrf_k: member.rrf_k,
+                            pooling: member.pooling.clone(),
+                            rerank_n: member.rerank_n,
+                            reranked: true,
+                            rerank_arm: Some(arm.clone()),
+                            universe_size,
+                            k,
+                            cases: fixture.len(),
+                            eligible_relevant: eligible_total,
+                            recovered_relevant: recovered,
+                            recall: recovered as f64 / eligible_total as f64,
+                            mean_latency_ms: mean_ms,
+                            p95_latency_ms: percentile_of(&sorted_rerank, 0.95),
+                            max_latency_ms: sorted_rerank.last().copied().unwrap_or(0.0) as u128,
+                            mean_rerank_ms_per_case: mean_rerank_only,
+                            mean_forwards_per_case: mean_forwards,
+                            fallback_cases: 0,
+                            cache_entries: 0,
+                        });
+                    }
+                }
+                member_modes.sort();
+                arms.push(R001RerankArm {
+                    arm: arm.clone(),
+                    universe_size,
+                    fusion: fusion.clone(),
+                    alpha,
+                    rrf_k,
+                    pooling: pooling.to_string(),
+                    pool_n,
+                    cases: fixture.len(),
+                    mean_rerank_ms_per_case: mean_rerank_only,
+                    mean_forwards_per_case: mean_forwards,
+                    total_chunks,
+                    total_forwards,
+                    total_dropped,
+                    member_modes,
+                });
+            }
+        }
+    }
+    eprintln!(
+        "r001 universe {universe_size}: {} re-rank arms measured in {:.0}s",
+        arms.len(),
+        rerank_started.elapsed().as_secs_f64()
+    );
+    Ok((points, arms, violations))
+}
+
+/// Residual miss attribution for the frozen point: per-tool ranks in
+/// the lexical and semantic-only orderings plus the fused rank and
+/// margin at the frozen K, per universe. The semantic ordering is the
+/// alpha-1.0 weighted-union under the winner's pooling (proven equal
+/// to the M004 semantic ordering in M002); the lexical ordering is
+/// catalog BM25 by delegation.
+#[allow(clippy::too_many_arguments)]
+fn attribute_winner<S: SemanticScorer>(
+    retrievers: &mut BTreeMap<String, VariantRetriever<S>>,
+    ranker_scorer: &FrozenRankerScorer<'_>,
+    dev_cases: &[ToolAdvisorCase],
+    dataset_fp: &str,
+    winner: &R001Selection,
+    universe_size: usize,
+) -> Result<Vec<R001Attribution>> {
+    let fixture = expand_universe(dev_cases, universe_size)?;
+    let surface = format!(
+        "r001-attribution:{}:{}:{universe_size}",
+        dataset_fp, winner.pooling
+    );
+    let retriever = retrievers
+        .get_mut(winner.pooling.as_str())
+        .ok_or_else(|| anyhow!("no retriever for pooling {}", winner.pooling))?;
+    let semantic_selection =
+        VariantSelection::new("weighted-union", 1.0, 60.0, &winner.pooling, 48)?;
+    let winner_selection = VariantSelection::new(
+        &winner.fusion,
+        winner.alpha,
+        winner.rrf_k,
+        &winner.pooling,
+        winner.rerank_n,
+    )?;
+    let mut attributed = Vec::new();
+    for case in &fixture {
+        let allowed = eligible_deferred_names(case);
+        let relevant: BTreeSet<String> = case
+            .relevance
+            .keys()
+            .filter(|name| allowed.contains(*name))
+            .cloned()
+            .collect();
+        if relevant.is_empty() {
+            continue;
+        }
+        let bm25: Vec<RankedCandidate> = advisor_lexical_ordering(case);
+        let semantic_result =
+            retriever.retrieve(case, &surface, &semantic_selection, universe_size)?;
+        if semantic_result.fallback_to_bm25 {
+            return Err(anyhow!(
+                "semantic endpoint fell back during attribution for {}",
+                case.case_id
+            ));
+        }
+        let semantic: Vec<RankedCandidate> = semantic_result
+            .names
+            .into_iter()
+            .zip(semantic_result.scores)
+            .map(|(name, score)| RankedCandidate { name, score })
+            .collect();
+        let fused: Vec<RankedCandidate> = if winner.reranked {
+            let coarse = retriever.retrieve(case, &surface, &winner_selection, universe_size)?;
+            let pool: Vec<String> = coarse.names.into_iter().take(winner.rerank_n).collect();
+            rerank_pool(ranker_scorer, case, &pool, pool.len())?.promoted
+        } else {
+            let result = retriever.retrieve(case, &surface, &winner_selection, universe_size)?;
+            result
+                .names
+                .into_iter()
+                .zip(result.scores)
+                .map(|(name, score)| RankedCandidate { name, score })
+                .collect()
+        };
+        for miss in attribute_misses(&relevant, &bm25, Some(&semantic), &fused, winner.k) {
+            attributed.push(R001Attribution {
+                universe_size,
+                attribution: miss,
+            });
+        }
+    }
+    Ok(attributed)
+}
+
+/// Run the preregistered M003 sweep once: verify fixtures live, load
+/// the frozen encoder and ranker, measure every universe (resuming
+/// fingerprint-bound checkpoints), select at most one operating point,
+/// and re-attach the unchanged M004 promotion separator at the frozen
+/// point. Returns the full report; a negative verdict is data
+/// (`selection: None` with `negative_summary`), and the caller decides
+/// whether to fail on it after receipts are written.
+pub fn run_r001_sweep(output_dir: &Path) -> Result<R001SweepReport> {
+    let sweep_started = Instant::now();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let prereg = preregistration(EXPECTED_FIXTURE_FINGERPRINT);
+    let prereg_fp = prereg_fingerprint(&prereg)?;
+    let live_fixture_fp = fixture_fingerprint()?;
+    verify_fixture_fingerprint(&live_fixture_fp, EXPECTED_FIXTURE_FINGERPRINT)?;
+    let dev_fp = dev_partition_tripwire()?;
+    let implementation_commit = resolve_implementation_commit(&root)?;
+    let sweep_fp = r001_sweep_fingerprint(&prereg_fp, &live_fixture_fp, &implementation_commit);
+    eprintln!("r001 sweep fingerprint {sweep_fp} (commit {implementation_commit})");
+
+    let cases = load_cases(Some(&root.join(PREREG_DATASET))).context("load frozen corpus")?;
+    let dataset_fp = dataset_fingerprint(&cases)?;
+    let partition = partition_cases(&cases);
+    let dev_cases: Vec<ToolAdvisorCase> = partition
+        .dev_cases
+        .iter()
+        .map(|index| cases[*index].clone())
+        .collect();
+    if dev_cases.len() != M004_DEV_CASES {
+        return Err(anyhow!(
+            "dev partition has {} cases; expected {M004_DEV_CASES}",
+            dev_cases.len()
+        ));
+    }
+
+    let device = Device::Cpu;
+    let encoder_path = root.join(PREREG_ENCODER_MANIFEST);
+    let load_started = Instant::now();
+    let encoder = CandleBertSequenceEncoder::load(&encoder_path, &device)?;
+    let cold_load_s = load_started.elapsed().as_secs_f64();
+    let asset_dir = encoder_path
+        .parent()
+        .ok_or_else(|| anyhow!("encoder manifest has no parent directory"))?;
+    let weights_mib = dir_size_bytes(asset_dir)? / 1024 / 1024;
+    eprintln!("r001 encoder loaded in {cold_load_s:.1}s ({weights_mib} MiB weights)");
+
+    let ranker_path = root.join(PREREG_RANKER_ARTIFACT);
+    let ranker = load_ranker_artifact(&ranker_path, &device)?;
+    if ranker.manifest.dev_partition_fingerprint != EXPECTED_DEV_PARTITION_FINGERPRINT {
+        return Err(anyhow!(
+            "ranker dev partition changed: sweep cannot measure the selected artifact"
+        ));
+    }
+    let ranker_scorer = FrozenRankerScorer::new(&ranker)?;
+    let abstention_threshold = ranker.manifest.calibration.abstention_threshold;
+    let temperature = ranker.manifest.calibration.candidate_temperature;
+    let bias = ranker.manifest.calibration.candidate_bias;
+
+    // Schema-size evidence over deferred candidates (promotion shape).
+    let mut schema_bytes = Vec::with_capacity(dev_cases.len());
+    for case in &dev_cases {
+        schema_bytes.push(
+            case.candidates
+                .iter()
+                .filter(|candidate| candidate.disclosure == "deferred")
+                .map(|candidate| {
+                    serde_json::to_vec(candidate)
+                        .map(|bytes| bytes.len())
+                        .unwrap_or(0)
+                })
+                .sum::<usize>() as f64,
+        );
+    }
+    schema_bytes
+        .sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let schema_p95 = percentile_of(&schema_bytes, 0.95) as usize;
+
+    std::fs::create_dir_all(output_dir)?;
+    let mut retrievers: BTreeMap<String, VariantRetriever<EncoderSemanticScorer<'_>>> =
+        BTreeMap::new();
+    for pooling in POOLING_VARIANTS {
+        retrievers.insert(
+            pooling.to_string(),
+            VariantRetriever::new(EncoderSemanticScorer::new(&encoder)),
+        );
+    }
+    let mut all_points = Vec::new();
+    let mut all_arms = Vec::new();
+    let mut violations = 0usize;
+    let mut universes_measured = Vec::new();
+    let mut universes_resumed = Vec::new();
+    let mut coarse_seconds = 0.0f64;
+    for universe_size in PREREG_UNIVERSES {
+        let checkpoint_file = checkpoint_path(&output_dir.display().to_string(), universe_size);
+        if let Ok(bytes) = std::fs::read(&checkpoint_file) {
+            if let Ok(checkpoint) = serde_json::from_slice::<R001UniverseCheckpoint>(&bytes) {
+                if checkpoint_accepts(
+                    &checkpoint.sweep_fingerprint,
+                    checkpoint.universe_size,
+                    &sweep_fp,
+                    universe_size,
+                ) && checkpoint.fixture_fingerprint == live_fixture_fp
+                {
+                    eprintln!("r001 universe {universe_size}: resumed from checkpoint");
+                    violations += checkpoint.authority_violations;
+                    all_points.extend(checkpoint.points);
+                    all_arms.extend(checkpoint.arms);
+                    universes_resumed.push(universe_size);
+                    continue;
+                }
+            }
+        }
+        let universe_started = Instant::now();
+        let (points, arms, universe_violations) = measure_universe(
+            &mut retrievers,
+            &ranker_scorer,
+            &dev_cases,
+            &dataset_fp,
+            universe_size,
+        )?;
+        let universe_seconds = universe_started.elapsed().as_secs_f64();
+        coarse_seconds += universe_seconds;
+        violations += universe_violations;
+        std::fs::write(
+            &checkpoint_file,
+            serde_json::to_vec_pretty(&R001UniverseCheckpoint {
+                sweep_fingerprint: sweep_fp.clone(),
+                universe_size,
+                fixture_fingerprint: live_fixture_fp.clone(),
+                points: points.clone(),
+                arms: arms.clone(),
+                authority_violations: universe_violations,
+            })?,
+        )?;
+        all_points.extend(points);
+        all_arms.extend(arms);
+        universes_measured.push(universe_size);
+    }
+    // Coarse vs re-rank split is approximated from arm cost reports;
+    // the wall-clock total is exact.
+    let rerank_seconds: f64 = all_arms
+        .iter()
+        .map(|arm| arm.mean_rerank_ms_per_case * arm.cases as f64 / 1000.0)
+        .sum();
+    coarse_seconds -= rerank_seconds;
+
+    let wallclock_s = sweep_started.elapsed().as_secs();
+    let points_64: Vec<R001FrontierPoint> = all_points
+        .iter()
+        .filter(|point| point.universe_size == 64)
+        .cloned()
+        .collect();
+    let points_128: Vec<R001FrontierPoint> = all_points
+        .iter()
+        .filter(|point| point.universe_size == 128)
+        .cloned()
+        .collect();
+    let points_256: Vec<R001FrontierPoint> = all_points
+        .iter()
+        .filter(|point| point.universe_size == 256)
+        .cloned()
+        .collect();
+
+    // Selection: primary first, then bounded extended, else negative.
+    let mut selection: Option<R001Selection> = None;
+    let mut negative_summary: Option<String> = None;
+    match select_r001_primary(&points_64, &points_128, &points_256, violations) {
+        Ok(candidate) => {
+            let latencies = aggregate_candidate_latencies(&all_points);
+            let latency = latencies
+                .get(&(candidate.mode.clone(), candidate.k))
+                .cloned()
+                .unwrap_or(R001CandidateLatency {
+                    p95_ms: 0.0,
+                    max_ms: 0,
+                    mean_rerank_ms: 0.0,
+                });
+            selection = Some(R001Selection {
+                mode: candidate.mode.clone(),
+                fusion: candidate.fusion.clone(),
+                alpha: candidate.alpha,
+                rrf_k: candidate.rrf_k,
+                pooling: candidate.pooling.clone(),
+                rerank_n: candidate.rerank_n,
+                k: candidate.k,
+                extended: false,
+                reranked: candidate.reranked,
+                recall_64: candidate.recall_64,
+                recall_128: candidate.recall_128,
+                recall_256: candidate.recall_256,
+                mean_latency_ms: candidate.mean_latency_ms,
+                max_latency_ms: candidate.max_latency_ms,
+                authority_violations: violations,
+                budget_evidence: evidence_for_candidate(
+                    &latency,
+                    cold_load_s,
+                    weights_mib,
+                    wallclock_s,
+                    schema_p95,
+                ),
+            });
+        }
+        Err(primary_error) => {
+            let latencies = aggregate_candidate_latencies(&all_points);
+            match select_r001_extended(
+                &points_64,
+                &points_128,
+                &points_256,
+                violations,
+                &latencies,
+                cold_load_s,
+                weights_mib,
+                wallclock_s,
+                schema_p95,
+                &prereg.budgets,
+            ) {
+                Ok((candidate, evidence)) => {
+                    selection = Some(R001Selection {
+                        mode: candidate.mode.clone(),
+                        fusion: candidate.fusion.clone(),
+                        alpha: candidate.alpha,
+                        rrf_k: candidate.rrf_k,
+                        pooling: candidate.pooling.clone(),
+                        rerank_n: candidate.rerank_n,
+                        k: candidate.k,
+                        extended: true,
+                        reranked: candidate.reranked,
+                        recall_64: candidate.recall_64,
+                        recall_128: candidate.recall_128,
+                        recall_256: candidate.recall_256,
+                        mean_latency_ms: candidate.mean_latency_ms,
+                        max_latency_ms: candidate.max_latency_ms,
+                        authority_violations: violations,
+                        budget_evidence: evidence,
+                    });
+                }
+                Err(extended_error) => {
+                    negative_summary = Some(format!(
+                        "no r001 operating point clears 0.99/0.98/0.95 \
+                         (primary: {primary_error}; extended: {extended_error}; \
+                         best recalls 64/128/256={:.4}/{:.4}/{:.4}; violations={violations}; \
+                         cold-load={cold_load_s:.1}s weights={weights_mib}MiB \
+                         wallclock={wallclock_s}s)",
+                        best_recall(&points_64),
+                        best_recall(&points_128),
+                        best_recall(&points_256),
+                    ));
+                }
+            }
+        }
+    }
+    // Wall-clock overrun closes negatively on resources even with a
+    // clearing point: the sweep did not complete inside its budget.
+    if wallclock_s > BUDGET_SWEEP_WALLCLOCK_S {
+        negative_summary = Some(format!(
+            "r001 sweep exceeded the {BUDGET_SWEEP_WALLCLOCK_S}s wall-clock budget \
+             ({wallclock_s}s elapsed); selection invalidated on resources"
+        ));
+        selection = None;
+    }
+
+    // Positive path only: attribution plus the unchanged promotion
+    // separator at the frozen point.
+    let mut promotion: Option<R001PromotionEvidence> = None;
+    let mut attribution = Vec::new();
+    let mut promotion_seconds = 0.0f64;
+    if let Some(winner) = selection.clone() {
+        let promotion_started = Instant::now();
+        for universe_size in PREREG_UNIVERSES {
+            attribution.extend(attribute_winner(
+                &mut retrievers,
+                &ranker_scorer,
+                &dev_cases,
+                &dataset_fp,
+                &winner,
+                universe_size,
+            )?);
+        }
+        let views =
+            promotion_case_views(&ranker, &dev_cases, abstention_threshold, temperature, bias)?;
+        let outcomes: Vec<PromotionOutcome> = promotion_threshold_grid()
+            .iter()
+            .map(|threshold| promotion_outcome_for_threshold(&views, *threshold))
+            .collect();
+        match select_promotion_threshold(&outcomes) {
+            Ok(outcome) => {
+                let order = promotion_order_evidence(
+                    &ranker,
+                    &dev_cases,
+                    PROMOTION_EVIDENCE_SAMPLE_CASES,
+                    PROMOTION_EVIDENCE_PERMUTATIONS,
+                    PREREG_SEED,
+                    abstention_threshold,
+                    temperature,
+                    bias,
+                    outcome.threshold,
+                )?;
+                promotion_seconds = promotion_started.elapsed().as_secs_f64();
+                promotion = Some(R001PromotionEvidence { outcome, order });
+            }
+            Err(promotion_error) => {
+                negative_summary = Some(format!(
+                    "r001 retrieval cleared at {} K={} but the promotion separator \
+                     failed: {promotion_error}",
+                    winner.mode, winner.k
+                ));
+                selection = None;
+                attribution.clear();
+            }
+        }
+    }
+    // Promotion borrows end here; receipts below need no scoring.
+    let wallclock_total_s = sweep_started.elapsed().as_secs();
+    let report = R001SweepReport {
+        schema_version: RETRIEVAL_ARCH_SCHEMA_VERSION,
+        protocol: RETRIEVAL_ARCH_PROTOCOL.into(),
+        sweep_fingerprint: sweep_fp,
+        fixture_fingerprint: live_fixture_fp,
+        dev_partition_fingerprint: dev_fp,
+        dataset_fingerprint: dataset_fp,
+        implementation_commit,
+        cases_per_universe: M004_DEV_CASES,
+        eligible_relevant_per_universe: M004_ELIGIBLE_RELEVANT,
+        points: all_points,
+        arms: all_arms,
+        selection: selection.clone(),
+        negative_summary: negative_summary.clone(),
+        promotion: promotion.clone(),
+        attribution: attribution.clone(),
+        resources: R001ResourceEvidence {
+            cold_load_s,
+            encoder_weights_mib: weights_mib,
+            sweep_wallclock_s: wallclock_total_s,
+            coarse_seconds,
+            rerank_seconds,
+            promotion_seconds,
+            universes_measured,
+            universes_resumed,
+        },
+    };
+    std::fs::write(
+        output_dir.join("r001-sweep-report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    if let (Some(winner), Some(promotion_evidence)) = (selection, promotion) {
+        std::fs::write(
+            output_dir.join("r001-frozen-point.json"),
+            serde_json::to_vec_pretty(&R001FrozenPoint {
+                protocol: RETRIEVAL_ARCH_PROTOCOL.into(),
+                sweep_fingerprint: report.sweep_fingerprint.clone(),
+                fixture_fingerprint: report.fixture_fingerprint.clone(),
+                dev_partition_fingerprint: report.dev_partition_fingerprint.clone(),
+                implementation_commit: report.implementation_commit.clone(),
+                selection: winner,
+                promotion: promotion_evidence,
+                attribution,
+            })?,
+        )?;
+    }
+    eprintln!(
+        "r001 sweep done in {wallclock_total_s}s: {}",
+        negative_summary.as_deref().unwrap_or("point frozen")
+    );
+    Ok(report)
+}
+
+/// Best recall over any measured point: the negative-verdict ceiling.
+fn best_recall(points: &[R001FrontierPoint]) -> f64 {
+    points
+        .iter()
+        .map(|point| point.recall)
+        .fold(0.0f64, f64::max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::operating_point::expand_universe;
@@ -2165,6 +3443,400 @@ mod tests {
             2,
         )
         .expect_err("partially unknown pool fails closed");
+    }
+
+    #[test]
+    fn variant_grid_partitions_into_nine_fusion_settings() {
+        assert_eq!(all_variant_selections().len(), 180);
+        let settings = fusion_settings();
+        assert_eq!(settings.len(), 9);
+        // Every grid mode belongs to exactly one setting's member set.
+        let mut covered = BTreeSet::new();
+        for (fusion, alpha, rrf_k) in &settings {
+            for (member_alpha, member_rrf) in setting_members(fusion, *alpha, *rrf_k) {
+                for pooling in POOLING_VARIANTS {
+                    for rerank_n in RERANK_CANDIDATE_NS {
+                        let member = VariantSelection::new(
+                            fusion,
+                            member_alpha,
+                            member_rrf,
+                            pooling,
+                            rerank_n,
+                        )
+                        .expect("member");
+                        assert!(
+                            covered.insert(member.point_mode()),
+                            "duplicate grid mode {}",
+                            member.point_mode()
+                        );
+                    }
+                }
+            }
+            // The canonical member is itself a grid point.
+            for pooling in POOLING_VARIANTS {
+                for rerank_n in RERANK_CANDIDATE_NS {
+                    let canonical = setting_canonical(fusion, *alpha, *rrf_k, pooling, rerank_n)
+                        .expect("canonical");
+                    assert!(is_setting_canonical(&canonical));
+                    assert!(covered.contains(&canonical.point_mode()));
+                }
+            }
+        }
+        assert_eq!(covered.len(), 180);
+        assert!(setting_members("ghost", 0.5, 60.0).is_empty());
+        assert!(setting_canonical("ghost", 0.5, 60.0, "mean", 48).is_err());
+    }
+
+    #[test]
+    fn sweep_checkpoint_resumes_only_on_matching_fingerprint_and_universe() {
+        let dir = std::env::temp_dir().join("r001-checkpoint-unit");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = checkpoint_path(&dir.display().to_string(), 64);
+        let checkpoint = R001UniverseCheckpoint {
+            sweep_fingerprint: "fp".into(),
+            universe_size: 64,
+            fixture_fingerprint: "fix".into(),
+            points: Vec::new(),
+            arms: Vec::new(),
+            authority_violations: 0,
+        };
+        std::fs::write(
+            &file,
+            serde_json::to_vec_pretty(&checkpoint).expect("serialize"),
+        )
+        .expect("write");
+        let bytes = std::fs::read(&file).expect("read");
+        let loaded: R001UniverseCheckpoint = serde_json::from_slice(&bytes).expect("round-trip");
+        assert_eq!(loaded.fixture_fingerprint, "fix");
+        assert!(checkpoint_accepts(
+            &loaded.sweep_fingerprint,
+            loaded.universe_size,
+            "fp",
+            64
+        ));
+        assert!(!checkpoint_accepts(
+            &loaded.sweep_fingerprint,
+            loaded.universe_size,
+            "other",
+            64
+        ));
+        assert!(!checkpoint_accepts(
+            &loaded.sweep_fingerprint,
+            loaded.universe_size,
+            "fp",
+            128
+        ));
+        std::fs::remove_file(&file).ok();
+    }
+
+    fn r001_point(
+        mode: &str,
+        universe: usize,
+        k: usize,
+        recall: f64,
+        mean_ms: f64,
+    ) -> R001FrontierPoint {
+        let total = 1000;
+        let recovered = (recall * total as f64) as usize;
+        R001FrontierPoint {
+            schema_version: RETRIEVAL_SCHEMA_VERSION,
+            mode: mode.into(),
+            fusion: "weighted-union".into(),
+            alpha: 0.5,
+            rrf_k: 60.0,
+            pooling: "mean".into(),
+            rerank_n: 48,
+            reranked: false,
+            rerank_arm: None,
+            universe_size: universe,
+            k,
+            cases: 62,
+            eligible_relevant: total,
+            recovered_relevant: recovered,
+            recall: recovered as f64 / total as f64,
+            mean_latency_ms: mean_ms,
+            p95_latency_ms: mean_ms,
+            max_latency_ms: mean_ms as u128,
+            mean_rerank_ms_per_case: 0.0,
+            mean_forwards_per_case: 0.0,
+            fallback_cases: 0,
+            cache_entries: 0,
+        }
+    }
+
+    fn r001_universe_points(
+        mode: &str,
+        universe: usize,
+        k: usize,
+        recall: f64,
+        mean_ms: f64,
+    ) -> Vec<R001FrontierPoint> {
+        vec![r001_point(mode, universe, k, recall, mean_ms)]
+    }
+
+    #[test]
+    fn r001_primary_selection_picks_smallest_cheapest_clearing_point() {
+        // One mode clearing at K=24 across universes.
+        let points_64 = r001_universe_points("m", 64, 24, 1.0, 5.0);
+        let points_128 = r001_universe_points("m", 128, 24, 0.99, 5.0);
+        let points_256 = r001_universe_points("m", 256, 24, 0.96, 5.0);
+        let selected =
+            select_r001_primary(&points_64, &points_128, &points_256, 0).expect("selection");
+        assert_eq!((selected.mode.as_str(), selected.k), ("m", 24));
+        assert!((selected.recall_256 - 0.96).abs() < 1e-9);
+        // Missing 256 gate fails closed.
+        let weak_256 = r001_universe_points("m", 256, 24, 0.90, 5.0);
+        assert!(select_r001_primary(&points_64, &points_128, &weak_256, 0).is_err());
+        // Authority violations fail closed.
+        assert!(select_r001_primary(&points_64, &points_128, &points_256, 1).is_err());
+        // Smaller K wins over lower latency at larger K.
+        let mut all_64 = points_64.clone();
+        all_64.extend(r001_universe_points("fast", 64, 16, 1.0, 50.0));
+        let mut all_128 = points_128.clone();
+        all_128.extend(r001_universe_points("fast", 128, 16, 0.99, 50.0));
+        let mut all_256 = points_256.clone();
+        all_256.extend(r001_universe_points("fast", 256, 16, 0.96, 50.0));
+        let selected = select_r001_primary(&all_64, &all_128, &all_256, 0).expect("selection");
+        assert_eq!((selected.mode.as_str(), selected.k), ("fast", 16));
+        // At equal K the cheaper mode wins; exact ties break by name.
+        let mut cheap_64 = r001_universe_points("aaa", 64, 16, 1.0, 5.0);
+        cheap_64.extend(r001_universe_points("zzz", 64, 16, 1.0, 5.0));
+        let mut cheap_128 = r001_universe_points("aaa", 128, 16, 0.99, 6.0);
+        cheap_128.extend(r001_universe_points("zzz", 128, 16, 0.99, 1.0));
+        let mut cheap_256 = r001_universe_points("aaa", 256, 16, 0.96, 5.0);
+        cheap_256.extend(r001_universe_points("zzz", 256, 16, 0.96, 5.0));
+        let selected =
+            select_r001_primary(&cheap_64, &cheap_128, &cheap_256, 0).expect("selection");
+        assert_eq!(selected.mode.as_str(), "aaa");
+        // Modes missing any universe are skipped, never defaulted.
+        let partial_64 = r001_universe_points("partial", 64, 16, 1.0, 1.0);
+        let mut mixed_64 = cheap_64.clone();
+        mixed_64.extend(partial_64);
+        let selected =
+            select_r001_primary(&mixed_64, &cheap_128, &cheap_256, 0).expect("selection");
+        assert_eq!(selected.mode.as_str(), "aaa");
+    }
+
+    #[test]
+    fn r001_extended_selection_requires_gates_and_every_budget() {
+        let limits = preregistration("unit").budgets;
+        let points_64 = r001_universe_points("m", 64, 48, 1.0, 5.0);
+        let points_128 = r001_universe_points("m", 128, 48, 0.99, 5.0);
+        let points_256 = r001_universe_points("m", 256, 48, 0.96, 5.0);
+        let good_latency = R001CandidateLatency {
+            p95_ms: 100.0,
+            max_ms: 500,
+            mean_rerank_ms: 200.0,
+        };
+        let mut latencies = BTreeMap::new();
+        latencies.insert(("m".to_string(), 48), good_latency);
+        // Primary branch sees nothing at K<=32, so only extended can win.
+        assert!(select_r001_primary(&points_64, &points_128, &points_256, 0).is_err());
+        let (candidate, evidence) = select_r001_extended(
+            &points_64,
+            &points_128,
+            &points_256,
+            0,
+            &latencies,
+            2.0,
+            100,
+            3600,
+            1000,
+            &limits,
+        )
+        .expect("extended selection");
+        assert_eq!((candidate.mode.as_str(), candidate.k), ("m", 48));
+        assert!((evidence.retrieval_p95_ms - 100.0).abs() < 1e-9);
+        assert_eq!(evidence.retrieval_max_ms, 500);
+        assert!((evidence.rerank_per_case_ms - 200.0).abs() < 1e-9);
+        // Each budget breach fails closed with the gates still clearing.
+        for breach in [
+            R001CandidateLatency {
+                p95_ms: 6000.0,
+                max_ms: 500,
+                mean_rerank_ms: 200.0,
+            },
+            R001CandidateLatency {
+                p95_ms: 100.0,
+                max_ms: 40_000,
+                mean_rerank_ms: 200.0,
+            },
+            R001CandidateLatency {
+                p95_ms: 100.0,
+                max_ms: 500,
+                mean_rerank_ms: 6000.0,
+            },
+        ] {
+            let mut breached = BTreeMap::new();
+            breached.insert(("m".to_string(), 48), breach);
+            assert!(
+                select_r001_extended(
+                    &points_64,
+                    &points_128,
+                    &points_256,
+                    0,
+                    &breached,
+                    2.0,
+                    100,
+                    3600,
+                    1000,
+                    &limits,
+                )
+                .is_err(),
+                "budget breach must fail closed"
+            );
+        }
+        assert!(
+            select_r001_extended(
+                &points_64,
+                &points_128,
+                &points_256,
+                0,
+                &latencies,
+                20.0,
+                100,
+                3600,
+                1000,
+                &limits,
+            )
+            .is_err(),
+            "cold-load breach must fail closed"
+        );
+        assert!(
+            select_r001_extended(
+                &points_64,
+                &points_128,
+                &points_256,
+                1,
+                &latencies,
+                2.0,
+                100,
+                3600,
+                1000,
+                &limits,
+            )
+            .is_err(),
+            "violations must fail closed"
+        );
+    }
+
+    #[test]
+    fn candidate_latencies_aggregate_worst_case_across_universes() {
+        let points = vec![
+            r001_point("m", 64, 48, 1.0, 10.0),
+            r001_point("m", 128, 48, 1.0, 30.0),
+            r001_point("m", 256, 48, 1.0, 20.0),
+        ];
+        let aggregated = aggregate_candidate_latencies(&points);
+        let latency = aggregated
+            .get(&("m".to_string(), 48))
+            .expect("aggregated latency");
+        assert!((latency.p95_ms - 30.0).abs() < 1e-9);
+        assert_eq!(latency.max_ms, 30);
+        let evidence = evidence_for_candidate(latency, 2.0, 100, 3600, 1000);
+        assert!((evidence.retrieval_p95_ms - 30.0).abs() < 1e-9);
+        assert_eq!(evidence.sweep_wallclock_s, 3600);
+    }
+
+    /// Predeclared R001 sweep (protocol
+    /// `r001-preregistered-retrieval-architecture-v1`).
+    ///
+    /// Measures the M002 variant grid on dev universes, selects at most
+    /// one operating point (primary K<=32 preferred, bounded extended
+    /// K only with all budgets met), attributes residual misses at the
+    /// frozen point, and re-attaches the unchanged M004 promotion
+    /// separator there. Run explicitly for closure evidence:
+    /// `cargo test --locked --features tool-advisor-encoder-training
+    /// -p codegg --lib --
+    /// tool_advisor::retrieval_architecture::tests::r001_extended_frontier_sweep
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn r001_extended_frontier_sweep() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let encoder_manifest = root.join(PREREG_ENCODER_MANIFEST);
+        let ranker_artifact = root.join(PREREG_RANKER_ARTIFACT);
+        if !encoder_manifest.exists() || !ranker_artifact.exists() {
+            eprintln!("SKIP: reference encoder assets or frozen ranker absent in this environment");
+            return;
+        }
+        let output_dir = root.join(PREREG_OUTPUT_DIR);
+        let report = run_r001_sweep(&output_dir).expect("r001 sweep runs to verdict");
+        for universe_size in PREREG_UNIVERSES {
+            eprintln!(
+                "r001 frontier universe {universe_size} (mode recall@16/24/32/48/64 mean-ms):"
+            );
+            let mut rows: BTreeMap<String, Vec<&R001FrontierPoint>> = BTreeMap::new();
+            for point in report
+                .points
+                .iter()
+                .filter(|point| point.universe_size == universe_size)
+            {
+                rows.entry(point.mode.clone()).or_default().push(point);
+            }
+            for (mode, mut row) in rows {
+                row.sort_by_key(|point| point.k);
+                let recalls: Vec<String> = row
+                    .iter()
+                    .map(|point| format!("{:.4}", point.recall))
+                    .collect();
+                let mean_ms = row
+                    .first()
+                    .map(|point| point.mean_latency_ms)
+                    .unwrap_or(0.0);
+                let rerank_ms = row
+                    .first()
+                    .map(|point| point.mean_rerank_ms_per_case)
+                    .unwrap_or(0.0);
+                let marker = if row.first().map(|point| point.reranked).unwrap_or(false) {
+                    "reranked"
+                } else {
+                    "coarse   "
+                };
+                eprintln!(
+                    "  {marker} {mode} {} mean={mean_ms:.1}ms rerank={rerank_ms:.1}ms",
+                    recalls.join(" "),
+                );
+            }
+        }
+        match &report.selection {
+            Some(selection) => {
+                eprintln!(
+                    "r001 frozen: {} K={} extended={} reranked={} \
+                     (64:{:.4} 128:{:.4} 256:{:.4}) violations={} wallclock={}s",
+                    selection.mode,
+                    selection.k,
+                    selection.extended,
+                    selection.reranked,
+                    selection.recall_64,
+                    selection.recall_128,
+                    selection.recall_256,
+                    selection.authority_violations,
+                    report.resources.sweep_wallclock_s,
+                );
+                if let Some(promotion) = &report.promotion {
+                    eprintln!(
+                        "r001 promotion: threshold={:.2} recall={:.4} no-tool={:.4} \
+                         irrelevant={:.4} max_promos={} consistency={:.3} crossings={}",
+                        promotion.outcome.threshold,
+                        promotion.outcome.relevant_recall,
+                        promotion.outcome.no_tool_promotion_rate,
+                        promotion.outcome.irrelevant_promotion_rate,
+                        promotion.outcome.max_promotions_observed,
+                        promotion.order.identity_consistency,
+                        promotion.order.threshold_crossing_cases,
+                    );
+                }
+                eprintln!(
+                    "r001 residual misses at frozen point: {}",
+                    report.attribution.len()
+                );
+            }
+            None => panic!(
+                "r001 negative: {}",
+                report.negative_summary.as_deref().unwrap_or("unknown")
+            ),
+        }
     }
 
     #[test]
