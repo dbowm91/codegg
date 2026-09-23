@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Experiment M002 — Retriever and Fusion Variants
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `e483c2d6`
 

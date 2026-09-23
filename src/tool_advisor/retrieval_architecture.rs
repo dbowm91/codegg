@@ -18,9 +18,13 @@
 //! tool_advisor::retrieval_architecture::tests::r001_extended_frontier_sweep
 //! --ignored --nocapture`
 
+use super::context_v2::AdvisorContextV2;
+use super::sequence_encoder::{CandleBertSequenceEncoder, PoolingStrategy};
+use super::sequence_ranking::{SequenceRanker, RANKING_ARCHITECTURE_SPAN_PACKED};
+use super::sequence_retrieval::RETRIEVAL_SCHEMA_VERSION;
 use super::{
     baseline_prediction, dataset_fingerprint, load_cases, partition_cases, RankedCandidate,
-    ToolAdvisorCase,
+    ToolAdvisorCandidate, ToolAdvisorCase,
 };
 use crate::tool::catalog::SearchMode;
 use anyhow::{anyhow, Context, Result};
@@ -28,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 // ---- preregistered selection contract ----
 
@@ -692,6 +697,513 @@ pub fn bm25_recall_at_k(cases: &[ToolAdvisorCase], k: usize) -> (usize, usize) {
     (recovered, eligible)
 }
 
+// ---- M002 variant space (fusion, pooling, lexical, re-rank) ----
+//
+// M001 froze the selection contract; this section implements exactly the
+// preregistered variant axes behind the existing authority boundary. No
+// selection, gating, or threshold logic lives here (that belongs to M003):
+// - `VariantSelection`: typed grid parameters; unknown values fail closed.
+// - `select_coarse_ordering`: pure fusion dispatch that CALLS the M001
+//   normative reference functions (`fuse_weighted_union`,
+//   `fuse_rrf_with_k`, `fuse_max`); reimplementing the math here is a defect.
+// - `VariantRetriever`: pooling-parameterized coarse retrieval over
+//   deferred-only descriptors with BM25 fallback on any encoder failure.
+// - `advisor_lexical_ordering`: the advisor-side lexical signal, reusing
+//   catalog BM25 machinery without altering it.
+// - `rerank_pool`: two-stage re-rank through the frozen M003 span-packed
+//   ranker with per-case cost accounting.
+
+/// Typed M002 variant parameters. Every field must be a preregistered
+/// M001 grid value (`FUSION_VARIANTS`, `FUSION_ALPHAS`, `RRF_KS`,
+/// `POOLING_VARIANTS`, `RERANK_CANDIDATE_NS`); anything else fails closed
+/// at construction. Grid floats compare exactly: the preregistered values
+/// are exact binary fractions, so only exact matches validate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VariantSelection {
+    pub fusion: String,
+    pub alpha: f64,
+    pub rrf_k: f64,
+    pub pooling: String,
+    pub rerank_n: usize,
+}
+
+impl VariantSelection {
+    pub fn new(
+        fusion: &str,
+        alpha: f64,
+        rrf_k: f64,
+        pooling: &str,
+        rerank_n: usize,
+    ) -> Result<Self> {
+        if !FUSION_VARIANTS.contains(&fusion) {
+            return Err(anyhow!("unpreregistered fusion variant {fusion}"));
+        }
+        if !FUSION_ALPHAS.contains(&alpha) {
+            return Err(anyhow!("unpreregistered fusion alpha {alpha}"));
+        }
+        if !RRF_KS.contains(&rrf_k) {
+            return Err(anyhow!("unpreregistered RRF constant {rrf_k}"));
+        }
+        if !POOLING_VARIANTS.contains(&pooling) {
+            return Err(anyhow!("unpreregistered pooling variant {pooling}"));
+        }
+        if !RERANK_CANDIDATE_NS.contains(&rerank_n) {
+            return Err(anyhow!("unpreregistered re-rank pool size {rerank_n}"));
+        }
+        Ok(Self {
+            fusion: fusion.into(),
+            alpha,
+            rrf_k,
+            pooling: pooling.into(),
+            rerank_n,
+        })
+    }
+
+    /// Map the validated pooling name to the encoder strategy.
+    /// (`POOLING_VARIANTS`, preregistered in M001.)
+    pub fn pooling_strategy(&self) -> Result<PoolingStrategy> {
+        parse_pooling(&self.pooling)
+    }
+
+    /// Canonical M003 frontier mode name for this grid point. The mapping
+    /// is injective over the preregistered grid: every field is named, so
+    /// no two grid points share a mode string and `select_retrieval_point`
+    /// keeps its exact-identity semantics on variant points.
+    pub fn point_mode(&self) -> String {
+        format!(
+            "r001-{}-a{}-k{}-p{}-n{}",
+            self.fusion, self.alpha, self.rrf_k, self.pooling, self.rerank_n
+        )
+    }
+}
+
+/// Parse an encoder pooling strategy, failing closed on anything outside
+/// the preregistered `POOLING_VARIANTS`.
+pub fn parse_pooling(value: &str) -> Result<PoolingStrategy> {
+    match value {
+        "mean" => Ok(PoolingStrategy::Mean),
+        "cls" => Ok(PoolingStrategy::Cls),
+        other => Err(anyhow!("unpreregistered pooling variant {other}")),
+    }
+}
+
+/// Pure fusion dispatch over pre-scored signal pairs. Delegates to the
+/// M001 normative reference functions on identical inputs; the fusion
+/// variant comes from a validated [`VariantSelection`].
+pub fn select_coarse_ordering(
+    bm25: &[(String, f64)],
+    semantic: &[(String, f64)],
+    selection: &VariantSelection,
+) -> Result<Vec<RankedCandidate>> {
+    match selection.fusion.as_str() {
+        "weighted-union" => Ok(fuse_weighted_union(bm25, semantic, selection.alpha)),
+        "rrf" => Ok(fuse_rrf_with_k(bm25, semantic, selection.rrf_k)),
+        "max" => Ok(fuse_max(bm25, semantic)),
+        other => Err(anyhow!("unpreregistered fusion variant {other}")),
+    }
+}
+
+/// Advisor-side lexical ordering over the eligible deferred set. This is
+/// the M002-named entry point for the lexical signal; it reuses catalog
+/// BM25 machinery without altering it by delegating to [`bm25_ordering`].
+/// (Preregistered implicitly: the lexical side of every fusion variant.)
+pub fn advisor_lexical_ordering(case: &ToolAdvisorCase) -> Vec<RankedCandidate> {
+    bm25_ordering(case)
+}
+
+fn variant_descriptor(candidate: &ToolAdvisorCandidate) -> String {
+    // Parity with `sequence_retrieval`'s private descriptor text: the
+    // encoder must see the same surface for variant and M004 paths.
+    format!(
+        "canonical name: {}; description: {}; category: {}; disclosure: {}",
+        candidate.name, candidate.description, candidate.category, candidate.disclosure
+    )
+}
+
+fn normalized_variant_descriptor(candidate: &ToolAdvisorCandidate) -> String {
+    // Parity with `sequence_retrieval`'s private normalization.
+    variant_descriptor(candidate)
+        .split_whitespace()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn variant_cosine(left: &[f32], right: &[f32]) -> f64 {
+    // Parity with `sequence_retrieval`'s private cosine.
+    let mut dot = 0.0f64;
+    let mut left_norm = 0.0f64;
+    let mut right_norm = 0.0f64;
+    for (left, right) in left.iter().zip(right.iter()) {
+        dot += f64::from(*left) * f64::from(*right);
+        left_norm += f64::from(*left) * f64::from(*left);
+        right_norm += f64::from(*right) * f64::from(*right);
+    }
+    let denominator = left_norm.sqrt() * right_norm.sqrt();
+    if denominator <= f64::EPSILON {
+        0.0
+    } else {
+        dot / denominator
+    }
+}
+
+/// Injectable semantic scorer so variant retrieval stays testable without
+/// encoder assets: production uses [`EncoderSemanticScorer`], tests use a
+/// stub. The scorer only ever sees serialized context strings and
+/// descriptor text, never case authority state.
+pub trait SemanticScorer {
+    fn tokenizer_version(&self) -> String;
+    fn encode_query(&self, context: &str, pooling: PoolingStrategy) -> Result<Vec<f32>>;
+    fn encode_descriptor(&self, descriptor: &str, pooling: PoolingStrategy) -> Result<Vec<f32>>;
+}
+
+/// Production semantic scorer over the reference encoder asset.
+pub struct EncoderSemanticScorer<'a> {
+    pub encoder: &'a CandleBertSequenceEncoder,
+}
+
+impl<'a> EncoderSemanticScorer<'a> {
+    pub fn new(encoder: &'a CandleBertSequenceEncoder) -> Self {
+        Self { encoder }
+    }
+}
+
+impl SemanticScorer for EncoderSemanticScorer<'_> {
+    fn tokenizer_version(&self) -> String {
+        // Parity with `HybridRetriever::new`: same version string, so
+        // variant cache keys stay comparable with the M004 cache.
+        format!(
+            "{}:{}",
+            self.encoder.assets.manifest.architecture,
+            self.encoder
+                .assets
+                .manifest
+                .hashes
+                .get("vocabulary")
+                .cloned()
+                .unwrap_or_default()
+        )
+    }
+
+    fn encode_query(&self, context: &str, pooling: PoolingStrategy) -> Result<Vec<f32>> {
+        self.encoder.encode_context(context, pooling)
+    }
+
+    fn encode_descriptor(&self, descriptor: &str, pooling: PoolingStrategy) -> Result<Vec<f32>> {
+        self.encoder.encode_with_pooling("", descriptor, pooling)
+    }
+}
+
+/// Cache key for variant descriptor embeddings. Experiment-local (not the
+/// M004 `RetrievalCacheKey`) because the pooling axis must be part of the
+/// key: mean and cls embeddings of one descriptor must never collide. Keys
+/// hold descriptor hashes only, never user context.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct VariantCacheKey {
+    surface_fingerprint: String,
+    canonical_name: String,
+    normalized_descriptor_hash: String,
+    encoder_tokenizer_version: String,
+    pooling: String,
+}
+
+/// Pooling-parameterized coarse retrieval over deferred-only descriptors.
+///
+/// Mirrors `HybridRetriever` semantics (deferred-only input, BM25 fallback
+/// on any encoder failure so retrieval never becomes an availability gate)
+/// with two deliberate differences: the pooling strategy and fusion math
+/// come from the preregistered [`VariantSelection`], and the embedding
+/// cache is experiment-local so pooling variants cannot collide.
+pub struct VariantRetriever<S> {
+    scorer: S,
+    cache: BTreeMap<VariantCacheKey, Vec<f32>>,
+    surface_fingerprint: Option<String>,
+}
+
+/// One variant retrieval result. `mode` is the canonical
+/// [`VariantSelection::point_mode`] name the M003 sweep records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariantRetrieval {
+    pub schema_version: u16,
+    pub mode: String,
+    pub k: usize,
+    pub names: Vec<String>,
+    pub scores: Vec<f64>,
+    pub eligible_count: usize,
+    pub fallback_to_bm25: bool,
+    pub cache_entries: usize,
+    pub retrieval_ms: u128,
+}
+
+impl<S: SemanticScorer> VariantRetriever<S> {
+    pub fn new(scorer: S) -> Self {
+        Self {
+            scorer,
+            cache: BTreeMap::new(),
+            surface_fingerprint: None,
+        }
+    }
+
+    pub fn retrieve(
+        &mut self,
+        case: &ToolAdvisorCase,
+        surface_fingerprint: &str,
+        selection: &VariantSelection,
+        k: usize,
+    ) -> Result<VariantRetrieval> {
+        if k == 0 {
+            return Err(anyhow!("retrieval K must be positive"));
+        }
+        if self.surface_fingerprint.as_deref() != Some(surface_fingerprint) {
+            self.cache.clear();
+            self.surface_fingerprint = Some(surface_fingerprint.to_string());
+        }
+        let started = Instant::now();
+        let eligible: Vec<&ToolAdvisorCandidate> = case
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.disclosure == "deferred")
+            .collect();
+        let eligible_count = eligible.len();
+        if eligible.is_empty() {
+            return Ok(VariantRetrieval {
+                schema_version: RETRIEVAL_SCHEMA_VERSION,
+                mode: selection.point_mode(),
+                k,
+                names: Vec::new(),
+                scores: Vec::new(),
+                eligible_count,
+                fallback_to_bm25: false,
+                cache_entries: self.cache.len(),
+                retrieval_ms: started.elapsed().as_millis(),
+            });
+        }
+        let lexical: Vec<(String, f64)> = advisor_lexical_ordering(case)
+            .into_iter()
+            .map(|entry| (entry.name, entry.score))
+            .collect();
+        let fallback = |lexical: &[(String, f64)], cache_entries: usize, started: Instant| {
+            let mut truncated = lexical.to_vec();
+            sort_scored(&mut truncated);
+            truncated.truncate(k.min(eligible_count));
+            VariantRetrieval {
+                schema_version: RETRIEVAL_SCHEMA_VERSION,
+                mode: selection.point_mode(),
+                k,
+                names: truncated.iter().map(|(name, _)| name.clone()).collect(),
+                scores: truncated.iter().map(|(_, score)| *score).collect(),
+                eligible_count,
+                fallback_to_bm25: true,
+                cache_entries,
+                retrieval_ms: started.elapsed().as_millis(),
+            }
+        };
+        let pooling = selection.pooling_strategy()?;
+        let context = AdvisorContextV2::from_benchmark_context(&case.context).serialize();
+        let query = match self.scorer.encode_query(&context, pooling) {
+            Ok(query) => query,
+            Err(_) => return Ok(fallback(&lexical, self.cache.len(), started)),
+        };
+        let tokenizer_version = self.scorer.tokenizer_version();
+        let mut semantic = Vec::with_capacity(eligible.len());
+        for candidate in &eligible {
+            let descriptor = variant_descriptor(candidate);
+            let key = VariantCacheKey {
+                surface_fingerprint: surface_fingerprint.to_string(),
+                canonical_name: candidate.name.clone(),
+                normalized_descriptor_hash: hex::encode(Sha256::digest(
+                    normalized_variant_descriptor(candidate).as_bytes(),
+                )),
+                encoder_tokenizer_version: tokenizer_version.clone(),
+                pooling: selection.pooling.clone(),
+            };
+            let embedding = match self.cache.get(&key) {
+                Some(embedding) => embedding.clone(),
+                None => match self.scorer.encode_descriptor(&descriptor, pooling) {
+                    Ok(embedding) => {
+                        self.cache.insert(key, embedding.clone());
+                        embedding
+                    }
+                    Err(_) => return Ok(fallback(&lexical, self.cache.len(), started)),
+                },
+            };
+            semantic.push((candidate.name.clone(), variant_cosine(&query, &embedding)));
+        }
+        let mut fused: Vec<(String, f64)> = select_coarse_ordering(&lexical, &semantic, selection)?
+            .into_iter()
+            .map(|entry| (entry.name, entry.score))
+            .collect();
+        sort_scored(&mut fused);
+        fused.truncate(k.min(eligible_count));
+        Ok(VariantRetrieval {
+            schema_version: RETRIEVAL_SCHEMA_VERSION,
+            mode: selection.point_mode(),
+            k,
+            names: fused.iter().map(|(name, _)| name.clone()).collect(),
+            scores: fused.iter().map(|(_, score)| *score).collect(),
+            eligible_count,
+            fallback_to_bm25: false,
+            cache_entries: self.cache.len(),
+            retrieval_ms: started.elapsed().as_millis(),
+        })
+    }
+}
+
+fn sort_scored(scores: &mut [(String, f64)]) {
+    // Score-descending with name tiebreaks: the experiment-wide
+    // deterministic ordering (parity with `sequence_retrieval`).
+    scores.sort_by(|left, right| left.0.cmp(&right.0));
+    scores.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+}
+
+/// Chunk scorer for the two-stage re-rank: scores one candidate chunk and
+/// reports its forward count (and any architecture-level drops). The
+/// production implementation wraps the frozen M003 span-packed ranker;
+/// tests use a deterministic stub.
+pub trait ChunkRankScorer {
+    fn scorer_name(&self) -> &'static str;
+    fn max_chunk_candidates(&self) -> usize;
+    fn score_chunk(
+        &self,
+        case: &ToolAdvisorCase,
+        candidates: &[ToolAdvisorCandidate],
+    ) -> Result<(Vec<RankedCandidate>, usize, usize)>;
+}
+
+/// Production re-rank scorer: the frozen M003 span-packed ranker. The
+/// artifact is a read-only input: weights and calibration are never
+/// retrained here, and ranker scores never enter the descriptor cache.
+pub struct FrozenRankerScorer<'a> {
+    pub ranker: &'a SequenceRanker,
+}
+
+impl<'a> FrozenRankerScorer<'a> {
+    /// Bind to the frozen span-packed ranker only. Any other architecture
+    /// fails closed: the M003 sweep must measure the selected ranker.
+    pub fn new(ranker: &'a SequenceRanker) -> Result<Self> {
+        if ranker.manifest.architecture != RANKING_ARCHITECTURE_SPAN_PACKED {
+            return Err(anyhow!(
+                "re-rank requires the frozen span-packed ranker, found {}",
+                ranker.manifest.architecture
+            ));
+        }
+        Ok(Self { ranker })
+    }
+}
+
+impl ChunkRankScorer for FrozenRankerScorer<'_> {
+    fn scorer_name(&self) -> &'static str {
+        "frozen-span-packed"
+    }
+
+    fn max_chunk_candidates(&self) -> usize {
+        self.ranker.manifest.max_candidates.max(1)
+    }
+
+    fn score_chunk(
+        &self,
+        case: &ToolAdvisorCase,
+        candidates: &[ToolAdvisorCandidate],
+    ) -> Result<(Vec<RankedCandidate>, usize, usize)> {
+        let mut chunk_case = case.clone();
+        chunk_case.candidates = candidates.to_vec();
+        let (prediction, dropped, forwards) = self.ranker.predict_case(&chunk_case)?;
+        Ok((prediction.ranked, forwards, dropped))
+    }
+}
+
+/// Two-stage re-rank accounting for one pool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankReport {
+    pub scorer: String,
+    pub pool_size: usize,
+    pub promoted_k: usize,
+    pub promoted: Vec<RankedCandidate>,
+    pub chunks: usize,
+    pub forwards: usize,
+    pub dropped: usize,
+    pub elapsed_ms: u128,
+}
+
+/// Re-rank a coarse union pool through the chunk scorer down to top `k`.
+///
+/// The pool is name-sorted before chunking so chunk boundaries (and hence
+/// scores) are order-independent: a permuted pool promotes the identical
+/// set. Pool names are revalidated against the eligible deferred universe
+/// before scoring; outsiders fail closed. Chunking is honest, not silent:
+/// the frozen ranker scores at most `max_chunk_candidates` per forward
+/// (its manifest caps at 16, below the preregistered pools of 48/64), so
+/// every chunk and forward is counted and chunk-local scores merge by
+/// global sort. No selection or gating happens here.
+pub fn rerank_pool<S: ChunkRankScorer>(
+    scorer: &S,
+    case: &ToolAdvisorCase,
+    pool_names: &[String],
+    k: usize,
+) -> Result<RerankReport> {
+    if k == 0 {
+        return Err(anyhow!("re-rank K must be positive"));
+    }
+    if pool_names.is_empty() {
+        return Err(anyhow!("re-rank pool must be non-empty"));
+    }
+    let eligible = eligible_deferred_names(case);
+    let mut pool: Vec<&ToolAdvisorCandidate> = Vec::with_capacity(pool_names.len());
+    for name in pool_names {
+        if !eligible.contains(name) {
+            return Err(anyhow!(
+                "re-rank pool names {name} outside the eligible deferred universe"
+            ));
+        }
+        let candidate = case
+            .candidates
+            .iter()
+            .find(|candidate| &candidate.name == name)
+            .ok_or_else(|| anyhow!("re-rank pool names unknown candidate {name}"))?;
+        pool.push(candidate);
+    }
+    pool.sort_by(|left, right| left.name.cmp(&right.name));
+    let chunk_size = scorer.max_chunk_candidates().max(1);
+    let started = Instant::now();
+    let mut merged: Vec<RankedCandidate> = Vec::new();
+    let mut chunks = 0usize;
+    let mut forwards = 0usize;
+    let mut dropped = 0usize;
+    for chunk in pool.chunks(chunk_size) {
+        let owned: Vec<ToolAdvisorCandidate> = chunk.iter().map(|c| (*c).clone()).collect();
+        let (ranked, chunk_forwards, chunk_dropped) = scorer.score_chunk(case, &owned)?;
+        merged.extend(ranked);
+        chunks += 1;
+        forwards += chunk_forwards;
+        dropped += chunk_dropped;
+    }
+    let mut scored: Vec<(String, f64)> = merged
+        .into_iter()
+        .map(|entry| (entry.name, entry.score))
+        .collect();
+    sort_scored(&mut scored);
+    scored.truncate(k.min(pool.len()));
+    Ok(RerankReport {
+        scorer: scorer.scorer_name().into(),
+        pool_size: pool.len(),
+        promoted_k: k,
+        promoted: scored
+            .into_iter()
+            .map(|(name, score)| RankedCandidate { name, score })
+            .collect(),
+        chunks,
+        forwards,
+        dropped,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::operating_point::expand_universe;
@@ -1123,5 +1635,629 @@ mod tests {
                 "BM25 miss set must be K-invariant at universe {size}"
             );
         }
+    }
+
+    // ---- M002 variant tests ----
+
+    use std::cell::RefCell;
+
+    fn variant_selection(
+        fusion: &str,
+        alpha: f64,
+        rrf_k: f64,
+        pooling: &str,
+        rerank_n: usize,
+    ) -> VariantSelection {
+        VariantSelection::new(fusion, alpha, rrf_k, pooling, rerank_n).expect("valid selection")
+    }
+
+    fn signal(entries: &[(&str, f64)]) -> Vec<(String, f64)> {
+        entries
+            .iter()
+            .map(|(name, score)| ((*name).to_string(), *score))
+            .collect()
+    }
+
+    #[test]
+    fn variant_grid_is_fully_constructible_and_rejects_unknowns() {
+        let mut modes = BTreeSet::new();
+        for fusion in FUSION_VARIANTS {
+            for alpha in FUSION_ALPHAS {
+                for rrf_k in RRF_KS {
+                    for pooling in POOLING_VARIANTS {
+                        for rerank_n in RERANK_CANDIDATE_NS {
+                            let selection =
+                                variant_selection(fusion, alpha, rrf_k, pooling, rerank_n);
+                            assert!(modes.insert(selection.point_mode()));
+                        }
+                    }
+                }
+            }
+        }
+        // Injective over the grid: 3 fusions x 5 alphas x 3 RRF_K x 2
+        // poolings x 2 pool sizes, no shared mode string.
+        assert_eq!(
+            modes.len(),
+            FUSION_VARIANTS.len()
+                * FUSION_ALPHAS.len()
+                * RRF_KS.len()
+                * POOLING_VARIANTS.len()
+                * RERANK_CANDIDATE_NS.len()
+        );
+        assert!(VariantSelection::new("tf-idf", 0.5, 60.0, "mean", 48).is_err());
+        assert!(VariantSelection::new("rrf", 0.3, 60.0, "mean", 48).is_err());
+        assert!(VariantSelection::new("rrf", 0.5, 45.0, "mean", 48).is_err());
+        assert!(VariantSelection::new("max", 0.5, 60.0, "median", 48).is_err());
+        assert!(VariantSelection::new("max", 0.5, 60.0, "mean", 32).is_err());
+        parse_pooling("mean").expect("mean parses");
+        parse_pooling("cls").expect("cls parses");
+        parse_pooling("median").expect_err("unknown pooling fails closed");
+    }
+
+    #[test]
+    fn fusion_dispatch_matches_reference_vectors_across_full_grids() {
+        let bm25 = signal(&[("a", 3.0), ("b", 2.0), ("c", 0.0), ("d", 1.0)]);
+        let semantic = signal(&[("a", 0.1), ("b", 0.9), ("c", 0.7), ("e", 0.5)]);
+        for alpha in FUSION_ALPHAS {
+            let selection = variant_selection("weighted-union", alpha, 60.0, "mean", 48);
+            assert_eq!(
+                select_coarse_ordering(&bm25, &semantic, &selection).expect("dispatch"),
+                fuse_weighted_union(&bm25, &semantic, alpha),
+                "weighted-union must call the reference function at alpha {alpha}"
+            );
+        }
+        for rrf_k in RRF_KS {
+            let selection = variant_selection("rrf", 0.5, rrf_k, "mean", 48);
+            assert_eq!(
+                select_coarse_ordering(&bm25, &semantic, &selection).expect("dispatch"),
+                fuse_rrf_with_k(&bm25, &semantic, rrf_k),
+                "rrf must call the reference function at K {rrf_k}"
+            );
+        }
+        let selection = variant_selection("max", 0.5, 60.0, "cls", 64);
+        assert_eq!(
+            select_coarse_ordering(&bm25, &semantic, &selection).expect("dispatch"),
+            fuse_max(&bm25, &semantic),
+            "max must call the reference function"
+        );
+        let bogus = VariantSelection {
+            fusion: "tf-idf".into(),
+            alpha: 0.5,
+            rrf_k: 60.0,
+            pooling: "mean".into(),
+            rerank_n: 48,
+        };
+        select_coarse_ordering(&bm25, &semantic, &bogus).expect_err("bogus fusion fails closed");
+    }
+
+    #[test]
+    fn alpha_half_reproduces_equal_weight_ordering() {
+        // Hand computation: normalized BM25 is a=1, b=2/3, c=0;
+        // normalized semantic is a=0, b=2/3, c=1. Equal weights give
+        // b=4/3 ahead of the a=c=1 tie, broken by name.
+        let bm25 = signal(&[("a", 3.0), ("b", 2.0), ("c", 0.0)]);
+        let semantic = signal(&[("a", 0.0), ("b", 2.0), ("c", 3.0)]);
+        let selection = variant_selection("weighted-union", 0.5, 60.0, "mean", 48);
+        let fused = select_coarse_ordering(&bm25, &semantic, &selection).expect("dispatch");
+        let names: Vec<&str> = fused.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["b", "a", "c"]);
+        assert!((fused[0].score - 2.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lexical_signal_matches_bm25_ordering_on_dev_fixtures() {
+        let cases = load_cases(None).expect("builtin corpus");
+        let partition = partition_cases(&cases);
+        let dev: Vec<ToolAdvisorCase> = partition
+            .dev_cases
+            .iter()
+            .take(4)
+            .map(|index| cases[*index].clone())
+            .collect();
+        assert_eq!(dev.len(), 4);
+        for case in &dev {
+            assert_eq!(
+                advisor_lexical_ordering(case),
+                bm25_ordering(case),
+                "advisor lexical signal must reuse catalog BM25 ordering"
+            );
+        }
+    }
+
+    #[test]
+    fn coarse_ordering_is_deterministic_under_permutation() {
+        let bm25 = signal(&[("b", 1.0), ("a", 1.0), ("c", 0.5)]);
+        let semantic = signal(&[("c", 0.5), ("a", 0.5), ("b", 0.5)]);
+        let selections = [
+            variant_selection("weighted-union", 0.25, 60.0, "mean", 48),
+            variant_selection("rrf", 0.5, 120.0, "cls", 64),
+            variant_selection("max", 0.5, 60.0, "mean", 48),
+        ];
+        for selection in &selections {
+            let first = select_coarse_ordering(&bm25, &semantic, selection).expect("dispatch");
+            let permuted_bm25 = signal(&[("c", 0.5), ("b", 1.0), ("a", 1.0)]);
+            let permuted_semantic = signal(&[("a", 0.5), ("b", 0.5), ("c", 0.5)]);
+            assert_eq!(
+                select_coarse_ordering(&permuted_bm25, &permuted_semantic, selection)
+                    .expect("dispatch"),
+                first,
+                "fusion output must not depend on input order"
+            );
+            // Name tiebreaks stay stable: the tied a/b pair keeps a first.
+            assert_eq!(first[0].name, "a");
+        }
+    }
+
+    /// Stub semantic scorer with exact 2-D embeddings, so cosine scores
+    /// are hand-computable: query [1,0] gives a=1.0, b=0.0,
+    /// c=1/sqrt(2).
+    struct StubSemanticScorer {
+        descriptors: BTreeMap<String, Vec<f32>>,
+        fail_query: bool,
+        fail_descriptors: bool,
+        seen_pooling: RefCell<Vec<PoolingStrategy>>,
+    }
+
+    impl StubSemanticScorer {
+        fn working() -> Self {
+            Self {
+                descriptors: BTreeMap::from([
+                    ("tool-a".to_string(), vec![1.0, 0.0]),
+                    ("tool-b".to_string(), vec![0.0, 1.0]),
+                    ("tool-c".to_string(), vec![1.0, 1.0]),
+                ]),
+                fail_query: false,
+                fail_descriptors: false,
+                seen_pooling: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SemanticScorer for StubSemanticScorer {
+        fn tokenizer_version(&self) -> String {
+            "stub-encoder-v1".into()
+        }
+
+        fn encode_query(&self, _context: &str, pooling: PoolingStrategy) -> Result<Vec<f32>> {
+            self.seen_pooling.borrow_mut().push(pooling);
+            if self.fail_query {
+                return Err(anyhow!("stub query failure"));
+            }
+            Ok(vec![1.0, 0.0])
+        }
+
+        fn encode_descriptor(
+            &self,
+            descriptor: &str,
+            pooling: PoolingStrategy,
+        ) -> Result<Vec<f32>> {
+            self.seen_pooling.borrow_mut().push(pooling);
+            if self.fail_descriptors {
+                return Err(anyhow!("stub descriptor failure"));
+            }
+            let name = descriptor
+                .strip_prefix("canonical name: ")
+                .and_then(|rest| rest.split(';').next())
+                .ok_or_else(|| anyhow!("stub cannot parse descriptor"))?;
+            self.descriptors
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow!("stub has no vector for {name}"))
+        }
+    }
+
+    fn stub_case(id: &str) -> ToolAdvisorCase {
+        ToolAdvisorCase {
+            schema_version: CASE_SCHEMA_VERSION,
+            case_id: id.into(),
+            context: format!("stub context {id}"),
+            candidates: vec![
+                synthetic_candidate("tool-a", "deferred"),
+                synthetic_candidate("tool-b", "deferred"),
+                synthetic_candidate("tool-c", "deferred"),
+                synthetic_candidate(&format!("{id}-immediate"), "immediate"),
+                synthetic_candidate(&format!("{id}-denied"), "denied"),
+            ],
+            relevance: BTreeMap::from([("tool-a".to_string(), 3), (format!("{id}-denied"), 3)]),
+            preferred_order: vec!["tool-a".into()],
+            none: false,
+            tags: vec![],
+            group_id: id.into(),
+            provenance: "r001-test".into(),
+            semantic_group: String::new(),
+            leakage_group: String::new(),
+            task_family: String::new(),
+            tool_family: String::new(),
+            generated_variant_family: String::new(),
+            teacher_probabilities: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn variant_retrieval_matches_reference_fusion_through_stub() {
+        let case = stub_case("stub");
+        let selection = variant_selection("weighted-union", 0.5, 60.0, "mean", 48);
+        let mut retriever = VariantRetriever::new(StubSemanticScorer::working());
+        let result = retriever
+            .retrieve(&case, "surface-a", &selection, 16)
+            .expect("retrieve");
+        assert!(!result.fallback_to_bm25);
+        assert_eq!(result.eligible_count, 3);
+        assert_eq!(result.cache_entries, 3);
+        assert_eq!(result.mode, selection.point_mode());
+        let lexical: Vec<(String, f64)> = advisor_lexical_ordering(&case)
+            .into_iter()
+            .map(|entry| (entry.name, entry.score))
+            .collect();
+        let semantic = vec![
+            (
+                "tool-a".to_string(),
+                variant_cosine(&[1.0, 0.0], &[1.0, 0.0]),
+            ),
+            (
+                "tool-b".to_string(),
+                variant_cosine(&[1.0, 0.0], &[0.0, 1.0]),
+            ),
+            (
+                "tool-c".to_string(),
+                variant_cosine(&[1.0, 0.0], &[1.0, 1.0]),
+            ),
+        ];
+        let mut expected: Vec<(String, f64)> =
+            select_coarse_ordering(&lexical, &semantic, &selection)
+                .expect("reference fusion")
+                .into_iter()
+                .map(|entry| (entry.name, entry.score))
+                .collect();
+        sort_scored(&mut expected);
+        assert_eq!(result.names.len(), 3);
+        for (index, (name, score)) in expected.iter().enumerate() {
+            assert_eq!(&result.names[index], name);
+            assert!((result.scores[index] - score).abs() < 1e-12);
+        }
+        // Non-deferred candidates never enter, even when labeled relevant.
+        assert!(
+            !result.names.iter().any(|name| name.ends_with("denied")),
+            "denied tools must never enter variant retrieval"
+        );
+    }
+
+    #[test]
+    fn encoder_failure_falls_back_to_bm25_without_availability_gate() {
+        let case = stub_case("fallback");
+        let selection = variant_selection("rrf", 0.5, 60.0, "mean", 48);
+        for (fail_query, fail_descriptors) in [(true, false), (false, true)] {
+            let mut retriever = VariantRetriever::new(StubSemanticScorer {
+                descriptors: StubSemanticScorer::working().descriptors,
+                fail_query,
+                fail_descriptors,
+                seen_pooling: RefCell::new(Vec::new()),
+            });
+            let result = retriever
+                .retrieve(&case, "surface-a", &selection, 2)
+                .expect("fallback retrieve");
+            assert!(result.fallback_to_bm25);
+            let expected: Vec<String> = advisor_lexical_ordering(&case)
+                .into_iter()
+                .take(2)
+                .map(|entry| entry.name)
+                .collect();
+            assert_eq!(result.names, expected);
+        }
+        VariantRetriever::new(StubSemanticScorer::working())
+            .retrieve(&case, "surface-a", &selection, 0)
+            .expect_err("zero K fails closed");
+    }
+
+    #[test]
+    fn pooling_variants_are_stable_and_never_collide_in_cache() {
+        let case = stub_case("pooling");
+        let mut retriever = VariantRetriever::new(StubSemanticScorer::working());
+        let mean_selection = variant_selection("max", 0.5, 60.0, "mean", 48);
+        let cls_selection = variant_selection("max", 0.5, 60.0, "cls", 48);
+        let mean = retriever
+            .retrieve(&case, "surface-a", &mean_selection, 16)
+            .expect("mean retrieve");
+        let cls = retriever
+            .retrieve(&case, "surface-a", &cls_selection, 16)
+            .expect("cls retrieve");
+        // The stub returns identical vectors per pooling, so orderings
+        // match; the assertion that matters is cache separation below.
+        assert_eq!(mean.names, cls.names);
+        assert_eq!(retriever.cache.len(), 6);
+        {
+            let poolings = retriever.scorer.seen_pooling.borrow();
+            let poolings = poolings.iter().collect::<Vec<_>>();
+            assert!(poolings.contains(&&PoolingStrategy::Mean));
+            assert!(poolings.contains(&&PoolingStrategy::Cls));
+        }
+        // Surface change invalidates, same surface reuses.
+        let before = retriever.cache.len();
+        retriever
+            .retrieve(&case, "surface-a", &mean_selection, 16)
+            .expect("cached retrieve");
+        assert_eq!(retriever.cache.len(), before);
+        retriever
+            .retrieve(&case, "surface-b", &mean_selection, 16)
+            .expect("new surface retrieve");
+        assert_eq!(retriever.cache.len(), 3);
+    }
+
+    #[test]
+    fn variant_cache_keys_never_contain_user_context() {
+        let marker = "user-context-marker-7f3a9c";
+        let mut case = stub_case("hygiene");
+        case.context = format!("{marker} inspect secret project files");
+        let selection = variant_selection("weighted-union", 0.25, 30.0, "mean", 64);
+        let mut retriever = VariantRetriever::new(StubSemanticScorer::working());
+        retriever
+            .retrieve(&case, "surface-a", &selection, 16)
+            .expect("retrieve");
+        assert!(!retriever.cache.is_empty());
+        for key in retriever.cache.keys() {
+            let rendered = format!("{key:?}");
+            assert!(
+                !rendered.contains(marker),
+                "cache key must never contain user context: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn variant_point_identity_uses_universe_not_shortlist_k() {
+        use super::super::sequence_retrieval::{select_retrieval_point, RetrievalFrontierPoint};
+        let selection = variant_selection("weighted-union", 0.25, 60.0, "cls", 48);
+        let point = |universe: usize, k: usize| RetrievalFrontierPoint {
+            mode: selection.point_mode(),
+            k,
+            cases: 1,
+            relevant_tools: 1,
+            recovered_tools: 1,
+            recall: 1.0,
+            mean_latency_ms: 0.0,
+            max_latency_ms: 0,
+            candidate_universe_size: universe,
+            shortlist_k: k,
+            eligible_relevant_tools: 1,
+            recovered_relevant_tools: 1,
+        };
+        let points = vec![point(64, 16), point(64, 24)];
+        assert!(select_retrieval_point(&points, 64, 16, &selection.point_mode()).is_ok());
+        select_retrieval_point(&points, 128, 16, &selection.point_mode())
+            .expect_err("missing universe fails closed");
+        select_retrieval_point(&points, 64, 16, "rrf").expect_err("mode mismatch fails closed");
+        let duplicated = vec![point(64, 16), point(64, 16)];
+        select_retrieval_point(&duplicated, 64, 16, &selection.point_mode())
+            .expect_err("duplicate fails closed");
+    }
+
+    /// Deterministic stub chunk scorer: scores derive from the name only,
+    /// so permuted pools must promote identical sets.
+    struct StubChunkScorer {
+        max_chunk: usize,
+    }
+
+    impl ChunkRankScorer for StubChunkScorer {
+        fn scorer_name(&self) -> &'static str {
+            "stub-chunk"
+        }
+
+        fn max_chunk_candidates(&self) -> usize {
+            self.max_chunk
+        }
+
+        fn score_chunk(
+            &self,
+            _case: &ToolAdvisorCase,
+            candidates: &[ToolAdvisorCandidate],
+        ) -> Result<(Vec<RankedCandidate>, usize, usize)> {
+            let ranked = candidates
+                .iter()
+                .map(|candidate| {
+                    let first = candidate.name.as_bytes().first().copied().unwrap_or(0);
+                    RankedCandidate {
+                        name: candidate.name.clone(),
+                        score: candidate.name.len() as f64 + f64::from(first) / 256.0,
+                    }
+                })
+                .collect();
+            Ok((ranked, candidates.len(), 0))
+        }
+    }
+
+    fn rerank_case() -> ToolAdvisorCase {
+        ToolAdvisorCase {
+            schema_version: CASE_SCHEMA_VERSION,
+            case_id: "rerank".into(),
+            context: "rerank context".into(),
+            candidates: vec![
+                synthetic_candidate("a", "deferred"),
+                synthetic_candidate("bb", "deferred"),
+                synthetic_candidate("ccc", "deferred"),
+                synthetic_candidate("dddd", "deferred"),
+                synthetic_candidate("ee", "deferred"),
+                synthetic_candidate("rerank-immediate", "immediate"),
+            ],
+            relevance: BTreeMap::from([("dddd".to_string(), 3)]),
+            preferred_order: vec!["dddd".into()],
+            none: false,
+            tags: vec![],
+            group_id: "rerank".into(),
+            provenance: "r001-test".into(),
+            semantic_group: String::new(),
+            leakage_group: String::new(),
+            task_family: String::new(),
+            tool_family: String::new(),
+            generated_variant_family: String::new(),
+            teacher_probabilities: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn rerank_pool_chunks_counts_cost_and_promotes_by_score() {
+        // Hand scores: dddd=4+100/256, ccc=3+99/256, ee=2+101/256,
+        // bb=2+98/256, a=1+97/256. Top-3 is dddd, ccc, ee.
+        let case = rerank_case();
+        let scorer = StubChunkScorer { max_chunk: 2 };
+        let pool: Vec<String> = ["a", "bb", "ccc", "dddd", "ee"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let report = rerank_pool(&scorer, &case, &pool, 3).expect("rerank");
+        assert_eq!(report.chunks, 3);
+        assert_eq!(report.forwards, 5);
+        assert_eq!(report.dropped, 0);
+        assert_eq!(report.pool_size, 5);
+        let promoted: Vec<&str> = report
+            .promoted
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(promoted, vec!["dddd", "ccc", "ee"]);
+    }
+
+    #[test]
+    fn rerank_pool_is_permutation_invariant() {
+        let case = rerank_case();
+        let scorer = StubChunkScorer { max_chunk: 2 };
+        let forward: Vec<String> = ["a", "bb", "ccc", "dddd", "ee"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let mut reversed = forward.clone();
+        reversed.reverse();
+        let first = rerank_pool(&scorer, &case, &forward, 3).expect("rerank");
+        let second = rerank_pool(&scorer, &case, &reversed, 5).expect("rerank");
+        // Same promoted set regardless of input order (name-sorted
+        // chunking); the K=5 report holds the full ordered pool.
+        let full: Vec<&str> = second
+            .promoted
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(full, vec!["dddd", "ccc", "ee", "bb", "a"]);
+        let promoted: Vec<&str> = first
+            .promoted
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(promoted, vec!["dddd", "ccc", "ee"]);
+        for (left, right) in first.promoted.iter().zip(second.promoted.iter().take(3)) {
+            assert_eq!(left.name, right.name);
+            assert!((left.score - right.score).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn rerank_pool_revalidates_the_deferred_universe() {
+        let case = rerank_case();
+        let scorer = StubChunkScorer { max_chunk: 16 };
+        rerank_pool(&scorer, &case, &["a".to_string()], 0).expect_err("zero K fails closed");
+        rerank_pool(&scorer, &case, &[], 2).expect_err("empty pool fails closed");
+        rerank_pool(&scorer, &case, &["rerank-immediate".to_string()], 1)
+            .expect_err("non-deferred pool member fails closed");
+        rerank_pool(&scorer, &case, &["ghost-tool".to_string()], 1)
+            .expect_err("unknown pool member fails closed");
+        rerank_pool(
+            &scorer,
+            &case,
+            &["a".to_string(), "ghost-tool".to_string()],
+            2,
+        )
+        .expect_err("partially unknown pool fails closed");
+    }
+
+    #[test]
+    fn live_variant_paths_reproduce_m004_endpoints() {
+        use super::super::sequence_encoder::CandleBertSequenceEncoder;
+        use super::super::sequence_retrieval::{HybridRetriever, RetrievalMode};
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let manifest_path = root.join(PREREG_ENCODER_MANIFEST);
+        if !manifest_path.exists() {
+            eprintln!("SKIP: reference encoder assets absent in this environment");
+            return;
+        }
+        let device = candle_core::Device::Cpu;
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest_path, &device).expect("encoder load");
+        let case = stub_case("live");
+        let surface = "live-surface";
+        let mut hybrid = HybridRetriever::new(&encoder);
+        let mut variant = VariantRetriever::new(EncoderSemanticScorer::new(&encoder));
+        // Alpha 1.0 is semantic-only: ordering must equal M004 semantic.
+        let semantic_only = variant_selection("weighted-union", 1.0, 60.0, "mean", 48);
+        let variant_semantic = variant
+            .retrieve(&case, surface, &semantic_only, 3)
+            .expect("semantic-only retrieve");
+        let m004_semantic = hybrid
+            .retrieve(&case, surface, RetrievalMode::Semantic, 3)
+            .expect("M004 semantic retrieve");
+        assert!(!variant_semantic.fallback_to_bm25);
+        assert_eq!(variant_semantic.names, m004_semantic.names);
+        // Alpha 0.0 is BM25-only: ordering must equal M004 BM25.
+        let lexical_only = variant_selection("weighted-union", 0.0, 60.0, "mean", 48);
+        let variant_lexical = variant
+            .retrieve(&case, surface, &lexical_only, 3)
+            .expect("lexical-only retrieve");
+        let m004_bm25 = hybrid
+            .retrieve(&case, surface, RetrievalMode::Bm25, 3)
+            .expect("M004 BM25 retrieve");
+        assert_eq!(variant_lexical.names, m004_bm25.names);
+        // Cls pooling runs cleanly on the same path.
+        let cls = variant_selection("max", 0.5, 60.0, "cls", 48);
+        let cls_result = variant
+            .retrieve(&case, surface, &cls, 3)
+            .expect("cls retrieve");
+        assert!(!cls_result.fallback_to_bm25);
+        assert_eq!(cls_result.names.len(), 3);
+        eprintln!(
+            "live variant endpoints match M004: semantic={:?} bm25={:?}",
+            variant_semantic.names, variant_lexical.names
+        );
+    }
+
+    #[test]
+    fn live_frozen_ranker_reranks_and_rejects_wrong_architecture() {
+        use super::super::sequence_ranking::load_artifact;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let artifact_path = root.join(PREREG_RANKER_ARTIFACT);
+        if !artifact_path.exists() {
+            eprintln!("SKIP: frozen span-packed ranker absent in this environment");
+            return;
+        }
+        let device = candle_core::Device::Cpu;
+        let mut ranker =
+            load_artifact(&artifact_path, &device).expect("load frozen span-packed ranker");
+        // Frozen binding: the loader itself verified the head hash; the
+        // architecture and dev partition pin the selected artifact.
+        assert_eq!(
+            ranker.manifest.architecture, RANKING_ARCHITECTURE_SPAN_PACKED,
+            "re-rank binds to the frozen span-packed ranker"
+        );
+        assert_eq!(
+            ranker.manifest.dev_partition_fingerprint, EXPECTED_DEV_PARTITION_FINGERPRINT,
+            "ranker dev partition must match the frozen corpus"
+        );
+        let scorer = FrozenRankerScorer::new(&ranker).expect("frozen scorer binds");
+        let case = rerank_case();
+        let pool: Vec<String> = ["a", "bb", "ccc"].iter().map(ToString::to_string).collect();
+        let report = rerank_pool(&scorer, &case, &pool, 2).expect("frozen rerank");
+        assert_eq!(report.promoted.len(), 2);
+        assert_eq!(report.dropped, 0);
+        assert!(report.forwards >= 1, "ranker cost must be counted");
+        eprintln!(
+            "live frozen rerank promotes {:?} in {} forwards",
+            report
+                .promoted
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            report.forwards
+        );
+        ranker.manifest.architecture = "bogus-architecture".into();
+        assert!(
+            FrozenRankerScorer::new(&ranker).is_err(),
+            "wrong architecture fails closed"
+        );
     }
 }
