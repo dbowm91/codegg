@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Closure Corrective C001 — Execution Ownership and Planning Closure
 
-Status: active
+Status: implemented (evidence gathered; see `plans/closure/tool-selection-advisor-retrieval-architecture-closure-corrective/001-status.md`; hosted CI run `35859251981` success on `220d3638`)
 
 Repository baseline: `5864e5497d23f65fdec0390ac65c4173d92af2dd`
 

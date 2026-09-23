@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture — Closure Corrective Addendum
 
-Status: active
+Status: closed (C001 closed; see `plans/closure/tool-selection-advisor-retrieval-architecture-closure-corrective/001-status.md`; implementation `220d3638`; hosted CI run `35859251981`)
 
 Repository planning baseline: `5864e5497d23f65fdec0390ac65c4173d92af2dd`
 
@@ -48,7 +48,7 @@ One milestone only:
 
 - `plans/implementation/tool-selection-advisor-retrieval-architecture-closure-corrective/001-execution-ownership-and-planning-closure.md`
 
-Status: active.
+Status: closed (see `plans/closure/tool-selection-advisor-retrieval-architecture-closure-corrective/001-status.md`; implementation `220d3638`; hosted CI run `35859251981`).
 
 The milestone removes the experiment-owned Git subprocess, repairs roadmap state, runs the canonical repository guards, and adds supplemental closure evidence.
 
