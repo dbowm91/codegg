@@ -610,6 +610,17 @@ pub fn checkpoint_path(output_dir: &str, universe_size: usize) -> PathBuf {
     PathBuf::from(output_dir).join(format!("r001-checkpoint-frontier-{universe_size}.json"))
 }
 
+/// Fingerprint-bound coarse checkpoint path for one universe.
+pub fn coarse_checkpoint_path(output_dir: &str, universe_size: usize) -> PathBuf {
+    PathBuf::from(output_dir).join(format!("r001-checkpoint-coarse-{universe_size}.json"))
+}
+
+/// Canonical coarse orderings per setting id: per-case full orderings
+/// the arm phase pools from.
+pub type CanonicalOrderings = BTreeMap<String, Vec<Vec<String>>>;
+/// Canonical coarse per-case timings per setting id.
+pub type CanonicalTimings = BTreeMap<String, Vec<f64>>;
+
 /// Resume only on fingerprint and universe match; otherwise recompute.
 pub fn checkpoint_accepts(
     stored_fingerprint: &str,
@@ -1422,6 +1433,22 @@ pub struct R001UniverseCheckpoint {
     pub authority_violations: usize,
 }
 
+/// Fingerprint-bound coarse checkpoint for one universe: the complete
+/// coarse frontier plus the canonical orderings/timings the arm phase
+/// pools from. Lets a run capture every universe's recall ceilings
+/// (which adjudicate whether any arm can clear the gates) before the
+/// slow arm phase begins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct R001CoarseCheckpoint {
+    pub sweep_fingerprint: String,
+    pub universe_size: usize,
+    pub fixture_fingerprint: String,
+    pub points: Vec<R001FrontierPoint>,
+    pub authority_violations: usize,
+    pub canonical_orderings: CanonicalOrderings,
+    pub canonical_ms: CanonicalTimings,
+}
+
 /// Frozen R001 operating-point selection: at most one of these exists
 /// per sweep, primary (K<=32) preferred over extended.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1779,18 +1806,13 @@ fn r001_sweep_fingerprint(
     hex::encode(hasher.finalize())
 }
 
-/// Measure one universe: all 180 coarse grid modes directly per case,
-/// then the 36 distinct re-rank arms fanned out to member modes.
-/// Returns frontier points, distinct arm measurements, and the
-/// authority violation count (which must be zero at selection).
-#[allow(clippy::too_many_arguments)]
-fn measure_universe<S: SemanticScorer>(
-    retrievers: &mut BTreeMap<String, VariantRetriever<S>>,
-    ranker_scorer: &FrozenRankerScorer<'_>,
+/// Expand dev cases to one retrieval universe with tripwires: exactly
+/// the M004 case and eligible-relevant counts, so any corpus or
+/// expansion drift fails closed before measurement.
+fn expand_and_expect(
     dev_cases: &[ToolAdvisorCase],
-    dataset_fp: &str,
     universe_size: usize,
-) -> Result<(Vec<R001FrontierPoint>, Vec<R001RerankArm>, usize)> {
+) -> Result<(Vec<ToolAdvisorCase>, Vec<BTreeSet<String>>, usize)> {
     let fixture = expand_universe(dev_cases, universe_size)?;
     if fixture.len() != M004_DEV_CASES {
         return Err(anyhow!(
@@ -1817,11 +1839,30 @@ fn measure_universe<S: SemanticScorer>(
              expected {M004_ELIGIBLE_RELEVANT}"
         ));
     }
+    Ok((fixture, expected_per_case, eligible_total))
+}
+
+/// Measure one universe's coarse grid: the 9 fusion-settings x 2
+/// poolings retrieved directly per case, fanned out to all 180 member
+/// modes. Returns frontier points, the violation count, and the
+/// canonical orderings/timings the arm phase pools from.
+fn measure_universe_coarse<S: SemanticScorer>(
+    retrievers: &mut BTreeMap<String, VariantRetriever<S>>,
+    dev_cases: &[ToolAdvisorCase],
+    dataset_fp: &str,
+    universe_size: usize,
+) -> Result<(
+    Vec<R001FrontierPoint>,
+    usize,
+    CanonicalOrderings,
+    CanonicalTimings,
+)> {
+    let (fixture, expected_per_case, eligible_total) = expand_and_expect(dev_cases, universe_size)?;
     let mut points = Vec::new();
     let mut violations = 0usize;
     // Canonical coarse orderings and timings, keyed by setting id.
-    let mut canonical_names: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
-    let mut canonical_ms: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut canonical_names: CanonicalOrderings = BTreeMap::new();
+    let mut canonical_ms: CanonicalTimings = BTreeMap::new();
     let coarse_started = Instant::now();
     for (fusion, alpha, rrf_k) in fusion_settings() {
         for pooling in POOLING_VARIANTS {
@@ -1925,6 +1966,26 @@ fn measure_universe<S: SemanticScorer>(
          ({} points, {violations} violations)",
         points.len(),
     );
+    Ok((points, violations, canonical_names, canonical_ms))
+}
+
+/// Measure one universe's re-rank arms: the 36 distinct arms (settings
+/// x poolings x pool sizes) fanned out to member modes under
+/// stage-qualified identities. Canonical orderings come from the
+/// coarse phase (checkpointed); expectations re-derive deterministically
+/// from re-expansion. Returns arm points, arm measurements, and the
+/// arm-phase violation count (arm pools revalidate, so this is zero
+/// unless the coarse ordering escaped its universe).
+fn measure_universe_arms(
+    ranker_scorer: &FrozenRankerScorer<'_>,
+    dev_cases: &[ToolAdvisorCase],
+    universe_size: usize,
+    canonical_names: &BTreeMap<String, Vec<Vec<String>>>,
+    canonical_ms: &BTreeMap<String, Vec<f64>>,
+) -> Result<(Vec<R001FrontierPoint>, Vec<R001RerankArm>, usize)> {
+    let (fixture, expected_per_case, eligible_total) = expand_and_expect(dev_cases, universe_size)?;
+    let mut points = Vec::new();
+    let violations = 0usize;
     // Distinct re-rank arms fanned out to member modes.
     let rerank_started = Instant::now();
     let mut arms = Vec::new();
@@ -2220,8 +2281,22 @@ pub fn run_r001_sweep(output_dir: &Path) -> Result<R001SweepReport> {
     let mut universes_measured = Vec::new();
     let mut universes_resumed = Vec::new();
     let mut coarse_seconds = 0.0f64;
+    let mut arm_seconds = 0.0f64;
+    let output_dir_str = output_dir.display().to_string();
+    // Universes whose full checkpoint (coarse + arms) is done, this
+    // run or a resumed one: the arm phase skips them.
+    let mut universes_complete: BTreeSet<usize> = BTreeSet::new();
+    // Canonical orderings/timings per universe for the arm phase.
+    let mut coarse_maps: BTreeMap<usize, (CanonicalOrderings, CanonicalTimings)> = BTreeMap::new();
+    // Coarse-phase violations per universe for full checkpoints.
+    let mut coarse_violations: BTreeMap<usize, usize> = BTreeMap::new();
+    // Phase 1: coarse grids for every universe first, so an
+    // interrupted run still preserves the complete coarse frontier:
+    // the recall ceilings that adjudicate whether any arm can clear
+    // the gates (arm recall@K can never exceed its ordering's coarse
+    // recall@64, since pools are top-48/64 subsets).
     for universe_size in PREREG_UNIVERSES {
-        let checkpoint_file = checkpoint_path(&output_dir.display().to_string(), universe_size);
+        let checkpoint_file = checkpoint_path(&output_dir_str, universe_size);
         if let Ok(bytes) = std::fs::read(&checkpoint_file) {
             if let Ok(checkpoint) = serde_json::from_slice::<R001UniverseCheckpoint>(&bytes) {
                 if checkpoint_accepts(
@@ -2231,48 +2306,101 @@ pub fn run_r001_sweep(output_dir: &Path) -> Result<R001SweepReport> {
                     universe_size,
                 ) && checkpoint.fixture_fingerprint == live_fixture_fp
                 {
-                    eprintln!("r001 universe {universe_size}: resumed from checkpoint");
+                    eprintln!("r001 universe {universe_size}: resumed full checkpoint");
                     violations += checkpoint.authority_violations;
                     all_points.extend(checkpoint.points);
                     all_arms.extend(checkpoint.arms);
+                    universes_resumed.push(universe_size);
+                    universes_complete.insert(universe_size);
+                    continue;
+                }
+            }
+        }
+        let coarse_file = coarse_checkpoint_path(&output_dir_str, universe_size);
+        if let Ok(bytes) = std::fs::read(&coarse_file) {
+            if let Ok(checkpoint) = serde_json::from_slice::<R001CoarseCheckpoint>(&bytes) {
+                if checkpoint_accepts(
+                    &checkpoint.sweep_fingerprint,
+                    checkpoint.universe_size,
+                    &sweep_fp,
+                    universe_size,
+                ) && checkpoint.fixture_fingerprint == live_fixture_fp
+                {
+                    eprintln!("r001 universe {universe_size}: resumed coarse checkpoint");
+                    violations += checkpoint.authority_violations;
+                    all_points.extend(checkpoint.points);
+                    coarse_violations.insert(universe_size, checkpoint.authority_violations);
+                    coarse_maps.insert(
+                        universe_size,
+                        (checkpoint.canonical_orderings, checkpoint.canonical_ms),
+                    );
                     universes_resumed.push(universe_size);
                     continue;
                 }
             }
         }
         let universe_started = Instant::now();
-        let (points, arms, universe_violations) = measure_universe(
-            &mut retrievers,
-            &ranker_scorer,
-            &dev_cases,
-            &dataset_fp,
-            universe_size,
-        )?;
-        let universe_seconds = universe_started.elapsed().as_secs_f64();
-        coarse_seconds += universe_seconds;
+        let (points, universe_violations, names, ms) =
+            measure_universe_coarse(&mut retrievers, &dev_cases, &dataset_fp, universe_size)?;
+        coarse_seconds += universe_started.elapsed().as_secs_f64();
         violations += universe_violations;
+        coarse_violations.insert(universe_size, universe_violations);
+        std::fs::write(
+            &coarse_file,
+            serde_json::to_vec_pretty(&R001CoarseCheckpoint {
+                sweep_fingerprint: sweep_fp.clone(),
+                universe_size,
+                fixture_fingerprint: live_fixture_fp.clone(),
+                points: points.clone(),
+                authority_violations: universe_violations,
+                canonical_orderings: names.clone(),
+                canonical_ms: ms.clone(),
+            })?,
+        )?;
+        all_points.extend(points);
+        coarse_maps.insert(universe_size, (names, ms));
+    }
+    // Phase 2: re-rank arms per universe with full checkpoints.
+    for universe_size in PREREG_UNIVERSES {
+        if universes_complete.contains(&universe_size) {
+            continue;
+        }
+        let Some((names, ms)) = coarse_maps.get(&universe_size) else {
+            return Err(anyhow!(
+                "universe {universe_size} has no coarse checkpoint for the arm phase"
+            ));
+        };
+        let checkpoint_file = checkpoint_path(&output_dir_str, universe_size);
+        let arms_started = Instant::now();
+        let (points, arms, universe_violations) =
+            measure_universe_arms(&ranker_scorer, &dev_cases, universe_size, names, ms)?;
+        arm_seconds += arms_started.elapsed().as_secs_f64();
+        violations += universe_violations;
+        let total_universe_violations =
+            coarse_violations.get(&universe_size).copied().unwrap_or(0) + universe_violations;
         std::fs::write(
             &checkpoint_file,
             serde_json::to_vec_pretty(&R001UniverseCheckpoint {
                 sweep_fingerprint: sweep_fp.clone(),
                 universe_size,
                 fixture_fingerprint: live_fixture_fp.clone(),
-                points: points.clone(),
+                points: all_points
+                    .iter()
+                    .filter(|point| point.universe_size == universe_size)
+                    .cloned()
+                    .chain(points.clone())
+                    .collect(),
                 arms: arms.clone(),
-                authority_violations: universe_violations,
+                authority_violations: total_universe_violations,
             })?,
         )?;
         all_points.extend(points);
         all_arms.extend(arms);
         universes_measured.push(universe_size);
+        universes_complete.insert(universe_size);
     }
-    // Coarse vs re-rank split is approximated from arm cost reports;
-    // the wall-clock total is exact.
-    let rerank_seconds: f64 = all_arms
-        .iter()
-        .map(|arm| arm.mean_rerank_ms_per_case * arm.cases as f64 / 1000.0)
-        .sum();
-    coarse_seconds -= rerank_seconds;
+    // Coarse vs re-rank split is exact across the two phases.
+    let rerank_seconds = arm_seconds;
 
     let wallclock_s = sweep_started.elapsed().as_secs();
     let points_64: Vec<R001FrontierPoint> = all_points
@@ -3547,6 +3675,38 @@ mod tests {
             128
         ));
         std::fs::remove_file(&file).ok();
+        // The coarse checkpoint round-trips the arm-phase inputs too.
+        let coarse_file = coarse_checkpoint_path(&dir.display().to_string(), 128);
+        let mut canonical = BTreeMap::new();
+        canonical.insert("setting".to_string(), vec![vec!["a".to_string()]]);
+        let coarse = R001CoarseCheckpoint {
+            sweep_fingerprint: "fp".into(),
+            universe_size: 128,
+            fixture_fingerprint: "fix".into(),
+            points: vec![r001_point("m", 128, 16, 1.0, 5.0)],
+            authority_violations: 0,
+            canonical_orderings: canonical,
+            canonical_ms: BTreeMap::from([("setting".to_string(), vec![1.0])]),
+        };
+        std::fs::write(
+            &coarse_file,
+            serde_json::to_vec_pretty(&coarse).expect("serialize"),
+        )
+        .expect("write");
+        let bytes = std::fs::read(&coarse_file).expect("read");
+        let loaded: R001CoarseCheckpoint = serde_json::from_slice(&bytes).expect("round-trip");
+        assert!(checkpoint_accepts(
+            &loaded.sweep_fingerprint,
+            loaded.universe_size,
+            "fp",
+            128
+        ));
+        assert_eq!(loaded.points.len(), 1);
+        assert_eq!(
+            loaded.canonical_orderings["setting"],
+            vec![vec!["a".to_string()]]
+        );
+        std::fs::remove_file(&coarse_file).ok();
     }
 
     fn r001_point(
