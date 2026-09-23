@@ -20,6 +20,11 @@ Implementation commits or pull requests:
 Hosted CI:
 
 - `CI / verify` run `35859251981` — success on `220d3638` (`https://github.com/dbowm91/codegg/actions/runs/35859251981`)
+- `CI / verify` run `35861891751` — success on the closure commit `6e183045`
+  (`https://github.com/dbowm91/codegg/actions/runs/35861891751`; first attempt hit an
+  unrelated flake in `tests/interactive_process_sessions.rs`
+  `environment_overrides_apply_while_denied_vars_stay_stripped`, green on `--failed` rerun —
+  see §10)
 
 Predecessor evidence (immutable, not rewritten):
 
@@ -120,6 +125,9 @@ cargo test --locked --features tool-advisor-encoder-training -p codegg --lib -- 
 - Hosted `CI / verify` run `35859251981` on `220d3638` — success, including
   `Execution ownership guard`, `Formatting`, `Workspace Clippy`, and `Workspace tests`.
   This is the green run the plan requires before closure.
+- Hosted `CI / verify` run `35861891751` on the closure commit — success on `--failed`
+  rerun (first attempt failed only on the unrelated PTY env test classified in §10;
+  all guards including execution ownership passed on both attempts).
 
 No workspace-wide sweep beyond the above is claimed. The 2700-point R001 frontier was
 deliberately not rerun per §5 of the source plan.
@@ -173,10 +181,10 @@ resource-intensive stages.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| none | — | — | — |
+| low | Hosted run `35861891751` (closure commit) first attempt failed on `tests/interactive_process_sessions.rs::environment_overrides_apply_while_denied_vars_stay_stripped` (PTY `env` output missing the override) | None on C001: unrelated interactive-process timing flake; the file under test is untouched by this corrective, and the implementation run `35859251981` passed the same suite | Classified, no scope widened: `--failed` rerun of `35861891751` is green; no follow-up registered |
 
 All four plan defects (D1–D4) are closed. No new defect was found. Hosted CI exposed no
-unrelated substantive failure.
+related failure and no unrelated substantive failure.
 
 ## 11. Roadmap disposition
 
