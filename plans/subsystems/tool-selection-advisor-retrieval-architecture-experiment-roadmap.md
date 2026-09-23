@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Experiment Roadmap
 
-Status: proposed
+Status: active
 
 Repository planning baseline: `ccd548515f59f082c64a128c3b8ab3079ddf9f88`
 
@@ -205,6 +205,6 @@ The workstream closes when M003 closes. Positive M003 freezes one operating poin
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready for handoff | `plans/implementation/tool-selection-advisor-retrieval-architecture-experiment/001-retrieval-miss-diagnostics-and-preregistration.md` | — | none |
+| M001 | active | `plans/implementation/tool-selection-advisor-retrieval-architecture-experiment/001-retrieval-miss-diagnostics-and-preregistration.md` | — | none |
 | M002 | not started | — | — | M001 |
 | M003 | not started | — | — | M002 |

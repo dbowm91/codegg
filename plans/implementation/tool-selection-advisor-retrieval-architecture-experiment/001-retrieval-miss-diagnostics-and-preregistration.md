@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Experiment M001 — Retrieval-Miss Diagnostics and Preregistration
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `ccd548515f59f082c64a128c3b8ab3079ddf9f88`
 
