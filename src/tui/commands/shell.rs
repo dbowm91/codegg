@@ -3,8 +3,8 @@
 //! Contains handlers for human shell execution, shell event processing,
 //! shell output inclusion, rerunning, killing, listing, and showing shell commands.
 
-use super::super as app;
 use super::super::task_lifecycle::TuiTaskKind;
+use crate::tui as app;
 use crate::tui::app::send_tui;
 use crate::util::truncate::truncate_prefix;
 

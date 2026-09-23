@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation Roadmap
 
-Status: active; M001-M004 closed, M005 externally blocked, M006 closed
+Status: active; M001-M006 closed; M005 CodeGG adoption implemented via Eggup
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 
@@ -50,7 +50,7 @@ At the reviewed baseline and subsequent accepted closure points:
 4. M002 established `[workspace.package]` and `[workspace.dependencies]` as the shared version/default-policy owner while leaving crate-specific feature additions local.
 5. M003 disabled `image` defaults and `ratatui-image` `image-defaults`, retaining PNG/JPEG/GIF/WebP plus proven built-in BMP support while removing optional image-default dependency families.
 6. M004 qualified `egggit`, `eggsentry`, `codegg-protocol`, and `eggcontext` as publishable boundaries and explicitly retained CodeGG-specific crates internally without creating speculative new crates.
-7. M005 confirmed that no generalized external updater package currently satisfies CodeGG's required interface. CodeGG therefore retired its curl/shell in-place execution path and remains check-only/fail-closed while verified replacement is blocked.
+7. Historical M005 closure confirmed that no generalized external updater package then satisfied CodeGG's required interface. The follow-up CodeGG adoption now consumes Eggup's immutable-pinned core/acquisition APIs; see `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. The original 005 closure remains unchanged as historical evidence.
 8. During M001 closure, newly published RUSTSEC-2026-0285 was detected against resolved `rustls 0.23.41`. The advisory is medium severity and identifies `rustls >=0.23.45` as patched. M001-M003 correctly recorded it as separate bounded maintenance because it was post-baseline and unrelated to their scoped dependency changes. M006 owns that remediation.
 
 ## 4. Invariants and non-goals
@@ -178,13 +178,11 @@ Goals (met):
 
 Plan: `plans/implementation/dependency-security-workspace-consolidation/005-generic-updater-interface-and-codegg-adoption.md`
 
-Status: **blocked on the external generalized updater interface** (M002 hard dependency satisfied by `plans/closure/dependency-security-workspace-consolidation/002-status.md`). CodeGG-side curl/shell execution-path hardening is landed and recorded in `plans/closure/dependency-security-workspace-consolidation/005-status.md`; verified binary replacement remains blocked.
+Status: **implemented by follow-up adoption**. M002's hard dependency is satisfied by `plans/closure/dependency-security-workspace-consolidation/002-status.md`. The external updater interface is provided by Eggup and CodeGG's managed bundle adoption is recorded in `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. The original 005 closure remains immutable and records the earlier blocked state.
 
 Hard dependency: M002 accepted closure.
 
-Interface dependency: a generalized updater package must exist outside CodeGG with a written contract that is not Gregg-specific and does not require greggd/service-manager ownership. The package should own candidate acquisition/verification/staging/replacement mechanics while allowing CodeGG to retain its own CLI UX and use a native Rust HTTP transport such as Eggfetch.
-
-This roadmap intentionally does not authorize creating that external package inside CodeGG or copying Gregg's implementation here.
+The dependency is now closed by Eggup's independently consumable acquisition/core APIs. CodeGG retains release/version/target/archive policy and its existing Eggfetch transport profile; Eggup owns generic bounded acquisition and local verified transaction mechanics. No Gregg implementation, greggd dependency, or service-manager behavior was adopted.
 
 ### M006 — Rustls advisory remediation and planning reconciliation
 

@@ -106,6 +106,11 @@ for the full list):
 - New web-search providers belong in the external `eggsearch` project, not `src/search/`
   (legacy fallback). New deterministic validators go in the `eggsact` crate first. New
   LSP servers go in `crates/egglsp/src/server.rs` + config.
+- `codegg upgrade` uses CodeGG-owned release/target policy plus Eggup's
+  immutable-pinned core/acquisition crates. Keep its existing Eggfetch trust and
+  redirect profile; do not add `eggup-eggfetch` or move archive policy into Eggup.
+  When changing the upgrade contract, update `architecture/upgrade.md` and
+  `.opencode/skills/upgrade/SKILL.md` together.
 - Semantic model routing is opt-in through exact `virtual:<name>` aliases only; concrete
   models bypass it. It never changes durable session/provider-connection selection, only
   picks a compatible model through the already-selected connection. No local affinity

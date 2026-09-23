@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `codegg upgrade` now performs native verified replacement of the managed
+  three-runfile bundle on supported Linux/macOS targets through Eggup. It
+  preserves CodeGG's release/target policy and Eggfetch trust profile,
+  verifies the archive checksum before strict extraction, validates all
+  candidates, and commits with rollback/recovery receipts. Unsupported
+  targets retain pinned fresh-install guidance; normal upgrade never fetches
+  or executes `install.sh`. Eggup is pinned to immutable revision
+  `66813b3b94de3a9b2f270e0000dc339ef6f0b478`.
+
 ### Fixed
 
 - `upgrade()`: retire the network-fetched installer-script execution path (M005 hardening). `upgrade()` no longer spawns external `curl`, never fetches or executes a shell script, acquires no candidate bytes, and attempts no executable replacement; a valid newer tag now fails closed with manual fresh-install guidance (`CODEGG_VERSION=v{latest}` + `install.sh` URL) via the pure `describe_upgrade()` disposition. `check_for_updates()` (Eggfetch, 10s timeout, bounded redirects) and `installer_invocation()` fresh-install pin contract are unchanged.

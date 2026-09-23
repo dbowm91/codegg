@@ -100,6 +100,15 @@ The installer only works for releases that carry the documented prebuilt
 asset set (see `RELEASING.md`); older releases without those assets are not
 installer-compatible. Other hosts should install from source below.
 
+### Upgrade an existing prebuilt installation
+
+On supported Linux/macOS targets, run `codegg upgrade` to update the managed
+CodeGG/helper/eggsearch runfile bundle as one verified transaction. The
+command verifies the selected release archive against `checksums.txt` before
+extraction and preserves the prior bundle if replacement fails. It does not
+fetch or execute `install.sh`. Windows and unsupported installations retain
+the version-pinned manual fresh-install path.
+
 ### From source
 
 > Note: installing from source is NOT the self-contained contract. `cargo

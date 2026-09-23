@@ -906,6 +906,8 @@ dependencies = [
  "egglsp",
  "eggsact",
  "eggsentry",
+ "eggup-acquisition",
+ "eggup-core",
  "flate2",
  "futures-executor",
  "futures-util",
@@ -1869,6 +1871,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "eggup-acquisition"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggup.git?rev=66813b3b94de3a9b2f270e0000dc339ef6f0b478#66813b3b94de3a9b2f270e0000dc339ef6f0b478"
+
+[[package]]
+name = "eggup-core"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggup.git?rev=66813b3b94de3a9b2f270e0000dc339ef6f0b478#66813b3b94de3a9b2f270e0000dc339ef6f0b478"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]

@@ -1,33 +1,33 @@
-//! Self-update version check with a retired in-place execution path.
+//! Release selection and verified managed-runfile self-update.
 //!
 //! M005 (dependency-security workspace consolidation) hardening:
 //!
-//! - The normal `codegg upgrade` path is check-only. It queries GitHub
-//!   release metadata through the existing Eggfetch transport with an
-//!   explicit timeout and bounded redirect policy.
-//! - CodeGG does not download and execute a network-fetched shell
-//!   installer script, does not shell out to external `curl`, acquires no
-//!   candidate binary bytes, and attempts no executable replacement.
+//! - CodeGG owns release/version/target/archive policy and uses Eggup for
+//!   bounded acquisition contracts and verified local multi-runfile
+//!   transaction mechanics.
+//! - Normal self-update downloads only declared release assets, verifies the
+//!   archive checksum before strict extraction, and never fetches or executes
+//!   the bootstrap installer.
 //! - Fresh installation via `install.sh` remains supported as a manual
 //!   operator action; [`installer_invocation`] pins the only version-pin
 //!   name the installer honors (`CODEGG_VERSION`).
-//! - Automatic verified binary replacement remains blocked on a
-//!   generalized external updater interface that is not Gregg/greggd
-//!   specific (see M005 plan and closure record). CodeGG intentionally
-//!   does not duplicate those mechanics locally.
+//! - Existing Eggfetch trust, Rustls, redirect, and timeout policy remains
+//!   CodeGG-owned. Unsupported hosts retain pinned manual bootstrap guidance.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use eggfetch_core::Timeout;
 
+mod managed;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Installer script URL referenced by fresh-install guidance.
 ///
 /// This URL is never fetched or executed by CodeGG itself. It is printed
-/// by the check-only CLI path so an operator can perform a manual
-/// fresh installation. See [`installer_invocation`].
+/// only as manual fresh-install guidance for unsupported in-place targets.
+/// See [`installer_invocation`].
 pub const INSTALLER_SCRIPT_URL: &str =
     "https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh";
 
@@ -100,27 +100,28 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
 
 pub async fn upgrade() -> Result<String, AppError> {
     let info = check_for_updates().await?;
-    describe_upgrade(&info)
+    if !info.needs_update {
+        return Ok(format!("Already on latest version ({})", info.current));
+    }
+    let latest = info
+        .latest
+        .ok_or_else(|| AppError::Upgrade("no latest version found".to_string()))?;
+    let latest_for_worker = latest.clone();
+    tokio::task::spawn_blocking(move || managed::update(&latest_for_worker))
+        .await
+        .map_err(|_| AppError::Upgrade("upgrade worker failed".to_string()))?
+        .map_err(AppError::Upgrade)
 }
 
-/// Pure fail-closed disposition for a checked [`VersionInfo`].
+/// Pure manual-install guidance for unsupported in-place targets.
 ///
-/// This is the entire in-place update decision surface after M005
-/// hardening:
+/// Supported Linux/macOS targets use [`upgrade`] and the managed native path.
+/// This function remains deterministic and network-free for CLI/reporting
+/// callers that need fresh-install guidance:
 ///
-/// - already-current yields `Ok` without touching the executable;
-/// - a missing latest tag or an invalid semver tag fails closed;
-/// - a valid newer tag fails closed with manual fresh-install guidance.
-///
-/// No candidate bytes are acquired, no checksum is required (there is
-/// nothing to verify because nothing is downloaded), and no executable
-/// replacement is attempted, so checksum mismatch, wrong program or
-/// version identity, unwritable destination, interrupted download,
-/// replacement failure, and unsupported-target cases all reduce to the
-/// same property: the existing executable is left intact. Verified
-/// binary replacement awaits the blocked external generic updater
-/// interface and is intentionally not reimplemented here.
-pub fn describe_upgrade(info: &VersionInfo) -> Result<String, AppError> {
+/// Already-current yields `Ok`; missing or invalid release data fails closed;
+/// a valid newer release yields version-pinned bootstrap guidance.
+pub fn describe_manual_fresh_install(info: &VersionInfo) -> Result<String, AppError> {
     if !info.needs_update {
         return Ok(format!("Already on latest version ({})", info.current));
     }
@@ -141,7 +142,7 @@ pub fn describe_upgrade(info: &VersionInfo) -> Result<String, AppError> {
         .collect::<Vec<_>>()
         .join(" ");
     Err(AppError::Upgrade(format!(
-        "automatic in-place update is disabled; existing executable left intact. \
+        "native in-place update is unavailable on this target. \
 New version available: {latest} (current: {}). \
 For a manual fresh installation only, run: {pin} curl -fsSL {script_url} | sh",
         info.current

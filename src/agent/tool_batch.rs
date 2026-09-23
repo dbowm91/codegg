@@ -1741,7 +1741,12 @@ impl AgentLoop {
             };
             let output = &outcome.model_text;
             if output.len() > max_tool_result_bytes {
-                let safe_end = output.floor_char_boundary(max_tool_result_bytes);
+                let safe_end = output
+                    .char_indices()
+                    .map(|(index, _)| index)
+                    .take_while(|index| *index <= max_tool_result_bytes)
+                    .last()
+                    .unwrap_or(0);
                 let mut truncated = output[..safe_end].to_string();
                 truncated.push_str(&format!(
                     "\n... [truncated: output was {} bytes, limit is {} bytes]",

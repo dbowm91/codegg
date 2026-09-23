@@ -1,121 +1,66 @@
 # Upgrade Module
 
-Self-upgrade version check via GitHub releases (check-only).
+Native verified replacement of CodeGG's managed runfile bundle on the
+prebuilt Linux and macOS targets.
 
-## Purpose
+## Ownership
 
-Checks the GitHub releases API for a newer version and prints manual
-fresh-install instructions. Automatic in-place binary replacement is
-retired: CodeGG never downloads and executes a network-fetched shell
-script, never shells out to external `curl`, acquires no candidate
-bytes, and attempts no executable replacement. Verified binary
-replacement awaits the blocked external generic updater interface
-(M005); it is intentionally not reimplemented locally.
+CodeGG owns GitHub release identity, version comparison, target mapping,
+archive naming, the pinned eggsearch version, helper identity semantics, and
+CLI output. Eggup owns bounded acquisition contracts and local staged,
+verified, locked multi-file replacement with rollback and recovery receipts.
+Eggpack remains producer authority. The fresh-install `install.sh` remains a
+separate bootstrap path and is never fetched or executed by `codegg upgrade`.
 
-## Where It Lives
+## Flow
 
-- `src/upgrade/mod.rs` — version check and fail-closed disposition logic
-- `src/main.rs:1015` — `cmd_upgrade()` CLI handler
+`cmd_upgrade()` calls `upgrade::upgrade()`. It checks the latest release with
+the existing Eggfetch client/profile, then for a newer supported release:
 
-## How It Works
+1. maps the running Linux/macOS OS and architecture to one of the four
+   installer targets;
+2. downloads `checksums.txt` and exactly `codegg-<target>.tar.gz` using the
+   CodeGG-owned Eggfetch client through an `AcquisitionTransport` adapter;
+3. selects one exact basename entry and verifies archive SHA-256 before
+   opening the gzip/tar stream;
+4. extracts privately, accepting only the three required top-level runfiles
+   and optional `THIRD-PARTY-NOTICES.txt`; links, special files, duplicate or
+   case-colliding names, nested paths, unexpected entries, and over-bound
+   members are rejected;
+5. hashes extracted regular files and supplies those SHA-256 values to
+   `eggup-core`; bounded staged candidate probes verify exact CodeGG and
+   eggsearch identities/versions and the helper's safe refusal behavior;
+6. proves live ownership from the running CodeGG path/version and the sibling
+   identity probes, then commits the complete runfile set through Eggup.
 
-### CLI Command (`codegg upgrade`)
+The archive checksum is integrity evidence, not publisher authenticity. The
+transitive digest from archive to extracted member is not independent member
+signing. The optional notice is treated as data and never executed.
 
-`cmd_upgrade()` in `src/main.rs:1015` calls `upgrade::check_for_updates()`,
-compares with `CARGO_PKG_VERSION`, and prints manual install instructions:
+## Failure and platform behavior
 
-```
-curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
-```
+Any release, checksum, download, archive, candidate, ownership, or lock failure
+occurs before live mutation. Commit failures use Eggup rollback. A
+`RecoveryRequired` receipt surfaces its retained evidence path. A previously
+installed CodeGG binary may add absent helper or eggsearch siblings; arbitrary
+existing files are never treated as owned. An existing notice is preserved
+because the updater cannot prove its ownership.
 
-It does **not** call `upgrade()`.
+Only `x86_64` and `aarch64` Linux/macOS prebuilt targets are eligible for
+in-place replacement. Windows, unsupported targets, and installations outside
+the qualified sibling contract receive pinned manual fresh-install guidance.
+The inert `autoupdate` configuration remains inactive; this path runs only
+when the user invokes `codegg upgrade`.
 
-### Version Check
+## Source locations
 
-`check_for_updates()` sends a GET to
-`https://api.github.com/repos/dbowm91/codegg/releases/latest`
-with a 10-second timeout. Parses `tag_name`, strips leading `v`,
-and compares with the compiled `VERSION`.
+- `src/upgrade/mod.rs` — release metadata, version policy, CLI-facing entry
+- `src/upgrade/managed.rs` — CodeGG-specific target/archive policy, Eggfetch
+  adapter, checksum parser, strict extraction, candidate checks, and ownership
+- `src/main.rs` — `cmd_upgrade()`
+- `tests/upgrade.rs` and `src/upgrade/managed.rs` — deterministic policy and
+  archive fixtures
 
-### Install Function (retired, fail-closed)
-
-`upgrade()` checks for updates via `check_for_updates()`, then delegates
-to the pure `describe_upgrade()` disposition:
-
-- already-current returns `Ok("Already on latest version ...")` without
-  touching the executable;
-- missing latest tag or invalid semver returns `Err` (fail-closed);
-- a valid newer tag returns `Err` with manual fresh-install guidance
-  (`CODEGG_VERSION=v{latest}` plus the `install.sh` URL).
-
-It never spawns `curl`, never fetches or executes a shell script, and
-never replaces the running binary. The script URL and pin env are built
-by the pure `installer_invocation()` constructor so the fresh-install
-pin contract remains unit-tested without spawning a subprocess.
-
-## Key Types & APIs
-
-### VersionInfo (`src/upgrade/mod.rs:8`)
-
-```rust
-pub struct VersionInfo {
-    pub current: String,
-    pub latest: Option<String>,
-    pub needs_update: bool,
-}
-```
-
-### Functions
-
-| Function | Signature | Notes |
-|----------|-----------|-------|
-| `current_version()` | `fn() -> String` | Returns `CARGO_PKG_VERSION` |
-| `check_for_updates()` | `async fn() -> Result<VersionInfo, AppError>` | GitHub API query via Eggfetch |
-| `upgrade()` | `async fn() -> Result<String, AppError>` | Check + fail-closed `describe_upgrade()`; never replaces binary |
-| `describe_upgrade()` | `fn(&VersionInfo) -> Result<String, AppError>` | Pure fail-closed disposition; deterministic without network |
-
-## Configuration Surface
-
-### autoupdate (`opencode.json`)
-
-```rust
-pub enum AutoupdateConfig {
-    Bool(bool),
-    Notify(String),
-}
-```
-
-Default: `Bool(true)`. Defined in `codegg-config` schema
-(`crates/codegg-config/src/schema.rs:204`), loaded into
-`Config.autoupdate` (`schema.rs:229`). **Not wired to the
-upgrade module** — the config is loaded and stored but never
-read by `check_for_updates()` or `upgrade()`.
-
-## Invariants & Gotchas
-
-- **CLI is check-only**: `codegg upgrade` never modifies the binary.
-- **`upgrade()` is fail-closed**: it returns manual fresh-install guidance
-  for any newer version instead of downloading, verifying, or replacing
-  bytes. No `std::process::Command`, no external `curl`, no shell
-  execution anywhere in `src/upgrade/`.
-- **`autoupdate` config is inert**: exists in schema with default `true`
-  but the upgrade module does not read it. Background auto-upgrade is
-  not implemented.
-- **No candidate acquisition**: because no binary bytes are fetched,
-  checksum / program-identity / version-identity / unwritable-destination
-  / interrupted-download / replacement-failure / unsupported-target cases
-  all reduce to "existing executable left intact" by construction.
-  Verified binary replacement awaits the blocked M005 external updater
-  interface and is not duplicated locally.
-- **Version comparison is exact string match**: `l != VERSION` — does
-  not use semver ordering. Two different strings always trigger
-  `needs_update: true`.
-- **Version-pin env mismatch (fixed)**: `upgrade()` once exported the
-  target as `INSTALL_VERSION`, which `install.sh` ignores. It now exports
-  `CODEGG_VERSION` via the `installer_invocation()` constructor, matching
-  the installer's supported surface. `tests/upgrade.rs` pins the env name;
-  renaming it requires updating `install.sh` first.
-
-## Related Docs
-
-- [config.md](config.md) — `autoupdate` field (defined but not wired)
+The Eggup dependency is pinned to immutable revision
+`66813b3b94de3a9b2f270e0000dc339ef6f0b478`; it is not a floating branch.
+CodeGG retains its current Eggfetch/Rustls/WebPKI trust and redirect policy.

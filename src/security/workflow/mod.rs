@@ -414,7 +414,7 @@ Binary files a/image.png and b/image.png differ
 
         let cargo_target = targets
             .iter()
-            .find(|t| t.file_path == *"Cargo.toml")
+            .find(|t| t.file_path.as_path() == std::path::Path::new("Cargo.toml"))
             .unwrap();
         assert_eq!(
             cargo_target.reason,
@@ -423,7 +423,7 @@ Binary files a/image.png and b/image.png differ
 
         let unsafe_target = targets
             .iter()
-            .find(|t| t.file_path == *"src/unsafe_block.rs")
+            .find(|t| t.file_path.as_path() == std::path::Path::new("src/unsafe_block.rs"))
             .unwrap();
         assert_eq!(unsafe_target.reason, SecurityTargetReason::UnsafeCode);
     }

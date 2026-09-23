@@ -1773,22 +1773,7 @@ async fn cmd_import(file: &str) -> Result<(), AppError> {
 
 async fn cmd_upgrade() -> Result<(), AppError> {
     println!("Checking for updates...");
-
-    let info = upgrade::check_for_updates().await?;
-
-    if !info.needs_update {
-        println!("Already on latest version ({})", info.current);
-        return Ok(());
-    }
-
-    println!(
-        "New version available: {} (current: {})",
-        info.latest.as_deref().unwrap_or("unknown"),
-        info.current
-    );
-    println!("Run the following to upgrade:");
-    println!("  curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh");
-
+    println!("{}", upgrade::upgrade().await?);
     Ok(())
 }
 
