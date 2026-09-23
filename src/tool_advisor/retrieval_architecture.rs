@@ -3919,6 +3919,143 @@ mod tests {
         assert_eq!(evidence.sweep_wallclock_s, 3600);
     }
 
+    /// R001 miss attribution for the negative verdict (M003 WP-B).
+    ///
+    /// The complete coarse frontier caps every 128/256 ordering at
+    /// 68/72, so no operating point can clear the gates and the arm
+    /// phase is provably moot (arm recall@K can never exceed its
+    /// ordering's coarse recall@64). This test attributes the residual
+    /// misses of the two best coarse families (weighted-union alpha
+    /// 0.25 and RRF-60, mean pooling) at K=32 on every universe,
+    /// adjudicating dual-signal vs weight-sensitive misses per tool.
+    /// Run explicitly for closure evidence:
+    /// `cargo test --locked --features tool-advisor-encoder-training
+    /// -p codegg --lib --
+    /// tool_advisor::retrieval_architecture::tests::r001_miss_attribution
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn r001_miss_attribution() {
+        use super::super::sequence_encoder::CandleBertSequenceEncoder;
+        use super::super::sequence_ranking::load_artifact;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let encoder_manifest = root.join(PREREG_ENCODER_MANIFEST);
+        let ranker_artifact = root.join(PREREG_RANKER_ARTIFACT);
+        if !encoder_manifest.exists() || !ranker_artifact.exists() {
+            eprintln!("SKIP: reference encoder assets or frozen ranker absent in this environment");
+            return;
+        }
+        let cases = load_cases(Some(&root.join(PREREG_DATASET))).expect("frozen corpus");
+        let dataset_fp = dataset_fingerprint(&cases).expect("dataset fingerprint");
+        let dev_cases: Vec<ToolAdvisorCase> = partition_cases(&cases)
+            .dev_cases
+            .iter()
+            .map(|index| cases[*index].clone())
+            .collect();
+        assert_eq!(dev_cases.len(), M004_DEV_CASES, "dev partition size");
+        let device = candle_core::Device::Cpu;
+        let encoder =
+            CandleBertSequenceEncoder::load(&encoder_manifest, &device).expect("encoder load");
+        let ranker = load_artifact(&ranker_artifact, &device).expect("ranker load");
+        let ranker_scorer = FrozenRankerScorer::new(&ranker).expect("frozen scorer binds");
+        let mut retrievers: BTreeMap<String, VariantRetriever<EncoderSemanticScorer<'_>>> =
+            BTreeMap::new();
+        for pooling in POOLING_VARIANTS {
+            retrievers.insert(
+                pooling.to_string(),
+                VariantRetriever::new(EncoderSemanticScorer::new(&encoder)),
+            );
+        }
+        // Analysis-only winners (NOT frozen points): the two best
+        // coarse families at the primary K=32 cut.
+        let winners = [("weighted-union", 0.25, 60.0), ("rrf", 0.5, 60.0)];
+        let mut attributed = Vec::new();
+        for (fusion, alpha, rrf_k) in winners {
+            let selection = setting_canonical(fusion, alpha, rrf_k, "mean", RERANK_CANDIDATE_NS[0])
+                .expect("canonical winner");
+            let winner = R001Selection {
+                mode: selection.point_mode(),
+                fusion: selection.fusion.clone(),
+                alpha: selection.alpha,
+                rrf_k: selection.rrf_k,
+                pooling: selection.pooling.clone(),
+                rerank_n: selection.rerank_n,
+                k: 32,
+                extended: false,
+                reranked: false,
+                recall_64: 0.0,
+                recall_128: 0.0,
+                recall_256: 0.0,
+                mean_latency_ms: 0.0,
+                max_latency_ms: 0,
+                authority_violations: 0,
+                budget_evidence: evidence_for_candidate(
+                    &R001CandidateLatency {
+                        p95_ms: 0.0,
+                        max_ms: 0,
+                        mean_rerank_ms: 0.0,
+                    },
+                    0.0,
+                    0,
+                    0,
+                    0,
+                ),
+            };
+            for universe_size in PREREG_UNIVERSES {
+                let universe_attributed = attribute_winner(
+                    &mut retrievers,
+                    &ranker_scorer,
+                    &dev_cases,
+                    &dataset_fp,
+                    &winner,
+                    universe_size,
+                )
+                .expect("attribution");
+                assert!(
+                    !universe_attributed.is_empty(),
+                    "analysis must observe real misses for {fusion} universe {universe_size}"
+                );
+                attributed.extend(universe_attributed);
+            }
+        }
+        let mut causes: BTreeMap<(String, usize, String), usize> = BTreeMap::new();
+        for entry in &attributed {
+            let miss = &entry.attribution;
+            causes
+                .entry((
+                    entry.universe_size.to_string(),
+                    32,
+                    miss.cause.as_str().to_string(),
+                ))
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+        for ((universe, k, cause), count) in &causes {
+            eprintln!("r001 attribution universe {universe} K={k} {cause}: {count}");
+        }
+        eprintln!("r001 attributed misses total: {}", attributed.len());
+        for entry in attributed.iter().take(12) {
+            let miss = &entry.attribution;
+            eprintln!(
+                "  u{} {} bm25={:?} semantic={:?} fused={:?} margin={:.4?} {}",
+                entry.universe_size,
+                miss.tool_name,
+                miss.bm25_rank,
+                miss.semantic_rank,
+                miss.fused_rank,
+                miss.margin_to_boundary,
+                miss.cause.as_str(),
+            );
+        }
+        std::fs::create_dir_all(root.join(PREREG_OUTPUT_DIR)).expect("output dir");
+        std::fs::write(
+            root.join(PREREG_OUTPUT_DIR)
+                .join("r001-miss-attribution.json"),
+            serde_json::to_vec_pretty(&attributed).expect("serialize"),
+        )
+        .expect("write attribution receipt");
+    }
+
     /// Predeclared R001 sweep (protocol
     /// `r001-preregistered-retrieval-architecture-v1`).
     ///
