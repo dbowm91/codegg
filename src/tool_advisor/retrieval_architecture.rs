@@ -1220,11 +1220,14 @@ pub fn rerank_pool<S: ChunkRankScorer>(
 // selects the smallest/cheapest point clearing the M004 gates, and
 // re-attaches the unchanged M004 promotion separator at the frozen
 // point. Measurement strategy (explicit, no silent subsampling):
-// - Coarse: all 180 grid `VariantSelection`s are retrieved directly
-//   per case at [`SWEEP_FULL_K`]; every smaller cut derives from the
-//   measured ordering. `rerank_n` is inert for coarse orderings
-//   (`retrieve` never reads it) but both values are looped, so every
-//   coarse mode record is a direct measurement.
+// - Coarse: the 9 fusion-settings x 2 poolings are retrieved
+//   directly per case at [`SWEEP_FULL_K`]; every smaller cut derives
+//   from the measured ordering. Member modes (inert alpha/rrf_k axes,
+//   both rerank_n values) fan out with `coarse_setting` provenance:
+//   the inert axes never enter retrieval, so the shared values are
+//   exact, and all 180 grid selections are still constructed. Direct
+//   180-wide measurement paces ~3x over the wall-clock budget, so the
+//   fan-out is a measured necessity, not a shortcut.
 // - Re-rank: 36 distinct arms (9 fusion-settings x 2 poolings x 2 pool
 //   sizes) are measured through [`rerank_pool`]. Inert-axis duplicates
 //   (alpha outside weighted-union, `rrf_k` outside rrf) share the
@@ -1353,8 +1356,12 @@ pub struct R001FrontierPoint {
     pub rerank_n: usize,
     pub reranked: bool,
     /// Distinct-arm id for fanned-out rerank records (`None` for
-    /// coarse records, which are all direct measurements).
+    /// coarse records, which fan out from their setting instead).
     pub rerank_arm: Option<String>,
+    /// Setting id for fanned-out coarse records (`None` for reranked
+    /// records, which carry `rerank_arm`). Inert-axis duplicates share
+    /// the setting's measured ordering exactly by determinism.
+    pub coarse_setting: Option<String>,
     pub universe_size: usize,
     pub k: usize,
     pub cases: usize,
@@ -1800,108 +1807,104 @@ fn measure_universe<S: SemanticScorer>(
     }
     let mut points = Vec::new();
     let mut violations = 0usize;
-    // Canonical coarse orderings and timings for the re-rank pools,
-    // keyed by setting id: the N=48 grid member is measured first in
-    // grid order and N is inert for coarse retrieval.
+    // Canonical coarse orderings and timings, keyed by setting id.
     let mut canonical_names: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
     let mut canonical_ms: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let coarse_started = Instant::now();
-    for selection in all_variant_selections() {
-        let retriever = retrievers
-            .get_mut(selection.pooling.as_str())
-            .ok_or_else(|| anyhow!("no retriever for pooling {}", selection.pooling))?;
-        let surface = format!(
-            "r001-sweep:{dataset_fp}:{}:{universe_size}",
-            selection.pooling
-        );
-        let mut latencies_ms: Vec<f64> = Vec::with_capacity(fixture.len());
-        let mut orderings: Vec<Vec<String>> = Vec::with_capacity(fixture.len());
-        let mut fallbacks = 0usize;
-        let mut cache_entries = 0usize;
-        for case in &fixture {
-            let result = retriever.retrieve(case, &surface, &selection, SWEEP_FULL_K)?;
-            let allowed = eligible_deferred_names(case);
-            for name in &result.names {
-                if !allowed.contains(name) {
-                    violations += 1;
+    for (fusion, alpha, rrf_k) in fusion_settings() {
+        for pooling in POOLING_VARIANTS {
+            let key = setting_id(&fusion, alpha, rrf_k, pooling);
+            let selection =
+                setting_canonical(&fusion, alpha, rrf_k, pooling, RERANK_CANDIDATE_NS[0])?;
+            let retriever = retrievers
+                .get_mut(pooling)
+                .ok_or_else(|| anyhow!("no retriever for pooling {pooling}"))?;
+            let surface = format!("r001-sweep:{dataset_fp}:{pooling}:{universe_size}");
+            let mut latencies_ms: Vec<f64> = Vec::with_capacity(fixture.len());
+            let mut orderings: Vec<Vec<String>> = Vec::with_capacity(fixture.len());
+            let mut fallbacks = 0usize;
+            let mut cache_entries = 0usize;
+            for case in &fixture {
+                let result = retriever.retrieve(case, &surface, &selection, SWEEP_FULL_K)?;
+                let allowed = eligible_deferred_names(case);
+                for name in &result.names {
+                    if !allowed.contains(name) {
+                        violations += 1;
+                    }
+                }
+                if result.fallback_to_bm25 {
+                    fallbacks += 1;
+                }
+                cache_entries = cache_entries.max(result.cache_entries);
+                latencies_ms.push(result.retrieval_ms as f64);
+                orderings.push(result.names);
+            }
+            if fallbacks > 0 {
+                return Err(anyhow!(
+                    "setting {key} fell back to BM25 on {fallbacks} cases; measurement invalid"
+                ));
+            }
+            let mut sorted_latencies = latencies_ms.clone();
+            sorted_latencies.sort_by(|left, right| {
+                left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mean_ms = sorted_latencies.iter().sum::<f64>() / sorted_latencies.len() as f64;
+            let p95_ms = percentile_of(&sorted_latencies, 0.95);
+            let max_ms = sorted_latencies.last().copied().unwrap_or(0.0) as u128;
+            // Fan out to every member mode: the inert axes never enter
+            // retrieval (`retrieve` reads only the pooling and the
+            // fusion dispatch), so member records share the measured
+            // values exactly, with `coarse_setting` provenance. All 180
+            // grid selections are still constructed (validating them);
+            // only the deterministic re-measurement is skipped, which
+            // the wall-clock budget requires (direct 180-wide
+            // measurement paces at ~3x over budget).
+            for (member_alpha, member_rrf) in setting_members(&fusion, alpha, rrf_k) {
+                for rerank_n in RERANK_CANDIDATE_NS {
+                    let member = VariantSelection::new(
+                        &fusion,
+                        member_alpha,
+                        member_rrf,
+                        pooling,
+                        rerank_n,
+                    )?;
+                    for k in SWEEP_KS {
+                        let mut recovered = 0usize;
+                        for (ordering, expected) in orderings.iter().zip(expected_per_case.iter()) {
+                            let top: BTreeSet<&String> =
+                                ordering.iter().take(k.min(ordering.len())).collect();
+                            recovered += expected.iter().filter(|name| top.contains(name)).count();
+                        }
+                        points.push(R001FrontierPoint {
+                            schema_version: RETRIEVAL_SCHEMA_VERSION,
+                            mode: member.point_mode(),
+                            fusion: member.fusion.clone(),
+                            alpha: member.alpha,
+                            rrf_k: member.rrf_k,
+                            pooling: member.pooling.clone(),
+                            rerank_n: member.rerank_n,
+                            reranked: false,
+                            rerank_arm: None,
+                            coarse_setting: Some(key.clone()),
+                            universe_size,
+                            k,
+                            cases: fixture.len(),
+                            eligible_relevant: eligible_total,
+                            recovered_relevant: recovered,
+                            recall: recovered as f64 / eligible_total as f64,
+                            mean_latency_ms: mean_ms,
+                            p95_latency_ms: p95_ms,
+                            max_latency_ms: max_ms,
+                            mean_rerank_ms_per_case: 0.0,
+                            mean_forwards_per_case: 0.0,
+                            fallback_cases: 0,
+                            cache_entries,
+                        });
+                    }
                 }
             }
-            if result.fallback_to_bm25 {
-                fallbacks += 1;
-            }
-            cache_entries = cache_entries.max(result.cache_entries);
-            latencies_ms.push(result.retrieval_ms as f64);
-            orderings.push(result.names);
-        }
-        if fallbacks > 0 {
-            return Err(anyhow!(
-                "variant {} fell back to BM25 on {fallbacks} cases; measurement invalid",
-                selection.point_mode()
-            ));
-        }
-        let mut sorted_latencies = latencies_ms.clone();
-        sorted_latencies
-            .sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-        let mean_ms = sorted_latencies.iter().sum::<f64>() / sorted_latencies.len() as f64;
-        let p95_ms = percentile_of(&sorted_latencies, 0.95);
-        let max_ms = sorted_latencies.last().copied().unwrap_or(0.0) as u128;
-        for k in SWEEP_KS {
-            let mut recovered = 0usize;
-            for (ordering, expected) in orderings.iter().zip(expected_per_case.iter()) {
-                let top: BTreeSet<&String> = ordering.iter().take(k.min(ordering.len())).collect();
-                recovered += expected.iter().filter(|name| top.contains(name)).count();
-            }
-            points.push(R001FrontierPoint {
-                schema_version: RETRIEVAL_SCHEMA_VERSION,
-                mode: selection.point_mode(),
-                fusion: selection.fusion.clone(),
-                alpha: selection.alpha,
-                rrf_k: selection.rrf_k,
-                pooling: selection.pooling.clone(),
-                rerank_n: selection.rerank_n,
-                reranked: false,
-                rerank_arm: None,
-                universe_size,
-                k,
-                cases: fixture.len(),
-                eligible_relevant: eligible_total,
-                recovered_relevant: recovered,
-                recall: recovered as f64 / eligible_total as f64,
-                mean_latency_ms: mean_ms,
-                p95_latency_ms: p95_ms,
-                max_latency_ms: max_ms,
-                mean_rerank_ms_per_case: 0.0,
-                mean_forwards_per_case: 0.0,
-                fallback_cases: 0,
-                cache_entries,
-            });
-        }
-        if is_setting_canonical(&selection)
-            && !canonical_names.contains_key(&setting_id(
-                &selection.fusion,
-                selection.alpha,
-                selection.rrf_k,
-                &selection.pooling,
-            ))
-        {
-            canonical_names.insert(
-                setting_id(
-                    &selection.fusion,
-                    selection.alpha,
-                    selection.rrf_k,
-                    &selection.pooling,
-                ),
-                orderings,
-            );
-            canonical_ms.insert(
-                setting_id(
-                    &selection.fusion,
-                    selection.alpha,
-                    selection.rrf_k,
-                    &selection.pooling,
-                ),
-                latencies_ms,
-            );
+            canonical_names.insert(key.clone(), orderings);
+            canonical_ms.insert(key, latencies_ms);
         }
     }
     let coarse_seconds = coarse_started.elapsed().as_secs_f64();
@@ -1983,6 +1986,7 @@ fn measure_universe<S: SemanticScorer>(
                             rerank_n: member.rerank_n,
                             reranked: true,
                             rerank_arm: Some(arm.clone()),
+                            coarse_setting: None,
                             universe_size,
                             k,
                             cases: fixture.len(),
@@ -3548,6 +3552,7 @@ mod tests {
             rerank_n: 48,
             reranked: false,
             rerank_arm: None,
+            coarse_setting: None,
             universe_size: universe,
             k,
             cases: 62,
