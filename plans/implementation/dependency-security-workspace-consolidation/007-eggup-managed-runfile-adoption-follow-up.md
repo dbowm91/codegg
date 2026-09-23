@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation M007 — Eggup Managed-Runfile Adoption Follow-up
 
-Status: implemented; local qualification in progress
+Status: closed
 
 Repository baseline: `220d3638fe043b24e65a7817241543612f9e82af`
 
@@ -36,4 +36,6 @@ WebPKI trust profile and all CodeGG-owned release policy.
 The source dependency is pinned to Eggup revision
 `66813b3b94de3a9b2f270e0000dc339ef6f0b478`; no floating branch or published
 package assumption is used. Required local checks and hosted CI results are
-recorded in `plans/closure/dependency-security-workspace-consolidation/007-status.md`.
+recorded in `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`.
+
+Implementation commit: `23d84422c71bc1c251ba916a1a6c81e35c341fc9`.

@@ -1,6 +1,6 @@
 # Dependency Security and Workspace Consolidation Roadmap
 
-Status: active; M001-M006 closed; M005 CodeGG adoption implemented via Eggup
+Status: active; M001-M006 and the CodeGG M005 follow-up are closed
 
 Repository baseline reviewed: `b3459640765261057e902a9df05bc71faa6cecc4`
 
