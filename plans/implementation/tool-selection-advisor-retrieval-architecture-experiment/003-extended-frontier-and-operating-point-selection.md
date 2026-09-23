@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Experiment M003 — Extended Frontier and Operating-Point Selection
 
-Status: active
+Status: implemented (evidence gathered; negative result — see `plans/closure/tool-selection-advisor-retrieval-architecture-experiment/003-status.md`; re-rank arms provably moot via ceiling lemma, see closure §2/§6)
 
 Repository baseline: `cde81715`
 
