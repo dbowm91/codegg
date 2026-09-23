@@ -474,6 +474,7 @@ pub struct AdvisorOperatingPoint {
 }
 
 impl AdvisorOperatingPoint {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model_artifact: &str,
         model_artifact_sha256: &str,
@@ -607,6 +608,7 @@ fn percentile(sorted: &[f64], quantile: f64) -> f64 {
 /// Promotion identity under candidate permutation: the promoted set
 /// must not change with presentation order, and no candidate may
 /// cross the frozen threshold from position alone.
+#[allow(clippy::too_many_arguments)]
 pub fn promotion_order_evidence(
     ranker: &SequenceRanker,
     cases: &[ToolAdvisorCase],
@@ -749,7 +751,21 @@ pub fn run_operating_point_selection(
     std::fs::create_dir_all(&sweep.output_dir)?;
 
     // Retrieval frontier on dev universes (selection) + train
-    // confirmation at the selected point only.
+    // confirmation at the selected point only. Each universe frontier
+    // checkpoints to disk so an interrupted run resumes without
+    // recomputing finished universes; checkpoints bind the sweep
+    // fingerprint and are ignored on any mismatch.
+    #[derive(Serialize, Deserialize)]
+    struct FrontierCheckpoint {
+        sweep_fingerprint: String,
+        universe_size: usize,
+        points: Vec<RetrievalFrontierPoint>,
+        authority_violations: usize,
+    }
+    let checkpoint_path = |size: usize| {
+        std::path::Path::new(&sweep.output_dir)
+            .join(format!("m004-checkpoint-frontier-{size}.json"))
+    };
     let mut retriever = HybridRetriever::new(&encoder);
     let surface = format!("m004-dev-universes:{dataset_fp}");
     let modes = [
@@ -761,6 +777,15 @@ pub fn run_operating_point_selection(
     let mut frontier_by_universe: BTreeMap<usize, Vec<RetrievalFrontierPoint>> = BTreeMap::new();
     let mut violations = 0usize;
     for size in FRONTIER_UNIVERSES {
+        if let Ok(bytes) = std::fs::read(checkpoint_path(size)) {
+            if let Ok(checkpoint) = serde_json::from_slice::<FrontierCheckpoint>(&bytes) {
+                if checkpoint.sweep_fingerprint == fingerprint && checkpoint.universe_size == size {
+                    frontier_by_universe.insert(size, checkpoint.points);
+                    violations += checkpoint.authority_violations;
+                    continue;
+                }
+            }
+        }
         let fixture = expand_universe(&dev_cases, size)?;
         let report = retrieval_frontier(
             &mut retriever,
@@ -772,6 +797,7 @@ pub fn run_operating_point_selection(
         // Authority check: the frontier only scores eligible deferred
         // descriptors, so any recovered name outside the case universe
         // is a violation. Re-resolve every point explicitly.
+        let mut universe_violations = 0usize;
         for case in &fixture {
             let allowed = deferred_names(case);
             for mode in &modes {
@@ -779,13 +805,23 @@ pub fn run_operating_point_selection(
                     let result = retriever.retrieve_with_fallback(case, &surface, *mode, k);
                     for name in &result.names {
                         if !allowed.contains(name) {
-                            violations += 1;
+                            universe_violations += 1;
                         }
                     }
                 }
             }
         }
-        frontier_by_universe.insert(size, report.points);
+        violations += universe_violations;
+        frontier_by_universe.insert(size, report.points.clone());
+        std::fs::write(
+            checkpoint_path(size),
+            serde_json::to_vec_pretty(&FrontierCheckpoint {
+                sweep_fingerprint: fingerprint.clone(),
+                universe_size: size,
+                points: report.points,
+                authority_violations: universe_violations,
+            })?,
+        )?;
     }
     let selection = select_retrieval_operating_point(
         &frontier_by_universe[&64],
@@ -804,11 +840,7 @@ pub fn run_operating_point_selection(
         &[selection.k],
         &[selected_mode],
     )?;
-    let train_confirmation_recall = train_report
-        .points
-        .first()
-        .map(|point| point_recall(point))
-        .unwrap_or(0.0);
+    let train_confirmation_recall = train_report.points.first().map(point_recall).unwrap_or(0.0);
 
     // Promotion threshold sweep on dev (predeclared grid).
     let views = promotion_case_views(&ranker, &dev_cases, abstention_threshold, temperature, bias)?;
@@ -859,9 +891,7 @@ pub fn run_operating_point_selection(
     let mut forwards = 0usize;
     for case in &dev_cases {
         let started = Instant::now();
-        let (_, _, case_forwards) = ranker
-            .predict_case(case)
-            .map(|(prediction, dropped, forwards)| (prediction, dropped, forwards))?;
+        let (_, _, case_forwards) = ranker.predict_case(case)?;
         ranking_latencies.push(started.elapsed().as_secs_f64() * 1000.0);
         forwards = forwards.max(case_forwards);
     }
