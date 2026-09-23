@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment M004 — Retrieval and Promotion Operating Point
 
-Status: active
+Status: implemented (negative — no K<=32 clears preregistered retrieval gates; see `plans/closure/tool-selection-advisor-order-invariance-experiment/004-status.md`)
 
 Repository baseline: `c96fbdfa75996187f725289890ccaaf5b140d180`
 

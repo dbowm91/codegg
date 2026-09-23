@@ -134,7 +134,7 @@ existing live-primary-model M004
 - M001 is closed (`plans/closure/tool-selection-advisor-order-invariance-experiment/001-status.md`).
 - M002 is closed (`plans/closure/tool-selection-advisor-order-invariance-experiment/002-status.md`).
 - M003 is closed positively (`plans/closure/tool-selection-advisor-order-invariance-experiment/003-status.md`).
-- M004 is ready.
+- M004 is closed negatively (`plans/closure/tool-selection-advisor-order-invariance-experiment/004-status.md`).
 - M005 is blocked on positive M004 closure.
 
 ## 7. Milestones
@@ -175,7 +175,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/004-retrieval-and-promotion-operating-point.md`
 
-Status: ready (M003 closed positively).
+Status: closed (negative — no K<=32 retrieval operating point clears the preregistered gates; see `plans/closure/tool-selection-advisor-order-invariance-experiment/004-status.md`).
 
 Choose K/mode and a promotion-specific calibrated confidence threshold on train/dev-only fixtures. Keep abstention calibration separate.
 
@@ -185,7 +185,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked on M004.
+Status: blocked on positive M004 (M004 closed negatively — no operating point frozen).
 
 Freeze architecture/model/operating point plus a fresh v4 semantic holdout in a separate preregistration commit, require CI, then perform one release-mode final evaluation.
 
