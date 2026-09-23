@@ -13,10 +13,13 @@
 //! retriever variant is implemented, and no gate is relaxed. The
 //! extended frontier sweep runs once in M003 under the exact command
 //! recorded in [`PREREG_SWEEP_COMMAND`]:
-//! `cargo test --locked --features tool-advisor-encoder-training -p
-//! codegg --lib --
+//! `CODEGG_R001_IMPLEMENTATION_COMMIT="$(git rev-parse HEAD)" cargo test
+//! --locked --features tool-advisor-encoder-training -p codegg --lib --
 //! tool_advisor::retrieval_architecture::tests::r001_extended_frontier_sweep
 //! --ignored --nocapture`
+//!
+//! The shell supplies the commit SHA outside CodeGG; this module never
+//! spawns Git for provenance.
 
 use super::context_v2::AdvisorContextV2;
 use super::operating_point::{
@@ -40,7 +43,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Instant;
 
 // ---- preregistered selection contract ----
@@ -109,7 +111,11 @@ pub const PREREG_OUTPUT_DIR: &str = "target/tool-advisor/retrieval-architecture"
 pub const PREREG_SEED: u64 = 0x7275_7472_6965_7631;
 
 /// Exact M003 sweep command, recorded here so the closure can quote it.
-pub const PREREG_SWEEP_COMMAND: &str = "cargo test --locked \
+/// The shell resolves the commit SHA outside CodeGG and injects it via
+/// `CODEGG_R001_IMPLEMENTATION_COMMIT`; the Rust process never spawns Git.
+pub const PREREG_SWEEP_COMMAND: &str =
+    "CODEGG_R001_IMPLEMENTATION_COMMIT=\"$(git rev-parse HEAD)\" \
+     cargo test --locked \
      --features tool-advisor-encoder-training -p codegg --lib -- \
      tool_advisor::retrieval_architecture::tests::r001_extended_frontier_sweep \
      --ignored --nocapture";
@@ -1764,28 +1770,32 @@ fn dir_size_bytes(path: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// Implementation commit SHA for sweep receipts. Resolved once at
-/// sweep start so a provenance failure fails fast, never after hours
-/// of measurement.
-fn resolve_implementation_commit(root: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .arg("rev-parse")
-        .arg("HEAD")
-        .output()
-        .context("resolve implementation commit")?;
-    if !output.status.success() {
-        return Err(anyhow!("git rev-parse HEAD failed"));
-    }
-    let sha = String::from_utf8(output.stdout)
-        .context("implementation commit is not UTF-8")?
-        .trim()
-        .to_string();
-    if sha.is_empty() {
+/// Explicit implementation-commit provenance for sweep receipts.
+///
+/// The caller/operator supplies the commit SHA; this module never
+/// spawns Git (see execution-ownership: the experiment owns no
+/// process lifecycle). Validation runs first in [`run_r001_sweep`]
+/// so a provenance failure fails fast, never after hours of
+/// measurement. Accepted values are 40-character Git SHA-1 or
+/// 64-character SHA-256 hex strings; the normalized lowercase form
+/// is what receipts and [`r001_sweep_fingerprint`] bind.
+pub fn validate_implementation_commit(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return Err(anyhow!("empty implementation commit"));
     }
-    Ok(sha)
+    if trimmed.len() != 40 && trimmed.len() != 64 {
+        return Err(anyhow!(
+            "invalid implementation commit length {}: expected 40 or 64 hex chars",
+            trimmed.len()
+        ));
+    }
+    if !trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(anyhow!(
+            "invalid implementation commit: expected hexadecimal SHA"
+        ));
+    }
+    Ok(trimmed.to_ascii_lowercase())
 }
 
 /// Sweep fingerprint over preregistration, live fixtures, and
@@ -2197,7 +2207,13 @@ fn attribute_winner<S: SemanticScorer>(
 /// point. Returns the full report; a negative verdict is data
 /// (`selection: None` with `negative_summary`), and the caller decides
 /// whether to fail on it after receipts are written.
-pub fn run_r001_sweep(output_dir: &Path) -> Result<R001SweepReport> {
+///
+/// `implementation_commit` is explicit caller/operator provenance: a
+/// 40-char SHA-1 or 64-char SHA-256 hex string, validated and
+/// lowercased before fingerprinting. No fallback spawns Git; a
+/// missing/invalid value fails fast before encoder load or sweep work.
+pub fn run_r001_sweep(output_dir: &Path, implementation_commit: &str) -> Result<R001SweepReport> {
+    let implementation_commit = validate_implementation_commit(implementation_commit)?;
     let sweep_started = Instant::now();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prereg = preregistration(EXPECTED_FIXTURE_FINGERPRINT);
@@ -2205,7 +2221,6 @@ pub fn run_r001_sweep(output_dir: &Path) -> Result<R001SweepReport> {
     let live_fixture_fp = fixture_fingerprint()?;
     verify_fixture_fingerprint(&live_fixture_fp, EXPECTED_FIXTURE_FINGERPRINT)?;
     let dev_fp = dev_partition_tripwire()?;
-    let implementation_commit = resolve_implementation_commit(&root)?;
     let sweep_fp = r001_sweep_fingerprint(&prereg_fp, &live_fixture_fp, &implementation_commit);
     eprintln!("r001 sweep fingerprint {sweep_fp} (commit {implementation_commit})");
 
@@ -2905,6 +2920,84 @@ mod tests {
             checkpoint_path("out", 64),
             PathBuf::from("out/r001-checkpoint-frontier-64.json")
         );
+    }
+
+    #[test]
+    fn implementation_commit_accepts_valid_sha1_and_sha256() {
+        let sha1 = "a".repeat(40);
+        assert_eq!(
+            validate_implementation_commit(&sha1).expect("40-char hex"),
+            sha1
+        );
+        let sha256 = "b".repeat(64);
+        assert_eq!(
+            validate_implementation_commit(&sha256).expect("64-char hex"),
+            sha256
+        );
+    }
+
+    #[test]
+    fn implementation_commit_rejects_empty_nonhex_and_bad_length() {
+        validate_implementation_commit("").expect_err("empty must fail");
+        validate_implementation_commit("   ").expect_err("whitespace-only must fail");
+        validate_implementation_commit(&"g".repeat(40)).expect_err("non-hex must fail");
+        validate_implementation_commit(&"a".repeat(39)).expect_err("short must fail");
+        validate_implementation_commit(&"a".repeat(41)).expect_err("long must fail");
+        validate_implementation_commit(&"a".repeat(63)).expect_err("63 must fail");
+        validate_implementation_commit(&"a".repeat(65)).expect_err("65 must fail");
+    }
+
+    #[test]
+    fn implementation_commit_normalizes_case_for_fingerprint() {
+        let lower = "ab".repeat(20);
+        let upper = lower.to_ascii_uppercase();
+        assert_eq!(
+            validate_implementation_commit(&upper).expect("uppercase hex"),
+            lower,
+            "provenance must normalize to lowercase"
+        );
+        let via_upper = r001_sweep_fingerprint(
+            "prereg",
+            "fixture",
+            &validate_implementation_commit(&upper).expect("normalize"),
+        );
+        let via_lower = r001_sweep_fingerprint("prereg", "fixture", &lower);
+        assert_eq!(via_upper, via_lower);
+    }
+
+    #[test]
+    fn sweep_fingerprint_binds_normalized_commit_identity() {
+        let commit_a = "c".repeat(40);
+        let commit_b = "d".repeat(40);
+        let base = r001_sweep_fingerprint("prereg", "fixture", &commit_a);
+        assert_eq!(base.len(), 64);
+        assert_ne!(
+            base,
+            r001_sweep_fingerprint("prereg", "fixture", &commit_b),
+            "changing only the implementation commit must change the fingerprint"
+        );
+        assert_ne!(
+            base,
+            r001_sweep_fingerprint("other-prereg", "fixture", &commit_a),
+            "fingerprint must also bind preregistration"
+        );
+    }
+
+    #[test]
+    fn sweep_rejects_invalid_provenance_before_encoder_work() {
+        let dir = std::env::temp_dir().join("codegg-r001-provenance-guard");
+        for bad in ["", "not-a-sha", &"a".repeat(39)] {
+            let error = run_r001_sweep(&dir, bad).expect_err("invalid provenance must fail fast");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("implementation commit"),
+                "provenance error must name the commit: {message}"
+            );
+        }
+        // No implicit repository fallback: the sweep takes provenance
+        // only from its explicit argument, never from the working tree.
+        // An invalid argument fails even though this checkout has a
+        // resolvable HEAD; there is no code path that shells out to Git.
     }
 
     fn identity_point(universe: usize, k: usize, mode: &str) -> RetrievalFrontierPoint {
@@ -4064,13 +4157,22 @@ mod tests {
     /// K only with all budgets met), attributes residual misses at the
     /// frozen point, and re-attaches the unchanged M004 promotion
     /// separator there. Run explicitly for closure evidence:
-    /// `cargo test --locked --features tool-advisor-encoder-training
-    /// -p codegg --lib --
+    /// `CODEGG_R001_IMPLEMENTATION_COMMIT="$(git rev-parse HEAD)" cargo test
+    /// --locked --features tool-advisor-encoder-training -p codegg --lib --
     /// tool_advisor::retrieval_architecture::tests::r001_extended_frontier_sweep
     /// --ignored --nocapture`
+    ///
+    /// The shell resolves the commit SHA outside CodeGG and injects it
+    /// via `CODEGG_R001_IMPLEMENTATION_COMMIT`. A missing/invalid value
+    /// fails fast before encoder load or sweep work; the Rust process
+    /// never spawns Git.
     #[test]
     #[ignore]
     fn r001_extended_frontier_sweep() {
+        let implementation_commit = std::env::var("CODEGG_R001_IMPLEMENTATION_COMMIT")
+            .expect("CODEGG_R001_IMPLEMENTATION_COMMIT must be set, e.g. $(git rev-parse HEAD)");
+        validate_implementation_commit(&implementation_commit)
+            .expect("valid CODEGG_R001_IMPLEMENTATION_COMMIT");
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let encoder_manifest = root.join(PREREG_ENCODER_MANIFEST);
         let ranker_artifact = root.join(PREREG_RANKER_ARTIFACT);
@@ -4079,7 +4181,8 @@ mod tests {
             return;
         }
         let output_dir = root.join(PREREG_OUTPUT_DIR);
-        let report = run_r001_sweep(&output_dir).expect("r001 sweep runs to verdict");
+        let report = run_r001_sweep(&output_dir, &implementation_commit)
+            .expect("r001 sweep runs to verdict");
         for universe_size in PREREG_UNIVERSES {
             eprintln!(
                 "r001 frontier universe {universe_size} (mode recall@16/24/32/48/64 mean-ms):"

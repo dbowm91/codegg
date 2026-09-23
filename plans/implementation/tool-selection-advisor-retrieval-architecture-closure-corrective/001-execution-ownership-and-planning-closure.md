@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Closure Corrective C001 — Execution Ownership and Planning Closure
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `5864e5497d23f65fdec0390ac65c4173d92af2dd`
 

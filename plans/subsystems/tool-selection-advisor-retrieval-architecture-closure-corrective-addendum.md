@@ -48,7 +48,7 @@ One milestone only:
 
 - `plans/implementation/tool-selection-advisor-retrieval-architecture-closure-corrective/001-execution-ownership-and-planning-closure.md`
 
-Status: ready.
+Status: active.
 
 The milestone removes the experiment-owned Git subprocess, repairs roadmap state, runs the canonical repository guards, and adds supplemental closure evidence.
 
