@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Architecture Experiment M002 — Retriever and Fusion Variants
 
-Status: active
+Status: implemented (evidence gathered; positive result — see `plans/closure/tool-selection-advisor-retrieval-architecture-experiment/002-status.md`)
 
 Repository baseline: `e483c2d6`
 
