@@ -1236,6 +1236,8 @@ pub fn rerank_pool<S: ChunkRankScorer>(
 //   provenance instead of re-running tens of thousands of identical
 //   ranker forwards. `rerank_pool` is deterministic (name-sorted
 //   chunking, CPU ranker forwards), so fan-out is exact, not sampled.
+//   Reranked records carry the grid mode name plus `-reranked`: both
+//   stages compete in selection under unique identities.
 // - Latency is measured at the full-ordering call: BM25, query
 //   encoding, descriptor encoding, and fusion are all K-independent,
 //   so the full-K timing fairly bounds every smaller cut of the same
@@ -1345,9 +1347,19 @@ pub fn setting_members(fusion: &str, alpha: f64, rrf_k: f64) -> Vec<(f64, f64)> 
 /// shortlist K. Coarse records are direct per-(case, variant)
 /// measurements; reranked records fan out from their distinct arm
 /// (see `rerank_arm`) with identical values by determinism.
+///
+/// Stage identity: coarse records carry the bare
+/// [`VariantSelection::point_mode`] name; reranked records append
+/// `-reranked`. Both stages compete in selection (smallest/cheapest
+/// clearing point wins), so the suffix is load-bearing: without it the
+/// two stages would share one identity and selection could not see
+/// the arms. Grid coordinates stay exact in the dedicated fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct R001FrontierPoint {
     pub schema_version: u16,
+    /// Frontier identity: the grid mode name for coarse records, the
+    /// grid mode name plus `-reranked` for reranked records. Unique
+    /// per (mode, K, universe) by construction.
     pub mode: String,
     pub fusion: String,
     pub alpha: f64,
@@ -1963,7 +1975,11 @@ fn measure_universe<S: SemanticScorer>(
                 for (member_alpha, member_rrf) in setting_members(&fusion, alpha, rrf_k) {
                     let member =
                         VariantSelection::new(&fusion, member_alpha, member_rrf, pooling, pool_n)?;
-                    member_modes.push(member.point_mode());
+                    // Stage-qualified identity: the reranked stage of
+                    // this grid mode competes separately from its
+                    // coarse stage (see `R001FrontierPoint::mode`).
+                    let mode = format!("{}-reranked", member.point_mode());
+                    member_modes.push(mode.clone());
                     for k in SWEEP_KS {
                         let mut recovered = 0usize;
                         for (promoted, expected) in
@@ -1978,7 +1994,7 @@ fn measure_universe<S: SemanticScorer>(
                         }
                         points.push(R001FrontierPoint {
                             schema_version: RETRIEVAL_SCHEMA_VERSION,
-                            mode: member.point_mode(),
+                            mode: mode.clone(),
                             fusion: member.fusion.clone(),
                             alpha: member.alpha,
                             rrf_k: member.rrf_k,
@@ -3841,6 +3857,20 @@ mod tests {
                 "r001 negative: {}",
                 report.negative_summary.as_deref().unwrap_or("unknown")
             ),
+        }
+    }
+
+    #[test]
+    fn reranked_stage_identity_never_collides_with_grid_modes() {
+        for selection in all_variant_selections() {
+            assert!(!selection.point_mode().contains("reranked"));
+            let staged = format!("{}-reranked", selection.point_mode());
+            assert!(
+                all_variant_selections()
+                    .iter()
+                    .all(|other| other.point_mode() != staged),
+                "staged identity must be fresh: {staged}"
+            );
         }
     }
 
