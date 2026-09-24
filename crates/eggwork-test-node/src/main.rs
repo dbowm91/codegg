@@ -100,28 +100,28 @@ fn read_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>, Str
 
 async fn run() -> Result<NodeServer, String> {
     let args = Args::parse()?;
-    let node_id = eggwork_core::NodeId::new(args.required("--node-id")?)
+    let node_id = eggwork_core::NodeId::new(args.required("node-id")?)
         .map_err(|e| format!("invalid --node-id: {e:?}"))?;
     let bind: std::net::SocketAddr = args
-        .required("--bind")?
+        .required("bind")?
         .parse()
         .map_err(|e| format!("invalid --bind: {e}"))?;
     let tls = eggserve_core::tls::TlsServerConfig::builder()
         .single_identity(
-            read_certs(&args.required("--server-cert")?)?,
-            read_key(&args.required("--server-key")?)?,
+            read_certs(&args.required("server-cert")?)?,
+            read_key(&args.required("server-key")?)?,
         )
         .map_err(|e| format!("server identity invalid: {e:?}"))?
-        .client_auth_required(read_certs(&args.required("--ca")?)?)
+        .client_auth_required(read_certs(&args.required("ca")?)?)
         .map_err(|e| format!("trust roots invalid: {e:?}"))?
         .build()
         .map_err(|e| format!("TLS configuration invalid: {e:?}"))?;
 
-    let client_certs = read_certs(&args.required("--client-cert")?)?;
+    let client_certs = read_certs(&args.required("client-cert")?)?;
     let leaf = client_certs
         .first()
         .ok_or_else(|| "client certificate file is empty".to_string())?;
-    let principal = eggwork_core::PrincipalId::new(args.required("--principal")?)
+    let principal = eggwork_core::PrincipalId::new(args.required("principal")?)
         .map_err(|e| format!("invalid --principal: {e:?}"))?;
     let resolver = Arc::new(FingerprintPrincipalResolver::new([(
         FingerprintPrincipalResolver::fingerprint(leaf.as_ref()),
@@ -147,24 +147,24 @@ async fn run() -> Result<NodeServer, String> {
     });
 
     let lease_ttl = Duration::from_secs(
-        args.optional("--lease-ttl-secs", "300")
+        args.optional("lease-ttl-secs", "300")
             .parse()
             .map_err(|e| format!("invalid --lease-ttl-secs: {e}"))?,
     );
     let max_active: u32 = args
-        .optional("--max-active", "4")
+        .optional("max-active", "4")
         .parse()
         .map_err(|e| format!("invalid --max-active: {e}"))?;
     let blob_quota: u64 = args
-        .optional("--blob-quota-bytes", "268435456")
+        .optional("blob-quota-bytes", "268435456")
         .parse()
         .map_err(|e| format!("invalid --blob-quota-bytes: {e}"))?;
     let workspace_quota: u64 = args
-        .optional("--workspace-quota-bytes", "268435456")
+        .optional("workspace-quota-bytes", "268435456")
         .parse()
         .map_err(|e| format!("invalid --workspace-quota-bytes: {e}"))?;
 
-    for key in ["--exec-root", "--blob-root", "--workspace-root"] {
+    for key in ["exec-root", "blob-root", "workspace-root"] {
         let dir = args.required(key)?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {dir}: {e}"))?;
     }
@@ -177,11 +177,11 @@ async fn run() -> Result<NodeServer, String> {
         NodeConfig {
             node_id,
             bind,
-            execution_root: PathBuf::from(args.required("--exec-root")?),
-            database_path: PathBuf::from(args.required("--db")?),
-            blob_root: PathBuf::from(args.required("--blob-root")?),
+            execution_root: PathBuf::from(args.required("exec-root")?),
+            database_path: PathBuf::from(args.required("db")?),
+            blob_root: PathBuf::from(args.required("blob-root")?),
             blob_quota_bytes: blob_quota,
-            workspace_root: PathBuf::from(args.required("--workspace-root")?),
+            workspace_root: PathBuf::from(args.required("workspace-root")?),
             workspace_quota_bytes: workspace_quota,
             max_active_executions: max_active,
             lease_ttl,
