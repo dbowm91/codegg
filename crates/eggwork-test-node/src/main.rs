@@ -199,6 +199,10 @@ async fn run() -> Result<NodeServer, String> {
 #[tokio::main]
 async fn main() {
     use std::io::Write;
+    // Select the process-level rustls provider before any TLS builder runs:
+    // with only `ring` enabled and no process default, provider resolution
+    // would otherwise panic (same init the Eggwork in-tree tests perform).
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let server = match run().await {
         Ok(server) => server,
         Err(message) => {
