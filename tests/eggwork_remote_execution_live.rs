@@ -229,7 +229,29 @@ impl LiveNode {
 
         // Readiness protocol: the helper prints `READY port=<N>`.
         // Anything else on stdout is diagnostic context for failures.
+        // Stderr is captured (bounded) so a startup failure stays
+        // diagnosable even though the node logs there while running.
         let stdout = child.stdout.take().expect("piped stdout");
+        let stderr_log: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let log = stderr_log.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut chunk = vec![0u8; 8192];
+                let mut reader = stderr;
+                loop {
+                    match reader.read(&mut chunk).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let mut log = log.lock().unwrap();
+                            log.extend_from_slice(&chunk[..n]);
+                            log.truncate(16 * 1024);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let port: u16 = tokio::time::timeout(Duration::from_secs(60), async {
             let mut last_line = String::new();
@@ -243,9 +265,13 @@ impl LiveNode {
                     }
                     None => {
                         let status = child.wait().await.ok();
+                        let logged = stderr_log.lock().unwrap();
                         panic!(
-                            "helper exited before READY \
-                             (status={status:?}, last={last_line:?})"
+                            "helper exited before READY (helper={} \
+                             status={status:?}, last={last_line:?}, \
+                             stderr={:?})",
+                            helper.display(),
+                            String::from_utf8_lossy(&logged),
                         );
                     }
                 }
@@ -253,16 +279,6 @@ impl LiveNode {
         })
         .await
         .expect("helper must become ready");
-        // Drain stderr so server-side logging can never block the node on
-        // a full pipe; startup failures surface through stdout instead.
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut sink = vec![0u8; 8192];
-                let mut reader = stderr;
-                while reader.read(&mut sink).await.map(|n| n > 0).unwrap_or(false) {}
-            });
-        }
 
         let node = ResolvedEggworkNode {
             node_id: "live-node-1".to_string(),
