@@ -32,11 +32,12 @@ use codegg_core::workspace_services::{
 use eggfetch_core::{BoxBytesStream, Error as EggfetchError};
 use eggwork_client::{ClientError as EggworkClientError, WorkspaceReady};
 use eggwork_core::{
-    ArtifactId, ArtifactRecord, ArtifactType, BlobDigest, EventMetadata, EventSequence,
-    ExecutionEvent, ExecutionEventKind, ExecutionGeneration, ExecutionHandle, ExecutionId,
-    ExecutionResult, ExecutionSnapshot, ExecutionSpec, ExecutionState, LeaseId, NodeCapabilities,
-    NodeId, NodeStatus, ProtocolVersion, ProtocolVersionRange, RelativePath,
-    WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
+    ArtifactId, ArtifactRecord, ArtifactType, BlobDigest, CommandSpec, EventMetadata,
+    EventSequence, ExecutionEvent, ExecutionEventKind, ExecutionGeneration, ExecutionHandle,
+    ExecutionId, ExecutionResult, ExecutionSnapshot, ExecutionSpec, ExecutionState,
+    IsolationRequirement, LeaseId, NetworkRequirement, NodeCapabilities, NodeId, NodeStatus,
+    OutputPolicy, ProtocolVersion, ProtocolVersionRange, RelativePath, Requirement,
+    ResourceRequirements, StdinPolicy, WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
 };
 use futures_util::StreamExt;
 
@@ -213,6 +214,25 @@ impl EggworkNodeClient for ScriptedClient {
         handle: &ExecutionHandle,
         _workspace_id: &EggworkWorkspaceId,
     ) -> Result<codegg::scheduler::BoxEventStream, EggworkClientError> {
+        // Mirror the real node's fail-closed admission (C001): only
+        // `IsolationRequirement::None` + `NetworkRequirement::Unrestricted`
+        // specs are accepted. The pre-corrective BestEffort/Disabled spec
+        // is rejected here exactly as the live node rejects it, so spec
+        // drift fails fast in scripted tests too.
+        let admitted = matches!(
+            spec.command.isolation,
+            eggwork_core::IsolationRequirement::None
+        ) && matches!(
+            spec.command.network,
+            eggwork_core::NetworkRequirement::Unrestricted
+        );
+        if !admitted {
+            return Err(EggworkClientError::Api {
+                status: 409,
+                code: "capability_mismatch".to_string(),
+                message: "requested execution capability is unavailable".to_string(),
+            });
+        }
         self.submits.fetch_add(1, Ordering::SeqCst);
         self.submitted_argv
             .lock()
@@ -676,6 +696,58 @@ async fn scripted_fencing_rejects_wrong_lease() {
     // The accepted lease still authorizes control operations.
     assert!(client.cancel(&accepted).await.is_ok());
     assert!(client.renew(&accepted, "rn-1").await.is_ok());
+}
+
+/// The scripted seam mirrors the real node's fail-closed spec admission:
+/// a restricted (BestEffort/Disabled) spec is rejected with typed 409
+/// `capability_mismatch`, exactly as the live node rejects it. This pins
+/// the C001 `build_spec` posture so spec drift fails fast without a live
+/// node — the pre-corrective BestEffort spec fails this seam.
+#[tokio::test(flavor = "current_thread")]
+async fn scripted_seam_rejects_restricted_spec_like_real_node() {
+    let client = ScriptedClient::succeeding();
+    let handle = ExecutionHandle {
+        execution_id: ExecutionId::new("exec-restricted").unwrap(),
+        generation: ExecutionGeneration::new(1).unwrap(),
+        lease_id: LeaseId::new("codegg-lease-restricted").unwrap(),
+    };
+    let workspace = EggworkWorkspaceId::new("ws-restricted").unwrap();
+    let spec = ExecutionSpec {
+        schema_version: 1,
+        command: CommandSpec {
+            argv: vec!["echo".to_string()],
+            cwd: None,
+            environment: Vec::new(),
+            stdin: StdinPolicy::Null,
+            timeout_millis: 5_000,
+            output: OutputPolicy::default(),
+            declared_outputs: Vec::new(),
+            resources: ResourceRequirements {
+                memory_bytes: Requirement::NotRequested,
+                cpu_millis: Requirement::NotRequested,
+                pids: Requirement::NotRequested,
+            },
+            isolation: IsolationRequirement::BestEffort,
+            network: NetworkRequirement::Disabled,
+        },
+        metadata: Vec::new(),
+    };
+    let err = match client
+        .execute_in_workspace(&spec, &handle, &workspace)
+        .await
+    {
+        Ok(_) => panic!("restricted spec must be rejected"),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            err,
+            EggworkClientError::Api { status: 409, ref code, .. }
+            if code == "capability_mismatch"
+        ),
+        "expected typed capability_mismatch, got {err:?}"
+    );
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
 }
 
 // ── Pre-flight failures ────────────────────────────────────────────────────

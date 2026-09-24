@@ -137,6 +137,11 @@ Consequences for CodeGG:
   fencing (`invalid_lease`); `tests/eggwork_remote_execution_live.rs`
   qualifies the production `NodeClientFactory` path against a real
   loopback node with mTLS (Linux).
+- The remote command requests `IsolationRequirement::None` +
+  `NetworkRequirement::Unrestricted`: the pinned node fail-closed
+  rejects restricted specs (HTTP 409 `capability_mismatch`), a posture
+  proven by live qualification and pinned by scripted seam tests (see
+  the C001 closure finding).
 
 ### JobState Machine (`store.rs:81`)
 

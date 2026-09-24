@@ -364,7 +364,13 @@ skipped, traversal rejected; 4096 entries / 256 MiB total / 64 MiB per
 file), exactly one idempotent execution is submitted, bounded progress
 is streamed, the lease is renewed every 30 s, cancellation propagates
 to the exact handle, and declared artifacts are imported into
-the RunStore (`ActualBackend::Eggwork`). The scheduler permit is held
+the RunStore (`ActualBackend::Eggwork`). The executor requests exactly
+the node-admitted spec combination (`IsolationRequirement::None` +
+`NetworkRequirement::Unrestricted`): the pinned node fail-closed
+rejects restricted specs with 409 `capability_mismatch`, so remote
+commands run without node-enforced sandboxing and with network access
+on the explicitly selected node (see the C001 closure finding; M002
+operator-policy follow-up). The scheduler permit is held
 for the whole remote lifetime. On restart a persisted handle is
 observed/reconciled, never resubmitted: terminal snapshots map to
 completions, still-live executions are cancelled and reported

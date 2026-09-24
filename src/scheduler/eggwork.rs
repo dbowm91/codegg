@@ -1346,6 +1346,20 @@ fn deterministic_workspace_id(
 
 /// Build the remote command: argv boundaries preserved exactly, explicit
 /// (empty) environment allowlist, mapped timeout, no shell reconstruction.
+///
+/// Isolation/network posture: the pinned Eggwork node (rev `128f808c`,
+/// see `plans/closure/eggwork-fixed-target-remote-execution-corrective/`)
+/// fail-closed rejects every execution that does not request
+/// `IsolationRequirement::None` + `NetworkRequirement::Unrestricted`
+/// (HTTP 409 `capability_mismatch`). M001 originally requested
+/// BestEffort/Disabled, which live qualification proved unexecutable:
+/// no restricted spec was ever accepted by a real node. The executor
+/// therefore requests exactly the admitted combination and documents
+/// the posture honestly: remote commands run without node-enforced
+/// sandboxing and with network access on the explicitly selected,
+/// mTLS-authenticated node. Restoring stricter requests requires an
+/// Eggwork revision that admits them plus re-qualification (M002
+/// operator-policy follow-up).
 fn build_spec(
     argv: &[String],
     cwd: Option<RelativePath>,
@@ -1368,8 +1382,8 @@ fn build_spec(
             cpu_millis: Requirement::NotRequested,
             pids: Requirement::NotRequested,
         },
-        isolation: IsolationRequirement::BestEffort,
-        network: NetworkRequirement::Disabled,
+        isolation: IsolationRequirement::None,
+        network: NetworkRequirement::Unrestricted,
     };
     let spec = ExecutionSpec {
         schema_version: 1,
@@ -1713,10 +1727,22 @@ mod tests {
 
         async fn execute_in_workspace(
             &self,
-            _spec: &ExecutionSpec,
+            spec: &ExecutionSpec,
             _handle: &ExecutionHandle,
             _workspace_id: &EggworkWorkspaceId,
         ) -> Result<BoxEventStream, EggworkClientError> {
+            // Mirror the real node's fail-closed admission (C001): only
+            // unrestricted specs are accepted. A restricted spec here means
+            // the executor drifted from the qualified contract.
+            let admitted = matches!(spec.command.isolation, IsolationRequirement::None)
+                && matches!(spec.command.network, NetworkRequirement::Unrestricted);
+            if !admitted {
+                return Err(EggworkClientError::Api {
+                    status: 409,
+                    code: "capability_mismatch".to_string(),
+                    message: "requested execution capability is unavailable".to_string(),
+                });
+            }
             let events = self.events.clone();
             let stream = futures_util::stream::iter(events.into_iter().map(Ok));
             Ok(stream.boxed())
