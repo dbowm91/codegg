@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Post-Closure Corrective Addendum
 
-Status: active corrective; C001 ready
+Status: closed; C001 closed with real-node evidence (`plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`)
 
 Predecessor roadmap:
 
@@ -78,7 +78,12 @@ No evidence currently shows a cross-node or privilege escalation issue. Eggwork'
 
 Class: invariant/corrective
 
-Status: ready
+Status: closed
+
+Closure record:
+
+- `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`
+- implementation `f4e6e69d` (+ follow-ups through `3ca3b7b6`); hosted CI run `36051370501` success
 
 Implementation plan:
 

@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001 historically closed, post-closure corrective C001 ready, M002 blocked on C001
+Status: active roadmap; M001 historically closed, post-closure corrective C001 closed, M002 eligible for planning
 
 Canonical authority:
 
@@ -97,6 +97,13 @@ Post-closure corrective authority:
 
 A later review found that the live Eggwork handle and the persisted `RemoteExecutionHandle` are created with different random lease tokens, while Eggwork fences cancel/renew by the original lease token. M001 therefore remains historical evidence but is not the current correctness disposition until C001 closes.
 
+Corrective closure:
+
+- `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`
+- implementation `f4e6e69d` (+ follow-ups through `3ca3b7b6`); hosted CI run `36051370501` success
+
+C001 restored single-source lease identity, qualified the production NodeClient against a real loopback node over mTLS (valid renew/cancel, typed `invalid_lease` rejection, live + terminal restart reconciliation with no second submit), and proved the pinned node only admits unrestricted specs (HTTP 409 otherwise; executor requests `None` + `Unrestricted`, see the closure finding). M001 remains historical evidence; C001 is the current correctness disposition.
+
 Objective:
 
 Add a durable explicit Eggwork execution target and an Eggwork-backed scheduler executor for a bounded set of finite job kinds, preserving CodeGG scheduler/workspace/RunStore authority.
@@ -105,7 +112,9 @@ Add a durable explicit Eggwork execution target and an Eggwork-backed scheduler 
 
 Class: infrastructure/polish
 
-Status: blocked on post-closure corrective C001
+Status: ready for planning (unblocked by corrective C001 closure `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`; no implementation plan authored yet)
+
+C001 follow-up owned here: surface the per-node unrestricted-execution posture (no node-enforced sandboxing or network disablement at the pinned Eggwork rev) in operator diagnostics/policy, and restore stricter spec requests with re-qualification when Eggwork admits restricted specs.
 
 Objective:
 
@@ -123,7 +132,7 @@ Expected scope:
 
 Class: infrastructure/capability
 
-Status: blocked on post-closure corrective C001 and a separately reviewed optimized Eggwork materializer contract
+Status: blocked on a separately reviewed optimized Eggwork materializer contract (post-closure corrective C001 is closed)
 
 Objective:
 
@@ -133,7 +142,7 @@ Reduce full snapshot transfer using Git-aware or content-aware evidence while pr
 
 Class: capability
 
-Status: deferred; blocked on corrective C001, target policy, workspace optimization, and stable AgentRun worker-entry contract
+Status: deferred; blocked on target policy (M002), workspace optimization (M003), and stable AgentRun worker-entry contract (post-closure corrective C001 is closed)
 
 Objective:
 
