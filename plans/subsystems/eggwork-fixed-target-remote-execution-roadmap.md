@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001 historically closed, post-closure corrective C001 closed, M002 eligible for planning
+Status: active roadmap; M001+C001 closed, M002 ready, M002a blocked on M002 + Eggwork remote-admission C001
 
 Canonical authority:
 
@@ -112,9 +112,17 @@ Add a durable explicit Eggwork execution target and an Eggwork-backed scheduler 
 
 Class: infrastructure/polish
 
-Status: ready for planning (unblocked by corrective C001 closure `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`; no implementation plan authored yet)
+Status: ready
 
-C001 follow-up owned here: surface the per-node unrestricted-execution posture (no node-enforced sandboxing or network disablement at the pinned Eggwork rev) in operator diagnostics/policy, and restore stricter spec requests with re-qualification when Eggwork admits restricted specs.
+Implementation plan:
+
+- `plans/implementation/eggwork-fixed-target-remote-execution/002-target-capability-projection-and-operator-policy.md`
+
+C001 follow-up owned here: surface the per-node unrestricted-execution posture in operator diagnostics/policy, make required isolation/network policy fail closed before upload, and construct restricted specs only when authenticated node capability evidence supports them.
+
+Interface dependency:
+
+- Eggwork remote-admission corrective feature contract (`isolation.landlock.workspace-rw.v1`, `network.unrestricted.v1`, existing resource features) is registered upstream. M002 may implement against that written contract before the upstream code lands.
 
 Objective:
 
@@ -128,11 +136,25 @@ Expected scope:
 - explicit capability mismatch before expensive workspace upload where possible;
 - no global automatic placement yet.
 
+### M002a — Restricted-spec live requalification
+
+Class: invariant/qualification
+
+Status: blocked on M002 closure + Eggwork remote-admission corrective C001 closure
+
+Implementation plan:
+
+- `plans/implementation/eggwork-fixed-target-remote-execution/002a-restricted-spec-live-requalification.md`
+
+Objective:
+
+Pin the corrected Eggwork revision and prove CodeGG's production mTLS path executes a required Landlock-isolated job with filesystem escape denial, exact lease/restart behavior, and no network-isolation overclaim.
+
 ### M003 — Workspace transfer optimization
 
 Class: infrastructure/capability
 
-Status: blocked on a separately reviewed optimized Eggwork materializer contract (post-closure corrective C001 is closed)
+Status: blocked on a separately reviewed optimized Eggwork materializer contract; M001 corrective C001 is closed. M002/M002a are not hard dependencies unless the materializer design needs their posture model.
 
 Objective:
 
@@ -142,7 +164,7 @@ Reduce full snapshot transfer using Git-aware or content-aware evidence while pr
 
 Class: capability
 
-Status: deferred; blocked on target policy (M002), workspace optimization (M003), and stable AgentRun worker-entry contract (post-closure corrective C001 is closed)
+Status: deferred; blocked on target policy (M002), restricted live qualification (M002a), workspace optimization (M003), and stable AgentRun worker-entry contract
 
 Objective:
 
