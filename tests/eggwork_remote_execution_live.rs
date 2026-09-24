@@ -789,7 +789,12 @@ async fn live_restart_terminal_reconciliation_returns_result_without_resubmit() 
             dir.path().to_path_buf(),
         ))
         .await;
-    assert_eq!(first.status, ExecutorStatus::Completed);
+    assert_eq!(
+        first.status,
+        ExecutorStatus::Completed,
+        "live terminal first run failed: {}",
+        first.summary
+    );
     assert_no_secret_in_summary(&first.summary);
 
     // Fresh executor, same attempt: terminal snapshot maps back without a
@@ -849,7 +854,12 @@ async fn live_node_connection_capabilities_and_workspace_isolation() {
             dir.path().to_path_buf(),
         ))
         .await;
-    assert_eq!(completion.status, ExecutorStatus::Completed);
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "live isolation run failed: {}",
+        completion.summary
+    );
     assert_no_secret_in_summary(&completion.summary);
     assert!(
         !dir.path().join("REMOTE_ONLY_MARKER").exists(),
