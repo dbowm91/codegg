@@ -26,6 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
+| Eggwork fixed-target remote execution | active | `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` | M001 ready | Eggwork fixed-target execution substrate is closed through Control Plane M003/Foundation M003; CodeGG owns target selection, scheduler, durable attempt state, workspace authority, and RunStore mapping. |
 | Eggfetch 0.2 adoption | closed | `plans/subsystems/eggfetch-0-2-adoption-roadmap.md` | M001 closed | Workstream closed with crates.io 0.2.0 adoption and provider stream-deadline correction (`plans/closure/eggfetch-0-2-adoption/001-status.md`; implementation `653e7abb`). |
 | Eggfetch 0.2 adoption maintenance corrective | closed | `plans/subsystems/eggfetch-0-2-adoption-maintenance-corrective-addendum.md` | C001 closed | Post-closure polish landed: internal provider timeout-policy symbols narrowed and duplicated redirect fixtures hardened with deterministic `WouldBlock` coverage; no production HTTP behavior or dependency change. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -46,6 +47,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Eggwork fixed-target remote execution | M001 fixed-target finite-job executor | **ready** | `plans/implementation/eggwork-fixed-target-remote-execution/001-fixed-target-finite-job-executor.md` | CodeGG baseline `e508de52`; Eggwork reviewed baseline `e7d9a8e5`; implement durable explicit target + scheduler-owned Eggwork executor; no automatic placement or local fallback. |
 | Eggfetch 0.2 adoption maintenance corrective | C001 provider policy API and redirect-fixture hardening | closed | `plans/implementation/eggfetch-0-2-adoption-maintenance-corrective/001-provider-policy-api-and-redirect-fixture-hardening.md` | Closure: `plans/closure/eggfetch-0-2-adoption-maintenance-corrective/001-status.md`; implementation `7c505d1f`. No successor corrective; no downstream plan unblocked. |
 | Eggfetch 0.2 adoption | M001 Eggfetch 0.2.0 adoption and provider stream-deadline correctness | closed | `plans/implementation/eggfetch-0-2-adoption/001-eggfetch-0.2.0-adoption-and-provider-stream-deadline-correctness.md` | Closure: `plans/closure/eggfetch-0-2-adoption/001-status.md`; implementation `653e7abb`. No successor milestone; no downstream plan unblocked. |
 | Agent context and discovery surface | M001 MCP resource/prompt projection | closed | `plans/implementation/agent-context-discovery-surface/001-mcp-resource-and-prompt-projection.md` | Closure: `plans/closure/agent-context-discovery-surface/001-status.md`. |
@@ -126,6 +128,12 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 | Tool-selection advisor post-closure corrective | M004 live small-model trajectory qualification | C004 closed with disposition B (no useful gain): no positive offline disposition exists, so the live study stays blocked pending a new model-architecture experiment; original operator/provider/trajectory/resource prerequisites were never satisfied either. |
 | Tool-selection advisor sequence-encoder experiment | Existing live-primary-model M004 | Historical M005/v2/v3 dispositions remain negative. The order-invariance experiment is now the active architecture/model successor; live M004 stays blocked unless its fresh-v4 M005 records A, plus original operator/provider/live-trajectory prerequisites. |
 | Tool-selection advisor sequence qualification corrective | Existing live-primary-model M004 | Qualification-evidence C002 closed with valid v3 D (retrieval 0.9294, pair accuracy 0/13). Order-invariance M001-M005 now own the next model attempt; live M004 stays blocked pending positive fresh-v4 disposition and original prerequisites. |
+
+## Eggwork remote-execution control point
+
+Eggwork remote execution M001 is the active CodeGG-owned handoff for integrating `eggstack/eggwork`. It is independent of Eggwork Operations/packaging work. CodeGG must persist the execution target and remote attempt provenance, keep `JobScheduler` as the only admission/fairness/retry authority, and use Eggwork only after a named node has already been selected.
+
+Do not implement this from Eggwork's planning tree directly; the controlling CodeGG handoff is `plans/implementation/eggwork-fixed-target-remote-execution/001-fixed-target-finite-job-executor.md`.
 
 ## Closure work and current control points
 
