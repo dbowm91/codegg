@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001 ready
+Status: active roadmap; M001 historically closed, post-closure corrective C001 ready, M002 blocked on C001
 
 Canonical authority:
 
@@ -79,11 +79,23 @@ Relevant current seams:
 
 Class: capability/invariant
 
-Status: ready
+Status: historically closed; current qualification is corrective-required
 
 Implementation plan:
 
 - `plans/implementation/eggwork-fixed-target-remote-execution/001-fixed-target-finite-job-executor.md`
+
+Historical closure:
+
+- `plans/closure/eggwork-fixed-target-remote-execution/001-status.md`
+- implementation `67f8f3d33651846bbdbd3e4a3bc239e50a0237a6`
+
+Post-closure corrective authority:
+
+- `plans/subsystems/eggwork-fixed-target-remote-execution-post-closure-corrective-addendum.md`
+- C001: `plans/implementation/eggwork-fixed-target-remote-execution-corrective/001-lease-identity-and-live-node-qualification.md`
+
+A later review found that the live Eggwork handle and the persisted `RemoteExecutionHandle` are created with different random lease tokens, while Eggwork fences cancel/renew by the original lease token. M001 therefore remains historical evidence but is not the current correctness disposition until C001 closes.
 
 Objective:
 
@@ -93,7 +105,7 @@ Add a durable explicit Eggwork execution target and an Eggwork-backed scheduler 
 
 Class: infrastructure/polish
 
-Status: blocked on M001
+Status: blocked on post-closure corrective C001
 
 Objective:
 
@@ -111,7 +123,7 @@ Expected scope:
 
 Class: infrastructure/capability
 
-Status: blocked on M001 and a separately reviewed optimized Eggwork materializer contract
+Status: blocked on post-closure corrective C001 and a separately reviewed optimized Eggwork materializer contract
 
 Objective:
 
@@ -121,7 +133,7 @@ Reduce full snapshot transfer using Git-aware or content-aware evidence while pr
 
 Class: capability
 
-Status: deferred; blocked on finite-job integration, target policy, workspace optimization, and stable AgentRun worker-entry contract
+Status: deferred; blocked on corrective C001, target policy, workspace optimization, and stable AgentRun worker-entry contract
 
 Objective:
 
