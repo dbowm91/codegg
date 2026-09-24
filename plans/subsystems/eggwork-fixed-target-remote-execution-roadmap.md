@@ -46,7 +46,7 @@ Eggwork MUST NOT become a second CodeGG scheduler.
 
 ## 2. Current CodeGG seams
 
-Reviewed CodeGG baseline: `e508de52083a30a1b234f5f9b619910cad6792d4`.
+Reviewed CodeGG implementation baseline: `d3d390d56620fb5c6f755a5dfb0987e0a1c01651`.
 
 Relevant current seams:
 
@@ -79,7 +79,7 @@ Relevant current seams:
 
 Class: capability/invariant
 
-Status: historically closed; current qualification is corrective-required
+Status: qualified through closed corrective C001
 
 Implementation plan:
 
@@ -95,7 +95,7 @@ Post-closure corrective authority:
 - `plans/subsystems/eggwork-fixed-target-remote-execution-post-closure-corrective-addendum.md`
 - C001: `plans/implementation/eggwork-fixed-target-remote-execution-corrective/001-lease-identity-and-live-node-qualification.md`
 
-A later review found that the live Eggwork handle and the persisted `RemoteExecutionHandle` are created with different random lease tokens, while Eggwork fences cancel/renew by the original lease token. M001 therefore remains historical evidence but is not the current correctness disposition until C001 closes.
+A later review found that the original M001 implementation created divergent live/persisted lease tokens. Corrective C001 closed that defect and is the current qualification evidence; the historical M001 closure remains immutable predecessor evidence.
 
 Corrective closure:
 
