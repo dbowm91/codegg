@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M001 — Signal Sufficiency Audit and Preregistration
 
-Status: ready for handoff
+Status: blocked
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -258,3 +258,10 @@ Positive M001 closure requires:
 - no gate changed.
 
 If inferability fails, M002 remains blocked and a separate evaluation corrective must be registered.
+
+M001 stopped at this hard stop. The audit exposed gate-critical relevance-label defects
+involving `table_filter`; see
+`plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md` and
+`plans/implementation/tool-selection-advisor-retrieval-signal-experiment/006-retrieval-evaluation-target-corrective.md`.
+No representation or training preregistration was frozen. M002-M005 remain blocked
+until the corrective establishes and validates the retrieval relevance target.

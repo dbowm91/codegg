@@ -156,7 +156,7 @@ M004 operating point   M003 learned projection
 M005 fresh v4 qualification
 ```
 
-- M001 is ready.
+- M001 is blocked at its hard stop: gate-critical `table_filter` secondary labels are not supported by the visible current-step query in at least two corpus cases; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`.
 - M002 is blocked on M001.
 - M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
 - M004 requires either positive M002 or positive M003.
@@ -170,9 +170,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001-signal-sufficiency-audit-and-preregistration.md`
 
-Status: ready.
+Status: blocked at the §4 hard stop; see closure record.
 
-Audit every persistent miss at case level, determine whether the relevance label is inferable from allowed query state, freeze Retrieval Signal V2 field/normalization boundaries, and preregister deterministic and learned experiment degrees of freedom.
+Audit every persistent miss at case level. The initial review found unsupported gate-critical `table_filter` secondary labels before completing the audit, so the preregistration was not frozen and downstream work remains stopped pending the registered evaluation-target corrective C001.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -180,7 +180,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M001.
+Status: blocked on positive M001 after evaluation-target correction.
 
 Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
 
@@ -190,7 +190,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: blocked/conditional on M002.
+Status: blocked pending positive M001 and valid M002 result.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 
@@ -200,7 +200,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/004-retrieval-and-promotion-operating-point.md`
 
-Status: blocked on positive M002 or M003.
+Status: blocked pending valid positive M002 or M003 after M001.
 
 Freeze the smallest/cheapest dev retrieval point that clears the existing recall gates, then attach the already-separated candidate-relevance promotion calibration.
 
@@ -210,7 +210,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked on M004.
+Status: blocked on positive M004 after valid M001.
 
 Build a new zero-leakage, order-balanced semantic holdout and run one separately preregistered release-mode qualification of the complete retrieval + span-packed ranker + promotion stack.
 
