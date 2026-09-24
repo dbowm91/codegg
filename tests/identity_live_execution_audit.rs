@@ -42,8 +42,8 @@ use codegg_core::audit_instrumentation as instr;
 use codegg_core::audit_instrumentation::{ExecutionAuditEmitter, TrustedExecutionAuditContext};
 use codegg_core::identity::ProjectId;
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
-    JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
+    JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::team::{PrincipalKind, ProjectRole, TeamStore};
 use codegg_core::transport_auth::AuthenticatedPrincipal;
@@ -301,6 +301,7 @@ fn trajectory_job(
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

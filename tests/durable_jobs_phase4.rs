@@ -20,8 +20,9 @@ use codegg_core::jobs::store::{
 };
 use codegg_core::jobs::{
     AttemptCompletion, AttemptState, BackoffPolicy, CancelOutcome, CancelReason, DaemonGeneration,
-    FailureClass, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority, JobSource, JobState,
-    JobStore, JobStoreError, NewJob, RecoveryPolicy, ResourceRequest, RetryPolicy, ScheduleId,
+    ExecutionTarget, FailureClass, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
+    JobSource, JobState, JobStore, JobStoreError, NewJob, RecoveryPolicy, ResourceRequest,
+    RetryPolicy, ScheduleId,
 };
 use codegg_core::workspace::WorkspaceId;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -61,6 +62,7 @@ fn default_new_job(ws_id: &WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

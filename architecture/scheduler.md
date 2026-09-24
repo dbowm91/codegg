@@ -163,9 +163,12 @@ from starving unrelated work.
 #### ExecutorRegistry (`executor.rs`)
 
 Keyed by `ExecutorKind` (`Test`, `ManagedArgv`, `Subagent`,
-`BashDispatch`, `Python`, `ToolProgram`, `AgentTurn`, `Synthetic`).
-Duplicate kinds are rejected. `for_job(&JobRecord)` resolves the best
-executor.
+`BashDispatch`, `Python`, `ToolProgram`, `AgentTurn`, `Synthetic`,
+`Eggwork`). Duplicate kinds are rejected. `for_job(&JobRecord)` resolves
+the best executor via `executor_kind_for_job`, which evaluates the
+durable `ExecutionTarget` before the job kind: `EggworkNode` targets
+always route to `Eggwork` (eligibility enforced by its `validate()` with
+no local fallback), `Local` jobs keep the pre-existing mapping.
 
 `AgentTurnExecutor` (Project Work Orders M002) is the scheduler-owned
 admission recorder for WorkOrder initial turns: it validates the durable
@@ -325,12 +328,42 @@ constructing TestRunner locally.
 | durable `ScheduleStore` | Subagent | scheduler admission | Sole production scheduling owner |
 | typed Git services / native Git read fallback | GitRead/mutation | egggit/Git service | Domain-specific compatibility path; migration remains |
 | interactive terminal/editor/formatter helpers | explicit user/local action | local process API | Not daemon heavy-job submission yet |
+| Eggwork-targeted finite jobs (`ExecutionTarget::EggworkNode`) | Build/Lint/Format/ManagedProcess/Shell with canonical argv | Eggwork node via `EggworkExecutor` (`src/scheduler/eggwork.rs`) | Scheduler submission; permit spans full remote lifetime; no local fallback |
 
 The last three rows are deliberately documented rather than hidden
 behind the static guard: they are compatibility or domain-specific
 surfaces whose full scheduler submission requires additional
 RunStore/PTY integration. They must not be described as covered by the
 daemon invariant until migrated.
+
+### Fixed-target Eggwork remote execution (M001)
+
+`EggworkExecutor` (`src/scheduler/eggwork.rs`) runs `Build`, `Lint`,
+`Format`, `ManagedProcess`, and `Shell` jobs with canonical argv on one
+explicitly named Eggwork node. Routing is target-first
+(`executor_kind_for_job`); `Test` remote execution is deferred with a
+typed validation error, and every other kind fails closed — remote
+failure never falls back to local execution and never selects another
+node.
+
+Named nodes come from daemon configuration (`[eggwork.nodes]` in
+`codegg-config`: endpoint plus CA/client-cert/client-key file paths and
+optional required capabilities). Relative key paths are rejected; key
+material is resolved at use time and redacted from diagnostics.
+
+Per attempt the executor derives a deterministic Eggwork identity
+(`codegg-{sha256(job, attempt)}`, generation 1, fresh lease id),
+persists the handle via `set_attempt_remote_handle` before uploading
+anything, then transfers a bounded workspace snapshot (regular files
+only, symlinks skipped, traversal rejected; 4096 entries / 256 MiB
+total / 64 MiB per file), submits exactly one idempotent execution,
+streams bounded progress, renews the lease every 30 s, propagates
+cancellation to the exact handle, and imports declared artifacts into
+the RunStore (`ActualBackend::Eggwork`). The scheduler permit is held
+for the whole remote lifetime. On restart a persisted handle is
+observed/reconciled, never resubmitted: terminal snapshots map to
+completions, still-live executions are cancelled and reported
+interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
 
 ### Ephemeral interactive admission (M001)
 

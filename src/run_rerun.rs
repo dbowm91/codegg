@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use codegg_core::jobs::{
-    IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, ResourceRequest,
-    RetryPolicy,
+    ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
+    ResourceRequest, RetryPolicy,
 };
 use codegg_core::run_store::{RunId, RunManifest, RunStatus};
 use codegg_core::workspace::WorkspaceId;
@@ -159,6 +159,7 @@ pub fn to_job(spec: ValidatedRerun, workspace_id: WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: Some("rerun".to_string()),
+        target: ExecutionTarget::default(),
     }
 }
 

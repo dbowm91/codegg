@@ -298,13 +298,12 @@ impl BashTool {
                     schedule_id: None,
                     depends_on: Vec::new(),
                     parent_job_id: None,
-
                     parent_attempt_id: None,
-
                     parent_call_id: None,
                     parent_program_id: None,
                     parent_instruction_sequence: None,
                     relation_kind: None,
+                    target: codegg_core::jobs::ExecutionTarget::default(),
                 },
             )
             .await
@@ -473,7 +472,8 @@ impl BashTool {
         timeout: Duration,
     ) -> Result<DispatchOutcome, ToolError> {
         use codegg_core::jobs::{
-            IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, RetryPolicy,
+            ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
+            RetryPolicy,
         };
 
         let workspace_root = request
@@ -536,6 +536,7 @@ impl BashTool {
             relation_kind: None,
             schedule_id: None,
             depends_on: vec![],
+            target: ExecutionTarget::default(),
         };
 
         let key = crate::scheduler::submission::SubmissionKey::new(format!("python:{source_hash}"))
@@ -900,6 +901,7 @@ impl BashTool {
                     deadline: None,
                     schedule_id: None,
                     depends_on: Vec::new(),
+                    target: codegg_core::jobs::ExecutionTarget::default(),
                 },
             )
             .await
@@ -995,6 +997,7 @@ impl BashTool {
                     deadline: None,
                     schedule_id: None,
                     depends_on: Vec::new(),
+                    target: codegg_core::jobs::ExecutionTarget::default(),
                 },
             )
             .await

@@ -11,8 +11,9 @@ use codegg::scheduler::submission::{JobSubmissionError, JobSubmissionService, Su
 use codegg::scheduler::{JobScheduler, ResolvedSchedulerConfig};
 use codegg::tool::Tool;
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
-    JobSource, JobState, JobStore, JobStoreQuery, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
+    JobPriority, JobRecord, JobSource, JobState, JobStore, JobStoreQuery, NewJob, ResourceRequest,
+    RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -107,6 +108,7 @@ impl TestHarness {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
 
         let key =
@@ -188,6 +190,7 @@ async fn disabled_scheduler_returns_typed_error() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     let result = submission.submit(None, spec).await;
@@ -236,6 +239,7 @@ async fn python_payload_validates_mode() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     let result = harness.submission.submit(None, spec).await;
@@ -252,7 +256,7 @@ async fn source_hash_mismatch_rejected_at_validation() {
 
     let executor = PythonJobExecutor::new(None);
     let now = chrono::Utc::now();
-    let job = codegg_core::jobs::JobRecord {
+    let job = JobRecord {
         job_id: codegg_core::jobs::JobId::new_unchecked("j-test"),
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         session_id: None,
@@ -292,6 +296,7 @@ async fn source_hash_mismatch_rejected_at_validation() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     let result = executor.validate(&job);
@@ -310,7 +315,7 @@ async fn legacy_script_path_payload_rejected_without_source() {
 
     let executor = PythonJobExecutor::new(None);
     let now = chrono::Utc::now();
-    let job = codegg_core::jobs::JobRecord {
+    let job = JobRecord {
         job_id: codegg_core::jobs::JobId::new_unchecked("j-legacy"),
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         session_id: None,
@@ -350,6 +355,7 @@ async fn legacy_script_path_payload_rejected_without_source() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     // Validation passes (it only checks mode and hash)
@@ -462,7 +468,7 @@ async fn python_executor_cancelled_before_launch() {
     cancellation.cancel(); // Cancel immediately
 
     let now = chrono::Utc::now();
-    let job = codegg_core::jobs::JobRecord {
+    let job = JobRecord {
         job_id: codegg_core::jobs::JobId::new_unchecked("j-cancel"),
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         session_id: None,
@@ -504,6 +510,7 @@ async fn python_executor_cancelled_before_launch() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     let ctx = codegg::scheduler::executor::JobExecutionContext {
@@ -543,7 +550,7 @@ async fn python_executor_rejects_cwd_outside_workspace() {
     let executor = PythonJobExecutor::new(None);
     let now = chrono::Utc::now();
     // CWD outside workspace: try to use /etc as CWD with a workspace of /tmp
-    let job = codegg_core::jobs::JobRecord {
+    let job = JobRecord {
         job_id: codegg_core::jobs::JobId::new_unchecked("j-cwd-escape"),
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         session_id: None,
@@ -585,6 +592,7 @@ async fn python_executor_rejects_cwd_outside_workspace() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     let ctx = codegg::scheduler::executor::JobExecutionContext {

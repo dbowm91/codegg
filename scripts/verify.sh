@@ -71,6 +71,9 @@ run_quick() {
     echo "==> python3 scripts/check_scheduler_bypass.py"
     (cd "$REPO_ROOT" && python3 scripts/check_scheduler_bypass.py)
 
+    echo "==> python3 scripts/check_eggwork_target_routing.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_eggwork_target_routing.py)
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 

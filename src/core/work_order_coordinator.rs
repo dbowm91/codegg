@@ -23,6 +23,7 @@
 //! ordering, reconciliation, events/audit). Pure gate/policy helpers live
 //! in `codegg-core::work_order::coordinator`.
 
+use codegg_core::jobs::ExecutionTarget;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -864,6 +865,7 @@ impl super::daemon::CoreDaemon {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
         // execution-ownership: scheduler — the only production tool-call
         // boundary; heavy work goes through JobSubmissionService.

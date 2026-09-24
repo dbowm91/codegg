@@ -49,7 +49,8 @@ Different strategies per field type:
 
 - **Field-by-field**: `provider` (via `ProviderConfig::merge()`),
   `server` (via `ServerConfig::merge()`), `watcher`, `search`,
-  `discovery`
+  `discovery`, `eggwork` (via `EggworkConfig::merge()` per node key,
+  mirroring the `provider` map merge)
 - **Key replacement**: `agent`, `mcp`, `commands`, `mode`, `model_profile` (insert
   overwrites existing keys)
 - **Key replacement**: `model_routers` (each virtual model key from a later
@@ -317,6 +318,11 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `model_profile` — per-model tuning profiles
 - `orchestration` — opt-in bounded convergence defaults and aggregate deadline
 - `tool_backends` — per-domain tool backend selection
+- `eggwork` — named Eggwork nodes for fixed-target remote execution
+  (`nodes: { name: { node_id?, endpoint, ca_cert_path, client_cert_path,
+  client_key_path, required_capabilities? } }`); merged per node key;
+  endpoint must be bare HTTPS, key paths must be absolute, private-key
+  reference redacted from `Debug`
 
 `orchestration.auto_convergence` defaults to `false`. The host clamps
 `default_max_cycles` to 1–4, `max_producers_per_cycle` to 1–3, and

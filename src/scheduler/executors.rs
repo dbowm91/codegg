@@ -1559,8 +1559,8 @@ fn _ensure_availability_used(_a: ExecutorAvailability) {}
 mod tests {
     use super::*;
     use codegg_core::jobs::{
-        IdempotencyClass, JobId, JobPayload, JobPriority, JobSource, JobState, ResourceRequest,
-        RetryPolicy,
+        ExecutionTarget, IdempotencyClass, JobId, JobPayload, JobPriority, JobSource, JobState,
+        ResourceRequest, RetryPolicy,
     };
 
     fn sample_test_job(argv: Vec<String>, cwd: Option<String>) -> JobRecord {
@@ -1603,6 +1603,7 @@ mod tests {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         }
     }
 
@@ -1663,6 +1664,7 @@ mod tests {
             relation_kind: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
+            target: ExecutionTarget::default(),
         };
         assert!(exec.validate(&job).is_ok());
     }
@@ -1706,6 +1708,7 @@ mod tests {
             cancel_reason: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
+            target: ExecutionTarget::default(),
         };
         assert!(matches!(
             exec.validate(&job),

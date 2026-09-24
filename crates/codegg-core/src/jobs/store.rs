@@ -18,9 +18,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::error::StorageError;
 use crate::jobs::{
     AttemptCompletion, AttemptId, AttemptState, CancelOutcome, CancelReason, CancelResult,
-    DaemonGeneration, IdempotencyClass, JobAttempt, JobErrorRecord, JobId, JobKind, JobPayload,
-    JobPriority, JobRecord, JobSource, NewJob, RecoveryPolicy, RecoveryReport, ResourceRequest,
-    RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, JobAttempt, JobErrorRecord, JobId,
+    JobKind, JobPayload, JobPriority, JobRecord, JobSource, NewJob, RecoveryPolicy, RecoveryReport,
+    RemoteExecutionHandle, ResourceRequest, RetryPolicy,
 };
 use crate::workspace::WorkspaceId;
 
@@ -50,6 +50,10 @@ pub struct JobSummary {
     pub updated_at: DateTime<Utc>,
     pub schedule_id: Option<crate::jobs::ScheduleId>,
     pub cancel_requested_at: Option<DateTime<Utc>>,
+    /// `Some(node_id)` for jobs whose target is an Eggwork remote
+    /// node; `None` for local jobs. Useful for list views without
+    /// exposing the full `ExecutionTarget` payload.
+    pub target_node_id: Option<String>,
 }
 
 pub fn job_state_to_str(s: JobState) -> &'static str {
@@ -192,6 +196,35 @@ fn u32_from_i64(v: i64) -> Result<u32, JobStoreError> {
         .map_err(|_| JobStoreError::Storage(StorageError::Database(format!("u32 overflow: {v}"))))
 }
 
+/// Map an `ExecutionTarget` to its bounded `target_kind` discriminator.
+/// `Local` is the legacy default; `EggworkNode` requires a non-empty
+/// `target_node_id` (validated by `ExecutionTarget::validate`).
+fn target_kind(target: &ExecutionTarget) -> &'static str {
+    match target {
+        ExecutionTarget::Local => "local",
+        ExecutionTarget::EggworkNode { .. } => "eggwork_node",
+    }
+}
+
+/// Map an `ExecutionTarget` to its persisted `target_node_id`. `Local`
+/// persists as `None` so legacy rows that pre-date the column are
+/// indistinguishable from a fresh default.
+fn target_node_id(target: &ExecutionTarget) -> Option<&str> {
+    target.eggwork_node_id()
+}
+
+fn target_from_parts(kind: Option<&str>, node_id: Option<&str>) -> ExecutionTarget {
+    match kind {
+        Some("eggwork_node") => match node_id {
+            Some(node_id) if !node_id.is_empty() => ExecutionTarget::EggworkNode {
+                node_id: node_id.to_owned(),
+            },
+            _ => ExecutionTarget::Local,
+        },
+        _ => ExecutionTarget::Local,
+    }
+}
+
 /// Apply the four filter predicates shared by `list_jobs` and
 /// `list_job_records`. Centralising the filter keeps the two callers
 /// in lock-step when new query fields are added.
@@ -276,6 +309,7 @@ fn begin_attempt_locked(
         error: None,
         created_at: now,
         updated_at: now,
+        remote_handle: None,
     };
     let updated_job = JobRecord {
         state: JobState::Running,
@@ -346,6 +380,7 @@ impl JobStore for InMemoryJobStore {
             parent_program_id: spec.parent_program_id,
             parent_instruction_sequence: spec.parent_instruction_sequence,
             relation_kind: spec.relation_kind,
+            target: spec.target,
         };
         guard.jobs.insert(job_id.clone(), record.clone());
         Ok(record)
@@ -398,6 +433,7 @@ impl JobStore for InMemoryJobStore {
                 updated_at: r.updated_at,
                 schedule_id: r.schedule_id.clone(),
                 cancel_requested_at: r.cancel_requested_at,
+                target_node_id: r.target.eggwork_node_id().map(str::to_owned),
             })
             .collect();
         out.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
@@ -531,6 +567,28 @@ impl JobStore for InMemoryJobStore {
             attempt_id.clone(),
             JobAttempt {
                 executor: Some(executor.to_string()),
+                updated_at: Utc::now(),
+                ..attempt
+            },
+        );
+        Ok(())
+    }
+
+    async fn set_attempt_remote_handle(
+        &self,
+        attempt_id: &AttemptId,
+        handle: Option<&RemoteExecutionHandle>,
+    ) -> Result<(), JobStoreError> {
+        let mut guard = self.inner.lock().await;
+        let attempt = guard
+            .attempts
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        guard.attempts.insert(
+            attempt_id.clone(),
+            JobAttempt {
+                remote_handle: handle.cloned(),
                 updated_at: Utc::now(),
                 ..attempt
             },
@@ -949,6 +1007,7 @@ impl JobStore for InMemoryJobStore {
                         updated_at: job.updated_at,
                         schedule_id: job.schedule_id.clone(),
                         cancel_requested_at: job.cancel_requested_at,
+                        target_node_id: job.target.eggwork_node_id().map(str::to_owned),
                     });
                 }
             }
@@ -1092,9 +1151,10 @@ impl JobStore for SqliteJobStore {
                 time_created, time_updated, time_terminal,
                 cancel_requested_at, cancel_reason, labels_json,
                 parent_job_id, parent_attempt_id, parent_call_id,
-                parent_program_id, parent_instruction_sequence, relation_kind
+                parent_program_id, parent_instruction_sequence, relation_kind,
+                target_kind, target_node_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, 0,
-                      ?, ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?, ?, ?, ?)
+                      ?, ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(job_id.as_str())
@@ -1120,6 +1180,8 @@ impl JobStore for SqliteJobStore {
         .bind(spec.parent_program_id.as_deref())
         .bind(spec.parent_instruction_sequence.map(i64::from))
         .bind(spec.relation_kind.as_deref())
+        .bind(target_kind(&spec.target))
+        .bind(target_node_id(&spec.target))
         .execute(&mut *tx)
         .await
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
@@ -1170,6 +1232,7 @@ impl JobStore for SqliteJobStore {
             parent_program_id: spec.parent_program_id,
             parent_instruction_sequence: spec.parent_instruction_sequence,
             relation_kind: spec.relation_kind,
+            target: spec.target,
         };
         Ok(record)
     }
@@ -1185,6 +1248,7 @@ impl JobStore for SqliteJobStore {
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
                    parent_program_id, parent_instruction_sequence, relation_kind,
+                   target_kind, target_node_id,
                    (SELECT GROUP_CONCAT(depends_on_job_id, ',')
                     FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
             FROM job WHERE id = ?
@@ -1239,6 +1303,7 @@ impl JobStore for SqliteJobStore {
                        cancel_requested_at, cancel_reason, labels_json,
                        parent_job_id, parent_attempt_id, parent_call_id,
                        parent_program_id, parent_instruction_sequence, relation_kind,
+                       target_kind, target_node_id,
                        (SELECT GROUP_CONCAT(depends_on_job_id, ',')
                         FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
                 FROM job WHERE id IN ({placeholders})
@@ -1262,7 +1327,8 @@ impl JobStore for SqliteJobStore {
             r#"
             SELECT id, workspace_id, kind, priority, state, attempt_count,
                    current_attempt_id, time_created, time_updated,
-                   schedule_id, cancel_requested_at
+                   schedule_id, cancel_requested_at,
+                   target_kind, target_node_id
             FROM job WHERE 1=1
             "#,
         );
@@ -1332,6 +1398,8 @@ impl JobStore for SqliteJobStore {
                 let time_updated: i64 = row.get("time_updated");
                 let schedule_id: Option<String> = row.get("schedule_id");
                 let cancel_requested_at: Option<i64> = row.get("cancel_requested_at");
+                let target_kind: Option<String> = row.get("target_kind");
+                let target_node_id: Option<String> = row.get("target_node_id");
                 Ok(JobSummary {
                     job_id: JobId::new_unchecked(job_id),
                     workspace_id: WorkspaceId::new_unchecked(workspace_id),
@@ -1347,6 +1415,12 @@ impl JobStore for SqliteJobStore {
                     schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
                     cancel_requested_at: cancel_requested_at
                         .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
+                    target_node_id: target_from_parts(
+                        target_kind.as_deref(),
+                        target_node_id.as_deref(),
+                    )
+                    .eggwork_node_id()
+                    .map(str::to_owned),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1403,6 +1477,7 @@ impl JobStore for SqliteJobStore {
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
                    parent_program_id, parent_instruction_sequence, relation_kind,
+                   target_kind, target_node_id,
                    (SELECT GROUP_CONCAT(depends_on_job_id, ',')
                     FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
             FROM job WHERE 1=1
@@ -1468,7 +1543,7 @@ impl JobStore for SqliteJobStore {
             r#"
             SELECT id, job_id, sequence, state, daemon_generation, executor,
                    run_id, heartbeat_at, time_started, time_completed,
-                   error_json, time_created, time_updated
+                   error_json, time_created, time_updated, remote_handle_json
             FROM job_attempt
             WHERE job_id = ?
             ORDER BY sequence ASC
@@ -1558,6 +1633,7 @@ impl JobStore for SqliteJobStore {
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
                    parent_program_id, parent_instruction_sequence, relation_kind,
+                   target_kind, target_node_id,
                    (SELECT GROUP_CONCAT(depends_on_job_id, ',')
                     FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
             FROM job WHERE id = ?
@@ -1646,6 +1722,7 @@ impl JobStore for SqliteJobStore {
             error: None,
             created_at: now,
             updated_at: now,
+            remote_handle: None,
         })
     }
 
@@ -1706,6 +1783,33 @@ impl JobStore for SqliteJobStore {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn set_attempt_remote_handle(
+        &self,
+        attempt_id: &AttemptId,
+        handle: Option<&RemoteExecutionHandle>,
+    ) -> Result<(), JobStoreError> {
+        let json = match handle {
+            Some(handle) => Some(
+                serde_json::to_string(handle)
+                    .map_err(|e| JobStoreError::Serialization(e.to_string()))?,
+            ),
+            None => None,
+        };
+        let result = sqlx::query(
+            "UPDATE job_attempt SET remote_handle_json = ?, time_updated = ? WHERE id = ?",
+        )
+        .bind(json)
+        .bind(Utc::now().timestamp_millis())
+        .bind(attempt_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         if result.rows_affected() == 0 {
             return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
         }
@@ -2224,7 +2328,7 @@ impl JobStore for SqliteJobStore {
                 SELECT j.id, j.workspace_id, j.kind, j.priority, j.state,
                        j.attempt_count, j.current_attempt_id,
                        j.time_created, j.time_updated, j.schedule_id,
-                       j.cancel_requested_at
+                       j.cancel_requested_at, j.target_kind, j.target_node_id
                 FROM job j
                 WHERE j.parent_job_id = ?
                 ORDER BY j.time_created ASC, j.id ASC
@@ -2259,6 +2363,8 @@ impl JobStore for SqliteJobStore {
                 queue.push(job_id.clone());
                 let state = JobState::from_str_lossy(&state);
                 if !state.is_terminal() {
+                    let target_kind: Option<String> = row.get("target_kind");
+                    let target_node_id: Option<String> = row.get("target_node_id");
                     summaries.push(JobSummary {
                         job_id: JobId::new_unchecked(job_id),
                         workspace_id: WorkspaceId::new_unchecked(workspace_id),
@@ -2274,6 +2380,12 @@ impl JobStore for SqliteJobStore {
                         schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
                         cancel_requested_at: cancel_requested_at
                             .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
+                        target_node_id: target_from_parts(
+                            target_kind.as_deref(),
+                            target_node_id.as_deref(),
+                        )
+                        .eggwork_node_id()
+                        .map(str::to_owned),
                     });
                 }
             }
@@ -2451,6 +2563,14 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
         relation_kind: row
             .try_get::<Option<String>, _>("relation_kind")
             .unwrap_or(None),
+        target: target_from_parts(
+            row.try_get::<Option<String>, _>("target_kind")
+                .unwrap_or(None)
+                .as_deref(),
+            row.try_get::<Option<String>, _>("target_node_id")
+                .unwrap_or(None)
+                .as_deref(),
+        ),
         labels,
     })
 }
@@ -2469,6 +2589,15 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
     let error_json: Option<String> = row.get("error_json");
     let time_created: i64 = row.get("time_created");
     let time_updated: i64 = row.get("time_updated");
+    let remote_handle_json: Option<String> = row
+        .try_get::<Option<String>, _>("remote_handle_json")
+        .unwrap_or(None);
+    let remote_handle: Option<RemoteExecutionHandle> = match remote_handle_json {
+        Some(json) if !json.is_empty() => Some(
+            serde_json::from_str(&json).map_err(|e| JobStoreError::Serialization(e.to_string()))?,
+        ),
+        _ => None,
+    };
     Ok(JobAttempt {
         attempt_id: AttemptId::new_unchecked(id),
         job_id: JobId::new_unchecked(job_id),
@@ -2485,6 +2614,7 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
             .unwrap_or_else(Utc::now),
         updated_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_updated)
             .unwrap_or_else(Utc::now),
+        remote_handle,
     })
 }
 

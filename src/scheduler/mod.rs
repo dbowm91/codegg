@@ -30,6 +30,7 @@
 
 pub mod admission;
 pub mod config;
+pub mod eggwork;
 pub mod events;
 pub mod executor;
 pub mod executors;
@@ -49,6 +50,10 @@ pub use admission::{
 };
 pub use config::{
     ResolvedSchedulerConfig, SchedulerConfig, SchedulerConfigError, SchedulerRolloutMode,
+};
+pub use eggwork::{
+    BoxEventStream, EggworkClientFactory, EggworkExecutor, EggworkExecutorConfig,
+    EggworkNodeClient, ResolvedEggworkNode,
 };
 pub use executor::{
     ExecutorAvailability, ExecutorCompletion, ExecutorHealth, ExecutorKind, ExecutorMetrics,

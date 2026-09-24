@@ -95,6 +95,22 @@ Typed payload variants (`JobPayload`) carry enough data to rerun safely
 without consulting stale client state. Secret material must never be
 embedded — use credential references.
 
+### Execution Target (`mod.rs:515`, schema v66)
+
+`ExecutionTarget` selects where an attempt runs: `Local` (default) or
+`EggworkNode { node_id }` (one named Eggwork node). It is persisted on
+`NewJob`/`JobRecord` (`target_kind`/`target_node_id` columns; historical
+rows read back as `Local`). The job stores only the node id; endpoints
+and key material stay in daemon configuration (`[eggwork.nodes]`).
+
+`RemoteExecutionHandle` (schema version 1) persists the bound remote
+identity on `JobAttempt` (`remote_handle_json`): node id, execution id,
+generation, lease id. The Eggwork executor writes it before any
+upload/execute side effect and reconciles it on restart instead of
+resubmitting, so one CodeGG attempt maps to at most one accepted remote
+execution. Bearer lease material lives only in this attempt-scoped row,
+never in job payloads, progress text, or audit metadata.
+
 ### JobState Machine (`store.rs:81`)
 
 ```
@@ -140,6 +156,7 @@ during daemon generation recovery.
 | `begin_attempt(JobId, DaemonGeneration)` | Create attempt, transition job to `Running` |
 | `mark_attempt_running(AttemptId)` | `Created`/`Admitted` → `Running` |
 | `set_attempt_executor(AttemptId, executor)` | Persist executor provenance before an attempt enters `Running` |
+| `set_attempt_remote_handle(AttemptId, Option<RemoteExecutionHandle>)` | Persist the bound remote identity before remote side effects (Eggwork M001) |
 | `record_heartbeat(AttemptId, DateTime)` | Persist heartbeat timestamp |
 | `finish_attempt(AttemptCompletion)` | Atomically persist attempt + job completion |
 | `request_cancel(JobId, CancelReason)` | Apply or record cancellation request |

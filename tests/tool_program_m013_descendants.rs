@@ -13,8 +13,8 @@ mod common;
 
 use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::jobs::{
-    AttemptId, AttemptState, CancelReason, DaemonGeneration, IdempotencyClass, JobId, JobKind,
-    JobPayload, JobPriority, JobSource, JobState, JobStore, NewJob, RecoveryPolicy,
+    AttemptId, AttemptState, CancelReason, DaemonGeneration, ExecutionTarget, IdempotencyClass,
+    JobId, JobKind, JobPayload, JobPriority, JobSource, JobState, JobStore, NewJob, RecoveryPolicy,
     ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
@@ -64,6 +64,7 @@ fn make_tool_program_job(
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

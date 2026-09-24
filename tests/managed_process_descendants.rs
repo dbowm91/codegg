@@ -19,8 +19,9 @@ use codegg::scheduler::{
     JobScheduler, JobSubmissionService, ResolvedSchedulerConfig, SchedulerShutdownMode,
 };
 use codegg_core::jobs::{
-    CancelOutcome, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
-    JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    CancelOutcome, DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind,
+    JobPayload, JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, ResourceRequest,
+    RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -72,6 +73,7 @@ fn build_managed_argv_job(workspace: &WorkspaceId, argv: Vec<String>) -> NewJob 
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

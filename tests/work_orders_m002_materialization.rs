@@ -15,8 +15,8 @@ use codegg::scheduler::submission::{JobSubmissionService, SubmissionKey};
 use codegg::scheduler::{JobScheduler, ResolvedSchedulerConfig};
 use codegg_core::identity::{PrincipalId, ProjectId};
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
-    JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
+    JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::session::{CreateSession, SessionStore};
 use codegg_core::work_order::{
@@ -141,6 +141,7 @@ impl SchedulerHarness {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         }
     }
 }

@@ -11,10 +11,10 @@ use codegg::scheduler::{
     AdmissionController, JobScheduler, JobSubmissionService, ResolvedSchedulerConfig, SubmissionKey,
 };
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, BackoffPolicy, DaemonGeneration, FailureClass,
-    IdempotencyClass, InMemoryJobStore, InMemoryScheduleStore, JobKind, JobPayload, JobPriority,
-    JobSource, JobState, JobStore, JobStoreQuery, NewJob, RecoveryPolicy, ResourceRequest,
-    RetryPolicy, ScheduleKind, ScheduleStore, ScheduleTemplate,
+    AttemptCompletion, AttemptState, BackoffPolicy, DaemonGeneration, ExecutionTarget,
+    FailureClass, IdempotencyClass, InMemoryJobStore, InMemoryScheduleStore, JobKind, JobPayload,
+    JobPriority, JobSource, JobState, JobStore, JobStoreQuery, NewJob, RecoveryPolicy,
+    ResourceRequest, RetryPolicy, ScheduleKind, ScheduleStore, ScheduleTemplate,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -54,11 +54,13 @@ fn default_new_job(workspace_id: &WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
 fn non_idempotent_job(workspace_id: &WorkspaceId) -> NewJob {
     NewJob {
+        target: ExecutionTarget::default(),
         idempotency: IdempotencyClass::NonIdempotent,
         ..default_new_job(workspace_id)
     }
@@ -394,6 +396,7 @@ async fn schedule_occurrence_uniqueness_across_restarts() {
                     parent_program_id: None,
                     parent_instruction_sequence: None,
                     relation_kind: None,
+                    target: ExecutionTarget::default(),
                 })
                 .await
                 .map_err(MaterializerError::JobStore)?;

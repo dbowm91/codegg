@@ -68,6 +68,9 @@ let job = store.create_job(NewJob {
     parent_program_id: None,
     parent_instruction_sequence: None,
     relation_kind: None,
+    // Execution target: Local by default; EggworkNode { node_id } routes to
+    // the Eggwork executor via executor_kind_for_job (never Local fallback).
+    target: ExecutionTarget::Local,
 }).await?;
 ```
 

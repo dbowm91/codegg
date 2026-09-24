@@ -559,8 +559,8 @@ fn uncertain_effect_is_secret_safe_and_bounded() {
 
 use codegg::scheduler::{JobSubmissionService, ResolvedSchedulerConfig};
 use codegg_core::jobs::{
-    DaemonGeneration, InMemoryJobStore, JobKind, JobPayload, JobPriority, JobSource, NewJob,
-    ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, InMemoryJobStore, JobKind, JobPayload, JobPriority,
+    JobSource, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -648,6 +648,7 @@ fn tool_program_job(
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

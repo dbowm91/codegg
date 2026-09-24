@@ -3,8 +3,8 @@
 mod common;
 
 use codegg_core::jobs::{
-    CancelReason, IdempotencyClass, JobId, JobKind, JobPriority, JobSource, JobState, JobStore,
-    NewJob, ResourceRequest, RetryPolicy,
+    CancelReason, ExecutionTarget, IdempotencyClass, JobId, JobKind, JobPriority, JobSource,
+    JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 use std::time::Duration;
@@ -45,6 +45,7 @@ fn job(parent: Option<JobId>) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

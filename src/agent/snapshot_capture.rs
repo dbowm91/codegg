@@ -8,6 +8,7 @@
 
 use super::r#loop::AgentLoop;
 use crate::bus::events::AppEvent;
+use codegg_core::jobs::ExecutionTarget;
 use tokio::sync::broadcast::error::TryRecvError;
 
 impl AgentLoop {
@@ -144,6 +145,7 @@ impl AgentLoop {
                     parent_program_id: None,
                     parent_instruction_sequence: None,
                     relation_kind: None,
+                    target: ExecutionTarget::default(),
                 };
                 if let Err(e) = submission.submit(None, spec).await {
                     tracing::warn!(error = %e, "failed to submit security-review subagent");

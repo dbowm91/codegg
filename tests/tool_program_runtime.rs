@@ -10,8 +10,8 @@ use std::sync::{
 
 use async_trait::async_trait;
 use codegg_core::jobs::{
-    AttemptId, DaemonGeneration, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
-    JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
+    AttemptId, DaemonGeneration, ExecutionTarget, IdempotencyClass, JobId, JobKind, JobPayload,
+    JobPriority, JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
 };
 use codegg_core::tool_program::ProgramStore;
 use codegg_core::workspace::WorkspaceId;
@@ -204,6 +204,7 @@ fn sample_job(fixture: &RuntimeFixture, program_id: &str, source: &str) -> JobRe
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

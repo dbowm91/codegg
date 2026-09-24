@@ -217,6 +217,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 65 {
         migrate_and_record(pool, 65).await?;
     }
+    if current_version < 66 {
+        migrate_and_record(pool, 66).await?;
+    }
 
     Ok(())
 }
@@ -294,6 +297,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             63 => migrate_v63(&mut tx).await?,
             64 => migrate_v64(&mut tx).await?,
             65 => migrate_v65(&mut tx).await?,
+            66 => migrate_v66(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2684,6 +2688,25 @@ async fn migrate_v65(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
+    Ok(())
+}
+
+/// Eggwork M001 fixed-target finite-job executor:
+/// durable execution target on `job` and remote execution provenance
+/// on `job_attempt`. Additive columns only; existing rows default to
+/// `Local` (`target_kind = 'local'`, `target_node_id = NULL`).
+async fn migrate_v66(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        "ALTER TABLE job ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'local'",
+        "ALTER TABLE job ADD COLUMN target_node_id TEXT",
+        "ALTER TABLE job_attempt ADD COLUMN remote_handle_json TEXT",
+    ] {
+        add_column_ignore_duplicate(&mut *tx, statement.to_string()).await?;
+    }
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_target_node ON job(target_node_id)")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 /// Hot-path lookup indexes: `job_attempt.run_id` backs the

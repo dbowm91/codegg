@@ -491,8 +491,8 @@ fn fingerprint_record(job: &codegg_core::jobs::JobRecord) -> String {
 mod tests {
     use super::*;
     use codegg_core::jobs::{
-        IdempotencyClass, InMemoryJobStore, JobPayload, JobPriority, JobSource, JobStore,
-        ResourceRequest, RetryPolicy, SqliteJobStore,
+        ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobPayload, JobPriority, JobSource,
+        JobStore, ResourceRequest, RetryPolicy, SqliteJobStore,
     };
     use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
     use codegg_core::workspace_services::{
@@ -572,6 +572,7 @@ mod tests {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         }
     }
 

@@ -302,6 +302,12 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                 None => merged.provider = Some(providers.clone()),
             }
         }
+        if let Some(ref eggwork) = config.eggwork {
+            match &mut merged.eggwork {
+                Some(ref mut existing) => existing.merge(eggwork),
+                None => merged.eggwork = Some(eggwork.clone()),
+            }
+        }
         if let Some(ref agents) = config.agent {
             match &mut merged.agent {
                 Some(ref mut existing) => {

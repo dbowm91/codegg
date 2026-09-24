@@ -297,7 +297,8 @@ impl PythonScriptTool {
         submission: &Arc<JobSubmissionService>,
     ) -> Result<String, ToolError> {
         use codegg_core::jobs::{
-            IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, RetryPolicy,
+            ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
+            RetryPolicy,
         };
 
         let workspace_root = request
@@ -359,13 +360,12 @@ impl PythonScriptTool {
             schedule_id: None,
             depends_on: vec![],
             parent_job_id: None,
-
             parent_attempt_id: None,
-
             parent_call_id: None,
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
 
         // Derive a submission key from source hash for idempotency

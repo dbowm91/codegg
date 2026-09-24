@@ -8,8 +8,8 @@
 #![cfg(test)]
 
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
-    JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
+    JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 use std::time::Duration;
@@ -54,6 +54,7 @@ fn make_base_job() -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -75,6 +76,7 @@ async fn c21_typed_lineage_fields_preserved() {
         parent_program_id: Some("tp-lineage".into()),
         parent_instruction_sequence: Some(0),
         relation_kind: Some("child_job".into()),
+        target: ExecutionTarget::default(),
         ..make_base_job()
     };
 
@@ -118,6 +120,7 @@ async fn c23_lineage_preserved_through_transitions() {
         parent_program_id: Some("tp-lineage".into()),
         parent_instruction_sequence: Some(1),
         relation_kind: Some("child_job".into()),
+        target: ExecutionTarget::default(),
         ..make_base_job()
     };
 
@@ -196,6 +199,7 @@ async fn c24_canonical_child_identity_from_sequence() {
             parent_program_id: Some("tp-lineage".into()),
             parent_instruction_sequence: Some(0),
             relation_kind: Some("child_job".into()),
+            target: ExecutionTarget::default(),
             ..make_base_job()
         })
         .await
@@ -209,6 +213,7 @@ async fn c24_canonical_child_identity_from_sequence() {
             parent_program_id: Some("tp-lineage".into()),
             parent_instruction_sequence: Some(1),
             relation_kind: Some("child_job".into()),
+            target: ExecutionTarget::default(),
             ..make_base_job()
         })
         .await
@@ -243,6 +248,7 @@ async fn c25_replay_same_sequence_reuses_child() {
             parent_program_id: Some("tp-lineage".into()),
             parent_instruction_sequence: Some(0),
             relation_kind: Some("child_job".into()),
+            target: ExecutionTarget::default(),
             ..make_base_job()
         })
         .await

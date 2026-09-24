@@ -1,3 +1,4 @@
+use codegg_core::jobs::ExecutionTarget;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -2357,6 +2358,7 @@ impl CoreDaemon {
                     parent_program_id: None,
                     parent_instruction_sequence: None,
                     relation_kind: None,
+                    target: ExecutionTarget::default(),
                 };
                 PendingAction::SubmitJob {
                     kind: codegg_core::collaboration::ChatActionKind::AgentTask,
@@ -2461,6 +2463,7 @@ impl CoreDaemon {
                     parent_program_id: None,
                     parent_instruction_sequence: None,
                     relation_kind: None,
+                    target: ExecutionTarget::default(),
                 };
                 PendingAction::SubmitJob {
                     kind: codegg_core::collaboration::ChatActionKind::ReviewRequest,

@@ -20,8 +20,9 @@ use codegg::tool::{
     ToolEffectClass, ToolExecutionContext, ToolRegistry,
 };
 use codegg_core::jobs::{
-    AttemptId, DaemonGeneration, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
-    JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy, ToolProgramExecutionContext,
+    AttemptId, DaemonGeneration, ExecutionTarget, IdempotencyClass, JobId, JobKind, JobPayload,
+    JobPriority, JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
+    ToolProgramExecutionContext,
 };
 use codegg_core::workspace::WorkspaceId;
 use serde_json::json;
@@ -192,6 +193,7 @@ fn c41_executor_fixture(
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
     let executor = ToolProgramExecutor::new(broker, registry).with_artifact_store(artifact_store);
     let context = JobExecutionContext {

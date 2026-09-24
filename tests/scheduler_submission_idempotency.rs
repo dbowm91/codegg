@@ -3,9 +3,9 @@ use std::sync::Arc;
 use codegg::scheduler::submission::{JobSubmissionError, JobSubmissionService, SubmissionKey};
 use codegg::scheduler::{JobScheduler, ResolvedSchedulerConfig};
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, CancelReason, DaemonGeneration, IdempotencyClass,
-    InMemoryJobStore, JobKind, JobPayload, JobPriority, JobSource, JobState, JobStore,
-    JobStoreQuery, NewJob, ResourceRequest, RetryPolicy,
+    AttemptCompletion, AttemptState, CancelReason, DaemonGeneration, ExecutionTarget,
+    IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority, JobSource, JobState,
+    JobStore, JobStoreQuery, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -41,6 +41,7 @@ fn test_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -421,6 +422,7 @@ async fn payload_too_large_rejects_without_creating_job() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
 
     let err = h

@@ -21,9 +21,9 @@ use codegg::scheduler::{
     SchedulerShutdownMode, SubmissionKey,
 };
 use codegg_core::jobs::{
-    AttemptCompletion, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobAttempt, JobId,
-    JobKind, JobPayload, JobPriority, JobRecord, JobSource, JobStore, JobStoreError, NewJob,
-    ResourceRequest, RetryPolicy,
+    AttemptCompletion, DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore,
+    JobAttempt, JobId, JobKind, JobPayload, JobPriority, JobRecord, JobSource, JobStore,
+    JobStoreError, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -228,6 +228,7 @@ fn build_new_job(ws_id: &WorkspaceId, kind: JobKind, payload: JobPayload) -> New
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

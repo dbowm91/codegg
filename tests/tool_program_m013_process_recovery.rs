@@ -31,8 +31,8 @@ use codegg::tool::tool_program_ledger::ToolProgramLedger;
 use codegg::tool::tool_program_result::ToolProgramResultStore;
 use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::jobs::{
-    CancelReason, DaemonGeneration, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource,
-    JobStore, NewJob, RecoveryPolicy, ResourceRequest, RetryPolicy,
+    CancelReason, DaemonGeneration, ExecutionTarget, IdempotencyClass, JobKind, JobPayload,
+    JobPriority, JobSource, JobStore, NewJob, RecoveryPolicy, ResourceRequest, RetryPolicy,
 };
 use codegg_core::tool_program::{
     CallRequest, CompletedCall, ProgramResult, ProgramStatus, ProgramValue,
@@ -142,6 +142,7 @@ fn make_tool_program_job(program_id: &str) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -270,6 +271,7 @@ async fn j1_job_store_lineage_survives_restart() {
             parent_job_id: Some(parent.job_id.clone()),
             parent_attempt_id: Some(codegg_core::jobs::AttemptId::new_unchecked("att-j1")),
             parent_call_id: Some("call-j1-seq-0".into()),
+            target: ExecutionTarget::default(),
             ..make_tool_program_job("tp-j1-restart-child")
         })
         .await
@@ -344,6 +346,7 @@ async fn j1_descendant_cancellation_converges_to_baseline() {
                 parent_job_id: Some(parent.job_id.clone()),
                 parent_attempt_id: Some(codegg_core::jobs::AttemptId::new_unchecked("att-j1")),
                 parent_call_id: Some(format!("call-j1-{i}")),
+                target: ExecutionTarget::default(),
                 ..make_tool_program_job(&format!("tp-j1-converge-child-{i}"))
             })
             .await

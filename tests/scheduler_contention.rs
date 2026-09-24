@@ -23,8 +23,8 @@ use codegg::scheduler::{
     UnschedulableReason,
 };
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobId, JobKind, JobPayload, JobPriority,
-    JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobId, JobKind,
+    JobPayload, JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -183,6 +183,7 @@ fn build_spec(ws: &WorkspaceId, priority: JobPriority) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

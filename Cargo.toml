@@ -68,6 +68,7 @@ eggfetch-core = { version = "0.2.0", default-features = false }
 http = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 parking_lot = "0.12"
+bytes = "1"
 proptest = "1"
 
 [workspace.lints.rust]
@@ -145,6 +146,7 @@ tokio-stream = { workspace = true, optional = true }
 futures-util = { workspace = true, features = ["sink"] }
 futures-executor.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 
 # Database
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "derive", "chrono", "json"] }
@@ -269,6 +271,12 @@ egglsp.workspace = true
 codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
+
+# Eggwork fixed-target remote execution substrate (M001).
+# Pinned to an immutable revision per plans/implementation/eggwork-fixed-target-remote-execution.
+# Default features only: no Eggress-routed dialer in M001 (per plan §3).
+eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "128f808c62f176d414dd18a705773e45f5e2891a", default-features = false }
+eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "128f808c62f176d414dd18a705773e45f5e2891a", default-features = false }
 
 # Optional sequence-encoder experiment. These dependencies are never part of
 # the default advisor/runtime graph; the feature boundary is intentionally

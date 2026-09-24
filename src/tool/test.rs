@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use codegg_core::jobs::ExecutionTarget;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -237,13 +238,12 @@ impl TestTool {
                     schedule_id: None,
                     depends_on: Vec::new(),
                     parent_job_id: None,
-
                     parent_attempt_id: None,
-
                     parent_call_id: None,
                     parent_program_id: None,
                     parent_instruction_sequence: None,
                     relation_kind: None,
+                    target: ExecutionTarget::default(),
                 },
             )
             .await

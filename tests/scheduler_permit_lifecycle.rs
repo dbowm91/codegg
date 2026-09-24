@@ -11,8 +11,8 @@ use codegg::scheduler::{
 };
 
 use codegg_core::jobs::{
-    AttemptState, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
-    JobPriority, JobSource, JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    AttemptState, DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind,
+    JobPayload, JobPriority, JobSource, JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -48,6 +48,7 @@ fn build_test_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -77,6 +78,7 @@ fn build_build_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

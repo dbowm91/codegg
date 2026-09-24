@@ -110,7 +110,7 @@ impl JobDispatcher for NullJobDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codegg_core::jobs::{JobId, JobKind};
+    use codegg_core::jobs::{ExecutionTarget, JobId, JobKind};
 
     #[tokio::test(flavor = "current_thread")]
     async fn unsupported_kind_returns_error() {
@@ -146,13 +146,12 @@ mod tests {
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
             parent_job_id: None,
-
             parent_attempt_id: None,
-
             parent_call_id: None,
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
 
         // NullJobDispatcher accepts anything
@@ -199,6 +198,7 @@ mod tests {
             relation_kind: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
+            target: ExecutionTarget::default(),
         };
         assert!(dispatcher.dispatch_created_job(job).await.is_ok());
     }

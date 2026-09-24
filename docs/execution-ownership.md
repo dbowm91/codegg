@@ -92,6 +92,19 @@ setup/exec status travels over a bounded descriptor that is closed before the
 target `exec`. The Python interpreter-prefix probe is an annotated, 64 KiB-capped
 setup probe; it is not the user execution path.
 
+## Remote execution without local spawn
+
+`src/scheduler/eggwork.rs` (`EggworkExecutor`, M001) executes
+explicitly targeted finite jobs on a named Eggwork node. It is covered
+by the `src/scheduler/` manifest entry and introduces no local
+process-spawn owner: all execution happens remotely via `eggwork-client`
+(mutual TLS, bounded workspace snapshot, idempotent submit, lease
+renewal, remote cancel). Scheduler admission, the permit lifetime, and
+attempt provenance apply unchanged; the permit spans the whole remote
+lifetime and remote failure never falls back to local execution. The
+companion static guard `scripts/check_eggwork_target_routing.py`
+pins target-first routing, crate confinement, and handle persistence.
+
 ## Migration trajectory
 
 The deferred-domain-executor sites are documented compatibility

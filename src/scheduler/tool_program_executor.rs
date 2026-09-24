@@ -598,6 +598,7 @@ impl BrokerCallback for BrokerAdapter {
             parent_program_id: Some(self.program_id.clone()),
             parent_instruction_sequence: Some(request.sequence),
             relation_kind: Some("child_job".to_string()),
+            target: codegg_core::jobs::ExecutionTarget::default(),
         };
 
         // On restart the pending checkpoint is authoritative: reattach by
@@ -2011,8 +2012,8 @@ impl JobExecutor for ToolProgramExecutor {
 mod tests {
     use super::*;
     use codegg_core::jobs::{
-        IdempotencyClass, JobId, JobPayload, JobPriority, JobSource, JobState, ResourceRequest,
-        RetryPolicy,
+        ExecutionTarget, IdempotencyClass, JobId, JobPayload, JobPriority, JobSource, JobState,
+        ResourceRequest, RetryPolicy,
     };
     use codegg_core::workspace::WorkspaceId;
     use std::collections::HashMap;
@@ -2103,6 +2104,7 @@ mod tests {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         }
     }
 
@@ -2197,6 +2199,7 @@ mod tests {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
         assert!(exec.validate(&job).is_err());
     }

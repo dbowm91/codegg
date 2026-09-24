@@ -301,6 +301,9 @@ pub struct Config {
     pub command_intent: Option<CommandIntentConfig>,
     /// Conservative, opt-in policy for bounded produce/verify convergence.
     pub orchestration: Option<OrchestrationConfig>,
+    /// Named Eggwork nodes for fixed-target remote execution. Absent by
+    /// default; Eggwork-targeted jobs require an entry here.
+    pub eggwork: Option<EggworkConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -367,6 +370,190 @@ impl Default for ProviderConnectionsConfig {
             health_stale_after_ms: 5 * 60 * 1_000,
             refresh_backoff_base_ms: 1_000,
         }
+    }
+}
+
+/// Named Eggwork node profiles for fixed-target remote execution.
+///
+/// The daemon resolves a job's `ExecutionTarget::EggworkNode { node_id }`
+/// against this table at execution time. Jobs persist only the node id;
+/// endpoints and key material stay daemon/config-owned and are never written
+/// into job rows, diagnostics, or audit metadata.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct EggworkConfig {
+    pub nodes: Option<HashMap<String, EggworkNodeProfile>>,
+}
+
+impl EggworkConfig {
+    pub fn merge(&mut self, other: &EggworkConfig) {
+        if let Some(ref nodes) = other.nodes {
+            match self.nodes {
+                Some(ref mut existing) => {
+                    for (name, profile) in nodes {
+                        if let Some(current) = existing.get_mut(name) {
+                            current.merge(profile);
+                        } else {
+                            existing.insert(name.clone(), profile.clone());
+                        }
+                    }
+                }
+                None => self.nodes = Some(nodes.clone()),
+            }
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        if let Some(ref nodes) = self.nodes {
+            validate_bound(&mut errors, "eggwork.nodes", nodes.len(), 0, 64);
+            for (name, profile) in nodes {
+                profile.validate(name, &mut errors);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Resolve the profile selected by an Eggwork execution target.
+    pub fn node(&self, name: &str) -> Option<&EggworkNodeProfile> {
+        self.nodes.as_ref().and_then(|nodes| nodes.get(name))
+    }
+}
+
+/// One named Eggwork node. Secret material is referenced by file path and
+/// resolved at use time; the private key path is redacted from `Debug`.
+#[derive(Deserialize, Serialize, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct EggworkNodeProfile {
+    /// Canonical node id. When absent, the table key is authoritative.
+    pub node_id: Option<String>,
+    /// HTTPS endpoint of the node (no credentials, query, or fragment).
+    pub endpoint: Option<String>,
+    /// PEM file holding the CA certificate used to trust the node.
+    pub ca_cert_path: Option<String>,
+    /// PEM file holding the client certificate presented to the node.
+    pub client_cert_path: Option<String>,
+    /// PEM file holding the client private key. Never logged or serialized
+    /// into diagnostics beyond this reference.
+    pub client_key_path: Option<String>,
+    /// Optional capability names the node must advertise before execution.
+    pub required_capabilities: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for EggworkNodeProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EggworkNodeProfile")
+            .field("node_id", &self.node_id)
+            .field("endpoint", &self.endpoint)
+            .field("ca_cert_path", &self.ca_cert_path)
+            .field("client_cert_path", &self.client_cert_path)
+            .field(
+                "client_key_path",
+                &self.client_key_path.as_ref().map(|_| "[redacted]"),
+            )
+            .field("required_capabilities", &self.required_capabilities)
+            .finish()
+    }
+}
+
+impl EggworkNodeProfile {
+    pub fn merge(&mut self, other: &EggworkNodeProfile) {
+        if other.node_id.is_some() {
+            self.node_id.clone_from(&other.node_id);
+        }
+        if other.endpoint.is_some() {
+            self.endpoint.clone_from(&other.endpoint);
+        }
+        if other.ca_cert_path.is_some() {
+            self.ca_cert_path.clone_from(&other.ca_cert_path);
+        }
+        if other.client_cert_path.is_some() {
+            self.client_cert_path.clone_from(&other.client_cert_path);
+        }
+        if other.client_key_path.is_some() {
+            self.client_key_path.clone_from(&other.client_key_path);
+        }
+        if other.required_capabilities.is_some() {
+            self.required_capabilities
+                .clone_from(&other.required_capabilities);
+        }
+    }
+
+    /// Effective node id: explicit field wins, otherwise the table key.
+    pub fn effective_node_id<'a>(&'a self, table_key: &'a str) -> &'a str {
+        self.node_id.as_deref().unwrap_or(table_key)
+    }
+
+    fn validate(&self, table_key: &str, errors: &mut Vec<String>) {
+        let scope = format!("eggwork.nodes[{table_key}]");
+        validate_optional_text(
+            errors,
+            &format!("{scope}.node_id"),
+            self.node_id.as_deref(),
+            128,
+            false,
+        );
+        if let Some(ref endpoint) = self.endpoint {
+            validate_https_endpoint(errors, &format!("{scope}.endpoint"), endpoint);
+        }
+        for (field, value) in [
+            ("ca_cert_path", self.ca_cert_path.as_deref()),
+            ("client_cert_path", self.client_cert_path.as_deref()),
+            ("client_key_path", self.client_key_path.as_deref()),
+        ] {
+            validate_optional_text(errors, &format!("{scope}.{field}"), value, 1024, true);
+            if let Some(path) = value {
+                if path.contains('\0') {
+                    errors.push(format!("{scope}.{field} cannot contain NUL"));
+                }
+            }
+        }
+        validate_string_list(
+            errors,
+            &format!("{scope}.required_capabilities"),
+            &self.required_capabilities,
+            64,
+        );
+    }
+}
+
+/// Endpoint metadata must be a bare HTTPS URL: no credentials, query, or
+/// fragment. Mirrors the provider-connection endpoint policy without taking
+/// a URL-parser dependency.
+fn validate_https_endpoint(errors: &mut Vec<String>, name: &str, endpoint: &str) {
+    if endpoint.is_empty() {
+        errors.push(format!("{name} cannot be empty"));
+        return;
+    }
+    if endpoint.len() > 1024 {
+        errors.push(format!("{name} exceeds maximum length of 1024 bytes"));
+        return;
+    }
+    if endpoint.chars().any(char::is_control) {
+        errors.push(format!("{name} cannot contain NUL or control characters"));
+        return;
+    }
+    let rest = match endpoint.strip_prefix("https://") {
+        Some(rest) => rest,
+        None => {
+            errors.push(format!("{name} must use the https scheme"));
+            return;
+        }
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        errors.push(format!("{name} must include a host"));
+        return;
+    }
+    if authority.contains('@') {
+        errors.push(format!("{name} must not embed credentials"));
+    }
+    if rest.contains('?') || rest.contains('#') {
+        errors.push(format!("{name} must not carry a query or fragment"));
     }
 }
 
@@ -2443,6 +2630,12 @@ impl Config {
             }
         }
 
+        if let Some(ref eggwork) = self.eggwork {
+            if let Err(eggwork_errors) = eggwork.validate() {
+                errors.extend(eggwork_errors);
+            }
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -3910,5 +4103,125 @@ mod tests {
         let output = shell.output.unwrap();
         assert_eq!(output.projection_kind(), ProjectionPolicyKind::Aggressive);
         assert_eq!(output.max_model_output_tokens(), 2000);
+    }
+
+    fn eggwork_profile(endpoint: &str) -> EggworkNodeProfile {
+        EggworkNodeProfile {
+            node_id: Some("node-1".to_string()),
+            endpoint: Some(endpoint.to_string()),
+            ca_cert_path: Some("/etc/eggwork/ca.pem".to_string()),
+            client_cert_path: Some("/etc/eggwork/client.pem".to_string()),
+            client_key_path: Some("/etc/eggwork/client.key".to_string()),
+            required_capabilities: Some(vec!["exec.argv.v1".to_string()]),
+        }
+    }
+
+    #[test]
+    fn eggwork_nodes_deserialize_additively() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"eggwork": {"nodes": {"node-1": {"endpoint": "https://node-1:8443"}}}}"#,
+        )
+        .unwrap();
+        let nodes = cfg.eggwork.clone().unwrap().nodes.unwrap();
+        assert_eq!(
+            nodes["node-1"].endpoint.as_deref(),
+            Some("https://node-1:8443")
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn eggwork_validation_rejects_plain_http_and_embedded_secrets() {
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert("bad".to_string(), eggwork_profile("http://node-1:8443"));
+        let cfg = Config {
+            eggwork: Some(EggworkConfig { nodes: Some(nodes) }),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("https scheme")), "{errs:?}");
+
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert(
+            "creds".to_string(),
+            eggwork_profile("https://user:pass@node-1:8443/x?y=1#z"),
+        );
+        let cfg = Config {
+            eggwork: Some(EggworkConfig { nodes: Some(nodes) }),
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("credentials")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("query or fragment")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn eggwork_debug_redacts_private_key_reference() {
+        let profile = eggwork_profile("https://node-1:8443");
+        let rendered = format!("{profile:?}");
+        assert!(rendered.contains("https://node-1:8443"));
+        assert!(rendered.contains("[redacted]"));
+        assert!(!rendered.contains("client.key"));
+    }
+
+    #[test]
+    fn eggwork_effective_node_id_prefers_explicit_field() {
+        let profile = eggwork_profile("https://node-1:8443");
+        assert_eq!(profile.effective_node_id("table-key"), "node-1");
+        let fallback = EggworkNodeProfile::default();
+        assert_eq!(fallback.effective_node_id("table-key"), "table-key");
+    }
+
+    #[test]
+    fn eggwork_merge_composes_layered_profiles_per_key() {
+        let mut base_nodes = std::collections::HashMap::new();
+        base_nodes.insert("node-1".to_string(), eggwork_profile("https://node-1:8443"));
+        let mut base = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(base_nodes),
+            }),
+            ..Default::default()
+        };
+        let mut overlay_nodes = std::collections::HashMap::new();
+        overlay_nodes.insert(
+            "node-1".to_string(),
+            EggworkNodeProfile {
+                endpoint: Some("https://node-1:9443".to_string()),
+                ..Default::default()
+            },
+        );
+        overlay_nodes.insert("node-2".to_string(), eggwork_profile("https://node-2:8443"));
+        let overlay = Config {
+            eggwork: Some(EggworkConfig {
+                nodes: Some(overlay_nodes),
+            }),
+            ..Default::default()
+        };
+        let merged = crate::paths::merge_configs(&[base.clone(), overlay]);
+        let nodes = merged.eggwork.clone().unwrap().nodes.unwrap();
+        assert_eq!(
+            nodes["node-1"].endpoint.as_deref(),
+            Some("https://node-1:9443")
+        );
+        // Untouched fields survive the per-key merge.
+        assert_eq!(
+            nodes["node-1"].ca_cert_path.as_deref(),
+            Some("/etc/eggwork/ca.pem")
+        );
+        assert!(nodes.contains_key("node-2"));
+        // Base is unchanged (merge clones).
+        assert_eq!(
+            base.eggwork
+                .as_mut()
+                .unwrap()
+                .node("node-1")
+                .unwrap()
+                .endpoint
+                .as_deref(),
+            Some("https://node-1:8443")
+        );
     }
 }

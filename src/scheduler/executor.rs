@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use codegg_core::jobs::{AttemptId, DaemonGeneration, JobId, JobKind, JobRecord};
+use codegg_core::jobs::{AttemptId, DaemonGeneration, ExecutionTarget, JobId, JobKind, JobRecord};
 use codegg_core::workspace::WorkspaceId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -79,6 +79,9 @@ pub enum ExecutorKind {
     ToolProgram,
     AgentTurn,
     Synthetic,
+    /// Fixed-target remote execution on one named Eggwork node. Reached
+    /// only for `ExecutionTarget::EggworkNode` jobs; never for `Local`.
+    Eggwork,
 }
 
 impl ExecutorKind {
@@ -92,6 +95,7 @@ impl ExecutorKind {
             ExecutorKind::ToolProgram => "tool_program",
             ExecutorKind::AgentTurn => "agent_turn",
             ExecutorKind::Synthetic => "synthetic",
+            ExecutorKind::Eggwork => "eggwork",
         }
     }
 }
@@ -318,7 +322,15 @@ pub enum ExecutorRegistryError {
 /// This is the central place where `JobKind` -> executor dispatch is
 /// decided. ManagedArgv is also the bounded process adapter for shell and
 /// generic managed-process jobs; it does not make those jobs unscheduled.
+///
+/// The execution target is evaluated before the kind: any job explicitly
+/// targeted at an Eggwork node routes to the Eggwork executor (which
+/// validates eligibility itself and never falls back to local execution).
+/// `Local` jobs keep the pre-existing mapping unchanged.
 pub fn executor_kind_for_job(job: &JobRecord) -> Option<ExecutorKind> {
+    if matches!(job.target, ExecutionTarget::EggworkNode { .. }) {
+        return Some(ExecutorKind::Eggwork);
+    }
     match (job.kind, executor_variant(&job.payload)) {
         (JobKind::Test, _) => Some(ExecutorKind::Test),
         (JobKind::AgentTurn, _) => Some(ExecutorKind::AgentTurn),
@@ -364,8 +376,8 @@ pub(crate) fn executor_variant(payload: &codegg_core::jobs::JobPayload) -> Paylo
 mod tests {
     use super::*;
     use codegg_core::jobs::{
-        IdempotencyClass, JobId, JobKind, JobPayload, JobPriority, JobSource, JobState,
-        ResourceRequest, RetryPolicy,
+        ExecutionTarget, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority, JobSource,
+        JobState, ResourceRequest, RetryPolicy,
     };
     use codegg_core::workspace::WorkspaceId;
     use std::collections::HashMap;
@@ -486,6 +498,7 @@ mod tests {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         }
     }
 }

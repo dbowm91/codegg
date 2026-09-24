@@ -330,6 +330,56 @@ impl CoreDaemon {
                     "tool program executor already supplied by scheduler"
                 );
             }
+            // Fixed-target Eggwork remote execution (M001). The executor is
+            // registered only when named nodes are configured; Eggwork jobs
+            // without a matching profile fail closed at execution time.
+            match codegg_config::schema::Config::load() {
+                Ok(config) => {
+                    if let Some(ref eggwork) = config.eggwork {
+                        match crate::scheduler::eggwork::EggworkExecutorConfig::from_daemon_config(
+                            eggwork,
+                        ) {
+                            Ok(exec_config) => {
+                                if exec_config.nodes.is_empty() {
+                                    tracing::info!(
+                                        "eggwork executor not registered: no nodes configured"
+                                    );
+                                } else {
+                                    let count = exec_config.nodes.len();
+                                    let executor = crate::scheduler::eggwork::EggworkExecutor::new(
+                                        exec_config.with_store(deps.job_store.clone()),
+                                    );
+                                    if let Err(error) =
+                                        scheduler.register_executor_sync(Arc::new(executor))
+                                    {
+                                        tracing::warn!(
+                                            ?error,
+                                            "eggwork executor registration failed"
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            node_count = count,
+                                            "eggwork executor registered"
+                                        );
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                tracing::error!(
+                                    error = %error,
+                                    "USER ACTION REQUIRED: eggwork executor not registered - fix [eggwork.nodes] key material paths"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        ?error,
+                        "eggwork executor not registered: daemon config unavailable"
+                    );
+                }
+            }
         }
         if should_spawn_scheduler {
             let _handle = scheduler.spawn_run();

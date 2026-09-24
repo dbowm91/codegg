@@ -8,8 +8,9 @@
 #![cfg(test)]
 
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, CancelReason, DaemonGeneration, IdempotencyClass, JobId,
-    JobKind, JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    AttemptCompletion, AttemptState, CancelReason, DaemonGeneration, ExecutionTarget,
+    IdempotencyClass, JobId, JobKind, JobPriority, JobSource, JobStore, NewJob, ResourceRequest,
+    RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 use std::time::Duration;
@@ -54,6 +55,7 @@ fn make_job(parent: Option<JobId>) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
     if let Some(pid) = parent {
         job.parent_job_id = Some(pid);

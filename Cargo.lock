@@ -885,6 +885,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "bytes",
  "candle-core",
  "candle-nn",
  "candle-transformers",
@@ -908,6 +909,8 @@ dependencies = [
  "eggsentry",
  "eggup-acquisition",
  "eggup-core",
+ "eggwork-client",
+ "eggwork-core",
  "flate2",
  "futures-executor",
  "futures-util",
@@ -1884,6 +1887,34 @@ version = "0.1.0"
 source = "git+https://github.com/eggstack/eggup.git?rev=66813b3b94de3a9b2f270e0000dc339ef6f0b478#66813b3b94de3a9b2f270e0000dc339ef6f0b478"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "eggwork-client"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggwork.git?rev=128f808c62f176d414dd18a705773e45f5e2891a#128f808c62f176d414dd18a705773e45f5e2891a"
+dependencies = [
+ "bytes",
+ "eggfetch-core",
+ "eggwork-core",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "eggwork-core"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggwork.git?rev=128f808c62f176d414dd18a705773e45f5e2891a#128f808c62f176d414dd18a705773e45f5e2891a"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

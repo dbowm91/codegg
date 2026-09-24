@@ -14,10 +14,11 @@ pub use paths::{
     load_config, merge_configs, parse_config, resolve_config_paths, system_config_path,
 };
 pub use schema::{
-    AuthConfig, Config, DiscoveryConfig, DiscoveryMode, DiscoveryRootConfig, ModelProfileConfig,
-    ModelRouteConfig, ModelRouterConfig, OrchestrationConfig, OrchestrationTier, SchedulerConfig,
-    SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig,
-    SymlinkPolicy, ToolAdvisorConfig, ToolAdvisorRemoteConfig, ToolAdvisorTrainingDataConfig,
+    AuthConfig, Config, DiscoveryConfig, DiscoveryMode, DiscoveryRootConfig, EggworkConfig,
+    EggworkNodeProfile, ModelProfileConfig, ModelRouteConfig, ModelRouterConfig,
+    OrchestrationConfig, OrchestrationTier, SchedulerConfig, SchedulerFairnessConfig,
+    SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig, SymlinkPolicy,
+    ToolAdvisorConfig, ToolAdvisorRemoteConfig, ToolAdvisorTrainingDataConfig,
     VIRTUAL_MODEL_PREFIX,
 };
 pub use watcher::ConfigWatcher;

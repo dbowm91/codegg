@@ -37,8 +37,8 @@ use crate::tool::backend::{StructuredToolResult, ToolExecutionContext, ToolProve
 use crate::tool::contract::{ToolCallerPolicy, ToolContract, ToolEffectClass};
 use crate::tool::{Tool, ToolCategory};
 use codegg_core::jobs::{
-    IdempotencyClass as JobsIdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
-    ResourceRequest, RetryPolicy,
+    ExecutionTarget, IdempotencyClass as JobsIdempotencyClass, JobKind, JobPayload, JobPriority,
+    JobSource, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::tool_program::{self, ProgramStore};
 
@@ -544,6 +544,7 @@ impl ToolProgramTool {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
 
         let submitted = submission

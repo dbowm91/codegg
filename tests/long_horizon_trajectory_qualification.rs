@@ -77,8 +77,8 @@ use codegg_core::goal::{
 };
 use codegg_core::jobs::store::JobStoreQuery;
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, DaemonGeneration, IdempotencyClass, JobId, JobKind,
-    JobPayload, JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    AttemptCompletion, AttemptState, DaemonGeneration, ExecutionTarget, IdempotencyClass, JobId,
+    JobKind, JobPayload, JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
     SqliteJobStore, GOAL_PROVENANCE_LABEL_KEY,
 };
 use codegg_core::model_profile::resolve::infer_builtin_profile;
@@ -196,6 +196,7 @@ fn test_job_spec(session_id: &str, kind: JobKind, payload: JobPayload) -> NewJob
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

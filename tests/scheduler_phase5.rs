@@ -31,9 +31,9 @@ use codegg::scheduler::{
 };
 
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, InMemoryScheduleStore, JobKind,
-    JobPayload, JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, ResourceRequest,
-    RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, InMemoryScheduleStore,
+    JobKind, JobPayload, JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob,
+    ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -82,6 +82,7 @@ fn build_job(workspace: &WorkspaceId, kind: JobKind) -> JobRecord {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -305,6 +306,7 @@ fn build_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

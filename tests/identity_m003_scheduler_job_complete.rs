@@ -29,8 +29,9 @@ use codegg_core::audit_instrumentation::{
     self as instr, emit_counters_snapshot, ExecutionAuditEmitter,
 };
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind,
-    JobPayload, JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    AttemptCompletion, AttemptState, DaemonGeneration, ExecutionTarget, IdempotencyClass,
+    InMemoryJobStore, JobKind, JobPayload, JobPriority, JobSource, JobStore, NewJob,
+    ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -98,6 +99,7 @@ fn new_job(workspace: codegg_core::workspace::WorkspaceId, session: Option<Strin
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

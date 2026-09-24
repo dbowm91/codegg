@@ -494,6 +494,71 @@ pub enum JobKind {
     Unsupported,
 }
 
+/// Durable, explicit target for a CodeGG job.
+///
+/// The target is selected at job creation time and persisted on the
+/// `JobRecord`. CodeGG owns target selection entirely; remote
+/// execution substrates never select an alternate target.
+///
+/// * `Local` (default) — the job runs through the existing local
+///   executor kinds. Historical persisted jobs without an explicit
+///   target deserialize to `Local`.
+/// * `EggworkNode { node_id }` — the job runs on the named Eggwork
+///   node whose TLS material lives in daemon configuration. Only the
+///   node id is persisted on the job; credentials and endpoints are
+///   resolved against the daemon configuration at execute time. The
+///   scheduler permit lifetime includes the remote execution.
+///
+/// Eggwork `busy`, `draining`, capability mismatch, and transport
+/// failures are reported back to CodeGG policy. The executor does not
+/// select another node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "node_id")]
+pub enum ExecutionTarget {
+    /// Default. Job runs through the existing local executor kinds.
+    #[default]
+    Local,
+    /// Job runs on the named Eggwork node. The executor resolves
+    /// TLS material against the daemon's `eggwork` configuration
+    /// before any upload or execute side effect.
+    EggworkNode { node_id: String },
+}
+
+impl ExecutionTarget {
+    /// Returns the node id if this target is an Eggwork remote target;
+    /// `None` for `Local` (the default for historical persisted jobs).
+    pub fn eggwork_node_id(&self) -> Option<&str> {
+        match self {
+            ExecutionTarget::Local => None,
+            ExecutionTarget::EggworkNode { node_id } => Some(node_id.as_str()),
+        }
+    }
+
+    /// Validate the target's identifier bounds. Empty or oversized
+    /// node ids are rejected so a malformed target never reaches an
+    /// executor.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            ExecutionTarget::Local => Ok(()),
+            ExecutionTarget::EggworkNode { node_id } => {
+                if node_id.is_empty() {
+                    return Err("eggwork node id must not be empty");
+                }
+                if node_id.len() > 128 {
+                    return Err("eggwork node id exceeds 128-byte limit");
+                }
+                if !node_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                {
+                    return Err("eggwork node id contains forbidden characters");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 impl JobKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -1117,6 +1182,10 @@ pub struct NewJob {
     pub parent_instruction_sequence: Option<u32>,
     /// M014-D1: Typed relation kind for child lineage.
     pub relation_kind: Option<String>,
+    /// Durable execution target selected before any remote
+    /// invocation. Defaults to [`ExecutionTarget::Local`] for
+    /// callers that do not specify one.
+    pub target: ExecutionTarget,
 }
 
 impl NewJob {
@@ -1170,6 +1239,11 @@ pub struct JobRecord {
     pub parent_instruction_sequence: Option<u32>,
     /// M014-D1: Typed relation kind for child lineage.
     pub relation_kind: Option<String>,
+    /// Durable execution target. Persisted with the job and read on
+    /// every dispatch. Historical jobs without an explicit target
+    /// deserialize to [`ExecutionTarget::Local`].
+    #[serde(default)]
+    pub target: ExecutionTarget,
     /// Free-form metadata persisted alongside the job (tool name, run
     /// identifier, etc.). Not used by the queue state machine.
     #[serde(default)]
@@ -1192,6 +1266,42 @@ pub struct JobAttempt {
     pub error: Option<JobErrorRecord>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Optional bounded provenance for a remote execution substrate
+    /// (Eggwork M001). The serialized form is a JSON document with
+    /// `node_id`, `execution_id`, `generation`, and `lease_id`.
+    /// Stored before the remote handle is relied on for
+    /// reconciliation, restart, or cancel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_handle: Option<RemoteExecutionHandle>,
+}
+
+/// Persisted provenance for one remote execution handle. Survives
+/// daemon restart so a CodeGG attempt can reconcile against the same
+/// remote identity or conservatively mark itself interrupted.
+///
+/// The shape is intentionally narrow: only the bounded identifiers
+/// needed to find, renew, or cancel one accepted remote execution.
+/// No endpoint, certificate, or credential material is stored here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteExecutionHandle {
+    /// Schema version of this handle envelope. Bumped if a new field
+    /// is added; older daemons ignore unknown fields under
+    /// `serde(default)`.
+    pub schema_version: u16,
+    /// Stable node identifier this attempt is bound to (matches
+    /// `ExecutionTarget::EggworkNode::node_id`).
+    pub node_id: String,
+    /// Eggwork execution id. Maps one-to-one to the CodeGG attempt.
+    pub execution_id: String,
+    /// Eggwork generation. Stable for this CodeGG attempt.
+    pub generation: u64,
+    /// Eggwork lease id (bearer token for control operations).
+    pub lease_id: String,
+}
+
+impl RemoteExecutionHandle {
+    /// Current schema version. The first public revision is `1`.
+    pub const SCHEMA_VERSION: u16 = 1;
 }
 
 /// Reason attached to a cancellation request.
@@ -1394,6 +1504,19 @@ pub trait JobStore: Send + Sync {
         &self,
         _attempt_id: &AttemptId,
         _executor: &str,
+    ) -> Result<(), JobStoreError> {
+        Ok(())
+    }
+
+    /// Persist remote execution provenance for an attempt before it is
+    /// relied on for reconciliation, restart, or cancel. The default
+    /// implementation keeps custom test stores source-compatible; the
+    /// built-in stores serialize the bounded handle so it survives a
+    /// daemon restart. `None` clears any previously persisted handle.
+    async fn set_attempt_remote_handle(
+        &self,
+        _attempt_id: &AttemptId,
+        _handle: Option<&RemoteExecutionHandle>,
     ) -> Result<(), JobStoreError> {
         Ok(())
     }

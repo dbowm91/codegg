@@ -823,6 +823,7 @@ pub fn job_submit_from_dto(
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: crate::jobs::ExecutionTarget::default(),
     })
 }
 

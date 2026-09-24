@@ -17,9 +17,9 @@ use codegg::scheduler::{
     JobScheduler, JobSubmissionService, ResolvedSchedulerConfig,
 };
 use codegg_core::jobs::{
-    CancelOutcome, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
-    JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, RecoveryPolicy, ResourceRequest,
-    RetryPolicy,
+    CancelOutcome, DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind,
+    JobPayload, JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, RecoveryPolicy,
+    ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -67,6 +67,7 @@ fn build_managed_process_spec(workspace: &WorkspaceId, argv: Vec<String>) -> New
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -101,6 +102,7 @@ fn build_subagent_spec(workspace: &WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 

@@ -7,8 +7,9 @@
 use codegg::tool::Tool;
 use codegg_core::goal::GoalStore;
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, DaemonGeneration, IdempotencyClass, JobPayload, JobPriority,
-    JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy, SqliteJobStore,
+    AttemptCompletion, AttemptState, DaemonGeneration, ExecutionTarget, IdempotencyClass,
+    JobPayload, JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    SqliteJobStore,
 };
 use codegg_core::work_plan::{
     NewWorkItem, NewWorkPlan, WorkAcceptance, WorkAcceptanceDisposition, WorkEvidenceKind,
@@ -129,6 +130,7 @@ async fn insert_job_with_state(
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         })
         .await
         .unwrap();
@@ -427,6 +429,7 @@ async fn in_flight_job_yields_wait_behavior() {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         })
         .await
         .unwrap();

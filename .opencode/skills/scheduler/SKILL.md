@@ -159,7 +159,11 @@ it does not restore unscheduled execution.
 7. **`executor_kind_for_job` is the single source of truth** for
    `JobRecord → ExecutorKind` mapping. The bash-dispatch path uses
    `ExecutorKind::BashDispatch`; reads do NOT persist to RunStore
-   (matching the native tool behaviour).
+   (matching the native tool behaviour). Routing is target-first:
+   `ExecutionTarget::EggworkNode` always maps to `ExecutorKind::Eggwork`
+   (eligibility enforced by its `validate()`, remote Test deferred,
+   no local fallback); `Local` keeps the pre-existing mapping.
+   `scripts/check_eggwork_target_routing.py` pins these invariants.
 8. **Static guard exemption model.** `check_scheduler_bypass.py` no
    longer accepts whole-file exemptions for files that contain both
    scheduler-owned and compatibility paths (e.g. `src/agent/loop.rs`).

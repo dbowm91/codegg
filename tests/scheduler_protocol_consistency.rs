@@ -16,8 +16,8 @@ use codegg::scheduler::{
 };
 use codegg_core::jobs::store::JobStoreQuery;
 use codegg_core::jobs::{
-    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
-    JobRecord, JobSource, JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload,
+    JobPriority, JobRecord, JobSource, JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -48,6 +48,7 @@ fn build_managed_argv_job(workspace: &WorkspaceId, argv: Vec<String>) -> NewJob 
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -77,6 +78,7 @@ fn build_slow_job(workspace: &WorkspaceId) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -547,6 +549,7 @@ async fn event_log_boundedness() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
     let _ = scheduler.submit(holder_spec).await;
     // Wait for the holder to be admitted.
@@ -579,6 +582,7 @@ async fn event_log_boundedness() {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         };
         let _ = scheduler.submit(spec).await;
     }
@@ -755,6 +759,7 @@ async fn invalid_payload_for_kind_is_rejected() {
                 parent_program_id: None,
                 parent_instruction_sequence: None,
                 relation_kind: None,
+                target: ExecutionTarget::default(),
             },
         )
         .await

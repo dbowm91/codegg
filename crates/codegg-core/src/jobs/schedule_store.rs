@@ -681,8 +681,8 @@ fn row_to_schedule(row: &sqlx::sqlite::SqliteRow) -> Result<ScheduleRecord, Sche
 mod tests {
     use super::*;
     use crate::jobs::{
-        DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPriority, JobSource,
-        NewJob, ResourceRequest, RetryPolicy,
+        DaemonGeneration, ExecutionTarget, IdempotencyClass, InMemoryJobStore, JobKind,
+        JobPriority, JobSource, NewJob, ResourceRequest, RetryPolicy,
     };
 
     fn ws() -> WorkspaceId {
@@ -824,6 +824,7 @@ mod tests {
                 parent_program_id: None,
                 parent_instruction_sequence: None,
                 relation_kind: None,
+                target: ExecutionTarget::default(),
             })
             .await
             .unwrap();

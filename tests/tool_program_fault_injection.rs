@@ -780,6 +780,7 @@ async fn authority_digest_validated_at_admission() {
             parent_program_id: None,
             parent_instruction_sequence: None,
             relation_kind: None,
+            target: ExecutionTarget::default(),
         }
     }
 

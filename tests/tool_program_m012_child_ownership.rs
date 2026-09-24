@@ -13,8 +13,9 @@
 #![cfg(test)]
 
 use codegg_core::jobs::{
-    store::InMemoryJobStore, AttemptId, CancelReason, IdempotencyClass, JobId, JobKind, JobPayload,
-    JobPriority, JobSource, JobState, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    store::InMemoryJobStore, AttemptId, CancelReason, ExecutionTarget, IdempotencyClass, JobId,
+    JobKind, JobPayload, JobPriority, JobSource, JobState, JobStore, NewJob, ResourceRequest,
+    RetryPolicy,
 };
 use codegg_core::tool_program::ChildJobOp;
 use codegg_core::workspace::WorkspaceId;
@@ -61,6 +62,7 @@ fn make_child_job(parent_job_id: &JobId, call_id: &str, seq: u32) -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -100,6 +102,7 @@ fn make_parent_job() -> NewJob {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     }
 }
 
@@ -143,6 +146,7 @@ async fn c12_new_job_carries_parent_fields() {
         parent_program_id: None,
         parent_instruction_sequence: None,
         relation_kind: None,
+        target: ExecutionTarget::default(),
     };
     assert_eq!(
         job.parent_job_id.as_ref().map(|j| j.as_str()),

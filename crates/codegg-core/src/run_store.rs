@@ -169,6 +169,8 @@ pub enum ActualBackend {
     /// Git-mutating managed process (legacy, prefer `Git`).
     #[deprecated(note = "Use ActualBackend::Git instead")]
     GitMutating,
+    /// Fixed-target remote execution on a named Eggwork node.
+    Eggwork,
     /// Command was rejected before execution.
     Rejected { reason: String },
 }
@@ -184,6 +186,7 @@ impl ActualBackend {
             Self::Git => "git",
             #[allow(deprecated)]
             Self::GitMutating => "git_mutating",
+            Self::Eggwork => "eggwork",
             Self::Rejected { .. } => "rejected",
         }
     }
