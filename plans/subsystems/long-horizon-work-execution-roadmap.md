@@ -349,6 +349,33 @@ This roadmap closes only when:
 - representative long-running work survives restart and repeated context transitions with deterministic evidence;
 - no new workflow engine or second compaction/history authority was introduced.
 
+## 11.1 Post-closure Eggplan assessment integration boundary
+
+The M001-M005 long-horizon WorkPlan roadmap remains historically closed. A
+later cross-repository adoption effort must not reopen or transfer WorkPlan
+storage/runtime ownership merely to reuse generic assessment semantics.
+
+The active integration authority is:
+
+- `plans/subsystems/eggplan-assessment-integration-roadmap.md`;
+- M001 `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md`.
+
+Eggplan's pure CodeGG bridge exposed one missing CodeGG provenance primitive:
+completed jobs/runs do not durably record the exact source subject they
+observed. That primitive is attempt-scoped execution provenance, not a
+WorkPlan-domain field.
+
+Until the integration M001 closes:
+
+- existing CodeGG WorkPlan assessment remains authoritative in production;
+- historical status-only evidence behavior remains unchanged;
+- Eggplan-backed differential adoption stays blocked;
+- Projection/Todo/Goal/checkpoint/context-epoch ownership remains exactly as
+  qualified by this closed roadmap.
+
+A positive integration M001 closure may unblock the separately registered
+Eggplan assessment-adoption milestone; it does not reopen M001-M005 here.
+
 ## 12. Milestone status
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
