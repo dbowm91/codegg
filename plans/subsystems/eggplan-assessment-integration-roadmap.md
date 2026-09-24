@@ -99,9 +99,27 @@ Exit condition: a completed current-generation CodeGG job can resolve its
 historical execution subject after restart without consulting the current
 worktree, while legacy/missing/drifted cases remain explicitly unavailable.
 
+### M004 — M001 provenance corrective completion
+
+Status: blocked on Eggwork fixed-target remote-execution C001 and current
+Eggplan bridge/head revalidation.
+
+Plan:
+
+- `plans/implementation/eggplan-assessment-integration/004-m001-provenance-corrective-completion.md`
+
+Complete the missing remote materialization seal, RunManifest and exact
+AgentRun correlation, complete bounded subject capture, persistence/restart
+qualification, and reviewed Eggplan conversion fixtures identified by the
+M001 corrective-pass closure.
+
+Exit condition: all M001 acceptance criteria are evidenced and M001 can
+positively close. This corrective milestone does not adopt the assessor.
+
 ### M002 — Eggplan-backed WorkPlan assessment adoption
 
-Status: blocked on positive M001 and current Eggplan staged-adoption handoff.
+Status: blocked on positive M001 (including M004) and current Eggplan
+staged-adoption handoff.
 
 Coordinate with Eggplan
 `plans/implementation/codegg-integration/002-staged-eggplan-assessment-adoption.md`.
