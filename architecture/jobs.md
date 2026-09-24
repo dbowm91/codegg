@@ -111,6 +111,17 @@ resubmitting, so one CodeGG attempt maps to at most one accepted remote
 execution. Bearer lease material lives only in this attempt-scoped row,
 never in job payloads, progress text, or audit metadata.
 
+### Execution subject provenance (schema v67)
+
+`JobAttempt.source_subject_json` is the authority for the source observed by
+an execution; retries capture independently. The scheduler captures a bounded
+Git subject from its leased canonical root before dispatch and seals local
+execution after executor cleanup. Stable means start and end subjects match;
+drift leaves the terminal job result truthful but is not subject-qualified
+evidence. Legacy NULL rows remain unavailable and are never backfilled from
+current Git state. Materialized remote sealing and RunManifest projection are
+not implemented yet and must not be treated as qualified.
+
 ### Eggwork lease-fencing contract (corrective C001)
 
 The persisted tuple must be byte-exact with the live Eggwork

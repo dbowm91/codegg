@@ -220,6 +220,7 @@ then re-run recover: continue").
 | `OperationFamily` (9 variants) | `operation_state.rs` | Routing/UI labels |
 | `RecoveryAction` (`Continue`, `Abort`, `Skip`) | `operation_state.rs` | Legal recovery actions |
 | `detect_operation_state_for_root` | `operation_state.rs` | Canonical state discovery |
+| `capture_execution_subject` | `execution_subject.rs` | Bounded HEAD and dirty working-tree digest at an explicit canonical root; repository identity is supplied by the caller |
 | `CommitInfo`, `BlameResult`, `BranchInfo`, `TagInfo`, `RemoteInfo` | various | Typed read results |
 
 ### Root crate

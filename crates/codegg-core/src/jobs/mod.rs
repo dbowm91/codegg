@@ -37,6 +37,7 @@ use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::StorageError;
+use crate::execution_subject::ExecutionSubjectProvenance;
 use crate::run_store::RunId;
 use crate::workspace::WorkspaceId;
 
@@ -1273,6 +1274,9 @@ pub struct JobAttempt {
     /// reconciliation, restart, or cancel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_handle: Option<RemoteExecutionHandle>,
+    /// Attempt-scoped source provenance. NULL on pre-provenance attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_subject: Option<ExecutionSubjectProvenance>,
 }
 
 /// Persisted provenance for one remote execution handle. Survives
@@ -1543,6 +1547,30 @@ pub trait JobStore: Send + Sync {
         _handle: Option<&RemoteExecutionHandle>,
     ) -> Result<(), JobStoreError> {
         Ok(())
+    }
+
+    /// Persist the source state observed immediately before execution.
+    async fn set_attempt_source_subject_started(
+        &self,
+        _job_id: &JobId,
+        _attempt_id: &AttemptId,
+        _provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        Err(JobStoreError::InvalidPayload(
+            "source subject persistence is unsupported by this store".into(),
+        ))
+    }
+
+    /// Seal attempt provenance after the live execution or immutable input snapshot.
+    async fn seal_attempt_source_subject(
+        &self,
+        _job_id: &JobId,
+        _attempt_id: &AttemptId,
+        _provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        Err(JobStoreError::InvalidPayload(
+            "source subject persistence is unsupported by this store".into(),
+        ))
     }
 
     /// Persist attempt heart-beat at `at`.

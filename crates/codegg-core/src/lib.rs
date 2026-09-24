@@ -10,6 +10,7 @@ pub mod bus;
 pub mod collaboration;
 pub mod context;
 pub mod error;
+pub mod execution_subject;
 pub mod goal;
 pub mod identity;
 pub mod jobs;

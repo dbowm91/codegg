@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration M001 — Durable Execution-Subject Provenance
 
-Status: ready for handoff
+Status: active
 
 Repository baseline:
 

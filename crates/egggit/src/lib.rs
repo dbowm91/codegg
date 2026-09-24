@@ -24,6 +24,7 @@
 pub mod blame;
 pub mod conflict;
 pub mod diff;
+pub mod execution_subject;
 pub mod log;
 pub mod operation_state;
 pub mod process;
@@ -42,6 +43,7 @@ pub use diff::{
     changed_files, diff_summary, diff_text, file_diff, validate_patch, ChangedFile, DiffMode,
     DiffSummary, FileDiff, PatchValidation,
 };
+pub use execution_subject::{capture_execution_subject, SubjectCaptureError};
 pub use log::{log_commits, CommitInfo};
 pub use operation_state::{
     detect_operation_state_for_root, detect_repository_operation_state, ApplyState, BisectState,

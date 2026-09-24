@@ -27,6 +27,10 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use codegg_core::agent_run::{AgentRunStore, AgentRunTerminalOutcome};
+use codegg_core::execution_subject::{
+    ExecutionSubjectKind, ExecutionSubjectProvenance, ExecutionSubjectRevision,
+    ExecutionSubjectState, SubjectSealKind, SubjectUnavailableReason,
+};
 use codegg_core::jobs::{
     AttemptCompletion, AttemptId, AttemptState, CancelReason, DaemonGeneration, FailureClass,
     JobErrorRecord, JobId, JobRecord, JobState, JobStore, JobStoreError,
@@ -1010,6 +1014,51 @@ impl JobScheduler {
             .begin_attempt(&job.job_id, &self.daemon_generation)
             .await?;
 
+        // Capture at the scheduler-owned canonical workspace boundary. A capture
+        // failure is durable unavailability and never blocks ordinary execution.
+        let source_subject =
+            match egggit::capture_execution_subject(&lease.path_policy().canonical_root).await {
+                Ok(captured) => {
+                    let subject = ExecutionSubjectRevision {
+                        schema_version:
+                            codegg_core::execution_subject::EXECUTION_SUBJECT_SCHEMA_VERSION,
+                        subject_kind: ExecutionSubjectKind::Git,
+                        repository_identity: format!(
+                            "codegg-workspace:{}",
+                            job.workspace_id.as_str()
+                        ),
+                        revision: captured.revision,
+                        state: if captured.dirty {
+                            ExecutionSubjectState::Dirty
+                        } else {
+                            ExecutionSubjectState::Clean
+                        },
+                        dirty_digest: captured.dirty_digest,
+                    };
+                    ExecutionSubjectProvenance::started(subject).ok()
+                }
+                Err(error) => {
+                    let reason = match error {
+                        egggit::SubjectCaptureError::NotGit => SubjectUnavailableReason::NotGit,
+                        egggit::SubjectCaptureError::BoundsExceeded => {
+                            SubjectUnavailableReason::BoundsExceeded
+                        }
+                        egggit::SubjectCaptureError::UnsafePath => {
+                            SubjectUnavailableReason::UnsafePath
+                        }
+                        egggit::SubjectCaptureError::Failed(_) => {
+                            SubjectUnavailableReason::CaptureFailed
+                        }
+                    };
+                    Some(ExecutionSubjectProvenance::unavailable(reason))
+                }
+            };
+        if let Some(provenance) = &source_subject {
+            self.store
+                .set_attempt_source_subject_started(&job.job_id, &attempt.attempt_id, provenance)
+                .await?;
+        }
+
         // Spawn the executor task. Permit is moved into the task.
         let cancellation = CancellationToken::new();
         let ctx = JobExecutionContext {
@@ -1101,6 +1150,8 @@ impl JobScheduler {
         }
         let running_tasks = self.running_tasks.clone();
         let task_attempt_id = attempt_id.clone();
+        let source_subject_for_task = source_subject.clone();
+        let subject_root_for_task = lease_for_task.path_policy().canonical_root.clone();
         let audit_emitter_for_task = self.audit_emitter.lock().await.clone();
         let job_for_task = job.clone();
         {
@@ -1161,6 +1212,46 @@ impl JobScheduler {
                         None => execution.await,
                     }
                 };
+                if let Some(mut provenance) = source_subject_for_task {
+                    if provenance.captured.is_some() {
+                        if let Ok(captured) =
+                            egggit::capture_execution_subject(&subject_root_for_task).await
+                        {
+                            let sealed = ExecutionSubjectRevision {
+                                schema_version:
+                                    codegg_core::execution_subject::EXECUTION_SUBJECT_SCHEMA_VERSION,
+                                subject_kind: ExecutionSubjectKind::Git,
+                                repository_identity: provenance
+                                    .captured
+                                    .as_ref()
+                                    .map(|s| s.repository_identity.clone())
+                                    .unwrap_or_default(),
+                                revision: captured.revision,
+                                state: if captured.dirty {
+                                    ExecutionSubjectState::Dirty
+                                } else {
+                                    ExecutionSubjectState::Clean
+                                },
+                                dirty_digest: captured.dirty_digest,
+                            };
+                            if provenance
+                                .seal(sealed, SubjectSealKind::LiveExecutionEnd)
+                                .is_ok()
+                            {
+                                if let Err(error) = store
+                                    .seal_attempt_source_subject(
+                                        &job_id_for_task,
+                                        &attempt_id,
+                                        &provenance,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(job_id = %job_id_for_task, attempt_id = %attempt_id, %error, "failed to persist sealed execution subject");
+                                }
+                            }
+                        }
+                    }
+                }
                 {
                     let mut completions_guard = completions.lock().await;
                     let seq = completions_seq.fetch_add(1, Ordering::Relaxed);

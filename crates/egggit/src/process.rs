@@ -192,6 +192,20 @@ pub async fn run(args: &[String], cwd: &Path) -> Result<StdOutput, EgggitError> 
     .map_err(|error| EgggitError::Join(error.to_string()))?
 }
 
+/// Run a synchronous read-only Git command using the governed environment policy.
+pub fn run_sync(args: &[String], cwd: &Path) -> Result<StdOutput, EgggitError> {
+    if !cwd.exists() {
+        return Err(EgggitError::NotARepository(cwd.display().to_string()));
+    }
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("git".to_owned());
+    argv.extend_from_slice(args);
+    GitEnvPolicy::default()
+        .apply_sync(&argv, cwd)
+        .output()
+        .map_err(|e| EgggitError::Io(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

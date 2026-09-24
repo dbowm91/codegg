@@ -27,9 +27,10 @@ evidence correlation, and the host-owned completion arbiter.
 | Module re-exports | `crates/codegg-core/src/work_plan/mod.rs` |
 | Model tools (`work_plan_get`, `work_plan_update_item`) | `src/tool/work_plan.rs` |
 | Evidence assembly (jobs/runs) | `src/work_plan_evidence.rs` |
+| Enriched evidence resolver | `src/work_plan_evidence.rs::assemble_resolved_evidence`; resolves subjects from durable JobAttempt rows only |
 | Completion arbiter + turn/Goal gates | `src/work_plan_arbiter.rs` |
 | Todo one-way sync | `src/work_plan_todo_sync.rs` |
-| DB schema | `crates/codegg-core/src/session/schema.rs` migration v59; layout `storage::STORAGE_LAYOUT_VERSION = 59` |
+| DB schema | `crates/codegg-core/src/session/schema.rs` migration v67; layout `storage::STORAGE_LAYOUT_VERSION = 67` |
 | Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `crates/codegg-core/tests/work_plan_projection_arbiter.rs`, `tests/work_plan_projection_arbiter.rs` + in-module unit tests |
 
 ## How It Works

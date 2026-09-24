@@ -37,6 +37,11 @@ Storage root: `<workspace>/.codegg/runs/`.
    descriptor, actual_backend/fallback. Rewrites index entry under the
    serialization lock. Triggers best-effort retention cleanup.
 
+Scheduler-owned source-subject provenance is currently authoritative on
+`JobAttempt`. RunManifest propagation is not implemented yet; consumers must
+resolve historical subjects through the durable job/attempt link and must not
+reconstruct them from the RunStore workspace path.
+
 ### Directory Layout
 
 ```

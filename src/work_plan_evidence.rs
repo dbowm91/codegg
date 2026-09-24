@@ -5,11 +5,90 @@
 //! assessment. It does not execute tools or infer provenance from model prose.
 //! A ref whose target cannot be found is `Unavailable` — never satisfied.
 
+use codegg_core::execution_subject::{
+    ExecutionSubjectProvenance, SubjectDisposition, SubjectUnavailableReason,
+};
 use codegg_core::jobs::{JobId, JobState, JobStore, SqliteJobStore};
 use codegg_core::work_plan::{
     HostEvidenceStatus, WorkEvidenceKind, WorkItem, WorkPlanEvidenceSnapshot,
 };
 use sqlx::SqlitePool;
+
+/// Host-resolved evidence with exact durable execution lineage. Unlike the legacy
+/// status snapshot, this value never consults the current worktree.
+#[derive(Debug, Clone)]
+pub struct ResolvedWorkEvidence {
+    pub kind: WorkEvidenceKind,
+    pub ref_id: String,
+    pub status: HostEvidenceStatus,
+    pub source_subject: Option<codegg_core::execution_subject::ExecutionSubjectRevision>,
+    pub source_subject_disposition: SubjectDisposition,
+    pub native_job_id: Option<String>,
+    pub native_attempt_id: Option<String>,
+    pub native_run_id: Option<String>,
+}
+
+fn resolve_subject(
+    provenance: Option<ExecutionSubjectProvenance>,
+) -> (
+    Option<codegg_core::execution_subject::ExecutionSubjectRevision>,
+    SubjectDisposition,
+) {
+    match provenance {
+        Some(p) if p.disposition == SubjectDisposition::Stable => (p.captured, p.disposition),
+        Some(p) if p.disposition == SubjectDisposition::Started => (p.captured, p.disposition),
+        Some(p) => (None, p.disposition),
+        None => (
+            None,
+            SubjectDisposition::Unavailable(SubjectUnavailableReason::LegacyMissingProvenance),
+        ),
+    }
+}
+
+/// Resolve status and the historical attempt subject for each bounded ref.
+pub async fn assemble_resolved_evidence(
+    pool: &SqlitePool,
+    items: &[WorkItem],
+) -> Result<Vec<ResolvedWorkEvidence>, String> {
+    const MAX_EVIDENCE_REFS: usize = 256;
+    let store = SqliteJobStore::new(pool.clone());
+    let mut resolved = Vec::new();
+    for item in items {
+        for evidence in &item.evidence {
+            if resolved.len() >= MAX_EVIDENCE_REFS {
+                return Ok(resolved);
+            }
+            let id = JobId::new_unchecked(evidence.ref_id.as_str().to_owned());
+            let record = store.get_job(&id).await.map_err(|e| e.to_string())?;
+            let (status, attempt) = match record {
+                Some(job) => {
+                    let attempts = store
+                        .list_attempts(&job.job_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    (
+                        job_state_to_evidence(job.state),
+                        attempts.into_iter().max_by_key(|a| a.sequence),
+                    )
+                }
+                None => (HostEvidenceStatus::Unavailable, None),
+            };
+            let (source_subject, source_subject_disposition) =
+                resolve_subject(attempt.as_ref().and_then(|a| a.source_subject.clone()));
+            resolved.push(ResolvedWorkEvidence {
+                kind: evidence.kind,
+                ref_id: evidence.ref_id.as_str().to_owned(),
+                status,
+                source_subject,
+                source_subject_disposition,
+                native_job_id: attempt.as_ref().map(|a| a.job_id.to_string()),
+                native_attempt_id: attempt.as_ref().map(|a| a.attempt_id.to_string()),
+                native_run_id: attempt.and_then(|a| a.run_id.map(|r| r.to_string())),
+            });
+        }
+    }
+    Ok(resolved)
+}
 
 fn job_state_to_evidence(state: JobState) -> HostEvidenceStatus {
     match state {

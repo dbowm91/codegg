@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active roadmap; M001 execution-subject provenance ready, M002 blocked on M001
+Status: active roadmap; M001 execution-subject provenance active, M002 blocked on M001
 
 Canonical authority:
 
@@ -84,7 +84,7 @@ worktree manager.
 
 ### M001 — Durable execution-subject provenance
 
-Status: ready.
+Status: active.
 
 Plan:
 

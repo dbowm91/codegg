@@ -16,6 +16,7 @@ use sqlx::{Row, SqlitePool};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::StorageError;
+use crate::execution_subject::ExecutionSubjectProvenance;
 use crate::jobs::{
     AttemptCompletion, AttemptId, AttemptState, CancelOutcome, CancelReason, CancelResult,
     DaemonGeneration, ExecutionTarget, IdempotencyClass, JobAttempt, JobErrorRecord, JobId,
@@ -310,6 +311,7 @@ fn begin_attempt_locked(
         created_at: now,
         updated_at: now,
         remote_handle: None,
+        source_subject: None,
     };
     let updated_job = JobRecord {
         state: JobState::Running,
@@ -589,6 +591,75 @@ impl JobStore for InMemoryJobStore {
             attempt_id.clone(),
             JobAttempt {
                 remote_handle: handle.cloned(),
+                updated_at: Utc::now(),
+                ..attempt
+            },
+        );
+        Ok(())
+    }
+
+    async fn set_attempt_source_subject_started(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        let mut guard = self.inner.lock().await;
+        let attempt = guard
+            .attempts
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        if attempt.job_id != *job_id {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        if attempt.source_subject.is_some() {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        if provenance.sealed.is_some() {
+            return Err(JobStoreError::InvalidPayload(
+                "start provenance cannot already be sealed".into(),
+            ));
+        }
+        guard.attempts.insert(
+            attempt_id.clone(),
+            JobAttempt {
+                source_subject: Some(provenance.clone()),
+                updated_at: Utc::now(),
+                ..attempt
+            },
+        );
+        Ok(())
+    }
+
+    async fn seal_attempt_source_subject(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        let mut guard = self.inner.lock().await;
+        let attempt = guard
+            .attempts
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        if attempt.job_id != *job_id {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let prior = attempt.source_subject.as_ref().ok_or_else(|| {
+            JobStoreError::InvalidPayload("cannot seal without start provenance".into())
+        })?;
+        if prior.captured != provenance.captured
+            || prior.sealed.is_some()
+            || provenance.sealed.is_none()
+        {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        guard.attempts.insert(
+            attempt_id.clone(),
+            JobAttempt {
+                source_subject: Some(provenance.clone()),
                 updated_at: Utc::now(),
                 ..attempt
             },
@@ -1543,7 +1614,7 @@ impl JobStore for SqliteJobStore {
             r#"
             SELECT id, job_id, sequence, state, daemon_generation, executor,
                    run_id, heartbeat_at, time_started, time_completed,
-                   error_json, time_created, time_updated, remote_handle_json
+                   error_json, time_created, time_updated, remote_handle_json, source_subject_json
             FROM job_attempt
             WHERE job_id = ?
             ORDER BY sequence ASC
@@ -1723,6 +1794,7 @@ impl JobStore for SqliteJobStore {
             created_at: now,
             updated_at: now,
             remote_handle: None,
+            source_subject: None,
         })
     }
 
@@ -1812,6 +1884,73 @@ impl JobStore for SqliteJobStore {
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         if result.rows_affected() == 0 {
             return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn set_attempt_source_subject_started(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        if provenance.sealed.is_some() {
+            return Err(JobStoreError::InvalidPayload(
+                "start provenance cannot already be sealed".into(),
+            ));
+        }
+        let json = serde_json::to_string(provenance)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        if json.len() > crate::execution_subject::MAX_EXECUTION_SUBJECT_JSON_BYTES {
+            return Err(JobStoreError::InvalidPayload(
+                "source subject provenance exceeds size bound".into(),
+            ));
+        }
+        let result = sqlx::query("UPDATE job_attempt SET source_subject_json = ?, time_updated = ? WHERE id = ? AND job_id = ? AND source_subject_json IS NULL")
+            .bind(json).bind(Utc::now().timestamp_millis()).bind(attempt_id.as_str()).bind(job_id.as_str()).execute(&self.pool).await.map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn seal_attempt_source_subject(
+        &self,
+        job_id: &JobId,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        let json = serde_json::to_string(provenance)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        if json.len() > crate::execution_subject::MAX_EXECUTION_SUBJECT_JSON_BYTES {
+            return Err(JobStoreError::InvalidPayload(
+                "source subject provenance exceeds size bound".into(),
+            ));
+        }
+        let prior =
+            sqlx::query("SELECT source_subject_json FROM job_attempt WHERE id = ? AND job_id = ?")
+                .bind(attempt_id.as_str())
+                .bind(job_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?
+                .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        let prior_json: Option<String> = prior.try_get("source_subject_json").unwrap_or(None);
+        let old: ExecutionSubjectProvenance =
+            serde_json::from_str(prior_json.as_deref().ok_or_else(|| {
+                JobStoreError::InvalidPayload("cannot seal without start provenance".into())
+            })?)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        if old.captured != provenance.captured
+            || old.sealed.is_some()
+            || provenance.sealed.is_none()
+        {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let result = sqlx::query("UPDATE job_attempt SET source_subject_json = ?, time_updated = ? WHERE id = ? AND job_id = ? AND source_subject_json = ?")
+            .bind(json).bind(Utc::now().timestamp_millis()).bind(attempt_id.as_str()).bind(job_id.as_str()).bind(prior_json).execute(&self.pool).await.map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
         }
         Ok(())
     }
@@ -2598,6 +2737,11 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
         ),
         _ => None,
     };
+    let source_subject_json: Option<String> = row.try_get("source_subject_json").unwrap_or(None);
+    let source_subject = source_subject_json
+        .filter(|s| !s.is_empty())
+        .map(|s| serde_json::from_str(&s).map_err(|e| JobStoreError::Serialization(e.to_string())))
+        .transpose()?;
     Ok(JobAttempt {
         attempt_id: AttemptId::new_unchecked(id),
         job_id: JobId::new_unchecked(job_id),
@@ -2615,6 +2759,7 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
         updated_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_updated)
             .unwrap_or_else(Utc::now),
         remote_handle,
+        source_subject,
     })
 }
 
