@@ -742,12 +742,12 @@ async fn live_restart_live_reconciliation_cancels_under_persisted_handle() {
     // No second remote execution was accepted on reconnect, and the
     // submitted tuple is exactly the persisted tuple.
     assert_eq!(submits.load(Ordering::SeqCst), 1);
-    let submitted = live.factory.submitted_handles.lock().unwrap();
+    let submitted: Vec<ExecutionHandle> =
+        live.factory.submitted_handles.lock().unwrap().clone();
     assert_eq!(submitted.len(), 1);
     assert_eq!(submitted[0].execution_id.as_str(), durable.execution_id);
     assert_eq!(submitted[0].generation.get(), durable.generation);
     assert_eq!(submitted[0].lease_id.as_str(), durable.lease_id);
-    drop(submitted);
     live.shutdown().await;
 }
 
