@@ -53,7 +53,7 @@ pub use config::{
 };
 pub use eggwork::{
     to_eggwork_handle, BoxEventStream, EggworkClientFactory, EggworkExecutor,
-    EggworkExecutorConfig, EggworkNodeClient, ResolvedEggworkNode,
+    EggworkExecutorConfig, EggworkNodeClient, NodeClientFactory, ResolvedEggworkNode,
 };
 pub use executor::{
     ExecutorAvailability, ExecutorCompletion, ExecutorHealth, ExecutorKind, ExecutorMetrics,
