@@ -1,5 +1,9 @@
 [workspace]
 members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/codegg-git"]
+# `crates/eggwork-test-node` is a standalone test-fixture workspace (own
+# lockfile): it must resolve `eggwork-server` without this workspace's
+# `sqlx` sqlite linkage (see dev-dependencies comment above).
+exclude = ["crates/eggwork-test-node"]
 resolver = "2"
 
 [workspace.package]
@@ -288,6 +292,15 @@ candle-transformers = { version = "0.11", default-features = false, optional = t
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+# Eggwork corrective C001 live-node fixture (test-only): ephemeral identity
+# generation only. The live node itself runs in the workspace-excluded
+# `crates/eggwork-test-node` helper (own lockfile, same immutable Eggwork
+# revision): `eggwork-server` cannot link into this package's test binaries
+# because its `rusqlite -> libsqlite3-sys 0.38` collides with
+# `sqlx-sqlite -> libsqlite3-sys 0.28` (`links = "sqlite3"` must be unique
+# per resolve graph). Production dependencies are unchanged.
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [features]
 default = ["arboard"]

@@ -52,8 +52,8 @@ pub use config::{
     ResolvedSchedulerConfig, SchedulerConfig, SchedulerConfigError, SchedulerRolloutMode,
 };
 pub use eggwork::{
-    BoxEventStream, EggworkClientFactory, EggworkExecutor, EggworkExecutorConfig,
-    EggworkNodeClient, ResolvedEggworkNode,
+    to_eggwork_handle, BoxEventStream, EggworkClientFactory, EggworkExecutor,
+    EggworkExecutorConfig, EggworkNodeClient, ResolvedEggworkNode,
 };
 pub use executor::{
     ExecutorAvailability, ExecutorCompletion, ExecutorHealth, ExecutorKind, ExecutorMetrics,

@@ -8,7 +8,7 @@ mod common;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,8 +34,8 @@ use eggwork_client::{ClientError as EggworkClientError, WorkspaceReady};
 use eggwork_core::{
     ArtifactId, ArtifactRecord, ArtifactType, BlobDigest, EventMetadata, EventSequence,
     ExecutionEvent, ExecutionEventKind, ExecutionGeneration, ExecutionHandle, ExecutionId,
-    ExecutionResult, ExecutionSnapshot, ExecutionSpec, ExecutionState, NodeCapabilities, NodeId,
-    NodeStatus, ProtocolVersion, ProtocolVersionRange, RelativePath,
+    ExecutionResult, ExecutionSnapshot, ExecutionSpec, ExecutionState, LeaseId, NodeCapabilities,
+    NodeId, NodeStatus, ProtocolVersion, ProtocolVersionRange, RelativePath,
     WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
 };
 use futures_util::StreamExt;
@@ -48,13 +48,24 @@ struct ScriptedClient {
     capabilities: Mutex<NodeCapabilities>,
     status: Mutex<NodeStatus>,
     submitted_argv: Mutex<Vec<Vec<String>>>,
+    /// Full submitted handles in acceptance order. The persisted-handle
+    /// tests compare the submitted lease against the durable lease so a
+    /// divergent-lease regression cannot hide behind id-only assertions.
+    submitted_handles: Mutex<Vec<ExecutionHandle>>,
     uploads: AtomicUsize,
     submits: AtomicUsize,
     cancels: Mutex<Vec<String>>,
+    cancel_leases: Mutex<Vec<String>>,
     renews: AtomicUsize,
+    renew_leases: Mutex<Vec<String>>,
     artifacts: Mutex<Vec<ArtifactRecord>>,
     artifact_bytes: Mutex<Vec<u8>>,
     hang_events: Mutex<bool>,
+    /// When enabled, the fake fences cancel/renew on the accepted lease
+    /// token like the real Eggwork server: a mismatched lease is rejected
+    /// with typed `invalid_lease` instead of succeeding.
+    fencing: AtomicBool,
+    accepted_leases: Mutex<HashMap<String, String>>,
 }
 
 fn test_capabilities(features: Vec<String>) -> NodeCapabilities {
@@ -112,13 +123,43 @@ impl ScriptedClient {
             capabilities: Mutex::new(test_capabilities(vec!["exec.argv.v1".to_string()])),
             status: Mutex::new(test_status(false, 0)),
             submitted_argv: Mutex::new(Vec::new()),
+            submitted_handles: Mutex::new(Vec::new()),
             uploads: AtomicUsize::new(0),
             submits: AtomicUsize::new(0),
             cancels: Mutex::new(Vec::new()),
+            cancel_leases: Mutex::new(Vec::new()),
             renews: AtomicUsize::new(0),
+            renew_leases: Mutex::new(Vec::new()),
             artifacts: Mutex::new(Vec::new()),
             artifact_bytes: Mutex::new(Vec::new()),
             hang_events: Mutex::new(false),
+            fencing: AtomicBool::new(false),
+            accepted_leases: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn enable_lease_fencing(&self) {
+        self.fencing.store(true, Ordering::SeqCst);
+    }
+
+    /// Typed `invalid_lease` rejection mirroring the real Eggwork server
+    /// (HTTP 403, code `invalid_lease`).
+    fn invalid_lease() -> EggworkClientError {
+        EggworkClientError::Api {
+            status: 403,
+            code: "invalid_lease".to_string(),
+            message: "execution lease is invalid".to_string(),
+        }
+    }
+
+    fn check_lease(&self, handle: &ExecutionHandle) -> Result<(), EggworkClientError> {
+        if !self.fencing.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let accepted = self.accepted_leases.lock().unwrap();
+        match accepted.get(handle.execution_id.as_str()) {
+            Some(expected) if expected == handle.lease_id.as_str() => Ok(()),
+            _ => Err(Self::invalid_lease()),
         }
     }
 }
@@ -169,7 +210,7 @@ impl EggworkNodeClient for ScriptedClient {
     async fn execute_in_workspace(
         &self,
         spec: &ExecutionSpec,
-        _handle: &ExecutionHandle,
+        handle: &ExecutionHandle,
         _workspace_id: &EggworkWorkspaceId,
     ) -> Result<codegg::scheduler::BoxEventStream, EggworkClientError> {
         self.submits.fetch_add(1, Ordering::SeqCst);
@@ -177,6 +218,11 @@ impl EggworkNodeClient for ScriptedClient {
             .lock()
             .unwrap()
             .push(spec.command.argv.clone());
+        self.submitted_handles.lock().unwrap().push(handle.clone());
+        self.accepted_leases.lock().unwrap().insert(
+            handle.execution_id.as_str().to_string(),
+            handle.lease_id.as_str().to_string(),
+        );
         if *self.hang_events.lock().unwrap() {
             Ok(
                 futures_util::stream::pending::<Result<ExecutionEvent, EggworkClientError>>()
@@ -199,19 +245,29 @@ impl EggworkNodeClient for ScriptedClient {
         &self,
         handle: &ExecutionHandle,
     ) -> Result<ExecutionSnapshot, EggworkClientError> {
+        self.check_lease(handle)?;
         self.cancels
             .lock()
             .unwrap()
             .push(handle.execution_id.as_str().to_string());
+        self.cancel_leases
+            .lock()
+            .unwrap()
+            .push(handle.lease_id.as_str().to_string());
         Ok(self.snapshot.lock().unwrap().clone())
     }
 
     async fn renew(
         &self,
-        _handle: &ExecutionHandle,
+        handle: &ExecutionHandle,
         _renewal_id: &str,
     ) -> Result<ExecutionSnapshot, EggworkClientError> {
+        self.check_lease(handle)?;
         self.renews.fetch_add(1, Ordering::SeqCst);
+        self.renew_leases
+            .lock()
+            .unwrap()
+            .push(handle.lease_id.as_str().to_string());
         Ok(self.snapshot.lock().unwrap().clone())
     }
 
@@ -439,6 +495,187 @@ async fn sqlite_target_and_handle_round_trip() {
         .unwrap();
     assert_eq!(persisted.execution_id, "exec-sql-1");
     assert_eq!(persisted.generation, 1);
+    assert_eq!(persisted.lease_id, "lease-sql-1");
+}
+
+// ── Lease identity through durable stores ──────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_memory_handle_round_trip_preserves_lease() {
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let record = store
+        .create_job(NewJob {
+            workspace_id: WorkspaceId::new_unchecked("ws-egg"),
+            session_id: None,
+            turn_id: None,
+            kind: JobKind::Build,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload: JobPayload::ManagedArgv {
+                argv: vec!["echo".to_string()],
+                cwd: None,
+            },
+            resource_request: ResourceRequest::default(),
+            timeout: None,
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency: IdempotencyClass::SafeRepeat,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: eggwork_target(),
+        })
+        .await
+        .unwrap();
+    let attempt = store
+        .begin_attempt(&record.job_id, &DaemonGeneration::new_unchecked("gen-mem"))
+        .await
+        .unwrap();
+    let handle = codegg_core::jobs::RemoteExecutionHandle::from_parts(
+        "node-1".to_string(),
+        "exec-mem-1".to_string(),
+        1,
+        "lease-mem-1".to_string(),
+    );
+    store
+        .set_attempt_remote_handle(&attempt.attempt_id, Some(&handle))
+        .await
+        .unwrap();
+    let attempts = store.list_attempts(&record.job_id).await.unwrap();
+    let persisted = attempts
+        .iter()
+        .find(|a| a.attempt_id == attempt.attempt_id)
+        .and_then(|a| a.remote_handle.clone())
+        .unwrap();
+    assert_eq!(persisted.execution_id, "exec-mem-1");
+    assert_eq!(persisted.generation, 1);
+    assert_eq!(persisted.lease_id, "lease-mem-1");
+    // The public reconstruction path rebuilds the exact fenced tuple.
+    let rebuilt = codegg::scheduler::to_eggwork_handle(&persisted).unwrap();
+    assert_eq!(rebuilt.execution_id.as_str(), "exec-mem-1");
+    assert_eq!(rebuilt.generation.get(), 1);
+    assert_eq!(rebuilt.lease_id.as_str(), "lease-mem-1");
+}
+
+/// C001: the lease submitted to the node must equal the persisted lease,
+/// and retransmission of the same attempt must reuse it without a second
+/// submit. Under the pre-corrective two-token implementation the first
+/// assertion fails (submitted != persisted).
+#[tokio::test(flavor = "current_thread")]
+async fn submitted_lease_matches_persisted_handle() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let record = store
+        .create_job(NewJob {
+            workspace_id: WorkspaceId::new_unchecked("ws-egg"),
+            session_id: None,
+            turn_id: None,
+            kind: JobKind::Build,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload: JobPayload::ManagedArgv {
+                argv: vec!["echo".to_string()],
+                cwd: None,
+            },
+            resource_request: ResourceRequest::default(),
+            timeout: None,
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency: IdempotencyClass::SafeRepeat,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: eggwork_target(),
+        })
+        .await
+        .unwrap();
+    let attempt = store
+        .begin_attempt(
+            &record.job_id,
+            &DaemonGeneration::new_unchecked("gen-lease"),
+        )
+        .await
+        .unwrap();
+    let client = Arc::new(ScriptedClient::succeeding());
+    let exec = executor_with(&client, Some(store.clone()));
+    let mut job = build_record(eggwork_target());
+    job.job_id = record.job_id.clone();
+    let mut first_ctx = bound_context(job.clone(), dir.path().to_path_buf());
+    first_ctx.attempt_id = attempt.attempt_id.clone();
+    let first = exec.execute(first_ctx).await;
+    assert_eq!(first.status, ExecutorStatus::Completed);
+    let attempts = store.list_attempts(&record.job_id).await.unwrap();
+    let persisted = attempts
+        .iter()
+        .find(|a| a.attempt_id == attempt.attempt_id)
+        .and_then(|a| a.remote_handle.clone())
+        .expect("remote handle persisted");
+    let submitted: Vec<ExecutionHandle> = client.submitted_handles.lock().unwrap().clone();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].execution_id.as_str(), persisted.execution_id);
+    assert_eq!(submitted[0].generation.get(), persisted.generation);
+    assert_eq!(submitted[0].lease_id.as_str(), persisted.lease_id);
+    // Retransmission of the same attempt reuses the exact persisted lease.
+    let mut second_ctx = bound_context(job, dir.path().to_path_buf());
+    second_ctx.attempt_id = attempt.attempt_id.clone();
+    let second = exec.execute(second_ctx).await;
+    assert_eq!(second.status, ExecutorStatus::Completed);
+    assert_eq!(client.submits.load(Ordering::SeqCst), 1);
+}
+
+/// The fenced scripted seam rejects a tampered lease with typed
+/// `invalid_lease` while the accepted lease still controls the execution.
+#[tokio::test(flavor = "current_thread")]
+async fn scripted_fencing_rejects_wrong_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(ScriptedClient::succeeding());
+    client.enable_lease_fencing();
+    let exec = executor_with(&client, None);
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Completed);
+    let accepted = client.submitted_handles.lock().unwrap()[0].clone();
+    let forged = ExecutionHandle {
+        execution_id: accepted.execution_id.clone(),
+        generation: accepted.generation,
+        lease_id: LeaseId::new("codegg-lease-forged-wrong-token").unwrap(),
+    };
+    let cancel_err = client.cancel(&forged).await.unwrap_err();
+    assert!(
+        matches!(
+            cancel_err,
+            EggworkClientError::Api { status: 403, ref code, .. } if code == "invalid_lease"
+        ),
+        "expected typed invalid_lease, got {cancel_err:?}"
+    );
+    let renew_err = client.renew(&forged, "rn-1").await.unwrap_err();
+    assert!(
+        matches!(
+            renew_err,
+            EggworkClientError::Api { status: 403, ref code, .. } if code == "invalid_lease"
+        ),
+        "expected typed invalid_lease, got {renew_err:?}"
+    );
+    // The accepted lease still authorizes control operations.
+    assert!(client.cancel(&accepted).await.is_ok());
+    assert!(client.renew(&accepted, "rn-1").await.is_ok());
 }
 
 // ── Pre-flight failures ────────────────────────────────────────────────────

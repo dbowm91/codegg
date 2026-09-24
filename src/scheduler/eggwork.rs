@@ -987,6 +987,14 @@ impl EggworkExecutor {
 
 /// Derive the deterministic Eggwork identity for one CodeGG attempt:
 /// stable across retransmission, distinct across attempts.
+///
+/// The lease token is generated exactly once per fresh attempt and shared
+/// verbatim between the live [`ExecutionHandle`] and the durable
+/// [`RemoteExecutionHandle`]. Eggwork stores `lease_hash(lease_id)` at
+/// acceptance and fences cancel/renew against it, so minting a second
+/// token for the durable record would leave restart reconciliation
+/// unauthorized (`invalid_lease`). Retransmission of the same attempt must
+/// NOT call this again: the persisted handle is the identity.
 fn derive_handle(
     job: &JobRecord,
     attempt_id: &AttemptId,
@@ -1008,24 +1016,30 @@ fn derive_handle(
         ExecutionTarget::EggworkNode { node_id } => node_id.clone(),
         ExecutionTarget::Local => return Err("job has no EggworkNode target".to_string()),
     };
-    Ok((
-        ExecutionHandle {
-            execution_id: eggwork_id,
-            generation,
-            lease_id,
-        },
-        RemoteExecutionHandle {
-            schema_version: RemoteExecutionHandle::SCHEMA_VERSION,
-            node_id,
-            execution_id,
-            generation: 1,
-            lease_id: uuid::Uuid::new_v4().simple().to_string(),
-        },
-    ))
+    // Single-source lease identity: the durable record copies the exact
+    // execution id, generation, and lease id from the live handle built
+    // above. No second random token is minted here.
+    let live = ExecutionHandle {
+        execution_id: eggwork_id,
+        generation,
+        lease_id,
+    };
+    let durable = RemoteExecutionHandle::from_parts(
+        node_id,
+        live.execution_id.as_str().to_string(),
+        live.generation.get(),
+        live.lease_id.as_str().to_string(),
+    );
+    Ok((live, durable))
 }
 
 /// Rebuild the fenced Eggwork handle from durable provenance.
-fn to_eggwork_handle(handle: &RemoteExecutionHandle) -> Result<ExecutionHandle, String> {
+///
+/// The reconstruction is byte-exact: execution id, generation, and lease
+/// id are copied verbatim so the rebuilt handle authorizes cancel/renew
+/// against the accepted execution. Any divergence is a typed validation
+/// failure, never a silent reinterpretation.
+pub fn to_eggwork_handle(handle: &RemoteExecutionHandle) -> Result<ExecutionHandle, String> {
     Ok(ExecutionHandle {
         execution_id: ExecutionId::new(&handle.execution_id)
             .map_err(|e| format!("execution id invalid: {e:?}"))?,
@@ -1849,6 +1863,90 @@ mod tests {
             node_id: "node-1".to_string(),
         });
         assert!(exec.validate(&job).is_ok());
+    }
+
+    /// C001 regression: the live handle and the durable record must carry
+    /// one identical lease token. The pre-corrective implementation minted
+    /// two independent random tokens, so this equality fails against it.
+    #[test]
+    fn lease_identity_is_single_source() {
+        let job = managed_argv_job(ExecutionTarget::EggworkNode {
+            node_id: "node-1".to_string(),
+        });
+        let attempt = AttemptId::new_unchecked("att-lease-1");
+        let (live, durable) = derive_handle(&job, &attempt).expect("derive handle");
+        assert_eq!(live.execution_id.as_str(), durable.execution_id);
+        assert_eq!(live.generation.get(), durable.generation);
+        assert_eq!(live.lease_id.as_str(), durable.lease_id);
+        assert_eq!(durable.node_id, "node-1");
+    }
+
+    /// Reconstruction from the durable record must rebuild the exact
+    /// fenced tuple, and repeated reconstruction must be stable.
+    #[test]
+    fn reconstruction_is_exact_and_stable() {
+        let job = managed_argv_job(ExecutionTarget::EggworkNode {
+            node_id: "node-1".to_string(),
+        });
+        let attempt = AttemptId::new_unchecked("att-lease-2");
+        let (live, durable) = derive_handle(&job, &attempt).expect("derive handle");
+        let first = to_eggwork_handle(&durable).expect("reconstruct");
+        let second = to_eggwork_handle(&durable).expect("reconstruct again");
+        for rebuilt in [&first, &second] {
+            assert_eq!(rebuilt.execution_id.as_str(), live.execution_id.as_str());
+            assert_eq!(rebuilt.generation.get(), live.generation.get());
+            assert_eq!(rebuilt.lease_id.as_str(), live.lease_id.as_str());
+        }
+    }
+
+    /// The single-source constructor copies a fixed canonical tuple
+    /// verbatim. Fully deterministic: no randomness is involved, so this
+    /// pins the invariant without any statistical UUID comparison.
+    #[test]
+    fn from_parts_copies_canonical_tuple_verbatim() {
+        let durable = RemoteExecutionHandle::from_parts(
+            "node-9".to_string(),
+            "codegg-fixed-execution".to_string(),
+            1,
+            "codegg-lease-fixed".to_string(),
+        );
+        assert_eq!(
+            durable.schema_version,
+            RemoteExecutionHandle::SCHEMA_VERSION
+        );
+        assert_eq!(durable.node_id, "node-9");
+        assert_eq!(durable.execution_id, "codegg-fixed-execution");
+        assert_eq!(durable.generation, 1);
+        assert_eq!(durable.lease_id, "codegg-lease-fixed");
+        let rebuilt = to_eggwork_handle(&durable).expect("reconstruct fixed tuple");
+        assert_eq!(rebuilt.execution_id.as_str(), "codegg-fixed-execution");
+        assert_eq!(rebuilt.generation.get(), 1);
+        assert_eq!(rebuilt.lease_id.as_str(), "codegg-lease-fixed");
+    }
+
+    /// Execution identity derives deterministically from job + attempt:
+    /// the same attempt re-derives the same execution id (so retransmission
+    /// must reuse the persisted lease rather than minting), while a new
+    /// attempt derives a distinct execution id. Both properties are pure
+    /// SHA-256 digests — no randomness is compared.
+    #[test]
+    fn execution_identity_deterministic_per_attempt() {
+        let job = managed_argv_job(ExecutionTarget::EggworkNode {
+            node_id: "node-1".to_string(),
+        });
+        let attempt = AttemptId::new_unchecked("att-det-1");
+        let (first_live, _) = derive_handle(&job, &attempt).expect("derive first");
+        let (second_live, _) = derive_handle(&job, &attempt).expect("derive second");
+        assert_eq!(
+            first_live.execution_id.as_str(),
+            second_live.execution_id.as_str()
+        );
+        let other_attempt = AttemptId::new_unchecked("att-det-2");
+        let (other_live, _) = derive_handle(&job, &other_attempt).expect("derive other");
+        assert_ne!(
+            first_live.execution_id.as_str(),
+            other_live.execution_id.as_str()
+        );
     }
 
     #[test]

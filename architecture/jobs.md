@@ -111,6 +111,33 @@ resubmitting, so one CodeGG attempt maps to at most one accepted remote
 execution. Bearer lease material lives only in this attempt-scoped row,
 never in job payloads, progress text, or audit metadata.
 
+### Eggwork lease-fencing contract (corrective C001)
+
+The persisted tuple must be byte-exact with the live Eggwork
+`ExecutionHandle` accepted by the node. Eggwork stores
+`lease_hash(lease_id)` at acceptance and fences control operations
+against it: cancel/renew with a divergent lease token is rejected with
+HTTP 403 `invalid_lease` (a wrong principal yields 403 `forbidden`).
+Consequences for CodeGG:
+
+- `derive_handle` mints exactly one lease token per fresh CodeGG attempt
+  and copies it verbatim into both the live handle and the durable
+  record (`RemoteExecutionHandle::from_parts`); no second token exists.
+- `to_eggwork_handle` reconstructs the exact fenced tuple from durable
+  state; retransmission of the same attempt reuses the persisted handle
+  and never re-derives.
+- A new CodeGG attempt derives a distinct execution id (deterministic
+  digest over job id + attempt id) and therefore a fresh lease.
+- Restart reconciliation observes the persisted execution: terminal
+  snapshots map to completions, still-live executions are cancelled
+  under their own persisted handle and the attempt reports
+  `Interrupted`. Loss of the exact execution is a typed
+  interruption/failure, never a local fallback.
+- The scripted `ScriptedClient` seam optionally enforces the same
+  fencing (`invalid_lease`); `tests/eggwork_remote_execution_live.rs`
+  qualifies the production `NodeClientFactory` path against a real
+  loopback node with mTLS (Linux).
+
 ### JobState Machine (`store.rs:81`)
 
 ```

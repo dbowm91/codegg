@@ -352,18 +352,25 @@ optional required capabilities). Relative key paths are rejected; key
 material is resolved at use time and redacted from diagnostics.
 
 Per attempt the executor derives a deterministic Eggwork identity
-(`codegg-{sha256(job, attempt)}`, generation 1, fresh lease id),
-persists the handle via `set_attempt_remote_handle` before uploading
-anything, then transfers a bounded workspace snapshot (regular files
-only, symlinks skipped, traversal rejected; 4096 entries / 256 MiB
-total / 64 MiB per file), submits exactly one idempotent execution,
-streams bounded progress, renews the lease every 30 s, propagates
-cancellation to the exact handle, and imports declared artifacts into
+(`codegg-{sha256(job, attempt)}`, generation 1) and mints exactly one
+fresh lease id shared verbatim between the live handle and the persisted
+record (corrective C001 single-source identity). Eggwork fences
+cancel/renew on the accepted lease hash (403 `invalid_lease` on
+mismatch), so the durable handle reconstructs the exact fenced tuple via
+`to_eggwork_handle`. The handle is persisted via
+`set_attempt_remote_handle` before uploading anything, then a bounded
+workspace snapshot is transferred (regular files only, symlinks
+skipped, traversal rejected; 4096 entries / 256 MiB total / 64 MiB per
+file), exactly one idempotent execution is submitted, bounded progress
+is streamed, the lease is renewed every 30 s, cancellation propagates
+to the exact handle, and declared artifacts are imported into
 the RunStore (`ActualBackend::Eggwork`). The scheduler permit is held
 for the whole remote lifetime. On restart a persisted handle is
 observed/reconciled, never resubmitted: terminal snapshots map to
 completions, still-live executions are cancelled and reported
 interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
+Live mTLS qualification: `tests/eggwork_remote_execution_live.rs`
+(Linux).
 
 ### Ephemeral interactive admission (M001)
 

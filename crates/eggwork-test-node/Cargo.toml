@@ -1,0 +1,45 @@
+# Standalone live-node fixture for CodeGG Eggwork corrective C001 tests.
+#
+# This crate is deliberately NOT a member of the CodeGG workspace (see the
+# root `exclude`) and carries its own lockfile: `eggwork-server` links
+# `rusqlite -> libsqlite3-sys 0.38`, which cannot resolve in the same graph
+# as the workspace's `sqlx-sqlite -> libsqlite3-sys 0.28` (`links =
+# "sqlite3"` must be unique). The fixture therefore runs as a bounded
+# subprocess (`tests/eggwork_remote_execution_live.rs` spawns it with
+# `kill_on_drop` + temp-dir cleanup) rather than in-process.
+#
+# Pinned to the exact immutable Eggwork revision used by CodeGG production
+# `eggwork-client`/`eggwork-core`. `LocalProcessRunner` remains the node's
+# canonical process owner; this helper only hosts `NodeServer` the way the
+# `eggworkd` binary would.
+
+[package]
+name = "codegg-eggwork-test-node"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+
+[[bin]]
+name = "codegg-eggwork-test-node"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "net",
+  "signal",
+  "time",
+] }
+eggwork-server = { git = "https://github.com/eggstack/eggwork.git", rev = "128f808c62f176d414dd18a705773e45f5e2891a", default-features = false }
+eggwork-runner = { git = "https://github.com/eggstack/eggwork.git", rev = "128f808c62f176d414dd18a705773e45f5e2891a", default-features = false }
+eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "128f808c62f176d414dd18a705773e45f5e2891a", default-features = false }
+eggserve-core = { version = "0.2.0", default-features = false, features = ["tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+sha2 = "0.10"
+hex = "0.4"

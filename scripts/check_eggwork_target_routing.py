@@ -74,7 +74,15 @@ def main() -> int:
             fail("Local targets must never route to the Eggwork executor")
 
     # 3. Eggwork crates confined to the executor module (+ tests).
-    allowed_prefixes = ("src/scheduler/eggwork.rs", "tests/", "src/scheduler/mod.rs")
+    # `crates/eggwork-test-node/` is the C001 live-qualification fixture: it
+    # hosts the Eggwork node under test and never constructs CodeGG jobs,
+    # selections, or executions, so it cannot bypass target selection.
+    allowed_prefixes = (
+        "src/scheduler/eggwork.rs",
+        "tests/",
+        "src/scheduler/mod.rs",
+        "crates/eggwork-test-node/",
+    )
     for path in list(ROOT.joinpath("src").rglob("*.rs")) + list(
         ROOT.joinpath("crates").rglob("*.rs")
     ):

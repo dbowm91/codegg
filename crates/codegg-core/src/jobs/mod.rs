@@ -1302,6 +1302,30 @@ pub struct RemoteExecutionHandle {
 impl RemoteExecutionHandle {
     /// Current schema version. The first public revision is `1`.
     pub const SCHEMA_VERSION: u16 = 1;
+
+    /// Build the durable handle from one canonical identity tuple.
+    ///
+    /// The caller MUST pass the exact execution id, generation, and lease
+    /// id of the live Eggwork `ExecutionHandle` accepted by the node.
+    /// Eggwork fences cancel/renew on the accepted lease token, so the
+    /// durable record must copy that token verbatim — never mint a second
+    /// random lease. This constructor takes the tuple as already-validated
+    /// strings so the single-source invariant is structural: there is no
+    /// code path here that can generate a divergent token.
+    pub fn from_parts(
+        node_id: String,
+        execution_id: String,
+        generation: u64,
+        lease_id: String,
+    ) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            node_id,
+            execution_id,
+            generation,
+            lease_id,
+        }
+    }
 }
 
 /// Reason attached to a cancellation request.
