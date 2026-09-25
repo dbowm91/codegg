@@ -26,7 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
-| Eggwork fixed-target remote execution | active | `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` | M002a closed; M003 blocked | Required Landlock execution is qualified on the corrected Eggwork pin. M003 remains blocked on its independently reviewed optimized materializer contract; M004 remains deferred pending M003 and the stable AgentRun worker-entry contract. |
+| Eggwork fixed-target remote execution | active | `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` | M002a closed; M003 plan registered/blocked | Required Landlock execution is qualified. M003 handoff is registered at `plans/implementation/eggwork-fixed-target-remote-execution/003-content-aware-derived-workspace-transfer.md` and waits specifically on Eggwork Workspace/Artifact M004 closure; M004 remains deferred pending M003 + stable AgentRun worker-entry contract. |
 | Eggplan assessment integration | active | `plans/subsystems/eggplan-assessment-integration-roadmap.md` | M001 closed; M002 ready | M001 closure: `plans/closure/eggplan-assessment-integration/001-status.md`, implementation `418fdc85`, hosted CI run `36106606574` success. M002 is unblocked to begin staged adoption; legacy/current-worktree backfill remains forbidden. |
 | Eggfetch 0.2 adoption | closed | `plans/subsystems/eggfetch-0-2-adoption-roadmap.md` | M001 closed | Workstream closed with crates.io 0.2.0 adoption and provider stream-deadline correction (`plans/closure/eggfetch-0-2-adoption/001-status.md`; implementation `653e7abb`). |
 | Eggfetch 0.2 adoption maintenance corrective | closed | `plans/subsystems/eggfetch-0-2-adoption-maintenance-corrective-addendum.md` | C001 closed | Post-closure polish landed: internal provider timeout-policy symbols narrowed and duplicated redirect fixtures hardened with deterministic `WouldBlock` coverage; no production HTTP behavior or dependency change. |
@@ -168,6 +168,7 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Eggwork fixed-target remote execution | M003 content-aware derived workspace transfer | Eggwork Workspace/Artifact M004 `reusable manifest CAS and derived materialization` must close with `workspace.derive.v1`, principal-scoped retained bases, canonical patch equivalence, and typed base-miss semantics. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 | Tool-selection advisor post-closure corrective | M004 live small-model trajectory qualification | C004 closed with disposition B (no useful gain): no positive offline disposition exists, so the live study stays blocked pending a new model-architecture experiment; original operator/provider/trajectory/resource prerequisites were never satisfied either. |
@@ -176,9 +177,9 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 ## Eggwork remote-execution control point
 
-Eggwork remote execution M002a is closed after CodeGG live-qualified the corrected `eggstack/eggwork` required-isolation contract (`plans/closure/eggwork-fixed-target-remote-execution/002a-status.md`). M001 established fixed-target execution; M002 added posture projection and fail-closed operator policy. CodeGG must keep `JobScheduler` as the only admission/fairness/retry authority and use Eggwork only after a named node has already been selected. M003 remains blocked on the optimized materializer contract; M004 remains deferred on M003 and the stable AgentRun worker-entry contract.
+Eggwork remote execution M002a is closed after CodeGG live-qualified the corrected `eggstack/eggwork` required-isolation contract (`plans/closure/eggwork-fixed-target-remote-execution/002a-status.md`). M001 established fixed-target execution; M002 added posture projection and fail-closed operator policy. CodeGG must keep `JobScheduler` as the only admission/fairness/retry authority and use Eggwork only after a named node has already been selected. M003 now has a registered handoff and is blocked specifically on Eggwork Workspace/Artifact M004 (`workspace.derive.v1` retained-manifest/patch contract). M004 remains deferred on M003 and the stable AgentRun worker-entry contract.
 
-The completed CodeGG M002a handoff is `plans/implementation/eggwork-fixed-target-remote-execution/002a-restricted-spec-live-requalification.md`; its qualification evidence is recorded in `plans/closure/eggwork-fixed-target-remote-execution/002a-status.md`. Future M003/M004 work must use its own registered handoff and preserve this boundary.
+The completed CodeGG M002a handoff is `plans/implementation/eggwork-fixed-target-remote-execution/002a-restricted-spec-live-requalification.md`; its qualification evidence is recorded in `plans/closure/eggwork-fixed-target-remote-execution/002a-status.md`. M003's registered handoff is `plans/implementation/eggwork-fixed-target-remote-execution/003-content-aware-derived-workspace-transfer.md`; it must not be activated before the named Eggwork Workspace M004 closure.
 
 ## Closure work and current control points
 
