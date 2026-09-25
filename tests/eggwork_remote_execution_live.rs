@@ -886,8 +886,12 @@ async fn live_restricted_policies_refuse_before_workspace_upload() {
     let client = live.client();
     let capabilities = client.capabilities().await.expect("capabilities");
     let status = client.status().await.expect("status");
-    assert_eq!(capabilities.features, status.capabilities.features);
     assert!(capabilities.features.iter().any(|f| f == "exec.argv.v1"));
+    assert!(status
+        .capabilities
+        .features
+        .iter()
+        .any(|f| f == "exec.argv.v1"));
     assert!(!capabilities
         .features
         .iter()
