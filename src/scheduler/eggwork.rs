@@ -418,6 +418,15 @@ impl EggworkExecutor {
         }
     }
 
+    /// Replace daemon-owned node configuration and discard snapshots derived
+    /// from the previous trust/profile set.
+    pub fn replace_config(&mut self, config: EggworkExecutorConfig) {
+        self.config = config;
+        if let Ok(mut cache) = self.posture_cache.lock() {
+            cache.clear();
+        }
+    }
+
     /// Refresh and return a bounded, secret-free operator view of configured
     /// nodes. Execution admission never consumes this cache.
     pub async fn node_postures(&self) -> Vec<EggworkNodePosture> {
@@ -2275,6 +2284,53 @@ mod tests {
             crate::scheduler::executor::ExecutorHealth::Degraded
         );
         assert_eq!(executor.node_postures().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_posture_expires_and_config_replacement_invalidates_cache() {
+        let client = Arc::new(FakeNodeClient::succeeding());
+        let mut nodes = HashMap::new();
+        nodes.insert("node-1".into(), test_node());
+        let mut executor = EggworkExecutor::with_factory(
+            EggworkExecutorConfig {
+                nodes: nodes.clone(),
+                ..Default::default()
+            },
+            Arc::new(FakeFactory { client }),
+        );
+        executor.posture_cache.lock().unwrap().insert(
+            "node-1".into(),
+            CachedNodePosture {
+                observed: Instant::now() - POSTURE_CACHE_TTL - Duration::from_secs(1),
+                value: EggworkNodePosture {
+                    node_id: "node-1".into(),
+                    reachable: false,
+                    draining: None,
+                    active_executions: None,
+                    max_active_executions: None,
+                    workspace_isolation: false,
+                    network_unrestricted: false,
+                    network_disabled_capable: false,
+                    resources: [false; 3],
+                    raw_features: Vec::new(),
+                    configured_isolation: codegg_config::schema::EggworkIsolationPolicy::None,
+                    configured_network: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
+                    policy_satisfied: false,
+                    inconsistent: false,
+                    observation_age: Duration::ZERO,
+                    diagnostic: Some("stale".into()),
+                },
+            },
+        );
+        let posture = executor.node_postures().await;
+        assert!(posture[0].reachable);
+        assert!(!posture[0].diagnostic.as_deref().unwrap().contains("stale"));
+        executor.replace_config(EggworkExecutorConfig::default());
+        assert!(executor.posture_cache.lock().unwrap().is_empty());
+        assert_eq!(
+            executor.health(),
+            crate::scheduler::executor::ExecutorHealth::Unavailable
+        );
     }
 
     #[test]
