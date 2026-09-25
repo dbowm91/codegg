@@ -490,7 +490,7 @@ cargo test -p codegg-core --lib session          # session unit tests
 cargo test -p codegg-core --lib session::message  # message model tests
 cargo test -p codegg-core --lib session::events   # event tests
 cargo test -p codegg-core --lib session::state    # TUI state tests
-cargo test -p codegg-core --test session_crud     # integration CRUD
+cargo test --test session_family                     # 5-session consolidated integration binary (M004)
 cargo test -p codegg-core --lib session::legacy_resolution
 cargo test -p codegg-core --lib session::store::event_store_idempotency_tests
 cargo test -p codegg-core --lib session::continuation

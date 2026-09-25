@@ -175,7 +175,7 @@ cargo test --test collaboration_m002_chat_tui # 11 chat policy TUI tests
 cargo test --test collaboration_m001_chat       # 12 default-behavior tests
 cargo test --test collaboration_m003_chat_actions  # 10 non-escalation tests
 cargo test --test team_m003_membership_admin  # 12 membership/token/chat-override tests (M003)
-cargo test --test session_control_m004_controller_lease  # 23 controller lease tests (M004)
+cargo test --test session_family                       # 88 default-feature session tests (M004 consolidated)
 cargo test --test workspace_m005_selected_project_chat  # 9 Workspace selected-project routing tests (M005)
 python3 scripts/check_authorization_matrix.py # matrix covers 4 new policy ops + 11 team ops + 5 control ops
 ```

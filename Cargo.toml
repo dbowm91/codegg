@@ -368,6 +368,14 @@ required-features = ["server"]
 name = "projection_replay"
 path = "tests/projection_replay/mod.rs"
 
+# M004: same pattern as the M003 pilot, applied to the 5 default-feature
+# `session_*` integration targets. Excludes feature-gated
+# `team_collaboration_*` binaries (per M004 plan: tests with incompatible
+# `required-features` are out of scope).
+[[test]]
+name = "session_family"
+path = "tests/session_family/mod.rs"
+
 [profile.release]
 lto = "thin"
 strip = true

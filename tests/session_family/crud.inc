@@ -1,4 +1,4 @@
-mod common;
+use super::common;
 
 use codegg::session::{
     CreateSession, MessageStore, PartStore, SessionStore, TodoItemInput, TodoStore, UpdateSession,

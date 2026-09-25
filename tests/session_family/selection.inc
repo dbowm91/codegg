@@ -1,4 +1,4 @@
-mod common;
+use super::common;
 
 use codegg::core::session_selection::{
     get_selection, list_selection, list_selection_models, update_selection, SelectionError,
