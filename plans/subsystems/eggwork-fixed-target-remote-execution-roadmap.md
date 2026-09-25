@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001+C001+M002 closed, M002a closing, M003 blocked on materializer contract, M004 deferred
+Status: active roadmap; M001+C001+M002+M002a closed, M003 blocked on materializer contract, M004 deferred
 
 Canonical authority:
 
@@ -144,7 +144,7 @@ Expected scope:
 
 Class: invariant/qualification
 
-Status: closing; M002 and Eggwork remote-admission corrective C001 are closed; hosted Linux CI passed
+Status: closed; M002 and Eggwork remote-admission corrective C001 are closed; CodeGG live required-Landlock qualification passed hosted Linux CI
 
 Implementation plan:
 
@@ -152,7 +152,7 @@ Implementation plan:
 
 Objective:
 
-Pin the corrected Eggwork revision and prove CodeGG's production mTLS path executes a required Landlock-isolated job with filesystem escape denial, exact lease/restart behavior, and no network-isolation overclaim.
+Pin the corrected Eggwork revision and prove CodeGG's production mTLS path executes a required Landlock-isolated job with filesystem escape denial, exact lease/restart behavior, and no network-isolation overclaim. Closure evidence: `plans/closure/eggwork-fixed-target-remote-execution/002a-status.md`.
 
 ### M003 — Workspace transfer optimization
 
@@ -168,7 +168,7 @@ Reduce full snapshot transfer using Git-aware or content-aware evidence while pr
 
 Class: capability
 
-Status: deferred; blocked on target policy (M002), restricted live qualification (M002a), workspace optimization (M003), and stable AgentRun worker-entry contract
+Status: deferred; M002 target policy and M002a restricted live qualification are closed. Still blocked on workspace optimization (M003) and the stable AgentRun worker-entry contract.
 
 Objective:
 

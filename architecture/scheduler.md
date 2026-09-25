@@ -373,7 +373,7 @@ policy. Required workspace isolation and disabled networking fail before
 upload unless both views advertise their versioned capabilities. The
 corrected Eggwork pin is live-qualified with required `workspace_rw`
 Landlock: workspace-local access succeeds, outside-workspace access is
-denied, and terminal evidence reports `SandboxResult::Applied { profile: \"workspace_rw\" }`. Disabled networking remains
+denied, and terminal evidence reports `SandboxResult::Applied { profile: "workspace_rw" }`. Disabled networking remains
 unsupported and is refused before upload. Legacy unrestricted profiles
 remain executable and are visibly classified as unsandboxed with network
 access. A bounded, lazy posture projection feeds operator diagnostics and
