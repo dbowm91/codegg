@@ -1,6 +1,7 @@
 # Eggplan Assessment Integration C002 — AgentRun-Link Resolution and Bridge-Fixture Corrective
 
-Status: active
+Status: implemented (closed; see
+`plans/closure/eggplan-assessment-integration/002-status.md`)
 
 Repository baseline: `841ad117`
 
