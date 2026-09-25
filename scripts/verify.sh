@@ -9,9 +9,10 @@
 #
 # Resource policy:
 #   Broad Cargo commands use CARGO_BUILD_JOBS=2 by default (local
-#   developer machines). CI overrides this per-runner (see
-#   .github/workflows/ci.yml). Test execution stays serial within each
-#   binary; cross-binary parallelism comes from nextest profile `ci`.
+#   developer machines). Hosted CI sets CARGO_BUILD_JOBS=4 (== runner
+#   vCPUs, M001 disposition in architecture/testing.md). Test execution
+#   stays serial within each binary; cross-binary parallelism comes
+#   from nextest profile `ci`.
 #   Callers may override any env var before invoking this script.
 #
 # The script stops at the first failing command and returns its status.
