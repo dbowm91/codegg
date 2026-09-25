@@ -2,9 +2,15 @@
 
 Status: ready for handoff
 
-Repository baseline:
+Repository baselines:
 
-- CodeGG: `f4e6e69d9e968e2adbb4228b3a7d45f55bd1294c`
+- original planning baseline:
+  `f4e6e69d9e968e2adbb4228b3a7d45f55bd1294c`
+- current handoff baseline after Eggwork M002/M002a:
+  `f5f8d96d7b7371c8583196c58d36ef7b3118ed3c`
+- current storage layout: v66; M001 owns the next additive migration, v67
+- current pinned Eggwork production revision:
+  `6cc813418c3f14740a635fef79208e85219175bb`
 
 External blocker/evidence reviewed:
 
@@ -28,6 +34,39 @@ Related CodeGG roadmaps/contracts:
 - `architecture/git.md`
 
 Primary class: infrastructure / provenance invariant / cross-repository unblock
+
+## 0. Current-head planning reconciliation
+
+M001 has not been implemented or closed, so CodeGG planning governance does
+not permit inventing a post-closure corrective lineage. The handoff is instead
+revised in place against current repository evidence.
+
+The current-head review found three material deviations from the original
+handoff that are authoritative for implementation:
+
+1. **Storage version** — CodeGG remains at `STORAGE_LAYOUT_VERSION = 66`;
+   the provenance column/envelope therefore uses the next sequential
+   migration, v67. Do not reuse or renumber v66.
+2. **Eggwork seal point** — current `EggworkExecutor::run_remote` builds a
+   bounded immutable in-memory `WorkspaceSnapshot` first, then uploads its
+   copied bytes, creates the remote workspace, and finally submits execution.
+   The exact-source stability window for remote evidence is therefore around
+   `build_snapshot(&ctx.workspace_root)`, not around the later
+   `create_workspace`/remote-submit boundary.
+3. **Materialization completeness** — current `build_snapshot` can omit
+   symlinks/non-regular entries and oversize files. A remote execution over an
+   incomplete projection MUST NOT be labeled stable exact-subject evidence
+   merely because Git S1 == S2. Exact-subject eligibility requires a complete
+   materialization under the active transfer contract.
+
+The current Eggwork manifest has a canonical `WorkspaceManifest::digest()`.
+Persist that digest as remote-input provenance when exact-subject eligibility
+is evaluated. It is integrity for the transferred input, not a replacement for
+the Git SubjectRevision.
+
+The original architectural intent remains unchanged: CodeGG owns capture and
+attempt persistence; Eggplan later consumes the resulting subject as pure
+assessment input.
 
 ## 1. Objective
 
@@ -169,7 +208,7 @@ Do not claim that CodeGG's repository identity is already the same as an
 Eggplan repository-store ID. M003 repository Plan binding owns any explicit
 cross-repository identity translation.
 
-## 6. Execution stability semantics
+## 6. Execution stability and remote-input semantics
 
 One start capture alone is insufficient to claim that a live workspace stayed
 stable throughout a command.
@@ -180,9 +219,13 @@ Persist a versioned provenance envelope, conceptually:
         captured: ExecutionSubjectRevision,
         sealed: Option<ExecutionSubjectRevision>,
         disposition: Stable | Drifted | Unavailable,
-        seal_kind: LiveExecutionEnd | SnapshotMaterialized,
+        seal_kind: LiveExecutionEnd | SnapshotBuilt,
+        materialization_digest: Option<String>,
+        materialization_complete: Option<bool>,
         unavailable_reason: Option<...>,
     }
+
+Exact names may differ, but the information boundary must remain equivalent.
 
 ### Local live-workspace executors
 
@@ -196,20 +239,68 @@ Persist a versioned provenance envelope, conceptually:
 6. drift does not rewrite the job's terminal execution status, but the
    execution is not eligible as stable exact-subject evidence.
 
-### Snapshot/materialized remote executors
+### Eggwork/current immutable-snapshot path
 
-For Eggwork or another immutable/materialized execution backend:
+Current CodeGG flow is:
 
-1. capture S1 immediately before constructing the source snapshot;
-2. build/seal the bounded workspace materialization;
-3. capture S2 immediately after materialization and before remote submit;
-4. Stable only when S2 == S1;
-5. bind that stable subject to the accepted remote attempt;
-6. later local edits after the remote snapshot is sealed do not invalidate
-   the historical remote execution subject.
+    preflight
+      -> build_snapshot(workspace_root)
+      -> upload_snapshot(copied bytes)
+      -> create_remote_workspace(manifest)
+      -> execute_in_workspace(...)
 
-Do not require the local worktree to remain unchanged for the entire remote
-execution once its immutable input is sealed.
+The authoritative source seal is therefore the successful construction of the
+immutable in-memory snapshot, not the later remote workspace API call.
+
+Required protocol:
+
+1. capture/persist S1 immediately before `build_snapshot`;
+2. build the bounded `WorkspaceSnapshot`;
+3. capture S2 immediately after `build_snapshot` returns, before upload;
+4. compute/persist the canonical `snapshot.manifest.digest()`;
+5. classify materialization completeness;
+6. exact-subject Stable eligibility requires:
+   - S1 == S2;
+   - no omitted source entries that could affect execution semantics;
+   - a valid canonical manifest digest;
+7. upload/create/execute from the already copied snapshot bytes;
+8. later local edits after step 6 do not invalidate that historical remote
+   input because upload consumes the immutable copied bytes.
+
+Do NOT recapture the current worktree after upload or remote execution and use
+that later value as the historical subject.
+
+### Materialization completeness
+
+Current `build_snapshot` records `skipped_non_regular` and
+`skipped_oversize`; it deliberately skips symlinks/non-regular entries and
+oversize files. Current Eggwork `WorkspaceManifest::validate` also forbids
+symlink materialization.
+
+Therefore:
+
+- if either skip count is nonzero, remote execution MAY continue under current
+  scheduler policy, but provenance is
+  `Unavailable(MaterializationIncomplete)` for exact-subject evidence;
+- do not silently treat "manifest successfully uploaded" as proof that the
+  full source subject was transferred;
+- preserve skip counts and manifest digest only as bounded provenance;
+- a later Eggwork materializer contract may broaden exact-subject eligibility,
+  but M001 must not overclaim it.
+
+Extra transfer metadata such as repository administrative files may be present;
+that does not itself invalidate exact-source eligibility. Omission of
+source-relevant entries does.
+
+### Concurrent mutation / ABA limitation
+
+S1/S2 does not globally serialize arbitrary external workspace writers. It is
+a bounded revalidation protocol analogous to Eggplan closure capture, not a
+filesystem transaction.
+
+For remote execution, the actual executed bytes are additionally bound by the
+manifest digest. Closure evidence must state this limitation rather than claim
+global exclusion of all transient mutations.
 
 ### Non-Git workspaces
 
@@ -413,8 +504,9 @@ subject of attempt N.
 
 ## 15. Migration and storage scope
 
-Update the current sequential storage version (current reviewed scheduler
-schema includes Eggwork migration v66) with the next additive migration.
+Update the current sequential storage version from v66 to v67 with the
+additive execution-subject provenance migration. The current-head recheck
+confirmed that Eggwork M002/M002a did not consume a later storage migration.
 
 At minimum update:
 
@@ -483,8 +575,11 @@ intent-named set/seal operations, and migration/restart coverage.
 
 ### WP3 — Scheduler capture/seal integration
 
-Capture S1 before side effects, seal at the correct local or materialized
-boundary, and ensure drift/unavailability never becomes exact proof.
+Capture S1 before local side effects. For local execution, seal at terminal
+cleanup. For Eggwork, capture S1 immediately before `build_snapshot`, capture
+S2 immediately after snapshot construction, persist the canonical manifest
+digest/completeness disposition, and only then upload/submit. Ensure
+drift/incomplete materialization/unavailability never becomes exact proof.
 
 ### WP4 — RunStore/AgentRun correlation
 
@@ -535,11 +630,18 @@ perform the M002 production assessor swap in this milestone.
 
 ### Remote/materialized execution
 
-- source stable during workspace materialization -> Stable;
-- mutation during materialization -> Drifted/no submit as subject-qualified
-  evidence;
-- local mutation after remote input seal does not rewrite historical subject;
-- remote attempt restart retains exact subject.
+- S1/S2 around `build_snapshot` with complete snapshot -> Stable;
+- source mutation during snapshot construction -> Drifted;
+- `skipped_non_regular > 0` -> execution may proceed, exact subject unavailable;
+- `skipped_oversize > 0` -> execution may proceed, exact subject unavailable;
+- canonical manifest digest persisted and stable across retry/restart;
+- local mutation after the in-memory snapshot seal does not rewrite the
+  historical subject;
+- upload/create-workspace consumes the sealed snapshot rather than rereading
+  the live worktree;
+- remote attempt restart retains exact subject + manifest provenance;
+- current-worktree recapture after remote completion is never used as
+  historical evidence.
 
 ### Legacy
 
@@ -616,7 +718,9 @@ M001 closes when:
 2. provenance is attempt-scoped and survives restart;
 3. local live-workspace drift is detected and cannot become stable exact
    evidence;
-4. remote/materialized executions bind subject at the input-seal boundary;
+4. remote/materialized executions bind subject at the in-memory snapshot seal,
+   persist the canonical manifest digest, and withhold exact-subject
+   eligibility when materialization is incomplete;
 5. legacy attempts remain subject-unavailable with no current-worktree
    backfill;
 6. AgentRun and scheduler-owned RunStore evidence can resolve the authoritative
@@ -638,6 +742,8 @@ Stop and report if:
 - legacy rows would need fabricated backfill;
 - CodeGG cannot distinguish live-workspace and materialized-input seal
   semantics;
+- remote exact-subject qualification would require treating a snapshot with
+  skipped source entries as complete;
 - M001 would require swapping the production WorkPlan assessor before
   differential qualification;
 - source provenance would include file contents/paths/secrets.
@@ -648,10 +754,11 @@ Create
 `plans/closure/eggplan-assessment-integration/001-status.md` containing:
 
 - implementation SHA(s);
-- exact migration/storage version;
+- exact migration/storage version (expected v67 from current v66);
 - ExecutionSubjectRevision/provenance schema table;
-- clean/dirty/drift/legacy matrix;
+- clean/dirty/drift/legacy/materialization-incomplete matrix;
 - local vs remote seal-point evidence;
+- Eggwork manifest-digest and snapshot-completeness evidence;
 - JobAttempt persistence/restart evidence;
 - AgentRun/RunStore correlation evidence;
 - enriched WorkPlan resolver evidence;

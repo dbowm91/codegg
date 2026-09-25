@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
 | Eggwork fixed-target remote execution | active | `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` | M002a closed; M003 blocked | Required Landlock execution is qualified on the corrected Eggwork pin. M003 remains blocked on its independently reviewed optimized materializer contract; M004 remains deferred pending M003 and the stable AgentRun worker-entry contract. |
-| Eggplan assessment integration | active | `plans/subsystems/eggplan-assessment-integration-roadmap.md` | M001 execution-subject provenance ready; M002 blocked on M001 | Eggplan live bridge `088968b` is ready, but CodeGG must first persist exact attempt-scoped execution subjects. Legacy/current-worktree backfill is forbidden. |
+| Eggplan assessment integration | active | `plans/subsystems/eggplan-assessment-integration-roadmap.md` | M001 execution-subject provenance ready after current-head reconciliation; M002 blocked on M001 | Handoff refreshed at CodeGG `f5f8d96d`: v66 -> v67 migration, Eggwork S1/S2 seal around immutable `build_snapshot`, manifest digest, and fail-closed incomplete materialization. Legacy/current-worktree backfill remains forbidden. |
 | Eggfetch 0.2 adoption | closed | `plans/subsystems/eggfetch-0-2-adoption-roadmap.md` | M001 closed | Workstream closed with crates.io 0.2.0 adoption and provider stream-deadline correction (`plans/closure/eggfetch-0-2-adoption/001-status.md`; implementation `653e7abb`). |
 | Eggfetch 0.2 adoption maintenance corrective | closed | `plans/subsystems/eggfetch-0-2-adoption-maintenance-corrective-addendum.md` | C001 closed | Post-closure polish landed: internal provider timeout-policy symbols narrowed and duplicated redirect fixtures hardened with deterministic `WouldBlock` coverage; no production HTTP behavior or dependency change. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
@@ -45,12 +45,36 @@ Canonical direction remains in:
 | Tool-selection advisor retrieval-architecture closure corrective | closed | `plans/subsystems/tool-selection-advisor-retrieval-architecture-closure-corrective-addendum.md` | C001 closed | Post-closure hygiene landed: experiment-owned Git subprocess removed in favor of explicit provenance input, roadmap status/duplicate row reconciled, canonical quick + hosted CI green. Retrieval/model conclusions frozen; nothing unblocked. |
 | Tool-selection advisor retrieval-signal experiment | active | `plans/subsystems/tool-selection-advisor-retrieval-signal-experiment-roadmap.md` | M001 ready; M002-M005 blocked/conditional | Successor to the closed fusion experiment. Audits query-inferability first, then tests deterministic schema/field-aware signal and—only if needed—a <=500k frozen-MiniLM projection before a new operating point/fresh-v4 qualification. |
 
+## Eggplan integration planning reconciliation
+
+The Eggplan integration M001 had not been implemented or closed when the
+Eggwork M002/M002a execution surface changed. Per `plans/003-planning-process.md`,
+this is not a post-closure corrective pass; the ready M001 handoff was revised
+in place against current head `f5f8d96d7b7371c8583196c58d36ef7b3118ed3c`.
+
+Material corrections now registered:
+
+- storage layout remains v66, so M001 owns additive migration v67;
+- Eggwork exact-source sealing occurs around construction of the immutable
+  in-memory `WorkspaceSnapshot`, before upload;
+- canonical Eggwork manifest digest is persisted as remote-input integrity
+  provenance;
+- `skipped_non_regular` or `skipped_oversize` makes exact-subject provenance
+  unavailable even if Git S1 == S2;
+- later local edits after the immutable snapshot seal do not invalidate the
+  historical remote input;
+- no current-worktree recapture may backfill historical execution evidence.
+
+The current head CI is green; the older planning-registration run
+`36027583460` failed Workspace Clippy and is retained only as historical
+non-passing evidence.
+
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
 | Eggwork fixed-target remote execution corrective | C001 lease identity + live-node qualification | closed | `plans/implementation/eggwork-fixed-target-remote-execution-corrective/001-lease-identity-and-live-node-qualification.md` | Closure: `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`; implementation `f4e6e69d` (+ follow-ups through `3ca3b7b6`); hosted CI run `36051370501` success. M002 unblocked to eligible-for-planning; M003/M004 dispositions unchanged. |
-| Eggplan assessment integration | M001 durable execution-subject provenance | **ready** | `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md` | Upstream unblock for Eggplan CodeGG M002. Capture/persist attempt-scoped exact source subject; legacy rows remain unavailable; no assessor swap in M001. |
+| Eggplan assessment integration | M001 durable execution-subject provenance | **ready** | `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md` | Reconciled against `f5f8d96d`. Add v67 attempt provenance; local S1/S2 spans execution, Eggwork S1/S2 spans immutable snapshot construction; persist manifest digest/completeness; incomplete transfer never becomes exact subject; no assessor swap in M001. |
 | Eggwork fixed-target remote execution | M001 fixed-target finite-job executor | historical closure; corrective closed | `plans/implementation/eggwork-fixed-target-remote-execution/001-fixed-target-finite-job-executor.md` | Historical closure: `plans/closure/eggwork-fixed-target-remote-execution/001-status.md`; implementation `67f8f3d3`. Corrective C001 is closed (`plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`); M002 is eligible for planning. |
 | Eggfetch 0.2 adoption maintenance corrective | C001 provider policy API and redirect-fixture hardening | closed | `plans/implementation/eggfetch-0-2-adoption-maintenance-corrective/001-provider-policy-api-and-redirect-fixture-hardening.md` | Closure: `plans/closure/eggfetch-0-2-adoption-maintenance-corrective/001-status.md`; implementation `7c505d1f`. No successor corrective; no downstream plan unblocked. |
 | Eggfetch 0.2 adoption | M001 Eggfetch 0.2.0 adoption and provider stream-deadline correctness | closed | `plans/implementation/eggfetch-0-2-adoption/001-eggfetch-0.2.0-adoption-and-provider-stream-deadline-correctness.md` | Closure: `plans/closure/eggfetch-0-2-adoption/001-status.md`; implementation `653e7abb`. No successor milestone; no downstream plan unblocked. |

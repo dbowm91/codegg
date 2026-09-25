@@ -360,6 +360,13 @@ The active integration authority is:
 - `plans/subsystems/eggplan-assessment-integration-roadmap.md`;
 - M001 `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md`.
 
+That handoff has been revalidated against current CodeGG
+`f5f8d96d7b7371c8583196c58d36ef7b3118ed3c` after Eggwork M002/M002a
+closure. For remote execution, exact-source provenance now seals around the
+immutable in-memory workspace snapshot and fails closed when the transfer
+omits source entries; later remote upload/execution does not recapture current
+worktree state.
+
 Eggplan's pure CodeGG bridge exposed one missing CodeGG provenance primitive:
 completed jobs/runs do not durably record the exact source subject they
 observed. That primitive is attempt-scoped execution provenance, not a

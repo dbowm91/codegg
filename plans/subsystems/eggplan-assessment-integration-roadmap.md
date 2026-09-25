@@ -19,6 +19,11 @@ External assessment substrate:
   `088968bd58680ae2b3741e2f1feb0614e0ff81a0`
 - Eggplan staged-adoption plan:
   `plans/implementation/codegg-integration/002-staged-eggplan-assessment-adoption.md`
+- current CodeGG M001 handoff baseline:
+  `f5f8d96d7b7371c8583196c58d36ef7b3118ed3c`
+- current CodeGG storage layout: v66; M001 owns additive v67
+- current pinned Eggwork revision:
+  `6cc813418c3f14740a635fef79208e85219175bb`
 
 Implementation MUST re-check both repository heads before each cross-repository
 handoff.
@@ -84,11 +89,28 @@ worktree manager.
 
 ### M001 — Durable execution-subject provenance
 
-Status: ready.
+Status: ready after current-head reconciliation.
 
 Plan:
 
 - `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md`
+
+The still-unimplemented handoff was revalidated after Eggwork M002/M002a
+closed. The current plan now pins the v66 -> v67 storage migration and the
+actual Eggwork execution-input boundary:
+
+    capture S1
+      -> build immutable in-memory WorkspaceSnapshot
+      -> capture S2 + manifest digest/completeness
+      -> upload copied bytes
+      -> create remote workspace
+      -> execute
+
+Exact-subject remote evidence is available only when S1 == S2 and the snapshot
+is complete under the current transfer contract. Current snapshot omissions
+(symlink/non-regular/oversize) remain explicit
+`MaterializationIncomplete` provenance rather than silently becoming exact
+proof.
 
 Capture a versioned CodeGG-native source subject at the authoritative execution
 input boundary, persist it on JobAttempt, make it available to linked
@@ -97,7 +119,8 @@ host-evidence resolver. Legacy records remain subject-unavailable.
 
 Exit condition: a completed current-generation CodeGG job can resolve its
 historical execution subject after restart without consulting the current
-worktree, while legacy/missing/drifted cases remain explicitly unavailable.
+worktree, while legacy/missing/drifted/incomplete-materialization cases remain
+explicitly unavailable for exact-subject proof.
 
 ### M002 — Eggplan-backed WorkPlan assessment adoption
 
@@ -128,7 +151,8 @@ belong here, not M001.
 
 M001 is independent of:
 
-- Eggwork post-closure corrective work except for shared scheduler tests;
+- further Eggwork M003 workspace-transfer optimization; M002/M002a are already
+  closed and their current snapshot/policy surface is the M001 baseline;
 - tool-selection experiments;
 - Eggplan Projection/CLI M002;
 - Eggplan Eggwork/Eggsearch adapter M002;
@@ -145,6 +169,8 @@ M001/M002 qualification must cover:
 - attempt-specific retry provenance;
 - persistence/restart;
 - subject drift;
+- remote snapshot manifest digest and completeness;
+- symlink/non-regular/oversize omission fail-closed semantics;
 - legacy NULL provenance;
 - AgentRun linkage to JobAttempt provenance;
 - RunStore propagation where a run is emitted;
