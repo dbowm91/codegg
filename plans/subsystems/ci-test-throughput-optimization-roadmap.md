@@ -99,11 +99,9 @@ M005 cache and final critical-path closure
 ```
 
 - M001 is closed with the measured hosted baseline (run `36173876950`, 17m54s, JOBS=4).
-- M002 is closed with the measured hosted baseline (run `36184915493` rerun, 17m26s, live target qualified, prebuild warm).
-- M003 is ready against the stabilized fixture/build policy so the pilot does not mix resource-policy changes with binary-topology changes.
-- M003 is blocked on M002 so the pilot does not mix resource-policy changes with binary-topology changes.
-- M004 is conditional on a positive M003 pilot.
-- M005 follows M004, or follows a documented negative M003/M004 disposition if consolidation is not retained.
+- M003 is closed with the measured hosted baseline (run `36193906726`, 17m31s, live target qualified, build 8m17s, exec 338s, positive pilot closed).
+- M004 is closed with the bounded consolidation (run `36196068239` final, 17m17s, build 7m51s, exec 362s, 5 `session_*` binaries → 1 `session_family`).
+- M005 is ready against the stabilized topology (hosted run `36196068239`).
 
 ## 5. Milestones
 
@@ -139,7 +137,21 @@ Select one representative high-fragmentation, non-heavy integration-test family 
 
 ### M004 — Bounded integration-test family consolidation
 
-Status: ready (unblocked by positive M003 pilot).
+Status: closed (`plans/closure/ci-test-throughput-optimization/004-status.md`;
+implementation `48790290`; hosted run `36196068239` final, 17m17s,
+build 7m51s, exec 362s, 5 default-feature `session_*` binaries → 1
+`session_family`).
+
+Implementation plan:
+
+- `plans/implementation/ci-test-throughput-optimization/004-bounded-integration-test-family-consolidation.md`
+
+Apply the proven harness pattern to additional compatible families, preserving feature/resource boundaries and human navigability. Stop before heavy/live/special-platform tests where consolidation would weaken isolation or diagnostics.
+
+### M005 — Compiler cache and final critical-path closure
+
+Status: ready (unblocked by M004 closure; stable baseline hosted run
+`36196068239`, 17m17s total, 7m51s build phase, 362s exec).
 
 ### M004 — Bounded integration-test family consolidation
 

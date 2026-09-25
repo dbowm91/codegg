@@ -1,6 +1,8 @@
 # CI/Test Throughput M005 — Cache and Critical-Path Closure
 
-Status: blocked on M004 or documented negative M003/M004 disposition
+Status: ready (unblocked by M004 closure
+`plans/closure/ci-test-throughput-optimization/004-status.md`; stable
+baseline is hosted run `36196068239`, 17m17s)
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
