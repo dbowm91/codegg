@@ -10,9 +10,9 @@ name: CI
 #
 # CI economy policy (see architecture/testing.md "CI Structure"):
 # concurrency cancels superseded runs on the same ref, docs-only changes
-# skip the workflow via paths-ignore, linking uses mold, and
-# CARGO_BUILD_JOBS=2 matches the 4 vCPU / 16 GB hosted runner while
-# test execution stays serial.
+# skip the workflow via paths-ignore, linking uses mold, build jobs are
+# tuned for the hosted runner (see env), and test execution runs under
+# nextest profile `ci` (serial within each binary, parallel across).
 
 on:
   pull_request:
@@ -73,6 +73,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Prebuilt nextest binary (~10 s). Test execution uses profile `ci`
+      # (.config/nextest.toml): serial within each binary (env mutation in
+      # tests is process-global), parallel across binaries, run-alone for
+      # the sleep-bound heavy files.
+      - uses: taiki-e/install-action@nextest
+
       - name: Configure git identity for tests
         run: |
           git config --global user.name "CI Test"
@@ -109,4 +115,4 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Workspace tests
-        run: cargo test --workspace --locked -- --test-threads=1
+        run: cargo nextest run --workspace --locked --profile ci

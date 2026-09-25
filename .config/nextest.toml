@@ -10,3 +10,32 @@ failure-output = "immediate-final"
 success-output = "never"
 test-threads = 1
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Routine CI/execution profile: parallel across test binaries, serial
+# within each binary. Used by `.github/workflows/ci.yml` and
+# `scripts/verify.sh full`. Workspace-wide only: subset runs
+# (`-p <crate>`) should use the default or timing profile, because the
+# heavy-binary filter below strictly requires its binaries to exist.
+#
+# Intra-binary parallelism is intentionally 1 everywhere: test code
+# mutates process-global environment variables extensively (auth keys,
+# routing flags, daemon homes), so threads within one binary are unsound.
+# Parallelism comes from running separate binaries concurrently — each is
+# its own OS process with its own environment.
+[profile.ci]
+test-threads = 4
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Serial within every binary (see above).
+[[profile.ci.overrides]]
+filter = "all()"
+test-threads = 1
+
+# Sleep/timeout-bound heavies that spawn real subprocesses and servers.
+# They run alone (never overlapped with anything) so their timing stays
+# deterministic and they cannot contend on process resources. Generous
+# slow-timeout: these legitimately take minutes on loaded runners.
+[[profile.ci.overrides]]
+filter = "binary(codegg::eggwork_remote_execution_live) | binary(codegg::interactive_process_attach_resume) | binary(codegg::interactive_process_sessions) | binary(codegg::interactive_terminal_tui)"
+threads-required = "num-cpus"
+slow-timeout = { period = "300s", terminate-after = 1 }

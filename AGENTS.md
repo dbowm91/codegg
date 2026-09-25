@@ -13,7 +13,9 @@ scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
 ```
 
-Both verify modes cap resources (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). `dbg!`/`println!`
+Both verify modes cap build jobs (`CARGO_BUILD_JOBS=2`); broad test execution
+runs under nextest profile `ci` (serial within each binary — env mutation in
+tests is process-global — parallel across binaries). `dbg!`/`println!`
 are allowed in tests (`clippy.toml`).
 
 ## Layout
@@ -53,7 +55,7 @@ Prefer the narrowest target covering the change; run `verify.sh quick` first.
 cargo test -p codegg-core                                            # single crate
 cargo test --test tui_render                                         # single integration test
 cargo test -p egglsp --features lsp-test-support --test scenario_engine  # LSP (needs feature)
-CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1  # capped full suite
+cargo nextest run --workspace --locked --profile ci  # capped full suite (needs cargo-nextest)
 ```
 
 - New `#[tokio::test]`s default to `current_thread`; use

@@ -8,7 +8,10 @@
 #   scripts/verify.sh help     — print usage
 #
 # Resource policy:
-#   Broad Cargo commands use CARGO_BUILD_JOBS=1 and --test-threads=1.
+#   Broad Cargo commands use CARGO_BUILD_JOBS=2 by default (local
+#   developer machines). CI overrides this per-runner (see
+#   .github/workflows/ci.yml). Test execution stays serial within each
+#   binary; cross-binary parallelism comes from nextest profile `ci`.
 #   Callers may override any env var before invoking this script.
 #
 # The script stops at the first failing command and returns its status.
@@ -19,7 +22,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ── Broad-test resource contract (matches CI) ───────────────────────────────
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 usage() {
@@ -33,10 +36,12 @@ Modes:
   help    Print this message.
 
 Resource policy:
-  Both modes set CARGO_BUILD_JOBS=1 by default.
-  Full mode passes --test-threads=1 to broad workspace tests.
+  Both modes set CARGO_BUILD_JOBS=2 by default.
+  Test execution uses nextest profile `ci` (serial within each binary,
+  parallel across binaries); plain `cargo test` broad runs keep
+  --test-threads=1.
   Callers may override via environment variables.
-  No optional external tools are required.
+  cargo-nextest is required for full mode.
 EOF
 }
 
@@ -83,7 +88,12 @@ run_quick() {
 # ── Full tier ───────────────────────────────────────────────────────────────
 run_full() {
     echo "==> Full verification"
-    echo "==> Broad-test environment: CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS --test-threads=1"
+    echo "==> Broad-test environment: CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS nextest profile ci"
+
+    if ! command -v cargo-nextest >/dev/null 2>&1; then
+        echo "Error: full mode requires cargo-nextest (cargo install cargo-nextest --locked)" >&2
+        exit 1
+    fi
 
     # Quick checks first
     run_quick
@@ -91,11 +101,11 @@ run_full() {
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo clippy --workspace --all-targets --locked -- -D warnings"
     (cd "$REPO_ROOT" && cargo clippy --workspace --all-targets --locked -- -D warnings)
 
-    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo test --workspace --locked -- --test-threads=1"
-    (cd "$REPO_ROOT" && cargo test --workspace --locked -- --test-threads=1)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run --workspace --locked --profile ci"
+    (cd "$REPO_ROOT" && cargo nextest run --workspace --locked --profile ci)
 
-    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo test -p codegg --locked --features server,plugins,lsp-test-support -- --test-threads=1"
-    (cd "$REPO_ROOT" && cargo test -p codegg --locked --features server,plugins,lsp-test-support -- --test-threads=1)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci"
+    (cd "$REPO_ROOT" && cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci)
 
     echo "==> Full verification passed."
 }

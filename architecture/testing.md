@@ -31,10 +31,12 @@ scripts/verify.sh full     # broad verification before handoff or release
 Runs quick first, then:
 
 1. `cargo clippy --workspace --all-targets --locked -- -D warnings`
-2. `cargo test --workspace --locked -- --test-threads=1`
-3. `cargo check -p codegg --locked --features server,plugins,lsp-test-support`
+2. `cargo nextest run --workspace --locked --profile ci`
+3. `cargo nextest run -p codegg --locked --features server,plugins,lsp-test-support --profile ci`
 
-Both modes set `CARGO_BUILD_JOBS=1` by default.
+Both modes set `CARGO_BUILD_JOBS=2` by default. Test execution runs
+under nextest profile `ci` (see below); plain `cargo test` broad runs
+keep `--test-threads=1`.
 
 ## Test Resource Classes
 
@@ -164,8 +166,8 @@ cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 # Single crate
 cargo test -p codegg-core
 
-# Capped workspace validation
-CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
+# Capped workspace validation (nextest parallelizes across binaries)
+cargo nextest run --workspace --locked --profile ci
 
 # LSP integration (fake server, serial)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
@@ -190,18 +192,32 @@ cargo test -p egglsp --features lsp-real-server-tests \
 python3 scripts/audit_tokio_tests.py
 ```
 
-## Test Timing with Nextest
+## Test Execution with Nextest
 
-Optional diagnostic tooling configured in `.config/nextest.toml`.
+Routine broad execution uses nextest profile `ci`, configured in
+`.config/nextest.toml` (requires `cargo install cargo-nextest --locked`;
+CI installs it via `taiki-e/install-action@nextest`):
 
-| Profile | Timeout | Threads | Use Case |
-|---------|---------|---------|----------|
-| `default` | 30s | Auto | Local development |
-| `timing` | 60s | Serial | Local timing diagnostics |
+| Profile | Threads | Scope | Use Case |
+|---------|---------|-------|----------|
+| `default` | 14 | intra-binary | Local development |
+| `timing` | Serial | intra-binary | Local timing diagnostics |
+| `ci` | 4 slots across binaries, 1 within | workspace-wide | CI + `verify.sh full` |
+
+`ci` parallelizes across test binaries (separate OS processes, each with
+its own environment) while forcing serial execution within each binary:
+test code mutates process-global env vars extensively, so intra-binary
+threads are unsound (verified by audit 2026-09-25). The four
+sleep/timeout-bound heavy files (`eggwork_remote_execution_live`,
+`interactive_process_attach_resume`, `interactive_process_sessions`,
+`interactive_terminal_tui`) run alone via `threads-required = "num-cpus"`.
+The profile is workspace-wide only — subset runs (`-p <crate>`) use the
+default or timing profile, because the heavy-binary filter strictly
+requires its binaries to exist.
 
 ```bash
-cargo install cargo-nextest
-cargo nextest run --workspace --profile timing --all-features
+cargo install cargo-nextest --locked
+cargo nextest run --workspace --profile ci
 scripts/capture-nextest-timing.sh --top 20
 ```
 
@@ -221,7 +237,7 @@ compile/link of ~100 test binaries). Steps in order:1. Generated-agent schema sy
 8. Scheduler bypass guard (`check_scheduler_bypass.py`)
 9. Formatting (`cargo fmt --check --all`)
 10. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
-11. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
+11. Workspace tests (`cargo nextest run --workspace --locked --profile ci`)
 
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
@@ -229,7 +245,8 @@ example, LSP, and cross-platform checks remain local.
 ### CI economy policy
 
 Four deliberate deviations from the local defaults, all confined to the
-hosted runner (4 vCPU / 16 GB). Local `verify.sh` behavior is unchanged:
+hosted runner (4 vCPU / 16 GB). Local `verify.sh` behavior is unchanged
+except `CARGO_BUILD_JOBS=2`:
 
 1. **Superseded-run cancellation** — `concurrency` with
    `cancel-in-progress: true` per ref. A new push cancels the previous
@@ -242,13 +259,17 @@ hosted runner (4 vCPU / 16 GB). Local `verify.sh` behavior is unchanged:
    workspace-test step is dominated by linking large test binaries, and
    mold is several times faster than GNU ld there; the suite itself
    validates the linked output.
-4. **`CARGO_BUILD_JOBS=2`** — matches the hosted runner. Test execution
-   stays serial (`--test-threads=1`) everywhere; local builds stay at 1.
+4. **Build jobs tuned for the runner** — `CARGO_BUILD_JOBS` above the
+   local default (see workflow env for the current probe value).
+5. **Nextest `ci` profile** — 4 execution slots across binaries, serial
+   within, run-alone heavies. Cuts measured test execution (~10.6 min
+   serial, 2026-09-25) to roughly half without touching `--test-threads`
+   semantics.
 
-Do not generalize these: raising `--test-threads` globally risks
-port/PTY conflicts and OOM in process-heavy targets, and splitting CI
-into parallel jobs that each compile the workspace duplicates the
-dominant cost instead of removing it.
+Do not generalize these: raising intra-binary `--test-threads` risks
+env-var races and OOM in process-heavy targets (audited, not assumed),
+and splitting CI into parallel jobs that each compile the workspace
+duplicates the dominant cost instead of removing it.
 
 ### Release-footprint measurements
 
@@ -290,23 +311,25 @@ cargo test --test projection_artifact_handles
 
 ### CI Lane Roadmap Decision
 
-**Conservative keep** — maintain the current single-job bounded test
-lane. Splitting into resource lanes would add complexity without
-measured need. If test count grows or wall-clock becomes problematic,
-consider nextest adoption, resource-aware splitting, or selective
-feature flags. These changes should be driven by measured regressions.
+**Conservative keep, parallelized execution** — the single-job bounded
+test lane stays (no resource-lane split: each extra job would recompile
+the workspace and duplicate the dominant cost). Wall-clock pressure is
+handled inside the lane via nextest profile `ci` (see above), adopted
+2026-09-25 after measurement showed execution, not just compile, needed
+parallelism.
 
 ### Future Considerations
 
-If test count grows significantly or wall-clock becomes problematic,
-consider:
+Nextest adoption (phase 1, 2026-09-25) covers cross-binary parallelism
+with serial-within and run-alone heavies. If wall-clock regresses:
 
-1. **Nextest adoption** — use `.config/nextest.toml` profiles for
-   timing data and potential parallelism.
-2. **Resource-aware splitting** — split into sequential lanes:
-   fast/default → storage → process-heavy → plugin-heavy.
+1. **Extend the run-alone list** — any new sleep/subprocess-bound file
+   gets a `binary(...)` entry in the `ci` profile's heavy override.
+2. **Tune slot count** — `test-threads` in profile `ci` trades memory
+   (one libcodegg-loaded binary per slot) against throughput; measure
+   before changing.
 3. **Selective feature flags** — use `--features` instead of
-   `--all-features` for targeted CI runs.
+   `--all-features` for targeted CI runs (unchanged).
 
 ## Related Docs
 
