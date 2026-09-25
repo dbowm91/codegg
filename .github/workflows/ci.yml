@@ -43,11 +43,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # CI-only override: GitHub-hosted runners have 4 vCPU / 16 GB, so two
-  # concurrent rustc/link jobs fit comfortably. Local default stays 1
+  # CI-only override: GitHub-hosted runners have 4 vCPU / 16 GB.
+  # Experimental: 4 parallel rustc/link jobs (up from 2) to probe
+  # headroom. If compile steps OOM, revert to 2. Local default stays 1
   # (see scripts/verify.sh) for smaller developer machines.
   # Test execution remains serial (--test-threads=1) in every mode.
-  CARGO_BUILD_JOBS: 2
+  CARGO_BUILD_JOBS: 4
 
 permissions:
   contents: read
