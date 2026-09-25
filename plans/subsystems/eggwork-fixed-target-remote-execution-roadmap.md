@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001+C001 closed, M002 closing, M002a blocked on M002 closure
+Status: active roadmap; M001+C001+M002 closed, M002a ready, M003 blocked on materializer contract, M004 deferred
 
 Canonical authority:
 
@@ -112,7 +112,11 @@ Add a durable explicit Eggwork execution target and an Eggwork-backed scheduler 
 
 Class: infrastructure/polish
 
-Status: closing
+Status: closed
+
+Closure record:
+
+- `plans/closure/eggwork-fixed-target-remote-execution/002-status.md`
 
 Implementation plan:
 
@@ -140,7 +144,7 @@ Expected scope:
 
 Class: invariant/qualification
 
-Status: blocked on M002 closure + Eggwork remote-admission corrective C001 closure
+Status: ready; M002 and Eggwork remote-admission corrective C001 are closed
 
 Implementation plan:
 

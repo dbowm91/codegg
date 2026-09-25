@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M002 — Target Capability Projection and Operator Policy
 
-Status: closing
+Status: implemented
 
 Source roadmap:
 

@@ -26,7 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
-| Eggwork fixed-target remote execution | closing | `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` | M002 closure review; M002a blocked | M002 implementation is pushed and undergoing hosted verification. Upstream Eggwork remote-admission C001 is closed with real mTLS evidence; M002a awaits M002 closure. |
+| Eggwork fixed-target remote execution | active | `plans/subsystems/eggwork-fixed-target-remote-execution-roadmap.md` | M002a ready for handoff | M002 closed with hosted Linux verification; upstream Eggwork remote-admission C001 is closed. M003 remains blocked on its optimized materializer contract; M004 remains deferred. |
 | Eggplan assessment integration | active | `plans/subsystems/eggplan-assessment-integration-roadmap.md` | M001 execution-subject provenance ready; M002 blocked on M001 | Eggplan live bridge `088968b` is ready, but CodeGG must first persist exact attempt-scoped execution subjects. Legacy/current-worktree backfill is forbidden. |
 | Eggfetch 0.2 adoption | closed | `plans/subsystems/eggfetch-0-2-adoption-roadmap.md` | M001 closed | Workstream closed with crates.io 0.2.0 adoption and provider stream-deadline correction (`plans/closure/eggfetch-0-2-adoption/001-status.md`; implementation `653e7abb`). |
 | Eggfetch 0.2 adoption maintenance corrective | closed | `plans/subsystems/eggfetch-0-2-adoption-maintenance-corrective-addendum.md` | C001 closed | Post-closure polish landed: internal provider timeout-policy symbols narrowed and duplicated redirect fixtures hardened with deterministic `WouldBlock` coverage; no production HTTP behavior or dependency change. |
@@ -49,8 +49,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Eggwork fixed-target remote execution | M002 target capability projection + operator policy | **closing** | `plans/implementation/eggwork-fixed-target-remote-execution/002-target-capability-projection-and-operator-policy.md` | Implementation pushed; closure awaits hosted Linux CI. |
-| Eggwork fixed-target remote execution | M002a restricted-spec live requalification | **blocked** | `plans/implementation/eggwork-fixed-target-remote-execution/002a-restricted-spec-live-requalification.md` | Requires CodeGG M002 closure + Eggwork Security remote-admission C001 closure and corrected immutable Eggwork pin. |
+| Eggwork fixed-target remote execution | M002a restricted-spec live requalification | **ready** | `plans/implementation/eggwork-fixed-target-remote-execution/002a-restricted-spec-live-requalification.md` | M002 closed; upstream Eggwork Security remote-admission C001 closed with live required-Landlock evidence. Review and pin the corrected immutable revision in M002a. |
 | Eggwork fixed-target remote execution corrective | C001 lease identity + live-node qualification | closed | `plans/implementation/eggwork-fixed-target-remote-execution-corrective/001-lease-identity-and-live-node-qualification.md` | Closure: `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`; implementation `f4e6e69d` (+ follow-ups through `3ca3b7b6`); hosted CI run `36051370501` success. M002 unblocked to eligible-for-planning; M003/M004 dispositions unchanged. |
 | Eggplan assessment integration | M001 durable execution-subject provenance | **ready** | `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md` | Upstream unblock for Eggplan CodeGG M002. Capture/persist attempt-scoped exact source subject; legacy rows remain unavailable; no assessor swap in M001. |
 | Eggwork fixed-target remote execution | M001 fixed-target finite-job executor | historical closure; corrective closed | `plans/implementation/eggwork-fixed-target-remote-execution/001-fixed-target-finite-job-executor.md` | Historical closure: `plans/closure/eggwork-fixed-target-remote-execution/001-status.md`; implementation `67f8f3d3`. Corrective C001 is closed (`plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`); M002 is eligible for planning. |
@@ -94,7 +93,7 @@ Canonical direction remains in:
 
 ## Current execution order and dependency gates
 
-**Eggwork remote execution M002/M002a gate:** CodeGG C001 is closed. M002 is active against the written upstream feature contract. M002a is the real restricted-spec integration gate and remains blocked until Eggwork closes `security-isolation-resource-remote-admission-corrective` C001; no plan may claim live required Landlock execution before that closure.
+**Eggwork remote execution M002/M002a gate:** CodeGG M002 and CodeGG corrective C001 are closed. Eggwork Security remote-admission corrective C001 is also closed with real required-Landlock evidence. M002a is ready for the corrected immutable pin and CodeGG production mTLS requalification; no plan may claim CodeGG live required-Landlock execution until M002a closes.
 
 
 **Eggwork fixed-target remote execution corrective gate:** M001 implementation `67f8f3d3` and closure `plans/closure/eggwork-fixed-target-remote-execution/001-status.md` remain immutable historical evidence. The post-closure lease divergence (`derive_handle` minted one lease token for the live handle and a second for the persisted record; Eggwork fences cancel/renew on the accepted token) is fixed: C001 is closed (`plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md`; implementation `f4e6e69d` + follow-ups through `3ca3b7b6`; hosted CI run `36051370501` success) with exact lease-tuple and real-node restart/cancel/renew evidence. Live qualification additionally proved the pinned node admits only unrestricted specs (executor requests `None` + `Unrestricted`; posture follow-up owned by M002). M002 is unblocked to eligible-for-planning; M003 remains blocked on the optimized materializer contract and M004 remains deferred.
@@ -150,9 +149,9 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 ## Eggwork remote-execution control point
 
-Eggwork remote execution M001 is the active CodeGG-owned handoff for integrating `eggstack/eggwork`. It is independent of Eggwork Operations/packaging work. CodeGG must persist the execution target and remote attempt provenance, keep `JobScheduler` as the only admission/fairness/retry authority, and use Eggwork only after a named node has already been selected.
+Eggwork remote execution M002a is the active CodeGG-owned handoff for integrating the corrected `eggstack/eggwork` isolation contract. M001 established fixed-target execution; M002 added posture projection and fail-closed operator policy. CodeGG must keep `JobScheduler` as the only admission/fairness/retry authority and use Eggwork only after a named node has already been selected.
 
-Do not implement this from Eggwork's planning tree directly; the controlling CodeGG handoff is `plans/implementation/eggwork-fixed-target-remote-execution/001-fixed-target-finite-job-executor.md`.
+Do not implement this from Eggwork's planning tree directly; the controlling CodeGG handoff is `plans/implementation/eggwork-fixed-target-remote-execution/002a-restricted-spec-live-requalification.md`.
 
 ## Closure work and current control points
 
@@ -190,6 +189,8 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Residual runtime consolidation | M001-M003 closed | `plans/closure/residual-runtime-consolidation/001-status.md` through `003-status.md` |
 
 ## Recently closed or conditionally closed work
+
+| Eggwork fixed-target remote execution | M002 target capability projection + operator policy | closed | `plans/closure/eggwork-fixed-target-remote-execution/002-status.md` | `ac29d9db` + tests through `12b8c62f`; hosted Linux CI run `36077353216` success; policy, posture projection, pre-upload rejection, cache/health diagnostics; M002a unblocked after auditing CodeGG M002 and upstream Eggwork C001. M003/M004 dispositions unchanged. |
 
 | Eggwork fixed-target remote execution corrective | C001 lease identity + live-node qualification | closed | `plans/closure/eggwork-fixed-target-remote-execution-corrective/001-status.md` | `f4e6e69d` + follow-ups through `3ca3b7b6`; hosted CI run `36051370501` success; single-source lease identity, real-node mTLS qualification (valid renew/invalid-lease rejection/restart reconciliation, no second submit), unrestricted-spec posture finding; M002 unblocked to eligible-for-planning. |
 
