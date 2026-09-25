@@ -98,8 +98,8 @@ M004 bounded family consolidation
 M005 cache and final critical-path closure
 ```
 
-- M001 is ready.
-- M002 is blocked on M001 timing instrumentation/baseline so its effect can be measured against a stable configuration.
+- M001 is closed with the measured hosted baseline (run `36173876950`, 17m54s, JOBS=4).
+- M002 is ready on the M001 timing instrumentation/baseline so its effect can be measured against a stable configuration.
 - M003 is blocked on M002 so the pilot does not mix resource-policy changes with binary-topology changes.
 - M004 is conditional on a positive M003 pilot.
 - M005 follows M004, or follows a documented negative M003/M004 disposition if consolidation is not retained.
@@ -108,7 +108,8 @@ M005 cache and final critical-path closure
 
 ### M001 — Build/link measurement and low-risk test-profile tuning
 
-Status: ready.
+Status: closed (`plans/closure/ci-test-throughput-optimization/001-status.md`;
+steady-state baseline hosted run `36173876950`, 17m54s, JOBS=4).
 
 Implementation plan:
 
@@ -118,7 +119,7 @@ Capture reproducible Cargo/Nextest timing evidence, A/B test CI-only test debugi
 
 ### M002 — Heavy-test scheduling and live Eggwork qualification
 
-Status: blocked on M001.
+Status: ready (unblocked by M001 closure).
 
 Implementation plan:
 

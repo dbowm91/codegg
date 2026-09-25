@@ -1,6 +1,8 @@
 # CI/Test Throughput M002 — Heavy-Test Scheduling and Live Qualification
 
-Status: blocked on M001
+Status: ready (unblocked by M001 closure
+`plans/closure/ci-test-throughput-optimization/001-status.md`; stable
+baseline is hosted run `36173876950`, 17m54s, JOBS=4)
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 

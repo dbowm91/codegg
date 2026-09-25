@@ -1,6 +1,7 @@
 # CI/Test Throughput M001 — Build/Link Measurement and Test-Profile Tuning
 
-Status: ready
+Status: implemented (closed; see
+`plans/closure/ci-test-throughput-optimization/001-status.md`)
 
 Repository baseline reviewed: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
