@@ -12,20 +12,28 @@
 #     silently disappear because a selector matched zero tests.
 #
 # Usage:
-#   ./scripts/detect-live-eggwork-changes.sh <event-name> [<base-sha>]
+#   ./scripts/detect-live-eggwork-changes.sh <event-name> [<base-sha> [<base-ref>]]
+#
+# In CI, pass `"${{ github.event_name }}"`,
+# `"${{ github.event.pull_request.base.sha }}"`, and
+# `"${{ github.event.pull_request.base.ref }}"`. The ref is the primary
+# fetch source: GitHub does not serve arbitrary SHAs over the fetch
+# protocol, so fetching the base SHA alone fails and would fail every
+# PR open. The SHA is still used for the diff once objects are present.
 #
 # Prints `live_required=true|...` progress to stdout for the CI log and
 # emits exactly `live_required=<true|false>` on the last line for
 # `$GITHUB_OUTPUT` capture. Exit status is always 0 (the decision, not
 # the detection health, is the output; failures resolve to true).
 #
-# Local simulation:
+# Local simulation (objects already exist locally, no fetch needed):
 #   ./scripts/detect-live-eggwork-changes.sh pull_request <base-sha>
 
 set -u
 
 EVENT_NAME="${1:-push}"
 BASE_SHA="${2:-}"
+BASE_REF="${3:-}"
 
 # Paths whose changes can affect live Eggwork qualification.
 LIVE_PATTERN='^(src/scheduler/|src/security/sandbox|src/bin/codegg-sandbox-helper\.rs|crates/eggwork-test-node/|tests/eggwork_remote_execution|\.github/workflows/ci\.yml$|\.config/nextest\.toml$|scripts/prebuild-eggwork-fixtures\.sh$|scripts/detect-live-eggwork-changes\.sh$|Cargo\.toml$|Cargo\.lock$)'
@@ -46,13 +54,24 @@ if [ -z "$BASE_SHA" ]; then
     exit 0
 fi
 
-if ! git fetch --no-tags --depth=1 origin "$BASE_SHA" >/dev/null 2>&1; then
-    fail_open "could not fetch base $BASE_SHA"
+# Shallow CI clones usually lack the base objects: fetch the base *ref*
+# (branch tip), which the protocol serves. A raw-SHA fetch is not
+# attempted: GitHub rejects it, and treating that rejection as fatal
+# would fail every PR open. If objects are already present (local
+# simulation, full clone), skip the fetch and diff directly.
+BASE_REV="$BASE_SHA"
+if git cat-file -e "$BASE_SHA^{commit}" >/dev/null 2>&1; then
+    echo "detect-live-eggwork: base objects present locally, no fetch needed"
+elif [ -n "$BASE_REF" ] && git fetch --no-tags --depth=1 origin "$BASE_REF" >/dev/null 2>&1; then
+    BASE_REV="FETCH_HEAD"
+    echo "detect-live-eggwork: fetched base ref $BASE_REF"
+else
+    fail_open "could not fetch base ref ${BASE_REF:-<none>}"
     exit 0
 fi
 
-CHANGED="$(git diff --name-only "$BASE_SHA...HEAD" 2>/dev/null)" || {
-    fail_open "could not diff $BASE_SHA...HEAD"
+CHANGED="$(git diff --name-only "$BASE_REV...HEAD" 2>/dev/null)" || {
+    fail_open "could not diff $BASE_REV...HEAD"
     exit 0
 }
 

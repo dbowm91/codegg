@@ -125,7 +125,7 @@ jobs:
       - name: Detect live-Eggwork relevance
         id: live
         run: |
-          ./scripts/detect-live-eggwork-changes.sh "${{ github.event_name }}" "${{ github.event.pull_request.base.sha }}" | tee /tmp/live-detect.log
+          ./scripts/detect-live-eggwork-changes.sh "${{ github.event_name }}" "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.base.ref }}" | tee /tmp/live-detect.log
           echo "live_required=$(tail -n 1 /tmp/live-detect.log | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
       # M002 WP1: build the workspace-excluded Eggwork fixtures once so
