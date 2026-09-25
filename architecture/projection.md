@@ -366,6 +366,9 @@ cargo test --test headless_projection_consumer
 # Adversarial tests
 cargo test --test context_projection_adversarial
 
+# Projection replay family (consolidated binary, M003 pilot): 11 modules
+cargo test --test projection_replay
+
 # Remote transport tests (needs server feature)
 cargo test --test projection_transport_real --features server
 

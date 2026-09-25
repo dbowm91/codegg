@@ -351,9 +351,7 @@ cargo test -p codegg-protocol
 cargo test -p codegg --lib core::transport::projection
 cargo test -p codegg --lib server::ws
 cargo test -p codegg --lib core::transport::daemon_socket
-cargo test --test projection_replay_daemon_protocol
-cargo test --test projection_replay_subscription
-cargo test --test projection_replay_resume
+cargo test --test projection_replay                 # consolidated binary (M003 pilot): 11 submodules
 cargo test --test projection_disclosure_invariants
 cargo test --test projection_artifact_handles
 ```

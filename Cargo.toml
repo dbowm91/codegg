@@ -358,6 +358,16 @@ name = "team_collaboration_postclosure_m001_registration_auth"
 path = "tests/team_collaboration_postclosure_m001_registration_auth.rs"
 required-features = ["server"]
 
+# M003 pilot: consolidate the 11 `projection_replay_*` integration
+# targets into one. Cargo does not auto-discover `tests/<dir>/mod.rs`
+# as a test target, so the consolidated binary is declared explicitly.
+# Per-file auto-discovery is suppressed by placing the moved sources
+# under `tests/projection_replay/` with a `.inc` extension (Cargo only
+# auto-discovers `*.rs`).
+[[test]]
+name = "projection_replay"
+path = "tests/projection_replay/mod.rs"
+
 [profile.release]
 lto = "thin"
 strip = true

@@ -1,4 +1,4 @@
-mod common;
+use super::common;
 
 use codegg_core::projection_replay::store::ProjectionReplayStore;
 use codegg_core::projection_replay::subscription::{SubscriptionConfig, SubscriptionRegistry};
