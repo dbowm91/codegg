@@ -1438,6 +1438,37 @@ impl ExecutionSubjectRevision {
                 }),
             }
     }
+
+    /// Lossless projection to Eggplan's five-field `SubjectRevision`
+    /// shape for the M002 adapter and golden fixtures. Verified against
+    /// Eggplan HEAD `47e6f11` (`SubjectState::{Clean, Dirty}` serialize
+    /// as `"clean"`/`"dirty"`). No production dependency on
+    /// `eggplan-repo`; M002 constructs the Eggplan value from the
+    /// durable CodeGG record.
+    pub fn to_eggplan_fields(&self) -> EggplanSubjectFields {
+        EggplanSubjectFields {
+            subject_kind: "git".to_string(),
+            repository_id: self.repository_identity.clone(),
+            revision: self.revision.clone(),
+            state: match self.state {
+                ExecutionSubjectState::Clean => "clean".to_string(),
+                ExecutionSubjectState::Dirty => "dirty".to_string(),
+            },
+            dirty_digest: self.dirty_digest.clone(),
+        }
+    }
+}
+
+/// Reviewed-fixture view of Eggplan's five-field `SubjectRevision`.
+/// The M002 adapter constructs the Eggplan value from the durable
+/// CodeGG record; this struct pins the wire shape in golden tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EggplanSubjectFields {
+    pub subject_kind: String,
+    pub repository_id: String,
+    pub revision: String,
+    pub state: String,
+    pub dirty_digest: Option<String>,
 }
 
 /// Persisted provenance for one remote execution handle. Survives

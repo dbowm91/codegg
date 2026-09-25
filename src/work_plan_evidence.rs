@@ -93,7 +93,7 @@ pub async fn assemble_resolved(
                 attempt_id: Option<String>,
             }
             if let Ok(Some(link)) = sqlx::query_as::<_, Link>(
-                "SELECT status, job_id, attempt_id FROM agent_run WHERE id = ?1",
+                "SELECT status, job_id, attempt_id FROM agent_run WHERE run_id = ?1",
             )
             .bind(evidence.ref_id.as_str())
             .fetch_optional(pool)
@@ -165,7 +165,7 @@ async fn agent_run_evidence_status(pool: &SqlitePool, ref_id: &str) -> HostEvide
     struct StatusRow {
         status: String,
     }
-    let row = sqlx::query_as::<_, StatusRow>("SELECT status FROM agent_run WHERE id = ?1")
+    let row = sqlx::query_as::<_, StatusRow>("SELECT status FROM agent_run WHERE run_id = ?1")
         .bind(ref_id)
         .fetch_optional(pool)
         .await;
