@@ -44,11 +44,14 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # CI-only override: GitHub-hosted runners have 4 vCPU / 16 GB.
-  # Experimental: 4 parallel rustc/link jobs (up from 2) to probe
-  # headroom. If compile steps OOM, revert to 2. Local default stays 1
+  # Experimental: 8 parallel rustc/link jobs (up from 4) to probe
+  # headroom. JOBS=4 showed no OOM (run superseded before completion).
+  # If compile steps OOM or wall-clock regresses (8 jobs oversubscribe
+  # 4 vCPUs; each rustc already threads codegen internally), revert to 2,
+  # the last fully validated setting (28m37s). Local default stays 1
   # (see scripts/verify.sh) for smaller developer machines.
   # Test execution remains serial (--test-threads=1) in every mode.
-  CARGO_BUILD_JOBS: 4
+  CARGO_BUILD_JOBS: 8
 
 permissions:
   contents: read
