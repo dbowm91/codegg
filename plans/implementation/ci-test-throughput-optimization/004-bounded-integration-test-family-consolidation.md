@@ -1,6 +1,7 @@
 # CI/Test Throughput M004 — Bounded Integration-Test Family Consolidation
 
-Status: blocked/conditional on positive M003
+Status: ready (unblocked by positive M003 pilot closure
+`plans/closure/ci-test-throughput-optimization/003-status.md`)
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 

@@ -127,13 +127,19 @@ qualified).
 
 ### M003 — Integration-harness consolidation pilot
 
-Status: ready (unblocked by M002 closure).
+Status: closed (`plans/closure/ci-test-throughput-optimization/003-status.md`;
+implementation `e27140fd`; hosted run `36193906726`, 17m31s, build 8m17s,
+exec 338s, 11 projection_replay_* binaries → 1 `projection_replay`).
 
 Implementation plan:
 
 - `plans/implementation/ci-test-throughput-optimization/003-integration-harness-consolidation-pilot.md`
 
 Select one representative high-fragmentation, non-heavy integration-test family and consolidate it into a smaller number of Cargo test targets without deleting test logic. Measure compile/link and execution effects. A negative result is valid closure.
+
+### M004 — Bounded integration-test family consolidation
+
+Status: ready (unblocked by positive M003 pilot).
 
 ### M004 — Bounded integration-test family consolidation
 
