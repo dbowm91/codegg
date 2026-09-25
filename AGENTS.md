@@ -14,8 +14,8 @@ cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 
 ```
 
 Both verify modes cap build jobs (`CARGO_BUILD_JOBS=2`); broad test execution
-runs under nextest profile `ci` (serial within each binary — env mutation in
-tests is process-global — parallel across binaries). `dbg!`/`println!`
+runs under nextest profile `ci` (one process per test — env mutation in
+tests is process-global — up to 4 concurrent). `dbg!`/`println!`
 are allowed in tests (`clippy.toml`).
 
 ## Layout

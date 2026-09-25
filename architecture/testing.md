@@ -200,14 +200,15 @@ CI installs it via `taiki-e/install-action@nextest`):
 
 | Profile | Threads | Scope | Use Case |
 |---------|---------|-------|----------|
-| `default` | 14 | intra-binary | Local development |
-| `timing` | Serial | intra-binary | Local timing diagnostics |
-| `ci` | 4 slots across binaries, 1 within | workspace-wide | CI + `verify.sh full` |
+| `default` | 14 | per-test processes | Local development |
+| `timing` | Serial | per-test processes | Local timing diagnostics |
+| `ci` | 4 concurrent tests | workspace-wide | CI + `verify.sh full` |
 
-`ci` parallelizes across test binaries (separate OS processes, each with
-its own environment) while forcing serial execution within each binary:
-test code mutates process-global env vars extensively, so intra-binary
-threads are unsound (verified by audit 2026-09-25). The four
+`ci` runs each test in its own process (nextest's execution model), up
+to 4 concurrently. That is why it is sound despite process-global env
+mutation throughout the test code: unlike `cargo test --test-threads=N`,
+no two tests ever share an address space, so intra-suite env races are
+impossible by construction (verified by audit 2026-09-25). The four
 sleep/timeout-bound heavy files (`eggwork_remote_execution_live`,
 `interactive_process_attach_resume`, `interactive_process_sessions`,
 `interactive_terminal_tui`) run alone via `threads-required = "num-cpus"`.
@@ -261,14 +262,15 @@ except `CARGO_BUILD_JOBS=2`:
    validates the linked output.
 4. **Build jobs tuned for the runner** — `CARGO_BUILD_JOBS` above the
    local default (see workflow env for the current probe value).
-5. **Nextest `ci` profile** — 4 execution slots across binaries, serial
-   within, run-alone heavies. Cuts measured test execution (~10.6 min
-   serial, 2026-09-25) to roughly half without touching `--test-threads`
-   semantics.
+5. **Nextest `ci` profile** — 4 concurrent per-test processes,
+   run-alone heavies. Cuts measured test execution (~10.6 min serial,
+   2026-09-25) by overlapping the long tail of small binaries; the
+   sleep-bound heavies still take their wall-clock. Does not change
+   `--test-threads` semantics of plain `cargo test` runs.
 
-Do not generalize these: raising intra-binary `--test-threads` risks
-env-var races and OOM in process-heavy targets (audited, not assumed),
-and splitting CI into parallel jobs that each compile the workspace
+Do not generalize these: intra-binary `--test-threads` stays 1 — test
+code mutates process-global env vars (audited, not assumed) — and
+splitting CI into parallel jobs that each compile the workspace
 duplicates the dominant cost instead of removing it.
 
 ### Release-footprint measurements
