@@ -145,6 +145,28 @@ async fn ensure_helper_built(path: &Path) {
     static BUILT: OnceCell<()> = OnceCell::const_new();
     BUILT
         .get_or_init(|| async {
+            // M002 WP1: CI prebuilds both fixtures once via
+            // `scripts/prebuild-eggwork-fixtures.sh` and exports
+            // `CODEGG_EGGWORK_FIXTURES_PREBUILT=1`. Assert on the
+            // prebuilt binaries instead of having every per-test
+            // process rediscover/rebuild them. Local direct invocation
+            // keeps the on-demand fallback below.
+            if matches!(
+                std::env::var("CODEGG_EGGWORK_FIXTURES_PREBUILT").as_deref(),
+                Ok("1")
+            ) {
+                assert!(
+                    path.exists(),
+                    "prebuilt fixture missing: {} (run scripts/prebuild-eggwork-fixtures.sh)",
+                    path.display()
+                );
+                assert!(
+                    sandbox_helper_binary(path).exists(),
+                    "prebuilt sandbox helper missing next to {} (run scripts/prebuild-eggwork-fixtures.sh)",
+                    path.display()
+                );
+                return;
+            }
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
             let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("crates/eggwork-test-node/Cargo.toml");

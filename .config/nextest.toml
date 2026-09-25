@@ -38,6 +38,14 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # `scheduler_cancellation` joined this list 2026-09-25: its real-`sleep`
 # token assertions flaked twice under parallel load (4- and 8-slot runs)
 # while passing serially.
+# M002 WP3 audit (2026-09-25): whole-binary exclusivity retained for all
+# five. The three interactive binaries drive real PTYs/subprocess trees
+# with timing assertions throughout; the live target owns exclusive
+# fixture lifecycle (mTLS node + Landlock); scheduler_cancellation has
+# proven timing flakes (incl. macOS-only failures while Linux is green).
+# Per-test narrowing was rejected: proving shared-slot safety per group
+# would cost more hosted measurement than the execution tail can repay,
+# and a wrong split reintroduces the exact flake class being removed.
 [[profile.ci.overrides]]
 filter = "binary(eggwork_remote_execution_live) | binary(interactive_process_attach_resume) | binary(interactive_process_sessions) | binary(interactive_terminal_tui) | binary(scheduler_cancellation)"
 threads-required = "num-cpus"

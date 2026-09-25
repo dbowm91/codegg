@@ -72,6 +72,14 @@ jobs:
       - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # M002 WP2: the live-Eggwork helper is a workspace-excluded
+          # standalone workspace (own lockfile, own target dir outside
+          # the root target tree). Without this entry every run rebuilds
+          # its eggwork-server dependency graph from scratch.
+          workspaces: |
+            . -> target
+            crates/eggwork-test-node -> target
 
       # Prebuilt nextest binary (~10 s). Test execution uses profile `ci`
       # (.config/nextest.toml): serial within each binary (env mutation in
@@ -114,5 +122,30 @@ jobs:
       - name: Workspace Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Detect live-Eggwork relevance
+        id: live
+        run: |
+          ./scripts/detect-live-eggwork-changes.sh "${{ github.event_name }}" "${{ github.event.pull_request.base.sha }}" | tee /tmp/live-detect.log
+          echo "live_required=$(tail -n 1 /tmp/live-detect.log | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      # M002 WP1: build the workspace-excluded Eggwork fixtures once so
+      # per-test processes assert on prebuilt binaries (via
+      # CODEGG_EGGWORK_FIXTURES_PREBUILT=1) instead of each
+      # discovering/rebuilding them. Skipped when the live target is
+      # omitted from this run (unrelated PRs).
+      - name: Prebuild Eggwork live fixtures
+        if: steps.live.outputs.live_required == 'true'
+        run: |
+          ./scripts/prebuild-eggwork-fixtures.sh
+          echo "CODEGG_EGGWORK_TEST_NODE=$PWD/crates/eggwork-test-node/target/debug/codegg-eggwork-test-node" >> "$GITHUB_ENV"
+          echo "CODEGG_EGGWORK_FIXTURES_PREBUILT=1" >> "$GITHUB_ENV"
+
       - name: Workspace tests
-        run: cargo nextest run --workspace --locked --profile ci
+        run: |
+          if [ "${{ steps.live.outputs.live_required }}" = "true" ]; then
+            echo "Live Eggwork qualification included (relevant change or main push)."
+            cargo nextest run --workspace --locked --profile ci
+          else
+            echo "Live Eggwork target omitted for this unrelated-PR run; it stays qualified via relevant-PR and main runs."
+            cargo nextest run --workspace --locked --profile ci -E 'not binary(eggwork_remote_execution_live)'
+          fi
