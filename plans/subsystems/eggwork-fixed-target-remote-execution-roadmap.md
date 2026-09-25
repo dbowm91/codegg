@@ -12,7 +12,8 @@ Canonical authority:
 External execution substrate:
 
 - Eggwork repository: `https://github.com/eggstack/eggwork`
-- reviewed Eggwork planning/implementation baseline: `e7d9a8e5a9b66f7c68ff4236c9a074ba81e035d7`
+- reviewed Eggwork implementation baseline: `2566e6a54451468011119844824b644aea891b0c`
+- reviewed Eggwork Workspace M004 planning commit: `ed0fc838bd006103021f1fb4749f579cabc2db87`
 - Control Plane M003 closure: `7fe07c0b75c2ab022f2a17b5999ee589e3d94e62`
 - Foundation M003 closure: `b3b5459a6077f59278fa1694a65f8c29a76000ef`
 
@@ -46,7 +47,7 @@ Eggwork MUST NOT become a second CodeGG scheduler.
 
 ## 2. Current CodeGG seams
 
-Reviewed CodeGG implementation baseline: `d3d390d56620fb5c6f755a5dfb0987e0a1c01651`.
+Reviewed CodeGG implementation baseline: `841ad117399c9279e3668828d5d9866983603381`.
 
 Relevant current seams:
 
@@ -158,11 +159,22 @@ Pin the corrected Eggwork revision and prove CodeGG's production mTLS path execu
 
 Class: infrastructure/capability
 
-Status: blocked on a separately reviewed optimized Eggwork materializer contract; M001 corrective C001 is closed. M002/M002a are not hard dependencies unless the materializer design needs their posture model.
+Status: blocked on Eggwork Workspace/Artifact M004 closure
+
+Implementation plan:
+
+- `plans/implementation/eggwork-fixed-target-remote-execution/003-content-aware-derived-workspace-transfer.md`
+
+Upstream prerequisite:
+
+- Eggwork `plans/implementation/workspace-artifact-transport/004-reusable-manifest-cas-and-derived-materialization.md`
+- planning commit `ed0fc838bd006103021f1fb4749f579cabc2db87`
 
 Objective:
 
-Reduce full snapshot transfer using Git-aware or content-aware evidence while preserving CodeGG worktree authority and dirty-state semantics.
+Reduce repeated full-manifest workspace transfer using Eggwork's Git-neutral retained-manifest + deterministic-patch contract while preserving CodeGG's existing full local snapshot, exact-source provenance, worktree authority, and dirty-state semantics.
+
+M003 deliberately keeps local full snapshot construction authoritative; it optimizes transfer representation rather than introducing metadata-only hashing shortcuts.
 
 ### M004 — Whole remote AgentRun worker
 
