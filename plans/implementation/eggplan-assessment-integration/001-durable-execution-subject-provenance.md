@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration M001 — Durable Execution-Subject Provenance
 
-Status: closing
+Status: closed
 
 Repository baselines:
 

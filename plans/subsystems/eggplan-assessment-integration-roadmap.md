@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active roadmap; M001 execution-subject provenance ready, M002 blocked on M001
+Status: active roadmap; M001 closed, M002 ready
 
 Canonical authority:
 
@@ -89,15 +89,17 @@ worktree manager.
 
 ### M001 — Durable execution-subject provenance
 
-Status: ready after current-head reconciliation.
+Status: closed.
 
 Plan:
 
 - `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md`
 
-The still-unimplemented handoff was revalidated after Eggwork M002/M002a
-closed. The current plan now pins the v66 -> v67 storage migration and the
-actual Eggwork execution-input boundary:
+The handoff was revalidated after Eggwork M002/M002a closed. M001 closed at
+CodeGG `418fdc85656e7e1faa57f71e5e7f10f7f4859c60`; closure evidence is
+`plans/closure/eggplan-assessment-integration/001-status.md` and hosted `CI`
+run `36106606574` succeeded. The plan pins the v66 -> v67 storage migration
+and actual Eggwork execution-input boundary:
 
     capture S1
       -> build immutable in-memory WorkspaceSnapshot
@@ -124,7 +126,12 @@ explicitly unavailable for exact-subject proof.
 
 ### M002 — Eggplan-backed WorkPlan assessment adoption
 
-Status: blocked on positive M001 and current Eggplan staged-adoption handoff.
+Status: ready; M001 is closed and the staged-adoption bridge is present.
+
+The provenance dependency is satisfied by CodeGG M001 closure
+`418fdc85656e7e1faa57f71e5e7f10f7f4859c60`. Eggplan's current pure bridge
+remains `088968bd58680ae2b3741e2f1feb0614e0ff81a0`. M002's own verification
+digest derivation and differential-adoption requirements remain its scope.
 
 Coordinate with Eggplan
 `plans/implementation/codegg-integration/002-staged-eggplan-assessment-adoption.md`.
