@@ -101,10 +101,18 @@ D001 negative control: with the predicate temporarily reverted to
 `WHERE id = ?1`, `linked_agent_run_resolves_passed_plus_exact_subject`
 fails; with the fix restored, the full file passes 14/14.
 
-Hosted CI: the push of this corrective triggers the canonical `verify`
-workflow; the run id will be linked from the push output. M001's hosted
-run `36106606574` remains the governing green evidence for the
-predecessor scope.
+Hosted CI: push of the corrective triggered canonical `verify` runs.
+Run [`36136964995`](https://github.com/dbowm91/codegg/actions/runs/36136964995)
+(on HEAD, same code tree plus the roadmap traceability note) is **success**.
+Run [`36136885925`](https://github.com/dbowm91/codegg/actions/runs/36136885925)
+(on the close commit) shows 807/808 with a single failure in
+`goal::checkpoint::tests::test_append_checkpoint_update`
+(`assertion failed: content.contains("Phase 1")`). That module is untouched
+by this corrective (diff: 2 query lines + additive helper/guard/tests); the
+test passes locally 5/5 in isolation and passed in the green HEAD run, so
+the single failure is a CI-environment flake, not a corrective regression.
+M001's hosted run `36106606574` remains the governing green evidence for
+the predecessor scope.
 
 ## 5. Invariant review
 
