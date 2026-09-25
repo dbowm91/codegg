@@ -1372,7 +1372,9 @@ impl ExecutionSubjectProvenance {
             ExecutionSubjectDisposition::Unavailable => {
                 self.unavailable_reason.is_some()
                     && (self.sealed.is_none()
-                        || self.captured.as_ref().zip(self.sealed.as_ref()).is_some())
+                        || (self.unavailable_reason
+                            == Some(ExecutionSubjectUnavailableReason::MaterializationIncomplete)
+                            && self.captured.as_ref() == self.sealed.as_ref()))
                     && self.materialization.as_ref().is_none_or(|m| {
                         m.manifest_digest.len() == 64
                             && m.manifest_digest

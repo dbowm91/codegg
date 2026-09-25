@@ -219,6 +219,7 @@ impl JobExecutionContext {
             .zip(end.as_ref())
             .is_some_and(|(a, b)| a == b);
         let capture_failed = end.is_none();
+        let drifted = started.captured.is_some() && end.is_some() && !equal;
         let skipped_non_regular = skipped_non_regular.min(u32::MAX as usize) as u32;
         let skipped_oversize = skipped_oversize.min(u32::MAX as usize) as u32;
         let complete = skipped_non_regular == 0 && skipped_oversize == 0;
@@ -228,12 +229,8 @@ impl JobExecutionContext {
             sealed: end,
             disposition: if equal && complete {
                 D::Stable
-            } else if started.captured.is_some() {
-                if equal {
-                    D::Unavailable
-                } else {
-                    D::Drifted
-                }
+            } else if drifted {
+                D::Drifted
             } else {
                 D::Unavailable
             },
@@ -244,10 +241,10 @@ impl JobExecutionContext {
                 Some(
                     codegg_core::jobs::ExecutionSubjectUnavailableReason::MaterializationIncomplete,
                 )
-            } else if started.captured.is_none() {
-                started.unavailable_reason
             } else if capture_failed {
                 Some(codegg_core::jobs::ExecutionSubjectUnavailableReason::CaptureFailed)
+            } else if started.captured.is_none() {
+                started.unavailable_reason
             } else {
                 None
             },
