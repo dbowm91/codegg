@@ -1,9 +1,9 @@
-//! Eggwork corrective C001 live-node qualification (Linux).
+//! Eggwork live-node qualification (Linux).
 //!
 //! Exercises the production [`NodeClientFactory`](codegg::scheduler::EggworkClientFactory)
-//! path against a real Eggwork node over mTLS: exact lease-fenced
-//! renew/cancel, wrong-lease rejection, and restart reconciliation through
-//! the `EggworkExecutor` (no scripted fake).
+//! path against a real Eggwork node over mTLS, including required Landlock
+//! execution, escape denial, lease-fenced renew/cancel, and restart
+//! reconciliation through the `EggworkExecutor` (no scripted fake).
 //!
 //! The node runs as a bounded `codegg-eggwork-test-node` subprocess (built
 //! from `crates/eggwork-test-node`, same immutable Eggwork revision as
@@ -12,8 +12,9 @@
 //! same cargo graph as the workspace's `sqlx-sqlite -> libsqlite3-sys
 //! 0.28` (`links = "sqlite3"` must be unique). The subprocess uses the
 //! same immutable revision with deterministic lifecycle and guaranteed
-//! cleanup, and `LocalProcessRunner` remains the node's canonical process
-//! owner — no second production process owner is created in CodeGG.
+//! cleanup, and `LocalProcessRunner` with Eggwork's trusted Landlock setup
+//! remains the node's canonical process owner — no second production process
+//! owner is created in CodeGG.
 //!
 //! Linux-only: `eggwork-runner` depends on Linux-only `landlock`, so the
 //! helper cannot compile on macOS. On other platforms this target builds
@@ -46,8 +47,8 @@ use eggfetch_core::{BoxBytesStream, Error as EggfetchError};
 use eggwork_client::{ClientError as EggworkClientError, WorkspaceReady};
 use eggwork_core::{
     ArtifactRecord, BlobDigest, ExecutionHandle, ExecutionId, ExecutionSnapshot, ExecutionSpec,
-    ExecutionState, LeaseId, NodeCapabilities, NodeStatus, WorkspaceId as EggworkWorkspaceId,
-    WorkspaceManifest,
+    ExecutionState, LeaseId, NodeCapabilities, NodeStatus, SandboxResult,
+    WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
 };
 use futures_util::StreamExt;
 use tokio::io::AsyncBufReadExt;
@@ -132,34 +133,101 @@ fn helper_binary() -> PathBuf {
         .join("crates/eggwork-test-node/target/debug/codegg-eggwork-test-node")
 }
 
+fn sandbox_helper_binary(node_binary: &Path) -> PathBuf {
+    node_binary
+        .parent()
+        .expect("fixture binary has a target directory")
+        .join("eggwork-sandbox-helper")
+}
+
 async fn ensure_helper_built(path: &Path) {
     use tokio::sync::OnceCell;
     static BUILT: OnceCell<()> = OnceCell::const_new();
     BUILT
         .get_or_init(|| async {
-            if path.exists() {
-                return;
-            }
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
             let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("crates/eggwork-test-node/Cargo.toml");
-            let output = tokio::time::timeout(
-                Duration::from_secs(600),
-                tokio::process::Command::new(cargo)
-                    .arg("build")
+            if !path.exists() {
+                let output = tokio::time::timeout(
+                    Duration::from_secs(600),
+                    tokio::process::Command::new(&cargo)
+                        .arg("build")
+                        .arg("--locked")
+                        .arg("--manifest-path")
+                        .arg(&manifest)
+                        .output(),
+                )
+                .await
+                .expect("fixture helper build must complete")
+                .expect("failed to run cargo for fixture helper");
+                assert!(
+                    output.status.success() && path.exists(),
+                    "fixture helper build failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            let sandbox_helper = sandbox_helper_binary(path);
+            {
+                let metadata = tokio::process::Command::new(&cargo)
+                    .arg("metadata")
                     .arg("--locked")
+                    .arg("--format-version")
+                    .arg("1")
                     .arg("--manifest-path")
                     .arg(&manifest)
-                    .output(),
-            )
-            .await
-            .expect("fixture helper build must complete")
-            .expect("failed to run cargo for fixture helper");
-            assert!(
-                output.status.success() && path.exists(),
-                "fixture helper build failed:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+                    .output()
+                    .await
+                    .expect("failed to locate pinned Eggwork source");
+                assert!(
+                    metadata.status.success(),
+                    "fixture cargo metadata failed:\n{}",
+                    String::from_utf8_lossy(&metadata.stderr)
+                );
+                let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)
+                    .expect("fixture cargo metadata is JSON");
+                let runner_manifest = metadata["packages"]
+                    .as_array()
+                    .and_then(|packages| {
+                        packages
+                            .iter()
+                            .find(|package| package["name"].as_str() == Some("eggwork-runner"))
+                    })
+                    .and_then(|package| package["manifest_path"].as_str())
+                    .map(PathBuf::from)
+                    .expect("pinned Eggwork runner manifest is present");
+                let eggwork_root = runner_manifest
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::parent)
+                    .expect("Eggwork runner is in the pinned workspace");
+                let target_dir = path
+                    .parent()
+                    .and_then(Path::parent)
+                    .expect("fixture binary has a target directory");
+                let output = tokio::time::timeout(
+                    Duration::from_secs(600),
+                    tokio::process::Command::new(&cargo)
+                        .arg("build")
+                        .arg("--locked")
+                        .arg("--manifest-path")
+                        .arg(eggwork_root.join("Cargo.toml"))
+                        .arg("--package")
+                        .arg("eggwork-sandbox-helper")
+                        .arg("--target-dir")
+                        .arg(target_dir)
+                        .output(),
+                )
+                .await
+                .expect("pinned Eggwork sandbox helper build must complete")
+                .expect("failed to build pinned Eggwork sandbox helper");
+                assert!(
+                    output.status.success() && sandbox_helper.exists(),
+                    "pinned Eggwork sandbox helper build failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         })
         .await;
 }
@@ -655,7 +723,8 @@ fn assert_no_secret_in_summary(summary: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_lease_fencing_renew_reject_cancel() {
-    let live = LiveNode::start().await;
+    let mut live = LiveNode::start().await;
+    live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("input.txt"), b"live\n").unwrap();
     let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
@@ -726,7 +795,8 @@ async fn live_lease_fencing_renew_reject_cancel() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_restart_live_reconciliation_cancels_under_persisted_handle() {
-    let live = LiveNode::start().await;
+    let mut live = LiveNode::start().await;
+    live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("input.txt"), b"live\n").unwrap();
     let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
@@ -832,7 +902,7 @@ async fn live_restart_terminal_reconciliation_returns_result_without_resubmit() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn live_node_connection_capabilities_and_workspace_isolation() {
-    let live = LiveNode::start().await;
+    let mut live = LiveNode::start().await;
     // Production factory connection plus capability/status projection.
     let client = live.client();
     let capabilities = client.capabilities().await.expect("capabilities");
@@ -843,6 +913,12 @@ async fn live_node_connection_capabilities_and_workspace_isolation() {
     let status = client.status().await.expect("status");
     assert_eq!(status.node_id.as_str(), "live-node-1");
     assert!(!status.draining);
+    assert_eq!(capabilities.features, status.capabilities.features);
+    assert!(capabilities
+        .features
+        .iter()
+        .any(|f| f == "isolation.landlock.workspace-rw.v1"));
+    live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
 
     // Bounded argv executes; remote mutation must not touch the local
     // workspace lease root.
@@ -852,7 +928,11 @@ async fn live_node_connection_capabilities_and_workspace_isolation() {
     let argv = vec![
         "/bin/sh".to_string(),
         "-c".to_string(),
-        "touch REMOTE_ONLY_MARKER".to_string(),
+        "set -eu; printf ok > inside.txt; test \"$(cat inside.txt)\" = ok; \
+         if cat /etc/passwd >/dev/null 2>&1; then exit 41; fi; \
+         outside=\"/tmp/codegg-landlock-escape-$$\"; \
+         if printf escaped > \"$outside\" 2>/dev/null; then rm -f \"$outside\"; exit 42; fi"
+            .to_string(),
     ];
     let (record, attempt) = create_remote_job(&store, argv.clone()).await;
     let (exec, _) = live.executor(Some(store.clone()));
@@ -868,15 +948,31 @@ async fn live_node_connection_capabilities_and_workspace_isolation() {
     assert_eq!(
         completion.status,
         ExecutorStatus::Completed,
-        "live isolation run failed: {}",
+        "live required-isolation run failed: {}",
         completion.summary
     );
     assert_no_secret_in_summary(&completion.summary);
     assert!(
-        !dir.path().join("REMOTE_ONLY_MARKER").exists(),
+        !dir.path().join("inside.txt").exists(),
         "remote execution must not mutate the local workspace"
     );
     assert!(dir.path().join("keep.txt").exists());
+    let attempts = store.list_attempts(&record.job_id).await.unwrap();
+    let durable = attempts
+        .iter()
+        .find_map(|attempt| attempt.remote_handle.clone())
+        .expect("persisted accepted handle");
+    let snapshot = client
+        .observe_generation(
+            &ExecutionId::new(&durable.execution_id).unwrap(),
+            durable.generation,
+        )
+        .await
+        .expect("observe required-isolation terminal result");
+    assert!(matches!(
+        snapshot.result.and_then(|result| result.sandbox),
+        Some(SandboxResult::Applied { profile }) if profile == "workspace_rw"
+    ));
     live.shutdown().await;
 }
 
@@ -893,6 +989,11 @@ async fn live_restricted_policies_refuse_before_workspace_upload() {
         .iter()
         .any(|f| f == "exec.argv.v1"));
     assert!(!capabilities
+        .features
+        .iter()
+        .any(|f| f == "network.disabled.v1"));
+    assert!(!status
+        .capabilities
         .features
         .iter()
         .any(|f| f == "network.disabled.v1"));
@@ -946,7 +1047,8 @@ async fn live_scheduler_end_to_end_remote_only() {
         ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
     };
 
-    let live = LiveNode::start().await;
+    let mut live = LiveNode::start().await;
+    live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
     let root = tempfile::tempdir().unwrap();
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
         .await

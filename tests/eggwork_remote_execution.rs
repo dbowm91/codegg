@@ -404,8 +404,16 @@ fn executor_with(
     client: &Arc<ScriptedClient>,
     store: Option<Arc<dyn JobStore>>,
 ) -> EggworkExecutor {
+    executor_with_node(client, test_node(), store)
+}
+
+fn executor_with_node(
+    client: &Arc<ScriptedClient>,
+    node: ResolvedEggworkNode,
+    store: Option<Arc<dyn JobStore>>,
+) -> EggworkExecutor {
     let mut nodes = HashMap::new();
-    nodes.insert("node-1".to_string(), test_node());
+    nodes.insert("node-1".to_string(), node);
     EggworkExecutor::with_factory(
         EggworkExecutorConfig {
             nodes,
@@ -769,6 +777,38 @@ async fn capability_mismatch_fails_before_upload() {
         .await;
     assert_eq!(completion.status, ExecutorStatus::Failed);
     assert!(completion.summary.contains("capability"));
+    assert_eq!(client.uploads.load(Ordering::SeqCst), 0);
+    assert_eq!(client.submits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn required_isolation_capability_removal_fails_before_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"data").unwrap();
+    let client = Arc::new(ScriptedClient::succeeding());
+    // Forge a positive status view while omitting Landlock from the separate
+    // capabilities response. Policy must use their conservative intersection.
+    client
+        .status
+        .lock()
+        .unwrap()
+        .capabilities
+        .features
+        .push("isolation.landlock.workspace-rw.v1".into());
+    let mut node = test_node();
+    node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
+    let exec = executor_with_node(&client, node, None);
+    let completion = exec
+        .execute(bound_context(
+            build_record(eggwork_target()),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(completion
+        .summary
+        .contains("isolation.landlock.workspace-rw.v1"));
+    assert!(completion.summary.contains("before workspace upload"));
     assert_eq!(client.uploads.load(Ordering::SeqCst), 0);
     assert_eq!(client.submits.load(Ordering::SeqCst), 0);
 }

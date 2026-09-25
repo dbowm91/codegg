@@ -447,7 +447,7 @@ cargo fmt
 
 For focused tests, prefer the crate or subsystem you changed rather than running unrelated verification by default. Contributor architecture, crate boundaries, generated assets, feature gates, and testing conventions are documented in [`AGENTS.md`](AGENTS.md).
 
-Dependency policy, execution ownership inventory, and cross-platform notes are in [`docs/dependency-maintenance.md`](docs/dependency-maintenance.md) and [`docs/execution-ownership.md`](docs/execution-ownership.md).
+Dependency policy, execution ownership inventory, remote Eggwork operator policy, and cross-platform notes are in [`docs/dependency-maintenance.md`](docs/dependency-maintenance.md), [`docs/execution-ownership.md`](docs/execution-ownership.md), and [`architecture/config.md`](architecture/config.md).
 
 Useful starting points:
 

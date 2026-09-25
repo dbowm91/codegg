@@ -1894,7 +1894,7 @@ dependencies = [
 [[package]]
 name = "eggwork-client"
 version = "0.1.0"
-source = "git+https://github.com/eggstack/eggwork.git?rev=128f808c62f176d414dd18a705773e45f5e2891a#128f808c62f176d414dd18a705773e45f5e2891a"
+source = "git+https://github.com/eggstack/eggwork.git?rev=6cc813418c3f14740a635fef79208e85219175bb#6cc813418c3f14740a635fef79208e85219175bb"
 dependencies = [
  "bytes",
  "eggfetch-core",
@@ -1910,7 +1910,7 @@ dependencies = [
 [[package]]
 name = "eggwork-core"
 version = "0.1.0"
-source = "git+https://github.com/eggstack/eggwork.git?rev=128f808c62f176d414dd18a705773e45f5e2891a#128f808c62f176d414dd18a705773e45f5e2891a"
+source = "git+https://github.com/eggstack/eggwork.git?rev=6cc813418c3f14740a635fef79208e85219175bb#6cc813418c3f14740a635fef79208e85219175bb"
 dependencies = [
  "hex",
  "serde",

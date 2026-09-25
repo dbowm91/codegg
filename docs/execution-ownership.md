@@ -105,6 +105,39 @@ lifetime and remote failure never falls back to local execution. The
 companion static guard `scripts/check_eggwork_target_routing.py`
 pins target-first routing, crate confinement, and handle persistence.
 
+### Operator policy
+
+Named nodes are configured under `[eggwork.nodes.<name>]` in daemon
+configuration. Keep private-key material in the referenced file; CodeGG
+redacts the configured key reference in diagnostics. For example:
+
+```toml
+[eggwork.nodes.build-linux]
+node_id = "build-linux"
+endpoint = "https://build-node.example:7443"
+ca_cert_path = "/etc/codegg/eggwork-ca.pem"
+client_cert_path = "/etc/codegg/eggwork-client.pem"
+client_key_path = "/etc/codegg/eggwork-client-key.pem"
+isolation_policy = "required"
+network_policy = "unrestricted"
+```
+
+`isolation_policy = "required"` requires the named node to advertise the
+qualified `workspace_rw` Landlock feature in both authenticated capability
+and status responses. If the node cannot satisfy it, the attempt fails before
+workspace upload; it never falls back to an unsandboxed run or another node.
+The live Linux qualification uses Eggwork's `TrustedLandlockSetup` and checks
+that workspace read/write succeeds, outside-workspace read/write is denied,
+and terminal evidence is `SandboxResult::Applied { profile: "workspace_rw" }`.
+
+`network_policy = "unrestricted"` is the explicit supported mode. CodeGG
+continues to reject `network_policy = "disabled"` before upload because the
+qualified Eggwork backend does not provide network isolation. Existing node
+profiles default to `isolation_policy = "none"` and
+`network_policy = "unrestricted"`; those choices remain visible in operator
+posture diagnostics. A policy change applies to future attempts and does not
+alter the durable target selected by an existing job.
+
 ## Migration trajectory
 
 The deferred-domain-executor sites are documented compatibility

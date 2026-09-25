@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use eggwork_runner::{LocalProcessRunner, NoExecutionSetup};
+use eggwork_runner::{LocalProcessRunner, TrustedLandlockSetup};
 use eggwork_server::{
     FingerprintPrincipalResolver, NodeConfig, NodePrincipal, NodeServer, Operation,
 };
@@ -168,11 +168,12 @@ async fn run() -> Result<NodeServer, String> {
         let dir = args.required(key)?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {dir}: {e}"))?;
     }
-    // `LocalProcessRunner` is the node's canonical process owner.
-    // `NoExecutionSetup` keeps the fixture hermetic on ordinary CI hosts
-    // (no sandbox-helper sibling install required); BestEffort isolation
-    // downgrades to NotApplied while Required still fails.
-    let runner = Arc::new(LocalProcessRunner::new(NoExecutionSetup));
+    // `LocalProcessRunner` remains the node's canonical process owner. The
+    // test harness builds the helper from this exact Eggwork revision and
+    // installs it as a trusted sibling, exercising the qualified backend.
+    let runner = Arc::new(LocalProcessRunner::new(
+        TrustedLandlockSetup::discover_sibling(),
+    ));
     let server = NodeServer::start(
         NodeConfig {
             node_id,

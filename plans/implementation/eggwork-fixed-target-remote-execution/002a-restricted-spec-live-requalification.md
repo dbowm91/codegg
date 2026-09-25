@@ -15,6 +15,7 @@ Hard dependencies:
 1. CodeGG M002 closure.
 2. Eggwork Security remote-admission corrective C001 closure:
    - `eggstack/eggwork: plans/implementation/security-isolation-resource-remote-admission-corrective/001-remote-enforcement-admission-and-capability-truthfulness.md`
+   - Closed by the reviewed implementation commit `6cc813418c3f14740a635fef79208e85219175bb`; closure record is at that revision under `plans/closure/security-isolation-resource-remote-admission-corrective/001-status.md`.
 
 Primary class: invariant/qualification
 
@@ -36,6 +37,8 @@ The selected Eggwork revision must:
 - continue rejecting `NetworkRequirement::Disabled`/`AllowListed` unless a real network backend has separately landed;
 - preserve existing lease/idempotency/mTLS behavior.
 
+Reviewed upstream closure evidence is `eggstack/eggwork@6cc813418c3f14740a635fef79208e85219175bb`, Linux x86_64, kernel 6.8, Landlock ABI V4. It includes a production `NodeServer` + controller fixture proving `Required` admission, escape denial, and terminal `Applied` evidence. Pin this exact immutable tested commit unless Cargo/API review finds a concrete incompatibility; do not substitute a newer unqualified head.
+
 Do not start M002a against planning-only upstream evidence.
 
 ## 3. Work package A — Pin corrected Eggwork revision
@@ -54,6 +57,10 @@ Configure the existing live fixture node/profile with:
 isolation_policy = required
 network_policy = unrestricted
 ```
+
+The fixture must use Eggwork's `TrustedLandlockSetup` and build the
+`eggwork-sandbox-helper` binary from the same pinned upstream workspace. A
+`NoExecutionSetup` fixture cannot qualify this milestone.
 
 Required assertions:
 
