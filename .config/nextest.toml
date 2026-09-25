@@ -22,8 +22,13 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # homes): unlike `cargo test --test-threads=N`, no two tests ever share
 # an address space, so intra-suite env races are impossible by
 # construction. `binary()` matches bare target names.
+#
+# Slot count is deliberately == runner vCPUs (4). 8 slots were tried
+# 2026-09-25 and reverted: oversubscription starved real-subprocess
+# timing tests (scheduler_cancellation) into flakes. Do not raise
+# without re-validating a full green run.
 [profile.ci]
-test-threads = 8
+test-threads = 4
 slow-timeout = { period = "60s", terminate-after = 2 }
 
 # Sleep/timeout-bound heavies that spawn real subprocesses and servers.

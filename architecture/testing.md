@@ -202,10 +202,12 @@ CI installs it via `taiki-e/install-action@nextest`):
 |---------|---------|-------|----------|
 | `default` | 14 | per-test processes | Local development |
 | `timing` | Serial | per-test processes | Local timing diagnostics |
-| `ci` | 8 concurrent tests | workspace-wide | CI + `verify.sh full` |
+| `ci` | 4 concurrent tests | workspace-wide | CI + `verify.sh full` |
 
 `ci` runs each test in its own process (nextest's execution model), up
-to 8 concurrently. That is why it is sound despite process-global env
+to 4 concurrently (= runner vCPUs; 8 was tried and reverted after
+starving subprocess timing tests). That is why it is sound despite
+process-global env
 mutation throughout the test code: unlike `cargo test --test-threads=N`,
 no two tests ever share an address space, so intra-suite env races are
 impossible by construction (verified by audit 2026-09-25). The four
@@ -262,11 +264,13 @@ except `CARGO_BUILD_JOBS=2`:
    validates the linked output.
 4. **Build jobs tuned for the runner** — `CARGO_BUILD_JOBS` above the
    local default (see workflow env for the current probe value).
-5. **Nextest `ci` profile** — 8 concurrent per-test processes,
-   run-alone heavies. Measured 2026-09-25: 11781 tests in ~7 min
-   execution (vs ~10.6 min under serial `cargo test`); the sleep-bound
-   heavies still take their wall-clock. Does not change
-   `--test-threads` semantics of plain `cargo test` runs.
+5. **Nextest `ci` profile** — 4 concurrent per-test processes
+   (= runner vCPUs; 8 tried 2026-09-25, reverted after a load-induced
+   flake in `scheduler_cancellation`), run-alone heavies. Measured:
+   11781 tests in ~7 min execution (vs ~10.6 min under serial
+   `cargo test`); the sleep-bound heavies still take their wall-clock.
+   Does not change `--test-threads` semantics of plain `cargo test`
+   runs.
 
 Do not generalize these: intra-binary `--test-threads` stays 1 — test
 code mutates process-global env vars (audited, not assumed) — and
