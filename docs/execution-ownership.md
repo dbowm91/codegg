@@ -94,7 +94,7 @@ setup probe; it is not the user execution path.
 
 ## Remote execution without local spawn
 
-`src/scheduler/eggwork.rs` (`EggworkExecutor`, M001) executes
+`src/scheduler/eggwork.rs` (`EggworkExecutor`, M001–M002a) executes
 explicitly targeted finite jobs on a named Eggwork node. It is covered
 by the `src/scheduler/` manifest entry and introduces no local
 process-spawn owner: all execution happens remotely via `eggwork-client`

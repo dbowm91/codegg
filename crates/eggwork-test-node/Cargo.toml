@@ -1,4 +1,4 @@
-# Standalone live-node fixture for CodeGG Eggwork corrective C001 tests.
+# Standalone live-node fixture for CodeGG Eggwork live qualification.
 #
 # This crate is deliberately NOT a member of the CodeGG workspace (see the
 # root `exclude`) and carries its own lockfile: `eggwork-server` links

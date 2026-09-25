@@ -370,11 +370,15 @@ the RunStore (`ActualBackend::Eggwork`). Every new attempt probes both
 authenticated capabilities and status before workspace transfer, checks
 their conservative feature intersection, and applies the node's explicit
 policy. Required workspace isolation and disabled networking fail before
-upload unless both views advertise their versioned capabilities. Legacy
-unrestricted profiles remain executable and are visibly classified as
-unsandboxed with network access. A bounded, lazy posture projection feeds
-operator diagnostics and coarse executor health; execution always uses a
-fresh preflight, never cached health. The scheduler permit is held
+upload unless both views advertise their versioned capabilities. The
+corrected Eggwork pin is live-qualified with required `workspace_rw`
+Landlock: workspace-local access succeeds, outside-workspace access is
+denied, and terminal evidence reports `SandboxResult::Applied { profile: \"workspace_rw\" }`. Disabled networking remains
+unsupported and is refused before upload. Legacy unrestricted profiles
+remain executable and are visibly classified as unsandboxed with network
+access. A bounded, lazy posture projection feeds operator diagnostics and
+coarse executor health; execution always uses a fresh preflight, never cached
+health. The scheduler permit is held
 for the whole remote lifetime. On restart a persisted handle is
 observed/reconciled, never resubmitted: terminal snapshots map to
 completions, still-live executions are cancelled and reported

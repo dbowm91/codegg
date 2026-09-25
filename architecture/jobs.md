@@ -142,8 +142,11 @@ Consequences for CodeGG:
   explicitly diagnosed. `required` filesystem isolation and `disabled`
   networking require fresh authenticated capability/status agreement
   before workspace upload; the resulting spec follows the configured
-  policy with no silent downgrade. Restricted live execution remains gated
-  by the M002a qualification plan.
+  policy with no silent downgrade. M002a qualifies `required` over the
+  production mTLS path against the corrected Eggwork pin: workspace access
+  succeeds, outside-workspace read/write is denied, and terminal evidence
+  reports applied `workspace_rw`. Network-disabled execution remains
+  unsupported and is refused before upload.
 
 ### JobState Machine (`store.rs:81`)
 

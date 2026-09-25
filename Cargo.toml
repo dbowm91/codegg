@@ -276,9 +276,9 @@ codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
-# Eggwork fixed-target remote execution substrate (M001).
-# Pinned to an immutable revision per plans/implementation/eggwork-fixed-target-remote-execution.
-# Default features only: no Eggress-routed dialer in M001 (per plan §3).
+# Eggwork fixed-target remote execution substrate (M001/M002a).
+# Pinned to the upstream corrected, immutable C001 revision reviewed by M002a.
+# Default features only: no Eggress-routed dialer (per plan §3).
 eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "6cc813418c3f14740a635fef79208e85219175bb", default-features = false }
 eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "6cc813418c3f14740a635fef79208e85219175bb", default-features = false }
 

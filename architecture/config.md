@@ -324,7 +324,11 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
   network_policy? } }`); isolation policy is `none` (default) or `required`,
   network policy is `unrestricted` (default) or `disabled`; merged per node key;
   endpoint must be bare HTTPS, key paths must be absolute, private-key
-  reference redacted from `Debug`
+  reference redacted from `Debug`. `required` needs the named node to advertise
+  `isolation.landlock.workspace-rw.v1` in both fresh authenticated capability
+  and status views on each attempt. `disabled` is fail-closed before upload:
+  Eggwork currently has no qualified network-isolation backend, so unrestricted
+  networking must be assumed for the supported mode.
 
 `orchestration.auto_convergence` defaults to `false`. The host clamps
 `default_max_cycles` to 1–4, `max_producers_per_cycle` to 1–3, and
