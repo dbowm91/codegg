@@ -333,6 +333,7 @@ impl LiveNode {
 struct CountingFactory {
     inner: NodeClientFactory,
     submits: Arc<AtomicUsize>,
+    uploads: Arc<AtomicUsize>,
     submitted_handles: Arc<Mutex<Vec<ExecutionHandle>>>,
 }
 
@@ -341,12 +342,17 @@ impl CountingFactory {
         Self {
             inner: NodeClientFactory,
             submits: Arc::new(AtomicUsize::new(0)),
+            uploads: Arc::new(AtomicUsize::new(0)),
             submitted_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn submits(&self) -> Arc<AtomicUsize> {
         self.submits.clone()
+    }
+
+    fn upload_count(&self) -> usize {
+        self.uploads.load(Ordering::SeqCst)
     }
 }
 
@@ -356,6 +362,7 @@ impl EggworkClientFactory for CountingFactory {
         Ok(Arc::new(CountingClient {
             inner: client,
             submits: self.submits.clone(),
+            uploads: self.uploads.clone(),
             submitted_handles: self.submitted_handles.clone(),
         }))
     }
@@ -364,6 +371,7 @@ impl EggworkClientFactory for CountingFactory {
 struct CountingClient {
     inner: Arc<dyn EggworkNodeClient>,
     submits: Arc<AtomicUsize>,
+    uploads: Arc<AtomicUsize>,
     submitted_handles: Arc<Mutex<Vec<ExecutionHandle>>>,
 }
 
@@ -390,6 +398,7 @@ impl EggworkNodeClient for CountingClient {
         declared_length: u64,
         stream: BoxBytesStream,
     ) -> Result<(), EggworkClientError> {
+        self.uploads.fetch_add(1, Ordering::SeqCst);
         self.inner
             .upload_blob(digest, declared_length, stream)
             .await
@@ -868,6 +877,59 @@ async fn live_node_connection_capabilities_and_workspace_isolation() {
         "remote execution must not mutate the local workspace"
     );
     assert!(dir.path().join("keep.txt").exists());
+    live.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_restricted_policies_refuse_before_workspace_upload() {
+    let mut live = LiveNode::start().await;
+    let client = live.client();
+    let capabilities = client.capabilities().await.expect("capabilities");
+    let status = client.status().await.expect("status");
+    assert_eq!(capabilities.features, status.capabilities.features);
+    assert!(capabilities.features.iter().any(|f| f == "exec.argv.v1"));
+    assert!(!capabilities
+        .features
+        .iter()
+        .any(|f| f == "network.disabled.v1"));
+
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("would-upload.txt"), b"data").unwrap();
+    if !capabilities
+        .features
+        .iter()
+        .any(|f| f == "isolation.landlock.workspace-rw.v1")
+    {
+        live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
+        let (exec, submits) = live.executor(Some(store.clone()));
+        let (record, attempt) = create_remote_job(&store, vec!["/bin/true".into()]).await;
+        let mut job = argv_record(vec!["/bin/true".into()]);
+        job.job_id = record.job_id;
+        let completion = exec
+            .execute(live_context(job, attempt.attempt_id, dir.path().into()))
+            .await;
+        assert_eq!(completion.status, ExecutorStatus::Failed);
+        assert!(completion
+            .summary
+            .contains("isolation.landlock.workspace-rw.v1"));
+        assert_eq!(submits.load(Ordering::SeqCst), 0);
+        assert_eq!(live.factory.upload_count(), 0);
+    }
+
+    live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::None;
+    live.node.network_policy = codegg_config::schema::EggworkNetworkPolicy::Disabled;
+    let (exec, submits) = live.executor(Some(store.clone()));
+    let (record, attempt) = create_remote_job(&store, vec!["/bin/true".into()]).await;
+    let mut job = argv_record(vec!["/bin/true".into()]);
+    job.job_id = record.job_id;
+    let completion = exec
+        .execute(live_context(job, attempt.attempt_id, dir.path().into()))
+        .await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(completion.summary.contains("network.disabled.v1"));
+    assert_eq!(submits.load(Ordering::SeqCst), 0);
+    assert_eq!(live.factory.upload_count(), 0);
     live.shutdown().await;
 }
 
