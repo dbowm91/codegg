@@ -203,6 +203,8 @@ fn c41_executor_fixture(
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         workspace_root: workspace.to_path_buf(),
         run_store: None,
+        subject_store: None,
+        source_subject_started: None,
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),

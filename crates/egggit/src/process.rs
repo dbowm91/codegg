@@ -6,8 +6,9 @@
 //! CodeGG sessions, runs, jobs, permissions, or projections.
 
 use crate::EgggitError;
+use std::io::Read;
 use std::path::Path;
-use std::process::{Command as StdCommand, Output as StdOutput};
+use std::process::{Command as StdCommand, Output as StdOutput, Stdio};
 use tokio::process::Command;
 
 /// Environment variables restored for local, non-interactive Git commands.
@@ -187,6 +188,55 @@ pub async fn run(args: &[String], cwd: &Path) -> Result<StdOutput, EgggitError> 
             .apply_sync(&argv, &cwd)
             .output()
             .map_err(|error| EgggitError::Io(error.to_string()))
+    })
+    .await
+    .map_err(|error| EgggitError::Join(error.to_string()))?
+}
+
+/// Run a read-only Git command with a hard stdout byte limit. The child is
+/// killed as soon as it exceeds the bound; stderr is discarded to avoid an
+/// unbounded diagnostic buffer.
+pub async fn run_bounded(
+    args: &[String],
+    cwd: &Path,
+    max_stdout_bytes: usize,
+) -> Result<StdOutput, EgggitError> {
+    if !cwd.exists() {
+        return Err(EgggitError::NotARepository(cwd.display().to_string()));
+    }
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("git".to_owned());
+    argv.extend_from_slice(args);
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut child = GitEnvPolicy::default()
+            .apply_sync(&argv, &cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| EgggitError::Io(error.to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| EgggitError::Io("missing git stdout".into()))?;
+        let mut bytes = Vec::new();
+        stdout
+            .take(max_stdout_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|error| EgggitError::Io(error.to_string()))?;
+        if bytes.len() > max_stdout_bytes {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EgggitError::OutputTooLarge);
+        }
+        let status = child
+            .wait()
+            .map_err(|error| EgggitError::Io(error.to_string()))?;
+        Ok(StdOutput {
+            status,
+            stdout: bytes,
+            stderr: Vec::new(),
+        })
     })
     .await
     .map_err(|error| EgggitError::Join(error.to_string()))?

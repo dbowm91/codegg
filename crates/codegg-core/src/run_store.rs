@@ -503,6 +503,9 @@ pub struct RunManifest {
     /// This is metadata only; asset bodies and local paths are never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_provenance: Option<RunAssetProvenance>,
+    /// Optional execution-attempt subject projection; never inferred from the current tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_subject: Option<crate::jobs::ExecutionSubjectProvenance>,
 }
 
 /// Bounded, path-free identity for the runtime assets used by a run.
@@ -1057,6 +1060,15 @@ pub trait RunStore: Send + Sync {
         completion: RunCompletion,
     ) -> Result<RunManifest, RunStoreError>;
     async fn get_run(&self, id: &RunId) -> Result<Option<RunManifest>, RunStoreError>;
+    /// Project the scheduler-sealed JobAttempt subject after executor cleanup.
+    /// Scheduler-owned RunStore records are projections; this API never captures source state.
+    async fn set_run_source_subject(
+        &self,
+        _id: &RunId,
+        _subject: &crate::jobs::ExecutionSubjectProvenance,
+    ) -> Result<(), RunStoreError> {
+        Ok(())
+    }
     async fn read_artifact(
         &self,
         id: &ArtifactId,
@@ -1449,6 +1461,7 @@ impl RunStore for FsRunStore {
             fallback: None,
             ownership: draft.ownership,
             asset_provenance: draft.asset_provenance.map(RunAssetProvenance::bounded),
+            source_subject: None,
         };
 
         let data = serde_json::to_vec_pretty(&manifest).map_err(RunStoreError::Json)?;
@@ -1627,6 +1640,43 @@ impl RunStore for FsRunStore {
         let data = fs::read(&manifest_path).await.map_err(RunStoreError::Io)?;
         let manifest: RunManifest = serde_json::from_slice(&data).map_err(RunStoreError::Json)?;
         Ok(Some(manifest))
+    }
+
+    async fn set_run_source_subject(
+        &self,
+        id: &RunId,
+        subject: &crate::jobs::ExecutionSubjectProvenance,
+    ) -> Result<(), RunStoreError> {
+        if !subject.validate_sealed() {
+            return Err(RunStoreError::IntegrityViolation(
+                "invalid attempt source subject".into(),
+            ));
+        }
+        let entries = self.read_index_cached().await;
+        let entry = entries
+            .iter()
+            .find(|entry| entry.run_id == *id)
+            .ok_or_else(|| RunStoreError::NotFound(format!("run {id}")))?;
+        let run_dir = self.run_dir(&entry.date_dir, id.as_str())?;
+        let manifest_path = run_dir.join(MANIFEST_FILENAME);
+        let data = fs::read(&manifest_path).await.map_err(RunStoreError::Io)?;
+        let mut manifest: RunManifest =
+            serde_json::from_slice(&data).map_err(RunStoreError::Json)?;
+        if manifest
+            .source_subject
+            .as_ref()
+            .zip(Some(subject))
+            .is_some_and(|(draft, sealed)| draft.captured != sealed.captured)
+        {
+            return Err(RunStoreError::IntegrityViolation(
+                "run subject disagrees with attempt provenance".into(),
+            ));
+        }
+        manifest.source_subject = Some(subject.clone());
+        let data = serde_json::to_vec_pretty(&manifest).map_err(RunStoreError::Json)?;
+        self.write_artifact_atomic(&run_dir, MANIFEST_FILENAME, &data)
+            .await
+            .map(|_| ())
     }
 
     async fn read_artifact(
@@ -1851,6 +1901,7 @@ impl RunStore for MemRunStore {
             fallback: None,
             ownership: draft.ownership,
             asset_provenance: draft.asset_provenance.map(RunAssetProvenance::bounded),
+            source_subject: None,
         };
 
         let mut runs = self.runs.write();
@@ -1942,6 +1993,34 @@ impl RunStore for MemRunStore {
     async fn get_run(&self, id: &RunId) -> Result<Option<RunManifest>, RunStoreError> {
         let runs = self.runs.read();
         Ok(runs.get(id).cloned())
+    }
+
+    async fn set_run_source_subject(
+        &self,
+        id: &RunId,
+        subject: &crate::jobs::ExecutionSubjectProvenance,
+    ) -> Result<(), RunStoreError> {
+        if !subject.validate_sealed() {
+            return Err(RunStoreError::IntegrityViolation(
+                "invalid attempt source subject".into(),
+            ));
+        }
+        let mut runs = self.runs.write();
+        let manifest = runs
+            .get_mut(id)
+            .ok_or_else(|| RunStoreError::NotFound(format!("run {id}")))?;
+        if manifest
+            .source_subject
+            .as_ref()
+            .zip(Some(subject))
+            .is_some_and(|(draft, sealed)| draft.captured != sealed.captured)
+        {
+            return Err(RunStoreError::IntegrityViolation(
+                "run subject disagrees with attempt provenance".into(),
+            ));
+        }
+        manifest.source_subject = Some(subject.clone());
+        Ok(())
     }
 
     async fn read_artifact(
@@ -2157,6 +2236,7 @@ mod tests {
             fallback: None,
             ownership: RunOwnership::Caller,
             asset_provenance: None,
+            source_subject: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();

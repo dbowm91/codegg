@@ -459,3 +459,18 @@ bash scripts/check-core-boundary.sh                        # boundary guard
 - `architecture/overview.md` — full module map
 - `.opencode/skills/jobs/SKILL.md` — skill reference
 - `architecture/tool_programs.md` — M007/M011 tool program contracts
+# Execution source provenance
+
+`JobAttempt.source_subject` is the authority for the source state consumed by
+one execution. It is a versioned bounded envelope; a retry captures a new
+subject and never inherits the preceding attempt's value. `JobRecord` labels
+are not provenance authority. The additive schema v67 column is nullable so
+legacy attempts remain unavailable; migration never consults a workspace.
+
+The scheduler captures S1 under the canonical workspace lease before executor
+side effects. Local live-workspace execution seals S2 after executor cleanup
+and before terminal persistence. Equal subjects are Stable; differences are
+Drifted while the execution status remains truthful. Eggwork seals around its
+materialized source snapshot before upload/submit; later local edits do not
+rewrite that immutable input identity. Capture failure, non-Git workspaces,
+legacy NULLs, and unsupported remote boundaries remain unavailable.

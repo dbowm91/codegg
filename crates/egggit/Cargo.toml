@@ -16,6 +16,7 @@ categories = ["development-tools", "filesystem"]
 
 [dependencies]
 serde.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "io-util"] }
 

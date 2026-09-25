@@ -5,11 +5,136 @@
 //! assessment. It does not execute tools or infer provenance from model prose.
 //! A ref whose target cannot be found is `Unavailable` — never satisfied.
 
-use codegg_core::jobs::{JobId, JobState, JobStore, SqliteJobStore};
+use codegg_core::jobs::{
+    ExecutionSubjectDisposition, ExecutionSubjectProvenance, JobAttempt, JobId, JobState, JobStore,
+    SqliteJobStore,
+};
 use codegg_core::work_plan::{
     HostEvidenceStatus, WorkEvidenceKind, WorkItem, WorkPlanEvidenceSnapshot,
 };
 use sqlx::SqlitePool;
+
+/// Host-resolved execution evidence keeps status separate from historical source identity.
+#[derive(Debug, Clone)]
+pub struct ResolvedWorkEvidence {
+    pub kind: WorkEvidenceKind,
+    pub ref_id: String,
+    pub status: HostEvidenceStatus,
+    pub source_subject: Option<ExecutionSubjectProvenance>,
+    pub source_subject_disposition: ExecutionSubjectDisposition,
+    pub native_job_id: Option<String>,
+    pub native_attempt_id: Option<String>,
+    pub native_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedWorkEvidenceSnapshot {
+    pub entries: Vec<ResolvedWorkEvidence>,
+}
+
+async fn attempt_for_job(store: &SqliteJobStore, job_id: &JobId) -> Option<JobAttempt> {
+    store
+        .list_attempts(job_id)
+        .await
+        .ok()?
+        .into_iter()
+        .max_by_key(|a| a.sequence)
+}
+
+/// Resolve status and attempt-scoped subject for current native records. Legacy
+/// attempts are left unavailable; this function never captures the worktree.
+pub async fn assemble_resolved(
+    pool: &SqlitePool,
+    items: &[WorkItem],
+) -> Result<ResolvedWorkEvidenceSnapshot, String> {
+    const MAX_EVIDENCE_REFS: usize = 256;
+    let store = SqliteJobStore::new(pool.clone());
+    let mut entries = Vec::new();
+    for evidence in items
+        .iter()
+        .flat_map(|item| item.evidence.iter())
+        .take(MAX_EVIDENCE_REFS)
+    {
+        let mut resolved = ResolvedWorkEvidence {
+            kind: evidence.kind,
+            ref_id: evidence.ref_id.as_str().to_owned(),
+            status: HostEvidenceStatus::Unavailable,
+            source_subject: None,
+            source_subject_disposition: ExecutionSubjectDisposition::Unavailable,
+            native_job_id: None,
+            native_attempt_id: None,
+            native_run_id: None,
+        };
+        let job_id = JobId::new_unchecked(evidence.ref_id.as_str().to_owned());
+        let job = match evidence.kind {
+            WorkEvidenceKind::TestJob
+            | WorkEvidenceKind::SchedulerJob
+            | WorkEvidenceKind::DelegatedRun => store.get_job(&job_id).await.ok().flatten(),
+            _ => None,
+        };
+        if let Some(job) = job {
+            resolved.status = job_state_to_evidence(job.state);
+            resolved.native_job_id = Some(job.job_id.to_string());
+            if let Some(attempt) = attempt_for_job(&store, &job.job_id).await {
+                resolved.native_attempt_id = Some(attempt.attempt_id.to_string());
+                resolved.native_run_id = attempt.run_id.as_ref().map(ToString::to_string);
+                resolved.source_subject_disposition = attempt
+                    .source_subject
+                    .as_ref()
+                    .map(|p| p.disposition)
+                    .unwrap_or(ExecutionSubjectDisposition::Unavailable);
+                resolved.source_subject = attempt.source_subject;
+            }
+        } else if evidence.kind == WorkEvidenceKind::AgentRun {
+            #[derive(sqlx::FromRow)]
+            struct Link {
+                status: String,
+                job_id: Option<String>,
+                attempt_id: Option<String>,
+            }
+            if let Ok(Some(link)) = sqlx::query_as::<_, Link>(
+                "SELECT status, job_id, attempt_id FROM agent_run WHERE id = ?1",
+            )
+            .bind(evidence.ref_id.as_str())
+            .fetch_optional(pool)
+            .await
+            {
+                resolved.status = match link.status.as_str() {
+                    "completed" => HostEvidenceStatus::Passed,
+                    "failed" | "cancelled" | "timed_out" | "interrupted" | "expired" => {
+                        HostEvidenceStatus::Failed
+                    }
+                    "running" | "scheduled" | "queued" | "blocked" | "pending" | "in_progress" => {
+                        HostEvidenceStatus::InProgress
+                    }
+                    _ => HostEvidenceStatus::Unavailable,
+                };
+                resolved.native_job_id = link.job_id.clone();
+                resolved.native_attempt_id = link.attempt_id.clone();
+                if let (Some(job), Some(attempt)) = (link.job_id, link.attempt_id) {
+                    let attempt_id = codegg_core::jobs::AttemptId::new_unchecked(attempt);
+                    let job_id = codegg_core::jobs::JobId::new_unchecked(job);
+                    if let Ok(attempts) = store.list_attempts(&job_id).await {
+                        if let Some(record) =
+                            attempts.into_iter().find(|a| a.attempt_id == attempt_id)
+                        {
+                            resolved.native_run_id =
+                                record.run_id.as_ref().map(ToString::to_string);
+                            resolved.source_subject_disposition = record
+                                .source_subject
+                                .as_ref()
+                                .map(|p| p.disposition)
+                                .unwrap_or(ExecutionSubjectDisposition::Unavailable);
+                            resolved.source_subject = record.source_subject;
+                        }
+                    }
+                }
+            }
+        }
+        entries.push(resolved);
+    }
+    Ok(ResolvedWorkEvidenceSnapshot { entries })
+}
 
 fn job_state_to_evidence(state: JobState) -> HostEvidenceStatus {
     match state {

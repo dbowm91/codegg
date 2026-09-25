@@ -30,6 +30,7 @@ pub mod process;
 pub mod refs;
 pub mod status;
 pub mod status_v2;
+pub mod subject;
 pub mod worktree;
 
 pub use blame::{blame_file, BlameEntry, BlameResult};
@@ -54,6 +55,7 @@ pub use refs::{
 };
 pub use status::RepoStatus;
 pub use status_v2::{DirtySummary, OperationState, RichRepoStatus, StatusEntry};
+pub use subject::{capture_git_source_subject, GitSourceSubject, SubjectCaptureError};
 pub use worktree::WorktreeInfo;
 
 use thiserror::Error;
@@ -75,4 +77,7 @@ pub enum EgggitError {
 
     #[error("task join error: {0}")]
     Join(String),
+
+    #[error("git output exceeded the configured byte bound")]
+    OutputTooLarge,
 }

@@ -946,6 +946,43 @@ impl EggworkExecutor {
             Ok(snapshot) => snapshot,
             Err(e) => return ExecutionOutcome::Failed(format!("eggwork: workspace snapshot: {e}")),
         };
+        // The remote subject is sealed around the immutable source snapshot,
+        // before upload or submit. Later local edits do not change this input.
+        if ctx
+            .source_subject_started
+            .as_ref()
+            .and_then(|p| p.captured.as_ref())
+            .is_some()
+        {
+            let manifest_digest = match snapshot.manifest.digest() {
+                Ok(digest) => digest.as_str().to_owned(),
+                Err(error) => {
+                    return ExecutionOutcome::Failed(format!(
+                        "eggwork: cannot digest materialized source manifest: {error}"
+                    ))
+                }
+            };
+            match ctx
+                .seal_materialized_source_subject(
+                    manifest_digest,
+                    snapshot.skipped_non_regular,
+                    snapshot.skipped_oversize,
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return ExecutionOutcome::Failed(
+                        "eggwork: source changed while materializing; remote submit refused".into(),
+                    )
+                }
+                Err(error) => {
+                    return ExecutionOutcome::Failed(format!(
+                        "eggwork: cannot seal source subject: {error}"
+                    ))
+                }
+            }
+        }
         ctx.progress
             .progress(
                 &ctx.job.job_id,
@@ -2165,6 +2202,8 @@ mod tests {
             workspace_id: WorkspaceId::new_unchecked("ws-egg"),
             workspace_root: root,
             run_store: None,
+            subject_store: None,
+            source_subject_started: None,
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(crate::scheduler::executor::NoopProgressSink),
             resources,
@@ -2514,6 +2553,8 @@ mod tests {
             workspace_id: WorkspaceId::new_unchecked("ws-egg"),
             workspace_root: dir.path().to_path_buf(),
             run_store: None,
+            subject_store: Some(store.clone()),
+            source_subject_started: None,
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(crate::scheduler::executor::NoopProgressSink),
             resources,

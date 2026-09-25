@@ -267,6 +267,9 @@ Key storage-layout migrations:
 - **v62**: `runtime_preferences` Task-composer model scope — nullable `last_task_provider_connection_id`/`last_task_model_id` (project Work Orders M003; existing rows untouched, bounds enforced in Rust)
 - **v63**: external task triggers — verifier-only `task_trigger` credentials (SHA-256 hex, never plaintext) plus the `task_trigger_receipt` idempotency ledger (project Work Orders M005; existing work orders untouched)
 - **v64**: project/channel chat access policy — `chat_project_policy` + `chat_project_chat_override`, `chat_channel_policy` + `chat_channel_chat_override` with optimistic revisions (team-collaboration M002, ADR-0006; absent rows preserve role defaults, no chat backfill)
+- **v65**: session-control turn-scoped shared-session controller lease (team-collaboration M004)
+- **v66**: Eggwork fixed-target execution target and remote handle fields
+- **v67**: nullable `job_attempt.source_subject_json` for attempt-scoped execution source provenance; historical rows remain NULL and are never backfilled from a workspace
 
 ## Testing
 

@@ -139,6 +139,10 @@ pub struct JobExecutionContext {
     /// `None` is retained for lightweight executor unit tests; production
     /// scheduler dispatch always supplies it.
     pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    /// Durable attempt store and scheduler-captured source identity. Executors
+    /// may seal only at a backend-specific immutable-input boundary.
+    pub subject_store: Option<Arc<dyn codegg_core::jobs::JobStore>>,
+    pub source_subject_started: Option<codegg_core::jobs::ExecutionSubjectProvenance>,
     pub cancellation: CancellationToken,
     pub progress: Arc<dyn JobProgressSink>,
     pub resources: ResourcePermitGuard,
@@ -175,6 +179,94 @@ impl JobExecutionContext {
             ));
         }
         Ok(())
+    }
+
+    /// Seal subject provenance immediately after a remote/materialized input
+    /// has been assembled, before submission. Returns false on source drift.
+    pub async fn seal_materialized_source_subject(
+        &self,
+        manifest_digest: String,
+        skipped_non_regular: usize,
+        skipped_oversize: usize,
+    ) -> Result<bool, String> {
+        use codegg_core::jobs::{
+            ExecutionSubjectDisposition as D, ExecutionSubjectKind as K,
+            ExecutionSubjectMaterialization as M, ExecutionSubjectProvenance as P,
+            ExecutionSubjectRevision as R, ExecutionSubjectSealKind as S,
+            ExecutionSubjectState as T,
+        };
+        let Some(started) = self.source_subject_started.as_ref() else {
+            return Err("missing started subject provenance".into());
+        };
+        let end = egggit::capture_git_source_subject(&self.workspace_root)
+            .await
+            .ok()
+            .map(|subject| R {
+                schema_version: R::SCHEMA_VERSION,
+                subject_kind: K::Git,
+                repository_identity: format!("codegg-workspace:{}", self.workspace_id.as_str()),
+                revision: subject.revision,
+                state: if subject.dirty_digest.is_some() {
+                    T::Dirty
+                } else {
+                    T::Clean
+                },
+                dirty_digest: subject.dirty_digest,
+            });
+        let equal = started
+            .captured
+            .as_ref()
+            .zip(end.as_ref())
+            .is_some_and(|(a, b)| a == b);
+        let capture_failed = end.is_none();
+        let skipped_non_regular = skipped_non_regular.min(u32::MAX as usize) as u32;
+        let skipped_oversize = skipped_oversize.min(u32::MAX as usize) as u32;
+        let complete = skipped_non_regular == 0 && skipped_oversize == 0;
+        let sealed = P {
+            schema_version: 1,
+            captured: started.captured.clone(),
+            sealed: end,
+            disposition: if equal && complete {
+                D::Stable
+            } else if started.captured.is_some() {
+                if equal {
+                    D::Unavailable
+                } else {
+                    D::Drifted
+                }
+            } else {
+                D::Unavailable
+            },
+            seal_kind: S::SnapshotMaterialized,
+            unavailable_reason: if equal && complete {
+                None
+            } else if equal {
+                Some(
+                    codegg_core::jobs::ExecutionSubjectUnavailableReason::MaterializationIncomplete,
+                )
+            } else if started.captured.is_none() {
+                started.unavailable_reason
+            } else if capture_failed {
+                Some(codegg_core::jobs::ExecutionSubjectUnavailableReason::CaptureFailed)
+            } else {
+                None
+            },
+            materialization: Some(M {
+                manifest_digest,
+                complete,
+                skipped_non_regular,
+                skipped_oversize,
+            }),
+        };
+        let store = self
+            .subject_store
+            .as_ref()
+            .ok_or_else(|| "attempt store unavailable for source-subject seal".to_string())?;
+        store
+            .seal_attempt_source_subject(&self.attempt_id, &sealed)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(equal)
     }
 }
 
@@ -433,6 +525,8 @@ mod tests {
             workspace_id: WorkspaceId::new_unchecked(""),
             workspace_root: std::path::PathBuf::from("/tmp"),
             run_store: None,
+            subject_store: None,
+            source_subject_started: None,
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(NoopProgressSink),
             resources: crate::scheduler::permit::ResourcePermitGuard::new_orphan(

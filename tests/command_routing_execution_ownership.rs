@@ -688,6 +688,7 @@ async fn manifest_serde_roundtrip_with_provenance() {
         }),
         ownership: RunOwnership::DelegatedBackend,
         asset_provenance: None,
+        source_subject: None,
     };
 
     let json = serde_json::to_string(&m).unwrap();

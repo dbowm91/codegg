@@ -1273,6 +1273,169 @@ pub struct JobAttempt {
     /// reconciliation, restart, or cancel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_handle: Option<RemoteExecutionHandle>,
+    /// Immutable, attempt-scoped source identity captured at the execution input boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_subject: Option<ExecutionSubjectProvenance>,
+}
+
+/// CodeGG-native source identity. This intentionally has no Eggplan dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionSubjectRevision {
+    pub schema_version: u16,
+    pub subject_kind: ExecutionSubjectKind,
+    pub repository_identity: String,
+    pub revision: String,
+    pub state: ExecutionSubjectState,
+    pub dirty_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSubjectKind {
+    Git,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSubjectState {
+    Clean,
+    Dirty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionSubjectProvenance {
+    pub schema_version: u16,
+    pub captured: Option<ExecutionSubjectRevision>,
+    pub sealed: Option<ExecutionSubjectRevision>,
+    pub disposition: ExecutionSubjectDisposition,
+    pub seal_kind: ExecutionSubjectSealKind,
+    pub unavailable_reason: Option<ExecutionSubjectUnavailableReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<ExecutionSubjectMaterialization>,
+}
+
+/// Bounded integrity and completeness metadata for a materialized remote input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionSubjectMaterialization {
+    pub manifest_digest: String,
+    pub complete: bool,
+    pub skipped_non_regular: u32,
+    pub skipped_oversize: u32,
+}
+
+impl ExecutionSubjectProvenance {
+    pub const SCHEMA_VERSION: u16 = 1;
+    pub const MAX_SERIALIZED_BYTES: usize = 4096;
+    pub fn validate_started(&self) -> bool {
+        self.schema_version == Self::SCHEMA_VERSION
+            && self.disposition == ExecutionSubjectDisposition::Started
+            && self.sealed.is_none()
+            && self.materialization.is_none()
+            && self
+                .captured
+                .as_ref()
+                .is_none_or(ExecutionSubjectRevision::validate)
+            && (self.captured.is_some() || self.unavailable_reason.is_some())
+    }
+    pub fn validate_sealed(&self) -> bool {
+        if self.schema_version != Self::SCHEMA_VERSION
+            || self.disposition == ExecutionSubjectDisposition::Started
+        {
+            return false;
+        }
+        if self.captured.as_ref().is_some_and(|s| !s.validate())
+            || self.sealed.as_ref().is_some_and(|s| !s.validate())
+        {
+            return false;
+        }
+        match self.disposition {
+            ExecutionSubjectDisposition::Stable => {
+                self.captured.is_some()
+                    && self.captured == self.sealed
+                    && self.unavailable_reason.is_none()
+                    && self.materialization.as_ref().is_none_or(|m| {
+                        m.manifest_digest.len() == 64
+                            && m.manifest_digest
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                            && m.complete
+                            && m.skipped_non_regular == 0
+                            && m.skipped_oversize == 0
+                    })
+            }
+            ExecutionSubjectDisposition::Drifted => {
+                self.captured.is_some() && self.sealed.is_some() && self.captured != self.sealed
+            }
+            ExecutionSubjectDisposition::Unavailable => {
+                self.unavailable_reason.is_some()
+                    && (self.sealed.is_none()
+                        || self.captured.as_ref().zip(self.sealed.as_ref()).is_some())
+                    && self.materialization.as_ref().is_none_or(|m| {
+                        m.manifest_digest.len() == 64
+                            && m.manifest_digest
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                            && (!m.complete
+                                || (m.skipped_non_regular == 0 && m.skipped_oversize == 0))
+                    })
+            }
+            ExecutionSubjectDisposition::Started => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSubjectDisposition {
+    Started,
+    Stable,
+    Drifted,
+    Unavailable,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSubjectSealKind {
+    LiveExecutionEnd,
+    SnapshotMaterialized,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSubjectUnavailableReason {
+    NotGit,
+    LegacyMissingProvenance,
+    CaptureFailed,
+    BoundsExceeded,
+    UnsafePath,
+    MaterializationIncomplete,
+}
+
+impl ExecutionSubjectRevision {
+    pub const SCHEMA_VERSION: u16 = 1;
+    pub fn validate(&self) -> bool {
+        self.schema_version == Self::SCHEMA_VERSION
+            && !self.repository_identity.is_empty()
+            && self.repository_identity.len() <= 256
+            && (self.repository_identity.starts_with("codegg-workspace:")
+                || self.repository_identity.starts_with("repository:"))
+            && !self.repository_identity.contains('/')
+            && !self.repository_identity.contains('\\')
+            && (self.revision.len() == 40 || self.revision.len() == 64)
+            && self
+                .revision
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            && match self.state {
+                ExecutionSubjectState::Clean => self.dirty_digest.is_none(),
+                ExecutionSubjectState::Dirty => self.dirty_digest.as_ref().is_some_and(|d| {
+                    d.len() == 64
+                        && d.bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                }),
+            }
+    }
 }
 
 /// Persisted provenance for one remote execution handle. Survives
@@ -1541,6 +1704,22 @@ pub trait JobStore: Send + Sync {
         &self,
         _attempt_id: &AttemptId,
         _handle: Option<&RemoteExecutionHandle>,
+    ) -> Result<(), JobStoreError> {
+        Ok(())
+    }
+
+    /// Persist execution input provenance before dispatch and seal it once the input boundary ends.
+    async fn set_attempt_source_subject_started(
+        &self,
+        _attempt_id: &AttemptId,
+        _provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        Ok(())
+    }
+    async fn seal_attempt_source_subject(
+        &self,
+        _attempt_id: &AttemptId,
+        _provenance: &ExecutionSubjectProvenance,
     ) -> Result<(), JobStoreError> {
         Ok(())
     }
@@ -1917,5 +2096,81 @@ mod tests {
             run_id: None,
         };
         assert_eq!(comp.clone(), comp);
+    }
+
+    #[test]
+    fn execution_subject_schema_rejects_inconsistent_clean_dirty_shapes() {
+        let clean = ExecutionSubjectRevision {
+            schema_version: 1,
+            subject_kind: ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-1".into(),
+            revision: "a".repeat(40),
+            state: ExecutionSubjectState::Clean,
+            dirty_digest: None,
+        };
+        assert!(clean.validate());
+        let mut invalid = clean.clone();
+        invalid.dirty_digest = Some("b".repeat(64));
+        assert!(!invalid.validate());
+        let mut dirty = clean;
+        dirty.state = ExecutionSubjectState::Dirty;
+        dirty.dirty_digest = Some("b".repeat(64));
+        assert!(dirty.validate());
+    }
+
+    #[test]
+    fn incomplete_materialization_cannot_be_stable_evidence() {
+        let subject = ExecutionSubjectRevision {
+            schema_version: 1,
+            subject_kind: ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-test".into(),
+            revision: "a".repeat(40),
+            state: ExecutionSubjectState::Clean,
+            dirty_digest: None,
+        };
+        let incomplete = ExecutionSubjectProvenance {
+            schema_version: 1,
+            captured: Some(subject.clone()),
+            sealed: Some(subject),
+            disposition: ExecutionSubjectDisposition::Unavailable,
+            seal_kind: ExecutionSubjectSealKind::SnapshotMaterialized,
+            unavailable_reason: Some(ExecutionSubjectUnavailableReason::MaterializationIncomplete),
+            materialization: Some(ExecutionSubjectMaterialization {
+                manifest_digest: "b".repeat(64),
+                complete: false,
+                skipped_non_regular: 1,
+                skipped_oversize: 0,
+            }),
+        };
+        assert!(incomplete.validate_sealed());
+        let mut false_stable = incomplete;
+        false_stable.disposition = ExecutionSubjectDisposition::Stable;
+        false_stable.unavailable_reason = None;
+        assert!(!false_stable.validate_sealed());
+    }
+
+    #[test]
+    fn subject_provenance_requires_stable_equality_and_drift_difference() {
+        let subject = ExecutionSubjectRevision {
+            schema_version: 1,
+            subject_kind: ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-1".into(),
+            revision: "a".repeat(40),
+            state: ExecutionSubjectState::Clean,
+            dirty_digest: None,
+        };
+        let stable = ExecutionSubjectProvenance {
+            schema_version: 1,
+            captured: Some(subject.clone()),
+            sealed: Some(subject.clone()),
+            disposition: ExecutionSubjectDisposition::Stable,
+            seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+            unavailable_reason: None,
+            materialization: None,
+        };
+        assert!(stable.validate_sealed());
+        let mut drifted = stable;
+        drifted.disposition = ExecutionSubjectDisposition::Drifted;
+        assert!(!drifted.validate_sealed());
     }
 }

@@ -220,6 +220,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 66 {
         migrate_and_record(pool, 66).await?;
     }
+    if current_version < 67 {
+        migrate_and_record(pool, 67).await?;
+    }
 
     Ok(())
 }
@@ -298,6 +301,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             64 => migrate_v64(&mut tx).await?,
             65 => migrate_v65(&mut tx).await?,
             66 => migrate_v66(&mut tx).await?,
+            67 => migrate_v67(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -329,6 +333,16 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             Err(e)
         }
     }
+}
+
+/// Attempt-scoped execution subject provenance. NULL is intentionally retained
+/// for historical rows; migrations never infer identity from the current tree.
+async fn migrate_v67(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        &mut *tx,
+        "ALTER TABLE job_attempt ADD COLUMN source_subject_json TEXT".to_string(),
+    )
+    .await
 }
 
 /// M011: durable Tool Program terminal notifications and delivery claims.

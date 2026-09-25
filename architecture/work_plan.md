@@ -325,3 +325,11 @@ dangling evidence explicitness, owner provenance, malformed rejection.
 - [model_profile_task_state.md](model_profile_task_state.md) — TodoState stays bounded projection
 - [session.md](session.md) — storage ownership, v59 tables
 - ADR-0003 — ownership decision; M003/M004 consume this foundation
+# Historical execution subject resolution
+
+The legacy status-only `assemble` projection remains unchanged. The parallel
+`assemble_resolved` API returns status separately from optional attempt-scoped
+source provenance and native job/attempt/run identifiers. It resolves
+AgentRun subjects only through the durable exact job+attempt link. Missing,
+dangling, legacy, drifted, and unsealed provenance is never filled from the
+current workspace.

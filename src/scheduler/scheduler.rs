@@ -28,8 +28,11 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use codegg_core::agent_run::{AgentRunStore, AgentRunTerminalOutcome};
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptId, AttemptState, CancelReason, DaemonGeneration, FailureClass,
-    JobErrorRecord, JobId, JobRecord, JobState, JobStore, JobStoreError,
+    AttemptCompletion, AttemptId, AttemptState, CancelReason, DaemonGeneration,
+    ExecutionSubjectDisposition, ExecutionSubjectKind, ExecutionSubjectProvenance,
+    ExecutionSubjectRevision, ExecutionSubjectSealKind, ExecutionSubjectState,
+    ExecutionSubjectUnavailableReason, ExecutionTarget, FailureClass, JobErrorRecord, JobId,
+    JobRecord, JobState, JobStore, JobStoreError,
 };
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
@@ -1012,13 +1015,15 @@ impl JobScheduler {
 
         // Spawn the executor task. Permit is moved into the task.
         let cancellation = CancellationToken::new();
-        let ctx = JobExecutionContext {
+        let mut ctx = JobExecutionContext {
             job: job.clone(),
             attempt_id: attempt.attempt_id.clone(),
             daemon_generation: self.daemon_generation.clone(),
             workspace_id: job.workspace_id.clone(),
             workspace_root: lease.path_policy().canonical_root.clone(),
             run_store: Some(lease.run_store()),
+            subject_store: Some(self.store.clone()),
+            source_subject_started: None,
             cancellation: cancellation.clone(),
             progress: Arc::new(DurableProgressSink {
                 store: self.store.clone(),
@@ -1026,6 +1031,58 @@ impl JobScheduler {
             }),
             resources: permit,
         };
+
+        // Capture at the scheduler-owned workspace boundary, before any
+        // executor side effects. The attempt store is the provenance authority.
+        let (captured_subject, capture_reason) =
+            match egggit::capture_git_source_subject(&ctx.workspace_root).await {
+                Ok(subject) => (
+                    Some(ExecutionSubjectRevision {
+                        schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
+                        subject_kind: ExecutionSubjectKind::Git,
+                        repository_identity: format!(
+                            "codegg-workspace:{}",
+                            ctx.workspace_id.as_str()
+                        ),
+                        revision: subject.revision,
+                        state: if subject.dirty_digest.is_some() {
+                            ExecutionSubjectState::Dirty
+                        } else {
+                            ExecutionSubjectState::Clean
+                        },
+                        dirty_digest: subject.dirty_digest,
+                    }),
+                    None,
+                ),
+                Err(egggit::SubjectCaptureError::NotGit) => {
+                    (None, Some(ExecutionSubjectUnavailableReason::NotGit))
+                }
+                Err(egggit::SubjectCaptureError::UnsafePath) => {
+                    (None, Some(ExecutionSubjectUnavailableReason::UnsafePath))
+                }
+                Err(egggit::SubjectCaptureError::BoundsExceeded) => (
+                    None,
+                    Some(ExecutionSubjectUnavailableReason::BoundsExceeded),
+                ),
+                Err(_) => (None, Some(ExecutionSubjectUnavailableReason::CaptureFailed)),
+            };
+        let start_provenance = ExecutionSubjectProvenance {
+            schema_version: 1,
+            captured: captured_subject.clone(),
+            sealed: None,
+            disposition: ExecutionSubjectDisposition::Started,
+            seal_kind: if matches!(&job.target, ExecutionTarget::Local) {
+                ExecutionSubjectSealKind::LiveExecutionEnd
+            } else {
+                ExecutionSubjectSealKind::SnapshotMaterialized
+            },
+            unavailable_reason: capture_reason,
+            materialization: None,
+        };
+        self.store
+            .set_attempt_source_subject_started(&attempt.attempt_id, &start_provenance)
+            .await?;
+        ctx.source_subject_started = Some(start_provenance.clone());
 
         let execution_timeout = job
             .deadline
@@ -1103,6 +1160,10 @@ impl JobScheduler {
         let task_attempt_id = attempt_id.clone();
         let audit_emitter_for_task = self.audit_emitter.lock().await.clone();
         let job_for_task = job.clone();
+        let subject_start_for_task = start_provenance.clone();
+        let subject_root_for_task = ctx.workspace_root.clone();
+        let subject_workspace_for_task = ctx.workspace_id.clone();
+        let subject_target_for_task = job.target.clone();
         {
             let executor = Arc::clone(&exec);
             let store = self.store.clone();
@@ -1161,6 +1222,113 @@ impl JobScheduler {
                         None => execution.await,
                     }
                 };
+                let subject_end = if matches!(&subject_target_for_task, ExecutionTarget::Local) {
+                    egggit::capture_git_source_subject(&subject_root_for_task)
+                        .await
+                        .ok()
+                        .map(|subject| ExecutionSubjectRevision {
+                            schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
+                            subject_kind: ExecutionSubjectKind::Git,
+                            repository_identity: format!(
+                                "codegg-workspace:{}",
+                                subject_workspace_for_task.as_str()
+                            ),
+                            revision: subject.revision,
+                            state: if subject.dirty_digest.is_some() {
+                                ExecutionSubjectState::Dirty
+                            } else {
+                                ExecutionSubjectState::Clean
+                            },
+                            dirty_digest: subject.dirty_digest,
+                        })
+                } else {
+                    None
+                };
+                let source_subject = if matches!(&subject_target_for_task, ExecutionTarget::Local) {
+                    match (&subject_start_for_task.captured, &subject_end) {
+                        (Some(start), Some(end)) if start == end => ExecutionSubjectProvenance {
+                            schema_version: 1,
+                            captured: Some(start.clone()),
+                            sealed: Some(end.clone()),
+                            disposition: ExecutionSubjectDisposition::Stable,
+                            seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+                            unavailable_reason: None,
+                            materialization: None,
+                        },
+                        (Some(start), Some(end)) => ExecutionSubjectProvenance {
+                            schema_version: 1,
+                            captured: Some(start.clone()),
+                            sealed: Some(end.clone()),
+                            disposition: ExecutionSubjectDisposition::Drifted,
+                            seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+                            unavailable_reason: None,
+                            materialization: None,
+                        },
+                        _ => ExecutionSubjectProvenance {
+                            schema_version: 1,
+                            captured: subject_start_for_task.captured.clone(),
+                            sealed: None,
+                            disposition: ExecutionSubjectDisposition::Unavailable,
+                            seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+                            unavailable_reason: subject_start_for_task
+                                .unavailable_reason
+                                .or(Some(ExecutionSubjectUnavailableReason::CaptureFailed)),
+                            materialization: None,
+                        },
+                    }
+                } else {
+                    store
+                        .list_attempts(&job_id_for_task)
+                        .await
+                        .ok()
+                        .and_then(|attempts| {
+                            attempts.into_iter().find(|a| a.attempt_id == attempt_id)
+                        })
+                        .and_then(|a| a.source_subject)
+                        .filter(|p| p.disposition != ExecutionSubjectDisposition::Started)
+                        .unwrap_or_else(|| ExecutionSubjectProvenance {
+                            schema_version: 1,
+                            captured: subject_start_for_task.captured.clone(),
+                            sealed: None,
+                            disposition: ExecutionSubjectDisposition::Unavailable,
+                            seal_kind: ExecutionSubjectSealKind::SnapshotMaterialized,
+                            unavailable_reason: Some(
+                                ExecutionSubjectUnavailableReason::CaptureFailed,
+                            ),
+                            materialization: None,
+                        })
+                };
+                if source_subject.disposition == ExecutionSubjectDisposition::Started {
+                    tracing::error!(job_id = %job_id_for_task, attempt_id = %attempt_id, "executor returned without sealing materialized source subject");
+                } else if let Ok(attempts) = store.list_attempts(&job_id_for_task).await {
+                    let already_sealed = attempts
+                        .iter()
+                        .find(|a| a.attempt_id == attempt_id)
+                        .and_then(|a| a.source_subject.as_ref())
+                        .is_some_and(|p| p.disposition != ExecutionSubjectDisposition::Started);
+                    if !already_sealed {
+                        if let Err(error) = store
+                            .seal_attempt_source_subject(&attempt_id, &source_subject)
+                            .await
+                        {
+                            tracing::error!(job_id = %job_id_for_task, attempt_id = %attempt_id, %error, "failed to seal execution source subject; evidence remains unavailable");
+                        }
+                    }
+                } else if let Err(error) = store
+                    .seal_attempt_source_subject(&attempt_id, &source_subject)
+                    .await
+                {
+                    tracing::error!(job_id = %job_id_for_task, attempt_id = %attempt_id, %error, "failed to seal execution source subject; evidence remains unavailable");
+                }
+                if let Some(run_id) = completion.run_id.as_ref() {
+                    if let Err(error) = lease_for_task
+                        .run_store()
+                        .set_run_source_subject(run_id, &source_subject)
+                        .await
+                    {
+                        tracing::error!(job_id = %job_id_for_task, attempt_id = %attempt_id, %run_id, %error, "failed to project attempt source subject into RunStore");
+                    }
+                }
                 {
                     let mut completions_guard = completions.lock().await;
                     let seq = completions_seq.fetch_add(1, Ordering::Relaxed);

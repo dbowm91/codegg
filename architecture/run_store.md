@@ -286,3 +286,11 @@ Run with `--test-threads=1` to avoid spurious hangs under concurrent load.
 - [snapshot.md](snapshot.md) — Pre-mutation snapshots
 - `architecture/tool_programs.md` — Tool Program lifecycle
 - `architecture/scheduler.md` — Scheduler admission and RunStore linkage
+# Execution subject projection
+
+Run manifests may carry the optional attempt-scoped `source_subject`
+provenance envelope. Scheduler-owned producers copy it from JobAttempt; the
+RunStore never captures or reconstructs source state itself. When both the
+draft and completion carry a subject, completion must preserve the captured
+revision. Historical manifests without the field remain valid and unavailable
+for exact-subject evidence.

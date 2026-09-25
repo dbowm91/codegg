@@ -220,6 +220,8 @@ fn make_ctx(job: JobRecord, cancelled: bool) -> JobExecutionContext {
         workspace_id: WorkspaceId::new_unchecked("ws-integration"),
         workspace_root: std::env::current_dir().unwrap(),
         run_store: None,
+        subject_store: None,
+        source_subject_started: None,
         cancellation: token,
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),

@@ -454,3 +454,11 @@ remains an explicit parent-side typed Git operation.
 - `architecture/command_intent.md` — Command intent classification and
   routing.
 - `architecture/command_routing.md` — Active routing mode.
+# Execution source subject capture
+
+`egggit::capture_git_source_subject` is the read-only, governed Git owner for
+execution provenance. It captures exact HEAD and a deterministic SHA-256
+digest for bounded dirty state without returning paths or file contents.
+Capture is rooted at the scheduler's canonical workspace path. Unsafe paths,
+non-Git workspaces, and bound/capture failures return typed unavailability;
+callers must not downgrade to a weaker status-only identity.

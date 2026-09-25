@@ -18,9 +18,10 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::error::StorageError;
 use crate::jobs::{
     AttemptCompletion, AttemptId, AttemptState, CancelOutcome, CancelReason, CancelResult,
-    DaemonGeneration, ExecutionTarget, IdempotencyClass, JobAttempt, JobErrorRecord, JobId,
-    JobKind, JobPayload, JobPriority, JobRecord, JobSource, NewJob, RecoveryPolicy, RecoveryReport,
-    RemoteExecutionHandle, ResourceRequest, RetryPolicy,
+    DaemonGeneration, ExecutionSubjectDisposition, ExecutionSubjectProvenance, ExecutionTarget,
+    IdempotencyClass, JobAttempt, JobErrorRecord, JobId, JobKind, JobPayload, JobPriority,
+    JobRecord, JobSource, NewJob, RecoveryPolicy, RecoveryReport, RemoteExecutionHandle,
+    ResourceRequest, RetryPolicy,
 };
 use crate::workspace::WorkspaceId;
 
@@ -310,6 +311,7 @@ fn begin_attempt_locked(
         created_at: now,
         updated_at: now,
         remote_handle: None,
+        source_subject: None,
     };
     let updated_job = JobRecord {
         state: JobState::Running,
@@ -589,6 +591,77 @@ impl JobStore for InMemoryJobStore {
             attempt_id.clone(),
             JobAttempt {
                 remote_handle: handle.cloned(),
+                updated_at: Utc::now(),
+                ..attempt
+            },
+        );
+        Ok(())
+    }
+
+    async fn set_attempt_source_subject_started(
+        &self,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        let json = serde_json::to_string(provenance)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        if !provenance.validate_started()
+            || json.len() > ExecutionSubjectProvenance::MAX_SERIALIZED_BYTES
+        {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let mut guard = self.inner.lock().await;
+        let attempt = guard
+            .attempts
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        if attempt
+            .source_subject
+            .as_ref()
+            .is_some_and(|p| p != provenance)
+        {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        guard.attempts.insert(
+            attempt_id.clone(),
+            JobAttempt {
+                source_subject: Some(provenance.clone()),
+                updated_at: Utc::now(),
+                ..attempt
+            },
+        );
+        Ok(())
+    }
+
+    async fn seal_attempt_source_subject(
+        &self,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        if !provenance.validate_sealed() {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let mut guard = self.inner.lock().await;
+        let attempt = guard
+            .attempts
+            .get(attempt_id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        let started = attempt
+            .source_subject
+            .as_ref()
+            .ok_or_else(|| JobStoreError::Conflict(attempt_id.to_string()))?;
+        if started.captured != provenance.captured
+            || started.sealed.is_some()
+            || matches!(provenance.disposition, ExecutionSubjectDisposition::Started)
+        {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        guard.attempts.insert(
+            attempt_id.clone(),
+            JobAttempt {
+                source_subject: Some(provenance.clone()),
                 updated_at: Utc::now(),
                 ..attempt
             },
@@ -1543,7 +1616,7 @@ impl JobStore for SqliteJobStore {
             r#"
             SELECT id, job_id, sequence, state, daemon_generation, executor,
                    run_id, heartbeat_at, time_started, time_completed,
-                   error_json, time_created, time_updated, remote_handle_json
+                   error_json, time_created, time_updated, remote_handle_json, source_subject_json
             FROM job_attempt
             WHERE job_id = ?
             ORDER BY sequence ASC
@@ -1723,6 +1796,7 @@ impl JobStore for SqliteJobStore {
             created_at: now,
             updated_at: now,
             remote_handle: None,
+            source_subject: None,
         })
     }
 
@@ -1812,6 +1886,64 @@ impl JobStore for SqliteJobStore {
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         if result.rows_affected() == 0 {
             return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn set_attempt_source_subject_started(
+        &self,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        let json = serde_json::to_string(provenance)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        if !provenance.validate_started()
+            || json.len() > ExecutionSubjectProvenance::MAX_SERIALIZED_BYTES
+        {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let result = sqlx::query("UPDATE job_attempt SET source_subject_json = ?, time_updated = ? WHERE id = ? AND source_subject_json IS NULL")
+            .bind(json).bind(Utc::now().timestamp_millis()).bind(attempt_id.as_str()).execute(&self.pool).await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn seal_attempt_source_subject(
+        &self,
+        attempt_id: &AttemptId,
+        provenance: &ExecutionSubjectProvenance,
+    ) -> Result<(), JobStoreError> {
+        if !provenance.validate_sealed() {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let json = serde_json::to_string(provenance)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        if json.len() > ExecutionSubjectProvenance::MAX_SERIALIZED_BYTES {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
+        }
+        let started = ExecutionSubjectProvenance {
+            schema_version: provenance.schema_version,
+            captured: provenance.captured.clone(),
+            sealed: None,
+            disposition: ExecutionSubjectDisposition::Started,
+            seal_kind: provenance.seal_kind,
+            unavailable_reason: provenance
+                .captured
+                .is_none()
+                .then_some(provenance.unavailable_reason)
+                .flatten(),
+            materialization: None,
+        };
+        let started_json = serde_json::to_string(&started)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        let result = sqlx::query("UPDATE job_attempt SET source_subject_json = ?, time_updated = ? WHERE id = ? AND source_subject_json = ?")
+            .bind(json).bind(Utc::now().timestamp_millis()).bind(attempt_id.as_str()).bind(started_json)
+            .execute(&self.pool).await.map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::Conflict(attempt_id.to_string()));
         }
         Ok(())
     }
@@ -2615,6 +2747,13 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
         updated_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_updated)
             .unwrap_or_else(Utc::now),
         remote_handle,
+        source_subject: row
+            .try_get::<Option<String>, _>("source_subject_json")
+            .unwrap_or(None)
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|e| JobStoreError::Serialization(e.to_string()))
+            })
+            .transpose()?,
     })
 }
 
@@ -2622,3 +2761,127 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
 fn _ensure_sync_mutex_used<T>(_m: &SyncMutex<T>) {}
 #[allow(dead_code)]
 fn _ensure_arc_used<T>(_a: &Arc<T>) {}
+
+#[cfg(test)]
+mod source_subject_tests {
+    use super::*;
+    use crate::jobs::{
+        ExecutionSubjectKind, ExecutionSubjectRevision, ExecutionSubjectSealKind,
+        ExecutionSubjectState,
+    };
+
+    fn test_job() -> NewJob {
+        NewJob {
+            workspace_id: WorkspaceId::new_unchecked("ws-test"),
+            session_id: None,
+            turn_id: None,
+            kind: JobKind::Build,
+            source: crate::jobs::JobSource::Interactive,
+            priority: crate::jobs::JobPriority::Normal,
+            payload: crate::jobs::JobPayload::Maintenance {
+                task: "subject-test".into(),
+            },
+            resource_request: crate::jobs::ResourceRequest::default(),
+            timeout: None,
+            retry_policy: crate::jobs::RetryPolicy::default(),
+            idempotency: crate::jobs::IdempotencyClass::ReadOnly,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: Vec::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
+            target: crate::jobs::ExecutionTarget::Local,
+        }
+    }
+
+    fn start_provenance() -> ExecutionSubjectProvenance {
+        ExecutionSubjectProvenance {
+            schema_version: 1,
+            captured: Some(ExecutionSubjectRevision {
+                schema_version: 1,
+                subject_kind: ExecutionSubjectKind::Git,
+                repository_identity: "codegg-workspace:ws-test".into(),
+                revision: "a".repeat(40),
+                state: ExecutionSubjectState::Clean,
+                dirty_digest: None,
+            }),
+            sealed: None,
+            disposition: ExecutionSubjectDisposition::Started,
+            seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+            unavailable_reason: None,
+            materialization: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn in_memory_attempt_subject_is_attempt_scoped_and_terminally_immutable() {
+        let store = InMemoryJobStore::new();
+        let job = store.create_job(test_job()).await.unwrap();
+        let generation = crate::jobs::DaemonGeneration::new_unchecked("generation");
+        let attempt = store.begin_attempt(&job.job_id, &generation).await.unwrap();
+        let started = start_provenance();
+        store
+            .set_attempt_source_subject_started(&attempt.attempt_id, &started)
+            .await
+            .unwrap();
+        let mut sealed = started.clone();
+        sealed.sealed = started.captured.clone();
+        sealed.disposition = ExecutionSubjectDisposition::Stable;
+        store
+            .seal_attempt_source_subject(&attempt.attempt_id, &sealed)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_attempts(&job.job_id).await.unwrap()[0].source_subject,
+            Some(sealed.clone())
+        );
+        assert!(store
+            .seal_attempt_source_subject(&attempt.attempt_id, &sealed)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn sqlite_v67_round_trips_attempt_subject() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let store = SqliteJobStore::new(pool);
+        let job = store.create_job(test_job()).await.unwrap();
+        let attempt = store
+            .begin_attempt(
+                &job.job_id,
+                &crate::jobs::DaemonGeneration::new_unchecked("gen"),
+            )
+            .await
+            .unwrap();
+        let started = start_provenance();
+        store
+            .set_attempt_source_subject_started(&attempt.attempt_id, &started)
+            .await
+            .unwrap();
+        let mut sealed = started.clone();
+        sealed.sealed = started.captured.clone();
+        sealed.disposition = ExecutionSubjectDisposition::Stable;
+        store
+            .seal_attempt_source_subject(&attempt.attempt_id, &sealed)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_attempts(&job.job_id).await.unwrap()[0].source_subject,
+            Some(sealed.clone())
+        );
+        assert!(store
+            .seal_attempt_source_subject(&attempt.attempt_id, &sealed)
+            .await
+            .is_err());
+    }
+}
