@@ -35,7 +35,10 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # They run alone (never overlapped with anything) so their timing stays
 # deterministic and they cannot contend on process resources. Generous
 # slow-timeout: these legitimately take minutes on loaded runners.
+# `scheduler_cancellation` joined this list 2026-09-25: its real-`sleep`
+# token assertions flaked twice under parallel load (4- and 8-slot runs)
+# while passing serially.
 [[profile.ci.overrides]]
-filter = "binary(eggwork_remote_execution_live) | binary(interactive_process_attach_resume) | binary(interactive_process_sessions) | binary(interactive_terminal_tui)"
+filter = "binary(eggwork_remote_execution_live) | binary(interactive_process_attach_resume) | binary(interactive_process_sessions) | binary(interactive_terminal_tui) | binary(scheduler_cancellation)"
 threads-required = "num-cpus"
 slow-timeout = { period = "300s", terminate-after = 1 }
