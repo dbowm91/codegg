@@ -595,6 +595,8 @@ fn live_context(job: JobRecord, attempt: AttemptId, root: PathBuf) -> JobExecuti
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(codegg::scheduler::NoopProgressSink),
         resources,
+        subject_store: None,
+        source_subject_started: None,
     }
 }
 
