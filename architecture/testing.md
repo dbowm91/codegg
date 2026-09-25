@@ -227,10 +227,13 @@ scripts/capture-nextest-timing.sh --top 20
 ## CI Structure
 
 Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`
-for PRs and pushes to `main`. Baseline: ~37 min per run (measured
+for PRs and pushes to `main`. Baseline was ~37 min per run (measured
 2026-09-25: ~45 s setup/guards/fmt, ~5 min clippy, ~31 min workspace
 tests, of which only ~10 min is test execution and ~20 min is serial
-compile/link of ~100 test binaries). Steps in order:1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
+compile/link of ~100 test binaries). After the economy policy below
+(mold, JOBS=8, nextest `ci`, run-alone heavies), steady state is
+~19 min green (2026-09-25: ~2 min clippy, ~16 min test step with ~7 min
+execution of 11781 tests). Steps in order:1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
