@@ -208,9 +208,10 @@ scripts/capture-nextest-timing.sh --top 20
 ## CI Structure
 
 Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`
-for PRs and pushes to `main`. Steps in order:
-
-1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
+for PRs and pushes to `main`. Baseline: ~37 min per run (measured
+2026-09-25: ~45 s setup/guards/fmt, ~5 min clippy, ~31 min workspace
+tests, of which only ~10 min is test execution and ~20 min is serial
+compile/link of ~100 test binaries). Steps in order:1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
@@ -224,6 +225,30 @@ for PRs and pushes to `main`. Steps in order:
 
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
+
+### CI economy policy
+
+Four deliberate deviations from the local defaults, all confined to the
+hosted runner (4 vCPU / 16 GB). Local `verify.sh` behavior is unchanged:
+
+1. **Superseded-run cancellation** — `concurrency` with
+   `cancel-in-progress: true` per ref. A new push cancels the previous
+   in-progress run instead of verifying both.
+2. **Docs-only skip** — `paths-ignore` for `plans/**`, `docs/**`,
+   `architecture/**`, `**.md`, `.opencode/skills/**`. Safe because every
+   guard verifies code -> docs direction; `assets/agents/**` and
+   `assets/prompts/**` stay gated.
+3. **mold linker** — `rui314/setup-mold@v1` as the default linker. The
+   workspace-test step is dominated by linking large test binaries, and
+   mold is several times faster than GNU ld there; the suite itself
+   validates the linked output.
+4. **`CARGO_BUILD_JOBS=2`** — matches the hosted runner. Test execution
+   stays serial (`--test-threads=1`) everywhere; local builds stay at 1.
+
+Do not generalize these: raising `--test-threads` globally risks
+port/PTY conflicts and OOM in process-heavy targets, and splitting CI
+into parallel jobs that each compile the workspace duplicates the
+dominant cost instead of removing it.
 
 ### Release-footprint measurements
 

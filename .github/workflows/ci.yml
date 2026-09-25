@@ -7,15 +7,47 @@ name: CI
 # Optional feature, plugin, example, LSP, and cross-platform checks
 # remain available locally via scripts/verify.sh
 # and the change-specific matrix in architecture/testing.md.
+#
+# CI economy policy (see architecture/testing.md "CI Structure"):
+# concurrency cancels superseded runs on the same ref, docs-only changes
+# skip the workflow via paths-ignore, linking uses mold, and
+# CARGO_BUILD_JOBS=2 matches the 4 vCPU / 16 GB hosted runner while
+# test execution stays serial.
 
 on:
   pull_request:
+    paths-ignore:
+      # Docs-only changes cannot break code or guards (all guards verify
+      # code -> docs direction). Asset sources stay gated: a change under
+      # assets/agents/ or assets/prompts/ still triggers this workflow.
+      - 'plans/**'
+      - 'docs/**'
+      - 'architecture/**'
+      - '**.md'
+      - '.opencode/skills/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'plans/**'
+      - 'docs/**'
+      - 'architecture/**'
+      - '**.md'
+      - '.opencode/skills/**'
+
+# Superseded runs never contribute signal: each push/PR-sync cancels the
+# previous in-progress run on the same ref instead of burning a second
+# full ~37-minute verifying job beside it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: 1
+  # CI-only override: GitHub-hosted runners have 4 vCPU / 16 GB, so two
+  # concurrent rustc/link jobs fit comfortably. Local default stays 1
+  # (see scripts/verify.sh) for smaller developer machines.
+  # Test execution remains serial (--test-threads=1) in every mode.
+  CARGO_BUILD_JOBS: 2
 
 permissions:
   contents: read
@@ -29,6 +61,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      # mold is a drop-in GNU-ld replacement, several times faster at
+      # linking the large codegg test binaries that dominate CI compile
+      # time. The test suite itself validates the linked output.
+      - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
 
