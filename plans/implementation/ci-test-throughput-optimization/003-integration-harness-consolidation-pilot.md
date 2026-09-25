@@ -1,6 +1,8 @@
 # CI/Test Throughput M003 — Integration-Harness Consolidation Pilot
 
-Status: blocked on M002
+Status: ready (unblocked by M002 closure
+`plans/closure/ci-test-throughput-optimization/002-status.md`; stable
+baseline is hosted run `36184915493`, 17m26s)
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
