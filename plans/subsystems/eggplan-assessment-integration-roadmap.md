@@ -98,7 +98,10 @@ Plan:
 The handoff was revalidated after Eggwork M002/M002a closed. M001 closed at
 CodeGG `418fdc85656e7e1faa57f71e5e7f10f7f4859c60`; closure evidence is
 `plans/closure/eggplan-assessment-integration/001-status.md` and hosted `CI`
-run `36106606574` succeeded. The plan pins the v66 -> v67 storage migration
+run `36106606574` succeeded. Follow-up corrective C002
+(`plans/closure/eggplan-assessment-integration/002-status.md`) repaired the
+AgentRun link predicate, pinned the bridge projection with golden tests,
+and added the subject-ownership guard; no closed API changed. The plan pins the v66 -> v67 storage migration
 and actual Eggwork execution-input boundary:
 
     capture S1
