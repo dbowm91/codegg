@@ -287,6 +287,8 @@ impl LiveNode {
             client_cert: client_cert_path,
             client_key: client_key_path,
             required_capabilities: Vec::new(),
+            isolation_policy: codegg_config::schema::EggworkIsolationPolicy::None,
+            network_policy: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
         };
         Self {
             _temp: temp,

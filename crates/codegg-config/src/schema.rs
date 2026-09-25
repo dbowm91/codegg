@@ -442,6 +442,26 @@ pub struct EggworkNodeProfile {
     pub client_key_path: Option<String>,
     /// Optional capability names the node must advertise before execution.
     pub required_capabilities: Option<Vec<String>>,
+    /// Required filesystem isolation posture for remote execution.
+    pub isolation_policy: Option<EggworkIsolationPolicy>,
+    /// Required network posture for remote execution.
+    pub network_policy: Option<EggworkNetworkPolicy>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EggworkIsolationPolicy {
+    #[default]
+    None,
+    Required,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EggworkNetworkPolicy {
+    #[default]
+    Unrestricted,
+    Disabled,
 }
 
 impl std::fmt::Debug for EggworkNodeProfile {
@@ -456,6 +476,8 @@ impl std::fmt::Debug for EggworkNodeProfile {
                 &self.client_key_path.as_ref().map(|_| "[redacted]"),
             )
             .field("required_capabilities", &self.required_capabilities)
+            .field("isolation_policy", &self.isolation_policy)
+            .field("network_policy", &self.network_policy)
             .finish()
     }
 }
@@ -480,6 +502,12 @@ impl EggworkNodeProfile {
         if other.required_capabilities.is_some() {
             self.required_capabilities
                 .clone_from(&other.required_capabilities);
+        }
+        if other.isolation_policy.is_some() {
+            self.isolation_policy = other.isolation_policy;
+        }
+        if other.network_policy.is_some() {
+            self.network_policy = other.network_policy;
         }
     }
 
@@ -4113,6 +4141,8 @@ mod tests {
             client_cert_path: Some("/etc/eggwork/client.pem".to_string()),
             client_key_path: Some("/etc/eggwork/client.key".to_string()),
             required_capabilities: Some(vec!["exec.argv.v1".to_string()]),
+            isolation_policy: Some(EggworkIsolationPolicy::None),
+            network_policy: Some(EggworkNetworkPolicy::Unrestricted),
         }
     }
 
@@ -4128,6 +4158,18 @@ mod tests {
             Some("https://node-1:8443")
         );
         assert!(cfg.validate().is_ok());
+        let defaults = cfg.eggwork.as_ref().unwrap().node("node-1").unwrap();
+        assert_eq!(defaults.isolation_policy, None);
+        assert_eq!(defaults.network_policy, None);
+        let policy: Config = serde_json::from_str(
+            r#"{"eggwork":{"nodes":{"node-1":{"isolation_policy":"required","network_policy":"disabled"}}}}"#,
+        ).unwrap();
+        let profile = policy.eggwork.unwrap().node("node-1").unwrap().clone();
+        assert_eq!(
+            profile.isolation_policy,
+            Some(EggworkIsolationPolicy::Required)
+        );
+        assert_eq!(profile.network_policy, Some(EggworkNetworkPolicy::Disabled));
     }
 
     #[test]
@@ -4210,6 +4252,10 @@ mod tests {
         assert_eq!(
             nodes["node-1"].ca_cert_path.as_deref(),
             Some("/etc/eggwork/ca.pem")
+        );
+        assert_eq!(
+            nodes["node-1"].isolation_policy,
+            Some(EggworkIsolationPolicy::None)
         );
         assert!(nodes.contains_key("node-2"));
         // Base is unchanged (merge clones).

@@ -331,6 +331,8 @@ fn test_node() -> ResolvedEggworkNode {
         client_cert: PathBuf::from("/tmp/client.pem"),
         client_key: PathBuf::from("/tmp/client.key"),
         required_capabilities: Vec::new(),
+        isolation_policy: codegg_config::schema::EggworkIsolationPolicy::None,
+        network_policy: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
     }
 }
 

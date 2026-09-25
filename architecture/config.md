@@ -320,7 +320,9 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `tool_backends` — per-domain tool backend selection
 - `eggwork` — named Eggwork nodes for fixed-target remote execution
   (`nodes: { name: { node_id?, endpoint, ca_cert_path, client_cert_path,
-  client_key_path, required_capabilities? } }`); merged per node key;
+  client_key_path, required_capabilities?, isolation_policy?,
+  network_policy? } }`); isolation policy is `none` (default) or `required`,
+  network policy is `unrestricted` (default) or `disabled`; merged per node key;
   endpoint must be bare HTTPS, key paths must be absolute, private-key
   reference redacted from `Debug`
 

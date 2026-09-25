@@ -26,8 +26,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -83,6 +83,12 @@ const LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(30);
 const OP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Eggwork feature the node must advertise for argv execution.
 const REQUIRED_EXEC_FEATURE: &str = "exec.argv.v1";
+const REQUIRED_ISOLATION_FEATURE: &str = "isolation.landlock.workspace-rw.v1";
+const NETWORK_DISABLED_FEATURE: &str = "network.disabled.v1";
+const NETWORK_UNRESTRICTED_FEATURE: &str = "network.unrestricted.v1";
+const POSTURE_CACHE_TTL: Duration = Duration::from_secs(30);
+const POSTURE_FAILURE_CACHE_TTL: Duration = Duration::from_secs(3);
+const MAX_POSTURE_FEATURES: usize = 128;
 
 /// One resolved Eggwork node: endpoint plus local file references for TLS
 /// trust and client identity. Key material is never loaded into this
@@ -95,6 +101,8 @@ pub struct ResolvedEggworkNode {
     pub client_cert: PathBuf,
     pub client_key: PathBuf,
     pub required_capabilities: Vec<String>,
+    pub isolation_policy: codegg_config::schema::EggworkIsolationPolicy,
+    pub network_policy: codegg_config::schema::EggworkNetworkPolicy,
 }
 
 /// Executor configuration: named nodes plus the durable store used for
@@ -156,6 +164,8 @@ impl EggworkExecutorConfig {
                             .required_capabilities
                             .clone()
                             .unwrap_or_default(),
+                        isolation_policy: profile.isolation_policy.unwrap_or_default(),
+                        network_policy: profile.network_policy.unwrap_or_default(),
                     },
                 );
             }
@@ -359,6 +369,33 @@ impl EggworkNodeClient for NodeClientAdapter {
 pub struct EggworkExecutor {
     config: EggworkExecutorConfig,
     factory: Arc<dyn EggworkClientFactory>,
+    posture_cache: Mutex<HashMap<String, CachedNodePosture>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EggworkNodePosture {
+    pub node_id: String,
+    pub reachable: bool,
+    pub draining: Option<bool>,
+    pub active_executions: Option<u32>,
+    pub max_active_executions: Option<u32>,
+    pub workspace_isolation: bool,
+    pub network_unrestricted: bool,
+    pub network_disabled_capable: bool,
+    pub resources: [bool; 3],
+    pub raw_features: Vec<String>,
+    pub configured_isolation: codegg_config::schema::EggworkIsolationPolicy,
+    pub configured_network: codegg_config::schema::EggworkNetworkPolicy,
+    pub policy_satisfied: bool,
+    pub inconsistent: bool,
+    pub observation_age: Duration,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone)]
+struct CachedNodePosture {
+    observed: Instant,
+    value: EggworkNodePosture,
 }
 
 impl EggworkExecutor {
@@ -366,6 +403,7 @@ impl EggworkExecutor {
         Self {
             config,
             factory: Arc::new(NodeClientFactory),
+            posture_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -373,7 +411,170 @@ impl EggworkExecutor {
         config: EggworkExecutorConfig,
         factory: Arc<dyn EggworkClientFactory>,
     ) -> Self {
-        Self { config, factory }
+        Self {
+            config,
+            factory,
+            posture_cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Refresh and return a bounded, secret-free operator view of configured
+    /// nodes. Execution admission never consumes this cache.
+    pub async fn node_postures(&self) -> Vec<EggworkNodePosture> {
+        let mut out = Vec::with_capacity(self.config.nodes.len().min(64));
+        for node in self.config.nodes.values() {
+            let cached = self.posture_cache.lock().ok().and_then(|cache| {
+                cache
+                    .get(&node.node_id)
+                    .filter(|entry| {
+                        entry.observed.elapsed()
+                            < if entry.value.reachable {
+                                POSTURE_CACHE_TTL
+                            } else {
+                                POSTURE_FAILURE_CACHE_TTL
+                            }
+                    })
+                    .cloned()
+            });
+            let posture = if let Some(cached) = cached {
+                let mut value = cached.value;
+                value.observation_age = cached.observed.elapsed();
+                value
+            } else {
+                let posture = self.probe_posture(node).await;
+                if let Ok(mut cache) = self.posture_cache.lock() {
+                    cache.insert(
+                        node.node_id.clone(),
+                        CachedNodePosture {
+                            observed: Instant::now(),
+                            value: posture.clone(),
+                        },
+                    );
+                    cache.retain(|_, entry| {
+                        entry.observed.elapsed()
+                            < if entry.value.reachable {
+                                POSTURE_CACHE_TTL
+                            } else {
+                                POSTURE_FAILURE_CACHE_TTL
+                            }
+                    });
+                }
+                posture
+            };
+            out.push(posture);
+        }
+        out.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        out
+    }
+
+    async fn probe_posture(&self, node: &ResolvedEggworkNode) -> EggworkNodePosture {
+        let failed = |message: String| EggworkNodePosture {
+            node_id: node.node_id.clone(),
+            reachable: false,
+            draining: None,
+            active_executions: None,
+            max_active_executions: None,
+            workspace_isolation: false,
+            network_unrestricted: false,
+            network_disabled_capable: false,
+            resources: [false; 3],
+            raw_features: Vec::new(),
+            configured_isolation: node.isolation_policy,
+            configured_network: node.network_policy,
+            policy_satisfied: false,
+            inconsistent: false,
+            observation_age: Duration::ZERO,
+            diagnostic: Some(message),
+        };
+        let Ok(client) = self.factory.client_for(node) else {
+            return failed("node client unavailable".into());
+        };
+        let (Ok(caps), Ok(status)) = (
+            op_timeout(client.capabilities()).await,
+            op_timeout(client.status()).await,
+        ) else {
+            return failed("capability/status probe failed".into());
+        };
+        let caps_features: HashSet<&str> = caps.features.iter().map(String::as_str).collect();
+        let status_features: HashSet<&str> = status
+            .capabilities
+            .features
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let inconsistent =
+            caps_features != status_features || status.node_id.as_str() != node.node_id;
+        let features: HashSet<String> = caps
+            .features
+            .iter()
+            .filter(|feature| {
+                status
+                    .capabilities
+                    .features
+                    .iter()
+                    .any(|other| other == *feature)
+            })
+            .cloned()
+            .collect();
+        let satisfied = features.contains(REQUIRED_EXEC_FEATURE)
+            && node
+                .required_capabilities
+                .iter()
+                .all(|f| features.contains(f.as_str()))
+            && (node.isolation_policy == codegg_config::schema::EggworkIsolationPolicy::None
+                || features.contains(REQUIRED_ISOLATION_FEATURE))
+            && (node.network_policy == codegg_config::schema::EggworkNetworkPolicy::Unrestricted
+                || features.contains(NETWORK_DISABLED_FEATURE))
+            && !status.draining
+            && status.active_executions < status.capabilities.max_active_executions;
+        let mut raw_features: Vec<_> = caps
+            .features
+            .into_iter()
+            .chain(status.capabilities.features)
+            .collect();
+        raw_features.sort();
+        raw_features.dedup();
+        raw_features.truncate(MAX_POSTURE_FEATURES);
+        let raw_features = raw_features
+            .into_iter()
+            .map(|feature| feature.chars().take(128).collect())
+            .collect();
+        let has = |feature: &str| features.contains(feature);
+        EggworkNodePosture {
+            node_id: node.node_id.clone(),
+            reachable: true,
+            draining: Some(status.draining),
+            active_executions: Some(status.active_executions),
+            max_active_executions: Some(status.capabilities.max_active_executions),
+            workspace_isolation: has(REQUIRED_ISOLATION_FEATURE),
+            network_unrestricted: has(NETWORK_UNRESTRICTED_FEATURE),
+            network_disabled_capable: has(NETWORK_DISABLED_FEATURE),
+            resources: [
+                has("resources.cgroups-v2.memory"),
+                has("resources.cgroups-v2.cpu"),
+                has("resources.cgroups-v2.pids"),
+            ],
+            raw_features,
+            configured_isolation: node.isolation_policy,
+            configured_network: node.network_policy,
+            policy_satisfied: satisfied,
+            inconsistent,
+            observation_age: Duration::ZERO,
+            diagnostic: {
+                let mut warnings = Vec::new();
+                if node.isolation_policy == codegg_config::schema::EggworkIsolationPolicy::None {
+                    warnings.push("filesystem isolation policy is none");
+                }
+                if node.network_policy == codegg_config::schema::EggworkNetworkPolicy::Unrestricted
+                {
+                    warnings.push("network policy is unrestricted");
+                }
+                if !satisfied && warnings.is_empty() {
+                    warnings.push("node does not satisfy configured policy");
+                }
+                (!warnings.is_empty()).then(|| warnings.join("; "))
+            },
+        }
     }
 
     fn node_id(job: &JobRecord) -> Option<&str> {
@@ -489,6 +690,44 @@ impl JobExecutor for EggworkExecutor {
                 run_id: None,
                 metrics,
             },
+        }
+    }
+
+    fn health(&self) -> crate::scheduler::executor::ExecutorHealth {
+        use crate::scheduler::executor::ExecutorHealth;
+        if self.config.nodes.is_empty() {
+            return ExecutorHealth::Unavailable;
+        }
+        let cache = match self.posture_cache.lock() {
+            Ok(cache) => cache,
+            Err(_) => return ExecutorHealth::Unavailable,
+        };
+        let entries: Vec<_> = self
+            .config
+            .nodes
+            .values()
+            .filter_map(|node| cache.get(&node.node_id))
+            .filter(|entry| entry.observed.elapsed() < POSTURE_CACHE_TTL)
+            .collect();
+        if entries.len() != self.config.nodes.len()
+            || entries
+                .iter()
+                .all(|e| !e.value.reachable || !e.value.policy_satisfied)
+        {
+            return ExecutorHealth::Unavailable;
+        }
+        if entries.iter().any(|e| {
+            !e.value.reachable
+                || !e.value.policy_satisfied
+                || e.value.inconsistent
+                || e.value.configured_isolation
+                    == codegg_config::schema::EggworkIsolationPolicy::None
+                || e.value.configured_network
+                    == codegg_config::schema::EggworkNetworkPolicy::Unrestricted
+        }) {
+            ExecutorHealth::Degraded
+        } else {
+            ExecutorHealth::Healthy
         }
     }
 }
@@ -662,9 +901,29 @@ impl EggworkExecutor {
         cwd: Option<&str>,
         timeout: Option<Duration>,
     ) -> ExecutionOutcome {
-        if let Err(e) = preflight(client, node).await {
-            return ExecutionOutcome::Failed(e);
-        }
+        let policy = match preflight(client, node).await {
+            Ok(policy) => policy,
+            Err(e) => return ExecutionOutcome::Failed(e),
+        };
+        ctx.progress
+            .progress(
+                &ctx.job.job_id,
+                &format!(
+                    "[eggwork {}] filesystem={} network={}",
+                    node.node_id,
+                    if policy.isolation == IsolationRequirement::Required {
+                        "landlock workspace-rw"
+                    } else {
+                        "unrestricted"
+                    },
+                    if policy.network == NetworkRequirement::Disabled {
+                        "disabled"
+                    } else {
+                        "unrestricted"
+                    },
+                ),
+            )
+            .await;
         if ctx.cancellation.is_cancelled() {
             return self
                 .cancel_before_submit(ctx, "cancelled after pre-flight, before upload")
@@ -708,7 +967,7 @@ impl EggworkExecutor {
         {
             return ExecutionOutcome::Failed(e);
         }
-        let spec = match build_spec(argv, remote_cwd, timeout) {
+        let spec = match build_spec(argv, remote_cwd, timeout, policy) {
             Ok(spec) => spec,
             Err(e) => return ExecutionOutcome::Failed(format!("eggwork: {e}")),
         };
@@ -1054,7 +1313,7 @@ pub fn to_eggwork_handle(handle: &RemoteExecutionHandle) -> Result<ExecutionHand
 async fn preflight(
     client: &Arc<dyn EggworkNodeClient>,
     node: &ResolvedEggworkNode,
-) -> Result<(), String> {
+) -> Result<ExecutionPolicy, String> {
     let capabilities = match op_timeout(client.capabilities()).await {
         Ok(caps) => caps,
         Err(e) => {
@@ -1064,33 +1323,44 @@ async fn preflight(
             ));
         }
     };
-    if !capabilities
-        .features
-        .iter()
-        .any(|f| f == REQUIRED_EXEC_FEATURE)
-    {
-        return Err(format!(
-            "eggwork: node '{}' lacks required capability '{REQUIRED_EXEC_FEATURE}'",
-            node.node_id
-        ));
-    }
-    for required in &node.required_capabilities {
-        if !capabilities.features.iter().any(|f| f == required) {
-            return Err(format!(
-                "eggwork: node '{}' lacks configured capability '{required}'",
-                node.node_id
-            ));
-        }
-    }
     let status = match op_timeout(client.status()).await {
         Ok(status) => status,
         Err(e) => {
             return Err(format!(
                 "eggwork: node '{}' status probe failed: {}",
                 node.node_id, e
-            ));
+            ))
         }
     };
+    if status.node_id.as_str() != node.node_id {
+        return Err(format!(
+            "eggwork: configured node '{}' returned status for a different node; refusing before workspace upload",
+            node.node_id
+        ));
+    }
+    let consistent_features: HashSet<&str> = capabilities
+        .features
+        .iter()
+        .map(String::as_str)
+        .filter(|f| status.capabilities.features.iter().any(|s| s == f))
+        .collect();
+    if capabilities.features != status.capabilities.features {
+        tracing::warn!(node_id = %node.node_id, "Eggwork capability/status feature mismatch; applying conservative intersection");
+    }
+    if !consistent_features.contains(REQUIRED_EXEC_FEATURE) {
+        return Err(format!(
+            "eggwork: node '{}' lacks required capability '{REQUIRED_EXEC_FEATURE}'",
+            node.node_id
+        ));
+    }
+    for required in &node.required_capabilities {
+        if !consistent_features.contains(required.as_str()) {
+            return Err(format!(
+                "eggwork: node '{}' lacks configured capability '{required}'",
+                node.node_id
+            ));
+        }
+    }
     if status.draining {
         return Err(format!("eggwork: node '{}' is draining", node.node_id));
     }
@@ -1100,7 +1370,38 @@ async fn preflight(
             node.node_id, status.active_executions, status.capabilities.max_active_executions
         ));
     }
-    Ok(())
+    let isolation = match node.isolation_policy {
+        codegg_config::schema::EggworkIsolationPolicy::None => IsolationRequirement::None,
+        codegg_config::schema::EggworkIsolationPolicy::Required => {
+            if !consistent_features.contains(REQUIRED_ISOLATION_FEATURE) {
+                return Err(format!("eggwork: node '{}' does not satisfy required isolation capability '{REQUIRED_ISOLATION_FEATURE}'; refusing before workspace upload", node.node_id));
+            }
+            IsolationRequirement::Required
+        }
+    };
+    let network = match node.network_policy {
+        codegg_config::schema::EggworkNetworkPolicy::Unrestricted => {
+            NetworkRequirement::Unrestricted
+        }
+        codegg_config::schema::EggworkNetworkPolicy::Disabled => {
+            if !consistent_features.contains(NETWORK_DISABLED_FEATURE) {
+                return Err(format!("eggwork: node '{}' does not satisfy disabled-network capability '{NETWORK_DISABLED_FEATURE}'; refusing before workspace upload", node.node_id));
+            }
+            NetworkRequirement::Disabled
+        }
+    };
+    if node.network_policy == codegg_config::schema::EggworkNetworkPolicy::Unrestricted
+        && !consistent_features.contains(NETWORK_UNRESTRICTED_FEATURE)
+    {
+        tracing::warn!(node_id = %node.node_id, "Eggwork node network access is unrestricted and unadvertised (legacy feature contract)");
+    }
+    Ok(ExecutionPolicy { isolation, network })
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionPolicy {
+    isolation: IsolationRequirement,
+    network: NetworkRequirement,
 }
 
 /// Map a payload cwd to an Eggwork-relative cwd rooted at the workspace
@@ -1347,23 +1648,13 @@ fn deterministic_workspace_id(
 /// Build the remote command: argv boundaries preserved exactly, explicit
 /// (empty) environment allowlist, mapped timeout, no shell reconstruction.
 ///
-/// Isolation/network posture: the pinned Eggwork node (rev `128f808c`,
-/// see `plans/closure/eggwork-fixed-target-remote-execution-corrective/`)
-/// fail-closed rejects every execution that does not request
-/// `IsolationRequirement::None` + `NetworkRequirement::Unrestricted`
-/// (HTTP 409 `capability_mismatch`). M001 originally requested
-/// BestEffort/Disabled, which live qualification proved unexecutable:
-/// no restricted spec was ever accepted by a real node. The executor
-/// therefore requests exactly the admitted combination and documents
-/// the posture honestly: remote commands run without node-enforced
-/// sandboxing and with network access on the explicitly selected,
-/// mTLS-authenticated node. Restoring stricter requests requires an
-/// Eggwork revision that admits them plus re-qualification (M002
-/// operator-policy follow-up).
+/// Isolation/network posture follows the fresh dual-view policy decision
+/// made by `preflight`; this helper cannot infer capabilities or downgrade.
 fn build_spec(
     argv: &[String],
     cwd: Option<RelativePath>,
     timeout: Option<Duration>,
+    policy: ExecutionPolicy,
 ) -> Result<ExecutionSpec, String> {
     let timeout_millis = timeout
         .map(|t| t.as_millis().min(u128::from(u64::MAX)) as u64)
@@ -1382,8 +1673,8 @@ fn build_spec(
             cpu_millis: Requirement::NotRequested,
             pids: Requirement::NotRequested,
         },
-        isolation: IsolationRequirement::None,
-        network: NetworkRequirement::Unrestricted,
+        isolation: policy.isolation,
+        network: policy.network,
     };
     let spec = ExecutionSpec {
         schema_version: 1,
@@ -1613,8 +1904,8 @@ mod tests {
     struct FakeNodeClient {
         events: Vec<ExecutionEvent>,
         final_snapshot: ExecutionSnapshot,
-        capabilities: NodeCapabilities,
-        status: NodeStatus,
+        capabilities: Mutex<NodeCapabilities>,
+        status: Mutex<NodeStatus>,
         uploaded: Mutex<Vec<(String, u64)>>,
         cancelled: Mutex<Vec<String>>,
         renewed: Mutex<Vec<String>>,
@@ -1650,15 +1941,15 @@ mod tests {
                         resources: None,
                     }),
                 },
-                capabilities: NodeCapabilities {
+                capabilities: Mutex::new(NodeCapabilities {
                     protocol: eggwork_core::ProtocolVersionRange {
                         min: eggwork_core::ProtocolVersion { major: 1, minor: 0 },
                         max: eggwork_core::ProtocolVersion { major: 1, minor: 5 },
                     },
                     features: vec![REQUIRED_EXEC_FEATURE.to_string()],
                     max_active_executions: 4,
-                },
-                status: NodeStatus {
+                }),
+                status: Mutex::new(NodeStatus {
                     node_id: eggwork_core::NodeId::new("node-1").unwrap(),
                     draining: false,
                     active_executions: 0,
@@ -1670,7 +1961,7 @@ mod tests {
                         features: vec![REQUIRED_EXEC_FEATURE.to_string()],
                         max_active_executions: 4,
                     },
-                },
+                }),
                 uploaded: Mutex::new(Vec::new()),
                 cancelled: Mutex::new(Vec::new()),
                 renewed: Mutex::new(Vec::new()),
@@ -1682,11 +1973,11 @@ mod tests {
     #[async_trait]
     impl EggworkNodeClient for FakeNodeClient {
         async fn capabilities(&self) -> Result<NodeCapabilities, EggworkClientError> {
-            Ok(self.capabilities.clone())
+            Ok(self.capabilities.lock().unwrap().clone())
         }
 
         async fn status(&self) -> Result<NodeStatus, EggworkClientError> {
-            Ok(self.status.clone())
+            Ok(self.status.lock().unwrap().clone())
         }
 
         async fn find_missing_blobs(
@@ -1879,7 +2170,111 @@ mod tests {
             client_cert: PathBuf::from("/tmp/client.pem"),
             client_key: PathBuf::from("/tmp/client.key"),
             required_capabilities: Vec::new(),
+            isolation_policy: codegg_config::schema::EggworkIsolationPolicy::None,
+            network_policy: codegg_config::schema::EggworkNetworkPolicy::Unrestricted,
         }
+    }
+
+    #[tokio::test]
+    async fn restricted_policy_requires_both_authenticated_feature_views() {
+        let client = Arc::new(FakeNodeClient::succeeding());
+        let client_trait: Arc<dyn EggworkNodeClient> = client.clone();
+        let mut node = test_node();
+        node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
+        let error = preflight(&client_trait, &node).await.unwrap_err();
+        assert!(error.contains("refusing before workspace upload"));
+
+        client
+            .status
+            .lock()
+            .unwrap()
+            .capabilities
+            .features
+            .push(REQUIRED_ISOLATION_FEATURE.into());
+        let error = preflight(&client_trait, &node).await.unwrap_err();
+        assert!(error.contains("refusing before workspace upload"));
+        client
+            .capabilities
+            .lock()
+            .unwrap()
+            .features
+            .push(REQUIRED_ISOLATION_FEATURE.into());
+        let policy = preflight(&client_trait, &node).await.unwrap();
+        assert_eq!(policy.isolation, IsolationRequirement::Required);
+        assert_eq!(policy.network, NetworkRequirement::Unrestricted);
+
+        let policy = ExecutionPolicy {
+            isolation: IsolationRequirement::Required,
+            network: NetworkRequirement::Unrestricted,
+        };
+        let spec = build_spec(&["true".into()], None, None, policy).unwrap();
+        assert_eq!(spec.command.isolation, IsolationRequirement::Required);
+    }
+
+    #[tokio::test]
+    async fn disabled_network_policy_fails_closed_without_advertisement() {
+        let client = Arc::new(FakeNodeClient::succeeding());
+        let client_trait: Arc<dyn EggworkNodeClient> = client.clone();
+        let mut node = test_node();
+        node.network_policy = codegg_config::schema::EggworkNetworkPolicy::Disabled;
+        let error = preflight(&client_trait, &node).await.unwrap_err();
+        assert!(error.contains("network.disabled.v1"));
+        assert!(error.contains("refusing before workspace upload"));
+        client
+            .status
+            .lock()
+            .unwrap()
+            .capabilities
+            .features
+            .push(NETWORK_DISABLED_FEATURE.into());
+        let error = preflight(&client_trait, &node).await.unwrap_err();
+        assert!(error.contains("network.disabled.v1"));
+        client
+            .capabilities
+            .lock()
+            .unwrap()
+            .features
+            .push(NETWORK_DISABLED_FEATURE.into());
+        let policy = preflight(&client_trait, &node).await.unwrap();
+        assert_eq!(policy.network, NetworkRequirement::Disabled);
+        let spec = build_spec(
+            &["true".into()],
+            None,
+            None,
+            ExecutionPolicy {
+                isolation: IsolationRequirement::None,
+                network: NetworkRequirement::Disabled,
+            },
+        )
+        .unwrap();
+        assert_eq!(spec.command.network, NetworkRequirement::Disabled);
+    }
+
+    #[tokio::test]
+    async fn posture_projection_is_bounded_secret_free_and_health_only() {
+        let client = Arc::new(FakeNodeClient::succeeding());
+        let mut nodes = HashMap::new();
+        nodes.insert("node-1".into(), test_node());
+        let executor = EggworkExecutor::with_factory(
+            EggworkExecutorConfig {
+                nodes,
+                ..Default::default()
+            },
+            Arc::new(FakeFactory { client }),
+        );
+        let posture = executor.node_postures().await;
+        assert_eq!(posture.len(), 1);
+        assert!(posture[0].reachable);
+        assert!(posture[0].policy_satisfied);
+        let warning = posture[0].diagnostic.as_deref().unwrap();
+        assert!(warning.contains("filesystem isolation policy is none"));
+        assert!(warning.contains("network policy is unrestricted"));
+        assert!(!warning.contains("client.key"));
+        assert_eq!(
+            executor.health(),
+            crate::scheduler::executor::ExecutorHealth::Degraded
+        );
+        assert_eq!(executor.node_postures().await.len(), 1);
     }
 
     #[test]
