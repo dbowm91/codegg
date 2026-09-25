@@ -150,8 +150,16 @@ Apply the proven harness pattern to additional compatible families, preserving f
 
 ### M005 — Compiler cache and final critical-path closure
 
-Status: ready (unblocked by M004 closure; stable baseline hosted run
-`36196068239`, 17m17s total, 7m51s build phase, 362s exec).
+Status: closed (`plans/closure/ci-test-throughput-optimization/005-status.md`;
+sccache + same-job-overlap negative dispositions recorded;
+documentation reconciled; final steady-state 17m17s hosted, run
+`36196068239` final).
+
+Implementation plan:
+
+- `plans/implementation/ci-test-throughput-optimization/005-cache-and-critical-path-closure.md`
+
+Evaluate compiler-result caching and safe same-job critical-path overlap against the stabilized topology. Retain only wins that are reproducible, bounded, and simpler than the time they save. Reconcile active testing documentation with the final measured routine-CI contract.
 
 ### M004 — Bounded integration-test family consolidation
 
