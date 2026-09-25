@@ -36,22 +36,22 @@ on:
 
 # Superseded runs never contribute signal: each push/PR-sync cancels the
 # previous in-progress run on the same ref instead of burning a second
-# full ~37-minute verifying job beside it.
+# full verifying job beside it.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  # CI-only override: GitHub-hosted runners have 4 vCPU / 16 GB.
-  # Experimental: 8 parallel rustc/link jobs (up from 4) to probe
-  # headroom. JOBS=4 showed no OOM (run superseded before completion).
-  # If compile steps OOM or wall-clock regresses (8 jobs oversubscribe
-  # 4 vCPUs; each rustc already threads codegen internally), revert to 2,
-  # the last fully validated setting (28m37s). Local default stays 1
+  # Hosted runners have 4 vCPU / 16 GB. Build jobs are fixed at 4 ==
+  # runner vCPUs (M001 disposition): 8 oversubscribes the runner because
+  # each rustc already threads codegen internally (codegen-units = 16),
+  # and 2 leaves headroom unused (28m37s at JOBS=2 vs ~19 min steady
+  # state at higher concurrency). Test execution slots match (nextest
+  # profile `ci` test-threads = 4). Local default stays 2
   # (see scripts/verify.sh) for smaller developer machines.
   # Test execution remains serial (--test-threads=1) in every mode.
-  CARGO_BUILD_JOBS: 8
+  CARGO_BUILD_JOBS: 4
 
 permissions:
   contents: read

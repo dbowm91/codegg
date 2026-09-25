@@ -265,8 +265,10 @@ except `CARGO_BUILD_JOBS=2`:
    workspace-test step is dominated by linking large test binaries, and
    mold is several times faster than GNU ld there; the suite itself
    validates the linked output.
-4. **Build jobs tuned for the runner** — `CARGO_BUILD_JOBS` above the
-   local default (see workflow env for the current probe value).
+4. **Build jobs fixed for the runner** — `CARGO_BUILD_JOBS=4` in
+   `.github/workflows/ci.yml` (M001 disposition: == runner vCPUs ==
+   nextest `ci` slots; 8 oversubscribes because each rustc already
+   threads codegen internally, 2 leaves headroom unused).
 5. **Nextest `ci` profile** — 4 concurrent per-test processes
    (= runner vCPUs; 8 tried 2026-09-25, reverted after a load-induced
    flake in `scheduler_cancellation`), run-alone heavies. Measured:
@@ -279,6 +281,44 @@ Do not generalize these: intra-binary `--test-threads` stays 1 — test
 code mutates process-global env vars (audited, not assumed) — and
 splitting CI into parallel jobs that each compile the workspace
 duplicates the dominant cost instead of removing it.
+
+### Build/link vs execution diagnostics (M001 recipe)
+
+To separate compile/link wall time from test execution on any run:
+
+1. **Hosted step times** — the Actions `Workspace tests` step spans
+   both phases. The build phase ends at the Cargo line
+   `Finished 'test' profile [unoptimized + debuginfo] target(s) in Xs`
+   in the step log; everything after is Nextest execution.
+2. **Nextest execution total** — the run-closing
+   `Summary [Xs] N tests run` line is pure execution across all
+   binaries (M001 baseline: 414 s for 11781 tests).
+3. **Local representative-unit probe** — rebuild one large test target
+   after touching the root lib (keeps deps warm, isolates one
+   lib-codegen + link unit):
+   ```bash
+   touch src/lib.rs && time cargo test --locked --no-run --test session_crud
+   ```
+   Compare candidates with `CARGO_INCREMENTAL=0` to remove
+   incremental-cache-maturity bias, and repeat warm builds to confirm
+   the steady state; a cold fingerprint (e.g. right after a profile
+   change) is not comparable to a warm baseline.
+4. **Cargo timing (ephemeral)** — for a one-off breakdown of where
+   rustc time goes in a representative build:
+   ```bash
+   cargo test --workspace --locked --no-run --timings
+   ```
+   Timing output stays local; it is not a CI artifact or gate.
+
+M001 dispositions (2026-09-25): `CARGO_PROFILE_TEST_DEBUG=0` rejected
+— codegen-isolated local A/B on a representative large test target
+showed wall parity (2m22s vs 2m23s non-incremental) with only CPU-time
+reduction, so no CI-only override without hosted proof; hosted
+`Finished ... + debuginfo` confirms generation happens but the
+8m50s parallel build phase across ~100 binaries is link-count
+dominated (evidence handed to M003). `codegen-units` not pursued —
+single-variable sweep unjustified while executable count dominates.
+`CARGO_BUILD_JOBS=4` retained as the measured final value.
 
 ### Release-footprint measurements
 
