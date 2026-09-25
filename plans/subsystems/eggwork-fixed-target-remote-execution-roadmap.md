@@ -144,7 +144,7 @@ Expected scope:
 
 Class: invariant/qualification
 
-Status: ready; M002 and Eggwork remote-admission corrective C001 are closed
+Status: active; M002 and Eggwork remote-admission corrective C001 are closed
 
 Implementation plan:
 

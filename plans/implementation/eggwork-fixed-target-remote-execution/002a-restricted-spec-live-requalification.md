@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M002a — Restricted-Spec Live Requalification
 
-Status: ready for handoff
+Status: active
 
 Source roadmap:
 
