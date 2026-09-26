@@ -1,6 +1,6 @@
 # CI/Test Throughput Post-Closure Corrective C002 — Hosted CI Timing-Flake Stabilization
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `9c88b9b80852022b39daa80a6b9fb7797fcaa824`
 

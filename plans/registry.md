@@ -230,7 +230,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 ## Recently closed or conditionally closed work
 
-| CI/test throughput optimization post-closure corrective | C001 closure evidence, cache qualification, and documentation reconciliation | conditionally closed | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` | Hosted sccache comparison rejected the candidate against its preregistered build threshold; PR #83 fast path green at 14m34s (11,714 passed / 1 skipped). Local Rust 1.89 Clippy findings and scheduler-cancellation failure need separate triage. Nothing newly unblocked. |
+| CI/test throughput optimization post-closure corrective | C001 closure evidence, cache qualification, and documentation reconciliation | blocked on C002 (measurements recorded) | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` | Hosted sccache comparison rejected the candidate against its preregistered build threshold; PR #83 fast path green at 14m34s (11,714 passed / 1 skipped). Local Rust 1.89 Clippy findings and scheduler-cancellation failure recorded for separate triage. C001 resumes after C002 closes. Nothing newly unblocked. |
 
 | Eggplan assessment integration | M001 durable execution-subject provenance | closed | `plans/closure/eggplan-assessment-integration/001-status.md` | `418fdc85` implementation; hosted CI run `36106606574` green; CodeGG M002 and Eggplan CodeGG Integration M002 are ready. Follow-up corrective C002 closed (`plans/closure/eggplan-assessment-integration/002-status.md`): AgentRun-link predicate fix, bridge fixtures, ownership guard. |
 
