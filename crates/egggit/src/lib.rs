@@ -20,6 +20,7 @@
 //! `egggit` has no dependency on any host application. One consumer is
 //! CodeGG's workflow layer, which keeps mutation and permission checks
 //! outside this crate.
+// C001 unrelated-PR timing fixture; no runtime behavior change.
 
 pub mod blame;
 pub mod conflict;
