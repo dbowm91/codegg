@@ -227,13 +227,32 @@ scripts/capture-nextest-timing.sh --top 20
 ## CI Structure
 
 Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`
-for PRs and pushes to `main`. Baseline was ~37 min per run (measured
-2026-09-25: ~45 s setup/guards/fmt, ~5 min clippy, ~31 min workspace
-tests, of which only ~10 min is test execution and ~20 min is serial
-compile/link of ~100 test binaries). After the economy policy below
-(mold, JOBS=8, nextest `ci`, run-alone heavies), steady state is
-~19 min green (2026-09-25: ~2 min clippy, ~16 min test step with ~7 min
-execution of 11781 tests). Steps in order:1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
+for PRs and pushes to `main`. The historical pre-optimization baseline
+was about 37 minutes (2026-09-25: ~45 s setup/guards/fmt, ~5 min
+Clippy, ~31 min workspace tests). The intermediate ~19-minute result
+and 11,781-test count are historical; final M001-M005 evidence is
+17m17s on main/live run `36196068239` attempt 3, with 11,726 passed
+and 1 skipped. The final measurement recorded ~2m08s Clippy, 7m51s
+workspace-test build, and 362.537s Nextest execution. The unrelated-PR
+fast path has not yet been measured; C001 owns that hosted measurement
+and the compiler-cache experiment. Steps run in this order:
+
+1. Checkout, stable Rust + rustfmt/Clippy, mold linker, Rust/Cargo cache, and Nextest setup.
+2. Configure test Git identity.
+3. Validate generated-agent schema, core boundary, sandbox contract, execution ownership,
+   TUI authority, HTTP route disposition, audit coverage, and scheduler bypass.
+4. Formatting.
+5. Workspace Clippy.
+6. Detect whether changed paths require live Eggwork qualification.
+7. Prebuild/cache the workspace-excluded Eggwork fixture only when live qualification is required.
+8. Workspace tests with `--profile ci`; main pushes and relevant PRs include
+   `eggwork_remote_execution_live`, while unrelated PRs omit that one binary.
+
+The ordinary unrelated-PR path and the main/relevant-change live path are
+separate baselines. Main always includes live qualification. PR relevance
+is determined by `scripts/detect-live-eggwork-changes.sh`; detection errors
+fail open and include the live target. `scripts/prebuild-eggwork-fixtures.sh`
+is conditional on the same decision.
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
@@ -272,7 +291,7 @@ except `CARGO_BUILD_JOBS=2`:
 5. **Nextest `ci` profile** — 4 concurrent per-test processes
    (= runner vCPUs; 8 tried 2026-09-25, reverted after a load-induced
    flake in `scheduler_cancellation`), run-alone heavies. Measured:
-   11781 tests in ~7 min execution (vs ~10.6 min under serial
+  historical 11,781 tests in ~7 min execution (vs ~10.6 min under serial
    `cargo test`); the sleep-bound heavies still take their wall-clock.
    Does not change `--test-threads` semantics of plain `cargo test`
    runs.
@@ -404,32 +423,20 @@ clippy 2m08s, prebuild warm 4 s, build phase 7m51s, exec 362s,
 11726 tests passed / 1 skipped). The full CI economy policy
 section above remains the authoritative summary.
 
-### M005 — Compiler-result cache and same-job overlap (negative dispositions)
+### M005 — Compiler-result cache and same-job overlap
 
-**sccache disposition: not retained.** The routine workflow already
-uses `Swatinem/rust-cache@v2` (added at M001 review, expanded at
-M002 to cover `crates/eggwork-test-node`) backed by the GitHub
-Actions cache. That cache stores crate dependencies by rustc version
-+ lockfile + Cargo.toml hash + the configured env-vars
-(`Swatinem/rust-cache` documentation, 2026-09-25 review). Adding a
-second `sccache` layer on top would:
-
-- double-cache every object, with the second layer keyed off a
-  larger hash (object key) than the first (rustc + lockfile hash);
-- require an externally-supplied backend secret to be useful
-  off-hosted (the M005 plan forbids external credentials); and
-- risk cache poisoning if a Cargo or rustc change made the
-  artifacts incompatible across rustc versions, and the
-  Swatinem-rust-cache rotation would not catch it.
-
-A bounded sccache probe (one probe commit, hosted run with
-`RUSTC_WRAPPER=sccache`, cold + warm-cache comparisons) was
-considered and rejected upfront for those reasons. The
-`Swatinem/rust-cache` cache currently uses restore keys
-`v0-rust-verify-Linux-x64-{env-hash}-{...}` and saves ~1 GiB per
-run; the restore time on warm hits is consistently <2 s and the
-build-phase savings on warm hits (vs cold ~10 min) are already
-absorbed into the 7m51s budget on warm runs.
+**Historical sccache disposition superseded by C001 measurement.**
+M005 rejected a hosted sccache experiment based on cache-equivalence
+and external-credential assumptions. Those assumptions were not
+established by the cited cache documentation. C001 in
+`plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md`
+owns the measured disposition; see
+`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.
+The current experiment uses the GitHub Actions cache backend and its
+runtime credentials, while retaining `Swatinem/rust-cache` for Cargo
+dependency/target reuse. No user-managed secret or external cache is
+in scope. Until C001 closes, do not treat either retention or rejection
+as a measured result.
 
 **Critical-path overlap disposition: rejected.** Same-job overlap
 candidates (parallelizing cheap static guards against the Cargo
@@ -446,17 +453,13 @@ build, for example) were considered and rejected:
   + tests against a separate target directory) would re-compile
   the workspace twice, doubling the dominant cost.
 
-The workstream therefore closes with one bounded non-release job
-plus a single reentrant warm-cache key, exactly the
-"Conservative keep, parallelized execution" disposition recorded
-above.
+The workstream retains one bounded non-release job and the
+"Conservative keep, parallelized execution" disposition for
+same-job overlap.
 
-**No superseded experiments to clean.** All current workflow
-comments reflect M001–M004 measured dispositions; no probe or
-trial comment remains in `ci.yml`, `.config/nextest.toml`,
-`scripts/verify.sh`, or `architecture/testing.md`. Per the M001
-diagnostic recipe, `cargo --timings` remains an ephemeral local
-diagnostic only.
+The compiler-cache configuration remains subject to C001's measured
+retain/revert decision. Per the M001 diagnostic recipe,
+`cargo --timings` remains an ephemeral local diagnostic only.
 
 ## Related Docs
 

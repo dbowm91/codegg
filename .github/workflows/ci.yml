@@ -52,6 +52,10 @@ env:
   # (see scripts/verify.sh) for smaller developer machines.
   # Test execution remains serial (--test-threads=1) in every mode.
   CARGO_BUILD_JOBS: 4
+  # sccache requires Rust incremental compilation to be disabled; C001
+  # holds this setting constant across the non-sccache control and cache
+  # candidate runs. Retention depends on measured hosted A/B results.
+  CARGO_INCREMENTAL: 0
 
 permissions:
   contents: read

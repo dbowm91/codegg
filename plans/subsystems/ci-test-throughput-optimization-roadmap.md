@@ -4,7 +4,7 @@ Status: closed; post-closure corrective C001 registered
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
-Post-closure note: M001-M005 are historical closed work. Post-closure review found planning/documentation drift and an unsupported M005 compiler-cache disposition. Those findings are owned by `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` C001. Stale duplicate M004/M005 blocks remain visible here as observed predecessor defects until C001 reconciles them; they are not active implementation authority.
+Post-closure note: M001-M005 are historical closed work. C001 in `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` reconciles the historical status/documentation drift and supplies the measured compiler-cache disposition. See its closure record at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.
 
 Primary class: polish / development infrastructure.
 
@@ -156,26 +156,6 @@ Status: closed (`plans/closure/ci-test-throughput-optimization/005-status.md`;
 sccache + same-job-overlap negative dispositions recorded;
 documentation reconciled; final steady-state 17m17s hosted, run
 `36196068239` final).
-
-Implementation plan:
-
-- `plans/implementation/ci-test-throughput-optimization/005-cache-and-critical-path-closure.md`
-
-Evaluate compiler-result caching and safe same-job critical-path overlap against the stabilized topology. Retain only wins that are reproducible, bounded, and simpler than the time they save. Reconcile active testing documentation with the final measured routine-CI contract.
-
-### M004 — Bounded integration-test family consolidation
-
-Status: blocked/conditional on positive M003.
-
-Implementation plan:
-
-- `plans/implementation/ci-test-throughput-optimization/004-bounded-integration-test-family-consolidation.md`
-
-Apply the proven harness pattern to additional compatible families, preserving feature/resource boundaries and human navigability. Stop before heavy/live/special-platform tests where consolidation would weaken isolation or diagnostics.
-
-### M005 — Compiler cache and final critical-path closure
-
-Status: blocked on M004 or documented negative consolidation disposition.
 
 Implementation plan:
 
