@@ -2,6 +2,8 @@
 
 Status: active; C002 ready; C001 blocked on C002
 
+Closure record (C001 measurements): `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`
+
 Repository baseline reviewed: `4f7e508976e70fbec0e645bd530b63fe3c8393c1`
 
 Predecessor work:
@@ -26,20 +28,20 @@ M001-M005 materially improved routine hosted CI and remain valid historical impl
 
 ### Finding A — planning state drift
 
-The predecessor roadmap still reports `Status: active` even though M001-M005 are closed. It also contains stale duplicate M004/M005 milestone blocks that still say `blocked/conditional` and `blocked` after later closed copies of those milestones.
+At discovery, the predecessor roadmap still reported `Status: active` even though M001-M005 were closed. It also contained stale duplicate M004/M005 milestone blocks that still said `blocked/conditional` and `blocked` after later closed copies of those milestones. C001 reconciled these surfaces.
 
-The registry currently reports the original workstream as `closing`, which is more accurate than the roadmap but still leaves two sources of planning truth in conflict.
+At discovery, the registry reported the original workstream as `closing`, leaving two sources of planning truth in conflict. The registry now keeps that predecessor workstream closed and records C001 as conditionally closed.
 
 ### Finding B — active testing documentation contains stale pre-final values
 
-The primary `architecture/testing.md` CI section still describes the post-tuning state as approximately 19 minutes with `JOBS=8` and 11,781 tests even though the final M001-M005 state is:
+At discovery, the primary `architecture/testing.md` CI section still described the post-tuning state as approximately 19 minutes with `JOBS=8` and 11,781 tests even though the final M001-M005 state was:
 
 - `CARGO_BUILD_JOBS=4`;
 - 17m17s on the final main/live hosted run;
 - 11,726 passed / 1 skipped;
 - explicit live-Eggwork relevance detection and conditional fixture prebuild before workspace tests.
 
-A later final-state subsection is correct, but the earlier operational section remains contradictory.
+C001 reconciled the operational section and recorded the separately measured unrelated-PR baseline.
 
 ### Finding C — M005 cache disposition was closed without the planned compiler-cache experiment
 
@@ -110,6 +112,12 @@ Hard dependencies:
 Objective:
 
 Repair the planning and active-document inconsistencies, execute the previously omitted bounded compiler-cache experiment with comparable hosted evidence, measure the unrelated-PR fast path, and produce one authoritative final disposition without reopening the already-closed test-topology and live-qualification design.
+
+Disposition: the sccache candidate was rejected because neither of the two
+full source-change observations reached the preregistered 45-second build
+reduction. The unrelated-PR hosted path is measured and green. Local Rust
+1.89 Clippy and the local scheduler-cancellation test remain failed and are
+recorded for separate triage; see the C001 closure record.
 
 ## 3. Historical closure treatment
 

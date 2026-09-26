@@ -199,7 +199,6 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| CI/test throughput optimization post-closure corrective | C001 active | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md`; preregistered A/B at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-measurement-preregistration.md` |
 | Project Work Orders and Task View — UX fidelity corrective | C001 closed | `plans/subsystems/project-work-orders-task-view-ux-corrective-addendum.md`; `plans/implementation/project-work-orders-task-view-corrective/001-human-task-ux-and-trigger-surface.md`; `plans/closure/project-work-orders-task-view-corrective/001-status.md` (implementation `1bd77c6d`); predecessor M003/M005/M007 closure records; accepted ADR-0005/ADR-0004 |
 | Provider /connect restoration — managed-key CI corrective | C001 closed | `plans/subsystems/provider-connect-restoration-ci-corrective-addendum.md`; `plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`; `plans/closure/provider-connect-restoration-ci-corrective/001-status.md`; hosted run 35483642396 |
 | Workspace migration test-contract CI corrective | C001 closed | `plans/subsystems/workspace-migration-test-contract-ci-corrective-addendum.md`; `plans/implementation/workspace-migration-test-contract-ci-corrective/001-canonical-storage-layout-assertions.md`; `plans/closure/workspace-migration-test-contract-ci-corrective/001-status.md`; hosted run 35483642396 |
@@ -230,6 +229,8 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Residual runtime consolidation | M001-M003 closed | `plans/closure/residual-runtime-consolidation/001-status.md` through `003-status.md` |
 
 ## Recently closed or conditionally closed work
+
+| CI/test throughput optimization post-closure corrective | C001 closure evidence, cache qualification, and documentation reconciliation | conditionally closed | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` | Hosted sccache comparison rejected the candidate against its preregistered build threshold; PR #83 fast path green at 14m34s (11,714 passed / 1 skipped). Local Rust 1.89 Clippy findings and scheduler-cancellation failure need separate triage. Nothing newly unblocked. |
 
 | Eggplan assessment integration | M001 durable execution-subject provenance | closed | `plans/closure/eggplan-assessment-integration/001-status.md` | `418fdc85` implementation; hosted CI run `36106606574` green; CodeGG M002 and Eggplan CodeGG Integration M002 are ready. Follow-up corrective C002 closed (`plans/closure/eggplan-assessment-integration/002-status.md`): AgentRun-link predicate fix, bridge fixtures, ownership guard. |
 

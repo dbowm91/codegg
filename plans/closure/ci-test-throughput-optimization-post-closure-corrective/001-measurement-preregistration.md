@@ -45,6 +45,7 @@ not evidence.
 Control reference selected before candidate activation: prior stabilized
 main/live run `36196068239` attempt 3 (17m17s total, Clippy 2m08s,
 Workspace tests 13m57s including 7m51s build and 362.537s execution,
-11,726 passed / 1 skipped). A dedicated same-incremental-mode control is
-being run because the prior run predates the explicit cache-compatible
-setting.
+11,726 passed / 1 skipped). A dedicated same-incremental-mode control was
+also run as `36211049535` attempt 1 because the prior run predates the
+explicit cache-compatible setting. Final results and disposition are in
+`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.

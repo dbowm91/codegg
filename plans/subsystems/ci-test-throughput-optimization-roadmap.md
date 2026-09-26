@@ -1,10 +1,10 @@
 # CI and Test Throughput Optimization Roadmap
 
-Status: closed; post-closure corrective C001 registered
+Status: closed; post-closure corrective C001 conditionally closed
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
-Post-closure note: M001-M005 are historical closed work. C001 in `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` reconciles the historical status/documentation drift and supplies the measured compiler-cache disposition. See its closure record at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.
+Post-closure note: M001-M005 are historical closed work. C001 in `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` reconciled the status/documentation drift, measured and rejected sccache, and qualified the unrelated-PR path. Its conditional closure records outstanding local Rust 1.89 verification failures at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.
 
 Primary class: polish / development infrastructure.
 
@@ -26,9 +26,9 @@ Routine hosted CI had improved materially but remained too slow for the expected
 - intermediate tuned steady-state around 19 minutes green (historical; superseded by final M001-M005 evidence below);
 - Workspace Clippy around 2 minutes;
 - workspace test step around 16 minutes;
-- actual execution of 11,781 tests around 7 minutes;
+- historical actual execution of 11,781 tests around 7 minutes;
 - therefore roughly 9 minutes of that baseline test step attributable to compile/link/setup rather than test bodies;
-- approximately 189 top-level integration-test source files, with the default workspace run linking on the order of 100 test executables.
+- approximately 189 top-level integration-test source files, with the historical workspace run linking on the order of 100 test executables.
 
 The objective is to reduce the ordinary PR feedback loop substantially while preserving the same correctness boundary. The workstream is measurement-led: cheap compiler/profile changes land first, heavyweight qualification is separated from ordinary feedback only with explicit coverage retention, and integration-test topology is consolidated only after a bounded pilot proves that repeated linking is a real remaining bottleneck.
 
@@ -58,7 +58,7 @@ The root `[profile.test]` sets `strip = "debuginfo"` but does not explicitly set
 
 ### 3.2 Integration-test executable count is structurally high
 
-Cargo creates a separate executable for each top-level integration-test target. The repository records 189 root integration-test files and the current CI timing note attributes a large portion of the workspace-test phase to compile/link of roughly 100 binaries. M003/M004 own a bounded consolidation experiment and, only if positive, broader family-based consolidation.
+Cargo creates a separate executable for each top-level integration-test target. The repository records 189 root integration-test files. M003 and M004 consolidated the compatible topology: the current default root integration suite has 84 binaries, and the workspace suite has 224 test binaries. The historical pre-consolidation run had roughly 100 root integration binaries.
 
 ### 3.3 Live Eggwork qualification is expensive and performs nested builds
 
@@ -154,9 +154,9 @@ Apply the proven harness pattern to additional compatible families, preserving f
 ### M005 — Compiler cache and final critical-path closure
 
 Status: closed (`plans/closure/ci-test-throughput-optimization/005-status.md`;
-sccache + same-job-overlap negative dispositions recorded;
-documentation reconciled; final steady-state 17m17s hosted, run
-`36196068239` final).
+historical unmeasured sccache rejection later superseded by corrective C001;
+same-job-overlap negative disposition remains accepted; final steady-state
+17m17s hosted, run `36196068239` final).
 
 Implementation plan:
 

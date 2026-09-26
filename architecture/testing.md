@@ -234,8 +234,9 @@ and 11,781-test count are historical; final M001-M005 evidence is
 17m17s on main/live run `36196068239` attempt 3, with 11,726 passed
 and 1 skipped. The final measurement recorded ~2m08s Clippy, 7m51s
 workspace-test build, and 362.537s Nextest execution. The unrelated-PR
-fast path has not yet been measured; C001 owns that hosted measurement
-and the compiler-cache experiment. Steps run in this order:
+fast path was measured on PR `#83`, hosted run `36218924520`: 14m34s
+total, 1m48s Clippy, 6m43s test build, 309.068s Nextest execution,
+11,714 passed / 1 skipped. Steps run in this order:
 
 1. Checkout, stable Rust + rustfmt/Clippy, mold linker, Rust/Cargo cache, and Nextest setup.
 2. Configure test Git identity.
@@ -252,7 +253,9 @@ The ordinary unrelated-PR path and the main/relevant-change live path are
 separate baselines. Main always includes live qualification. PR relevance
 is determined by `scripts/detect-live-eggwork-changes.sh`; detection errors
 fail open and include the live target. `scripts/prebuild-eggwork-fixtures.sh`
-is conditional on the same decision.
+is conditional on the same decision. The unrelated-PR measurement reported
+`live_required=false` and skipped fixture prebuild; its 12-test reduction is
+the omitted `eggwork_remote_execution_live` binary.
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
@@ -428,17 +431,17 @@ section above remains the authoritative summary.
 ### M005 — Compiler-result cache and same-job overlap
 
 **Historical sccache disposition superseded by C001 measurement.**
-M005 rejected a hosted sccache experiment based on cache-equivalence
-and external-credential assumptions. Those assumptions were not
-established by the cited cache documentation. C001 in
-`plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md`
-owns the measured disposition; see
+M005's unmeasured rejection was based on cache-equivalence and
+external-credential assumptions. C001 corrected those assumptions and
+ran a hosted comparison, but rejected retaining sccache because it did
+not clear the preregistered build-time threshold. Evidence is recorded in
 `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.
-The current experiment uses the GitHub Actions cache backend and its
-runtime credentials, while retaining `Swatinem/rust-cache` for Cargo
-dependency/target reuse. No user-managed secret or external cache is
-in scope. Until C001 closes, do not treat either retention or rejection
-as a measured result.
+The candidate used the GitHub Actions cache backend and its runtime
+credentials, while retaining `Swatinem/rust-cache` for Cargo dependency/
+target reuse. No user-managed secret or external cache was needed. C001 in
+`plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md`
+owns this measured disposition. The candidate configuration is not part
+of the current workflow.
 
 **Critical-path overlap disposition: rejected.** Same-job overlap
 candidates (parallelizing cheap static guards against the Cargo
@@ -459,8 +462,7 @@ The workstream retains one bounded non-release job and the
 "Conservative keep, parallelized execution" disposition for
 same-job overlap.
 
-The compiler-cache configuration remains subject to C001's measured
-retain/revert decision. Per the M001 diagnostic recipe,
+Per the M001 diagnostic recipe,
 `cargo --timings` remains an ephemeral local diagnostic only.
 
 ## Related Docs
