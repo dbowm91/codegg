@@ -20,7 +20,7 @@
 //! `egggit` has no dependency on any host application. One consumer is
 //! CodeGG's workflow layer, which keeps mutation and permission checks
 //! outside this crate.
-// C001 hosted compiler-cache measurement: ordinary unrelated source change.
+// C001 hosted compiler-cache source-change observation after the seed/warm runs.
 
 pub mod blame;
 pub mod conflict;
