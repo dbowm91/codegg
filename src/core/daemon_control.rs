@@ -321,6 +321,13 @@ impl CoreDaemon {
     /// Spawn the per-turn reaper that releases the lease (and parks the
     /// runtime) on the first terminal event for `(session_id, turn_id)`.
     ///
+    /// Readiness contract: the event-log broadcast receiver is created
+    /// synchronously before the reaper task spawns. When this function
+    /// returns, the receiver for this session/turn already exists, so a
+    /// terminal event published immediately afterwards cannot be lost to
+    /// a not-yet-subscribed receiver. (Creating the receiver inside the
+    /// spawned future allowed exactly that loss.)
+    ///
     /// The turn runtime publishes `TurnCompleted`/`TurnFailed` directly
     /// to the event log with the captured turn id; the reaper waits
     /// for exactly that envelope and then runs
@@ -330,9 +337,8 @@ impl CoreDaemon {
     pub fn spawn_turn_reaper(&self, session_id: String, turn_id: String) {
         let daemon_sessions = self.sessions.clone();
         let pool = self.pool.clone();
-        let event_log = self.event_log.clone();
+        let mut rx = self.event_log.subscribe();
         tokio::spawn(async move {
-            let mut rx = event_log.subscribe();
             loop {
                 let envelope = match rx.recv().await {
                     Ok(envelope) => envelope,

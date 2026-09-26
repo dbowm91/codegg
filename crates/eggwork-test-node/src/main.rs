@@ -7,7 +7,9 @@
 //! generated here and no secret bytes are ever printed.
 //!
 //! Protocol: on readiness the helper prints `READY port=<N>` to stdout and
-//! then waits for SIGINT/SIGTERM or stdin EOF. The test harness kills the
+//! then waits for SIGINT/SIGTERM or stdin EOF. During startup it prints
+//! test-only `PHASE <name>` markers (phase names only, never secrets) so
+//! the harness can report where a startup stall occurred. The test harness kills the
 //! child on completion (`kill_on_drop`) and removes the temp state roots.
 
 use std::collections::HashMap;
@@ -100,6 +102,7 @@ fn read_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>, Str
 
 async fn run() -> Result<NodeServer, String> {
     let args = Args::parse()?;
+    phase("args-parsed");
     let node_id = eggwork_core::NodeId::new(args.required("node-id")?)
         .map_err(|e| format!("invalid --node-id: {e:?}"))?;
     let bind: std::net::SocketAddr = args
@@ -116,6 +119,7 @@ async fn run() -> Result<NodeServer, String> {
         .map_err(|e| format!("trust roots invalid: {e:?}"))?
         .build()
         .map_err(|e| format!("TLS configuration invalid: {e:?}"))?;
+    phase("tls-ready");
 
     let client_certs = read_certs(&args.required("client-cert")?)?;
     let leaf = client_certs
@@ -168,12 +172,15 @@ async fn run() -> Result<NodeServer, String> {
         let dir = args.required(key)?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {dir}: {e}"))?;
     }
+    phase("storage-ready");
     // `LocalProcessRunner` remains the node's canonical process owner. The
     // test harness builds the helper from this exact Eggwork revision and
     // installs it as a trusted sibling, exercising the qualified backend.
     let runner = Arc::new(LocalProcessRunner::new(
         TrustedLandlockSetup::discover_sibling(),
     ));
+    phase("runner-ready");
+    phase("server-starting");
     let server = NodeServer::start(
         NodeConfig {
             node_id,
@@ -195,6 +202,15 @@ async fn run() -> Result<NodeServer, String> {
     .await
     .map_err(|e| format!("node failed to start: {e:?}"))?;
     Ok(server)
+}
+
+/// Test-only startup phase marker on stdout (phase name only; never
+/// secrets). The harness tracks the last observed phase so a readiness
+/// timeout can report where startup stalled.
+fn phase(name: &str) {
+    use std::io::Write;
+    println!("PHASE {name}");
+    let _ = std::io::stdout().flush();
 }
 
 #[tokio::main]
