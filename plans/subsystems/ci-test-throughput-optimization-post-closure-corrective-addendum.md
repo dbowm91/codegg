@@ -1,6 +1,6 @@
 # CI and Test Throughput Optimization — Post-Closure Evidence Corrective Addendum
 
-Status: active; C002 closed; C001 ready
+Status: closed; C001 + C002 + C003 closed
 
 Closure record (C001 measurements): `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`
 
@@ -80,7 +80,7 @@ The Eggwork timeout is a previously observed hosted flake, but its current timeo
 
 ### C001 — Closure evidence, compiler-cache qualification, and documentation reconciliation
 
-Status: ready (unblocked by C002 closure at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`).
+Status: closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` §13; conditional items resolved by C002 + C003).
 
 Implementation plan:
 
@@ -172,9 +172,30 @@ C001 closes when:
 - the final main/live hosted path is green;
 - C001 closure explicitly supersedes only the unsupported M005 cache conclusion, not M001-M004.
 
+### C003 — Local verification baseline corrective
+
+Status: closed.
+
+Closure record:
+
+- `plans/closure/ci-test-throughput-optimization-post-closure-corrective/003-status.md`
+
+Implementation plan:
+
+- `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/003-local-verification-baseline-corrective.md`
+
+Objective:
+
+Resolve C001's two named conditional items — the deterministic scheduler-cancellation harness race (test-only started-gates) and the full Rust 1.89 Clippy baseline (semantics-preserving rewrites) — so C001 can close strictly with zero residual medium+ findings.
+
+Dependency:
+
+- C001's final closure is gated on C003; nothing else depends on C003.
+
 ## 7. Status table
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | C002 Hosted CI timing-flake stabilization | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md` | — |
-| C001 Closure evidence, cache qualification, and doc reconciliation | ready | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` (measurements; final closure resumes) | — |
+| C001 Closure evidence, cache qualification, and doc reconciliation | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` (§13 lifts the conditional status) | — |
+| C003 Local verification baseline corrective | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/003-local-verification-baseline-corrective.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/003-status.md` | — |

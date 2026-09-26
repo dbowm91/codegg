@@ -1,6 +1,6 @@
 # C001 Closure — Closure Evidence, Cache Qualification, and Documentation Reconciliation
 
-Status: conditionally closed
+Status: closed (conditional items resolved by C002 + C003; see §13)
 
 Implementation plan: `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md`
 
@@ -10,7 +10,7 @@ Repository: CodeGG CI/test throughput optimization
 
 C001 reconciled the predecessor roadmap, registry, and testing documentation; corrected the unsupported reasoning behind M005's compiler-cache disposition; measured the `sccache` candidate under the registered decision rule; and captured a green hosted unrelated-PR fast-path run. The candidate did not meet the required build-time gain, so all sccache workflow configuration was removed. M001-M005 remain closed, with only M005's cache disposition superseded by this measured result. Same-job overlap remains rejected.
 
-The plan is conditionally closed because the requested local verification exposed a repeatable `scheduler_cancellation` test failure and local Clippy findings while the hosted stable-toolchain suite and Clippy were green. These are outside C001's allowed product/test scope and need independent triage. The hosted live suite also had helper-readiness timeouts on two non-qualifying attempts; later full live runs passed. No implementation or test changes were made to mask those results.
+The plan was conditionally closed at the time of writing because the requested local verification exposed a repeatable `scheduler_cancellation` test failure and local Clippy findings while the hosted stable-toolchain suite and Clippy were green. Those items were resolved afterwards by C002 and C003 (see §13); the conditional status is lifted. The hosted live suite also had helper-readiness timeouts on two non-qualifying attempts; later full live runs passed. No implementation or test changes were made to mask those results.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -23,7 +23,7 @@ The plan is conditionally closed because the requested local verification expose
 | Measure a green unrelated-PR fast path | PR #83, run `36218924520`, head `9df35f13c31f682cdd4d82cbb9a96709e5d6e010` | Complete; live target omitted |
 | Revert unqualified cache configuration | Final workflow tree has no sccache action, environment, wrapper, or stats step; `CARGO_INCREMENTAL=0` candidate-only setting removed | Complete |
 | Close and audit dependencies | Registry and blocked-work audit updated; no CI-throughput dependent plan was ready or blocked on C001 | Complete; nothing newly unblocked |
-| Required local broad verification | `scripts/verify.sh quick` passed; standalone Clippy and Nextest had the failures recorded below | Conditional |
+| Required local broad verification | `scripts/verify.sh quick` passed; standalone Clippy and Nextest had the failures recorded below | Complete after C003 (see §13) |
 
 ## 3. Implementation and production effect
 
@@ -76,7 +76,7 @@ The corrected selector PR #82 had a green full live run on attempt 2, `362139185
 - An unrelated comment-only PR exposed detector fail-open behavior because a shallow synthetic checkout lacked the merge base required by the three-dot diff. PR #82 fixed the selector with a two-tree comparison and merged as `9c88b9b`; the corrected fast-path and relevant-path detector behavior was observed in hosted runs.
 - The candidate warm run and main retry had helper-readiness timeouts. Subsequent candidate full live runs and the selector-fix PR retry passed; this corrective did not widen into live-fixture test changes.
 - The candidate failed its preregistered throughput threshold and was removed. The successful candidate runs do not justify retaining a cache that saves less than 45 seconds of build time.
-- Local `scheduler_cancellation` failed both in the workspace run and in isolation. Local Rust 1.89 Clippy found four diagnostics while hosted stable Clippy passed. These findings require independent triage; C001 did not edit source or test behavior.
+- Local `scheduler_cancellation` failed both in the workspace run and in isolation at the time of writing. Local Rust 1.89 Clippy found diagnostics while hosted stable Clippy passed. Both were subsequently resolved by C003 (harness determinism + full Clippy baseline); see §13. C001 itself did not edit source or test behavior for these.
 - Recovery is the normal `Swatinem/rust-cache` workflow with no `RUSTC_WRAPPER`, sccache action, GHA sccache environment, or incremental override.
 
 ## 7. Compatibility
@@ -91,7 +91,7 @@ The experiment used GitHub Actions-provided runtime cache credentials and added 
 
 - `architecture/testing.md` records the main/live and unrelated-PR hosted baselines, selector/prebuild order, measured cache rejection and same-job-overlap disposition.
 - The predecessor roadmap is historically closed; duplicate stale M004/M005 blocked fragments are removed.
-- The C001 addendum, implementation plan and registry reflect conditional closure. Predecessor closure records 001-005 remain byte-for-byte unchanged.
+- The C001 addendum, implementation plan and registry reflect closure. Predecessor closure records 001-005 remain byte-for-byte unchanged.
 - The C001 text audit of `JOBS=8|~19 min|11781|11,781|~100 test binaries|M005.*ready|M004.*blocked` found only explicit history or unrelated workstreams after reconciliation. In `architecture/testing.md`, 11,781/11,781-test values and roughly 100 root binaries are labeled historical or M001 baseline; current totals are 11,726 live-path tests, 11,714 unrelated-PR tests, 84 root integration binaries and 224 workspace binaries. The original CI roadmap labels pre-M003/M004 counts historical and records current 84/224 totals. The addendum's old-state findings are explicitly marked “At discovery.” CI registry M003/M004 rows are closed; remaining matching blocked/ready M004/M005 entries belong to other subsystems. `AGENTS.md`, `CONTRIBUTING.md`, `.github`, `.config` and `scripts` contain no active stale CI-throughput setting among those search terms.
 - The candidate PR #80 is the implementation/evidence review surface; temporary fast-path PR #83 is retained only as run evidence and is closed after this measurement.
 
@@ -99,17 +99,21 @@ The experiment used GitHub Actions-provided runtime cache credentials and added 
 
 | Severity | Finding | Disposition |
 |---|---|---|
-| Medium | Local scheduler-cancellation test consistently fails to observe its token, including isolated rerun | Outside C001 scope; requires separate test/scheduler triage |
-| Medium | Four local Rust 1.89 Clippy findings conflict with hosted stable Clippy success | Outside C001 scope; requires toolchain/source baseline triage |
-| Low | Hosted live fixture helper readiness timed out in a candidate warm attempt and a main retry | Later full live runs passed; report and monitor; no C001 harness change |
+| Medium | Local scheduler-cancellation test consistently fails to observe its token, including isolated rerun | Resolved by C003 (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/003-status.md`): harness race, test-only started-gates, 10/10 + 3/3 repeats green |
+| Medium | Four local Rust 1.89 Clippy findings conflict with hosted stable Clippy success | Resolved by C003: full 1.89 baseline green (recorded count was partial — the run stopped at the first failing crates); semantics-preserving rewrites, focused suites green |
+| Low | Hosted live fixture helper readiness timed out in a candidate warm attempt and a main retry | Resolved by C002 (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`): phase diagnostics installed, 60s bound retained, three consecutive green full hosted live runs |
 | Informational | sccache produced hits, but did not meet the measured build-time threshold | Rejected and reverted |
 
 ## 11. Roadmap and dependency disposition
 
-M001-M004 implementation and topology conclusions remain accepted. M005's same-job-overlap rejection remains accepted; its unmeasured cache rejection is superseded by this measured negative disposition. The original CI/test throughput roadmap remains closed. C001 is conditionally closed because local broad verification has unresolved failures, not because the cache or CI path is left implemented.
+M001-M004 implementation and topology conclusions remain accepted. M005's same-job-overlap rejection remains accepted; its unmeasured cache rejection is superseded by this measured negative disposition. The original CI/test throughput roadmap remains closed. C001 is closed: the conditional items were resolved by C002 (helper-readiness stability) and C003 (scheduler harness + Clippy baseline), leaving zero residual medium+ findings.
 
 The dependency-ready, active and blocked plan tables were audited. No registered future plan depends on this corrective, and no CI/test-throughput plan is waiting on C001. **Nothing is newly unblocked.** No successor plan is registered from these measurements; the local verification failures should be triaged under their owning scheduler/toolchain scope.
 
 ## 12. Registry updates
 
-`plans/registry.md` marks the post-closure corrective C001 conditionally closed, moves it out of active closure work, and points the recently closed/conditionally closed table at this record. The original workstream stays closed, and no ready/blocked CI-throughput handoff remains. The addendum and implementation plan carry the same conditional status.
+`plans/registry.md` marks the post-closure corrective C001 closed and points the recently closed table at this record. The original workstream stays closed. The addendum and implementation plan carry closed status.
+
+## 13. Final closure (C002 + C003 handoff)
+
+After this record was written, C002 closed (reaper race fixed, helper startup phase-diagnostic, three consecutive green full hosted live runs `36252873923` attempts 1-3) and C003 closed (scheduler-cancellation harness determinism, full Rust 1.89 Clippy baseline green). Re-validation on the current tree: docs-consistency searches clean, workflow retains the reverted no-sccache state, and run `36256462980` (final tree including this line's docs) is a fourth consecutive green with live Eggwork included (11,729 passed / 1 skipped). The conditional status is lifted; C001 is closed with no new successor plan.
