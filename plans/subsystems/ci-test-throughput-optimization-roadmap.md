@@ -20,14 +20,14 @@ Related ADRs: none required. This roadmap changes development/CI mechanics only;
 
 ## 1. Purpose
 
-Routine hosted CI has improved materially but remains too slow for the expected development loop. At the reviewed baseline, the repository records:
+Routine hosted CI had improved materially but remained too slow for the expected development loop. At the original 2026-09-25 reviewed baseline, the repository recorded:
 
 - historical routine CI around 37 minutes;
-- current tuned steady-state around 19 minutes green;
+- intermediate tuned steady-state around 19 minutes green (historical; superseded by final M001-M005 evidence below);
 - Workspace Clippy around 2 minutes;
 - workspace test step around 16 minutes;
 - actual execution of 11,781 tests around 7 minutes;
-- therefore roughly 9 minutes of the current test step still attributable to compile/link/setup rather than test bodies;
+- therefore roughly 9 minutes of that baseline test step attributable to compile/link/setup rather than test bodies;
 - approximately 189 top-level integration-test source files, with the default workspace run linking on the order of 100 test executables.
 
 The objective is to reduce the ordinary PR feedback loop substantially while preserving the same correctness boundary. The workstream is measurement-led: cheap compiler/profile changes land first, heavyweight qualification is separated from ordinary feedback only with explicit coverage retention, and integration-test topology is consolidated only after a bounded pilot proves that repeated linking is a real remaining bottleneck.
@@ -80,7 +80,7 @@ Those files contain 53 tests in aggregate. M002 must distinguish tests that genu
 
 ### 3.5 Existing cache is dependency-oriented
 
-`Swatinem/rust-cache` is already used. M005 may evaluate compiler-result caching and final critical-path overlap, but only after M001–M004 establish the new build/test topology. Cache complexity must not mask a structural link problem.
+`Swatinem/rust-cache` was already used. Historically M005 evaluated compiler-result caching and final critical-path overlap after M001–M004 established the build/test topology. C001's corrective closure owns the measured compiler-cache disposition. Cache complexity must not mask a structural link problem.
 
 ## 4. Dependency graph
 
@@ -103,7 +103,8 @@ M005 cache and final critical-path closure
 - M001 is closed with the measured hosted baseline (run `36173876950`, 17m54s, JOBS=4).
 - M003 is closed with the measured hosted baseline (run `36193906726`, 17m31s, live target qualified, build 8m17s, exec 338s, positive pilot closed).
 - M004 is closed with the bounded consolidation (run `36196068239` final, 17m17s, build 7m51s, exec 362s, 5 `session_*` binaries → 1 `session_family`).
-- M005 is ready against the stabilized topology (hosted run `36196068239`).
+- M005 is closed against the stabilized topology (hosted run `36196068239`);
+  its unmeasured compiler-cache conclusion is superseded by C001's closure record.
 
 ## 5. Milestones
 

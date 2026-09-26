@@ -269,7 +269,7 @@ example, LSP, and cross-platform checks remain local.
 
 ### CI economy policy
 
-Four deliberate deviations from the local defaults, all confined to the
+Five deliberate deviations from the local defaults, all confined to the
 hosted runner (4 vCPU / 16 GB). Local `verify.sh` behavior is unchanged
 except `CARGO_BUILD_JOBS=2`:
 
@@ -417,7 +417,9 @@ target. M004: 5 default-feature `session_*` binaries → 1
 binaries (`required-features = ["server"]`) are explicitly outside
 the consolidation scope per the M004 plan's incompatible-feature
 boundary. The total binary count of root integration tests fell
-from 100 to 84; workspace test count fell from 11,781 to 11,726;
+from 100 to 84 (the current root integration-test binary count is 84;
+the workspace run spans 224 test binaries); workspace test count fell
+from 11,781 to 11,726;
 hosted steady-state landed at 17m17s (run `36196068239`,
 clippy 2m08s, prebuild warm 4 s, build phase 7m51s, exec 362s,
 11726 tests passed / 1 skipped). The full CI economy policy
