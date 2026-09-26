@@ -70,8 +70,13 @@ else
     exit 0
 fi
 
-CHANGED="$(git diff --name-only "$BASE_REV...HEAD" 2>/dev/null)" || {
-    fail_open "could not diff $BASE_REV...HEAD"
+# Actions checks out pull requests at a synthetic merge commit, while its
+# shallow fetch of the base ref may omit the common ancestor needed by a
+# three-dot diff. The merge tree already includes the base tree, so compare
+# the fetched base tree directly to HEAD; on a PR this yields the changed
+# paths without requiring history beyond the two available commits.
+CHANGED="$(git diff --name-only "$BASE_REV" HEAD 2>/dev/null)" || {
+    fail_open "could not diff $BASE_REV HEAD"
     exit 0
 }
 
