@@ -1,6 +1,6 @@
 # CI and Test Throughput Optimization — Post-Closure Evidence Corrective Addendum
 
-Status: active; C002 ready; C001 blocked on C002
+Status: active; C002 closed; C001 ready
 
 Closure record (C001 measurements): `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`
 
@@ -80,7 +80,7 @@ The Eggwork timeout is a previously observed hosted flake, but its current timeo
 
 ### C001 — Closure evidence, compiler-cache qualification, and documentation reconciliation
 
-Status: blocked on C002.
+Status: ready (unblocked by C002 closure at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`).
 
 Implementation plan:
 
@@ -89,7 +89,11 @@ Implementation plan:
 
 ### C002 — Hosted CI timing-flake stabilization
 
-Status: ready.
+Status: closed.
+
+Closure record:
+
+- `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`
 
 Implementation plan:
 
@@ -172,5 +176,5 @@ C001 closes when:
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C002 Hosted CI timing-flake stabilization | ready | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | pending | — |
-| C001 Closure evidence, cache qualification, and doc reconciliation | blocked | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | pending | C002 hosted CI stability closure |
+| C002 Hosted CI timing-flake stabilization | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md` | — |
+| C001 Closure evidence, cache qualification, and doc reconciliation | ready | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` (measurements; final closure resumes) | — |

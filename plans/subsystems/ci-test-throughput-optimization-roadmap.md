@@ -1,10 +1,10 @@
 # CI and Test Throughput Optimization Roadmap
 
-Status: closed; post-closure corrective C001 conditionally closed
+Status: closed; post-closure corrective C002 closed, C001 ready
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
-Post-closure note: M001-M005 are historical closed work. C001 in `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` reconciled the status/documentation drift, measured and rejected sccache, and qualified the unrelated-PR path. Its conditional closure records outstanding local Rust 1.89 verification failures at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`.
+Post-closure note: M001-M005 are historical closed work. C001 in `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` reconciled the status/documentation drift, measured and rejected sccache, and qualified the unrelated-PR path; its measurements are recorded at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` and it is ready to resume final closure. C002 repaired the turn-reaper lost-event race exposed on main run `36215541015`, made helper-startup failures diagnostic, and qualified three consecutive green full hosted live runs; it is closed at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`.
 
 Primary class: polish / development infrastructure.
 
