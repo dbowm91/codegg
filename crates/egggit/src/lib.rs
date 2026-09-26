@@ -21,6 +21,8 @@
 //! CodeGG's workflow layer, which keeps mutation and permission checks
 //! outside this crate.
 
+// C001 unrelated-PR hosted fast-path measurement.
+
 pub mod blame;
 pub mod conflict;
 pub mod diff;
