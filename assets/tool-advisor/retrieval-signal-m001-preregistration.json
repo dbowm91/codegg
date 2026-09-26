@@ -1,0 +1,317 @@
+{
+  "schema_version": 2,
+  "protocol": "retrieval-signal-m001-preregistration-v1",
+  "repository_baseline": "88ebbb9685bc0af497bd5b2caac0819b9542d106",
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "fixture_fingerprint": "0715a9678d8b82ac9760ec1572aa28420f3cedaa32bf55515d1d7f40c8f19b05",
+  "expansion_code_version": 1,
+  "gates": {
+    "recall_128": 0.98,
+    "recall_256": 0.95,
+    "recall_64": 0.99
+  },
+  "universes": [
+    64,
+    128,
+    256
+  ],
+  "primary_ks": [
+    16,
+    24,
+    32
+  ],
+  "query_field_order": [
+    "current_objective",
+    "current_task",
+    "next_steps",
+    "unresolved_signal",
+    "capability_cue"
+  ],
+  "query_field_byte_cap": 2048,
+  "query_total_byte_cap": 8192,
+  "descriptor_field_order": [
+    "canonical_name",
+    "identifier_tokens",
+    "description",
+    "category_disclosure",
+    "schema_fields",
+    "normalization"
+  ],
+  "descriptor_schema_byte_cap": 1024,
+  "descriptor_schema_field_desc_cap": 256,
+  "generic_normalization": [
+    "identifier-decomposition",
+    "lowercase-unicode-normalization",
+    "punctuation-separation",
+    "conservative-shared-morphology"
+  ],
+  "synonym_lexicon_entries": 0,
+  "deterministic_lexical_variants": [
+    "v1-bm25-baseline",
+    "signal-v2-flat-bm25",
+    "signal-v2-field-weighted-bm25",
+    "signal-v2-normalized-bm25"
+  ],
+  "deterministic_semantic_variants": [
+    "signal-v2-flat",
+    "signal-v2-field-labelled-descriptor",
+    "signal-v2-field-labelled-query"
+  ],
+  "deterministic_pooling_variants": [
+    "mean",
+    "cls"
+  ],
+  "conditional_projection_families": [
+    "shared-linear-384x128",
+    "asymmetric-linear-384x128",
+    "asymmetric-mlp-384x128x128"
+  ],
+  "conditional_lr_grid": [
+    0.0001,
+    0.0003,
+    0.001
+  ],
+  "conditional_max_epochs": 5,
+  "conditional_temperature_grid": [
+    0.05,
+    0.07,
+    0.1
+  ],
+  "conditional_loss_weights": {
+    "contrastive": 1.0,
+    "graded_positive": 1.0,
+    "hard_negative": 0.5,
+    "same_family_margin": 0.1
+  },
+  "conditional_seeds": [
+    7,
+    21,
+    42
+  ],
+  "conditional_hard_negatives_per_positive": 7,
+  "conditional_batch_size": 64,
+  "conditional_max_params": 500000,
+  "schema_plumbing": {
+    "source_type": "ResolvedToolSurface -> ResolvedTool.definition: ToolDefinition { parameters: serde_json::Value }",
+    "source_path": "src/agent/tool_surface.rs + crates/codegg-providers/src/provider_core.rs",
+    "candidate_needs_optional_field": false,
+    "experiment_local_representation_sufficient": true,
+    "builtin_with_schema": [
+      "glob",
+      "write"
+    ],
+    "without_schema": [
+      "table_filter",
+      "lsp_rename",
+      "fixture_deferred_*"
+    ],
+    "finding": "table_filter has no live Tool impl in src/ (benchmark-only candidate name); lsp_rename has no standalone live Tool impl (live LSP surface exposes operation enums, not this candidate name). Both degrade to name/description/category/disclosure in Signal V2 and are reported in the schema-absent slice. glob/write map to GlobTool/WriteTool schemas captured above."
+  },
+  "quoted_fusion_evidence": [
+    {
+      "tool": "glob",
+      "bm25_rank": 256,
+      "semantic_rank": 256,
+      "fused_rank": 256,
+      "fused_margin": -0.2537,
+      "cause": "dual-signal-miss",
+      "provenance": "plans/closure/tool-selection-advisor-retrieval-architecture-experiment/003-status.md (implementation fb11a74f; u256 K=32; best fusion families weighted-union-0.25/mean and RRF-60/mean)"
+    },
+    {
+      "tool": "table_filter",
+      "bm25_rank": 256,
+      "semantic_rank": 230,
+      "fused_rank": 230,
+      "fused_margin": -0.047,
+      "cause": "dual-signal-miss",
+      "provenance": "plans/closure/tool-selection-advisor-retrieval-architecture-experiment/003-status.md (implementation fb11a74f; u256 K=32; best fusion families weighted-union-0.25/mean and RRF-60/mean)"
+    },
+    {
+      "tool": "write",
+      "bm25_rank": 256,
+      "semantic_rank": 256,
+      "fused_rank": 256,
+      "fused_margin": -0.191,
+      "cause": "dual-signal-miss",
+      "provenance": "plans/closure/tool-selection-advisor-retrieval-architecture-experiment/003-status.md (implementation fb11a74f; u256 K=32; best fusion families weighted-union-0.25/mean and RRF-60/mean)"
+    },
+    {
+      "tool": "lsp_rename",
+      "bm25_rank": 256,
+      "semantic_rank": 256,
+      "fused_rank": 256,
+      "fused_margin": -0.1431,
+      "cause": "dual-signal-miss",
+      "provenance": "plans/closure/tool-selection-advisor-retrieval-architecture-experiment/003-status.md (implementation fb11a74f; u256 K=32; best fusion families weighted-union-0.25/mean and RRF-60/mean)"
+    }
+  ],
+  "miss_audit": {
+    "dev_cases": 62,
+    "eligible_relevant": {
+      "128": 72,
+      "256": 72,
+      "64": 72
+    },
+    "bm25_recovered": {
+      "128": 52,
+      "256": 52,
+      "64": 52
+    },
+    "occurrences": [
+      {
+        "tool": "glob",
+        "case_id": "filesystem-semantic-003-variant-1",
+        "partition": "dev",
+        "relevance_grade": 3,
+        "preferred_order_position": 0,
+        "is_primary_highest_grade": true,
+        "serialized_query": "advisor-context-v2\ncurrent_objective: Locate every test fixture matching rollback_tag under quoted transcript t-4402 (ref fi-0007)\n",
+        "candidate_name": "glob",
+        "candidate_description": "Find files by path pattern",
+        "candidate_category": "ReadOnly",
+        "candidate_disclosure": "deferred",
+        "live_schema_fields": [
+          {
+            "name": "path",
+            "field_type": "string",
+            "description": "Directory to search in (default: current directory)",
+            "required": false
+          },
+          {
+            "name": "pattern",
+            "field_type": "string",
+            "description": "Glob pattern to match",
+            "required": true
+          }
+        ],
+        "bm25_rank": 256,
+        "bm25_score_model": "mirrored-catalog-bm25-v1",
+        "bm25_score": 0.0,
+        "semantic_rank_quoted": 256,
+        "fused_rank_quoted": 256,
+        "fused_margin_quoted": -0.2537,
+        "lexical_overlap_terms": [],
+        "nearest_wrong_candidates": [
+          "browser_test",
+          "test_run",
+          "coverage",
+          "fixture_deferred_000",
+          "fixture_deferred_001"
+        ],
+        "inferability": "query-paraphrase",
+        "inferability_rationale": "query expresses 'locate', a generic paraphrase of descriptor verb 'find' with no exact descriptor term present",
+        "inferability_support": "Locate every test fixtur"
+      },
+      {
+        "tool": "lsp_rename",
+        "case_id": "research-semantic-125-variant-1",
+        "partition": "dev",
+        "relevance_grade": 2,
+        "preferred_order_position": 1,
+        "is_primary_highest_grade": true,
+        "serialized_query": "advisor-context-v2\ncurrent_objective: Summarize the quoted specification of schema_registry for status board sb-1311 (ref re-0020)\n",
+        "candidate_name": "lsp_rename",
+        "candidate_description": "Rename a symbol workspace-wide",
+        "candidate_category": "Edit",
+        "candidate_disclosure": "deferred",
+        "live_schema_fields": [],
+        "bm25_rank": 256,
+        "bm25_score_model": "mirrored-catalog-bm25-v1",
+        "bm25_score": 0.0,
+        "semantic_rank_quoted": 256,
+        "fused_rank_quoted": 256,
+        "fused_margin_quoted": -0.1431,
+        "lexical_overlap_terms": [],
+        "nearest_wrong_candidates": [
+          "web_search",
+          "summarize",
+          "fixture_deferred_000",
+          "fixture_deferred_001",
+          "fixture_deferred_002"
+        ],
+        "inferability": "implicit-secondary",
+        "inferability_rationale": "grade 2 shares the case-highest grade with co-relevant 'summarize' (query-explicit via 'Summarize the quoted spe'); no descriptor, schema, or paraphrase cue for 'lsp_rename' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+        "inferability_support": "Summarize the quoted specification of schema_registry for status board sb-1311 (ref re-0020)"
+      },
+      {
+        "tool": "table_filter",
+        "case_id": "filesystem-semantic-013-variant-1",
+        "partition": "dev",
+        "relevance_grade": 2,
+        "preferred_order_position": 1,
+        "is_primary_highest_grade": true,
+        "serialized_query": "advisor-context-v2\ncurrent_objective: Read the module diff_viewer at snapshot log sl-6602 (ref fi-0018) and report its public exports\n",
+        "candidate_name": "table_filter",
+        "candidate_description": "Filter tabular data",
+        "candidate_category": "ReadOnly",
+        "candidate_disclosure": "deferred",
+        "live_schema_fields": [],
+        "bm25_rank": 256,
+        "bm25_score_model": "mirrored-catalog-bm25-v1",
+        "bm25_score": 0.0,
+        "semantic_rank_quoted": 230,
+        "fused_rank_quoted": 230,
+        "fused_margin_quoted": -0.047,
+        "lexical_overlap_terms": [],
+        "nearest_wrong_candidates": [
+          "read",
+          "plugin_search",
+          "fixture_deferred_000",
+          "fixture_deferred_001",
+          "fixture_deferred_002"
+        ],
+        "inferability": "implicit-secondary",
+        "inferability_rationale": "grade 2 shares the case-highest grade with co-relevant 'read' (query-explicit via 'Read the module diff_vie'); no descriptor, schema, or paraphrase cue for 'table_filter' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+        "inferability_support": "Read the module diff_viewer at snapshot log sl-6602 (ref fi-0018) and report its public exports"
+      },
+      {
+        "tool": "write",
+        "case_id": "verification-semantic-105-variant-1",
+        "partition": "dev",
+        "relevance_grade": 2,
+        "preferred_order_position": 1,
+        "is_primary_highest_grade": true,
+        "serialized_query": "advisor-context-v2\ncurrent_objective: Measure coverage of fixture_pack exercised by runbook excerpt rb-3302 (ref ve-0022)\n",
+        "candidate_name": "write",
+        "candidate_description": "Write content to files",
+        "candidate_category": "Edit",
+        "candidate_disclosure": "deferred",
+        "live_schema_fields": [
+          {
+            "name": "content",
+            "field_type": "string",
+            "description": "Content to write to the file",
+            "required": true
+          },
+          {
+            "name": "path",
+            "field_type": "string",
+            "description": "Path to the file to write",
+            "required": true
+          }
+        ],
+        "bm25_rank": 256,
+        "bm25_score_model": "mirrored-catalog-bm25-v1",
+        "bm25_score": 0.0,
+        "semantic_rank_quoted": 256,
+        "fused_rank_quoted": 256,
+        "fused_margin_quoted": -0.191,
+        "lexical_overlap_terms": [],
+        "nearest_wrong_candidates": [
+          "coverage",
+          "json_query",
+          "fixture_deferred_000",
+          "fixture_deferred_001",
+          "fixture_deferred_002"
+        ],
+        "inferability": "implicit-secondary",
+        "inferability_rationale": "grade 2 shares the case-highest grade with co-relevant 'coverage' (query-explicit via 'coverage of fixture_pack'); no descriptor, schema, or paraphrase cue for 'write' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+        "inferability_support": "Measure coverage of fixture_pack exercised by runbook excerpt rb-3302 (ref ve-0022)"
+      }
+    ]
+  },
+  "stop_condition": "HARD STOP: 3 occurrence(s) classified as evaluation defects (lsp_rename@research-semantic-125-variant-1:implicit-secondary, table_filter@filesystem-semantic-013-variant-1:implicit-secondary, write@verification-semantic-105-variant-1:implicit-secondary); M002 stays blocked; register a separate retrieval-evaluation corrective",
+  "m002_ready": false
+}

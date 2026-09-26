@@ -156,8 +156,9 @@ M004 operating point   M003 learned projection
 M005 fresh v4 qualification
 ```
 
-- M001 is ready.
-- M002 is blocked on M001.
+- M001 is blocked (evaluation hard stop; audit + preregistration complete).
+- M006 is ready and owns the relevance-target decision that unblocks M002.
+- M002 is blocked on M006 (via the required positive M001 re-audit).
 - M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
@@ -170,9 +171,16 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001-signal-sufficiency-audit-and-preregistration.md`
 
-Status: ready.
+Status: blocked.
 
-Audit every persistent miss at case level, determine whether the relevance label is inferable from allowed query state, freeze Retrieval Signal V2 field/normalization boundaries, and preregister deterministic and learned experiment degrees of freedom.
+Audit complete and preregistration frozen, but the §4 hard stop
+triggered: three gate-critical labels are supporting-workflow steps, not
+current-step needs (closure
+`plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`;
+receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
+with `m002_ready=false`). M002-M005 stay blocked pending the M006
+relevance-target decision. The frozen Signal V2 contract and conditional
+M003 grid stand for reuse once unblocked.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -213,6 +221,22 @@ Plan:
 Status: blocked on M004.
 
 Build a new zero-leakage, order-balanced semantic holdout and run one separately preregistered release-mode qualification of the complete retrieval + span-packed ranker + promotion stack.
+
+### M006 — Retrieval evaluation corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/006-retrieval-evaluation-corrective.md`
+
+Status: ready.
+
+Registered by the M001 §4 hard stop (closure
+`plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`).
+Decides the intended relevance target (all plausible workflow tools,
+current-step tools only, or graded recall), re-derives the gate-critical
+label set mechanically over frozen M001 rows without relabeling history,
+and unblocks M002 iff the re-derived set is fully inferable. Owns a
+negative workstream close otherwise.
 
 ## 8. Exit conditions
 
