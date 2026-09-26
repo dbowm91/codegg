@@ -1,6 +1,6 @@
 # CI and Test Throughput Optimization — Post-Closure Evidence Corrective Addendum
 
-Status: active; C001 ready
+Status: active; C002 ready; C001 blocked on C002
 
 Repository baseline reviewed: `4f7e508976e70fbec0e645bd530b63fe3c8393c1`
 
@@ -60,15 +60,47 @@ M002 intentionally omits the expensive live Eggwork target for unrelated pull re
 
 Therefore the ordinary unrelated-PR feedback time may already be materially lower, potentially near the original <15-minute aspirational target, but the workstream never captured a clean authoritative measurement.
 
+
+### Finding E — C001 implementation exposed hosted timing/correctness instability
+
+C001 began with a live-relevance selector correction, merged as `9c88b9b8` (PR #82). The fix changes PR comparison from a shallow-history-sensitive three-dot diff to direct fetched-base-tree vs synthetic merge-tree comparison. The PR run `36213918571` was green, but because the detector script itself is live-relevant it correctly exercised the live path and is not the required unrelated-PR baseline.
+
+The subsequent main run `36215541015` failed twice:
+
+- attempt 1: `session_family::control_m004_controller_lease::reaper_releases_on_turn_completed_event`;
+- attempt 2: `eggwork_remote_execution_live::live_blob_upload_and_workspace_materialization` timed out waiting for helper readiness.
+
+Inspection of `CoreDaemon::spawn_turn_reaper` found a concrete lost-event race: the event-log receiver is created inside the spawned task, so an immediately following terminal publication can occur before subscription and be lost permanently. This is production correctness scope and must be fixed before performance measurements resume.
+
+The Eggwork timeout is a previously observed hosted flake, but its current timeout path drops the captured helper diagnostics. C002 owns deterministic reaper readiness, Eggwork startup diagnostics/characterization, and hosted stability qualification. C001 is blocked until C002 closes.
+
 ## 2. Corrective milestone
 
 ### C001 — Closure evidence, compiler-cache qualification, and documentation reconciliation
+
+Status: blocked on C002.
+
+Implementation plan:
+
+- `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md`
+
+
+### C002 — Hosted CI timing-flake stabilization
 
 Status: ready.
 
 Implementation plan:
 
-- `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md`
+- `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md`
+
+Objective:
+
+Repair the turn-reaper lost-event race, make live Eggwork helper-startup failures phase-diagnostic, characterize the readiness stall without blind timeout inflation, exonerate or correct the consolidated session-family boundary, and restore a stable green full hosted baseline before C001 resumes cache/timing work.
+
+Dependency:
+
+- C002 has no new hard dependency beyond the already-closed M001-M005 work.
+- C001 is hard-blocked on C002 because cache/timing A/B evidence is not trustworthy while main/live CI is unstable.
 
 Hard dependencies:
 
@@ -132,4 +164,5 @@ C001 closes when:
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 Closure evidence, cache qualification, and doc reconciliation | ready | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | pending | — |
+| C002 Hosted CI timing-flake stabilization | ready | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | pending | — |
+| C001 Closure evidence, cache qualification, and doc reconciliation | blocked | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | pending | C002 hosted CI stability closure |
