@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: blocked on M001
+Status: ready — unblocked by M006 positive re-audit (current-step-only; receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`)
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 

@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M006 — Retrieval Evaluation Corrective
 
-Status: ready for handoff
+Status: implemented — decision `current-step-only` recorded, M002 unblocked (receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`)
 
 Repository baseline: `88ebbb9685bc0af497bd5b2caac0819b9542d106`
 

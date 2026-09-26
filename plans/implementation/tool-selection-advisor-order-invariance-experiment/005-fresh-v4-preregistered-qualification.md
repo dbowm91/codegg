@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment M005 — Fresh V4 Preregistered Qualification
 
-Status: blocked on M004
+Status: blocked — M004 closed negatively, closure recorded at `plans/closure/tool-selection-advisor-order-invariance-experiment/005-status.md`; live M004 stays blocked
 
 Repository baseline: `198524aa4ff8656928c86cf36168892532f2e29c`
 

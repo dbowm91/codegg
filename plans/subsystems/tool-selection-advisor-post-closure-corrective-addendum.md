@@ -238,7 +238,7 @@ Plan:
 
 Objective: run pre-registered end-to-end A/B trajectories with representative smaller/tool-fragile primary models and determine whether contextual rerank/proactive promotion materially improve tool use.
 
-Status: blocked on live primary-model/provider qualification evidence after M001 + M002 + M003 closure.
+Status: blocked on live primary-model/provider qualification evidence after M001 + M002 + M003 closure (blocked closure recorded at `plans/closure/tool-selection-advisor-post-closure-corrective/004-status.md`; C004-B, no qualified model, no live prerequisites).
 
 Exit conditions include real primary-model trajectories, held-out task fixtures, cost/latency/tool-use measurements, resource evidence on representative local targets, and truthful mode disposition. Default remains off regardless of outcome.
 
@@ -322,4 +322,4 @@ A negative A/B result is acceptable closure evidence. In that case the contextua
 | M001 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/001-dataset-split-and-consent-integrity.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/001-status.md` | Historical closure retained; later evidence-integrity corrective supersedes its qualification claims where noted. |
 | M002 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/002-contextual-encoder-runtime-and-training.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/002-status.md` | Historical closure retained; training/evaluation claims require the later evidence-integrity corrective. |
 | M003 | closed | `plans/implementation/tool-selection-advisor-post-closure-corrective/003-pre-turn-proactive-tool-disclosure.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/003-status.md` | Authority placement remains valid; candidate-shortlisting quality is corrected separately. |
-| M004 | blocked | `plans/implementation/tool-selection-advisor-post-closure-corrective/004-small-model-trajectory-qualification.md` | — | Requires positive C004 closure from `tool-selection-advisor-evidence-integrity-corrective-addendum.md` plus original live-provider/resource evidence. |
+| M004 | blocked | `plans/implementation/tool-selection-advisor-post-closure-corrective/004-small-model-trajectory-qualification.md` | `plans/closure/tool-selection-advisor-post-closure-corrective/004-status.md` | C004-B plus successor negatives; no qualified model and no live-provider/resource prerequisites. |

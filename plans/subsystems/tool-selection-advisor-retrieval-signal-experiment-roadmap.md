@@ -157,8 +157,8 @@ M005 fresh v4 qualification
 ```
 
 - M001 is blocked (evaluation hard stop; audit + preregistration complete).
-- M006 is ready and owns the relevance-target decision that unblocks M002.
-- M002 is blocked on M006 (via the required positive M001 re-audit).
+- M006 is closed positively and unblocked M002 (decision `current-step-only`, re-derived 69 per universe, receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`).
+- M002 is ready (via the M006 positive re-audit).
 - M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
@@ -188,9 +188,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M001.
+Status: ready — unblocked by M006 positive re-audit (current-step-only; re-derived 69 per universe, required 69/68/66; receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`).
 
-Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
+Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training, on the re-derived denominators.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
@@ -228,7 +228,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/006-retrieval-evaluation-corrective.md`
 
-Status: ready.
+Status: closed (positive) — decision `current-step-only` recorded with rationale, gate-critical set re-derived (1 included / 3 excluded), M002 unblocked (receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`).
 
 Registered by the M001 §4 hard stop (closure
 `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`).

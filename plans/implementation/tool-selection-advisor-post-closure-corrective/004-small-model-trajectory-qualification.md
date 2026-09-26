@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Post-Closure Corrective M004 — Small-Model Trajectory Qualification and Closure
 
-Status: blocked
+Status: blocked — no qualified model plus live prerequisites absent, closure recorded at `plans/closure/tool-selection-advisor-post-closure-corrective/004-status.md`
 
 Repository baseline: `c9087346620988a7c793fb2687732a62e481103a`
 

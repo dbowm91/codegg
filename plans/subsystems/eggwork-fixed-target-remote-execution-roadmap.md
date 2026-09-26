@@ -159,7 +159,7 @@ Pin the corrected Eggwork revision and prove CodeGG's production mTLS path execu
 
 Class: infrastructure/capability
 
-Status: blocked on Eggwork Workspace/Artifact M004 closure
+Status: blocked on Eggwork Workspace/Artifact M004 closure (blocked closure recorded at `plans/closure/eggwork-fixed-target-remote-execution/003-status.md`; upstream M004 absent in pinned `6cc8134` and newer `128f808`, no `workspace.derive.v1`)
 
 Implementation plan:
 

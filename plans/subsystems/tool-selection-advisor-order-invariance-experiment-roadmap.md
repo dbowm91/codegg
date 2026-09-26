@@ -185,7 +185,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked on positive M004 (M004 closed negatively — no operating point frozen).
+Status: blocked on positive M004 (M004 closed negatively — no operating point frozen; blocked closure recorded at `plans/closure/tool-selection-advisor-order-invariance-experiment/005-status.md`).
 
 Freeze architecture/model/operating point plus a fresh v4 semantic holdout in a separate preregistration commit, require CI, then perform one release-mode final evaluation.
 

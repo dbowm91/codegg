@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M003 — Content-Aware Derived Workspace Transfer
 
-Status: blocked on Eggwork Workspace/Artifact M004 closure
+Status: blocked — upstream M004 absent, closure recorded at `plans/closure/eggwork-fixed-target-remote-execution/003-status.md`; M004 stays deferred
 
 Source roadmap:
 

@@ -1519,6 +1519,298 @@ pub fn prereg_fingerprint(prereg: &M001Preregistration) -> Result<String> {
     )))
 }
 
+// ---- M006 retrieval-evaluation corrective ----
+//
+// M001 closed blocked on its §4 hard stop: three gate-critical occurrence
+// rows carry `implicit-secondary` labels (supporting-workflow steps whose
+// queries are fully explained by a co-relevant sibling tool). M006 owns the
+// product/evaluation decision the experiment is forbidden from making
+// implicitly: what retrieval relevance is *for*. It re-derives the
+// gate-critical set mechanically over the frozen M001 rows without
+// relabeling history, then verdicts M002.
+//
+// Decision (recorded with rationale; operator-supplied product judgment):
+// - `AllWorkflow`: every plausible workflow tool counts, including
+//   supporting steps. No row leaves the gate-critical set.
+// - `CurrentStepOnly`: only tools inferable from the bounded current-step
+//   query count. `implicit-secondary` rows leave the gate-critical set;
+//   every exclusion cites its occurrence row + this rule.
+// - `GradedRecall`: supporting steps count with reduced weight. All rows
+//   stay in the set with explicit weights; uninferable rows still block
+//   M002 because no graded weight was preregistered in M001.
+//
+// M002 is unblocked iff the re-derived included set contains zero
+// `implicit-secondary` / `other-evidence-defect` rows. Gates themselves are
+// never lowered: re-derived denominators and required-hit counts are
+// recomputed from the decision and reported alongside the verdict.
+
+/// Intended retrieval relevance target. Variants are exhaustive; the
+/// decision is recorded explicitly in the M006 receipt, never inferred
+/// from recall numbers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RelevanceTarget {
+    AllWorkflow,
+    CurrentStepOnly,
+    GradedRecall,
+}
+
+impl RelevanceTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllWorkflow => "all-workflow",
+            Self::CurrentStepOnly => "current-step-only",
+            Self::GradedRecall => "graded-recall",
+        }
+    }
+
+    /// Human-readable rule applied by [`gate_critical_set`] for this target.
+    pub fn exclusion_rule(self) -> &'static str {
+        match self {
+            Self::AllWorkflow => {
+                "all-workflow: no occurrence leaves the gate-critical set; supporting steps count fully"
+            }
+            Self::CurrentStepOnly => {
+                "current-step-only: implicit-secondary rows leave the gate-critical set (supporting-workflow steps are not current-step needs); all other rows stay"
+            }
+            Self::GradedRecall => {
+                "graded-recall: all rows stay with reduced weight for implicit-secondary (0.5 vs 1.0); uninferable rows still block M002 absent preregistered weights"
+            }
+        }
+    }
+}
+
+/// Recorded M006 relevance-target decision. The rationale is required and
+/// must be non-empty: a decision without recorded rationale is invalid
+/// output per the plan.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RelevanceDecision {
+    pub target: RelevanceTarget,
+    pub rationale: String,
+    pub repository_baseline: String,
+}
+
+/// Decide the relevance target with an explicit product rationale.
+///
+/// Rejects an empty/whitespace rationale. Does not touch frozen corpora,
+/// thresholds, K, or gates; it only records the judgment M002 needs.
+pub fn decide_relevance_target(
+    target: RelevanceTarget,
+    rationale: &str,
+    repository_baseline: &str,
+) -> Result<RelevanceDecision> {
+    if rationale.trim().is_empty() {
+        return Err(anyhow!(
+            "relevance-target decision requires a non-empty rationale"
+        ));
+    }
+    Ok(RelevanceDecision {
+        target,
+        rationale: rationale.trim().to_string(),
+        repository_baseline: repository_baseline.to_string(),
+    })
+}
+
+/// One row excluded from the gate-critical set under the decision, with
+/// the occurrence identity plus the rule citation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GateCriticalExclusion {
+    pub tool: String,
+    pub case_id: String,
+    pub inferability: String,
+    pub rule: String,
+}
+
+/// Split frozen M001 occurrence rows into gate-critical included rows plus
+/// cited exclusions, per the decided target. No corpus bytes are read or
+/// rewritten; the input rows are the frozen audit output.
+pub fn gate_critical_set(
+    target: RelevanceTarget,
+    occurrences: &[MissOccurrence],
+) -> (Vec<MissOccurrence>, Vec<GateCriticalExclusion>) {
+    let mut included = Vec::new();
+    let mut excluded = Vec::new();
+    for occurrence in occurrences {
+        let is_secondary = occurrence.inferability == "implicit-secondary";
+        match target {
+            RelevanceTarget::AllWorkflow => included.push(occurrence.clone()),
+            RelevanceTarget::CurrentStepOnly => {
+                if is_secondary {
+                    excluded.push(GateCriticalExclusion {
+                        tool: occurrence.tool.clone(),
+                        case_id: occurrence.case_id.clone(),
+                        inferability: occurrence.inferability.clone(),
+                        rule: target.exclusion_rule().to_string(),
+                    });
+                } else {
+                    included.push(occurrence.clone());
+                }
+            }
+            RelevanceTarget::GradedRecall => included.push(occurrence.clone()),
+        }
+    }
+    (included, excluded)
+}
+
+/// Weight of one occurrence under the decided target. Only `GradedRecall`
+/// differentiates; the weights are explicit here because M001 preregistered
+/// no graded weights, so a graded verdict still blocks M002 (see
+/// [`m002_unblocked`]).
+pub fn occurrence_weight(target: RelevanceTarget, occurrence: &MissOccurrence) -> f64 {
+    match target {
+        RelevanceTarget::GradedRecall if occurrence.inferability == "implicit-secondary" => 0.5,
+        _ => 1.0,
+    }
+}
+
+/// Re-derive per-universe eligible denominators after exclusions. Each
+/// excluded occurrence row belongs to one dev case present in every
+/// expanded universe, so every universe denominator drops by the number of
+/// distinct excluded `(tool, case_id)` pairs. Returns the re-derived map
+/// plus the distinct exclusion count for receipt transparency.
+pub fn rederived_eligible_counts(
+    eligible_relevant: &BTreeMap<String, usize>,
+    excluded: &[GateCriticalExclusion],
+) -> (BTreeMap<String, usize>, usize) {
+    let mut distinct = BTreeSet::new();
+    for row in excluded {
+        distinct.insert((row.tool.clone(), row.case_id.clone()));
+    }
+    let dropped = distinct.len();
+    let mut rederived = BTreeMap::new();
+    for (universe, eligible) in eligible_relevant {
+        rederived.insert(universe.clone(), eligible.saturating_sub(dropped));
+    }
+    (rederived, dropped)
+}
+
+/// Required hits for a recall gate at `ceil(denominator * gate)`.
+/// Gates themselves are never lowered by the decision.
+pub fn required_hits(denominator: usize, gate: f64) -> usize {
+    (denominator as f64 * gate).ceil() as usize
+}
+
+/// M002 unblock verdict over the re-derived included set: unblocked iff no
+/// included row carries an evaluation-defect class. Under `GradedRecall`
+/// the verdict stays blocked because reduced weight does not make an
+/// uninferable label inferable absent preregistered weights.
+pub fn m002_unblocked(target: RelevanceTarget, included: &[MissOccurrence]) -> bool {
+    let has_defect = included.iter().any(|occurrence| {
+        occurrence.inferability == "implicit-secondary"
+            || occurrence.inferability == "other-evidence-defect"
+    });
+    match target {
+        RelevanceTarget::CurrentStepOnly => !has_defect,
+        RelevanceTarget::AllWorkflow | RelevanceTarget::GradedRecall => !has_defect,
+    }
+}
+
+/// Machine-readable M006 decision receipt: decision log, re-derived
+/// denominators, required-hit counts under the frozen gates, re-audit
+/// classifications restricted to the derived set, and the explicit M002
+/// verdict. Readers must tolerate absence of these fields on the older
+/// M001 receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct M006DecisionReceipt {
+    pub schema_version: u16,
+    pub protocol: String,
+    pub repository_baseline: String,
+    pub dataset: String,
+    pub dataset_fingerprint: String,
+    pub dev_partition_fingerprint: String,
+    pub decision: RelevanceDecision,
+    pub exclusion_rule: String,
+    pub included_occurrences: Vec<MissOccurrence>,
+    pub excluded_occurrences: Vec<GateCriticalExclusion>,
+    pub rederived_eligible_relevant: BTreeMap<String, usize>,
+    pub required_hits: BTreeMap<String, usize>,
+    pub occurrence_weights: BTreeMap<String, f64>,
+    pub m002_unblocked: bool,
+    pub verdict: String,
+}
+
+/// M006 protocol identity.
+pub const M006_PROTOCOL: &str = "retrieval-signal-m006-decision-v1";
+/// M006 receipt schema version.
+pub const M006_SCHEMA_VERSION: u16 = 1;
+
+/// Build the M006 decision receipt from frozen M001 inputs plus the
+/// recorded decision. Re-runs no encoder and trains nothing; it filters
+/// the frozen `run_miss_audit` rows and recomputes denominators.
+pub fn m006_decision_receipt(decision: &RelevanceDecision) -> Result<M006DecisionReceipt> {
+    let cases = load_cases(None).context("load builtin corpus")?;
+    let dataset_fp = dataset_fingerprint(&cases).context("fingerprint dataset")?;
+    let partition = partition_cases(&cases);
+    let dev_cases: Vec<ToolAdvisorCase> = partition
+        .dev_cases
+        .iter()
+        .map(|index| cases[*index].clone())
+        .collect();
+    let dev_fp = dataset_fingerprint(&dev_cases).context("fingerprint dev partition")?;
+    if dev_fp != EXPECTED_DEV_PARTITION_FINGERPRINT {
+        return Err(anyhow!(
+            "dev partition fingerprint changed: corpus or partition logic drifted"
+        ));
+    }
+    let audit = run_miss_audit()?;
+    let (included, excluded) = gate_critical_set(decision.target, &audit.occurrences);
+    let (rederived, _) = rederived_eligible_counts(&audit.eligible_relevant, &excluded);
+    let mut required = BTreeMap::new();
+    for (universe, denominator) in &rederived {
+        let gate = match universe.as_str() {
+            "64" => GATE_RECALL_64,
+            "128" => GATE_RECALL_128,
+            "256" => GATE_RECALL_256,
+            _ => continue,
+        };
+        required.insert(
+            format!("required_hits_{universe}"),
+            required_hits(*denominator, gate),
+        );
+    }
+    let mut weights = BTreeMap::new();
+    for occurrence in &included {
+        weights.insert(
+            format!("{}@{}", occurrence.tool, occurrence.case_id),
+            occurrence_weight(decision.target, occurrence),
+        );
+    }
+    let unblocked = m002_unblocked(decision.target, &included);
+    let verdict = if unblocked {
+        format!(
+            "M002 unblocked: re-derived gate-critical set under {} is fully inferable ({} included, {} excluded); deterministic Signal V2 sweep authorized on the re-derived denominators",
+            decision.target.as_str(),
+            included.len(),
+            excluded.len()
+        )
+    } else {
+        format!(
+            "workstream negative close owned here: re-derived gate-critical set under {} still contains evaluation-defect rows ({} included with defects); M002 stays blocked; gates unchanged",
+            decision.target.as_str(),
+            included.len()
+        )
+    };
+    // v3 must never inform the decision: the receipt carries no v3 input
+    // and the builder never loads v3 fixtures.
+    Ok(M006DecisionReceipt {
+        schema_version: M006_SCHEMA_VERSION,
+        protocol: M006_PROTOCOL.into(),
+        repository_baseline: decision.repository_baseline.clone(),
+        dataset: "assets/tool-advisor/corpus.jsonl".into(),
+        dataset_fingerprint: dataset_fp,
+        dev_partition_fingerprint: dev_fp,
+        decision: decision.clone(),
+        exclusion_rule: decision.target.exclusion_rule().to_string(),
+        included_occurrences: included,
+        excluded_occurrences: excluded,
+        rederived_eligible_relevant: rederived,
+        required_hits: required,
+        occurrence_weights: weights,
+        m002_unblocked: unblocked,
+        verdict,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1756,5 +2048,115 @@ mod tests {
         let serialized = serde_json::to_string(&key).expect("serialize key");
         assert!(!serialized.contains("Locate every"));
         assert_eq!(key.representation_schema_version, 2);
+    }
+
+    #[test]
+    fn m006_decision_variants_are_exhaustive_and_round_trip() {
+        for target in [
+            RelevanceTarget::AllWorkflow,
+            RelevanceTarget::CurrentStepOnly,
+            RelevanceTarget::GradedRecall,
+        ] {
+            let decision = decide_relevance_target(target, "test rationale", "test-baseline")
+                .expect("decision builds");
+            assert_eq!(decision.target, target);
+            assert!(!decision.rationale.is_empty());
+            assert!(!decision.target.exclusion_rule().is_empty());
+            let serialized = serde_json::to_string(&decision).expect("serialize decision");
+            let round_trip: RelevanceDecision =
+                serde_json::from_str(&serialized).expect("round trip");
+            assert_eq!(round_trip, decision);
+        }
+        assert!(decide_relevance_target(RelevanceTarget::CurrentStepOnly, "   ", "x").is_err());
+        assert!(decide_relevance_target(RelevanceTarget::CurrentStepOnly, "", "x").is_err());
+    }
+
+    #[test]
+    fn m006_current_step_only_excludes_exactly_the_three_secondary_rows() {
+        let audit = run_miss_audit().expect("miss audit runs");
+        assert_eq!(audit.occurrences.len(), 4);
+        let (included, excluded) =
+            gate_critical_set(RelevanceTarget::CurrentStepOnly, &audit.occurrences);
+        assert_eq!(excluded.len(), 3);
+        assert_eq!(included.len(), 1);
+        for row in &excluded {
+            assert_eq!(row.inferability, "implicit-secondary");
+            assert!(row.rule.contains("current-step-only"));
+        }
+        // No inferable row is excluded: the surviving row is the
+        // query-paraphrase glob occurrence.
+        assert_eq!(included[0].tool, "glob");
+        assert_eq!(included[0].inferability, "query-paraphrase");
+        // AllWorkflow keeps everything; GradedRecall keeps everything.
+        let (all_included, all_excluded) =
+            gate_critical_set(RelevanceTarget::AllWorkflow, &audit.occurrences);
+        assert_eq!(all_included.len(), 4);
+        assert!(all_excluded.is_empty());
+        let (graded_included, graded_excluded) =
+            gate_critical_set(RelevanceTarget::GradedRecall, &audit.occurrences);
+        assert_eq!(graded_included.len(), 4);
+        assert!(graded_excluded.is_empty());
+    }
+
+    #[test]
+    fn m006_rederived_denominators_and_required_hits_follow_frozen_gates() {
+        let audit = run_miss_audit().expect("miss audit runs");
+        let (_, excluded) = gate_critical_set(RelevanceTarget::CurrentStepOnly, &audit.occurrences);
+        let (rederived, dropped) = rederived_eligible_counts(&audit.eligible_relevant, &excluded);
+        assert_eq!(dropped, 3);
+        assert_eq!(rederived.get("256").copied().unwrap_or(0), 69);
+        assert_eq!(rederived.get("128").copied().unwrap_or(0), 69);
+        assert_eq!(rederived.get("64").copied().unwrap_or(0), 69);
+        assert_eq!(required_hits(69, GATE_RECALL_256), 66);
+        assert_eq!(required_hits(69, GATE_RECALL_128), 68);
+        assert_eq!(required_hits(69, GATE_RECALL_64), 69);
+        // Frozen corpus unchanged: dev fingerprint still matches.
+        let cases = load_cases(None).expect("load corpus");
+        let partition = partition_cases(&cases);
+        let dev_cases: Vec<ToolAdvisorCase> = partition
+            .dev_cases
+            .iter()
+            .map(|index| cases[*index].clone())
+            .collect();
+        assert_eq!(
+            dataset_fingerprint(&dev_cases).expect("fingerprint dev"),
+            EXPECTED_DEV_PARTITION_FINGERPRINT
+        );
+    }
+
+    #[test]
+    fn m006_receipt_carries_no_v3_input() {
+        let decision = decide_relevance_target(
+            RelevanceTarget::CurrentStepOnly,
+            "test rationale: supporting steps are not current-step needs",
+            "test-baseline",
+        )
+        .expect("decision builds");
+        let receipt = m006_decision_receipt(&decision).expect("receipt builds");
+        assert_eq!(receipt.protocol, M006_PROTOCOL);
+        assert_eq!(receipt.schema_version, M006_SCHEMA_VERSION);
+        let serialized = serde_json::to_string(&receipt).expect("serialize receipt");
+        assert!(!serialized.contains("qualification-v3-holdout"));
+        assert!(!serialized.contains("sequence-qualification-v3"));
+        assert!(!serialized.contains("v3-holdout"));
+    }
+
+    #[test]
+    fn m006_current_step_only_unblocks_m002_while_all_workflow_stays_blocked() {
+        let audit = run_miss_audit().expect("miss audit runs");
+        let (current_included, _) =
+            gate_critical_set(RelevanceTarget::CurrentStepOnly, &audit.occurrences);
+        assert!(m002_unblocked(
+            RelevanceTarget::CurrentStepOnly,
+            &current_included
+        ));
+        let (all_included, _) = gate_critical_set(RelevanceTarget::AllWorkflow, &audit.occurrences);
+        assert!(!m002_unblocked(RelevanceTarget::AllWorkflow, &all_included));
+        let (graded_included, _) =
+            gate_critical_set(RelevanceTarget::GradedRecall, &audit.occurrences);
+        assert!(!m002_unblocked(
+            RelevanceTarget::GradedRecall,
+            &graded_included
+        ));
     }
 }
