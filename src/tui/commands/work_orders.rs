@@ -1791,10 +1791,8 @@ pub(crate) fn apply_trigger_revoked(
             .entry(work_order_id.clone())
             .or_default()
             .push(updated);
-    } else {
-        if let Some(list) = app.dialog_state.trigger_metadata.get_mut(&work_order_id) {
-            list.retain(|existing| existing.trigger_id != trigger_id);
-        }
+    } else if let Some(list) = app.dialog_state.trigger_metadata.get_mut(&work_order_id) {
+        list.retain(|existing| existing.trigger_id != trigger_id);
     }
     let _ = project_id;
     app.messages_state.toasts.info("Trigger revoked");

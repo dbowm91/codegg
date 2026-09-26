@@ -356,9 +356,9 @@ impl LspSemanticCache {
                 .input_hashes
                 .iter()
                 .filter(|(path, expected)| {
-                    !file_hashes
+                    file_hashes
                         .get(*path)
-                        .is_some_and(|actual| actual == *expected)
+                        .is_none_or(|actual| actual != *expected)
                 })
                 .map(|(path, _)| path.clone())
                 .collect();

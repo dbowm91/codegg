@@ -648,7 +648,7 @@ type PreparedLaunchArgv = (
 fn prepare_launch_argv(
     executable: &OsString,
     argv: &[OsString],
-    _cwd: &PathBuf,
+    _cwd: &Path,
     sandbox: &SandboxRequest,
     #[cfg(test)] helper_override: Option<&Path>,
 ) -> Result<PreparedLaunchArgv, ManagedProcessError> {

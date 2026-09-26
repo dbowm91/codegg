@@ -2144,8 +2144,8 @@ impl MeteredInterpreter {
         right: &ProgramValue,
     ) -> Result<bool, InterpreterError> {
         Ok(match kind {
-            IrCmpOp::Eq => self.values_equal(left, right),
-            IrCmpOp::NotEq => !self.values_equal(left, right),
+            IrCmpOp::Eq => Self::values_equal(left, right),
+            IrCmpOp::NotEq => !Self::values_equal(left, right),
             IrCmpOp::Lt => self.value_cmp(left, right)? == std::cmp::Ordering::Less,
             IrCmpOp::LtE => {
                 let ord = self.value_cmp(left, right)?;
@@ -2157,8 +2157,8 @@ impl MeteredInterpreter {
                 ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
             }
             IrCmpOp::In => match right {
-                ProgramValue::List(items) => items.iter().any(|i| self.values_equal(left, i)),
-                ProgramValue::Dict(pairs) => pairs.iter().any(|(k, _)| self.values_equal(left, k)),
+                ProgramValue::List(items) => items.iter().any(|i| Self::values_equal(left, i)),
+                ProgramValue::Dict(pairs) => pairs.iter().any(|(k, _)| Self::values_equal(left, k)),
                 ProgramValue::String(s) => match left {
                     ProgramValue::String(sub) => s.contains(sub.as_str()),
                     _ => false,
@@ -2169,7 +2169,7 @@ impl MeteredInterpreter {
         })
     }
 
-    fn values_equal(&self, left: &ProgramValue, right: &ProgramValue) -> bool {
+    fn values_equal(left: &ProgramValue, right: &ProgramValue) -> bool {
         match (left, right) {
             (ProgramValue::None, ProgramValue::None) => true,
             (ProgramValue::Bool(l), ProgramValue::Bool(r)) => l == r,
@@ -2179,7 +2179,10 @@ impl MeteredInterpreter {
             (ProgramValue::Float(l), ProgramValue::Int(r)) => *l == (*r as f64),
             (ProgramValue::String(l), ProgramValue::String(r)) => l == r,
             (ProgramValue::List(l), ProgramValue::List(r)) => {
-                l.len() == r.len() && l.iter().zip(r.iter()).all(|(a, b)| self.values_equal(a, b))
+                l.len() == r.len()
+                    && l.iter()
+                        .zip(r.iter())
+                        .all(|(a, b)| Self::values_equal(a, b))
             }
             _ => false,
         }

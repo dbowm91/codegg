@@ -61,10 +61,8 @@ impl SseParser {
                 if let Some(event) = self.parse_openai_line(&chunk) {
                     return Some(event);
                 }
-            } else {
-                if let Some(event) = self.parse_anthropic_chunk_inner(&chunk) {
-                    return Some(event);
-                }
+            } else if let Some(event) = self.parse_anthropic_chunk_inner(&chunk) {
+                return Some(event);
             }
         }
         None

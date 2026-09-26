@@ -401,12 +401,10 @@ fn parse_file_reference(input: &str) -> Result<(String, Option<(usize, usize)>),
             let lines = parse_line_range(lines_part)?;
             let path = if file_part.is_empty() {
                 path
+            } else if !path.is_empty() {
+                format!("{}@{}", path, file_part)
             } else {
-                if !path.is_empty() {
-                    format!("{}@{}", path, file_part)
-                } else {
-                    file_part.to_string()
-                }
+                file_part.to_string()
             };
             return Ok((path, Some(lines)));
         }

@@ -2026,6 +2026,10 @@ write = "deny"
     }
 
     #[test]
+    // Intentional non-emptiness guard on emergency-model constants: the
+    // values are const, so Clippy proves the outcome, but the test pins
+    // the invariant against future edits that empty them.
+    #[allow(clippy::const_is_empty)]
     fn test_emergency_default_model_constant_not_empty() {
         assert!(!EMERGENCY_DEFAULT_MODEL.is_empty());
         assert!(!EMERGENCY_DEFAULT_WORKHORSE_MODEL.is_empty());

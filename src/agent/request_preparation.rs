@@ -701,10 +701,8 @@ impl AgentLoop {
             if let Some(server) = domain_cfg.server_name.as_ref() {
                 if domain_cfg.expose_raw_mcp_tools() {
                     hidden_servers.retain(|s| s != server);
-                } else {
-                    if !hidden_servers.iter().any(|s| s == server) {
-                        hidden_servers.push(server.clone());
-                    }
+                } else if !hidden_servers.iter().any(|s| s == server) {
+                    hidden_servers.push(server.clone());
                 }
             }
         }
