@@ -39,6 +39,7 @@ pub mod order_invariance;
 pub mod requalify;
 #[cfg(feature = "tool-advisor-encoder-training")]
 pub mod retrieval_architecture;
+pub mod retrieval_signal;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
 pub mod sequence_encoder;
 #[cfg(feature = "tool-advisor-encoder-training")]
