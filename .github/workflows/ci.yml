@@ -46,8 +46,8 @@ env:
   # Hosted runners have 4 vCPU / 16 GB. Build jobs are fixed at 4 ==
   # runner vCPUs (M001 disposition): 8 oversubscribes the runner because
   # each rustc already threads codegen internally (codegen-units = 16),
-  # and 2 leaves headroom unused (28m37s at JOBS=2 vs ~19 min steady
-  # state at higher concurrency). Test execution slots match (nextest
+  # and 2 leaves headroom unused (28m37s at JOBS=2 vs 17m17s final
+  # main/live CI). Test execution slots match (nextest
   # profile `ci` test-threads = 4). Local default stays 2
   # (see scripts/verify.sh) for smaller developer machines.
   # Test execution remains serial (--test-threads=1) in every mode.

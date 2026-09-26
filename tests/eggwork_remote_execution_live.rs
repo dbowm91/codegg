@@ -343,13 +343,26 @@ impl LiveNode {
             });
         }
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let port: u16 = tokio::time::timeout(Duration::from_secs(60), async {
-            let mut last_line = String::new();
+        // Bounded startup failure bound (C002 WP3): every timeout reports
+        // helper path, elapsed time, child liveness/exit status, last
+        // stdout line, last PHASE marker, and the bounded stderr tail, and
+        // reaps the child so a failed qualification cannot leak a helper.
+        // No secret material is printed (phase names and tails only).
+        let started = std::time::Instant::now();
+        let mut last_line = String::new();
+        let mut last_phase: Option<String> = None;
+        // Bind the timeout result before matching: the readiness future
+        // borrows `child`/`last_line`/`last_phase`, and the timeout arm
+        // below must reuse them after the future is dropped.
+        let waited = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 match lines.next_line().await.expect("helper stdout") {
                     Some(line) => {
                         if let Some(rest) = line.strip_prefix("READY port=") {
                             return rest.trim().parse().expect("READY port parses");
+                        }
+                        if let Some(phase) = line.strip_prefix("PHASE ") {
+                            last_phase = Some(phase.trim().to_string());
                         }
                         last_line = line;
                     }
@@ -367,8 +380,30 @@ impl LiveNode {
                 }
             }
         })
-        .await
-        .expect("helper must become ready");
+        .await;
+        let port: u16 = match waited {
+            Ok(port) => port,
+            Err(_) => {
+                let elapsed = started.elapsed();
+                let state = match child.try_wait() {
+                    Ok(None) => {
+                        let _ = child.kill().await;
+                        let reap = child.wait().await.ok();
+                        format!("still alive at timeout; killed, reap status={reap:?}")
+                    }
+                    Ok(Some(status)) => format!("already exited with status {status}"),
+                    Err(error) => format!("try_wait failed: {error}"),
+                };
+                let logged = stderr_log.lock().unwrap();
+                panic!(
+                    "helper not ready after {elapsed:?} (helper={}, {state}, \
+                     last_phase={last_phase:?}, last_stdout={last_line:?}, \
+                     stderr={:?})",
+                    helper.display(),
+                    String::from_utf8_lossy(&logged),
+                );
+            }
+        };
 
         let node = ResolvedEggworkNode {
             node_id: "live-node-1".to_string(),

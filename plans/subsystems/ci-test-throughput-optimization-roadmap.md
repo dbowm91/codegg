@@ -1,10 +1,10 @@
 # CI and Test Throughput Optimization Roadmap
 
-Status: closed; post-closure corrective C001 registered
+Status: closed; post-closure corrective C002 closed, C001 ready
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
 
-Post-closure note: M001-M005 are historical closed work. Post-closure review found planning/documentation drift and an unsupported M005 compiler-cache disposition. Those findings are owned by `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` C001. Stale duplicate M004/M005 blocks remain visible here as observed predecessor defects until C001 reconciles them; they are not active implementation authority.
+Post-closure note: M001-M005 are historical closed work. C001 in `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` reconciled the status/documentation drift, measured and rejected sccache, and qualified the unrelated-PR path; its measurements are recorded at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` and it is ready to resume final closure. C002 repaired the turn-reaper lost-event race exposed on main run `36215541015`, made helper-startup failures diagnostic, and qualified three consecutive green full hosted live runs; it is closed at `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`.
 
 Primary class: polish / development infrastructure.
 
@@ -20,15 +20,15 @@ Related ADRs: none required. This roadmap changes development/CI mechanics only;
 
 ## 1. Purpose
 
-Routine hosted CI has improved materially but remains too slow for the expected development loop. At the reviewed baseline, the repository records:
+Routine hosted CI had improved materially but remained too slow for the expected development loop. At the original 2026-09-25 reviewed baseline, the repository recorded:
 
 - historical routine CI around 37 minutes;
-- current tuned steady-state around 19 minutes green;
+- intermediate tuned steady-state around 19 minutes green (historical; superseded by final M001-M005 evidence below);
 - Workspace Clippy around 2 minutes;
 - workspace test step around 16 minutes;
-- actual execution of 11,781 tests around 7 minutes;
-- therefore roughly 9 minutes of the current test step still attributable to compile/link/setup rather than test bodies;
-- approximately 189 top-level integration-test source files, with the default workspace run linking on the order of 100 test executables.
+- historical actual execution of 11,781 tests around 7 minutes;
+- therefore roughly 9 minutes of that baseline test step attributable to compile/link/setup rather than test bodies;
+- approximately 189 top-level integration-test source files, with the historical workspace run linking on the order of 100 test executables.
 
 The objective is to reduce the ordinary PR feedback loop substantially while preserving the same correctness boundary. The workstream is measurement-led: cheap compiler/profile changes land first, heavyweight qualification is separated from ordinary feedback only with explicit coverage retention, and integration-test topology is consolidated only after a bounded pilot proves that repeated linking is a real remaining bottleneck.
 
@@ -58,7 +58,7 @@ The root `[profile.test]` sets `strip = "debuginfo"` but does not explicitly set
 
 ### 3.2 Integration-test executable count is structurally high
 
-Cargo creates a separate executable for each top-level integration-test target. The repository records 189 root integration-test files and the current CI timing note attributes a large portion of the workspace-test phase to compile/link of roughly 100 binaries. M003/M004 own a bounded consolidation experiment and, only if positive, broader family-based consolidation.
+Cargo creates a separate executable for each top-level integration-test target. The repository records 189 root integration-test files. M003 and M004 consolidated the compatible topology: the current default root integration suite has 84 binaries, and the workspace suite has 224 test binaries. The historical pre-consolidation run had roughly 100 root integration binaries.
 
 ### 3.3 Live Eggwork qualification is expensive and performs nested builds
 
@@ -80,7 +80,7 @@ Those files contain 53 tests in aggregate. M002 must distinguish tests that genu
 
 ### 3.5 Existing cache is dependency-oriented
 
-`Swatinem/rust-cache` is already used. M005 may evaluate compiler-result caching and final critical-path overlap, but only after M001–M004 establish the new build/test topology. Cache complexity must not mask a structural link problem.
+`Swatinem/rust-cache` was already used. Historically M005 evaluated compiler-result caching and final critical-path overlap after M001–M004 established the build/test topology. C001's corrective closure owns the measured compiler-cache disposition. Cache complexity must not mask a structural link problem.
 
 ## 4. Dependency graph
 
@@ -103,7 +103,8 @@ M005 cache and final critical-path closure
 - M001 is closed with the measured hosted baseline (run `36173876950`, 17m54s, JOBS=4).
 - M003 is closed with the measured hosted baseline (run `36193906726`, 17m31s, live target qualified, build 8m17s, exec 338s, positive pilot closed).
 - M004 is closed with the bounded consolidation (run `36196068239` final, 17m17s, build 7m51s, exec 362s, 5 `session_*` binaries → 1 `session_family`).
-- M005 is ready against the stabilized topology (hosted run `36196068239`).
+- M005 is closed against the stabilized topology (hosted run `36196068239`);
+  its unmeasured compiler-cache conclusion is superseded by C001's closure record.
 
 ## 5. Milestones
 
@@ -153,29 +154,9 @@ Apply the proven harness pattern to additional compatible families, preserving f
 ### M005 — Compiler cache and final critical-path closure
 
 Status: closed (`plans/closure/ci-test-throughput-optimization/005-status.md`;
-sccache + same-job-overlap negative dispositions recorded;
-documentation reconciled; final steady-state 17m17s hosted, run
-`36196068239` final).
-
-Implementation plan:
-
-- `plans/implementation/ci-test-throughput-optimization/005-cache-and-critical-path-closure.md`
-
-Evaluate compiler-result caching and safe same-job critical-path overlap against the stabilized topology. Retain only wins that are reproducible, bounded, and simpler than the time they save. Reconcile active testing documentation with the final measured routine-CI contract.
-
-### M004 — Bounded integration-test family consolidation
-
-Status: blocked/conditional on positive M003.
-
-Implementation plan:
-
-- `plans/implementation/ci-test-throughput-optimization/004-bounded-integration-test-family-consolidation.md`
-
-Apply the proven harness pattern to additional compatible families, preserving feature/resource boundaries and human navigability. Stop before heavy/live/special-platform tests where consolidation would weaken isolation or diagnostics.
-
-### M005 — Compiler cache and final critical-path closure
-
-Status: blocked on M004 or documented negative consolidation disposition.
+historical unmeasured sccache rejection later superseded by corrective C001;
+same-job-overlap negative disposition remains accepted; final steady-state
+17m17s hosted, run `36196068239` final).
 
 Implementation plan:
 
