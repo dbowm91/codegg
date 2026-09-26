@@ -1,6 +1,6 @@
 # CI/Test Throughput Post-Closure Corrective C001 — Closure Evidence, Cache Qualification, and Documentation Reconciliation
 
-Status: ready
+Status: blocked on C002 hosted CI timing-flake stabilization
 
 Repository baseline reviewed: `4f7e508976e70fbec0e645bd530b63fe3c8393c1`
 
@@ -13,6 +13,13 @@ Predecessor closure:
 - `plans/closure/ci-test-throughput-optimization/005-status.md`
 
 Primary class: polish / development infrastructure.
+
+Hard dependency:
+
+- C002 hosted CI timing-flake stabilization must close first:
+  `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md`.
+
+C001 MUST NOT begin the sccache A/B or use hosted timing runs for closure while C002 is open. Planning/documentation inventory work may be reviewed, but final timing/cache evidence resumes only after C002 restores a trustworthy green main/live baseline.
 
 ## 1. Objective
 
