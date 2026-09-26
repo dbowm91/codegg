@@ -1,8 +1,10 @@
 # CI and Test Throughput Optimization Roadmap
 
-Status: active
+Status: closed; post-closure corrective C001 registered
 
 Repository planning baseline: `0c896db32d2325da39b129acde7dd406ce472dc4`
+
+Post-closure note: M001-M005 are historical closed work. Post-closure review found planning/documentation drift and an unsupported M005 compiler-cache disposition. Those findings are owned by `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` C001. Stale duplicate M004/M005 blocks remain visible here as observed predecessor defects until C001 reconciles them; they are not active implementation authority.
 
 Primary class: polish / development infrastructure.
 
