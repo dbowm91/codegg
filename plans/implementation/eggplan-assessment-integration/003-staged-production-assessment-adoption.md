@@ -1,6 +1,7 @@
 # Eggplan Assessment Integration M002 — Staged Production Assessment Adoption
 
-Status: ready for handoff
+Status: implemented (closed; see
+`plans/closure/eggplan-assessment-integration/003-status.md`)
 
 Repository baseline:
 

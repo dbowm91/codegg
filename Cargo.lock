@@ -905,6 +905,8 @@ dependencies = [
  "eggfetch-core",
  "egggit",
  "egglsp",
+ "eggplan-codegg-compat",
+ "eggplan-core",
  "eggsact",
  "eggsentry",
  "eggup-acquisition",
@@ -1828,6 +1830,28 @@ dependencies = [
  "which",
  "xz2",
  "zip 2.4.2",
+]
+
+[[package]]
+name = "eggplan-codegg-compat"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggplan.git?rev=0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8#0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8"
+dependencies = [
+ "eggplan-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "eggplan-core"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggplan.git?rev=0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8#0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

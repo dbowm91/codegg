@@ -308,6 +308,11 @@ cargo test -p codegg-core --test work_plan_projection_arbiter
 cargo test --test work_plan_projection_arbiter
 cargo test --test long_horizon_trajectory_qualification
 cargo test -p codegg-core -- migration
+cargo test -p codegg --lib work_plan_eggplan
+cargo test --test work_plan_eggplan_differential
+cargo test --test work_plan_eggplan_engines
+cargo test --test work_plan_resolved_evidence
+python3 scripts/check_eggplan_assessment_boundary.py
 ```
 
 Unit (model): IDs, bounds, transition matrices, blocker rule, actionability,
@@ -333,3 +338,75 @@ source provenance and native job/attempt/run identifiers. It resolves
 AgentRun subjects only through the durable exact job+attempt link. Missing,
 dangling, legacy, drifted, and unsealed provenance is never filled from the
 current workspace.
+
+## M002 staged Eggplan assessment adoption
+
+Git-backed supported-evidence plans are assessed through Eggplan's generic
+plan/evidence assessment (`src/work_plan_eggplan.rs`, the only production
+module that may name `eggplan_*`; guard:
+`scripts/check_eggplan_assessment_boundary.py`). Dependency pin (immutable,
+root package only): `eggplan-core` + `eggplan-codegg-compat` at Eggplan
+`0d4a6af7` (docs-only delta over the pure bridge `088968bd`); `eggplan-repo/
+-cli/-projection/-markdown/-integrations` are forbidden production
+dependencies, and `codegg-core` stays Eggplan-free (guard:
+`scripts/check-core-boundary.sh`). Transitive delta is zero new crates.
+
+- Facade (`assess_work_plan_with_eggplan`): resolves the canonical workspace
+  root from the session/workspace catalog (never CWD), captures the current
+  subject S1 through scheduler-owned `scheduler::assessment_subject`
+  (governed `egggit` capture; M001 ownership guard unchanged), resolves and
+  binds evidence, and calls the pure `assess_codegg_snapshot` bridge. Returns
+  the existing `WorkPlanCompletionAssessment` DTO plus engine identity,
+  Eggplan family/reason codes, mapping digest, S1, and a bounded diagnostic.
+  No Eggplan storage handle escapes; no repository Plan binding (M003).
+- Engine selection (explicit, deterministic): `EggplanGit` (Git-backed, S1
+  captured, all non-human kinds supported); `LegacyNonGit` (capture
+  positively established non-Git; capture errors never select it);
+  `LegacyUnsupportedEvidence` (Artifact/Commit cited, or plan shape outside
+  the pinned bridge contract — empty/oversized item set, overlong IDs);
+  `LegacyNoWorkspaceContext` (no workspace identity bound; preserves legacy
+  sessions/tests); `TerminalHistory` (Completed/Cancelled history is never
+  live-re-assessed). Legacy engines return the legacy result verbatim.
+  Missing/stale/drifted/unbound evidence stays fail-closed inside Eggplan
+  assessment, never legacy satisfaction; capture failure fails closed.
+- Verification spec v1 (`codegg` namespace, Eggplan domain-separated
+  digest): Test (argv/cwd/scope/effective timeout/target; display `command`
+  excluded), ManagedArgv/Shell/Git (argv/cwd/timeout/target; Shell without
+  explicit argv fails closed), Python (script/source digest + args/cwd/mode/
+  effective timeout; no durable source identity fails closed), SubagentRun
+  (prompt digest only, agent/model/policy/identities/base commit; legacy
+  Subagent stays unavailable). IDs/labels/timestamps/leases/logs/node
+  addresses never enter the digest (pinned golden + sensitivity tests).
+- Adapter: every observation carries current S1; historical provenance
+  decides only the observation status (Stable+sealed==S1 keeps terminal
+  status, else `Unavailable`; InProgress stays InProgress and cannot satisfy
+  completion). Unbindable refs are excluded from the snapshot (their
+  requirements read as missing, never satisfied); shared refs keep per-item
+  requirements with deterministic suffixed observation IDs. Human
+  acceptances are normalized at the input (N1: mixed with non-human
+  dispositions → `Unmet`; N2: human-only with non-`Passed` evidence →
+  `Unmet`) so Eggplan's evidence-independent human criterion cannot allow
+  completion CodeGG would refuse; the mapping manifest records original
+  dispositions. Dirty-digest namespace translation (M001 bare hex →
+  `sha256:`-prefixed) lives in the adapter; the durable shape is unchanged.
+- Completion revalidation (`maybe_complete_plan_on_turn_end`): the S1
+  assessment may be displayed, but the `Completed` CAS requires a fresh S2
+  capture immediately before the transition with S2 == S1 (identity,
+  revision, state, digest). Drift/failure/unresolvable root blocks the
+  close (`subject_changed_before_completion`), preserves state, writes
+  nothing into historical evidence; the next boundary re-assesses.
+  Legacy-engine assessments keep the direct CAS path.
+- Production call sites: `work_plan_arbiter::{assess_active_plan,
+  assess_goal_plan}` (now returning the backed assessment) and
+  `tool/work_plan.rs` read/mutation paths go through the facade; the
+  item-level host-evidence gate and `work_plan_todo_sync` (status-only)
+  are unchanged. `decide_from_assessment` still consumes the DTO.
+- Differential parity (`tests/work_plan_eggplan_differential.rs`,
+  `tests/work_plan_eggplan_engines.rs`): the universal rule is Eggplan
+  allows completion ⇒ legacy allows. Recorded stricter deltas (subject/
+  verification authority legacy did not model): forged `Satisfied`,
+  stale/drifted/incomplete/legacy-missing subjects, unbindable specs,
+  unlinked AgentRun rows, `Cancelled` items, distinct-identity failed
+  co-evidence. Recorded variant-ordering deltas (both refuse completion):
+  actionable+blocked mixes (Eggplan reports `Blocked`), owner-only in-flight
+  (Eggplan reports actionable), blocked plans with unbound requirements.

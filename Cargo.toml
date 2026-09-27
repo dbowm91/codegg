@@ -282,6 +282,15 @@ eggsact = "1.2.5"
 eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "6cc813418c3f14740a635fef79208e85219175bb", default-features = false }
 eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "6cc813418c3f14740a635fef79208e85219175bb", default-features = false }
 
+# Eggplan staged assessment adoption (eggplan-assessment-integration M002).
+# Pinned to the reviewed immutable head `0d4a6af7` (docs-only delta over the
+# pure bridge `088968bd`). Application-layer only: `codegg-core` must stay
+# Eggplan-free (see scripts/check-core-boundary.sh + the M002 boundary guard).
+# Only the pure assessment crates are consumed; `eggplan-repo/-cli/
+# -projection/-markdown/-integrations` are forbidden production dependencies.
+eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8" }
+eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8" }
+
 # Optional sequence-encoder experiment. These dependencies are never part of
 # the default advisor/runtime graph; the feature boundary is intentionally
 # explicit until offline qualification selects a production architecture.

@@ -190,10 +190,9 @@ pub fn split_identifier_tokens(name: &str) -> Vec<String> {
                 && (prev_was_lower
                     || (!current.is_empty()
                         && current.chars().last().is_some_and(|c| c.is_numeric())))
+                && !current.is_empty()
             {
-                if !current.is_empty() {
-                    raw_parts.push(std::mem::take(&mut current));
-                }
+                raw_parts.push(std::mem::take(&mut current));
             }
             current.extend(ch.to_lowercase());
             prev_was_lower = !is_upper && ch.is_alphabetic();
@@ -1312,7 +1311,7 @@ fn audit_occurrence(
         case_id: case.case_id.clone(),
         partition: "dev".into(),
         relevance_grade: grade,
-        preferred_order_position: preferred_order_position,
+        preferred_order_position,
         is_primary_highest_grade: grade >= max_grade,
         serialized_query: query.serialize(),
         candidate_name: candidate.name.clone(),

@@ -1933,12 +1933,12 @@ impl AgentLoop {
             .or_else(|| self.services.todo_pool.clone())
         {
             match crate::work_plan_arbiter::assess_active_plan(&pool, &self.session_id).await {
-                Ok(Some((plan, _items, assessment))) if plan.goal_id.is_none() => {
+                Ok(Some((plan, _items, backed))) if plan.goal_id.is_none() => {
                     let budget_expired = self.check_limits().is_some();
                     match crate::work_plan_arbiter::maybe_complete_plan_on_turn_end(
                         &pool,
                         &plan,
-                        &assessment,
+                        &backed,
                         budget_expired,
                     )
                     .await
