@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active roadmap; M001 closed, M002 closing (implementation landed, closure review in progress)
+Status: active roadmap; M001 closed, M002 closed (M003 dependency-ready, handoff unregistered)
 
 Canonical authority:
 
@@ -129,7 +129,11 @@ explicitly unavailable for exact-subject proof.
 
 ### M002 — Eggplan-backed WorkPlan assessment adoption
 
-Status: closing; implementation landed, closure review in progress.
+Status: closed.
+
+Closure: `plans/closure/eggplan-assessment-integration/003-m002-status.md`
+(implementation `85058541` + follow-ups through `79bae034`; hosted CI run
+`36336450431` success on the exact head).
 
 CodeGG-local implementation plan:
 
@@ -168,7 +172,10 @@ permissive regression and no CodeGG runtime/storage ownership transfer.
 
 ### M003 — Repository Plan binding
 
-Status: deferred; blocked on positive M002.
+Status: deferred; hard predecessor (positive M002) closed in
+`plans/closure/eggplan-assessment-integration/003-m002-status.md`, handoff
+plan unregistered. Registering the M003 implementation handoff remains
+future planning work.
 
 Allow a CodeGG session/WorkOrder to reference an Eggplan repository Plan and
 feed CodeGG job/run/test/artifact observations back through the qualified
