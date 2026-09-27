@@ -360,5 +360,5 @@ changes state.
   `plans/implementation/codegg-integration/002-staged-eggplan-assessment-
   adoption.md` amended to record CodeGG implementation `85058541`,
   CodeGG closure (this record), Eggplan pin `0d4a6af7`, and bridge
-  `088968bd` (commit `<eggplan-sha>`), leaving their M002 `ready` for
+  `088968bd` (commit `3a789fd`), leaving their M002 `ready` for
   their own closure pass.
