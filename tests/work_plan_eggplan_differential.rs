@@ -1277,6 +1277,41 @@ async fn differential_actionable_plus_blocked_items() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn differential_scheduled_job_actionable_item() {
+    // A scheduled (never-started) job cited by an actionable item: legacy
+    // reports actionable work remaining, Eggplan reports InFlight. Both
+    // refuse completion (recorded variant-ordering delta).
+    let pool = common::pool::isolated_pool().await;
+    let store = SqliteJobStore::new(pool.clone());
+    let job = store
+        .create_job(job_spec(JobKind::Test, test_payload()))
+        .await
+        .unwrap();
+    let (plan, _) = plan_fixture(WorkPlanStatus::Active);
+    let items = vec![item_fixture(
+        &plan,
+        WorkItemStatus::Actionable,
+        0,
+        vec![unmet("c")],
+        vec![evidence_ref(
+            WorkEvidenceKind::TestJob,
+            &job.job_id.to_string(),
+        )],
+    )];
+    let (legacy, eggplan, family) = run_both(&pool, &plan, &items).await;
+    assert!(matches!(
+        legacy,
+        WorkPlanCompletionAssessment::ActionableWorkRemaining { .. }
+    ));
+    assert!(matches!(
+        eggplan,
+        WorkPlanCompletionAssessment::InFlight { .. }
+    ));
+    assert_eq!(family, "in_flight");
+    assert_permissiveness(&legacy, &eggplan);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn differential_owner_provenance_only_inflight() {
     // An InProgress item with owner provenance but no live ref: legacy
     // surfaces an InFlight owner handle; Eggplan has no observation to
