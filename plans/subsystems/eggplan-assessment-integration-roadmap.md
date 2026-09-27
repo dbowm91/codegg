@@ -129,7 +129,17 @@ explicitly unavailable for exact-subject proof.
 
 ### M002 — Eggplan-backed WorkPlan assessment adoption
 
-Status: ready; M001 is closed and the staged-adoption bridge is present.
+Status: ready for handoff.
+
+CodeGG-local implementation plan:
+
+- `plans/implementation/eggplan-assessment-integration/003-staged-production-assessment-adoption.md`
+
+Coordinated Eggplan plan:
+
+- `plans/implementation/codegg-integration/002-staged-eggplan-assessment-adoption.md`
+
+M001 is closed and the staged-adoption bridge is present.
 
 The provenance dependency is satisfied by CodeGG M001 closure
 `418fdc85656e7e1faa57f71e5e7f10f7f4859c60`. Eggplan's current pure bridge
@@ -139,10 +149,18 @@ digest derivation and differential-adoption requirements remain its scope.
 Coordinate with Eggplan
 `plans/implementation/codegg-integration/002-staged-eggplan-assessment-adoption.md`.
 
-Use the pure Eggplan CodeGG bridge behind CodeGG's existing assessment surface,
-derive verification digests from authoritative native execution
-specifications, and run differential qualification before removing duplicated
-pure assessment logic.
+Use the pure Eggplan CodeGG bridge behind a CodeGG application-layer
+assessment facade, derive verification digests from authoritative native
+execution specifications, and run differential qualification before migrating
+production Git-backed supported-evidence call sites.
+
+The pure `codegg-core::work_plan::assess_work_plan` remains a compatibility
+API/differential oracle and explicit legacy engine for non-Git or currently
+unsupported evidence kinds; DB/Git authority is not moved into codegg-core.
+
+Implementation may proceed in parallel with the CI timing-flake corrective,
+but M002 closure requires a trustworthy green hosted baseline before CI
+evidence may be accepted.
 
 Exit condition: CodeGG's existing WorkPlan completion families are produced
 through Eggplan's generic assessment for the supported evidence subset with no
