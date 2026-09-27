@@ -1322,7 +1322,7 @@ async fn differential_bridge_rejects_binding_mismatch() {
     )
     .await;
     let (plan, _) = plan_fixture(WorkPlanStatus::Active);
-    let items = vec![item_fixture(
+    let items = [item_fixture(
         &plan,
         WorkItemStatus::Completed,
         0,
