@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M007 — M002 Preregistration Reproducibility Corrective
 
-Status: implemented — receipt `assets/tool-advisor/retrieval-signal-m002-preregistration.json` generated; focused reproducibility test and `scripts/verify.sh quick` passed; closure record follows
+Status: closed — `plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`
 
 Repository baseline: `0c663820`
 

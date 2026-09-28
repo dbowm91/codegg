@@ -179,9 +179,9 @@ current-step needs (closure
 `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`;
 receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
 with `m002_ready=false`). M006 later resolved the relevance-target
-blocker, but M002 is blocked on a separate missing-preregistration detail
-tracked by M007. The frozen Signal V2 contract and conditional M003 grid
-stand for reuse once M007 closes.
+  blocker. M007 later supplied the separate missing scoring details and
+  M002 is now ready. The frozen Signal V2 contract and conditional M003
+  grid stand for reuse under M002's new receipt.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -189,9 +189,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M007. M006 positively resolved the relevance target, but M002's §10 reproducibility stop fired because M001 omitted exact lexical weighting and semantic encoding details (blocked closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`).
+Status: ready — M006 resolved relevance and M007 closed the preregistration corrective (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`; receipt fingerprint `798a6e48…`).
 
-After M007 freezes the complete arm contract, implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators.
+Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the M007 frozen receipt.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
@@ -245,9 +245,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/007-m002-preregistration-reproducibility-corrective.md`
 
-Status: ready — M002 §10 stop condition; no retrieval measurement may begin until every arm is reproducible from a frozen receipt.
+Status: closed — every arm is reproducible from the frozen receipt (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`).
 
-Freeze the exact lexical weights/scoring and semantic encoding/pooling details omitted by M001, without inspecting M002 dev outcomes. Close M007 to return M002 to ready only after the reproducibility audit passes.
+M007 froze exact lexical weights/scoring and semantic encoding/pooling details omitted by M001 without inspecting M002 dev outcomes. M002 is ready and must use the committed receipt unchanged.
 
 ## 8. Exit conditions
 

@@ -1,13 +1,13 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: blocked — M001's preregistration omits the exact weighting/scoring contract required by §§3-4; blocked closure at `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`; M007 owns the preregistration correction
+Status: ready — M006 resolved the relevance target and M007 froze the reproducible scoring contract (`assets/tool-advisor/retrieval-signal-m002-preregistration.json`; SHA-256 `798a6e4847f93d5cf5039ba365f1535ced769fa9e328be1b3f902ec37eb1c7c0`; M007 closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`)
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
-Dependency:
+Dependencies:
 
 - M006 positive relevance-target decision (closed; current-step-only; M002 is eligible once its frozen scoring contract is reproducible).
-- M007 complete preregistration correction (blocked M002 stop condition; must close before any M002 measurement).
+- M007 complete preregistration correction (closed; receipt above).
 
 Source roadmap:
 
@@ -151,7 +151,7 @@ Stop and register corrective work if:
 - representation depends on candidate authority outside the allowed surface;
 - M001 preregistration cannot be reproduced.
 
-Stop disposition: The M001 receipt freezes variant names and field order but contains no exact query/descriptor weighting strategy or field weights. M002 §§3-4 require those values to be fixed by M001, so do not choose values or measure variants in this milestone. M007 owns the missing preregistration details.
+Stop disposition: The preregistration gap was resolved before any M002 measurement by M007. Use only the frozen receipt and do not change its parameters after observing dev results.
 
 ## 11. Verification
 
