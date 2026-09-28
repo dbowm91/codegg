@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: ready — M009 closed; no M002 retrieval outcomes have been measured
+Status: active — implementing the preregistered deterministic retrieval experiment; no M002 retrieval outcomes have been measured
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
