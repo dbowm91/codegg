@@ -1,13 +1,14 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: ready — M006 resolved the relevance target and M007 froze the reproducible scoring contract (`assets/tool-advisor/retrieval-signal-m002-preregistration.json`; SHA-256 `798a6e4847f93d5cf5039ba365f1535ced769fa9e328be1b3f902ec37eb1c7c0`; M007 closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`)
+Status: ready — M008 closed with the corrected preregistration receipt; no M002 retrieval outcomes have been measured
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
 Dependencies:
 
 - M006 positive relevance-target decision (closed; current-step-only; M002 is eligible once its frozen scoring contract is reproducible).
-- M007 complete preregistration correction (closed; receipt above).
+- M007 complete preregistration correction (closed; receipt `assets/tool-advisor/retrieval-signal-m002-preregistration.json`).
+- M008 explicit per-arm lexical tokenization (closed; corrected receipt fingerprint `4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712`).
 
 Source roadmap:
 
@@ -151,7 +152,7 @@ Stop and register corrective work if:
 - representation depends on candidate authority outside the allowed surface;
 - M001 preregistration cannot be reproduced.
 
-Stop disposition: The preregistration gap was resolved before any M002 measurement by M007. Use only the frozen receipt and do not change its parameters after observing dev results.
+Stop disposition: Arm-by-arm replay found that M007 did not distinguish flat BM25 tokenization from normalized-token BM25, leaving the two arms ambiguous. M008 clarified the three tokenizer contracts and BM25F term accounting before any M002 measurement; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/008-status.md`. The corrected receipt SHA-256 is `4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712`.
 
 ## 11. Verification
 

@@ -31,8 +31,11 @@
       "k1": 1.5,
       "b": 0.75,
       "idf": "ln(1 + (N - df + 0.5)/(df + 0.5))",
-      "query_tf": "raw term frequency",
-      "document_length": "sum of token occurrences",
+      "query_tf": "raw term frequency after the arm-specific tokenizer",
+      "document_length": "sum of token occurrences after the arm-specific tokenizer",
+      "flat_average_length": "mean document token count over every candidate in that case universe",
+      "field_document_frequency": "count candidate documents containing the term in any descriptor field",
+      "field_average_length": "mean field token count over every candidate, including empty fields",
       "zero_score_tie_break": "canonical_name ascending"
     },
     "normalization": {
@@ -46,13 +49,14 @@
         "name": "v1-bm25-baseline",
         "query": "AdvisorContextV2 serialized context",
         "descriptor": "canonical name + description",
-        "scorer": "existing ToolCatalog BM25; baseline implementation unchanged"
+        "tokenizer": "existing ToolCatalog tokenizer/scorer; unchanged baseline implementation"
       },
       {
         "name": "signal-v2-flat-bm25",
         "query": "RetrievalQueryV2::flat_text",
         "descriptor": "RetrievalDescriptorV2::flat_text",
-        "scorer": "BM25 constants above"
+        "tokenizer": "lowercase Unicode text; split on every non-alphanumeric character; preserve repeated tokens; no identifier decomposition",
+        "scorer": "BM25 constants above; query and document term frequency count occurrences"
       },
       {
         "name": "signal-v2-field-weighted-bm25",
@@ -104,13 +108,15 @@
             "weight": 0.0
           }
         ],
-        "scorer": "BM25F: for each term, qtf=sum(query_field_weight*term_frequency); weighted_tf=sum(descriptor_field_weight*term_frequency/(1-b+b*field_length/field_average_length)); score=sum(IDF*qtf*(k1+1)*weighted_tf/(k1+weighted_tf)); field averages are per-field means over the case candidate universe; empty fields contribute zero"
+        "tokenizer": "same occurrence-preserving lowercase Unicode/alphanumeric-boundary tokenizer as signal-v2-flat-bm25, applied independently to each field",
+        "scorer": "BM25F: per term qtf=sum(query_field_weight*raw field term frequency); weighted_tf=sum(descriptor_field_weight*raw field term frequency/(1-b+b*field_length/field_average_length)); IDF uses document presence in any descriptor field; score=sum(IDF*qtf*(k1+1)*weighted_tf/(k1+weighted_tf)); average lengths are means over all candidates and empty fields count as length zero"
       },
       {
         "name": "signal-v2-normalized-bm25",
         "query": "signal_tokens(RetrievalQueryV2::flat_text)",
         "descriptor": "signal_tokens(RetrievalDescriptorV2::flat_text)",
-        "scorer": "BM25 constants above; unique normalized tokens each count once"
+        "tokenizer": "NFKC; full Unicode lowercase; split on non-alphanumeric; decompose snake/kebab/camel identifiers; deduplicate preserving first occurrence; no stemming or synonyms",
+        "scorer": "BM25 constants above; normalized unique tokens each count once"
       }
     ],
     "semantic_arms": [
@@ -161,5 +167,5 @@
     "authority": "rank only candidates already present and deferred in the frozen expanded universe; no candidate creation, filtering, or authority decision",
     "selection": "best per-arm operating point uses smallest K, then lower p95 latency, then lower descriptor bytes/cache size, then lexical mode name; no post-hoc variants or parameter changes"
   },
-  "sha256": "798a6e4847f93d5cf5039ba365f1535ced769fa9e328be1b3f902ec37eb1c7c0"
+  "sha256": "4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712"
 }

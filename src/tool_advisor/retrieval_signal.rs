@@ -164,13 +164,13 @@ pub fn m007_preregistration_spec() -> serde_json::Value {
         "denominators": {"universe_sizes": [64,128,256], "eligible_relevant_each": 69, "required_hits": {"64":69,"128":68,"256":66}},
         "k_values": [16,24,32],
         "gates": {"64": 0.99, "128": 0.98, "256": 0.95, "authority_violations": 0},
-        "bm25": {"k1": M007_BM25_K1, "b": M007_BM25_B, "idf": "ln(1 + (N - df + 0.5)/(df + 0.5))", "query_tf": "raw term frequency", "document_length": "sum of token occurrences", "zero_score_tie_break": "canonical_name ascending"},
+        "bm25": {"k1": M007_BM25_K1, "b": M007_BM25_B, "idf": "ln(1 + (N - df + 0.5)/(df + 0.5))", "query_tf": "raw term frequency after the arm-specific tokenizer", "document_length": "sum of token occurrences after the arm-specific tokenizer", "flat_average_length": "mean document token count over every candidate in that case universe", "field_document_frequency": "count candidate documents containing the term in any descriptor field", "field_average_length": "mean field token count over every candidate, including empty fields", "zero_score_tie_break": "canonical_name ascending"},
         "normalization": {"unicode": "NFKC then full lowercase", "tokenization": "split on non-alphanumeric; decompose snake/kebab/camel identifiers; deduplicate preserving first occurrence", "stemming": "none", "synonyms": "none"},
         "lexical_arms": [
-            {"name":"v1-bm25-baseline", "query":"AdvisorContextV2 serialized context", "descriptor":"canonical name + description", "scorer":"existing ToolCatalog BM25; baseline implementation unchanged"},
-            {"name":"signal-v2-flat-bm25", "query":"RetrievalQueryV2::flat_text", "descriptor":"RetrievalDescriptorV2::flat_text", "scorer":"BM25 constants above"},
-            {"name":"signal-v2-field-weighted-bm25", "query_fields": M007_FIELD_WEIGHT_QUERY.iter().map(|(name, weight)| serde_json::json!({"name":name,"weight":weight})).collect::<Vec<_>>(), "descriptor_fields": M007_FIELD_WEIGHT_DESCRIPTOR.iter().map(|(name, weight)| serde_json::json!({"name":name,"weight":weight})).collect::<Vec<_>>(), "scorer":"BM25F: for each term, qtf=sum(query_field_weight*term_frequency); weighted_tf=sum(descriptor_field_weight*term_frequency/(1-b+b*field_length/field_average_length)); score=sum(IDF*qtf*(k1+1)*weighted_tf/(k1+weighted_tf)); field averages are per-field means over the case candidate universe; empty fields contribute zero"},
-            {"name":"signal-v2-normalized-bm25", "query":"signal_tokens(RetrievalQueryV2::flat_text)", "descriptor":"signal_tokens(RetrievalDescriptorV2::flat_text)", "scorer":"BM25 constants above; unique normalized tokens each count once"}
+            {"name":"v1-bm25-baseline", "query":"AdvisorContextV2 serialized context", "descriptor":"canonical name + description", "tokenizer":"existing ToolCatalog tokenizer/scorer; unchanged baseline implementation"},
+            {"name":"signal-v2-flat-bm25", "query":"RetrievalQueryV2::flat_text", "descriptor":"RetrievalDescriptorV2::flat_text", "tokenizer":"lowercase Unicode text; split on every non-alphanumeric character; preserve repeated tokens; no identifier decomposition", "scorer":"BM25 constants above; query and document term frequency count occurrences"},
+            {"name":"signal-v2-field-weighted-bm25", "query_fields": M007_FIELD_WEIGHT_QUERY.iter().map(|(name, weight)| serde_json::json!({"name":name,"weight":weight})).collect::<Vec<_>>(), "descriptor_fields": M007_FIELD_WEIGHT_DESCRIPTOR.iter().map(|(name, weight)| serde_json::json!({"name":name,"weight":weight})).collect::<Vec<_>>(), "tokenizer":"same occurrence-preserving lowercase Unicode/alphanumeric-boundary tokenizer as signal-v2-flat-bm25, applied independently to each field", "scorer":"BM25F: per term qtf=sum(query_field_weight*raw field term frequency); weighted_tf=sum(descriptor_field_weight*raw field term frequency/(1-b+b*field_length/field_average_length)); IDF uses document presence in any descriptor field; score=sum(IDF*qtf*(k1+1)*weighted_tf/(k1+weighted_tf)); average lengths are means over all candidates and empty fields count as length zero"},
+            {"name":"signal-v2-normalized-bm25", "query":"signal_tokens(RetrievalQueryV2::flat_text)", "descriptor":"signal_tokens(RetrievalDescriptorV2::flat_text)", "tokenizer":"NFKC; full Unicode lowercase; split on non-alphanumeric; decompose snake/kebab/camel identifiers; deduplicate preserving first occurrence; no stemming or synonyms", "scorer":"BM25 constants above; normalized unique tokens each count once"}
         ],
         "semantic_arms": [
             {"name":"signal-v2-flat", "query":"unlabelled RetrievalQueryV2 field values in frozen field order", "descriptor":"RetrievalDescriptorV2::flat_text"},
@@ -548,6 +548,23 @@ impl RetrievalQueryV2 {
             }
         }
         truncate_to_char_boundary(&output, QUERY_TOTAL_BYTE_CAP)
+    }
+
+    /// Query field values without labels, in the frozen field order. Used
+    /// only by the M002 semantic flat arm.
+    pub fn flat_text(&self) -> String {
+        let mut values = Vec::new();
+        values.extend(self.current_objective.iter().cloned());
+        values.extend(self.current_task.iter().cloned());
+        values.extend(self.next_steps.iter().cloned());
+        values.extend(self.unresolved_signal.iter().cloned());
+        values.extend(self.capability_cue.iter().cloned());
+        values
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Generic retrieval tokens for the query (audit/diagnostic helper).
@@ -2300,6 +2317,10 @@ mod tests {
         assert!(semantic.contains("field-labelled-descriptor"));
         assert!(semantic.contains("field-labelled-query"));
         assert!(!semantic.contains("qualification-v3"));
+        let lexical = serde_json::to_string(&spec["lexical_arms"]).unwrap();
+        assert!(lexical.contains("preserve repeated tokens"));
+        assert!(lexical.contains("deduplicate preserving first occurrence"));
+        assert!(lexical.contains("document presence in any descriptor field"));
         let committed: serde_json::Value = serde_json::from_str(include_str!(
             "../../assets/tool-advisor/retrieval-signal-m002-preregistration.json"
         ))

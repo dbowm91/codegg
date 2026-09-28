@@ -158,7 +158,7 @@ M005 fresh v4 qualification
 
 - M001 is blocked (evaluation hard stop; audit + preregistration complete).
 - M006 is closed positively and unblocked M002 (decision `current-step-only`, re-derived 69 per universe, receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`).
-- M002 is ready (via the M006 positive re-audit).
+- M006 resolved the relevance question; M008 closed the tokenization clarification and M002 is ready.
 - M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
@@ -179,9 +179,9 @@ current-step needs (closure
 `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`;
 receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
 with `m002_ready=false`). M006 later resolved the relevance-target
-  blocker. M007 later supplied the separate missing scoring details and
-  M002 is now ready. The frozen Signal V2 contract and conditional M003
-  grid stand for reuse under M002's new receipt.
+  blocker. M007 supplied the scoring details; M008 then froze distinct lexical
+  tokenizers and BM25F term accounting before measurement. M002 is ready with
+  corrected receipt fingerprint `4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712`.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -189,9 +189,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: ready — M006 resolved relevance and M007 closed the preregistration corrective (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`; receipt fingerprint `798a6e48…`).
+Status: ready — M008 closed; corrected receipt fingerprint `4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712`.
 
-Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the M007 frozen receipt.
+Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
@@ -247,7 +247,15 @@ Plan:
 
 Status: closed — every arm is reproducible from the frozen receipt (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`).
 
-M007 froze exact lexical weights/scoring and semantic encoding/pooling details omitted by M001 without inspecting M002 dev outcomes. M002 is ready and must use the committed receipt unchanged.
+M007 froze scoring weights and semantic encodings without inspecting M002 dev outcomes. M008 owns a final tokenizer/frequency distinction found before M002 began; M002 remains blocked until that corrective closes.
+
+### M008 — Lexical-arm tokenization corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/008-lexical-arm-tokenization-corrective.md`
+
+Status: closed — the corrected typed preregistration and receipt define distinct occurrence-preserving flat/BM25F tokenization and normalized/deduplicated tokenization, with BM25F query/document frequency, IDF, and average-length rules; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/008-status.md`. No M002 measurement occurred before closure.
 
 ## 8. Exit conditions
 
