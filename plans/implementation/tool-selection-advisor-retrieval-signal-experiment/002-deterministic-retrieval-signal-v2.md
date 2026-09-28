@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: blocked — M009 semantic cache arm identity corrective; no M002 retrieval outcomes have been measured
+Status: ready — M009 closed; no M002 retrieval outcomes have been measured
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -9,7 +9,7 @@ Dependencies:
 - M006 positive relevance-target decision (closed; current-step-only; M002 is eligible once its frozen scoring contract is reproducible).
 - M007 complete preregistration correction (closed; receipt `assets/tool-advisor/retrieval-signal-m002-preregistration.json`).
 - M008 explicit per-arm lexical tokenization (closed; corrected receipt fingerprint `4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712`).
-- M009 semantic cache arm identity (active corrective; the cache must not alias distinct semantic descriptor representations).
+- M009 semantic cache arm identity (closed; corrected receipt fingerprint `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`).
 
 Source roadmap:
 
@@ -155,7 +155,7 @@ Stop and register corrective work if:
 
 Stop disposition: Arm-by-arm replay found that M007 did not distinguish flat BM25 tokenization from normalized-token BM25, leaving the two arms ambiguous. M008 clarified the three tokenizer contracts and BM25F term accounting before any M002 measurement; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/008-status.md`. The corrected receipt SHA-256 is `4f9e00a367aa0e8568197deb1d877d1151d9437a9dd0b9ef601151f8047e9712`.
 
-Stop disposition (M009): Before the M002 sweep, source review found that the semantic descriptor cache key omitted semantic-arm identity even though the flat and field-labelled arms embed different text. M009 freezes that missing key dimension and adds a cache regression test. No M002 frontier measurement has run; do not measure until M009 closes with the updated receipt.
+Stop disposition (M009): Before the M002 sweep, source review found that the semantic descriptor cache key omitted semantic-arm identity even though the flat and field-labelled arms embed different text. M009 froze the missing key dimension and added a cache regression test (closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/009-status.md`). No M002 frontier measurement has run. The controlling receipt fingerprint is now `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 ## 11. Verification
 

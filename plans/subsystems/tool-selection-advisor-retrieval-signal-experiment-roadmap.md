@@ -158,7 +158,7 @@ M005 fresh v4 qualification
 
 - M001 is blocked (evaluation hard stop; audit + preregistration complete).
 - M006 is closed positively and unblocked M002 (decision `current-step-only`, re-derived 69 per universe, receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`).
-- M006 resolved the relevance question; M008 closed the tokenizer clarification. M002 remains blocked on M009's semantic cache identity fix.
+- M006 resolved the relevance question; M008 closed the tokenizer clarification and M009 closed semantic cache arm identity. M002 is ready.
 - M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
@@ -179,9 +179,10 @@ current-step needs (closure
 `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`;
 receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
 with `m002_ready=false`). M006 later resolved the relevance-target
-  blocker. M007 supplied the scoring details; M008 then froze distinct lexical
-  tokenizers and BM25F term accounting before measurement. M009 now owns a
-  semantic cache identity defect found before the M002 sweep.
+  blocker. M007 supplied the scoring details; M008 froze distinct lexical
+  tokenizers and BM25F term accounting; M009 froze semantic cache arm identity.
+  M002 is ready with receipt fingerprint
+  `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -189,7 +190,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M009 — the semantic cache key must include arm identity before M002 measurements.
+Status: ready — M009 closed; corrected receipt fingerprint `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
 
@@ -199,7 +200,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/009-semantic-cache-arm-identity-corrective.md`
 
-Status: closing — arm identity is in the preregistration cache contract and runtime cache key; focused tests and quick verification passed, pending closure record.
+Status: closed — arm identity is in the preregistration cache contract and runtime cache key; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/009-status.md`.
 
 ### M003 — Frozen-encoder learned retrieval projection
 

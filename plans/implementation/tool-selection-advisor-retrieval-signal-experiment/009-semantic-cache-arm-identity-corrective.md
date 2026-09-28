@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M009 — Semantic Cache Arm Identity Corrective
 
-Status: closing
+Status: closed
 
 Repository baseline: `5288d23`
 
