@@ -65,10 +65,20 @@ pub struct M002FrontierPoint {
     pub schema_presence: BTreeMap<String, SliceRecall>,
     pub latency_p50_ms: f64,
     pub latency_p95_ms: f64,
-    pub latency_max_ms: u128,
+    pub latency_max_ms: f64,
     pub descriptor_cache_entries: usize,
     pub descriptor_cache_bytes: usize,
     pub authority_violations: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EncoderCostReport {
+    pub model_load_ms: f64,
+    pub first_query_encode_ms: f64,
+    pub first_descriptor_encode_ms: f64,
+    pub warm_query_encode_p50_ms: f64,
+    pub warm_descriptor_encode_p50_ms: f64,
+    pub warm_repetitions: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +100,7 @@ pub struct M002SweepReceipt {
     pub dev_partition_sha256: String,
     pub universe_fingerprint: String,
     pub encoder_manifest_sha256: String,
+    pub encoder_costs: EncoderCostReport,
     pub cases: usize,
     pub eligible_relevant_by_universe: BTreeMap<usize, usize>,
     pub required_hits: BTreeMap<usize, usize>,
@@ -487,6 +498,49 @@ fn semantic_rank(
     Ok(sorted_rank(scores))
 }
 
+fn encoder_cost_report(
+    encoder: &CandleBertSequenceEncoder,
+    dev: &[ToolAdvisorCase],
+    model_load_ms: f64,
+) -> Result<EncoderCostReport> {
+    let case = expand_universe(dev, 64)?
+        .into_iter()
+        .next()
+        .context("M002 64-tool probe universe is empty")?;
+    let (query, descriptors) = semantic_texts(&case, "signal-v2-flat")?;
+    let descriptor = descriptors
+        .first()
+        .context("M002 probe case has no deferred descriptors")?
+        .2
+        .clone();
+    let strategy = PoolingStrategy::Mean;
+    let started = Instant::now();
+    encoder.encode_context(&query, strategy)?;
+    let first_query_encode_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let started = Instant::now();
+    encoder.encode_context(&descriptor, strategy)?;
+    let first_descriptor_encode_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let warm_repetitions = 5;
+    let mut query_costs = Vec::with_capacity(warm_repetitions);
+    let mut descriptor_costs = Vec::with_capacity(warm_repetitions);
+    for _ in 0..warm_repetitions {
+        let started = Instant::now();
+        encoder.encode_context(&query, strategy)?;
+        query_costs.push(started.elapsed().as_secs_f64() * 1000.0);
+        let started = Instant::now();
+        encoder.encode_context(&descriptor, strategy)?;
+        descriptor_costs.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    Ok(EncoderCostReport {
+        model_load_ms,
+        first_query_encode_ms,
+        first_descriptor_encode_ms,
+        warm_query_encode_p50_ms: percentile(&query_costs, 0.50),
+        warm_descriptor_encode_p50_ms: percentile(&descriptor_costs, 0.50),
+        warm_repetitions,
+    })
+}
+
 fn current_step_dev_cases() -> Result<(Vec<ToolAdvisorCase>, String, String)> {
     let corpus = load_cases(None)?;
     let dataset = dataset_fingerprint(&corpus)?;
@@ -661,7 +715,7 @@ fn frontier_point(
         schema_presence: group_report(by_schema),
         latency_p50_ms: percentile(&latencies, 0.50),
         latency_p95_ms: percentile(&latencies, 0.95),
-        latency_max_ms: latencies.iter().copied().fold(0.0, f64::max) as u128,
+        latency_max_ms: latencies.iter().copied().fold(0.0, f64::max),
         descriptor_cache_entries: cache_entries,
         descriptor_cache_bytes: cache_bytes,
         authority_violations: violations,
@@ -801,8 +855,10 @@ fn run_sweep() -> Result<M002SweepReceipt> {
     let manifest_bytes = std::fs::read(&manifest_path)
         .with_context(|| format!("read pinned encoder manifest {}", manifest_path.display()))?;
     let manifest_hash = hex::encode(Sha256::digest(&manifest_bytes));
+    let model_load_start = Instant::now();
     let encoder = CandleBertSequenceEncoder::load(&manifest_path, &Device::Cpu)
         .context("load M002 pinned MiniLM encoder")?;
+    let model_load_ms = model_load_start.elapsed().as_secs_f64() * 1000.0;
     if !encoder.assets.manifest.hashes.contains_key("weights")
         || !encoder.assets.manifest.hashes.contains_key("vocabulary")
     {
@@ -814,11 +870,12 @@ fn run_sweep() -> Result<M002SweepReceipt> {
         "{}:{}",
         manifest_hash, encoder.assets.manifest.hashes["vocabulary"]
     );
-    let mut cache = DescriptorCache::default();
+    let encoder_costs = encoder_cost_report(&encoder, &dev, model_load_ms)?;
     let mut frontier = Vec::new();
     let mut evaluated_by_arm_universe = BTreeMap::<(String, usize), Vec<EvaluatedCase>>::new();
     let mut universe_counts = BTreeMap::new();
     for size in PREREG_UNIVERSES {
+        let mut semantic_caches = BTreeMap::<String, DescriptorCache>::new();
         let expanded = expand_universe(&dev, size)?;
         let count: usize = expanded.iter().map(|case| case.relevance.len()).sum();
         universe_counts.insert(size, count);
@@ -847,8 +904,9 @@ fn run_sweep() -> Result<M002SweepReceipt> {
                 for pool in DETERMINISTIC_POOLING_VARIANTS {
                     let name = format!("{arm}/{pool}");
                     let start = Instant::now();
+                    let cache = semantic_caches.entry(name.clone()).or_default();
                     let ranked =
-                        semantic_rank(&case, arm, pool, &encoder, &encoder_version, &mut cache)?;
+                        semantic_rank(&case, arm, pool, &encoder, &encoder_version, cache)?;
                     let evaluated = EvaluatedCase {
                         case: case.clone(),
                         ranked,
@@ -909,7 +967,9 @@ fn run_sweep() -> Result<M002SweepReceipt> {
                     .map(|i| i + 1)
                     .unwrap_or(usize::MAX);
                 rank_by_arm.insert(arm.to_string(), rank);
-                entered_k.insert(format!("{arm}/K32"), rank <= 32);
+                for k in PREREG_PRIMARY_KS {
+                    entered_k.insert(format!("{arm}/K{k}"), rank <= k);
+                }
             }
         }
         for arm in DETERMINISTIC_SEMANTIC_VARIANTS {
@@ -926,7 +986,9 @@ fn run_sweep() -> Result<M002SweepReceipt> {
                         .map(|i| i + 1)
                         .unwrap_or(usize::MAX);
                     rank_by_arm.insert(label.clone(), rank);
-                    entered_k.insert(format!("{label}/K32"), rank <= 32);
+                    for k in PREREG_PRIMARY_KS {
+                        entered_k.insert(format!("{label}/K{k}"), rank <= k);
+                    }
                 }
             }
         }
@@ -957,6 +1019,7 @@ fn run_sweep() -> Result<M002SweepReceipt> {
         dev_partition_sha256: dev_hash,
         universe_fingerprint: universe_fingerprint(&dev, &PREREG_UNIVERSES)?,
         encoder_manifest_sha256: manifest_hash,
+        encoder_costs,
         cases: dev.len(),
         eligible_relevant_by_universe: universe_counts,
         required_hits: [

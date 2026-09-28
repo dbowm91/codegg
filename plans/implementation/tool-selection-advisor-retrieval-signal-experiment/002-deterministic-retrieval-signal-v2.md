@@ -102,6 +102,8 @@ Report:
 - descriptor cache size;
 - first-load/warm costs.
 
+The encoder cost report records model load duration, the first query and first descriptor encode durations, and p50 warm encode durations for those same texts/pooling after five repeated calls. Cache size is tracked independently per semantic arm and pooling strategy within each candidate-universe surface. Persistent misses include membership at each preregistered K (16/24/32).
+
 ## 7. Persistent-miss closure
 
 For each M001 persistent miss, show before/after:
