@@ -180,7 +180,7 @@ pub fn m007_preregistration_spec() -> serde_json::Value {
         "pooling_variants": ["mean", "cls"],
         "semantic_scoring": "Cross each semantic arm with both pooling variants. Encode query and descriptor independently using CandleBertSequenceEncoder::encode_context(text, pooling), whose token budget is MAX_PAIR_TOKENS=256. L2-normalize vectors, rank cosine dot product descending, and tie-break canonical_name ascending.",
         "encoder_asset": {"repository":"sentence-transformers/all-MiniLM-L6-v2", "revision":"1110a243fdf4706b3f48f1d95db1a4f5529b4d41", "required_files":["config.json","model.safetensors","vocab.txt","tokenizer_config.json or special_tokens_map.json","LICENSE"], "manifest_path":"target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json", "verification":"ResolvedAssets validates manifest SHA-256 for config, vocabulary, weights, and license; no network or download path"},
-        "cache_key_fields": ["representation_schema_version", "descriptor_fingerprint", "encoder_tokenizer_version", "pooling", "surface_fingerprint"],
+        "cache_key_fields": ["representation_schema_version", "semantic_arm", "descriptor_fingerprint", "encoder_tokenizer_version", "pooling", "surface_fingerprint"],
         "encoder_tokenizer_version": "all-MiniLM-L6-v2@1110a243fdf4706b3f48f1d95db1a4f5529b4d41 plus verified manifest hashes for config/vocabulary/weights",
         "surface_fingerprint": "SHA-256 over sorted (canonical_name, disclosure, descriptor_fingerprint_v2) tuples for every candidate in the expanded case universe; query fields are excluded",
         "cache_contents": "descriptor embeddings only; query embeddings are never cached",
@@ -657,6 +657,7 @@ impl RetrievalDescriptorV2 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RetrievalCacheKeyV2 {
     pub representation_schema_version: u16,
+    pub semantic_arm: String,
     pub descriptor_fingerprint: String,
     pub encoder_tokenizer_version: String,
     pub pooling: String,
@@ -2159,6 +2160,7 @@ mod tests {
         );
         let key = RetrievalCacheKeyV2 {
             representation_schema_version: RETRIEVAL_SIGNAL_SCHEMA_VERSION,
+            semantic_arm: "signal-v2-flat".into(),
             descriptor_fingerprint: descriptor_fingerprint_v2(&descriptor),
             encoder_tokenizer_version: "test-tokenizer".into(),
             pooling: "mean".into(),
@@ -2304,6 +2306,11 @@ mod tests {
             "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
         );
         assert_eq!(spec["normalization"]["synonyms"], "none");
+        assert!(spec["cache_key_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "semantic_arm"));
         let bytes = serde_json::to_vec(&spec).unwrap();
         let round_trip: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(round_trip, spec);
