@@ -8,7 +8,7 @@ Source subsystem roadmap: `plans/subsystems/tool-selection-advisor-retrieval-sig
 
 Repository baseline reviewed: `e62c161e`
 
-Implementation commit: pending final commit hash
+Implementation commit: `00533709` — close M008 lexical tokenization correction
 
 Receipt: `assets/tool-advisor/retrieval-signal-m002-preregistration.json`
 
