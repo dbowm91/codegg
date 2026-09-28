@@ -132,6 +132,109 @@ pub const DETERMINISTIC_SEMANTIC_VARIANTS: [&str; 3] = [
 /// Preregistered pooling options for deterministic semantic encodings.
 pub const DETERMINISTIC_POOLING_VARIANTS: [&str; 2] = ["mean", "cls"];
 
+/// M007 freezes every lexical/semantic arm detail that M002 requires.
+pub const M007_PROTOCOL: &str = "retrieval-signal-m002-preregistration-v1";
+pub const M007_SCHEMA_VERSION: u16 = 1;
+pub const M007_BM25_K1: f64 = 1.5;
+pub const M007_BM25_B: f64 = 0.75;
+pub const M007_FIELD_WEIGHT_QUERY: [(&str, f64); 5] = [
+    ("current_objective", 3.0),
+    ("current_task", 3.0),
+    ("next_steps", 1.0),
+    ("unresolved_signal", 2.0),
+    ("capability_cue", 2.0),
+];
+pub const M007_FIELD_WEIGHT_DESCRIPTOR: [(&str, f64); 6] = [
+    ("canonical_name", 4.0),
+    ("identifier_tokens", 3.0),
+    ("description", 1.0),
+    ("category_disclosure", 0.5),
+    ("schema_fields", 2.0),
+    ("normalization", 0.0),
+];
+
+/// Outcome-independent M002 scoring contract. Its SHA-256 uses explicit
+/// recursively key-sorted compact JSON so Cargo feature unification cannot
+/// change the fingerprint through serde_json map ordering.
+pub fn m007_preregistration_spec() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": M007_SCHEMA_VERSION,
+        "protocol": M007_PROTOCOL,
+        "relevance_decision_receipt": "assets/tool-advisor/retrieval-signal-m006-decision.json",
+        "denominators": {"universe_sizes": [64,128,256], "eligible_relevant_each": 69, "required_hits": {"64":69,"128":68,"256":66}},
+        "k_values": [16,24,32],
+        "gates": {"64": 0.99, "128": 0.98, "256": 0.95, "authority_violations": 0},
+        "bm25": {"k1": M007_BM25_K1, "b": M007_BM25_B, "idf": "ln(1 + (N - df + 0.5)/(df + 0.5))", "query_tf": "raw term frequency", "document_length": "sum of token occurrences", "zero_score_tie_break": "canonical_name ascending"},
+        "normalization": {"unicode": "NFKC then full lowercase", "tokenization": "split on non-alphanumeric; decompose snake/kebab/camel identifiers; deduplicate preserving first occurrence", "stemming": "none", "synonyms": "none"},
+        "lexical_arms": [
+            {"name":"v1-bm25-baseline", "query":"AdvisorContextV2 serialized context", "descriptor":"canonical name + description", "scorer":"existing ToolCatalog BM25; baseline implementation unchanged"},
+            {"name":"signal-v2-flat-bm25", "query":"RetrievalQueryV2::flat_text", "descriptor":"RetrievalDescriptorV2::flat_text", "scorer":"BM25 constants above"},
+            {"name":"signal-v2-field-weighted-bm25", "query_fields": M007_FIELD_WEIGHT_QUERY.iter().map(|(name, weight)| serde_json::json!({"name":name,"weight":weight})).collect::<Vec<_>>(), "descriptor_fields": M007_FIELD_WEIGHT_DESCRIPTOR.iter().map(|(name, weight)| serde_json::json!({"name":name,"weight":weight})).collect::<Vec<_>>(), "scorer":"BM25F: for each term, qtf=sum(query_field_weight*term_frequency); weighted_tf=sum(descriptor_field_weight*term_frequency/(1-b+b*field_length/field_average_length)); score=sum(IDF*qtf*(k1+1)*weighted_tf/(k1+weighted_tf)); field averages are per-field means over the case candidate universe; empty fields contribute zero"},
+            {"name":"signal-v2-normalized-bm25", "query":"signal_tokens(RetrievalQueryV2::flat_text)", "descriptor":"signal_tokens(RetrievalDescriptorV2::flat_text)", "scorer":"BM25 constants above; unique normalized tokens each count once"}
+        ],
+        "semantic_arms": [
+            {"name":"signal-v2-flat", "query":"unlabelled RetrievalQueryV2 field values in frozen field order", "descriptor":"RetrievalDescriptorV2::flat_text"},
+            {"name":"signal-v2-field-labelled-descriptor", "query":"unlabelled RetrievalQueryV2 field values in frozen field order", "descriptor":"RetrievalDescriptorV2::field_labelled_text"},
+            {"name":"signal-v2-field-labelled-query", "query":"RetrievalQueryV2::serialize with frozen field labels", "descriptor":"RetrievalDescriptorV2::flat_text"}
+        ],
+        "pooling_variants": ["mean", "cls"],
+        "semantic_scoring": "Cross each semantic arm with both pooling variants. Encode query and descriptor independently using CandleBertSequenceEncoder::encode_context(text, pooling), whose token budget is MAX_PAIR_TOKENS=256. L2-normalize vectors, rank cosine dot product descending, and tie-break canonical_name ascending.",
+        "encoder_asset": {"repository":"sentence-transformers/all-MiniLM-L6-v2", "revision":"1110a243fdf4706b3f48f1d95db1a4f5529b4d41", "required_files":["config.json","model.safetensors","vocab.txt","tokenizer_config.json or special_tokens_map.json","LICENSE"], "manifest_path":"target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json", "verification":"ResolvedAssets validates manifest SHA-256 for config, vocabulary, weights, and license; no network or download path"},
+        "cache_key_fields": ["representation_schema_version", "descriptor_fingerprint", "encoder_tokenizer_version", "pooling", "surface_fingerprint"],
+        "encoder_tokenizer_version": "all-MiniLM-L6-v2@1110a243fdf4706b3f48f1d95db1a4f5529b4d41 plus verified manifest hashes for config/vocabulary/weights",
+        "surface_fingerprint": "SHA-256 over sorted (canonical_name, disclosure, descriptor_fingerprint_v2) tuples for every candidate in the expanded case universe; query fields are excluded",
+        "cache_contents": "descriptor embeddings only; query embeddings are never cached",
+        "authority": "rank only candidates already present and deferred in the frozen expanded universe; no candidate creation, filtering, or authority decision",
+        "selection": "best per-arm operating point uses smallest K, then lower p95 latency, then lower descriptor bytes/cache size, then lexical mode name; no post-hoc variants or parameter changes"
+    })
+}
+
+pub fn m007_preregistration_fingerprint() -> Result<String> {
+    Ok(hex::encode(Sha256::digest(canonical_json_bytes(
+        &m007_preregistration_spec(),
+    )?)))
+}
+
+pub fn m007_preregistration_receipt() -> Result<serde_json::Value> {
+    let spec = m007_preregistration_spec();
+    let fingerprint = hex::encode(Sha256::digest(canonical_json_bytes(&spec)?));
+    Ok(serde_json::json!({"spec": spec, "sha256": fingerprint}))
+}
+
+fn canonical_json_bytes(value: &serde_json::Value) -> Result<Vec<u8>> {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut keys: Vec<_> = object.keys().collect();
+            keys.sort();
+            let mut output = Vec::new();
+            output.push(b'{');
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    output.push(b',');
+                }
+                output.extend(serde_json::to_vec(key)?);
+                output.push(b':');
+                output.extend(canonical_json_bytes(&object[*key])?);
+            }
+            output.push(b'}');
+            Ok(output)
+        }
+        serde_json::Value::Array(items) => {
+            let mut output = Vec::new();
+            output.push(b'[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    output.push(b',');
+                }
+                output.extend(canonical_json_bytes(item)?);
+            }
+            output.push(b']');
+            Ok(output)
+        }
+        _ => Ok(serde_json::to_vec(value)?),
+    }
+}
+
 // ---- frozen conditional learned grid (M003 degrees of freedom) ----
 
 /// Maximum trainable projection parameters for conditional M003.
@@ -2157,5 +2260,50 @@ mod tests {
             RelevanceTarget::GradedRecall,
             &graded_included
         ));
+    }
+
+    #[test]
+    fn m007_preregistration_is_complete_stable_and_outcome_independent() {
+        let spec = m007_preregistration_spec();
+        let receipt = m007_preregistration_receipt().expect("receipt builds");
+        assert_eq!(receipt["spec"], spec);
+        assert_eq!(
+            receipt["sha256"],
+            m007_preregistration_fingerprint().unwrap()
+        );
+        assert_eq!(spec["lexical_arms"].as_array().unwrap().len(), 4);
+        assert_eq!(spec["semantic_arms"].as_array().unwrap().len(), 3);
+        assert_eq!(spec["pooling_variants"], serde_json::json!(["mean", "cls"]));
+        assert!(spec["semantic_scoring"]
+            .as_str()
+            .unwrap()
+            .contains("MAX_PAIR_TOKENS=256"));
+        assert!(spec["surface_fingerprint"]
+            .as_str()
+            .unwrap()
+            .contains("query fields are excluded"));
+        assert_eq!(
+            spec["encoder_asset"]["revision"],
+            "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
+        );
+        assert_eq!(spec["normalization"]["synonyms"], "none");
+        let bytes = serde_json::to_vec(&spec).unwrap();
+        let round_trip: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(round_trip, spec);
+        let mut changed = spec.clone();
+        changed["k_values"][0] = serde_json::json!(15);
+        assert_ne!(
+            hex::encode(Sha256::digest(canonical_json_bytes(&spec).unwrap())),
+            hex::encode(Sha256::digest(canonical_json_bytes(&changed).unwrap()))
+        );
+        let semantic = serde_json::to_string(&spec["semantic_arms"]).unwrap();
+        assert!(semantic.contains("field-labelled-descriptor"));
+        assert!(semantic.contains("field-labelled-query"));
+        assert!(!semantic.contains("qualification-v3"));
+        let committed: serde_json::Value = serde_json::from_str(include_str!(
+            "../../assets/tool-advisor/retrieval-signal-m002-preregistration.json"
+        ))
+        .unwrap();
+        assert_eq!(committed, receipt);
     }
 }
