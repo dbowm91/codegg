@@ -1,12 +1,13 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: ready — unblocked by M006 positive re-audit (current-step-only; receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`)
+Status: blocked — M001's preregistration omits the exact weighting/scoring contract required by §§3-4; blocked closure at `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`; M007 owns the preregistration correction
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
-Hard dependency:
+Dependency:
 
-- M001 positive signal-sufficiency closure.
+- M006 positive relevance-target decision (closed; current-step-only; M002 is eligible once its frozen scoring contract is reproducible).
+- M007 complete preregistration correction (blocked M002 stop condition; must close before any M002 measurement).
 
 Source roadmap:
 
@@ -149,6 +150,8 @@ Stop and register corrective work if:
 - schema extraction leaks defaults/examples/runtime values;
 - representation depends on candidate authority outside the allowed surface;
 - M001 preregistration cannot be reproduced.
+
+Stop disposition: The M001 receipt freezes variant names and field order but contains no exact query/descriptor weighting strategy or field weights. M002 §§3-4 require those values to be fixed by M001, so do not choose values or measure variants in this milestone. M007 owns the missing preregistration details.
 
 ## 11. Verification
 

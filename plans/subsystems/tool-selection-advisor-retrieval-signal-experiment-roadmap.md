@@ -171,16 +171,17 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001-signal-sufficiency-audit-and-preregistration.md`
 
-Status: blocked.
+Status: blocked (historical closure). M006 resolved the relevance-target blocker; M002 is now blocked on M007's reproducibility corrective.
 
 Audit complete and preregistration frozen, but the §4 hard stop
 triggered: three gate-critical labels are supporting-workflow steps, not
 current-step needs (closure
 `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`;
 receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
-with `m002_ready=false`). M002-M005 stay blocked pending the M006
-relevance-target decision. The frozen Signal V2 contract and conditional
-M003 grid stand for reuse once unblocked.
+with `m002_ready=false`). M006 later resolved the relevance-target
+blocker, but M002 is blocked on a separate missing-preregistration detail
+tracked by M007. The frozen Signal V2 contract and conditional M003 grid
+stand for reuse once M007 closes.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -188,9 +189,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: ready — unblocked by M006 positive re-audit (current-step-only; re-derived 69 per universe, required 69/68/66; receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`).
+Status: blocked on M007. M006 positively resolved the relevance target, but M002's §10 reproducibility stop fired because M001 omitted exact lexical weighting and semantic encoding details (blocked closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`).
 
-Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training, on the re-derived denominators.
+After M007 freezes the complete arm contract, implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
@@ -237,6 +238,16 @@ current-step tools only, or graded recall), re-derives the gate-critical
 label set mechanically over frozen M001 rows without relabeling history,
 and unblocks M002 iff the re-derived set is fully inferable. Owns a
 negative workstream close otherwise.
+
+### M007 — M002 preregistration reproducibility corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/007-m002-preregistration-reproducibility-corrective.md`
+
+Status: ready — M002 §10 stop condition; no retrieval measurement may begin until every arm is reproducible from a frozen receipt.
+
+Freeze the exact lexical weights/scoring and semantic encoding/pooling details omitted by M001, without inspecting M002 dev outcomes. Close M007 to return M002 to ready only after the reproducibility audit passes.
 
 ## 8. Exit conditions
 
