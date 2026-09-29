@@ -158,8 +158,8 @@ M005 fresh v4 qualification
 
 - M001 is blocked (evaluation hard stop; audit + preregistration complete).
 - M006 is closed positively and unblocked M002 (decision `current-step-only`, re-derived 69 per universe, receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`).
-- M006 resolved the relevance question; M008 closed the tokenizer clarification and M009 closed semantic cache arm identity. The first full M002 sweep then exposed a derived-label projection defect; M002 is blocked pending M010.
-- M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
+- M006 resolved the relevance question; M008 closed the tokenizer clarification and M009 closed semantic cache arm identity. The first full M002 sweep exposed a derived-label projection defect; M010 corrected it before M002's valid negative frontier run.
+- M003 is conditional on M002's valid negative result and the positive current-step inferability re-audit in M006; the historical blocked M001 closure remains unchanged.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
 
@@ -190,7 +190,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: active — M010 closed the current-step label projection and complete-universe fingerprint preflight corrective. M002 generated a complete negative frontier receipt against frozen fingerprint `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0b9aed21b0a939ceff36e`; formal closure verification is in progress.
+Status: closed negative-valid — complete frontier receipt `assets/tool-advisor/retrieval-signal-m002-frontier.json` found no operating point clearing the frozen gates and recorded zero authority violations; final closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-completion-status.md` (initial blocked decision preserved in `002-status.md`).
 
 Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
 
@@ -216,7 +216,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: blocked/conditional on M002.
+Status: ready — M002 closed negative-valid and M006's positive current-step inferability re-audit satisfies the remaining M001 prerequisite.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 
