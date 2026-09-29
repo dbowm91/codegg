@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: active — implementing the preregistered deterministic retrieval experiment; no M002 retrieval outcomes have been measured
+Status: blocked — the preregistered sweep aborted before producing outcomes because a current-step derived case retained an excluded label in `preferred_order`. M010 owns the corrective projection and regression test.
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 

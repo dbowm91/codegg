@@ -190,7 +190,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: active — M009 closed; implementing the deterministic retrieval experiment with corrected receipt fingerprint `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
+Status: blocked — current-step derived supervision is inconsistent: M006 exclusions are removed from `relevance` but remain in `preferred_order`. The full sweep aborted before producing outcomes; M010 owns the correction. The frozen receipt fingerprint remains `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
 
