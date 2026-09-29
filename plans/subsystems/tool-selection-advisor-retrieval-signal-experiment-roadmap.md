@@ -216,7 +216,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: ready — M002 closed negative-valid and M006's positive current-step inferability re-audit satisfies the remaining M001 prerequisite.
+Status: active — M002 closed negative-valid and M006's positive current-step inferability re-audit satisfies the remaining M001 prerequisite.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 
