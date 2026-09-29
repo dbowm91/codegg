@@ -216,7 +216,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: blocked pending M011 — M006 re-audited dev gate-critical labels only; M003 requires an inferability audit and frozen optimizer-input set for train labels before any model fitting.
+Status: active — M011 is auditing train-partition inferability and freezing the optimizer input before M003 model fitting.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 

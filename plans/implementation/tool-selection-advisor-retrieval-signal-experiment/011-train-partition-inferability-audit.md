@@ -1,8 +1,8 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M011 — Train-Partition Inferability Audit
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `0a5b2bc6`
+Repository baseline: `5a14384c`
 
 Source roadmap: `plans/subsystems/tool-selection-advisor-retrieval-signal-experiment-roadmap.md#m003--frozen-encoder-learned-retrieval-projection`
 
