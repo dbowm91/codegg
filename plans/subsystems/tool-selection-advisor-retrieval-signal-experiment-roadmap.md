@@ -216,7 +216,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: blocked pending M012 — M006 re-audited dev gate-critical labels only; M011 found an inferability-classifier gap in the train partition, and M003 cannot train until M012 completes the audit-only correction.
+Status: active — M012 is correcting the audit-only inferability classifier and rerunning the train-only label audit before M003 can train.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 

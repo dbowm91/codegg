@@ -1,8 +1,8 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M012 — Train Inferability Taxonomy Coverage Corrective
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `3fa18576`
+Repository baseline: `4bb5c197`
 
 Source roadmap: `plans/subsystems/tool-selection-advisor-retrieval-signal-experiment-roadmap.md#m003--frozen-encoder-learned-retrieval-projection`
 
