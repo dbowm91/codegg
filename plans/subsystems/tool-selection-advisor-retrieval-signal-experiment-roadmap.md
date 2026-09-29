@@ -190,7 +190,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: ready — M010 closed the current-step label projection and complete-universe fingerprint preflight corrective. The previous full sweep aborted without producing outcomes; the unchanged sweep is ready to rerun. The frozen receipt fingerprint remains `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
+Status: active — M010 closed the current-step label projection and complete-universe fingerprint preflight corrective. The unchanged full sweep is running against the frozen receipt fingerprint `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
 

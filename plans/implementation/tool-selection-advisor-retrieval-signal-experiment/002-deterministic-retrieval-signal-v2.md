@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: ready for handoff — M010 closed the current-step label projection and fingerprint preflight corrective; retry the unchanged preregistered sweep.
+Status: active — retrying the unchanged preregistered sweep after M010 closed the current-step label projection and fingerprint preflight corrective.
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
