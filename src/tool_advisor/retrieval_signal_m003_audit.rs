@@ -18,12 +18,32 @@ use std::path::Path;
 pub const M011_PROTOCOL: &str = "retrieval-signal-m003-train-audit-v1";
 pub const M011_RECEIPT_PATH: &str = "assets/tool-advisor/retrieval-signal-m003-train-audit.json";
 pub const M011_OUTPUT_DIR: &str = "target/tool-advisor/retrieval-signal-m003-train-audit";
+pub const M012_AUDIT_TAXONOMY_VERSION: u16 = 1;
 const EXPECTED_DATASET_SHA256: &str =
     "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582";
 const EXPECTED_DEV_PARTITION_SHA256: &str =
     "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9";
 const EXPECTED_M006_DECISION_SHA256: &str =
     "24e3783f1cc1c3d8934bac1592607702966112554db8ca1215087f90cfd09756";
+const EXPECTED_AUDIT_TAXONOMY_SHA256: &str =
+    "919053a208e98776f8401248db8058b57b2011b4ab26efa29f86cb93b2001404";
+
+/// Tool-agnostic action paraphrases used only to decide whether a frozen
+/// train label is inferable. These are never injected into Retrieval Signal
+/// V2 tokens, descriptors, embeddings, or model inputs.
+const AUDIT_PARAPHRASE_GROUPS: [(&str, &[&str]); 8] = [
+    ("find", &["locate", "search", "look", "discover"]),
+    ("write", &["create", "persist", "save", "make"]),
+    ("rename", &["renaming", "renamed"]),
+    ("filter", &["filtering", "filtered", "narrow", "select"]),
+    (
+        "read",
+        &["open", "inspect", "examine", "view", "access", "load"],
+    ),
+    ("list", &["show", "display", "enumerate"]),
+    ("run", &["execute", "launch", "start"]),
+    ("edit", &["modify", "update", "change"]),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrainLabelAudit {
@@ -40,6 +60,8 @@ pub struct TrainLabelAudit {
 pub struct M011TrainAuditReceipt {
     pub schema_version: u16,
     pub protocol: String,
+    pub audit_taxonomy_version: u16,
+    pub audit_taxonomy_sha256: String,
     pub m006_decision_sha256: String,
     pub dataset_sha256: String,
     pub dev_partition_sha256: String,
@@ -51,6 +73,51 @@ pub struct M011TrainAuditReceipt {
     pub labels_by_class: BTreeMap<String, usize>,
     pub labels_by_grade: BTreeMap<u8, usize>,
     pub labels: Vec<TrainLabelAudit>,
+}
+
+pub fn audit_taxonomy_sha256() -> String {
+    let rows: Vec<(&str, Vec<&str>)> = AUDIT_PARAPHRASE_GROUPS
+        .iter()
+        .map(|(verb, variants)| (*verb, variants.to_vec()))
+        .collect();
+    hex::encode(sha2::Sha256::digest(
+        serde_json::to_vec(&rows).expect("static audit taxonomy serializes"),
+    ))
+}
+
+fn audit_paraphrase(
+    query_text: &str,
+    descriptor: &str,
+) -> Option<(InferabilityClass, String, String)> {
+    let descriptor_terms = signal_tokens(descriptor);
+    let query_terms: BTreeSet<String> = signal_tokens(query_text).into_iter().collect();
+    for descriptor_verb in descriptor_terms {
+        let Some((canonical, aliases)) = AUDIT_PARAPHRASE_GROUPS.iter().find(|(verb, variants)| {
+            *verb == descriptor_verb || variants.iter().any(|variant| *variant == descriptor_verb)
+        }) else {
+            continue;
+        };
+        for alias in std::iter::once(*canonical).chain(aliases.iter().copied()) {
+            if query_terms.contains(alias) {
+                let lower = query_text.to_ascii_lowercase();
+                let start = lower.find(alias)?;
+                let support = query_text[start..start + alias.len()].to_string();
+                let class = if alias == descriptor_verb {
+                    InferabilityClass::QueryExplicit
+                } else {
+                    InferabilityClass::QueryParaphrase
+                };
+                return Some((
+                    class,
+                    format!(
+                        "allowed query expresses generic action '{alias}' in the frozen action family of descriptor verb '{descriptor_verb}'"
+                    ),
+                    support,
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn schema_cue_tokens(candidate_name: &str) -> Vec<String> {
@@ -80,7 +147,7 @@ fn classify_label(
         .find(|candidate| candidate.name == tool)
         .ok_or_else(|| anyhow!("train relevance label references missing candidate {tool}"))?;
     let max_grade = case.relevance.values().copied().max().unwrap_or(grade);
-    let (mut class, mut rationale, support) = classify_inferability(
+    let (class, rationale, support) = classify_inferability(
         &case.context,
         &candidate.name,
         &candidate.description,
@@ -88,6 +155,19 @@ fn classify_label(
         grade,
         grade >= max_grade,
     );
+
+    let (class, rationale, support) = if class == InferabilityClass::OtherEvidenceDefect {
+        if let Some((audit_class, paraphrase_rationale, paraphrase_support)) =
+            audit_paraphrase(&case.context, &candidate.description)
+        {
+            (audit_class, paraphrase_rationale, paraphrase_support)
+        } else {
+            (class, rationale, support)
+        }
+    } else {
+        (class, rationale, support)
+    };
+    let (mut class, mut rationale, support) = (class, rationale, support);
 
     // Match M001's sibling-aware adjudication: a co-relevant tool that
     // explicitly explains the current query makes an otherwise unsupported
@@ -98,9 +178,13 @@ fn classify_label(
                 continue;
             }
             if let Some(sibling) = case.candidates.iter().find(|item| &item.name == name) {
-                if let Some(sibling_support) =
+                let sibling_support =
                     query_explicit_support(&case.context, &sibling.name, &sibling.description)
-                {
+                        .or_else(|| {
+                            audit_paraphrase(&case.context, &sibling.description)
+                                .map(|(_, _, support)| support)
+                        });
+                if let Some(sibling_support) = sibling_support {
                     class = InferabilityClass::ImplicitSecondary;
                     rationale = format!(
                         "grade {grade} shares the case-highest grade with co-relevant '{name}' (query-explicit via '{sibling_support}'); no descriptor, schema, or paraphrase cue for '{tool}' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state"
@@ -220,6 +304,8 @@ pub fn audited_optimizer_cases(
     let receipt = M011TrainAuditReceipt {
         schema_version: 1,
         protocol: M011_PROTOCOL.into(),
+        audit_taxonomy_version: M012_AUDIT_TAXONOMY_VERSION,
+        audit_taxonomy_sha256: audit_taxonomy_sha256(),
         m006_decision_sha256: EXPECTED_M006_DECISION_SHA256.into(),
         dataset_sha256: corpus_sha,
         dev_partition_sha256: dev_sha,
@@ -236,6 +322,9 @@ pub fn audited_optimizer_cases(
 }
 
 pub fn run_repository_audit(root: &Path) -> Result<M011TrainAuditReceipt> {
+    if audit_taxonomy_sha256() != EXPECTED_AUDIT_TAXONOMY_SHA256 {
+        return Err(anyhow!("M012 audit taxonomy fingerprint changed"));
+    }
     let corpus_path = root.join("assets/tool-advisor/corpus.jsonl");
     let cases = load_cases(Some(&corpus_path))?;
     let partition = partition_cases(&cases);
@@ -248,8 +337,10 @@ pub fn run_repository_audit(root: &Path) -> Result<M011TrainAuditReceipt> {
     }
     let output_dir = root.join(M011_OUTPUT_DIR);
     fs::create_dir_all(&output_dir)?;
+    let optimizer_tmp = output_dir.join("optimizer-cases.jsonl.tmp");
+    let optimizer_path = output_dir.join("optimizer-cases.jsonl");
     fs::write(
-        output_dir.join("optimizer-cases.jsonl"),
+        &optimizer_tmp,
         optimizer_cases
             .iter()
             .map(serde_json::to_string)
@@ -258,7 +349,11 @@ pub fn run_repository_audit(root: &Path) -> Result<M011TrainAuditReceipt> {
             + "\n",
     )?;
     let receipt_bytes = serde_json::to_vec_pretty(&receipt)?;
-    fs::write(root.join(M011_RECEIPT_PATH), &receipt_bytes)?;
+    let receipt_path = root.join(M011_RECEIPT_PATH);
+    let receipt_tmp = receipt_path.with_extension("json.tmp");
+    fs::write(&receipt_tmp, &receipt_bytes)?;
+    fs::rename(optimizer_tmp, optimizer_path)?;
+    fs::rename(receipt_tmp, receipt_path)?;
     Ok(receipt)
 }
 
@@ -269,14 +364,28 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn m003_train_audit_fails_closed_on_unclassified_primary_label() {
-        let cases = load_cases(None).expect("frozen corpus");
-        let partition = partition_cases(&cases);
-        let error = audited_optimizer_cases(&cases, &partition.train_cases)
-            .expect_err("M011 must stop rather than admit an unsupported primary label");
-        let message = format!("{error:#}");
-        assert!(message.contains("filesystem-semantic-014-variant-1 / read"));
-        assert!(message.contains("other-evidence-defect"));
+    fn m003_train_audit_generates_reproducible_receipt() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let receipt = run_repository_audit(&root).expect("M012-corrected M011 train audit");
+        assert_eq!(receipt.protocol, M011_PROTOCOL);
+        assert_eq!(receipt.audit_taxonomy_version, M012_AUDIT_TAXONOMY_VERSION);
+        assert_eq!(
+            receipt.audit_taxonomy_sha256,
+            EXPECTED_AUDIT_TAXONOMY_SHA256
+        );
+        assert!(receipt.train_cases > 0);
+        assert!(receipt.optimizer_cases > 0);
+        assert!(!receipt.labels.is_empty());
+        assert!(receipt
+            .labels
+            .iter()
+            .all(|row| !row.supporting_query_text.is_empty()));
+        assert!(receipt.labels.iter().any(|row| {
+            row.case_id == "filesystem-semantic-014-variant-1"
+                && row.tool == "read"
+                && row.class == "query-paraphrase"
+                && row.optimizer_included
+        }));
     }
 
     #[test]
@@ -301,5 +410,32 @@ mod tests {
         let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("M006 JSON");
         assert_eq!(receipt["protocol"], M006_PROTOCOL);
         assert_eq!(receipt["decision"]["target"], "current-step-only");
+    }
+
+    #[test]
+    fn audit_paraphrase_is_generic_and_does_not_change_retrieval_tokens() {
+        let (class, rationale, support) = audit_paraphrase(
+            "Open dep_lock in the coverage map",
+            "Read bounded file contents",
+        )
+        .expect("open/read is a generic action paraphrase");
+        assert_eq!(support, "Open");
+        assert_eq!(class, InferabilityClass::QueryParaphrase);
+        assert!(rationale.contains("generic action 'open'"));
+        assert_eq!(signal_tokens("open"), vec!["open"]);
+        let (_, _, support) = audit_paraphrase(
+            "Locate code semantically related to trace_span",
+            "Search code by semantic similarity",
+        )
+        .expect("locate/search are in the same generic action family");
+        assert_eq!(support, "Locate");
+        let (class, _, support) = audit_paraphrase(
+            "Find every reference to retry_budget",
+            "Find all references to a symbol",
+        )
+        .expect("exact short action should be explicit query support");
+        assert_eq!(class, InferabilityClass::QueryExplicit);
+        assert_eq!(support, "Find");
+        assert_eq!(audit_taxonomy_sha256().len(), 64);
     }
 }

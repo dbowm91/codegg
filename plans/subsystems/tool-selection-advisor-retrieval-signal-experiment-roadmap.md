@@ -216,7 +216,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: active — M012 is correcting the audit-only inferability classifier and rerunning the train-only label audit before M003 can train.
+Status: ready — M012 closed positively with a frozen train-only optimizer receipt; M003 is ready to begin the preregistered projection experiment.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 

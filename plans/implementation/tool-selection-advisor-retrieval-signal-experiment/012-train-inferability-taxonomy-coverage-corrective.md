@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M012 — Train Inferability Taxonomy Coverage Corrective
 
-Status: active
+Status: closed
 
 Repository baseline: `4bb5c197`
 
