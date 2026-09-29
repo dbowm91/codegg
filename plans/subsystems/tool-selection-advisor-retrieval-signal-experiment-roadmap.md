@@ -158,7 +158,7 @@ M005 fresh v4 qualification
 
 - M001 is blocked (evaluation hard stop; audit + preregistration complete).
 - M006 is closed positively and unblocked M002 (decision `current-step-only`, re-derived 69 per universe, receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`).
-- M006 resolved the relevance question; M008 closed the tokenizer clarification and M009 closed semantic cache arm identity. M002 is ready.
+- M006 resolved the relevance question; M008 closed the tokenizer clarification and M009 closed semantic cache arm identity. The first full M002 sweep then exposed a derived-label projection defect; M002 is blocked pending M010.
 - M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
@@ -181,7 +181,7 @@ receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
 with `m002_ready=false`). M006 later resolved the relevance-target
   blocker. M007 supplied the scoring details; M008 froze distinct lexical
   tokenizers and BM25F term accounting; M009 froze semantic cache arm identity.
-  M002 is ready with receipt fingerprint
+  M002's frozen preregistration receipt fingerprint is
   `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 ### M002 — Deterministic Retrieval Signal V2
@@ -201,6 +201,14 @@ Plan:
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/009-semantic-cache-arm-identity-corrective.md`
 
 Status: closed — arm identity is in the preregistration cache contract and runtime cache key; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/009-status.md`.
+
+### M010 — Current-step label projection corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/010-current-step-label-projection-corrective.md`
+
+Status: ready — M006-M009 are closed. The first full M002 sweep aborted before producing outcomes because M006 exclusions were removed from derived `relevance` but left in `preferred_order`. M010 will correct and test the in-memory projection without modifying frozen corpus or decision artifacts. M002 remains blocked until M010 closes.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
