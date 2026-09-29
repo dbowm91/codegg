@@ -51,7 +51,7 @@ No retrieval outcomes were produced. The frozen corpus and M006 receipt remain v
 - Validate projected cases before returning them.
 - Compute the complete universe fingerprint before loading MiniLM, using stable serialized case bytes after the expanded-fixture size/authority validator. Retain byte-for-byte fingerprint equivalence for valid cases.
 - Add regression tests for all three exclusions, unchanged eligible labels/order, stable denominators, and frozen corpus fingerprints.
-- Rerun the bounded feature-gated M002 tests, then retry the complete preregistered sweep.
+- Rerun the bounded feature-gated M002 tests and prove the complete sweep input preflight finishes before model loading. The full model-backed sweep remains M002 work after M010 closure unblocks that plan.
 
 ### Explicitly out of scope
 
@@ -92,13 +92,13 @@ Required changes: Add focused tests over all three excluded occurrences, assert 
 
 Acceptance evidence: Focused tests fail against the old projection and pass with the correction; source corpus hash and partition behavior remain unchanged.
 
-### Work package C — Retry the unchanged full sweep
+### Work package C — Fail-fast sweep input preflight
 
-Intent: Obtain the first complete M002 frontier receipt under the already-frozen contracts.
+Intent: Ensure projection, expansion, and fingerprint errors cannot appear after expensive encoder work has started.
 
-Required changes: Run the full ignored `m002_preregistered_dev_frontier_sweep` only after Work Packages A and B pass. The complete universe fingerprint must already have been computed successfully before encoder/model load. Do not change the frozen sweep inputs or protocol.
+Required changes: Compute the complete universe fingerprint before reading/loading the encoder. Verify the focused test exercises 64/128/256 universe expansion and deterministic fingerprinting. Do not change the frozen sweep inputs or protocol. M002 runs the full ignored sweep after this corrective closes.
 
-Acceptance evidence: A successful full receipt with all universes, arms, pooling strategies, metrics, and disposition written to both planned output paths, followed by a result-based downstream audit.
+Acceptance evidence: The bounded projection/fingerprint test passes, and source order proves `universe_fingerprint()` completes before model manifest loading. M002 can safely return to ready status.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
@@ -127,7 +127,6 @@ No production integration/security surface changes. Run the full ignored sweep o
 ```bash
 rustup run 1.98.1 cargo test --locked -p codegg --features tool-advisor-encoder-training --lib tool_advisor::retrieval_signal_m002::tests
 scripts/verify.sh quick
-rustup run 1.98.1 cargo test --locked -p codegg --features tool-advisor-encoder-training --lib tool_advisor::retrieval_signal_m002::tests::m002_preregistered_dev_frontier_sweep -- --ignored --nocapture
 cargo fmt --all -- --check
 git diff --check
 ```
@@ -144,7 +143,7 @@ Use the available Rust 1.98.1 toolchain for Candle feature-gated checks on this 
 
 - Current-step projection is coherent and regression-tested for all three M006 exclusions.
 - Frozen corpus and preregistration hashes do not change.
-- The unchanged full M002 sweep completes and writes its receipt, or a newly discovered correctness stop is registered as a separate corrective before any further retry.
+- The complete derived-view and universe-fingerprint preflight succeeds without loading the encoder; the M002 full sweep is then unblocked to run under its own plan.
 - Registry and roadmap accurately state which future plans are eligible after M010/M002 disposition.
 
 ## 14. Stop conditions
@@ -153,8 +152,8 @@ Stop and register a separate corrective if any M006 exclusion cannot be mapped t
 
 ## 15. Closure evidence required
 
-Record the implementation commit, focused and quick verification, corpus/receipt fingerprint checks, the complete sweep command and result, receipt paths/hash, M002 validity and gate disposition, unresolved findings, and the registry audit for M002-M005 and any other newly eligible plans.
+Record the implementation commit, focused and quick verification, corpus/receipt fingerprint checks, fail-fast ordering evidence, unresolved findings, and the registry audit that returns M002 to ready. Record no M002 outcome here; M002 owns the subsequent full sweep and its downstream audit.
 
 ## 16. Handoff notes
 
-The M002 sweep is exceptionally expensive on the current host: its failed first attempt ran 47,110 seconds. Run the focused tests before starting it and do not interrupt or duplicate a healthy full run. The pinned model files are local ignored assets under `target/tool-advisor/reference-assets/all-minilm-l6-v2/`.
+The M002 sweep is exceptionally expensive on the current host: its failed first attempt ran 47,110 seconds. M010 closes on deterministic projection/fingerprint preflight evidence; only then may M002 restart and run the full sweep. Run the focused tests before starting it and do not interrupt or duplicate a healthy full run. The pinned model files are local ignored assets under `target/tool-advisor/reference-assets/all-minilm-l6-v2/`.
