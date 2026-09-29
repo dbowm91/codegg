@@ -1,13 +1,14 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M003 — Frozen-Encoder Retrieval Projection
 
-Status: active
+Status: blocked
 
 Repository baseline: `99af426f`
 
 Hard dependencies:
 
 - M001 positive current-step inferability/preregistration re-audit, recorded by M006 (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`); the original blocked M001 closure remains historical evidence.
-- M002 valid negative result (deterministic Signal V2 did not clear the gates), formally closed at `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`.
+- M002 valid negative result (deterministic Signal V2 did not clear the gates), formally closed at `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-completion-status.md`.
+- M011 train-partition inferability audit and optimizer-input freeze (not yet closed); M006 re-audited only the M001 dev gate-critical miss set, not M003's optimizer labels.
 
 Source roadmap:
 
