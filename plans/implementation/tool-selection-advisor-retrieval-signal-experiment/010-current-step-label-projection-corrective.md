@@ -19,7 +19,7 @@ Primary class: experimental infrastructure / evidence integrity
 
 ## 1. Objective
 
-Apply M006's current-step exclusion consistently to all derived supervision fields used to construct M002 dev cases, without changing frozen corpus bytes, M006's relevance decision, or any M002 scoring contract. Add a regression guard that proves derived cases are valid before another expensive full sweep can start.
+Apply M006's current-step exclusion consistently to all derived supervision fields used to construct M002 dev cases, without changing frozen corpus bytes, M006's relevance decision, or any M002 scoring contract. Precompute and validate the complete universe fingerprint before model loading so deterministic input/fingerprint errors cannot consume another multi-hour sweep. Add regression guards for both defects.
 
 ## 2. Why this milestone is ready
 
@@ -31,6 +31,7 @@ No retrieval outcomes were produced. The frozen corpus and M006 receipt remain v
 
 - `src/tool_advisor/retrieval_signal_m002.rs`: `M006_EXCLUDED` and `current_step_dev_cases()` define the in-memory M002 target projection.
 - `src/tool_advisor/mod.rs`: `ToolAdvisorCase::validate` requires every `preferred_order` entry to have a corresponding relevance label.
+- `universe_fingerprint()` currently uses the persisted-case fingerprint helper, which validates a maximum of 128 candidates; M002's expanded 256-candidate view needs deterministic raw serialization after the dedicated universe validator.
 - `assets/tool-advisor/corpus.jsonl`: historical `filesystem-semantic-013-variant-1` retains both `read` and `table_filter` labels and preferred order; these bytes are frozen.
 - `assets/tool-advisor/retrieval-signal-m006-decision.json`: excludes exactly `table_filter`, `write`, and `lsp_rename` occurrences under `current-step-only`.
 
@@ -39,7 +40,7 @@ No retrieval outcomes were produced. The frozen corpus and M006 receipt remain v
 - Do not edit, regenerate, or relabel historical corpus, partition, M001, or M006 artifacts.
 - Apply exactly the three M006 exclusions to the derived M002 evaluation view; keep all other relevance and ordering entries intact.
 - Keep the 69 eligible labels, universes, K values, gates, scoring arms, and M007-M009 fingerprints unchanged.
-- Never begin the full sweep unless all projected dev cases and all expanded universes pass case validation.
+- Never begin the full sweep unless projected dev cases pass case validation, every expanded universe passes its dedicated size/authority validator, and the complete fingerprint is computed before encoder loading.
 - Do not inspect or infer retrieval outcomes from the failed partial execution; it emitted none.
 
 ## 5. Scope
@@ -48,6 +49,7 @@ No retrieval outcomes were produced. The frozen corpus and M006 receipt remain v
 
 - Make current-step projection remove each excluded tool from both `relevance` and `preferred_order` for its exact case occurrence.
 - Validate projected cases before returning them.
+- Compute the complete universe fingerprint before loading MiniLM, using stable serialized case bytes after the expanded-fixture size/authority validator. Retain byte-for-byte fingerprint equivalence for valid cases.
 - Add regression tests for all three exclusions, unchanged eligible labels/order, stable denominators, and frozen corpus fingerprints.
 - Rerun the bounded feature-gated M002 tests, then retry the complete preregistered sweep.
 
@@ -86,7 +88,7 @@ Acceptance evidence: All projected cases validate, the three excluded entries ar
 
 Intent: Prevent the full sweep from spending hours before detecting this class of defect.
 
-Required changes: Add focused tests over all three excluded occurrences, assert the 69-label count and each 64/128/256 expanded-universe denominator, and assert the original dataset fingerprint is unchanged by projection.
+Required changes: Add focused tests over all three excluded occurrences, assert the 69-label count and each 64/128/256 expanded-universe denominator, and assert that the original dataset fingerprint is unchanged by projection. Prove deterministic fingerprinting for the 256-candidate view and that it is computed before model loading. The generic case validator caps cases at 128 candidates, so size-256 expansion is checked by its dedicated `validate_expanded_fixture` contract through `expand_universe`.
 
 Acceptance evidence: Focused tests fail against the old projection and pass with the correction; source corpus hash and partition behavior remain unchanged.
 
@@ -94,13 +96,13 @@ Acceptance evidence: Focused tests fail against the old projection and pass with
 
 Intent: Obtain the first complete M002 frontier receipt under the already-frozen contracts.
 
-Required changes: Run the full ignored `m002_preregistered_dev_frontier_sweep` only after Work Packages A and B pass. Do not change the frozen sweep inputs or protocol.
+Required changes: Run the full ignored `m002_preregistered_dev_frontier_sweep` only after Work Packages A and B pass. The complete universe fingerprint must already have been computed successfully before encoder/model load. Do not change the frozen sweep inputs or protocol.
 
 Acceptance evidence: A successful full receipt with all universes, arms, pooling strategies, metrics, and disposition written to both planned output paths, followed by a result-based downstream audit.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
-Projection is deterministic and in-memory. A failed validation must return an error before model loading or frontier work begins. The full test is a single offline process; do not run duplicate sweeps concurrently. A failed attempt produces no accepted M002 evidence and must not be treated as a partial measurement.
+Projection is deterministic and in-memory. A failed projected-case validation or universe fingerprint must return an error before model loading or frontier work begins. The full test is a single offline process; do not run duplicate sweeps concurrently. A failed attempt produces no accepted M002 evidence and must not be treated as a partial measurement.
 
 ## 9. Compatibility and migration
 

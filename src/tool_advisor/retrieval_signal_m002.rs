@@ -558,8 +558,15 @@ fn current_step_dev_cases() -> Result<(Vec<ToolAdvisorCase>, String, String)> {
         for (case_id, tool) in M006_EXCLUDED {
             if case.case_id == case_id {
                 case.relevance.remove(tool);
+                case.preferred_order.retain(|name| name != tool);
             }
         }
+        case.validate().with_context(|| {
+            format!(
+                "validate M006 current-step projection for case {}",
+                case.case_id
+            )
+        })?;
     }
     Ok((dev, dataset, dev_fingerprint))
 }
@@ -834,11 +841,25 @@ fn digest_file(path: &Path) -> Result<String> {
 fn universe_fingerprint(cases: &[ToolAdvisorCase], sizes: &[usize]) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(b"retrieval-signal-m002-universe-v1\n");
-    hasher.update(dataset_fingerprint(cases)?.as_bytes());
+    hasher.update(fingerprint_cases_without_case_size_validation(cases)?.as_bytes());
     for size in sizes {
         let expanded = expand_universe(cases, *size)?;
         hasher.update(size.to_le_bytes());
-        hasher.update(dataset_fingerprint(&expanded)?.as_bytes());
+        hasher.update(fingerprint_cases_without_case_size_validation(&expanded)?.as_bytes());
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn fingerprint_cases_without_case_size_validation(cases: &[ToolAdvisorCase]) -> Result<String> {
+    let mut ordered = cases.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.case_id.cmp(&right.case_id));
+    let mut hasher = Sha256::new();
+    for case in ordered {
+        // Expanded 256-candidate universes intentionally exceed the generic
+        // persisted-case limit; expand_universe has already checked their
+        // dedicated candidate-count and authority contract.
+        hasher.update(serde_json::to_vec(case)?);
+        hasher.update(b"\n");
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -851,6 +872,7 @@ fn run_sweep() -> Result<M002SweepReceipt> {
             "M006-adjusted dev relevant count is {eligible}; expected 69"
         ));
     }
+    let universe_fingerprint = universe_fingerprint(&dev, &PREREG_UNIVERSES)?;
     let manifest_path = PathBuf::from(M002_ENCODER_MANIFEST);
     let manifest_bytes = std::fs::read(&manifest_path)
         .with_context(|| format!("read pinned encoder manifest {}", manifest_path.display()))?;
@@ -1017,7 +1039,7 @@ fn run_sweep() -> Result<M002SweepReceipt> {
         m006_decision_sha256,
         dataset_sha256: dataset_hash,
         dev_partition_sha256: dev_hash,
-        universe_fingerprint: universe_fingerprint(&dev, &PREREG_UNIVERSES)?,
+        universe_fingerprint,
         encoder_manifest_sha256: manifest_hash,
         encoder_costs,
         cases: dev.len(),
@@ -1061,6 +1083,102 @@ mod tests {
             assert!(expanded
                 .iter()
                 .all(|case| deferred_candidates(case).len() == size));
+        }
+    }
+
+    #[test]
+    fn m002_current_step_projection_removes_excluded_labels_consistently_without_mutating_corpus() {
+        let corpus = load_cases(None).expect("frozen corpus");
+        let source_fingerprint = dataset_fingerprint(&corpus).expect("source fingerprint");
+        let partition = partition_cases(&corpus);
+        let source_dev: BTreeMap<_, _> = partition
+            .dev_cases
+            .iter()
+            .map(|index| (corpus[*index].case_id.as_str(), &corpus[*index]))
+            .collect();
+
+        let (projected, projected_source_fingerprint, _) =
+            current_step_dev_cases().expect("current-step dev view");
+        assert_eq!(projected_source_fingerprint, source_fingerprint);
+        assert_eq!(
+            fingerprint_cases_without_case_size_validation(&projected)
+                .expect("current-step fingerprint"),
+            dataset_fingerprint(&projected).expect("validated current-step fingerprint")
+        );
+        assert_eq!(
+            dataset_fingerprint(&corpus).expect("corpus remains unchanged"),
+            source_fingerprint
+        );
+        assert_eq!(
+            projected
+                .iter()
+                .filter(|case| M006_EXCLUDED
+                    .iter()
+                    .any(|(case_id, _)| *case_id == case.case_id))
+                .count(),
+            M006_EXCLUDED.len()
+        );
+        assert_eq!(
+            projected
+                .iter()
+                .map(|case| case.relevance.len())
+                .sum::<usize>(),
+            69
+        );
+        let universe_hash = universe_fingerprint(&projected, &PREREG_UNIVERSES)
+            .expect("all universe fingerprints are computed before encoder loading");
+        assert_eq!(
+            universe_hash,
+            universe_fingerprint(&projected, &PREREG_UNIVERSES)
+                .expect("universe fingerprint is deterministic")
+        );
+
+        for case in &projected {
+            let source = source_dev
+                .get(case.case_id.as_str())
+                .expect("projected case belongs to frozen dev split");
+            let excluded = M006_EXCLUDED
+                .iter()
+                .find(|(case_id, _)| *case_id == case.case_id);
+            let mut expected_relevance = source.relevance.clone();
+            let mut expected_preferred_order = source.preferred_order.clone();
+            if let Some((_, tool)) = excluded {
+                assert!(expected_relevance.remove(*tool).is_some());
+                expected_preferred_order.retain(|name| name != tool);
+                assert!(!case.relevance.contains_key(*tool));
+                assert!(!case.preferred_order.iter().any(|name| name == tool));
+            }
+            assert_eq!(case.relevance, expected_relevance, "{}", case.case_id);
+            assert_eq!(
+                case.preferred_order, expected_preferred_order,
+                "{}",
+                case.case_id
+            );
+            case.validate().expect("projected case is coherent");
+        }
+
+        for size in PREREG_UNIVERSES {
+            let expanded = expand_universe(&projected, size).expect("projected universe");
+            if size <= 128 {
+                assert_eq!(
+                    fingerprint_cases_without_case_size_validation(&expanded)
+                        .expect("expanded fingerprint"),
+                    dataset_fingerprint(&expanded).expect("validated expanded fingerprint")
+                );
+            }
+            assert_eq!(
+                expanded
+                    .iter()
+                    .map(|case| case.relevance.len())
+                    .sum::<usize>(),
+                69
+            );
+            if size <= 128 {
+                for case in &expanded {
+                    case.validate()
+                        .unwrap_or_else(|error| panic!("{}: {error:#}", case.case_id));
+                }
+            }
         }
     }
 
