@@ -216,7 +216,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: ready — M012 closed positively with a frozen train-only optimizer receipt; M003 is ready to begin the preregistered projection experiment.
+Status: active — M012 closed positively with a frozen train-only optimizer receipt; M003 is executing the preregistered projection experiment.
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 
