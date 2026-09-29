@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M010 — Current-Step Label Projection Corrective
 
-Status: closing — implementation landed; regression and repository verification are under closure review before retrying M002
+Status: closed — `plans/closure/tool-selection-advisor-retrieval-signal-experiment/010-status.md`
 
 Repository baseline: `0ff67b4`
 

@@ -190,7 +190,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked — current-step derived supervision is inconsistent: M006 exclusions are removed from `relevance` but remain in `preferred_order`. The full sweep aborted before producing outcomes; M010 owns the correction. The frozen receipt fingerprint remains `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
+Status: ready — M010 closed the current-step label projection and complete-universe fingerprint preflight corrective. The previous full sweep aborted without producing outcomes; the unchanged sweep is ready to rerun. The frozen receipt fingerprint remains `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
 
@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/010-current-step-label-projection-corrective.md`
 
-Status: closing — M010 implementation landed and its projection/fingerprint regression tests passed. Closure review is in progress; M002 remains blocked until M010 closes.
+Status: closed — closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/010-status.md`; M006 projection and pre-encoder fingerprint checks pass. M002 is ready to rerun.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
