@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M010 — Current-Step Label Projection Corrective
 
-Status: active — correcting the M006 current-step derived label projection before retrying the M002 sweep
+Status: closing — implementation landed; regression and repository verification are under closure review before retrying M002
 
 Repository baseline: `0ff67b4`
 

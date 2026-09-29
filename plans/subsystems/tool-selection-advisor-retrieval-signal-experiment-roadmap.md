@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/010-current-step-label-projection-corrective.md`
 
-Status: active — M006-M009 are closed. The first full M002 sweep aborted before producing outcomes because M006 exclusions were removed from derived `relevance` but left in `preferred_order`. M010 is correcting and testing the in-memory projection without modifying frozen corpus or decision artifacts. M002 remains blocked until M010 closes.
+Status: closing — M010 implementation landed and its projection/fingerprint regression tests passed. Closure review is in progress; M002 remains blocked until M010 closes.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
