@@ -1,0 +1,4048 @@
+[
+  {
+    "case_id": "filesystem-semantic-000-variant-1",
+    "tool": "git_log",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": true
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-000-variant-1",
+    "tool": "read",
+    "hard_negatives": [
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-000-variant-2",
+    "tool": "read",
+    "hard_negatives": [
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-005-variant-1",
+    "tool": "list_dir",
+    "hard_negatives": [
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "process_list",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-006-variant-1",
+    "tool": "write",
+    "hard_negatives": [
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-009-variant-1",
+    "tool": "write",
+    "hard_negatives": [
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "fetch_url",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-014-variant-1",
+    "tool": "read",
+    "hard_negatives": [
+      {
+        "name": "process_list",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-015-variant-1",
+    "tool": "write",
+    "hard_negatives": [
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "memory_recall",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-016-variant-1",
+    "tool": "write",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-018-variant-1",
+    "tool": "read",
+    "hard_negatives": [
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-019-variant-1",
+    "tool": "glob",
+    "hard_negatives": [
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "schema_validate",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "filesystem-semantic-021-variant-1",
+    "tool": "write",
+    "hard_negatives": [
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-022-variant-1",
+    "tool": "git_status",
+    "hard_negatives": [
+      {
+        "name": "git_log",
+        "same_family": true
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-022-variant-1",
+    "tool": "grep",
+    "hard_negatives": [
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-022-variant-2",
+    "tool": "grep",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-028-variant-1",
+    "tool": "semantic_search",
+    "hard_negatives": [
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-029-variant-1",
+    "tool": "semantic_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-029-variant-1",
+    "tool": "symbol_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-031-variant-1",
+    "tool": "semantic_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-031-variant-1",
+    "tool": "symbol_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-032-variant-1",
+    "tool": "symbol_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-039-variant-1",
+    "tool": "grep",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      },
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-039-variant-1",
+    "tool": "symbol_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      },
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-040-variant-1",
+    "tool": "symbol_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "search-semantic-042-variant-1",
+    "tool": "grep",
+    "hard_negatives": [
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "replace",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-044-variant-1",
+    "tool": "git_log",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-046-variant-1",
+    "tool": "git_log",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-054-variant-1",
+    "tool": "git_diff",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": true
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-054-variant-1",
+    "tool": "git_status",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": true
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-058-variant-1",
+    "tool": "git_diff",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": true
+      },
+      {
+        "name": "git_status",
+        "same_family": true
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-059-variant-1",
+    "tool": "git_log",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": true
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-060-variant-1",
+    "tool": "git_log",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-064-variant-1",
+    "tool": "git_log",
+    "hard_negatives": [
+      {
+        "name": "git_blame",
+        "same_family": true
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "json_query",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-065-variant-1",
+    "tool": "git_diff",
+    "hard_negatives": [
+      {
+        "name": "git_log",
+        "same_family": true
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "git-semantic-065-variant-1",
+    "tool": "git_status",
+    "hard_negatives": [
+      {
+        "name": "git_log",
+        "same_family": true
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-070-variant-1",
+    "tool": "lsp_hover",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": true
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-071-variant-1",
+    "tool": "lsp_hover",
+    "hard_negatives": [
+      {
+        "name": "lsp_definition",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-074-variant-1",
+    "tool": "lsp_hover",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": true
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-076-variant-1",
+    "tool": "lsp_hover",
+    "hard_negatives": [
+      {
+        "name": "lsp_definition",
+        "same_family": true
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-078-variant-1",
+    "tool": "lsp_definition",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": true
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-079-variant-1",
+    "tool": "lsp_hover",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": true
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "docs_lookup",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-079-variant-1",
+    "tool": "lsp_rename",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": true
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "docs_lookup",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-080-variant-1",
+    "tool": "lsp_definition",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": true
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-082-variant-1",
+    "tool": "lsp_references",
+    "hard_negatives": [
+      {
+        "name": "lsp_definition",
+        "same_family": true
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "replace",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": true
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-085-variant-1",
+    "tool": "lsp_definition",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": true
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "lsp-semantic-086-variant-1",
+    "tool": "lsp_hover",
+    "hard_negatives": [
+      {
+        "name": "lsp_rename",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "docs_lookup",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-089-variant-1",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-090-variant-1",
+    "tool": "test_run",
+    "hard_negatives": [
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "lint",
+        "same_family": false
+      },
+      {
+        "name": "process_list",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-090-variant-1",
+    "tool": "typecheck",
+    "hard_negatives": [
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "lint",
+        "same_family": false
+      },
+      {
+        "name": "process_list",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-090-variant-2",
+    "tool": "typecheck",
+    "hard_negatives": [
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "lint",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-091-variant-1",
+    "tool": "coverage",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-091-variant-1",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-091-variant-2",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-092-variant-1",
+    "tool": "typecheck",
+    "hard_negatives": [
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-093-variant-1",
+    "tool": "typecheck",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-094-variant-1",
+    "tool": "coverage",
+    "hard_negatives": [
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-095-variant-1",
+    "tool": "test_run",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-098-variant-1",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-099-variant-1",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-100-variant-1",
+    "tool": "test_run",
+    "hard_negatives": [
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-102-variant-1",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-109-variant-1",
+    "tool": "coverage",
+    "hard_negatives": [
+      {
+        "name": "schema_validate",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "verification-semantic-109-variant-1",
+    "tool": "lint",
+    "hard_negatives": [
+      {
+        "name": "schema_validate",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-110-variant-1",
+    "tool": "web_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "docs_lookup",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-112-variant-1",
+    "tool": "docs_lookup",
+    "hard_negatives": [
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "summarize",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-113-variant-1",
+    "tool": "docs_lookup",
+    "hard_negatives": [
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-113-variant-1",
+    "tool": "summarize",
+    "hard_negatives": [
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-113-variant-2",
+    "tool": "docs_lookup",
+    "hard_negatives": [
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "summarize",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-116-variant-1",
+    "tool": "web_search",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-117-variant-1",
+    "tool": "docs_lookup",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "json_query",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-118-variant-1",
+    "tool": "fetch_url",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "table_filter",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-120-variant-1",
+    "tool": "fetch_url",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-122-variant-1",
+    "tool": "web_search",
+    "hard_negatives": [
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "docs_lookup",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "research-semantic-123-variant-1",
+    "tool": "web_search",
+    "hard_negatives": [
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      },
+      {
+        "name": "docs_lookup",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-133-variant-1",
+    "tool": "plan_get",
+    "hard_negatives": [
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-137-variant-1",
+    "tool": "plan_get",
+    "hard_negatives": [
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "memory_recall",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-143-variant-1",
+    "tool": "context_read",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-143-variant-1",
+    "tool": "goal_get",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-146-variant-1",
+    "tool": "context_read",
+    "hard_negatives": [
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-146-variant-1",
+    "tool": "goal_get",
+    "hard_negatives": [
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_blame",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-147-variant-1",
+    "tool": "goal_get",
+    "hard_negatives": [
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-148-variant-1",
+    "tool": "plan_get",
+    "hard_negatives": [
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_hover",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "git_status",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "context-semantic-149-variant-1",
+    "tool": "context_read",
+    "hard_negatives": [
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-155-variant-1",
+    "tool": "plugin_search",
+    "hard_negatives": [
+      {
+        "name": "plugin_install",
+        "same_family": true
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-156-variant-1",
+    "tool": "plugin_enable",
+    "hard_negatives": [
+      {
+        "name": "plugin_install",
+        "same_family": true
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": true
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-156-variant-2",
+    "tool": "browser_test",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_enable",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-157-variant-1",
+    "tool": "plugin_install",
+    "hard_negatives": [
+      {
+        "name": "plugin_enable",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-157-variant-1",
+    "tool": "plugin_search",
+    "hard_negatives": [
+      {
+        "name": "plugin_enable",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-157-variant-2",
+    "tool": "plugin_search",
+    "hard_negatives": [
+      {
+        "name": "plugin_install",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_enable",
+        "same_family": true
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-159-variant-1",
+    "tool": "plugin_install",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": true
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-162-variant-1",
+    "tool": "browser_test",
+    "hard_negatives": [
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-163-variant-1",
+    "tool": "plugin_enable",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": true
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_install",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-163-variant-1",
+    "tool": "write",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_install",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-164-variant-1",
+    "tool": "plugin_enable",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": true
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-167-variant-1",
+    "tool": "browser_test",
+    "hard_negatives": [
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-168-variant-1",
+    "tool": "plugin_install",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-170-variant-1",
+    "tool": "plugin_enable",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": true
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_install",
+        "same_family": true
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "plugin-semantic-172-variant-1",
+    "tool": "browser_test",
+    "hard_negatives": [
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-178-variant-1",
+    "tool": "process_list",
+    "hard_negatives": [
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-178-variant-2",
+    "tool": "process_list",
+    "hard_negatives": [
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-179-variant-1",
+    "tool": "env_get",
+    "hard_negatives": [
+      {
+        "name": "process_list",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-183-variant-1",
+    "tool": "env_get",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "write",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-186-variant-1",
+    "tool": "process_list",
+    "hard_negatives": [
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-187-variant-1",
+    "tool": "env_get",
+    "hard_negatives": [
+      {
+        "name": "browser_test",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-188-variant-1",
+    "tool": "shell_exec",
+    "hard_negatives": [
+      {
+        "name": "shell_history",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-189-variant-1",
+    "tool": "process_list",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-193-variant-1",
+    "tool": "process_list",
+    "hard_negatives": [
+      {
+        "name": "git_status",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-194-variant-1",
+    "tool": "env_get",
+    "hard_negatives": [
+      {
+        "name": "process_list",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "shell-semantic-195-variant-1",
+    "tool": "process_list",
+    "hard_negatives": [
+      {
+        "name": "list_dir",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-198-variant-1",
+    "tool": "json_edit",
+    "hard_negatives": [
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-198-variant-1",
+    "tool": "json_query",
+    "hard_negatives": [
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "coverage",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      },
+      {
+        "name": "test_run",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-198-variant-2",
+    "tool": "json_edit",
+    "hard_negatives": [
+      {
+        "name": "json_query",
+        "same_family": true
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "shell_history",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "git_log",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-199-variant-1",
+    "tool": "json_edit",
+    "hard_negatives": [
+      {
+        "name": "json_query",
+        "same_family": true
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-202-variant-1",
+    "tool": "json_edit",
+    "hard_negatives": [
+      {
+        "name": "json_query",
+        "same_family": true
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "schema_validate",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-203-variant-1",
+    "tool": "json_edit",
+    "hard_negatives": [
+      {
+        "name": "json_query",
+        "same_family": true
+      },
+      {
+        "name": "read",
+        "same_family": false
+      },
+      {
+        "name": "context_read",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "schema_validate",
+        "same_family": false
+      },
+      {
+        "name": "env_get",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-207-variant-1",
+    "tool": "json_query",
+    "hard_negatives": [
+      {
+        "name": "json_edit",
+        "same_family": true
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-212-variant-1",
+    "tool": "table_filter",
+    "hard_negatives": [
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "goal_get",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      },
+      {
+        "name": "typecheck",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-213-variant-1",
+    "tool": "schema_validate",
+    "hard_negatives": [
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "git_diff",
+        "same_family": false
+      },
+      {
+        "name": "lsp_definition",
+        "same_family": false
+      },
+      {
+        "name": "semantic_search",
+        "same_family": false
+      },
+      {
+        "name": "symbol_search",
+        "same_family": false
+      },
+      {
+        "name": "lsp_rename",
+        "same_family": false
+      },
+      {
+        "name": "lsp_references",
+        "same_family": false
+      }
+    ]
+  },
+  {
+    "case_id": "structured-semantic-215-variant-1",
+    "tool": "json_query",
+    "hard_negatives": [
+      {
+        "name": "json_edit",
+        "same_family": true
+      },
+      {
+        "name": "table_filter",
+        "same_family": false
+      },
+      {
+        "name": "plugin_search",
+        "same_family": false
+      },
+      {
+        "name": "grep",
+        "same_family": false
+      },
+      {
+        "name": "glob",
+        "same_family": false
+      },
+      {
+        "name": "web_search",
+        "same_family": false
+      },
+      {
+        "name": "plan_get",
+        "same_family": false
+      }
+    ]
+  }
+]

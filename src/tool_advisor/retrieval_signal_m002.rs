@@ -150,7 +150,7 @@ fn candidate_descriptor(candidate: &ToolAdvisorCandidate) -> RetrievalDescriptor
     RetrievalDescriptorV2::from_candidate(candidate, schema)
 }
 
-fn m002_context(case: &ToolAdvisorCase) -> AdvisorContextV2 {
+pub(super) fn m002_context(case: &ToolAdvisorCase) -> AdvisorContextV2 {
     AdvisorContextV2::from_benchmark_context(&case.context)
 }
 
@@ -434,7 +434,7 @@ fn surface_fingerprint(case: &ToolAdvisorCase) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn semantic_texts(
+pub(super) fn semantic_texts(
     case: &ToolAdvisorCase,
     arm: &str,
 ) -> Result<(String, Vec<(String, RetrievalDescriptorV2, String)>)> {
@@ -541,7 +541,7 @@ fn encoder_cost_report(
     })
 }
 
-fn current_step_dev_cases() -> Result<(Vec<ToolAdvisorCase>, String, String)> {
+pub(super) fn current_step_dev_cases() -> Result<(Vec<ToolAdvisorCase>, String, String)> {
     let corpus = load_cases(None)?;
     let dataset = dataset_fingerprint(&corpus)?;
     let partition = partition_cases(&corpus);

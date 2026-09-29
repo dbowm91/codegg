@@ -43,6 +43,8 @@ pub mod retrieval_signal;
 #[cfg(feature = "tool-advisor-encoder-training")]
 pub mod retrieval_signal_m002;
 #[cfg(feature = "tool-advisor-encoder-training")]
+pub mod retrieval_signal_m003;
+#[cfg(feature = "tool-advisor-encoder-training")]
 pub mod retrieval_signal_m003_audit;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
 pub mod sequence_encoder;
