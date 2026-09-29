@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active
+Status: closed (negative-valid)
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -171,7 +171,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001-signal-sufficiency-audit-and-preregistration.md`
 
-Status: blocked (historical closure). M006 resolved the relevance-target blocker; M002 is now blocked on M007's reproducibility corrective.
+Status: blocked (historical closure). M006 later resolved the relevance-target blocker; M002 completed with a valid negative result and M003 completed with a valid negative result. This historical M001 status is retained unchanged.
 
 Audit complete and preregistration frozen, but the §4 hard stop
 triggered: three gate-critical labels are supporting-workflow steps, not
@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/010-current-step-label-projection-corrective.md`
 
-Status: closed — closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/010-status.md`; M006 projection and pre-encoder fingerprint checks pass. M002 is ready to rerun.
+Status: closed — closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/010-status.md`; M006 projection and pre-encoder fingerprint checks pass. M002's final corrected frontier is closed negative-valid.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
@@ -216,9 +216,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: active — M012 closed positively with a frozen train-only optimizer receipt; M003 is executing the preregistered projection experiment.
+Status: closed (negative-valid) — the complete 81-point M003 projection sweep cleared no frozen retrieval gates; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/003-status.md`. M004 and M005 remain blocked because no positive retrieval result exists.
 
-If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
+The frozen projection grid used train-only graded positives and pre-frozen hard negatives. No arm cleared dev retrieval gates; no artifact was selected. See the M003 closure for receipt, verification, and resource-measurement limitation.
 
 ### M004 — Retrieval + promotion operating point
 

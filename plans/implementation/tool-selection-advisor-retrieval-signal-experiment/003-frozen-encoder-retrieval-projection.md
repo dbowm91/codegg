@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M003 — Frozen-Encoder Retrieval Projection
 
-Status: active
+Status: implemented
 
 Repository baseline: `99af426f`
 
