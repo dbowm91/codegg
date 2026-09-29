@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M011 — Train-Partition Inferability Audit
 
-Status: active
+Status: blocked — closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/011-status.md`; M012 owns the classifier coverage defect.
 
 Repository baseline: `5a14384c`
 
