@@ -1,5 +1,6 @@
 //! M002 deterministic Retrieval Signal V2 (lexical half, default features).
 //!
+//! C001 unrelated-PR fast-path probe: comment-only change, no behavior change.
 //! Implements the M001R-frozen Signal V2 representation and the deterministic
 //! lexical frontier without learned weights. Semantic MiniLM variants (§4 of
 //! the M002 plan) need the `tool-advisor-encoder-training` feature
