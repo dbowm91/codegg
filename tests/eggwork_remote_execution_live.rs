@@ -1138,6 +1138,13 @@ async fn live_scheduler_end_to_end_remote_only() {
         .await
         .unwrap();
     std::fs::write(root.path().join("build.sh"), b"#!/bin/sh\necho ok\n").unwrap();
+    for index in 0..24 {
+        std::fs::write(
+            root.path().join(format!("stable-{index:02}.txt")),
+            vec![b'x'; 256],
+        )
+        .unwrap();
+    }
     let services = WorkspaceServiceRegistry::new(
         workspace_registry,
         Arc::new(ProductionWorkspaceServicesFactory),
