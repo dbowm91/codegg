@@ -41,6 +41,7 @@ pub mod requalify;
 pub mod retrieval_architecture;
 pub mod retrieval_relevance;
 pub mod retrieval_signal;
+pub mod retrieval_signal_v2;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
 pub mod sequence_encoder;
 #[cfg(feature = "tool-advisor-encoder-training")]
