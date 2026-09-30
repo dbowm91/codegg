@@ -81,3 +81,4 @@ pub enum EgggitError {
     #[error("git output exceeded the configured byte bound")]
     OutputTooLarge,
 }
+// C001 sccache reuse probe: comment-only, one leaf crate.
