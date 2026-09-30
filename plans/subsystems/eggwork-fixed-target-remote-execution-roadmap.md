@@ -161,7 +161,7 @@ Pin the corrected Eggwork revision and prove CodeGG's production mTLS path execu
 
 Class: infrastructure/capability
 
-Status: ready for handoff
+Status: closed (`plans/closure/eggwork-fixed-target-remote-execution/003-status.md`; implementation `1ce377ce`; hosted CI run `36745285774` success, including live derived reuse under required isolation)
 
 Implementation plan:
 
@@ -187,7 +187,7 @@ M003 deliberately keeps local full snapshot construction authoritative; it optim
 
 Class: capability
 
-Status: deferred; M002 target policy and M002a restricted live qualification are closed. Still blocked on workspace optimization (M003) and the stable AgentRun worker-entry contract.
+Status: deferred; M002 target policy, M002a restricted live qualification, and M003 workspace transfer optimization are closed. Only the stable AgentRun worker-entry contract remains outstanding.
 
 Objective:
 
