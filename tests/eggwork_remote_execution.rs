@@ -38,6 +38,7 @@ use eggwork_core::{
     IsolationRequirement, LeaseId, NetworkRequirement, NodeCapabilities, NodeId, NodeStatus,
     OutputPolicy, ProtocolVersion, ProtocolVersionRange, RelativePath, Requirement,
     ResourceRequirements, StdinPolicy, WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
+    WorkspaceManifestPatch,
 };
 use futures_util::StreamExt;
 
@@ -205,6 +206,23 @@ impl EggworkNodeClient for ScriptedClient {
             generation: handle.generation,
             manifest_digest: manifest.digest().expect("manifest digest"),
             logical_bytes: manifest.logical_bytes(),
+        })
+    }
+
+    async fn create_workspace_derived(
+        &self,
+        _workspace_id: &EggworkWorkspaceId,
+        _handle: &ExecutionHandle,
+        _base_manifest_digest: &BlobDigest,
+        _patch: &WorkspaceManifestPatch,
+    ) -> Result<WorkspaceReady, EggworkClientError> {
+        // Scripted surface never retains a base: the executor must take
+        // the safe full-mode fallback. Derived-hit behavior is qualified
+        // through the in-module fake and the live suite.
+        Err(EggworkClientError::Api {
+            status: 409,
+            code: "base_manifest_missing".to_string(),
+            message: "no retained base".to_string(),
         })
     }
 

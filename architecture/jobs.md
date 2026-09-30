@@ -109,7 +109,10 @@ generation, lease id. The Eggwork executor writes it before any
 upload/execute side effect and reconciles it on restart instead of
 resubmitting, so one CodeGG attempt maps to at most one accepted remote
 execution. Bearer lease material lives only in this attempt-scoped row,
-never in job payloads, progress text, or audit metadata.
+never in job payloads, progress text, or audit metadata. The M003
+derived-transfer optimization cache is deliberately NOT persisted here:
+it is an in-memory, node-scoped, bounded hint that starts cold after
+restart and returns the executor to full materialization.
 
 ### Eggwork lease-fencing contract (corrective C001)
 
@@ -472,5 +475,8 @@ side effects. Local live-workspace execution seals S2 after executor cleanup
 and before terminal persistence. Equal subjects are Stable; differences are
 Drifted while the execution status remains truthful. Eggwork seals around its
 materialized source snapshot before upload/submit; later local edits do not
-rewrite that immutable input identity. Capture failure, non-Git workspaces,
+rewrite that immutable input identity. M003 preserves this ordering
+exactly: capture S1, build the immutable full snapshot, seal the full
+manifest digest, then choose full/derived transport. A derived patch is
+never persisted as the historical source identity. Capture failure, non-Git workspaces,
 legacy NULLs, and unsupported remote boundaries remain unavailable.

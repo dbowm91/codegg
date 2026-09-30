@@ -386,6 +386,44 @@ interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
 Live mTLS qualification: `tests/eggwork_remote_execution_live.rs`
 (Linux).
 
+#### Content-aware derived workspace transfer (M003)
+
+Workspace transfer is content-aware rather than Git-aware. CodeGG always
+constructs the exact full current `WorkspaceManifest` locally as the
+correctness and source-provenance authority; M003 changes transfer
+planning, never what bytes constitute the remote input.
+
+When the fresh preflight probe advertises `workspace.derive.v1` (never
+inferred from version strings) and the executor holds an acknowledged
+full manifest for the same `(node_id, workspace)` key, it derives a
+deterministic `WorkspaceManifestPatch` (removed paths become `Remove`,
+added/changed directories/files become upserts, executable-bit and
+digest/size changes count as file upserts, deterministic path ordering)
+and proves locally that `apply(base, patch)` reproduces the current
+manifest exactly before sending anything. Derived mode is used only
+when the patch is strictly smaller than the full manifest; then only
+patch-introduced blob digests are probed/uploaded (unchanged base
+digests stay pinned by the retained server-side manifest). A typed
+`409 base_manifest_missing` falls back to full mode with the same
+deterministic attempt workspace id/owner before any submit; every other
+derived failure (auth, digest, quota, identity, protocol, timeout,
+transport) fails closed with no fallback and no silent retry.
+
+The server-ready digest must equal the local full-manifest digest in
+both modes before `execute_in_workspace`; mismatch is a hard failure
+and no command is submitted. Successful creates (either mode) refresh
+the acknowledged base. The optimization cache is bounded (8 bases per
+node, 64 total, oldest-first eviction), secret-free (manifests only, no
+file bodies or TLS material), node-scoped (never shared across nodes),
+non-durable (cold after restart, cleared on config replacement), and
+never persisted in `JobRecord`/`JobAttempt`. Transfer facts (mode,
+base hit/miss, entry counts, manifest/patch bytes, blobs
+probed/uploaded, uploaded bytes — no paths or contents) are emitted on
+the progress sink. Blob bytes were already content-deduplicated by
+Eggwork before M003; this milestone adds manifest-level reuse.
+The Eggwork pin carries Workspace M004 plus the later Security M004
+Landlock hardening.
+
 ### Ephemeral interactive admission (M001)
 
 Local interactive PTYs (`src/interactive_process.rs`) are not durable

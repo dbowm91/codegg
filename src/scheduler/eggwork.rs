@@ -46,6 +46,7 @@ use eggwork_core::{
     ExecutionSpec, ExecutionState, IsolationRequirement, LeaseId, NetworkRequirement,
     NodeCapabilities, NodeStatus, OutputPolicy, RelativePath, Requirement, ResourceRequirements,
     StdinPolicy, WorkspaceEntry, WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
+    WorkspaceManifestPatch, WorkspacePatchEntry,
 };
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
@@ -86,6 +87,14 @@ const REQUIRED_EXEC_FEATURE: &str = "exec.argv.v1";
 const REQUIRED_ISOLATION_FEATURE: &str = "isolation.landlock.workspace-rw.v1";
 const NETWORK_DISABLED_FEATURE: &str = "network.disabled.v1";
 const NETWORK_UNRESTRICTED_FEATURE: &str = "network.unrestricted.v1";
+/// Eggwork feature advertising derived-workspace materialization (M003).
+const DERIVE_FEATURE: &str = "workspace.derive.v1";
+/// Typed server signal for an unknown/expired retained base (M003 fallback).
+const BASE_MANIFEST_MISSING_CODE: &str = "base_manifest_missing";
+/// Bound on acknowledged bases retained per node (M003 optimization cache).
+const MAX_DERIVED_BASES_PER_NODE: usize = 8;
+/// Global bound on acknowledged bases across all nodes.
+const MAX_DERIVED_BASES_TOTAL: usize = 64;
 const POSTURE_CACHE_TTL: Duration = Duration::from_secs(30);
 const POSTURE_FAILURE_CACHE_TTL: Duration = Duration::from_secs(3);
 const MAX_POSTURE_FEATURES: usize = 128;
@@ -210,6 +219,18 @@ pub trait EggworkNodeClient: Send + Sync {
         handle: &ExecutionHandle,
         manifest: &WorkspaceManifest,
     ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError>;
+    /// Derived materialization against a retained base manifest (M003).
+    /// Only called when the node advertises [`DERIVE_FEATURE`]; the caller
+    /// owns base selection, size comparison, and `base_manifest_missing`
+    /// fallback. The returned digest MUST be verified against the local
+    /// full manifest before any execution is submitted.
+    async fn create_workspace_derived(
+        &self,
+        workspace_id: &EggworkWorkspaceId,
+        handle: &ExecutionHandle,
+        base_manifest_digest: &BlobDigest,
+        patch: &WorkspaceManifestPatch,
+    ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError>;
     async fn execute_in_workspace(
         &self,
         spec: &ExecutionSpec,
@@ -312,6 +333,18 @@ impl EggworkNodeClient for NodeClientAdapter {
             .await
     }
 
+    async fn create_workspace_derived(
+        &self,
+        workspace_id: &EggworkWorkspaceId,
+        handle: &ExecutionHandle,
+        base_manifest_digest: &BlobDigest,
+        patch: &WorkspaceManifestPatch,
+    ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+        self.client
+            .create_workspace_derived(workspace_id, handle, base_manifest_digest, patch)
+            .await
+    }
+
     async fn execute_in_workspace(
         &self,
         spec: &ExecutionSpec,
@@ -370,6 +403,10 @@ pub struct EggworkExecutor {
     config: EggworkExecutorConfig,
     factory: Arc<dyn EggworkClientFactory>,
     posture_cache: Mutex<HashMap<String, CachedNodePosture>>,
+    /// Optimization-only acknowledged bases keyed by
+    /// `(node_id, workspace key)`. Never persisted; cold after restart or
+    /// config replacement, which simply returns the executor to full mode.
+    derived_bases: Mutex<HashMap<(String, String), AcknowledgedBase>>,
 }
 
 #[derive(Debug, Clone)]
@@ -398,12 +435,24 @@ struct CachedNodePosture {
     value: EggworkNodePosture,
 }
 
+/// One server-acknowledged full manifest usable as a derived-transfer base
+/// (M003). The manifest itself stays the local optimization hint: execution
+/// input and provenance authority always remain the freshly constructed
+/// full current manifest. No file bodies, TLS paths, or secrets are stored.
+#[derive(Clone)]
+struct AcknowledgedBase {
+    manifest: WorkspaceManifest,
+    digest: BlobDigest,
+    observed: Instant,
+}
+
 impl EggworkExecutor {
     pub fn new(config: EggworkExecutorConfig) -> Self {
         Self {
             config,
             factory: Arc::new(NodeClientFactory),
             posture_cache: Mutex::new(HashMap::new()),
+            derived_bases: Mutex::new(HashMap::new()),
         }
     }
 
@@ -415,6 +464,7 @@ impl EggworkExecutor {
             config,
             factory,
             posture_cache: Mutex::new(HashMap::new()),
+            derived_bases: Mutex::new(HashMap::new()),
         }
     }
 
@@ -424,6 +474,11 @@ impl EggworkExecutor {
         self.config = config;
         if let Ok(mut cache) = self.posture_cache.lock() {
             cache.clear();
+        }
+        // Optimization bases are node-scoped: a config replacement
+        // invalidates every entry and returns to full materialization.
+        if let Ok(mut bases) = self.derived_bases.lock() {
+            bases.clear();
         }
     }
 
@@ -997,21 +1052,51 @@ impl EggworkExecutor {
             )
             .await;
         let workspace_id = deterministic_workspace_id(&ctx.job.job_id, &ctx.attempt_id);
-        if let Err(e) = upload_snapshot(client, ctx, &snapshot).await {
-            if ctx.cancellation.is_cancelled() {
-                return self.cancel_before_submit(ctx, &e).await;
+        // Transfer planning (M003): the full current manifest stays the
+        // correctness authority; derived mode only reuses an acknowledged
+        // base as a transfer optimization under the fresh preflight probe.
+        let transfer = match self
+            .materialize_workspace(
+                ctx,
+                client,
+                node,
+                handle,
+                &workspace_id,
+                &snapshot,
+                policy.derive_supported,
+            )
+            .await
+        {
+            Ok(transfer) => transfer,
+            Err(e) => {
+                if ctx.cancellation.is_cancelled() {
+                    return self.cancel_before_submit(ctx, &e).await;
+                }
+                return ExecutionOutcome::Failed(e);
             }
-            return ExecutionOutcome::Failed(e);
-        }
+        };
+        ctx.progress
+            .progress(
+                &ctx.job.job_id,
+                &format!(
+                    "[eggwork {}] transfer mode={} base_hit={} entries={} patch_entries={} manifest_bytes={} patch_bytes={} blobs_probed={} blobs_uploaded={} uploaded_bytes={}",
+                    node.node_id,
+                    transfer.mode,
+                    transfer.base_hit,
+                    transfer.full_entries,
+                    transfer.patch_entries,
+                    transfer.full_bytes,
+                    transfer.patch_bytes,
+                    transfer.blobs_probed,
+                    transfer.blobs_uploaded,
+                    transfer.uploaded_bytes,
+                ),
+            )
+            .await;
         if ctx.cancellation.is_cancelled() {
             return self
                 .cancel_before_submit(ctx, "cancelled after upload, before submit")
                 .await;
-        }
-        if let Err(e) =
-            create_remote_workspace(client, &workspace_id, handle, &snapshot.manifest).await
-        {
-            return ExecutionOutcome::Failed(e);
         }
         let spec = match build_spec(argv, remote_cwd, timeout, policy) {
             Ok(spec) => spec,
@@ -1441,13 +1526,20 @@ async fn preflight(
     {
         tracing::warn!(node_id = %node.node_id, "Eggwork node network access is unrestricted and unadvertised (legacy feature contract)");
     }
-    Ok(ExecutionPolicy { isolation, network })
+    Ok(ExecutionPolicy {
+        isolation,
+        network,
+        derive_supported: consistent_features.contains(DERIVE_FEATURE),
+    })
 }
 
 #[derive(Debug, Clone)]
 struct ExecutionPolicy {
     isolation: IsolationRequirement,
     network: NetworkRequirement,
+    /// The fresh preflight probe advertised `workspace.derive.v1` (M003).
+    /// Capability is never inferred from version strings.
+    derive_supported: bool,
 }
 
 /// Map a payload cwd to an Eggwork-relative cwd rooted at the workspace
@@ -1621,12 +1713,66 @@ fn build_snapshot(root: &Path) -> Result<WorkspaceSnapshot, String> {
     })
 }
 
-/// Upload missing blobs, then create the deterministic remote workspace.
-async fn upload_snapshot(
-    client: &Arc<dyn EggworkNodeClient>,
-    ctx: &JobExecutionContext,
-    snapshot: &WorkspaceSnapshot,
-) -> Result<(), String> {
+impl EggworkExecutor {
+    /// Clone the acknowledged base for `(node_id, workspace_key)`, if any.
+    /// A missing entry (or a poisoned lock) simply means full mode.
+    fn acknowledged_base(&self, node_id: &str, workspace_key: &str) -> Option<AcknowledgedBase> {
+        self.derived_bases.lock().ok().and_then(|bases| {
+            bases
+                .get(&(node_id.to_string(), workspace_key.to_string()))
+                .cloned()
+        })
+    }
+
+    /// Record a server-acknowledged full manifest as a future derived base,
+    /// enforcing the per-node and global bounds with oldest-first eviction.
+    /// File bodies are never stored; only the manifest (paths + digests).
+    fn acknowledge_base(
+        &self,
+        node_id: &str,
+        workspace_key: &str,
+        manifest: WorkspaceManifest,
+        digest: BlobDigest,
+    ) {
+        let Ok(mut bases) = self.derived_bases.lock() else {
+            return;
+        };
+        bases.insert(
+            (node_id.to_string(), workspace_key.to_string()),
+            AcknowledgedBase {
+                manifest,
+                digest,
+                observed: Instant::now(),
+            },
+        );
+        // Per-node bound first: keep the freshest entries for this node.
+        let mut node_keys: Vec<(String, String)> = bases
+            .keys()
+            .filter(|(node, _)| node == node_id)
+            .cloned()
+            .collect();
+        if node_keys.len() > MAX_DERIVED_BASES_PER_NODE {
+            node_keys.sort_by_key(|key| bases.get(key).map(|base| base.observed));
+            for key in node_keys
+                .iter()
+                .take(node_keys.len() - MAX_DERIVED_BASES_PER_NODE)
+            {
+                bases.remove(key);
+            }
+        }
+        // Then the global bound across all nodes.
+        if bases.len() > MAX_DERIVED_BASES_TOTAL {
+            let mut keys: Vec<(String, String)> = bases.keys().cloned().collect();
+            keys.sort_by_key(|key| bases.get(key).map(|base| base.observed));
+            for key in keys.iter().take(bases.len() - MAX_DERIVED_BASES_TOTAL) {
+                bases.remove(key);
+            }
+        }
+    }
+}
+
+/// Sorted, deduplicated blob digests for every file in the snapshot.
+fn snapshot_digests(snapshot: &WorkspaceSnapshot) -> Vec<BlobDigest> {
     let mut digests: Vec<BlobDigest> = snapshot
         .files
         .values()
@@ -1634,7 +1780,325 @@ async fn upload_snapshot(
         .collect();
     digests.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     digests.dedup_by(|a, b| a.as_str() == b.as_str());
-    let missing = match op_timeout(client.find_missing_blobs(&digests)).await {
+    digests
+}
+
+/// Sorted, deduplicated blob digests referenced by `File` upserts in a patch.
+/// Unchanged base digests are never reprobed under the qualified upstream
+/// retention contract.
+fn patch_file_digests(patch: &WorkspaceManifestPatch) -> Vec<BlobDigest> {
+    let mut digests: Vec<BlobDigest> = patch
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            WorkspacePatchEntry::File { digest, .. } => Some(digest.clone()),
+            WorkspacePatchEntry::Remove { .. } | WorkspacePatchEntry::Directory { .. } => None,
+        })
+        .collect();
+    digests.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    digests.dedup_by(|a, b| a.as_str() == b.as_str());
+    digests
+}
+
+/// Derive the deterministic [`WorkspaceManifestPatch`] that transforms the
+/// acknowledged `base` into `current`, then prove locally that
+/// `apply(base, patch)` reproduces `current` exactly (digest equality)
+/// before the patch may be sent. Any divergence is a hard error: the patch
+/// is never trusted over the locally constructed full manifest.
+fn derive_patch(
+    base: &WorkspaceManifest,
+    base_digest: &BlobDigest,
+    current: &WorkspaceManifest,
+) -> Result<WorkspaceManifestPatch, String> {
+    let base_by_path: HashMap<&str, &WorkspaceEntry> = base
+        .entries
+        .iter()
+        .map(|entry| (entry.path().as_str(), entry))
+        .collect();
+    let current_by_path: HashMap<&str, &WorkspaceEntry> = current
+        .entries
+        .iter()
+        .map(|entry| (entry.path().as_str(), entry))
+        .collect();
+    let mut entries: Vec<WorkspacePatchEntry> = Vec::new();
+    let mut current_paths: Vec<&str> = current_by_path.keys().copied().collect();
+    current_paths.sort_unstable();
+    for path in current_paths {
+        let current_entry = current_by_path[path];
+        if base_by_path.get(path) == Some(&current_entry) {
+            continue;
+        }
+        // Added path, or any digest/size/executable change: upsert.
+        // `RelativePath` values come from validated manifests, so the
+        // revalidation inside `apply_to` cannot reject them.
+        let relative = RelativePath::new(path)
+            .map_err(|e| format!("eggwork: derived patch path invalid: {e:?}"))?;
+        match current_entry {
+            WorkspaceEntry::Directory { .. } => {
+                entries.push(WorkspacePatchEntry::Directory { path: relative });
+            }
+            WorkspaceEntry::File {
+                digest,
+                size_bytes,
+                executable,
+                ..
+            } => {
+                entries.push(WorkspacePatchEntry::File {
+                    path: relative,
+                    digest: digest.clone(),
+                    size_bytes: *size_bytes,
+                    executable: *executable,
+                });
+            }
+            // CodeGG snapshots never contain symlinks; a symlink here
+            // means the local manifest escaped the snapshot contract.
+            // Fail closed rather than synthesizing a patch entry.
+            WorkspaceEntry::Symlink { .. } => {
+                return Err("eggwork: derived patch cannot represent symlink entries".to_string());
+            }
+        }
+    }
+    let mut base_paths: Vec<&str> = base_by_path.keys().copied().collect();
+    base_paths.sort_unstable();
+    for path in base_paths {
+        if !current_by_path.contains_key(path) {
+            let relative = RelativePath::new(path)
+                .map_err(|e| format!("eggwork: derived patch path invalid: {e:?}"))?;
+            entries.push(WorkspacePatchEntry::Remove { path: relative });
+        }
+    }
+    // Deterministic path ordering across the whole patch.
+    entries.sort_by(|a, b| a.path().as_str().cmp(b.path().as_str()));
+    let patch = WorkspaceManifestPatch {
+        schema_version: 1,
+        base_manifest_digest: base_digest.clone(),
+        entries,
+    };
+    patch
+        .validate()
+        .map_err(|e| format!("eggwork: derived patch invalid: {e:?}"))?;
+    // Recomposition proof: the patch applied to the base must yield the
+    // current manifest exactly.
+    let recomposed = patch
+        .apply_to(base)
+        .map_err(|e| format!("eggwork: derived patch recomposition failed: {e:?}"))?;
+    let recomposed_digest = recomposed
+        .digest()
+        .map_err(|e| format!("eggwork: cannot digest recomposed manifest: {e}"))?;
+    let current_digest = current
+        .digest()
+        .map_err(|e| format!("eggwork: cannot digest current manifest: {e}"))?;
+    if recomposed_digest != current_digest {
+        return Err(
+            "eggwork: derived patch does not recompose to the current manifest".to_string(),
+        );
+    }
+    Ok(patch)
+}
+
+/// True only for the typed upstream missing-base signal. Every other
+/// derived-mode failure (auth, digest, quota, identity, protocol, timeout,
+/// transport) must NOT fall back to full mode.
+fn is_base_manifest_missing(error: &EggworkClientError) -> bool {
+    matches!(
+        error,
+        EggworkClientError::Api { status: 409, code, .. } if code == BASE_MANIFEST_MISSING_CODE
+    )
+}
+
+/// Bounded transfer facts for operator diagnostics (M003 §13). Counts and
+/// byte sizes only: no manifest contents, paths, bodies, or secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransferFacts {
+    mode: &'static str,
+    base_hit: bool,
+    full_entries: usize,
+    patch_entries: usize,
+    full_bytes: usize,
+    patch_bytes: usize,
+    blobs_probed: usize,
+    blobs_uploaded: usize,
+    uploaded_bytes: u64,
+}
+
+impl EggworkExecutor {
+    /// Materialize the snapshot's workspace on the node, choosing derived
+    /// mode only when a usable acknowledged base exists, the node
+    /// advertises [`DERIVE_FEATURE`], and the patch is strictly smaller
+    /// than the full manifest. Verifies the returned manifest digest
+    /// against the local full manifest in BOTH modes before any execution
+    /// may be submitted, and records the acknowledged base on success.
+    #[allow(clippy::too_many_arguments)]
+    async fn materialize_workspace(
+        &self,
+        ctx: &JobExecutionContext,
+        client: &Arc<dyn EggworkNodeClient>,
+        node: &ResolvedEggworkNode,
+        handle: &ExecutionHandle,
+        workspace_id: &EggworkWorkspaceId,
+        snapshot: &WorkspaceSnapshot,
+        derive_supported: bool,
+    ) -> Result<TransferFacts, String> {
+        let local_digest = snapshot
+            .manifest
+            .digest()
+            .map_err(|e| format!("eggwork: cannot digest current manifest: {e}"))?;
+        let full_bytes = serde_json::to_vec(&snapshot.manifest)
+            .map_err(|e| format!("eggwork: cannot encode current manifest: {e}"))?
+            .len();
+        let workspace_key = ctx.workspace_root.to_string_lossy().into_owned();
+        let base = if derive_supported {
+            self.acknowledged_base(&node.node_id, &workspace_key)
+        } else {
+            None
+        };
+        if let Some(base) = base {
+            let patch = derive_patch(&base.manifest, &base.digest, &snapshot.manifest)?;
+            let patch_bytes = serde_json::to_vec(&patch)
+                .map_err(|e| format!("eggwork: cannot encode derived patch: {e}"))?
+                .len();
+            if patch_bytes < full_bytes {
+                let digests = patch_file_digests(&patch);
+                let probed = digests.len();
+                let uploaded = upload_snapshot(client, ctx, snapshot, &digests).await?;
+                match op_timeout(client.create_workspace_derived(
+                    workspace_id,
+                    handle,
+                    &base.digest,
+                    &patch,
+                ))
+                .await
+                {
+                    Ok(ready) => {
+                        verify_ready_digest(&ready.manifest_digest, &local_digest)?;
+                        self.acknowledge_base(
+                            &node.node_id,
+                            &workspace_key,
+                            snapshot.manifest.clone(),
+                            local_digest.clone(),
+                        );
+                        return Ok(TransferFacts {
+                            mode: "derived",
+                            base_hit: true,
+                            full_entries: snapshot.manifest.entries.len(),
+                            patch_entries: patch.entries.len(),
+                            full_bytes,
+                            patch_bytes,
+                            blobs_probed: probed,
+                            blobs_uploaded: uploaded.0,
+                            uploaded_bytes: uploaded.1,
+                        });
+                    }
+                    Err(e) if is_base_manifest_missing(&e) => {
+                        // Typed miss: the server created no workspace. Fall
+                        // through to full mode with the same deterministic
+                        // attempt workspace id/owner before any submit.
+                        let facts = self
+                            .materialize_full(
+                                ctx,
+                                client,
+                                node,
+                                handle,
+                                workspace_id,
+                                snapshot,
+                                &local_digest,
+                                full_bytes,
+                                &workspace_key,
+                            )
+                            .await?;
+                        return Ok(TransferFacts {
+                            mode: "derived-miss-full",
+                            ..facts
+                        });
+                    }
+                    Err(e) => {
+                        return Err(format!("eggwork: derived workspace creation failed: {e}"));
+                    }
+                }
+            }
+        }
+        self.materialize_full(
+            ctx,
+            client,
+            node,
+            handle,
+            workspace_id,
+            snapshot,
+            &local_digest,
+            full_bytes,
+            &workspace_key,
+        )
+        .await
+    }
+
+    /// Full-mode materialization: probe/upload every digest, create the
+    /// full workspace, verify the returned digest, acknowledge the base.
+    #[allow(clippy::too_many_arguments)]
+    async fn materialize_full(
+        &self,
+        ctx: &JobExecutionContext,
+        client: &Arc<dyn EggworkNodeClient>,
+        node: &ResolvedEggworkNode,
+        handle: &ExecutionHandle,
+        workspace_id: &EggworkWorkspaceId,
+        snapshot: &WorkspaceSnapshot,
+        local_digest: &BlobDigest,
+        full_bytes: usize,
+        workspace_key: &str,
+    ) -> Result<TransferFacts, String> {
+        let digests = snapshot_digests(snapshot);
+        let probed = digests.len();
+        let uploaded = upload_snapshot(client, ctx, snapshot, &digests).await?;
+        let ready =
+            match op_timeout(client.create_workspace(workspace_id, handle, &snapshot.manifest))
+                .await
+            {
+                Ok(ready) => ready,
+                Err(e) => return Err(format!("eggwork: workspace creation failed: {e}")),
+            };
+        verify_ready_digest(&ready.manifest_digest, local_digest)?;
+        self.acknowledge_base(
+            &node.node_id,
+            workspace_key,
+            snapshot.manifest.clone(),
+            local_digest.clone(),
+        );
+        Ok(TransferFacts {
+            mode: "full",
+            base_hit: false,
+            full_entries: snapshot.manifest.entries.len(),
+            patch_entries: 0,
+            full_bytes,
+            patch_bytes: 0,
+            blobs_probed: probed,
+            blobs_uploaded: uploaded.0,
+            uploaded_bytes: uploaded.1,
+        })
+    }
+}
+
+/// The server-ready digest must equal the local current-manifest digest
+/// before `execute_in_workspace`. Mismatch is a hard failure: no command
+/// is submitted on a workspace the server describes differently.
+fn verify_ready_digest(ready_digest: &BlobDigest, local_digest: &BlobDigest) -> Result<(), String> {
+    if ready_digest != local_digest {
+        return Err(
+            "eggwork: server workspace digest does not match the local manifest; refusing submit"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Probe-then-upload for exactly `digests`, returning the server-reported
+/// missing count and their bytes for diagnostics.
+async fn upload_snapshot(
+    client: &Arc<dyn EggworkNodeClient>,
+    ctx: &JobExecutionContext,
+    snapshot: &WorkspaceSnapshot,
+    digests: &[BlobDigest],
+) -> Result<(usize, u64), String> {
+    let missing = match op_timeout(client.find_missing_blobs(digests)).await {
         Ok(missing) => missing,
         Err(e) => return Err(format!("eggwork: blob probe failed: {e}")),
     };
@@ -1643,6 +2107,7 @@ async fn upload_snapshot(
         .values()
         .map(|f| (BlobDigest::from_bytes(&f.bytes).as_str().to_string(), f))
         .collect();
+    let mut uploaded_bytes = 0u64;
     for digest in &missing {
         if ctx.cancellation.is_cancelled() {
             return Err("cancelled during blob upload".to_string());
@@ -1655,25 +2120,15 @@ async fn upload_snapshot(
         )])
         .boxed();
         match op_timeout(client.upload_blob(digest, file.bytes.len() as u64, stream)).await {
-            Ok(()) => {}
+            Ok(()) => {
+                uploaded_bytes = uploaded_bytes.saturating_add(file.bytes.len() as u64);
+            }
             Err(e) => {
                 return Err(format!("eggwork: blob upload failed: {e}"));
             }
         }
     }
-    Ok(())
-}
-
-async fn create_remote_workspace(
-    client: &Arc<dyn EggworkNodeClient>,
-    workspace_id: &EggworkWorkspaceId,
-    handle: &ExecutionHandle,
-    manifest: &WorkspaceManifest,
-) -> Result<(), String> {
-    match op_timeout(client.create_workspace(workspace_id, handle, manifest)).await {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("eggwork: workspace creation failed: {e}")),
-    }
+    Ok((missing.len(), uploaded_bytes))
 }
 
 /// Deterministic remote workspace id for one attempt.
@@ -1956,6 +2411,21 @@ mod tests {
         cancelled: Mutex<Vec<String>>,
         renewed: Mutex<Vec<String>>,
         artifacts: Vec<ArtifactRecord>,
+        /// Submitted execution ids, proving whether a test reached submit.
+        executed: Mutex<Vec<String>>,
+        /// Scripted derived-mode results, popped in order before the
+        /// honest emulation below. Used to inject typed misses,
+        /// non-miss failures, and digest mismatches.
+        derive_script: Mutex<
+            std::collections::VecDeque<Result<eggwork_client::WorkspaceReady, EggworkClientError>>,
+        >,
+        /// Miniature contract-conformant server base store: full creates
+        /// register their manifest by digest; derived lookups resolve the
+        /// base exactly like the upstream retained-manifest table.
+        retained: Mutex<HashMap<String, WorkspaceManifest>>,
+        /// Bounded derived-call log: workspace id, base digest, patch
+        /// entry count. No paths, contents, or secrets.
+        derived_calls: Mutex<Vec<(String, String, usize)>>,
     }
 
     impl FakeNodeClient {
@@ -2012,6 +2482,10 @@ mod tests {
                 cancelled: Mutex::new(Vec::new()),
                 renewed: Mutex::new(Vec::new()),
                 artifacts: Vec::new(),
+                executed: Mutex::new(Vec::new()),
+                derive_script: Mutex::new(std::collections::VecDeque::new()),
+                retained: Mutex::new(HashMap::new()),
+                derived_calls: Mutex::new(Vec::new()),
             }
         }
     }
@@ -2052,20 +2526,77 @@ mod tests {
             handle: &ExecutionHandle,
             manifest: &WorkspaceManifest,
         ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+            let digest = manifest.digest().expect("manifest digest");
+            self.retained
+                .lock()
+                .unwrap()
+                .insert(digest.as_str().to_string(), manifest.clone());
             Ok(eggwork_client::WorkspaceReady {
                 schema_version: 1,
                 workspace_id: workspace_id.clone(),
                 execution_id: handle.execution_id.clone(),
                 generation: handle.generation,
-                manifest_digest: manifest.digest().expect("manifest digest"),
+                manifest_digest: digest,
                 logical_bytes: manifest.logical_bytes(),
+            })
+        }
+
+        async fn create_workspace_derived(
+            &self,
+            workspace_id: &EggworkWorkspaceId,
+            handle: &ExecutionHandle,
+            base_manifest_digest: &BlobDigest,
+            patch: &WorkspaceManifestPatch,
+        ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+            self.derived_calls.lock().unwrap().push((
+                workspace_id.as_str().to_string(),
+                base_manifest_digest.as_str().to_string(),
+                patch.entries.len(),
+            ));
+            if let Some(scripted) = self.derive_script.lock().unwrap().pop_front() {
+                return scripted;
+            }
+            // Honest emulation of the retained-manifest table: unknown
+            // base is a typed miss with no side effect; a known base
+            // applies the patch through the shared validator.
+            let retained = self.retained.lock().unwrap().clone();
+            let Some(base) = retained.get(base_manifest_digest.as_str()) else {
+                return Err(EggworkClientError::Api {
+                    status: 409,
+                    code: BASE_MANIFEST_MISSING_CODE.to_string(),
+                    message: "no retained base".to_string(),
+                });
+            };
+            let final_manifest = patch.apply_to(base).map_err(|_| EggworkClientError::Api {
+                status: 400,
+                code: "invalid_patch".to_string(),
+                message: "patch rejected".to_string(),
+            })?;
+            let digest = final_manifest
+                .digest()
+                .map_err(|_| EggworkClientError::Api {
+                    status: 400,
+                    code: "invalid_manifest".to_string(),
+                    message: "final manifest rejected".to_string(),
+                })?;
+            self.retained
+                .lock()
+                .unwrap()
+                .insert(digest.as_str().to_string(), final_manifest);
+            Ok(eggwork_client::WorkspaceReady {
+                schema_version: 1,
+                workspace_id: workspace_id.clone(),
+                execution_id: handle.execution_id.clone(),
+                generation: handle.generation,
+                manifest_digest: digest,
+                logical_bytes: 0,
             })
         }
 
         async fn execute_in_workspace(
             &self,
             spec: &ExecutionSpec,
-            _handle: &ExecutionHandle,
+            handle: &ExecutionHandle,
             _workspace_id: &EggworkWorkspaceId,
         ) -> Result<BoxEventStream, EggworkClientError> {
             // Mirror the real node's fail-closed admission (C001): only
@@ -2081,6 +2612,10 @@ mod tests {
                 });
             }
             let events = self.events.clone();
+            self.executed
+                .lock()
+                .unwrap()
+                .push(handle.execution_id.as_str().to_string());
             let stream = futures_util::stream::iter(events.into_iter().map(Ok));
             Ok(stream.boxed())
         }
@@ -2254,6 +2789,7 @@ mod tests {
         let policy = ExecutionPolicy {
             isolation: IsolationRequirement::Required,
             network: NetworkRequirement::Unrestricted,
+            derive_supported: false,
         };
         let spec = build_spec(&["true".into()], None, None, policy).unwrap();
         assert_eq!(spec.command.isolation, IsolationRequirement::Required);
@@ -2292,6 +2828,7 @@ mod tests {
             ExecutionPolicy {
                 isolation: IsolationRequirement::None,
                 network: NetworkRequirement::Disabled,
+                derive_supported: false,
             },
         )
         .unwrap();
@@ -2633,5 +3170,466 @@ mod tests {
         assert_eq!(completion.status, ExecutorStatus::Cancelled);
         assert!(fake.uploaded.lock().unwrap().is_empty());
         assert!(fake.cancelled.lock().unwrap().is_empty());
+    }
+
+    // ── M003: content-aware derived workspace transfer ────────────────────
+
+    fn manifest_file(path: &str, content: &[u8], executable: bool) -> WorkspaceEntry {
+        WorkspaceEntry::File {
+            path: RelativePath::new(path).unwrap(),
+            digest: BlobDigest::from_bytes(content),
+            size_bytes: content.len() as u64,
+            executable,
+        }
+    }
+
+    fn manifest_dir(path: &str) -> WorkspaceEntry {
+        WorkspaceEntry::Directory {
+            path: RelativePath::new(path).unwrap(),
+        }
+    }
+
+    fn test_manifest(entries: Vec<WorkspaceEntry>) -> WorkspaceManifest {
+        let manifest = WorkspaceManifest {
+            schema_version: 1,
+            entries,
+        };
+        manifest.validate().unwrap();
+        manifest
+    }
+
+    fn manifest_digest(manifest: &WorkspaceManifest) -> BlobDigest {
+        manifest.digest().unwrap()
+    }
+
+    /// Advertise `workspace.derive.v1` in both probe views (preflight uses
+    /// the conservative intersection).
+    fn advertise_derive(client: &FakeNodeClient) {
+        client
+            .capabilities
+            .lock()
+            .unwrap()
+            .features
+            .push(DERIVE_FEATURE.to_string());
+        client
+            .status
+            .lock()
+            .unwrap()
+            .capabilities
+            .features
+            .push(DERIVE_FEATURE.to_string());
+    }
+
+    fn derive_executor(client: Arc<FakeNodeClient>) -> EggworkExecutor {
+        let mut nodes = HashMap::new();
+        nodes.insert("node-1".to_string(), test_node());
+        EggworkExecutor::with_factory(
+            EggworkExecutorConfig {
+                nodes,
+                store: None,
+                ..Default::default()
+            },
+            Arc::new(FakeFactory { client }),
+        )
+    }
+
+    async fn run_once(exec: &EggworkExecutor, root: &std::path::Path) -> ExecutorCompletion {
+        let job = managed_argv_job(ExecutionTarget::EggworkNode {
+            node_id: "node-1".to_string(),
+        });
+        let ctx = test_context(job, root.to_path_buf());
+        exec.execute(ctx).await
+    }
+
+    #[test]
+    fn derived_patch_unchanged_workspace_is_empty() {
+        let manifest = test_manifest(vec![
+            manifest_dir("src"),
+            manifest_file("src/main.rs", b"fn main() {}\n", false),
+        ]);
+        let digest = manifest_digest(&manifest);
+        let patch = derive_patch(&manifest, &digest, &manifest).unwrap();
+        assert!(patch.entries.is_empty());
+        assert_eq!(patch.base_manifest_digest, digest);
+    }
+
+    #[test]
+    fn derived_patch_records_content_change() {
+        let base = test_manifest(vec![manifest_file("a.txt", b"one\n", false)]);
+        let current = test_manifest(vec![manifest_file("a.txt", b"two\n", false)]);
+        let patch = derive_patch(&base, &manifest_digest(&base), &current).unwrap();
+        assert_eq!(patch.entries.len(), 1);
+        match &patch.entries[0] {
+            WorkspacePatchEntry::File {
+                digest,
+                size_bytes,
+                executable,
+                ..
+            } => {
+                assert_eq!(*digest, BlobDigest::from_bytes(b"two\n"));
+                assert_eq!(*size_bytes, 4);
+                assert!(!executable);
+            }
+            other => panic!("expected file upsert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derived_patch_records_executable_bit_change() {
+        let base = test_manifest(vec![manifest_file("run.sh", b"#!/bin/sh\n", false)]);
+        let current = test_manifest(vec![manifest_file("run.sh", b"#!/bin/sh\n", true)]);
+        let patch = derive_patch(&base, &manifest_digest(&base), &current).unwrap();
+        assert_eq!(patch.entries.len(), 1);
+        assert!(matches!(
+            &patch.entries[0],
+            WorkspacePatchEntry::File {
+                executable: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn derived_patch_records_add_file_and_directory() {
+        let base = test_manifest(vec![manifest_file("a.txt", b"a\n", false)]);
+        let current = test_manifest(vec![
+            manifest_file("a.txt", b"a\n", false),
+            manifest_dir("new"),
+            manifest_file("new/b.txt", b"b\n", false),
+        ]);
+        let patch = derive_patch(&base, &manifest_digest(&base), &current).unwrap();
+        assert_eq!(patch.entries.len(), 2);
+        assert!(matches!(
+            &patch.entries[0],
+            WorkspacePatchEntry::Directory { .. }
+        ));
+        assert!(matches!(
+            &patch.entries[1],
+            WorkspacePatchEntry::File { .. }
+        ));
+    }
+
+    #[test]
+    fn derived_patch_records_delete_file() {
+        let base = test_manifest(vec![
+            manifest_file("keep.txt", b"k\n", false),
+            manifest_file("drop.txt", b"d\n", false),
+        ]);
+        let current = test_manifest(vec![manifest_file("keep.txt", b"k\n", false)]);
+        let patch = derive_patch(&base, &manifest_digest(&base), &current).unwrap();
+        assert_eq!(patch.entries.len(), 1);
+        match &patch.entries[0] {
+            WorkspacePatchEntry::Remove { path } => assert_eq!(path.as_str(), "drop.txt"),
+            other => panic!("expected remove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derived_patch_delete_directory_lists_descendants_explicitly() {
+        let base = test_manifest(vec![
+            manifest_dir("old"),
+            manifest_file("old/a.txt", b"a\n", false),
+            manifest_file("old/b.txt", b"b\n", false),
+        ]);
+        let current = test_manifest(vec![]);
+        let patch = derive_patch(&base, &manifest_digest(&base), &current).unwrap();
+        let paths: Vec<&str> = patch
+            .entries
+            .iter()
+            .map(|entry| entry.path().as_str())
+            .collect();
+        // No recursive delete: every vanished path is named explicitly in
+        // deterministic order.
+        assert_eq!(paths, vec!["old", "old/a.txt", "old/b.txt"]);
+        assert!(patch
+            .entries
+            .iter()
+            .all(|entry| matches!(entry, WorkspacePatchEntry::Remove { .. })));
+    }
+
+    #[test]
+    fn derived_patch_entry_order_is_deterministic() {
+        let base = test_manifest(vec![]);
+        let current = test_manifest(vec![
+            manifest_file("z.txt", b"z\n", false),
+            manifest_dir("m"),
+            manifest_file("a.txt", b"a\n", false),
+        ]);
+        let patch = derive_patch(&base, &manifest_digest(&base), &current).unwrap();
+        let paths: Vec<&str> = patch
+            .entries
+            .iter()
+            .map(|entry| entry.path().as_str())
+            .collect();
+        assert_eq!(paths, vec!["a.txt", "m", "z.txt"]);
+    }
+
+    #[test]
+    fn derived_patch_rejects_symlink_current() {
+        let base = test_manifest(vec![]);
+        // The upstream validator forbids symlinks outright, so this
+        // manifest is invalid by construction; derive_patch must still
+        // fail closed rather than synthesize a patch entry.
+        let current = WorkspaceManifest {
+            schema_version: 1,
+            entries: vec![WorkspaceEntry::Symlink {
+                path: RelativePath::new("link").unwrap(),
+                target: "a.txt".to_string(),
+            }],
+        };
+        let error = derive_patch(&base, &manifest_digest(&base), &current).unwrap_err();
+        assert!(error.contains("symlink"));
+    }
+
+    #[test]
+    fn derived_cache_is_node_and_workspace_scoped() {
+        let exec = derive_executor(Arc::new(FakeNodeClient::succeeding()));
+        let manifest = test_manifest(vec![manifest_file("a.txt", b"a\n", false)]);
+        let digest = manifest_digest(&manifest);
+        exec.acknowledge_base("node-1", "ws-1", manifest, digest.clone());
+        assert!(exec.acknowledged_base("node-1", "ws-1").is_some());
+        // A cache entry for node A is never used for node B, and never
+        // for a different workspace on the same node.
+        assert!(exec.acknowledged_base("node-2", "ws-1").is_none());
+        assert!(exec.acknowledged_base("node-1", "ws-2").is_none());
+    }
+
+    #[test]
+    fn derived_cache_evicts_oldest_entries_under_bounds() {
+        let exec = derive_executor(Arc::new(FakeNodeClient::succeeding()));
+        let manifest = test_manifest(vec![]);
+        let digest = manifest_digest(&manifest);
+        for i in 0..MAX_DERIVED_BASES_PER_NODE + 2 {
+            exec.acknowledge_base(
+                "node-1",
+                &format!("ws-{i}"),
+                manifest.clone(),
+                digest.clone(),
+            );
+        }
+        let bases = exec.derived_bases.lock().unwrap();
+        let node_count = bases.keys().filter(|(node, _)| node == "node-1").count();
+        assert_eq!(node_count, MAX_DERIVED_BASES_PER_NODE);
+        assert!(bases
+            .get(&("node-1".to_string(), "ws-0".to_string()))
+            .is_none());
+        drop(bases);
+        // Global bound holds across many nodes.
+        for node in 0..10 {
+            for i in 0..MAX_DERIVED_BASES_PER_NODE {
+                exec.acknowledge_base(
+                    &format!("node-{node}"),
+                    &format!("ws-{i}"),
+                    manifest.clone(),
+                    digest.clone(),
+                );
+            }
+        }
+        assert!(exec.derived_bases.lock().unwrap().len() <= MAX_DERIVED_BASES_TOTAL);
+    }
+
+    #[test]
+    fn derived_cache_config_replacement_invalidates() {
+        let mut exec = derive_executor(Arc::new(FakeNodeClient::succeeding()));
+        let manifest = test_manifest(vec![]);
+        let digest = manifest_digest(&manifest);
+        exec.acknowledge_base("node-1", "ws-1", manifest, digest);
+        assert!(exec.acknowledged_base("node-1", "ws-1").is_some());
+        exec.replace_config(EggworkExecutorConfig::default());
+        assert!(exec.acknowledged_base("node-1", "ws-1").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preflight_reports_derive_support_from_intersection() {
+        let client = Arc::new(FakeNodeClient::succeeding());
+        let client_trait: Arc<dyn EggworkNodeClient> = client.clone();
+        let node = test_node();
+        let policy = preflight(&client_trait, &node).await.unwrap();
+        assert!(!policy.derive_supported);
+        // Capability in only one view is not support (intersection).
+        client
+            .capabilities
+            .lock()
+            .unwrap()
+            .features
+            .push(DERIVE_FEATURE.to_string());
+        let policy = preflight(&client_trait, &node).await.unwrap();
+        assert!(!policy.derive_supported);
+        client
+            .status
+            .lock()
+            .unwrap()
+            .capabilities
+            .features
+            .push(DERIVE_FEATURE.to_string());
+        let policy = preflight(&client_trait, &node).await.unwrap();
+        assert!(policy.derive_supported);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_without_derive_feature_stays_full() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        let exec = derive_executor(client.clone());
+        for _ in 0..2 {
+            let completion = run_once(&exec, dir.path()).await;
+            assert_eq!(completion.status, ExecutorStatus::Completed);
+        }
+        assert!(client.derived_calls.lock().unwrap().is_empty());
+        assert_eq!(client.executed.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_uses_derived_for_unchanged_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        advertise_derive(&client);
+        let exec = derive_executor(client.clone());
+        // First run establishes the acknowledged base via full mode.
+        let first = run_once(&exec, dir.path()).await;
+        assert_eq!(first.status, ExecutorStatus::Completed);
+        assert!(client.derived_calls.lock().unwrap().is_empty());
+        // Unchanged workspace derives with an empty patch and no uploads.
+        let second = run_once(&exec, dir.path()).await;
+        assert_eq!(second.status, ExecutorStatus::Completed);
+        let calls = client.derived_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, 0);
+        drop(calls);
+        assert_eq!(client.uploaded.lock().unwrap().len(), 1);
+        assert_eq!(client.executed.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_derived_uploads_only_changed_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"a\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"b\n").unwrap();
+        std::fs::write(dir.path().join("c.txt"), b"c\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        advertise_derive(&client);
+        let exec = derive_executor(client.clone());
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        assert_eq!(client.uploaded.lock().unwrap().len(), 3);
+        std::fs::write(dir.path().join("b.txt"), b"changed\n").unwrap();
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        assert_eq!(client.derived_calls.lock().unwrap().len(), 1);
+        // Only the changed digest was probed/uploaded; the server already
+        // pins the retained base blobs.
+        let uploaded = client.uploaded.lock().unwrap();
+        assert_eq!(uploaded.len(), 4);
+        let changed = BlobDigest::from_bytes(b"changed\n");
+        assert_eq!(uploaded[3].0, changed.as_str());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_base_miss_falls_back_to_full() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        std::fs::write(dir.path().join("lib.rs"), b"pub fn lib() {}\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        advertise_derive(&client);
+        let exec = derive_executor(client.clone());
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        // The server loses the retained base (expiry/GC/crash).
+        client.retained.lock().unwrap().clear();
+        std::fs::write(dir.path().join("main.rs"), b"fn main() { /* v2 */ }\n").unwrap();
+        let completion = run_once(&exec, dir.path()).await;
+        assert_eq!(completion.status, ExecutorStatus::Completed);
+        // Exactly one derived attempt, then the safe full fallback with
+        // the same deterministic workspace identity.
+        assert_eq!(client.derived_calls.lock().unwrap().len(), 1);
+        assert_eq!(client.executed.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_non_miss_derived_error_never_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        advertise_derive(&client);
+        let exec = derive_executor(client.clone());
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        client
+            .derive_script
+            .lock()
+            .unwrap()
+            .push_back(Err(EggworkClientError::Api {
+                status: 403,
+                code: "capability_mismatch".to_string(),
+                message: "denied".to_string(),
+            }));
+        let completion = run_once(&exec, dir.path()).await;
+        assert_eq!(completion.status, ExecutorStatus::Failed);
+        assert!(completion
+            .summary
+            .contains("derived workspace creation failed"));
+        // No silent fallback and no submit on the failed transfer.
+        assert_eq!(client.derived_calls.lock().unwrap().len(), 1);
+        assert_eq!(client.executed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_digest_mismatch_refuses_submit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        advertise_derive(&client);
+        let exec = derive_executor(client.clone());
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        client
+            .derive_script
+            .lock()
+            .unwrap()
+            .push_back(Ok(eggwork_client::WorkspaceReady {
+                schema_version: 1,
+                workspace_id: EggworkWorkspaceId::new("codegg-ws-test").unwrap(),
+                execution_id: ExecutionId::new("exec-1").unwrap(),
+                generation: ExecutionGeneration::new(1).unwrap(),
+                manifest_digest: BlobDigest::from_bytes(b"forged"),
+                logical_bytes: 0,
+            }));
+        let completion = run_once(&exec, dir.path()).await;
+        assert_eq!(completion.status, ExecutorStatus::Failed);
+        assert!(completion.summary.contains("does not match"));
+        assert_eq!(client.executed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_patch_not_smaller_stays_full() {
+        // Single-file workspace: any content change makes the patch
+        // (base digest + upsert) strictly larger than the full manifest.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("only.txt"), b"v1\n").unwrap();
+        let client = Arc::new(FakeNodeClient::succeeding());
+        advertise_derive(&client);
+        let exec = derive_executor(client.clone());
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        std::fs::write(dir.path().join("only.txt"), b"v2\n").unwrap();
+        assert_eq!(
+            run_once(&exec, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        assert!(client.derived_calls.lock().unwrap().is_empty());
     }
 }

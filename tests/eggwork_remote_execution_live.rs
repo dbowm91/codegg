@@ -48,7 +48,7 @@ use eggwork_client::{ClientError as EggworkClientError, WorkspaceReady};
 use eggwork_core::{
     ArtifactRecord, BlobDigest, ExecutionHandle, ExecutionId, ExecutionSnapshot, ExecutionSpec,
     ExecutionState, LeaseId, NodeCapabilities, NodeStatus, SandboxResult,
-    WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
+    WorkspaceId as EggworkWorkspaceId, WorkspaceManifest, WorkspaceManifestPatch,
 };
 use futures_util::StreamExt;
 use tokio::io::AsyncBufReadExt;
@@ -424,6 +424,7 @@ struct CountingFactory {
     inner: NodeClientFactory,
     submits: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
+    derived: Arc<AtomicUsize>,
     submitted_handles: Arc<Mutex<Vec<ExecutionHandle>>>,
 }
 
@@ -433,6 +434,7 @@ impl CountingFactory {
             inner: NodeClientFactory,
             submits: Arc::new(AtomicUsize::new(0)),
             uploads: Arc::new(AtomicUsize::new(0)),
+            derived: Arc::new(AtomicUsize::new(0)),
             submitted_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -444,6 +446,10 @@ impl CountingFactory {
     fn upload_count(&self) -> usize {
         self.uploads.load(Ordering::SeqCst)
     }
+
+    fn derived_count(&self) -> usize {
+        self.derived.load(Ordering::SeqCst)
+    }
 }
 
 impl EggworkClientFactory for CountingFactory {
@@ -453,6 +459,7 @@ impl EggworkClientFactory for CountingFactory {
             inner: client,
             submits: self.submits.clone(),
             uploads: self.uploads.clone(),
+            derived: self.derived.clone(),
             submitted_handles: self.submitted_handles.clone(),
         }))
     }
@@ -462,6 +469,7 @@ struct CountingClient {
     inner: Arc<dyn EggworkNodeClient>,
     submits: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
+    derived: Arc<AtomicUsize>,
     submitted_handles: Arc<Mutex<Vec<ExecutionHandle>>>,
 }
 
@@ -502,6 +510,19 @@ impl EggworkNodeClient for CountingClient {
     ) -> Result<WorkspaceReady, EggworkClientError> {
         self.inner
             .create_workspace(workspace_id, handle, manifest)
+            .await
+    }
+
+    async fn create_workspace_derived(
+        &self,
+        workspace_id: &EggworkWorkspaceId,
+        handle: &ExecutionHandle,
+        base_manifest_digest: &BlobDigest,
+        patch: &WorkspaceManifestPatch,
+    ) -> Result<WorkspaceReady, EggworkClientError> {
+        self.derived.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .create_workspace_derived(workspace_id, handle, base_manifest_digest, patch)
             .await
     }
 
@@ -1183,6 +1204,68 @@ async fn live_scheduler_end_to_end_remote_only() {
 }
 
 // ── Blob/workspace round-trip through the production client ──────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_derived_workspace_reuse_under_required_isolation() {
+    let mut live = LiveNode::start().await;
+    live.node.isolation_policy = codegg_config::schema::EggworkIsolationPolicy::Required;
+    // The node must advertise the M003 capability this test qualifies;
+    // support is never inferred from version strings.
+    let capabilities = live.client().capabilities().await.expect("capabilities");
+    assert!(
+        capabilities
+            .features
+            .iter()
+            .any(|feature| feature == "workspace.derive.v1"),
+        "node must advertise workspace.derive.v1"
+    );
+    let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+    let (exec, submits) = live.executor(Some(store.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("build.sh"), b"#!/bin/sh\necho derived-ok\n").unwrap();
+    std::fs::write(dir.path().join("data.txt"), b"v1\n").unwrap();
+    let argv = vec!["sh".to_string(), "build.sh".to_string()];
+    // First execution establishes the acknowledged base via full mode.
+    let (record1, attempt1) = create_remote_job(&store, argv.clone()).await;
+    let mut job1 = argv_record(argv.clone());
+    job1.job_id = record1.job_id.clone();
+    let first = exec
+        .execute(live_context(
+            job1,
+            attempt1.attempt_id.clone(),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(
+        first.status,
+        ExecutorStatus::Completed,
+        "live first run failed: {}",
+        first.summary
+    );
+    assert_eq!(live.factory.derived_count(), 0);
+    // Small change: the second execution must derive against the retained
+    // base, still under required Landlock isolation.
+    std::fs::write(dir.path().join("data.txt"), b"v2\n").unwrap();
+    let (record2, attempt2) = create_remote_job(&store, argv.clone()).await;
+    let mut job2 = argv_record(argv.clone());
+    job2.job_id = record2.job_id.clone();
+    let second = exec
+        .execute(live_context(
+            job2,
+            attempt2.attempt_id.clone(),
+            dir.path().to_path_buf(),
+        ))
+        .await;
+    assert_eq!(
+        second.status,
+        ExecutorStatus::Completed,
+        "live derived run failed: {}",
+        second.summary
+    );
+    assert_eq!(live.factory.derived_count(), 1);
+    assert_eq!(submits.load(Ordering::SeqCst), 2);
+    live.shutdown().await;
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn live_blob_upload_and_workspace_materialization() {

@@ -276,11 +276,12 @@ codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
-# Eggwork fixed-target remote execution substrate (M001/M002a).
-# Pinned to the upstream corrected, immutable C001 revision reviewed by M002a.
+# Eggwork fixed-target remote execution substrate (M001/M002a/M003).
+# Pinned to the upstream immutable revision that carries Workspace M004
+# (`workspace.derive.v1`) plus the later Security M004 Landlock hardening.
 # Default features only: no Eggress-routed dialer (per plan §3).
-eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "6cc813418c3f14740a635fef79208e85219175bb", default-features = false }
-eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "6cc813418c3f14740a635fef79208e85219175bb", default-features = false }
+eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
+eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
 
 # Optional sequence-encoder experiment. These dependencies are never part of
 # the default advisor/runtime graph; the feature boundary is intentionally
