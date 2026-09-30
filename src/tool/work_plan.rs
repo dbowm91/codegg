@@ -14,8 +14,8 @@ use sqlx::SqlitePool;
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolCategory};
 use codegg_core::work_plan::{
-    assess_work_plan, lookup_item_summary, project_work_plan, WorkItemId, WorkItemStatus,
-    WorkPlanId, WorkPlanProjectionParams, WorkPlanStore,
+    lookup_item_summary, project_work_plan, WorkItemId, WorkItemStatus, WorkPlanId,
+    WorkPlanProjectionParams, WorkPlanStore,
 };
 
 fn parse_status(value: &str) -> Option<WorkItemStatus> {
@@ -149,10 +149,20 @@ impl Tool for WorkPlanGetTool {
             let lookup = WorkItemId(item_id.to_string());
             let summary = lookup_item_summary(&items, &lookup)
                 .ok_or_else(|| ToolError::Execution("work item not found".to_string()))?;
-            let evidence = crate::work_plan_evidence::assemble(&self.pool, &items)
-                .await
-                .unwrap_or_default();
-            let assessment = assess_work_plan(&plan, &items, &evidence);
+            // M002: display reads go through engine selection; adapter
+            // failures surface as tool errors (fail-closed display).
+            let workspace_root =
+                crate::work_plan_eggplan::session_workspace_root(&self.pool, &self.session_id)
+                    .await;
+            let backed = crate::work_plan_eggplan::assess_with_engine(
+                &self.pool,
+                workspace_root.as_deref(),
+                &plan,
+                &items,
+            )
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            let assessment = backed.assessment;
             return Ok(serde_json::json!({
                 "plan_id": plan.id.as_str(),
                 "plan_revision": plan.revision,
@@ -183,10 +193,17 @@ impl Tool for WorkPlanGetTool {
             include_completed,
         };
         let projection = project_work_plan(&plan, &items, &params);
-        let evidence = crate::work_plan_evidence::assemble(&self.pool, &items)
-            .await
-            .unwrap_or_default();
-        let assessment = assess_work_plan(&plan, &items, &evidence);
+        let workspace_root =
+            crate::work_plan_eggplan::session_workspace_root(&self.pool, &self.session_id).await;
+        let backed = crate::work_plan_eggplan::assess_with_engine(
+            &self.pool,
+            workspace_root.as_deref(),
+            &plan,
+            &items,
+        )
+        .await
+        .map_err(|error| ToolError::Execution(error.to_string()))?;
+        let assessment = backed.assessment;
         Ok(serde_json::json!({
             "plan_id": projection.plan_id.as_str(),
             "plan_revision": projection.revision,
@@ -387,10 +404,18 @@ impl Tool for WorkPlanUpdateItemTool {
                 .list_items(&updated_plan.id)
                 .await
                 .map_err(|error| ToolError::Execution(error.to_string()))?;
-            let evidence = crate::work_plan_evidence::assemble(&self.pool, &items)
-                .await
-                .unwrap_or_default();
-            let assessment = assess_work_plan(&updated_plan, &items, &evidence);
+            let workspace_root =
+                crate::work_plan_eggplan::session_workspace_root(&self.pool, &self.session_id)
+                    .await;
+            let backed = crate::work_plan_eggplan::assess_with_engine(
+                &self.pool,
+                workspace_root.as_deref(),
+                &updated_plan,
+                &items,
+            )
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            let assessment = backed.assessment;
             publish_work_plan(&self.session_id, &updated_plan, &items, &assessment);
             // Keep the durable Todo projection in sync without erasing plan
             // history: terminal items stay out of Todo context.
@@ -439,10 +464,17 @@ impl Tool for WorkPlanUpdateItemTool {
             .list_items(&updated_plan.id)
             .await
             .map_err(|error| ToolError::Execution(error.to_string()))?;
-        let evidence = crate::work_plan_evidence::assemble(&self.pool, &items)
-            .await
-            .unwrap_or_default();
-        let assessment = assess_work_plan(&updated_plan, &items, &evidence);
+        let workspace_root =
+            crate::work_plan_eggplan::session_workspace_root(&self.pool, &self.session_id).await;
+        let backed = crate::work_plan_eggplan::assess_with_engine(
+            &self.pool,
+            workspace_root.as_deref(),
+            &updated_plan,
+            &items,
+        )
+        .await
+        .map_err(|error| ToolError::Execution(error.to_string()))?;
+        let assessment = backed.assessment;
         publish_work_plan(&self.session_id, &updated_plan, &items, &assessment);
         Ok(serde_json::json!({
             "plan_id": updated_plan.id.as_str(),

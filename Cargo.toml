@@ -276,6 +276,13 @@ codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
+# Eggplan staged assessment adoption (M002). Exactly one immutable
+# reviewed revision; only the pure assessment crates are consumed.
+# eggplan-repo/cli/projection/markdown/integrations must never enter
+# the production graph (static guard in WP1 tests).
+eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8", default-features = false }
+eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8", default-features = false }
+
 # Eggwork fixed-target remote execution substrate (M001/M002a/M003).
 # Pinned to the upstream immutable revision that carries Workspace M004
 # (`workspace.derive.v1`) plus the later Security M004 Landlock hardening.

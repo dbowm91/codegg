@@ -115,6 +115,41 @@ pub async fn assess_active_plan(
     )))
 }
 
+/// Assess the active plan for a session through the Eggplan-backed engine
+/// selection (M002). Git-backed supported-evidence paths use the Eggplan
+/// facade; the returned assessment carries its engine and S1 subject for
+/// completion revalidation. See `crate::work_plan_eggplan`.
+pub async fn assess_active_plan_with_eggplan(
+    pool: &SqlitePool,
+    session_id: &str,
+    workspace_root: &std::path::Path,
+) -> Result<
+    Option<(
+        WorkPlan,
+        Vec<WorkItem>,
+        crate::work_plan_eggplan::EggplanBackedAssessment,
+    )>,
+    String,
+> {
+    let store = WorkPlanStore::new(pool.clone());
+    let plan = store
+        .active_for_session(session_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
+    let items = store
+        .list_items(&plan.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let backed =
+        crate::work_plan_eggplan::assess_with_engine(pool, Some(workspace_root), &plan, &items)
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(Some((plan, items, backed)))
+}
+
 /// Assess the plan bound to a Goal, if any.
 pub async fn assess_goal_plan(
     pool: &SqlitePool,
@@ -140,6 +175,41 @@ pub async fn assess_goal_plan(
         items.clone(),
         assess_work_plan(&plan, &items, &evidence),
     )))
+}
+
+/// Assess the Goal-bound plan through the Eggplan-backed engine selection
+/// (M002). Callers resolve the session workspace root (e.g. via
+/// `crate::work_plan_eggplan::session_workspace_root`) and pass `None`
+/// only when no root is resolvable, which selects an explicit legacy
+/// engine rather than a fabricated subject.
+pub async fn assess_goal_plan_with_eggplan(
+    pool: &SqlitePool,
+    goal_id: &str,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<
+    Option<(
+        WorkPlan,
+        Vec<WorkItem>,
+        crate::work_plan_eggplan::EggplanBackedAssessment,
+    )>,
+    String,
+> {
+    let store = WorkPlanStore::new(pool.clone());
+    let plan = store
+        .active_for_goal(goal_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
+    let items = store
+        .list_items(&plan.id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let backed = crate::work_plan_eggplan::assess_with_engine(pool, workspace_root, &plan, &items)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some((plan, items, backed)))
 }
 
 pub fn decide_from_assessment(assessment: &WorkPlanCompletionAssessment) -> ArbiterDecision {
@@ -185,6 +255,21 @@ pub async fn check_ordinary_completion(
     match assess_active_plan(pool, session_id).await? {
         None => Ok(None),
         Some((_plan, _items, assessment)) => Ok(Some(decide_from_assessment(&assessment))),
+    }
+}
+
+/// Terminal-answer check through the Eggplan-backed engine selection
+/// (M002). Production Git-backed supported-evidence paths must use this;
+/// the legacy `check_ordinary_completion` remains for explicitly
+/// non-Git/test callers.
+pub async fn check_ordinary_completion_with_eggplan(
+    pool: &SqlitePool,
+    session_id: &str,
+    workspace_root: &std::path::Path,
+) -> Result<Option<ArbiterDecision>, String> {
+    match assess_active_plan_with_eggplan(pool, session_id, workspace_root).await? {
+        None => Ok(None),
+        Some((_plan, _items, backed)) => Ok(Some(decide_from_assessment(&backed.assessment))),
     }
 }
 

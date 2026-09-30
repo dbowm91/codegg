@@ -228,6 +228,48 @@ backfill. Legacy sessions simply have no active plan.
   bounded frontend summary (ids, revision, status, counts, assessment code).
   Frontends render only; mutations stay in model tools/daemon service.
 
+## M002 staged Eggplan assessment adoption
+
+Application-layer ownership: `src/work_plan_eggplan.rs` is the only
+production Eggplan touchpoint (plus the arbiter/tool call sites below).
+`codegg-core` stays Eggplan-free; only `eggplan-core` +
+`eggplan-codegg-compat` at the exact pinned revision enter the
+production graph (static pin/boundary guard in-module).
+
+- Engine selection (`assess_with_engine`): `EggplanGit` for Git-backed
+  supported-evidence paths; `LegacyNonGit` for positively non-Git
+  workspaces (capture failures never classify as non-Git);
+  `LegacyUnsupportedEvidence` for plans containing `Artifact`/`Commit`
+  refs. Terminal plans are lifecycle history and are not re-assessed.
+- Verification spec v1: canonical execution semantics per natively
+  owned job (variant, argv or content digests, cwd, scope, mode,
+  timeout, target class). Prompt/policy content enters only as digests;
+  display strings, timestamps, lease/attempt ids, and node addresses
+  never enter. Unreconstructible payloads (argv-less Shell, hash-less
+  inline Python, legacy Subagent, AgentTurn, Research) are
+  verification-unavailable and fail closed.
+- Evidence adapter: `assemble_resolved` records plus native job/attempt
+  objects become bounded observations with the Stable historical
+  subject and matching verification binding, deterministic ids, native
+  timestamps, and the fixed `epp_codegg_host` provider (Test/Command/
+  DelegatedRun only). Unavailable/drifted/incomplete evidence is never
+  fabricated into a passing observation.
+- Current subject: governed `egggit` capture plus read-only
+  `codegg-workspace:<id>` registry resolution (never HEAD-only).
+- Family projection preserves the existing DTO; CodeGG detail comes
+  from authoritative source state, never from free-form Eggplan text.
+- Completion transitions revalidate S2 before the CAS
+  (`complete_plan_with_subject_revalidation`);
+  `subject_changed_before_completion` preserves plan and evidence.
+- Migrated call sites: agent-loop terminal check + turn-end close
+  (`src/agent/loop.rs`), Goal gates/feedback (`src/tool/goal.rs`),
+  WorkPlan display/mutation reads (`src/tool/work_plan.rs`) — all via
+  engine selection with resolved session workspace roots. The legacy
+  core assessor remains the compatibility API and the explicit legacy
+  engines; a source guard test forbids new direct production calls.
+- Differential parity: `tests/work_plan_eggplan_differential.rs`
+  (28 cases incl. the S1/S2 race); no permissive delta is accepted.
+
 ## Invariants & Gotchas
 
 - `WorkPlanId` (`wp_`) / `WorkItemId` (`wi_`) are distinct types from

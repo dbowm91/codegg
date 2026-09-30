@@ -1453,9 +1453,10 @@ impl AgentLoop {
                     .map(|store| store.pool.clone())
                     .or_else(|| self.services.todo_pool.clone())
                 {
-                    match crate::work_plan_arbiter::check_ordinary_completion(
+                    match crate::work_plan_arbiter::check_ordinary_completion_with_eggplan(
                         &pool,
                         &self.session_id,
+                        &self.workspace_root,
                     )
                     .await
                     {
@@ -1932,17 +1933,39 @@ impl AgentLoop {
             .map(|store| store.pool.clone())
             .or_else(|| self.services.todo_pool.clone())
         {
-            match crate::work_plan_arbiter::assess_active_plan(&pool, &self.session_id).await {
-                Ok(Some((plan, _items, assessment))) if plan.goal_id.is_none() => {
+            match crate::work_plan_arbiter::assess_active_plan_with_eggplan(
+                &pool,
+                &self.session_id,
+                &self.workspace_root,
+            )
+            .await
+            {
+                Ok(Some((plan, _items, backed))) if plan.goal_id.is_none() => {
                     let budget_expired = self.check_limits().is_some();
-                    match crate::work_plan_arbiter::maybe_complete_plan_on_turn_end(
-                        &pool,
-                        &plan,
-                        &assessment,
-                        budget_expired,
-                    )
-                    .await
+                    // EggplanGit completions revalidate S2 before the CAS;
+                    // explicit legacy engines keep the legacy close path.
+                    let completed = if budget_expired {
+                        Ok(false)
+                    } else if backed.engine
+                        == crate::work_plan_eggplan::AssessmentEngine::EggplanGit
                     {
+                        crate::work_plan_eggplan::complete_plan_with_subject_revalidation(
+                            &pool,
+                            &self.workspace_root,
+                            &plan,
+                            &backed,
+                        )
+                        .await
+                    } else {
+                        crate::work_plan_arbiter::maybe_complete_plan_on_turn_end(
+                            &pool,
+                            &plan,
+                            &backed.assessment,
+                            budget_expired,
+                        )
+                        .await
+                    };
+                    match completed {
                         Ok(true) => {
                             tracing::info!(
                                 session_id = %self.session_id,

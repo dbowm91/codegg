@@ -1,6 +1,8 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: active (implementation in progress; baseline `0014e334`)
+Status: active (lexical half implemented and measured at `78c01f92`;
+semantic arms explicitly unblocked — see reassessment note below;
+baseline `0014e334`)
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -168,3 +170,30 @@ M002 closes with one deterministic frontier receipt and either:
 - a documented negative result that makes M003 ready.
 
 No downstream live advisor work is unblocked directly.
+
+## 13. Semantic-blocker reassessment (2026-09-30, no replanning needed)
+
+The two recorded semantic-arm blockers were re-probed and both
+dissolved into actionable execution steps:
+
+- Toolchain: `candle-core 0.11` fails under the stale default
+  toolchain (1.89.0, `stdarch_neon_f16` E0658) but builds cleanly
+  under 1.98.1 (`RUSTUP_TOOLCHAIN=1.98.1 cargo check -p codegg
+  --lib --features tool-advisor-encoder-training`, verified green),
+  which matches the CI `stable` era. No dependency change required.
+- Assets: the MiniLM reference files were acquired by explicit
+  operator exact-revision download into the gitignored
+  `target/tool-advisor/reference-assets/all-minilm-l6-v2/`
+  (`config.json`, `vocab.txt`, `model.safetensors`,
+  `tokenizer_config.json`, `special_tokens_map.json`), each SHA-256
+  verified against
+  `assets/tool-advisor/reference-models/all-minilm-l6-v2.json`
+  (config `953f9c0d…`, vocab `07eced37…`, weights `53aa5117…`).
+  `manifest.json` materializes through the encoder probe/loader flow.
+
+Close path (no plan change): implement the four deferred semantic
+modes against the frozen MiniLM text/key contract already in
+`src/tool_advisor/retrieval_signal_v2.rs`, measure the full 8-mode
+dev frontier, and close M002 (expected negative-but-valid given the
+lexical 47/53, which would make conditional M003 ready; M003 shares
+the now-proven toolchain). M002 stays active until then.

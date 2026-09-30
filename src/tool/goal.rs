@@ -297,12 +297,20 @@ impl Tool for GoalRequestCompletionTool {
         // M003 Goal-bound WorkPlan gate: a bound plan must assess
         // Complete/AwaitingUserJudgment before the authoritative Goal
         // verifier can complete the Goal. Other assessments return bounded
-        // feedback without mutating the plan.
-        let goal_plan = crate::work_plan_arbiter::assess_goal_plan(&self.pool, &goal.id)
-            .await
-            .map_err(ToolError::Execution)?;
-        if let Some((bound_plan, bound_items, assessment)) = goal_plan.as_ref() {
-            let gate = crate::work_plan_arbiter::decide_from_assessment(assessment);
+        // feedback without mutating the plan. M002 routes Git-backed
+        // supported-evidence paths through the Eggplan facade; the root
+        // resolves from the goal session (None selects explicit legacy).
+        let workspace_root =
+            crate::work_plan_eggplan::session_workspace_root(&self.pool, &goal.session_id).await;
+        let goal_plan = crate::work_plan_arbiter::assess_goal_plan_with_eggplan(
+            &self.pool,
+            &goal.id,
+            workspace_root.as_deref(),
+        )
+        .await
+        .map_err(ToolError::Execution)?;
+        if let Some((bound_plan, bound_items, backed)) = goal_plan.as_ref() {
+            let gate = crate::work_plan_arbiter::decide_from_assessment(&backed.assessment);
             match gate {
                 crate::work_plan_arbiter::ArbiterDecision::AllowCompletion
                 | crate::work_plan_arbiter::ArbiterDecision::NeedsUserJudgment(_) => {}
@@ -312,7 +320,7 @@ impl Tool for GoalRequestCompletionTool {
                         "verdict": "not_met",
                         "goal_id": goal.id,
                         "work_plan_id": bound_plan.id.as_str(),
-                        "work_plan_assessment": assessment.reason_code(),
+                            "work_plan_assessment": backed.assessment.reason_code(),
                         "next_action": prompt,
                     })
                     .to_string());
@@ -356,7 +364,7 @@ impl Tool for GoalRequestCompletionTool {
                     .to_string());
                 }
             }
-            let _ = (bound_items, assessment);
+            let _ = (bound_items, backed);
         }
 
         let host_evidence = crate::goal_verification::assemble(
@@ -373,13 +381,21 @@ impl Tool for GoalRequestCompletionTool {
             GoalVerificationVerdict::Met { summary } => {
                 // Re-check the bound plan under the same revision discipline:
                 // WorkPlan Complete/AwaitingUserJudgment is a prerequisite,
-                // GoalVerification remains the final authority.
-                if let Some((bound_plan, bound_items, assessment)) =
-                    crate::work_plan_arbiter::assess_goal_plan(&self.pool, &goal.id)
-                        .await
-                        .map_err(ToolError::Execution)?
+                // GoalVerification remains the final authority. M002 routes
+                // through the Eggplan-backed selection like the gate above.
+                let recheck_root =
+                    crate::work_plan_eggplan::session_workspace_root(&self.pool, &goal.session_id)
+                        .await;
+                if let Some((bound_plan, bound_items, backed)) =
+                    crate::work_plan_arbiter::assess_goal_plan_with_eggplan(
+                        &self.pool,
+                        &goal.id,
+                        recheck_root.as_deref(),
+                    )
+                    .await
+                    .map_err(ToolError::Execution)?
                 {
-                    let gate = crate::work_plan_arbiter::decide_from_assessment(&assessment);
+                    let gate = crate::work_plan_arbiter::decide_from_assessment(&backed.assessment);
                     if !matches!(
                         gate,
                         crate::work_plan_arbiter::ArbiterDecision::AllowCompletion
@@ -390,7 +406,7 @@ impl Tool for GoalRequestCompletionTool {
                             "verdict": "not_met",
                             "goal_id": goal.id,
                             "work_plan_id": bound_plan.id.as_str(),
-                            "work_plan_assessment": assessment.reason_code(),
+                        "work_plan_assessment": backed.assessment.reason_code(),
                             "next_action": "bound WorkPlan still has required work; resolve it before requesting Goal completion",
                         })
                         .to_string());
@@ -460,8 +476,17 @@ impl Tool for GoalRequestCompletionTool {
                 // M003: verifier NotMet may create/update an actionable
                 // WorkItem when a bounded existing-item mapping exists;
                 // otherwise return bounded feedback without mutating the plan.
+                // M002: same Eggplan-backed selection; only plan/items are used.
+                let feedback_root =
+                    crate::work_plan_eggplan::session_workspace_root(&self.pool, &goal.session_id)
+                        .await;
                 if let Ok(Some((bound_plan, bound_items, _))) =
-                    crate::work_plan_arbiter::assess_goal_plan(&self.pool, &goal.id).await
+                    crate::work_plan_arbiter::assess_goal_plan_with_eggplan(
+                        &self.pool,
+                        &goal.id,
+                        feedback_root.as_deref(),
+                    )
+                    .await
                 {
                     let recorded = crate::work_plan_arbiter::record_verifier_feedback(
                         &self.pool,
