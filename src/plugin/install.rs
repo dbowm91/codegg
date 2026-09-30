@@ -624,6 +624,9 @@ api_version = 1
     fn validate_uninstall_accepts_inside_plugins_dir() {
         let policy = PluginInstallPolicy::default();
         let dir = plugins_dir();
+        // Hermetic regardless of cross-test creation order: the validator
+        // canonicalizes the real dir, which no other test guarantees.
+        std::fs::create_dir_all(&dir).unwrap();
         let result = validate_uninstall_target(&dir, &policy);
         assert!(result.is_ok());
     }
@@ -634,6 +637,7 @@ api_version = 1
             refuse_outside_install_dir: false,
             ..Default::default()
         };
+        std::fs::create_dir_all(plugins_dir()).unwrap();
         let outside = std::env::temp_dir();
         let result = validate_uninstall_target(&outside, &policy);
         assert!(result.is_ok());
@@ -643,6 +647,8 @@ api_version = 1
     fn validate_wasm_module_inside_plugin_dir() {
         let policy = PluginInstallPolicy::default();
         let dir = plugins_dir();
+        // Same hermeticity note as the uninstall validators above.
+        std::fs::create_dir_all(&dir).unwrap();
         // The plugins dir itself is "inside" itself
         let result = validate_wasm_module_path(&dir, &dir, &policy);
         assert!(result.is_ok());
