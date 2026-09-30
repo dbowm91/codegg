@@ -1,6 +1,6 @@
 # CI and Test Throughput Optimization — Post-Closure Evidence Corrective Addendum
 
-Status: active; C002 ready; C001 blocked on C002
+Status: active; C002 closed; C001 ready (unblocked by C002 closure `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`)
 
 Repository baseline reviewed: `4f7e508976e70fbec0e645bd530b63fe3c8393c1`
 
@@ -78,7 +78,7 @@ The Eggwork timeout is a previously observed hosted flake, but its current timeo
 
 ### C001 — Closure evidence, compiler-cache qualification, and documentation reconciliation
 
-Status: blocked on C002.
+Status: ready (unblocked by C002 closure).
 
 Implementation plan:
 
@@ -87,7 +87,7 @@ Implementation plan:
 
 ### C002 — Hosted CI timing-flake stabilization
 
-Status: ready.
+Status: closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`; implementation `696ec282`; hosted runs `36748429660` attempts 1-3 success).
 
 Implementation plan:
 
