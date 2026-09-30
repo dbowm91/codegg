@@ -272,8 +272,7 @@ fn projection_training_grid() -> ProjectionTrainingGrid {
 pub fn normalize_identifier(name: &str) -> String {
     let mut tokens: Vec<String> = Vec::new();
     let mut current = String::new();
-    let mut chars = name.chars().peekable();
-    while let Some(ch) = chars.next() {
+    for ch in name.chars() {
         if ch == '_' || ch == '-' || ch == '/' || ch == ':' {
             if !current.is_empty() {
                 tokens.push(current.clone());

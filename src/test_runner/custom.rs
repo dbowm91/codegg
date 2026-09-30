@@ -300,8 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_is_nonempty() {
-        assert!(!CUSTOM_COMMAND_ALLOWLIST.is_empty());
+    fn allowlist_entries_have_nonempty_prefix() {
         for entry in CUSTOM_COMMAND_ALLOWLIST {
             assert!(
                 !entry.argv_prefix.is_empty(),

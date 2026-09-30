@@ -275,12 +275,10 @@ impl PermissionDialog {
                     } else {
                         Style::default().fg(theme.foreground)
                     }
+                } else if i == self.selected_option {
+                    Style::default().fg(theme.background).bg(theme.primary)
                 } else {
-                    if i == self.selected_option {
-                        Style::default().fg(theme.background).bg(theme.primary)
-                    } else {
-                        Style::default().fg(theme.foreground)
-                    }
+                    Style::default().fg(theme.foreground)
                 };
                 Line::from(Span::styled(format!("{prefix}{}", opt), style))
             })

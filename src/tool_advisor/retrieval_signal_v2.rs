@@ -21,11 +21,11 @@ use super::retrieval_relevance::{
     bm25_ordering_local, build_derived_view, eligible_deferred_names_local, expand_universe_local,
 };
 use super::retrieval_signal::{
-    cap_field, normalize_identifier, CANDIDATE_FIELD_CAPS, DESCRIPTOR_TOTAL_CAP_BYTES,
-    EXPECTED_DERIVED_VIEW_FINGERPRINT, LEXICAL_FIELD_WEIGHTS, PREREG_DERIVED_VIEW, QUERY_FIELDS,
-    QUERY_FIELD_CAPS, QUERY_MAX_NEXT_STEPS, SIGNAL_PREREG_ASSET_PATH, SIGNAL_PREREG_PROTOCOL,
+    cap_field, normalize_identifier, CANDIDATE_FIELD_CAPS, EXPECTED_DERIVED_VIEW_FINGERPRINT,
+    LEXICAL_FIELD_WEIGHTS, PREREG_DERIVED_VIEW, QUERY_FIELD_CAPS, QUERY_MAX_NEXT_STEPS,
+    SIGNAL_PREREG_ASSET_PATH, SIGNAL_PREREG_PROTOCOL,
 };
-use super::{baseline_prediction, normalize_text, ToolAdvisorCandidate, ToolAdvisorCase};
+use super::{normalize_text, ToolAdvisorCandidate, ToolAdvisorCase};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -972,6 +972,8 @@ pub fn write_frontier_atomic(path: &Path, receipt: &SignalV2FrontierReceipt) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_advisor::baseline_prediction;
+    use crate::tool_advisor::retrieval_signal::{DESCRIPTOR_TOTAL_CAP_BYTES, QUERY_FIELDS};
 
     #[test]
     fn representation_follows_frozen_contract() {

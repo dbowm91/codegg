@@ -2236,7 +2236,7 @@ async fn collect_cross_file_repair(
     generation: Option<u64>,
     freshness: LspEvidenceFreshness,
     items: &mut Vec<LspContextItem>,
-    _notes: &mut Vec<String>,
+    _notes: &mut [String],
 ) {
     // 1. Diagnostics in primary file.
     match provider.diagnostics_for_file(primary_file).await {

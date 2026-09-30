@@ -1048,7 +1048,7 @@ mod tests {
                 RetrievalRelevanceClass::ImplicitFuture
             );
             assert!(!entry.retrieval_eligible);
-            assert!(inferable_set(&view, case).contains(candidate) == false);
+            assert!(!inferable_set(&view, case).contains(candidate));
         }
         // Known current-step primaries are included.
         for (case, candidate) in [

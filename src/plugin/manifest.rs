@@ -228,7 +228,7 @@ impl PluginContributions {
                 )
             })?;
             let local = transport.requires_command();
-            if local != server.command.is_some() || (!local) != server.url.is_some() {
+            if local != server.command.is_some() || local == server.url.is_some() {
                 return Err(format!(
                     "MCP contribution '{}' has incomplete {} configuration",
                     server.name,

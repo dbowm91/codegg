@@ -2026,9 +2026,13 @@ write = "deny"
     }
 
     #[test]
-    fn test_emergency_default_model_constant_not_empty() {
-        assert!(!EMERGENCY_DEFAULT_MODEL.is_empty());
-        assert!(!EMERGENCY_DEFAULT_WORKHORSE_MODEL.is_empty());
+    fn test_emergency_default_models_are_qualified() {
+        for model in [EMERGENCY_DEFAULT_MODEL, EMERGENCY_DEFAULT_WORKHORSE_MODEL] {
+            assert!(
+                model.contains('/'),
+                "emergency model '{model}' must be provider-qualified"
+            );
+        }
     }
 
     #[test]

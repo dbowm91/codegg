@@ -1901,7 +1901,7 @@ pub type JobError = JobStoreError;
 #[allow(dead_code)]
 fn _ensure_async_mutex_used(_m: &AsyncMutex<()>) {}
 #[allow(dead_code)]
-fn _ensure_pathbuf_used(_p: &PathBuf) {}
+fn _ensure_pathbuf_used(_p: PathBuf) {}
 
 #[cfg(test)]
 mod tests {

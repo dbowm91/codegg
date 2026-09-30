@@ -13912,8 +13912,7 @@ mod remote_protocol_tests {
             snap_auto
                 .plugin_panels
                 .iter()
-                .find(|v| v.id == "multi-client:panel-1")
-                .is_none(),
+                .all(|v| v.id != "multi-client:panel-1"),
             "automation client must not have the panel in snapshot"
         );
     }

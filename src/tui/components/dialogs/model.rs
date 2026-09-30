@@ -152,16 +152,14 @@ impl ModelDialog {
                     let visible_models = self.count_visible_models(0);
                     self.scroll.clamp(self.selected, flat.len(), visible_models);
                 }
+            } else if let Some(idx) = flat.iter().position(|(p, _)| p == "opencode_zen") {
+                self.selected = idx;
+                let visible_models = self.count_visible_models(0);
+                self.scroll.clamp(self.selected, flat.len(), visible_models);
             } else {
-                if let Some(idx) = flat.iter().position(|(p, _)| p == "opencode_zen") {
-                    self.selected = idx;
-                    let visible_models = self.count_visible_models(0);
-                    self.scroll.clamp(self.selected, flat.len(), visible_models);
-                } else {
-                    self.selected = 0;
-                    let visible_models = self.count_visible_models(0);
-                    self.scroll.clamp(self.selected, flat.len(), visible_models);
-                }
+                self.selected = 0;
+                let visible_models = self.count_visible_models(0);
+                self.scroll.clamp(self.selected, flat.len(), visible_models);
             }
         } else {
             self.selected = 0;
