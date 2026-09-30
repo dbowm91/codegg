@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active roadmap; M001 closed, M002 active
+Status: active roadmap; M001 closed, M002 closed
 
 Canonical authority:
 
@@ -129,7 +129,7 @@ explicitly unavailable for exact-subject proof.
 
 ### M002 — Eggplan-backed WorkPlan assessment adoption
 
-Status: active (implementation landed locally; closure waits for the CI-stability operational gate).
+Status: closed (`plans/closure/eggplan-assessment-integration/003-m002-status.md`; implementations `3e992291` + `3c7438c7`; hosted `36760308368` success).
 
 CodeGG-local implementation plan:
 

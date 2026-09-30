@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration M002 — Staged Production Assessment Adoption
 
-Status: active (facade + verification spec + adapter + engine selection + S1/S2 revalidation + production migration + 28-case differential implemented locally; hosted closure evidence waits for CI C002 three-green)
+Status: closed (`plans/closure/eggplan-assessment-integration/003-m002-status.md`; implementations `3e992291` + `3c7438c7`; hosted `36760308368` success)
 
 Repository baseline:
 
