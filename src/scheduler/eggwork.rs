@@ -1942,7 +1942,9 @@ fn make_manifest_patch(
         base_manifest_digest: base_digest.clone(),
         entries,
     };
-    (patch.apply_to(base).ok()? == *current).then_some(patch)
+    let recomposed_digest = patch.apply_to(base).ok()?.digest().ok()?;
+    let current_digest = current.digest().ok()?;
+    (recomposed_digest == current_digest).then_some(patch)
 }
 
 fn full_workspace_request_bytes(
@@ -3033,7 +3035,10 @@ mod tests {
         let unchanged = make_manifest_patch(&old, &base_digest, &old).unwrap();
         assert!(unchanged.entries.is_empty());
         let patch = make_manifest_patch(&old, &base_digest, &current).unwrap();
-        assert_eq!(patch.apply_to(&old).unwrap(), current);
+        assert_eq!(
+            patch.apply_to(&old).unwrap().digest().unwrap(),
+            current.digest().unwrap()
+        );
         let workspace_id = EggworkWorkspaceId::new("workspace-1").unwrap();
         let handle = ExecutionHandle {
             execution_id: ExecutionId::new("exec-1").unwrap(),
