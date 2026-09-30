@@ -1,12 +1,12 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: blocked on M001
+Status: blocked on M001R
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
 Hard dependency:
 
-- M001 positive signal-sufficiency closure.
+- M001R positive preregistration closure after retrieval-evaluation corrective disposition B.
 
 Source roadmap:
 
@@ -28,7 +28,7 @@ Introduce an experiment-versioned representation, e.g.:
 
 Do not silently modify historical v1 retrieval semantics.
 
-Candidate descriptor construction must follow the exact M001 field contract. Query construction must follow the exact M001 `AdvisorContextV2` field contract.
+Candidate descriptor construction must follow the exact M001R field contract. Query construction must follow the exact M001R `AdvisorContextV2` field contract and bind the corrected retrieval-relevance view fingerprint.
 
 ## 3. Field-aware lexical scorer
 

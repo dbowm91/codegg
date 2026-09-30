@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active
+Status: active — blocked on retrieval-evaluation semantics corrective
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -81,7 +81,10 @@ The last two make a second question mandatory: whether every historical "relevan
 - v3 remains diagnostic-only and MUST NOT select representation, model, hyperparameters, thresholds, or K.
 - No remote model, telemetry, or automatic weight download.
 - Descriptor caches contain static tool metadata/embeddings only, never user context.
-- If M001 finds a relevance target not inferable from allowed query state, this workstream stops and registers an evaluation-label corrective. It MUST NOT lower recall gates or train around hidden-label leakage.
+- M001 found relevance targets not inferable from allowed query state and is now blocked/closed as historical evidence.
+- `plans/subsystems/tool-selection-advisor-retrieval-evaluation-semantics-corrective-addendum.md` controls the repair.
+- M001 MUST NOT be reopened. If the corrective confirms a real inferable signal gap, M001R owns preregistration continuation.
+- The workstream MUST NOT lower recall gates or train around hidden-label leakage.
 - Final positive qualification requires a fresh v4 holdout.
 
 ## 4. Hypotheses
@@ -140,26 +143,37 @@ The base transformer remains frozen. Projection parameter count should remain <=
 ## 6. Dependency graph
 
 ```text
-M001 signal sufficiency + representation preregistration
+M001 hard stop: evaluation-target defect
                 |
                 v
+retrieval-evaluation corrective C001
+        | A existing signal sufficient
+        |-------------------------------> M004 dependency review
+        |
+        | B real inferable signal gap
+        v
+M001R signal preregistration
+        |
+        v
 M002 deterministic Retrieval Signal V2
-                |
-        +-------+-------+
-        | positive      | insufficient but valid
-        v               v
-M004 operating point   M003 learned projection
-        ^               |
-        +---------------+
+        |
+        +-------------------+
+        | positive          | insufficient but valid
+        v                   v
+M004 operating point      M003 learned projection
+        ^                   |
+        +-------------------+
                 |
                 v
 M005 fresh v4 qualification
 ```
 
-- M001 is ready.
-- M002 is blocked on M001.
-- M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
-- M004 requires either positive M002 or positive M003.
+- M001 is blocked/closed after reaching its planned evaluation-target hard stop.
+- Retrieval-evaluation corrective C001 is the only ready handoff.
+- M001R is blocked on corrective disposition B.
+- M002 is blocked on positive M001R.
+- M003 remains conditional on a valid negative M002.
+- M004 is blocked; it may become eligible either from corrective disposition A (existing unchanged retrieval clears the corrected target) or from positive M002/M003.
 - M005 requires positive M004.
 
 ## 7. Milestones
@@ -170,9 +184,23 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001-signal-sufficiency-audit-and-preregistration.md`
 
-Status: ready.
+Status: blocked/closed by hard stop.
 
-Audit every persistent miss at case level, determine whether the relevance label is inferable from allowed query state, freeze Retrieval Signal V2 field/normalization boundaries, and preregister deterministic and learned experiment degrees of freedom.
+Closure:
+
+- `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`
+
+M001 established that the evaluation target mixes inferable current-state relevance with implicit future workflow relevance. It did not freeze Signal V2 or learned-model degrees of freedom.
+
+### M001R — Signal preregistration after evaluation corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001r-signal-preregistration-after-evaluation-corrective.md`
+
+Status: blocked on retrieval-evaluation C001 disposition B.
+
+M001R freezes Signal V2 and conditional projection degrees of freedom against the corrected inferable retrieval target. It exists so the blocked historical M001 is never silently reopened.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -180,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M001.
+Status: blocked on M001R.
 
 Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
 
@@ -218,7 +246,8 @@ Build a new zero-leakage, order-balanced semantic holdout and run one separately
 
 Positive completion requires:
 
-- no evaluation-label defect;
+- retrieval-evaluation semantics corrective closed with a usable inferable target;
+- no unresolved evaluation-label defect;
 - 64-tool retrieval recall >=0.99 at bounded K;
 - 128-tool recall >=0.98;
 - 256-tool recall >=0.95;

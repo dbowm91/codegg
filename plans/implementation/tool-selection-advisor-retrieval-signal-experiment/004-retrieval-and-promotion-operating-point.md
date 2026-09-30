@@ -1,13 +1,17 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M004 — Retrieval and Promotion Operating Point
 
-Status: blocked on positive M002 or M003
+Status: blocked on corrected retrieval target plus an eligible retrieval candidate
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
 Dependencies:
 
-- positive deterministic M002 **or** positive learned M003;
-- frozen span-packed downstream ranker from order-invariance M003.
+- retrieval-evaluation semantics corrective C001 closed with no unresolved evidence defect;
+- one eligible retrieval candidate supplied by either:
+  - corrective disposition A (unchanged existing retrieval clears corrected gates), or
+  - positive deterministic M002, or
+  - positive learned M003;
+- frozen span-packed downstream ranker from order-invariance M003, unless C001 disposition C registers a ranker-label corrective, in which case that corrective becomes a hard dependency.
 
 Source roadmap:
 

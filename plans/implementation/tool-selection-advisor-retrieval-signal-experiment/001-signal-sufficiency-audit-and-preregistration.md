@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M001 — Signal Sufficiency Audit and Preregistration
 
-Status: ready for handoff
+Status: blocked — hard stop reached; corrective required
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -13,6 +13,18 @@ Controlling architecture:
 - `plans/adrs/ADR-0009-local-tool-advisor-boundaries.md`
 
 Primary class: evidence/infrastructure.
+
+## Planning disposition
+
+The hard-stop branch in §4 has been reached. This plan is not to be resumed in place.
+
+Controlling status:
+
+- `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md` — blocked by evaluation-target semantics;
+- `plans/subsystems/tool-selection-advisor-retrieval-evaluation-semantics-corrective-addendum.md` — active corrective;
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001r-signal-preregistration-after-evaluation-corrective.md` — blocked successor if corrective disposition B confirms a genuine inferable retrieval gap.
+
+Historical corpus and predecessor evidence remain immutable.
 
 ## 1. Objective
 
