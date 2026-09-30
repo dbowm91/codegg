@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M003 — Content-Aware Derived Workspace Transfer
 
-Status: blocked on Eggwork Workspace/Artifact M004 closure
+Status: ready for handoff
 
 Source roadmap:
 
@@ -12,17 +12,24 @@ Closed predecessors:
 - M002 target capability/operator policy;
 - M002a required-isolation live qualification.
 
-Current CodeGG baseline:
+Current CodeGG baseline reviewed before reconciliation:
 
-- `841ad117399c9279e3668828d5d9866983603381`
+- `3b3ae916e9dc75cc60c7137d2bdf955e959bd6c5`
 
-Required upstream contract:
+Required upstream contract: satisfied
 
-- Eggwork Workspace/Artifact M004 plan:
-  `eggstack/eggwork@ed0fc838bd006103021f1fb4749f579cabc2db87`
-- `plans/implementation/workspace-artifact-transport/004-reusable-manifest-cas-and-derived-materialization.md` in Eggwork.
+- Eggwork Workspace/Artifact M004 implementation:
+  `eggstack/eggwork@1e89dacd2b2635a9f439547db8b9077b168063ec`
+- Eggwork M004 closure:
+  `eggstack/eggwork@5b989c966158e958dfb12fb9020728e4e7cbc92a`
+- Closure record:
+  `eggstack/eggwork: plans/closure/workspace-artifact-transport/004-status.md`
+- Current reviewed Eggwork head:
+  `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`
 
-M003 becomes ready only after the upstream closure proves `workspace.derive.v1`, principal-scoped base-manifest retention, canonical patch equivalence, and typed `base_manifest_missing` behavior.
+The closure proves the exact contract this plan was waiting for: `workspace.derive.v1`, principal-scoped retained canonical manifests, deterministic patch application through the existing full-manifest validator, retained blob authority for usable bases, typed non-destructive `base_manifest_missing`, and exact final canonical digest equivalence. The upstream closure explicitly marks downstream CodeGG M003 unblocked.
+
+The current reviewed Eggwork head also includes later Security M004 hardening that corrected the Landlock `/dev/null` rule and re-proved escape tests non-vacuously. M003 implementation must not pin an older revision that gains Workspace M004 while dropping that later security fix.
 
 Primary class: infrastructure/capability
 
@@ -65,11 +72,13 @@ M003 optimizes those surfaces without weakening steps 1-4.
 
 ## 4. Upstream API adoption
 
-After Eggwork M004 closes, pin the exact reviewed immutable Eggwork revision consistently in:
+At implementation start, re-check Eggwork head and pin one exact reviewed immutable Eggwork revision consistently in:
 
 - root production dependencies;
 - `crates/eggwork-test-node`;
 - any separate lockfiles/fixtures.
+
+The pin MUST contain both Workspace M004 and the later Security M004 Landlock hardening. The current reviewed candidate is `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`; a newer revision is acceptable only after the same contract/security checks are repeated.
 
 Extend `EggworkNodeClient` and the production `NodeClientAdapter` with the upstream derived-workspace method.
 
@@ -379,7 +388,7 @@ Hosted Linux live tests are required for closure because the current qualified r
 
 Stop and record a blocker if:
 
-- Eggwork M004 closes without guaranteeing canonical final digest equivalence;
+- the exact Eggwork revision selected at implementation time no longer satisfies the closed M004 contract or later Security M004 hardening;
 - base retention does not pin referenced blobs long enough for derived use;
 - safe fallback cannot distinguish typed base miss from ambiguous failure;
 - CodeGG would need to trust the patch instead of constructing the current full manifest;
