@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001+C001+M002+M002a closed, M003 blocked on Eggwork Workspace/Artifact M004, M004 deferred
+Status: active roadmap; M001+C001+M002+M002a closed, M003 ready for handoff, M004 deferred
 
 Canonical authority:
 
@@ -12,8 +12,10 @@ Canonical authority:
 External execution substrate:
 
 - Eggwork repository: `https://github.com/eggstack/eggwork`
-- reviewed Eggwork implementation baseline: `2566e6a54451468011119844824b644aea891b0c`
-- reviewed Eggwork Workspace M004 planning commit: `ed0fc838bd006103021f1fb4749f579cabc2db87`
+- reviewed Eggwork current head: `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`
+- Eggwork Workspace M004 implementation: `1e89dacd2b2635a9f439547db8b9077b168063ec`
+- Eggwork Workspace M004 closure: `5b989c966158e958dfb12fb9020728e4e7cbc92a` (`plans/closure/workspace-artifact-transport/004-status.md`)
+- later Eggwork Security M004 hardening/closure is included in current reviewed head `e6a5d82e...`
 - Control Plane M003 closure: `7fe07c0b75c2ab022f2a17b5999ee589e3d94e62`
 - Foundation M003 closure: `b3b5459a6077f59278fa1694a65f8c29a76000ef`
 
@@ -47,7 +49,7 @@ Eggwork MUST NOT become a second CodeGG scheduler.
 
 ## 2. Current CodeGG seams
 
-Reviewed CodeGG implementation baseline: `841ad117399c9279e3668828d5d9866983603381`.
+Reviewed CodeGG implementation baseline before this reconciliation: `3b3ae916e9dc75cc60c7137d2bdf955e959bd6c5`.
 
 Relevant current seams:
 
@@ -159,16 +161,21 @@ Pin the corrected Eggwork revision and prove CodeGG's production mTLS path execu
 
 Class: infrastructure/capability
 
-Status: blocked on Eggwork Workspace/Artifact M004 closure
+Status: ready for handoff
 
 Implementation plan:
 
 - `plans/implementation/eggwork-fixed-target-remote-execution/003-content-aware-derived-workspace-transfer.md`
 
-Upstream prerequisite:
+Upstream prerequisite: satisfied
 
-- Eggwork `plans/implementation/workspace-artifact-transport/004-reusable-manifest-cas-and-derived-materialization.md`
-- planning commit `ed0fc838bd006103021f1fb4749f579cabc2db87`
+- Eggwork implementation plan: `plans/implementation/workspace-artifact-transport/004-reusable-manifest-cas-and-derived-materialization.md`
+- implementation: `1e89dacd2b2635a9f439547db8b9077b168063ec`
+- closure: `5b989c966158e958dfb12fb9020728e4e7cbc92a`
+- closure record: `eggstack/eggwork: plans/closure/workspace-artifact-transport/004-status.md`
+- current reviewed Eggwork head: `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`, which also contains the later Security M004 Landlock non-vacuity hardening
+
+The upstream closure explicitly marks CodeGG M003 unblocked and proves `workspace.derive.v1`, principal-scoped retained manifests, canonical patch equivalence, retained-base blob authority, and typed `base_manifest_missing` behavior.
 
 Objective:
 
