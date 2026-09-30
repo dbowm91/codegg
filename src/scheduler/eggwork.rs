@@ -2268,12 +2268,27 @@ mod tests {
     use codegg_core::workspace::WorkspaceId;
     use std::sync::Mutex;
 
+    #[derive(Clone, Copy, Default)]
+    enum FakeDerivedBehavior {
+        #[default]
+        Succeed,
+        BaseMissing,
+        Fail,
+    }
+
     struct FakeNodeClient {
         events: Vec<ExecutionEvent>,
         final_snapshot: ExecutionSnapshot,
         capabilities: Mutex<NodeCapabilities>,
         status: Mutex<NodeStatus>,
         uploaded: Mutex<Vec<(String, u64)>>,
+        probed_blobs: Mutex<Vec<usize>>,
+        full_creates: Mutex<usize>,
+        derived_creates: Mutex<usize>,
+        submitted: Mutex<usize>,
+        manifests: Mutex<HashMap<String, WorkspaceManifest>>,
+        derived_behavior: Mutex<FakeDerivedBehavior>,
+        bad_ready_digest: Mutex<bool>,
         cancelled: Mutex<Vec<String>>,
         renewed: Mutex<Vec<String>>,
         artifacts: Vec<ArtifactRecord>,
@@ -2330,10 +2345,32 @@ mod tests {
                     },
                 }),
                 uploaded: Mutex::new(Vec::new()),
+                probed_blobs: Mutex::new(Vec::new()),
+                full_creates: Mutex::new(0),
+                derived_creates: Mutex::new(0),
+                submitted: Mutex::new(0),
+                manifests: Mutex::new(HashMap::new()),
+                derived_behavior: Mutex::new(FakeDerivedBehavior::default()),
+                bad_ready_digest: Mutex::new(false),
                 cancelled: Mutex::new(Vec::new()),
                 renewed: Mutex::new(Vec::new()),
                 artifacts: Vec::new(),
             }
+        }
+
+        fn enable_derived(&self) {
+            let feature = WORKSPACE_DERIVE_FEATURE.to_string();
+            self.capabilities
+                .lock()
+                .unwrap()
+                .features
+                .push(feature.clone());
+            self.status
+                .lock()
+                .unwrap()
+                .capabilities
+                .features
+                .push(feature);
         }
     }
 
@@ -2351,6 +2388,7 @@ mod tests {
             &self,
             digests: &[BlobDigest],
         ) -> Result<Vec<BlobDigest>, EggworkClientError> {
+            self.probed_blobs.lock().unwrap().push(digests.len());
             Ok(digests.to_vec())
         }
 
@@ -2373,12 +2411,23 @@ mod tests {
             handle: &ExecutionHandle,
             manifest: &WorkspaceManifest,
         ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+            *self.full_creates.lock().unwrap() += 1;
+            let digest = manifest.digest().expect("manifest digest");
+            self.manifests
+                .lock()
+                .unwrap()
+                .insert(digest.as_str().to_owned(), manifest.clone());
+            let manifest_digest = if *self.bad_ready_digest.lock().unwrap() {
+                BlobDigest::from_bytes(b"wrong ready digest")
+            } else {
+                digest
+            };
             Ok(eggwork_client::WorkspaceReady {
                 schema_version: 1,
                 workspace_id: workspace_id.clone(),
                 execution_id: handle.execution_id.clone(),
                 generation: handle.generation,
-                manifest_digest: manifest.digest().expect("manifest digest"),
+                manifest_digest,
                 logical_bytes: manifest.logical_bytes(),
             })
         }
@@ -2390,19 +2439,54 @@ mod tests {
             base_manifest_digest: &BlobDigest,
             patch: &WorkspaceManifestPatch,
         ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
-            let _ = base_manifest_digest;
+            *self.derived_creates.lock().unwrap() += 1;
+            match *self.derived_behavior.lock().unwrap() {
+                FakeDerivedBehavior::BaseMissing => {
+                    return Err(EggworkClientError::Api {
+                        status: 409,
+                        code: "base_manifest_missing".to_string(),
+                        message: "retained base missing".to_string(),
+                    });
+                }
+                FakeDerivedBehavior::Fail => {
+                    return Err(EggworkClientError::Api {
+                        status: 500,
+                        code: "internal".to_string(),
+                        message: "scripted derived failure".to_string(),
+                    });
+                }
+                FakeDerivedBehavior::Succeed => {}
+            }
+            let base = self
+                .manifests
+                .lock()
+                .unwrap()
+                .get(base_manifest_digest.as_str())
+                .cloned()
+                .ok_or_else(|| EggworkClientError::Api {
+                    status: 409,
+                    code: "base_manifest_missing".to_string(),
+                    message: "retained base missing".to_string(),
+                })?;
             let manifest = patch
-                .apply_to(&WorkspaceManifest {
-                    schema_version: 1,
-                    entries: Vec::new(),
-                })
+                .apply_to(&base)
                 .map_err(|_| EggworkClientError::InvalidResponse)?;
+            let digest = manifest.digest().expect("derived manifest digest");
+            self.manifests
+                .lock()
+                .unwrap()
+                .insert(digest.as_str().to_owned(), manifest.clone());
+            let manifest_digest = if *self.bad_ready_digest.lock().unwrap() {
+                BlobDigest::from_bytes(b"wrong derived ready digest")
+            } else {
+                digest
+            };
             Ok(eggwork_client::WorkspaceReady {
                 schema_version: 1,
                 workspace_id: workspace_id.clone(),
                 execution_id: handle.execution_id.clone(),
                 generation: handle.generation,
-                manifest_digest: manifest.digest().expect("derived manifest digest"),
+                manifest_digest,
                 logical_bytes: manifest.logical_bytes(),
             })
         }
@@ -2413,6 +2497,7 @@ mod tests {
             _handle: &ExecutionHandle,
             _workspace_id: &EggworkWorkspaceId,
         ) -> Result<BoxEventStream, EggworkClientError> {
+            *self.submitted.lock().unwrap() += 1;
             // Mirror the real node's fail-closed admission (C001): only
             // unrestricted specs are accepted. A restricted spec here means
             // the executor drifted from the qualified contract.
@@ -2553,6 +2638,137 @@ mod tests {
             progress: Arc::new(crate::scheduler::executor::NoopProgressSink),
             resources,
         }
+    }
+
+    async fn execute_fake(executor: &EggworkExecutor, root: &Path) -> ExecutorCompletion {
+        let job = managed_argv_job(ExecutionTarget::EggworkNode {
+            node_id: "node-1".to_string(),
+        });
+        executor
+            .execute(test_context(job, root.to_path_buf()))
+            .await
+    }
+
+    fn derived_test_executor(fake: Arc<FakeNodeClient>) -> EggworkExecutor {
+        let mut nodes = HashMap::new();
+        nodes.insert("node-1".to_string(), test_node());
+        EggworkExecutor::with_factory(
+            EggworkExecutorConfig {
+                nodes,
+                store: None,
+                ..Default::default()
+            },
+            Arc::new(FakeFactory { client: fake }),
+        )
+    }
+
+    fn populated_workspace(root: &Path) {
+        for index in 0..32 {
+            std::fs::write(
+                root.join(format!("stable-{index:02}.txt")),
+                format!("stable-{index:02} {}", "x".repeat(240)),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("build.sh"), b"#!/bin/sh\necho baseline\n").unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn derived_hit_probes_only_changed_blobs_after_acknowledged_full_base() {
+        let dir = tempfile::tempdir().unwrap();
+        populated_workspace(dir.path());
+        let fake = Arc::new(FakeNodeClient::succeeding());
+        fake.enable_derived();
+        let executor = derived_test_executor(fake.clone());
+
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        std::fs::write(dir.path().join("build.sh"), b"#!/bin/sh\necho changed\n").unwrap();
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+
+        assert_eq!(*fake.full_creates.lock().unwrap(), 1);
+        assert_eq!(*fake.derived_creates.lock().unwrap(), 1);
+        assert_eq!(*fake.probed_blobs.lock().unwrap(), vec![33, 1]);
+        assert_eq!(*fake.submitted.lock().unwrap(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn typed_base_miss_falls_back_to_full_materialization() {
+        let dir = tempfile::tempdir().unwrap();
+        populated_workspace(dir.path());
+        let fake = Arc::new(FakeNodeClient::succeeding());
+        fake.enable_derived();
+        let executor = derived_test_executor(fake.clone());
+
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        std::fs::write(dir.path().join("build.sh"), b"#!/bin/sh\necho changed\n").unwrap();
+        *fake.derived_behavior.lock().unwrap() = FakeDerivedBehavior::BaseMissing;
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+
+        assert_eq!(*fake.full_creates.lock().unwrap(), 2);
+        assert_eq!(*fake.derived_creates.lock().unwrap(), 1);
+        assert_eq!(*fake.probed_blobs.lock().unwrap(), vec![33, 1, 33]);
+        assert_eq!(*fake.submitted.lock().unwrap(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn other_derived_errors_fail_without_full_fallback_or_submit() {
+        let dir = tempfile::tempdir().unwrap();
+        populated_workspace(dir.path());
+        let fake = Arc::new(FakeNodeClient::succeeding());
+        fake.enable_derived();
+        let executor = derived_test_executor(fake.clone());
+
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        std::fs::write(dir.path().join("build.sh"), b"#!/bin/sh\necho changed\n").unwrap();
+        *fake.derived_behavior.lock().unwrap() = FakeDerivedBehavior::Fail;
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Failed
+        );
+
+        assert_eq!(*fake.full_creates.lock().unwrap(), 1);
+        assert_eq!(*fake.derived_creates.lock().unwrap(), 1);
+        assert_eq!(*fake.probed_blobs.lock().unwrap(), vec![33, 1]);
+        assert_eq!(*fake.submitted.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn derived_ready_digest_mismatch_refuses_to_submit() {
+        let dir = tempfile::tempdir().unwrap();
+        populated_workspace(dir.path());
+        let fake = Arc::new(FakeNodeClient::succeeding());
+        fake.enable_derived();
+        let executor = derived_test_executor(fake.clone());
+
+        assert_eq!(
+            execute_fake(&executor, dir.path()).await.status,
+            ExecutorStatus::Completed
+        );
+        std::fs::write(dir.path().join("build.sh"), b"#!/bin/sh\necho changed\n").unwrap();
+        *fake.bad_ready_digest.lock().unwrap() = true;
+        let completion = execute_fake(&executor, dir.path()).await;
+
+        assert_eq!(completion.status, ExecutorStatus::Failed);
+        assert!(completion
+            .summary
+            .contains("different workspace manifest digest"));
+        assert_eq!(*fake.derived_creates.lock().unwrap(), 1);
+        assert_eq!(*fake.submitted.lock().unwrap(), 1);
     }
 
     fn test_node() -> ResolvedEggworkNode {
