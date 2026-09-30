@@ -52,6 +52,10 @@ env:
   # (see scripts/verify.sh) for smaller developer machines.
   # Test execution remains serial (--test-threads=1) in every mode.
   CARGO_BUILD_JOBS: 4
+  # C001 A/B comparability: explicit incremental setting held constant
+  # across control and sccache candidate (sccache requires incremental
+  # off; explicit setting removes incremental-cache-maturity bias).
+  CARGO_INCREMENTAL: 0
 
 permissions:
   contents: read
