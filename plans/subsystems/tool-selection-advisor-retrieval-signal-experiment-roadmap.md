@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active — M001R closed positively, M002 ready
+Status: active — M001R closed positively, M002 active (lexical half landed, semantic arms unblocked)
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: ready for handoff (M001R closed positively; frozen receipt fp `eda1f6b6…`).
+Status: active (M001R closed positively; frozen receipt fp `eda1f6b6…`; lexical half landed at `78c01f92`, semantic arms unblocked per §13 reassessment).
 
 Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
 

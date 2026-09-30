@@ -103,7 +103,7 @@ M005 cache and final critical-path closure
 - M001 is closed with the measured hosted baseline (run `36173876950`, 17m54s, JOBS=4).
 - M003 is closed with the measured hosted baseline (run `36193906726`, 17m31s, live target qualified, build 8m17s, exec 338s, positive pilot closed).
 - M004 is closed with the bounded consolidation (run `36196068239` final, 17m17s, build 7m51s, exec 362s, 5 `session_*` binaries → 1 `session_family`).
-- M005 is ready against the stabilized topology (hosted run `36196068239`).
+- M005 is closed (`plans/closure/ci-test-throughput-optimization/005-status.md`; final steady-state 17m17s hosted, run `36196068239` final).
 
 ## 5. Milestones
 
@@ -156,26 +156,6 @@ Status: closed (`plans/closure/ci-test-throughput-optimization/005-status.md`;
 sccache + same-job-overlap negative dispositions recorded;
 documentation reconciled; final steady-state 17m17s hosted, run
 `36196068239` final).
-
-Implementation plan:
-
-- `plans/implementation/ci-test-throughput-optimization/005-cache-and-critical-path-closure.md`
-
-Evaluate compiler-result caching and safe same-job critical-path overlap against the stabilized topology. Retain only wins that are reproducible, bounded, and simpler than the time they save. Reconcile active testing documentation with the final measured routine-CI contract.
-
-### M004 — Bounded integration-test family consolidation
-
-Status: blocked/conditional on positive M003.
-
-Implementation plan:
-
-- `plans/implementation/ci-test-throughput-optimization/004-bounded-integration-test-family-consolidation.md`
-
-Apply the proven harness pattern to additional compatible families, preserving feature/resource boundaries and human navigability. Stop before heavy/live/special-platform tests where consolidation would weaken isolation or diagnostics.
-
-### M005 — Compiler cache and final critical-path closure
-
-Status: blocked on M004 or documented negative consolidation disposition.
 
 Implementation plan:
 

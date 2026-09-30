@@ -1,6 +1,6 @@
 # CI and Test Throughput Optimization — Post-Closure Evidence Corrective Addendum
 
-Status: active; C002 closed; C001 ready (unblocked by C002 closure `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`)
+Status: active; C002 closed; C001 active (unblocked by C002 closure `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`)
 
 Repository baseline reviewed: `4f7e508976e70fbec0e645bd530b63fe3c8393c1`
 
@@ -78,7 +78,7 @@ The Eggwork timeout is a previously observed hosted flake, but its current timeo
 
 ### C001 — Closure evidence, compiler-cache qualification, and documentation reconciliation
 
-Status: ready (unblocked by C002 closure).
+Status: active (unblocked by C002 closure).
 
 Implementation plan:
 
@@ -164,5 +164,5 @@ C001 closes when:
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C002 Hosted CI timing-flake stabilization | ready | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | pending | — |
-| C001 Closure evidence, cache qualification, and doc reconciliation | blocked | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | pending | C002 hosted CI stability closure |
+| C002 Hosted CI timing-flake stabilization | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md` | — |
+| C001 Closure evidence, cache qualification, and doc reconciliation | active | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | pending | — |

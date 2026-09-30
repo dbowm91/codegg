@@ -227,13 +227,19 @@ scripts/capture-nextest-timing.sh --top 20
 ## CI Structure
 
 Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`
-for PRs and pushes to `main`. Baseline was ~37 min per run (measured
-2026-09-25: ~45 s setup/guards/fmt, ~5 min clippy, ~31 min workspace
-tests, of which only ~10 min is test execution and ~20 min is serial
-compile/link of ~100 test binaries). After the economy policy below
-(mold, JOBS=8, nextest `ci`, run-alone heavies), steady state is
-~19 min green (2026-09-25: ~2 min clippy, ~16 min test step with ~7 min
-execution of 11781 tests). Steps in order:1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
+for PRs and pushes to `main`. Historical baseline was ~37 min per run
+(historical measurement 2026-09-25: ~45 s setup/guards/fmt, ~5 min
+clippy, ~31 min workspace tests, of which only ~10 min is test
+execution and ~20 min is serial compile/link of ~100 test binaries).
+Historical post-tuning steady state was ~19 min green (2026-09-25:
+~2 min clippy, ~16 min test step with ~7 min execution of 11781
+tests). Final M001-M005 state is 17m17s on main/live run
+`36196068239` attempt 3 (7m51s test build, 362.537s execution,
+11,726 passed / 1 skipped, live Eggwork included) with
+`CARGO_BUILD_JOBS=4` and 84 root integration-test binaries after
+M003/M004 consolidation (historical 100 pre-consolidation, 11,781
+pre-consolidation). Steps in order:
+1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
 2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
@@ -243,7 +249,15 @@ execution of 11781 tests). Steps in order:1. Generated-agent schema sync (`gener
 8. Scheduler bypass guard (`check_scheduler_bypass.py`)
 9. Formatting (`cargo fmt --check --all`)
 10. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
-11. Workspace tests (`cargo nextest run --workspace --locked --profile ci`)
+11. Live-Eggwork relevance detection
+(`scripts/detect-live-eggwork-changes.sh`; main pushes always
+require live; PRs require live only for live-relevant paths)
+12. Conditional Eggwork fixture prebuild
+(`scripts/prebuild-eggwork-fixtures.sh`; skipped when live is omitted)
+13. Workspace tests (`cargo nextest run --workspace --locked --profile ci`;
+full suite on main/relevant-PR live path, `-E 'not
+binary(eggwork_remote_execution_live)'` on the ordinary unrelated-PR
+fast path).
 
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
@@ -271,9 +285,11 @@ except `CARGO_BUILD_JOBS=2`:
    threads codegen internally, 2 leaves headroom unused).
 5. **Nextest `ci` profile** — 4 concurrent per-test processes
    (= runner vCPUs; 8 tried 2026-09-25, reverted after a load-induced
-   flake in `scheduler_cancellation`), run-alone heavies. Measured:
-   11781 tests in ~7 min execution (vs ~10.6 min under serial
-   `cargo test`); the sleep-bound heavies still take their wall-clock.
+   flake in `scheduler_cancellation`), run-alone heavies. Final
+   M001-M005 measurement: 11726 tests in 362s execution on run
+   `36196068239` (historical 11781 pre-consolidation in ~7 min vs
+   ~10.6 min under serial `cargo test`); the sleep-bound heavies still
+   take their wall-clock.
    Does not change `--test-threads` semantics of plain `cargo test`
    runs.
 
@@ -292,7 +308,9 @@ To separate compile/link wall time from test execution on any run:
    in the step log; everything after is Nextest execution.
 2. **Nextest execution total** — the run-closing
    `Summary [Xs] N tests run` line is pure execution across all
-   binaries (M001 baseline: 414 s for 11781 tests).
+   binaries (historical M001 baseline: 414 s for 11781 tests;
+   final M004 baseline: 362.537s for 11726 passed / 1 skipped on run
+   `36196068239`).
 3. **Local representative-unit probe** — rebuild one large test target
    after touching the root lib (keeps deps warm, isolates one
    lib-codegen + link unit):
