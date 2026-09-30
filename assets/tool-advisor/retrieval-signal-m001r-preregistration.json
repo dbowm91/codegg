@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "protocol": "m001r-preregistered-signal-v2-v1",
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "corpus_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "train_partition_fingerprint": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+  "dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "test_partition_fingerprint": "1765ad09db8ff1eece480739763f69f299edc126c2ccb654f657cda97dd0e035",
+  "derived_view": "assets/tool-advisor/retrieval-relevance-v1.json",
+  "derived_view_fingerprint": "23edef17d0e4f4ac71d4e4b65349585cfc9b3c08d49cd4f7ac47e3bad12b5479",
+  "adjudication_version": "retrieval-relevance-v1",
+  "train_eligible": {
+    "current_step": 113,
+    "explicit_next_step": 0,
+    "implicit_future": 25
+  },
+  "dev_eligible": {
+    "current_step": 53,
+    "explicit_next_step": 0,
+    "implicit_future": 19
+  },
+  "test_eligible": {
+    "current_step": 53,
+    "explicit_next_step": 0,
+    "implicit_future": 17
+  },
+  "c001_closure": "plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md",
+  "c001_disposition": "B",
+  "c001_implementation_commit": "8613575d",
+  "gates": {
+    "recall_128_min": 0.98,
+    "recall_256_min": 0.95,
+    "recall_64_min": 0.99
+  },
+  "universes": [
+    64,
+    128,
+    256
+  ],
+  "primary_ks": [
+    16,
+    24,
+    32
+  ],
+  "candidate_fields": [
+    "canonical_name",
+    "identifier_tokens",
+    "description",
+    "category",
+    "disclosure",
+    "schema_property_names",
+    "schema_property_descriptions",
+    "operation_terms"
+  ],
+  "candidate_field_caps": {
+    "canonical_name": 256,
+    "category": 128,
+    "description": 1024,
+    "disclosure": 128,
+    "identifier_tokens": 256,
+    "operation_terms": 512,
+    "schema_property_descriptions": 1024,
+    "schema_property_names": 1024
+  },
+  "descriptor_total_cap_bytes": 4096,
+  "query_fields": [
+    "current_objective",
+    "current_task",
+    "next_steps",
+    "unresolved_signal",
+    "capability_cue"
+  ],
+  "query_field_caps": {
+    "capability_cue": 1024,
+    "current_objective": 2048,
+    "current_task": 2048,
+    "next_steps": 2048,
+    "unresolved_signal": 1024
+  },
+  "query_total_cap_bytes": 8192,
+  "query_max_next_steps": 2,
+  "field_labels": [
+    "name",
+    "identifiers",
+    "description",
+    "category",
+    "disclosure",
+    "schema",
+    "schema-descriptions",
+    "operations"
+  ],
+  "lexical_field_weights": {
+    "canonical_name": 3.0,
+    "category": 0.5,
+    "description": 1.0,
+    "disclosure": 0.5,
+    "identifier_tokens": 2.0,
+    "operation_terms": 2.0,
+    "schema_property_names": 1.5
+  },
+  "deterministic_modes": [
+    "bm25-flat-v1-baseline",
+    "descriptor-v2-flat-bm25",
+    "field-weighted-bm25-v2",
+    "normalized-token-bm25-v2",
+    "semantic-flat-v2-mean",
+    "semantic-field-labelled-v2-mean",
+    "rrf-v2",
+    "normalized-union-v2"
+  ],
+  "semantic_poolings": [
+    "mean",
+    "cls"
+  ],
+  "rrf_k": 60.0,
+  "union_alpha": 0.5,
+  "encoder_manifest": "target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json",
+  "ranker_selection": "assets/tool-advisor/order-invariance-m003-selection.json",
+  "encoder_dim": 384,
+  "projection_dim": 128,
+  "projection_max_params": 500000,
+  "projection_options": [
+    {
+      "name": "shared-linear-384-128",
+      "query_tower": "shared-linear",
+      "descriptor_tower": "shared-linear",
+      "input_dim": 384,
+      "hidden_dim": null,
+      "output_dim": 128,
+      "trainable_params": 49280
+    },
+    {
+      "name": "asymmetric-linear-384-128",
+      "query_tower": "linear",
+      "descriptor_tower": "linear",
+      "input_dim": 384,
+      "hidden_dim": null,
+      "output_dim": 128,
+      "trainable_params": 98560
+    },
+    {
+      "name": "asymmetric-2layer-384-128-128",
+      "query_tower": "linear-relu-linear",
+      "descriptor_tower": "linear-relu-linear",
+      "input_dim": 384,
+      "hidden_dim": 128,
+      "output_dim": 128,
+      "trainable_params": 131584
+    }
+  ],
+  "projection_training": {
+    "learning_rates": [
+      0.0001,
+      0.0002
+    ],
+    "epochs": [
+      5,
+      10
+    ],
+    "temperatures": [
+      0.05,
+      0.07
+    ],
+    "loss": "infonce",
+    "seeds": [
+      7,
+      42,
+      123
+    ],
+    "hard_negatives_per_positive": [
+      7,
+      15
+    ],
+    "batch_sizes": [
+      64,
+      128
+    ]
+  },
+  "no_per_tool_aliases": true,
+  "fingerprint": "eda1f6b6ce6637fa4911268871a385b68300924a3069743503406a754423401b"
+}
