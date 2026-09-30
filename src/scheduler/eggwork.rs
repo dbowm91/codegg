@@ -3059,6 +3059,154 @@ mod tests {
     }
 
     #[test]
+    fn derived_transfer_cost_fixture_covers_cold_unchanged_small_and_moderate_edits() {
+        use std::time::Instant;
+
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..32 {
+            std::fs::write(
+                root.path().join(format!("stable-{index:02}.txt")),
+                format!("stable payload {index:02} {}", "x".repeat(240)),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.path().join("build.sh"), b"#!/bin/sh\necho baseline\n").unwrap();
+
+        let workspace_id = EggworkWorkspaceId::new("workspace-measurement").unwrap();
+        let handle = ExecutionHandle {
+            execution_id: ExecutionId::new("exec-measurement").unwrap(),
+            generation: ExecutionGeneration::new(1).unwrap(),
+            lease_id: LeaseId::new("lease-measurement").unwrap(),
+        };
+        let measure = |label: &str, base: Option<&WorkspaceManifest>| {
+            let snapshot_started = Instant::now();
+            let snapshot = build_snapshot(root.path()).unwrap();
+            let snapshot_elapsed_us = snapshot_started.elapsed().as_micros();
+            let plan_started = Instant::now();
+            let full_bytes =
+                full_workspace_request_bytes(&workspace_id, &handle, &snapshot.manifest);
+            let (mode, control_bytes, probes, uploads, uploaded_bytes) = match base {
+                Some(base) => {
+                    let digest = base.digest().unwrap();
+                    let patch = make_manifest_patch(base, &digest, &snapshot.manifest).unwrap();
+                    let patch_bytes =
+                        derived_workspace_request_bytes(&workspace_id, &handle, &patch);
+                    if patch_bytes < full_bytes {
+                        let changed = patch
+                            .entries
+                            .iter()
+                            .filter_map(|entry| match entry {
+                                WorkspacePatchEntry::File { digest, .. } => {
+                                    Some(digest.as_str().to_owned())
+                                }
+                                _ => None,
+                            })
+                            .collect::<std::collections::HashSet<_>>();
+                        let uploaded_bytes = snapshot
+                            .files
+                            .values()
+                            .filter(|file| {
+                                changed.contains(BlobDigest::from_bytes(&file.bytes).as_str())
+                            })
+                            .map(|file| file.bytes.len())
+                            .sum();
+                        (
+                            "derived",
+                            patch_bytes,
+                            changed.len(),
+                            changed.len(),
+                            uploaded_bytes,
+                        )
+                    } else {
+                        let unique = snapshot
+                            .files
+                            .values()
+                            .map(|file| BlobDigest::from_bytes(&file.bytes).as_str().to_owned())
+                            .collect::<std::collections::HashSet<_>>();
+                        (
+                            "full",
+                            full_bytes,
+                            unique.len(),
+                            unique.len(),
+                            snapshot.total_bytes as usize,
+                        )
+                    }
+                }
+                None => {
+                    let unique = snapshot
+                        .files
+                        .values()
+                        .map(|file| BlobDigest::from_bytes(&file.bytes).as_str().to_owned())
+                        .collect::<std::collections::HashSet<_>>();
+                    (
+                        "full",
+                        full_bytes,
+                        unique.len(),
+                        unique.len(),
+                        snapshot.total_bytes as usize,
+                    )
+                }
+            };
+            let plan_elapsed_us = plan_started.elapsed().as_micros();
+            eprintln!(
+                "eggwork_m003_measurement label={label} mode={mode} full_control_bytes={full_bytes} selected_control_bytes={control_bytes} blob_probes={probes} blob_uploads={uploads} uploaded_bytes={uploaded_bytes} snapshot_elapsed_us={snapshot_elapsed_us} transfer_plan_elapsed_us={plan_elapsed_us}"
+            );
+            (
+                snapshot.manifest,
+                full_bytes,
+                control_bytes,
+                probes,
+                uploads,
+                uploaded_bytes,
+            )
+        };
+
+        let (base, _cold_full, _, cold_probes, cold_uploads, cold_uploaded) =
+            measure("no_base", None);
+        assert_eq!(cold_probes, 33);
+        assert_eq!(cold_uploads, 33);
+        assert_eq!(cold_uploaded, base.logical_bytes() as usize);
+
+        let (
+            _,
+            unchanged_full,
+            unchanged_control,
+            unchanged_probes,
+            unchanged_uploads,
+            unchanged_bytes,
+        ) = measure("unchanged", Some(&base));
+        assert!(unchanged_control < unchanged_full);
+        assert_eq!(
+            (unchanged_probes, unchanged_uploads, unchanged_bytes),
+            (0, 0, 0)
+        );
+
+        std::fs::write(
+            root.path().join("build.sh"),
+            b"#!/bin/sh\necho small edit\n",
+        )
+        .unwrap();
+        let (small, small_full, small_control, small_probes, small_uploads, small_bytes) =
+            measure("small_edit", Some(&base));
+        assert!(small_control < small_full);
+        assert_eq!((small_probes, small_uploads), (1, 1));
+        assert_eq!(small_bytes, b"#!/bin/sh\necho small edit\n".len());
+
+        for index in 0..8 {
+            std::fs::write(
+                root.path().join(format!("stable-{index:02}.txt")),
+                format!("moderate edit {index:02} {}", "y".repeat(240)),
+            )
+            .unwrap();
+        }
+        let (_, moderate_full, moderate_control, moderate_probes, moderate_uploads, moderate_bytes) =
+            measure("moderate_edit", Some(&small));
+        assert!(moderate_control < moderate_full);
+        assert_eq!((moderate_probes, moderate_uploads), (8, 8));
+        assert!(moderate_bytes > small_bytes);
+    }
+
+    #[test]
     fn acknowledged_manifest_cache_is_node_scoped_and_bounded() {
         let manifest = WorkspaceManifest {
             schema_version: 1,
