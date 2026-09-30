@@ -1,8 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: active (lexical half implemented and measured at `78c01f92`;
-semantic arms explicitly unblocked — see reassessment note below;
-baseline `0014e334`)
+Status: implemented (closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`, negative-but-valid, M003 ready)
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 

@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active — M001R closed positively, M002 active (lexical half landed, semantic arms unblocked)
+Status: active — M001R closed positively, M002 closed (negative-but-valid), M003 ready
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: active (M001R closed positively; frozen receipt fp `eda1f6b6…`; lexical half landed at `78c01f92`, semantic arms unblocked per §13 reassessment).
+Status: closed (negative-but-valid; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`; implementation `eff890ec`, receipt fp `f5f76a99…`, best union 51/53).
 
 Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
 
@@ -218,7 +218,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: blocked/conditional on M002.
+Status: ready (unblocked by valid negative M002; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`).
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 
