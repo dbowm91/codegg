@@ -99,7 +99,17 @@ fn read_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>, Str
 }
 
 async fn run() -> Result<NodeServer, String> {
+    fn phase(stage: &str) {
+        use std::io::Write;
+        println!("PHASE {stage}");
+        let _ = std::io::stdout().flush();
+    }
     let args = Args::parse()?;
+    // Test-only startup phase markers on stdout (C002 WP3): the harness
+    // parses stdout for `READY` and tolerates these lines; on a readiness
+    // timeout the last observed phase pinpoints the stall. Stage names
+    // only — never paths, identities, or key material.
+    phase("args-parsed");
     let node_id = eggwork_core::NodeId::new(args.required("node-id")?)
         .map_err(|e| format!("invalid --node-id: {e:?}"))?;
     let bind: std::net::SocketAddr = args
@@ -116,6 +126,7 @@ async fn run() -> Result<NodeServer, String> {
         .map_err(|e| format!("trust roots invalid: {e:?}"))?
         .build()
         .map_err(|e| format!("TLS configuration invalid: {e:?}"))?;
+    phase("tls-ready");
 
     let client_certs = read_certs(&args.required("client-cert")?)?;
     let leaf = client_certs
@@ -168,12 +179,14 @@ async fn run() -> Result<NodeServer, String> {
         let dir = args.required(key)?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("create {dir}: {e}"))?;
     }
+    phase("storage-ready");
     // `LocalProcessRunner` remains the node's canonical process owner. The
     // test harness builds the helper from this exact Eggwork revision and
     // installs it as a trusted sibling, exercising the qualified backend.
     let runner = Arc::new(LocalProcessRunner::new(
         TrustedLandlockSetup::discover_sibling(),
     ));
+    phase("server-starting");
     let server = NodeServer::start(
         NodeConfig {
             node_id,

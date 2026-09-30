@@ -1,6 +1,6 @@
 # CI/Test Throughput Post-Closure Corrective C002 — Hosted CI Timing-Flake Stabilization
 
-Status: ready
+Status: active (WP1 reaper readiness + WP2 regression + WP3 helper/harness diagnostics implemented; WP4 characterization + WP6 stability qualification via remote CI)
 
 Repository baseline reviewed: `9c88b9b80852022b39daa80a6b9fb7797fcaa824`
 

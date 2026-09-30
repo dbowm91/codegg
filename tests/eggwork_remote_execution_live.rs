@@ -343,32 +343,61 @@ impl LiveNode {
             });
         }
         let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let port: u16 = tokio::time::timeout(Duration::from_secs(60), async {
-            let mut last_line = String::new();
-            loop {
-                match lines.next_line().await.expect("helper stdout") {
-                    Some(line) => {
-                        if let Some(rest) = line.strip_prefix("READY port=") {
-                            return rest.trim().parse().expect("READY port parses");
-                        }
-                        last_line = line;
+        // Overall 60-second startup bound (unchanged): every readiness
+        // failure below reports the helper path, elapsed time, child
+        // liveness/exit status, last stdout line, last PHASE marker, and
+        // a bounded stderr tail, and reaps the child before failing.
+        let started = std::time::Instant::now();
+        let deadline = started + Duration::from_secs(60);
+        let mut last_line = String::new();
+        let mut last_phase = String::from("(none)");
+        let port: u16 = loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(remaining, lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    if let Some(rest) = line.strip_prefix("READY port=") {
+                        break rest.trim().parse().expect("READY port parses");
                     }
-                    None => {
-                        let status = child.wait().await.ok();
-                        let logged = stderr_log.lock().unwrap();
-                        panic!(
-                            "helper exited before READY (helper={} \
-                             status={status:?}, last={last_line:?}, \
-                             stderr={:?})",
-                            helper.display(),
-                            String::from_utf8_lossy(&logged),
-                        );
+                    if let Some(stage) = line.strip_prefix("PHASE ") {
+                        last_phase = stage.trim().to_string();
+                    }
+                    last_line = line;
+                    if last_line.len() > 1024 {
+                        last_line.truncate(1024);
                     }
                 }
+                Ok(Ok(None)) => {
+                    let status = child.wait().await.ok();
+                    let logged = stderr_log.lock().unwrap();
+                    panic!(
+                        "helper exited before READY (helper={} \
+                         status={status:?}, last={last_line:?}, \
+                         phase={last_phase:?}, \
+                         stderr={:?})",
+                        helper.display(),
+                        String::from_utf8_lossy(&logged),
+                    );
+                }
+                Ok(Err(error)) => panic!("helper stdout read failed: {error}"),
+                Err(_) => {
+                    let elapsed = started.elapsed();
+                    let status = child.try_wait().expect("poll helper status");
+                    // Reap the failed helper so a timeout cannot leak it.
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    let logged = stderr_log.lock().unwrap();
+                    let stderr_text = String::from_utf8_lossy(&logged);
+                    let stderr_tail = &stderr_text[stderr_text.len().saturating_sub(2048)..];
+                    panic!(
+                        "helper must become ready (helper={} elapsed={elapsed:?} \
+                         alive={} status={status:?} last_phase={last_phase:?} \
+                         last_stdout={last_line:?} stderr_tail={stderr_tail:?})",
+                        helper.display(),
+                        status.is_none(),
+                    );
+                }
             }
-        })
-        .await
-        .expect("helper must become ready");
+        };
 
         let node = ResolvedEggworkNode {
             node_id: "live-node-1".to_string(),

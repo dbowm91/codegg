@@ -1004,6 +1004,136 @@ async fn reaper_releases_on_turn_completed_event() {
     assert!(cleared, "reaper must release the lease on TurnCompleted");
 }
 
+// C002 WP2: immediate terminal publication after `spawn_turn_reaper`
+// returns must not be lost. The subscription is synchronous, so no
+// readiness sleep/yield appears between spawn and publish; the bounded
+// poll below is only a deadlock/failure bound for the async release.
+async fn poll_lease_cleared(fixture: &Fixture) -> bool {
+    let store = SessionControllerStore::new(fixture.team.pool().clone());
+    for _ in 0..100 {
+        if store.get(&fixture.session_id).await.unwrap().is_none() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reaper_releases_on_turn_failed_event() {
+    let fixture = lease_fixture("reaper-failed").await;
+    fixture
+        .daemon
+        .spawn_turn_reaper(fixture.session_id.clone(), fixture.turn_id.clone());
+    fixture
+        .daemon
+        .event_log
+        .publish(
+            Some(fixture.session_id.clone()),
+            Some(fixture.turn_id.clone()),
+            codegg::protocol::core::CoreEvent::TurnFailed {
+                session_id: fixture.session_id.clone(),
+                turn_id: Some(fixture.turn_id.clone()),
+                message: "failed".to_string(),
+            },
+        )
+        .await;
+    assert!(
+        poll_lease_cleared(&fixture).await,
+        "reaper must release the lease on TurnFailed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reaper_ignores_unrelated_terminal_events() {
+    let fixture = lease_fixture("reaper-unrelated").await;
+    fixture
+        .daemon
+        .spawn_turn_reaper(fixture.session_id.clone(), fixture.turn_id.clone());
+    // Terminal events for another session and another turn must not
+    // release this turn's lease; the reaper keeps waiting.
+    fixture
+        .daemon
+        .event_log
+        .publish(
+            Some("sess-m004-other".to_string()),
+            Some(fixture.turn_id.clone()),
+            codegg::protocol::core::CoreEvent::TurnCompleted {
+                session_id: "sess-m004-other".to_string(),
+                turn_id: fixture.turn_id.clone(),
+                stop_reason: "completed".to_string(),
+            },
+        )
+        .await;
+    fixture
+        .daemon
+        .event_log
+        .publish(
+            Some(fixture.session_id.clone()),
+            Some("turn-m004-other".to_string()),
+            codegg::protocol::core::CoreEvent::TurnCompleted {
+                session_id: fixture.session_id.clone(),
+                turn_id: "turn-m004-other".to_string(),
+                stop_reason: "completed".to_string(),
+            },
+        )
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let store = SessionControllerStore::new(fixture.team.pool().clone());
+    assert!(
+        store.get(&fixture.session_id).await.unwrap().is_some(),
+        "unrelated terminal events must not release the lease"
+    );
+    // The matching terminal event still releases afterwards.
+    fixture
+        .daemon
+        .event_log
+        .publish(
+            Some(fixture.session_id.clone()),
+            Some(fixture.turn_id.clone()),
+            codegg::protocol::core::CoreEvent::TurnCompleted {
+                session_id: fixture.session_id.clone(),
+                turn_id: fixture.turn_id.clone(),
+                stop_reason: "completed".to_string(),
+            },
+        )
+        .await;
+    assert!(
+        poll_lease_cleared(&fixture).await,
+        "reaper must still release on the matching terminal event"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reaper_immediate_publish_is_stable_across_repetitions() {
+    // Under the pre-C002 ordering each iteration raced subscribe against
+    // publish; repeating the immediate-publish sequence makes a lost
+    // event near-certain. Post-fix every iteration passes deterministically.
+    for i in 0..25 {
+        let fixture = lease_fixture(&format!("reaper-rep-{i}")).await;
+        fixture
+            .daemon
+            .spawn_turn_reaper(fixture.session_id.clone(), fixture.turn_id.clone());
+        fixture
+            .daemon
+            .event_log
+            .publish(
+                Some(fixture.session_id.clone()),
+                Some(fixture.turn_id.clone()),
+                codegg::protocol::core::CoreEvent::TurnCompleted {
+                    session_id: fixture.session_id.clone(),
+                    turn_id: fixture.turn_id.clone(),
+                    stop_reason: "completed".to_string(),
+                },
+            )
+            .await;
+        assert!(
+            poll_lease_cleared(&fixture).await,
+            "iteration {i}: immediate TurnCompleted must not be lost"
+        );
+    }
+}
+
 // ── Submit acquisition + races ───────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
