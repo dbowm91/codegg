@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Evaluation Semantics Corrective Addendum
 
-Status: active
+Status: closed (C001 closed, disposition B; see `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`)
 
 Repository planning baseline: `ce088e9153b821d8473372c7c04786a4d90ab6ae`
 
@@ -46,7 +46,7 @@ One milestone:
 
 - `plans/implementation/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-inferable-relevance-target-and-rebaseline.md`
 
-Status: ready.
+Status: closed (disposition B; see `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`).
 
 It must:
 

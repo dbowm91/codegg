@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active — blocked on retrieval-evaluation semantics corrective
+Status: active — M001R ready after C001 disposition B
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -198,7 +198,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001r-signal-preregistration-after-evaluation-corrective.md`
 
-Status: blocked on retrieval-evaluation C001 disposition B.
+Status: ready (C001 closed disposition B with no ranker blocker; see `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`).
 
 M001R freezes Signal V2 and conditional projection degrees of freedom against the corrected inferable retrieval target. It exists so the blocked historical M001 is never silently reopened.
 

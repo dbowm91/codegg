@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Evaluation Semantics Corrective C001 — Inferable Relevance Target and Rebaseline
 
-Status: ready for handoff
+Status: implemented (evidence gathered; disposition B — see `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`; implementation `8613575d`)
 
 Repository baseline: `ce088e9153b821d8473372c7c04786a4d90ab6ae`
 

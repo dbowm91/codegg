@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M001R — Signal Preregistration After Evaluation Corrective
 
-Status: blocked on retrieval-evaluation C001 disposition B
+Status: ready for handoff (C001 closed disposition B with no ranker blocker; see `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`)
 
 Repository baseline: `ce088e9153b821d8473372c7c04786a4d90ab6ae`
 
