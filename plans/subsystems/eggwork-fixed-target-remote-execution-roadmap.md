@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001+C001+M002+M002a closed, M003 active after Eggwork Workspace/Artifact M004 closure, M004 deferred
+Status: closing; M001+C001+M002+M002a closed, M003 implementation landed and under closure review, M004 deferred
 
 Canonical authority:
 
@@ -159,7 +159,7 @@ Pin the corrected Eggwork revision and prove CodeGG's production mTLS path execu
 
 Class: infrastructure/capability
 
-Status: active; Eggwork Workspace/Artifact M004 closed at upstream `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c` (closure `plans/closure/workspace-artifact-transport/004-status.md`)
+Status: closing; implementation landed; hosted Linux verification and closure review in progress. Eggwork Workspace/Artifact M004 closed at upstream `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c` (closure `plans/closure/workspace-artifact-transport/004-status.md`)
 
 Implementation plan:
 

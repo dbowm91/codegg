@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M003 — Content-Aware Derived Workspace Transfer
 
-Status: active
+Status: closing
 
 Source roadmap:
 
