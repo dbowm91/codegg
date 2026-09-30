@@ -1240,7 +1240,11 @@ async fn live_scheduler_end_to_end_remote_only() {
 
     // Reuse the same CodeGG workspace on the same node. The executor's
     // acknowledged base should make this changed snapshot a derived request.
-    std::fs::write(root.path().join("build.sh"), b"#!/bin/sh\necho changed\n").unwrap();
+    std::fs::write(
+        root.path().join("build.sh"),
+        b"#!/bin/sh\nset -eu\nif cat /etc/passwd >/dev/null 2>&1; then exit 41; fi\noutside=/tmp/codegg-landlock-m003-escape\nif printf escaped >\"$outside\" 2>/dev/null; then rm -f \"$outside\"; exit 42; fi\necho changed\n",
+    )
+    .unwrap();
     let second = submission.submit(None, job).await.unwrap();
     let second_completion = scheduler
         .wait_for_completion(&second.job_id, Duration::from_secs(90))

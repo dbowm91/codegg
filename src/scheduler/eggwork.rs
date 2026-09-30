@@ -2749,6 +2749,18 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn derived_ready_digest_mismatch_refuses_to_submit() {
+        let full_dir = tempfile::tempdir().unwrap();
+        std::fs::write(full_dir.path().join("main.rs"), b"fn main() {}\n").unwrap();
+        let full_fake = Arc::new(FakeNodeClient::succeeding());
+        *full_fake.bad_ready_digest.lock().unwrap() = true;
+        let full_executor = derived_test_executor(full_fake.clone());
+        assert_eq!(
+            execute_fake(&full_executor, full_dir.path()).await.status,
+            ExecutorStatus::Failed
+        );
+        assert_eq!(*full_fake.full_creates.lock().unwrap(), 1);
+        assert_eq!(*full_fake.submitted.lock().unwrap(), 0);
+
         let dir = tempfile::tempdir().unwrap();
         populated_workspace(dir.path());
         let fake = Arc::new(FakeNodeClient::succeeding());
