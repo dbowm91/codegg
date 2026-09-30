@@ -386,6 +386,27 @@ interrupted. Static guard: `scripts/check_eggwork_target_routing.py`.
 Live mTLS qualification: `tests/eggwork_remote_execution_live.rs`
 (Linux).
 
+### Content-aware workspace transfer (M003)
+
+CodeGG always reads and hashes the complete bounded workspace snapshot and
+seals provenance with that full canonical manifest digest. After a successful
+workspace acknowledgement, the executor keeps a bounded in-memory manifest
+cache keyed by the selected node and CodeGG workspace id (maximum 256 entries;
+cold after restart and cleared when node configuration changes). When both
+authenticated capability and status snapshots advertise
+`workspace.derive.v1`, the next snapshot is compared with that acknowledged
+base using Eggwork's canonical `WorkspaceManifestPatch::apply_to`. Derived
+transfer is selected only when the complete serialized derive request is
+smaller than the full create request. The base is an optimization hint: a
+typed `base_manifest_missing` response retries with full materialization;
+other errors fail the attempt. Derived mode probes/uploads only blobs named by
+changed or new file entries because Eggwork M004 pins blobs referenced by
+retained manifests. The returned ready digest must match CodeGG's local full
+manifest digest before command submission. Existing blob-level deduplication
+predates M003; M003 adds manifest-level reuse. No paths or contents are logged.
+The protocol client/core/server pin is Eggwork
+`e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`.
+
 ### Ephemeral interactive admission (M001)
 
 Local interactive PTYs (`src/interactive_process.rs`) are not durable

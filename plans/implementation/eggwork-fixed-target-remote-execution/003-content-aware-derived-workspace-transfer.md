@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M003 — Content-Aware Derived Workspace Transfer
 
-Status: blocked — upstream M004 absent, closure recorded at `plans/closure/eggwork-fixed-target-remote-execution/003-status.md`; M004 stays deferred
+Status: active
 
 Source roadmap:
 
@@ -14,7 +14,13 @@ Closed predecessors:
 
 Current CodeGG baseline:
 
-- `841ad117399c9279e3668828d5d9866983603381`
+- `b88a73cad5380d10b11d409363893539a9809d80`
+
+Upstream dependency satisfied:
+
+- Eggwork Workspace/Artifact M004 closed at upstream `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`.
+- Closure: `plans/closure/workspace-artifact-transport/004-status.md` in Eggwork.
+- Verified contract: `workspace.derive.v1`, principal-scoped retained manifests and pinned blobs, canonical `WorkspaceManifestPatch::apply_to`, and typed `base_manifest_missing` with no ready-workspace side effect.
 
 Required upstream contract:
 
@@ -23,6 +29,8 @@ Required upstream contract:
 - `plans/implementation/workspace-artifact-transport/004-reusable-manifest-cas-and-derived-materialization.md` in Eggwork.
 
 M003 becomes ready only after the upstream closure proves `workspace.derive.v1`, principal-scoped base-manifest retention, canonical patch equivalence, and typed `base_manifest_missing` behavior.
+
+Readiness audit: satisfied by Eggwork Workspace/Artifact M004 closure at `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`; see upstream `plans/closure/workspace-artifact-transport/004-status.md`. Handoff activated after this audit.
 
 Primary class: infrastructure/capability
 

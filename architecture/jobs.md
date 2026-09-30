@@ -474,3 +474,11 @@ Drifted while the execution status remains truthful. Eggwork seals around its
 materialized source snapshot before upload/submit; later local edits do not
 rewrite that immutable input identity. Capture failure, non-Git workspaces,
 legacy NULLs, and unsupported remote boundaries remain unavailable.
+
+For Eggwork, the sealed subject is always the full locally constructed
+manifest. M003's optional `workspace.derive.v1` patch changes only transfer
+representation; the executor locally proves Eggwork's canonical patch
+recomposition equals the current manifest and checks the ready digest before
+submitting. Its acknowledged-manifest cache is in-memory and node-scoped, so
+restart simply returns to full transfer. Blob-level deduplication already
+existed; manifest-level reuse is the M003 addition.

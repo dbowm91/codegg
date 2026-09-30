@@ -459,6 +459,7 @@ struct CountingFactory {
     inner: NodeClientFactory,
     submits: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
+    derived: Arc<AtomicUsize>,
     submitted_handles: Arc<Mutex<Vec<ExecutionHandle>>>,
 }
 
@@ -468,6 +469,7 @@ impl CountingFactory {
             inner: NodeClientFactory,
             submits: Arc::new(AtomicUsize::new(0)),
             uploads: Arc::new(AtomicUsize::new(0)),
+            derived: Arc::new(AtomicUsize::new(0)),
             submitted_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -479,6 +481,10 @@ impl CountingFactory {
     fn upload_count(&self) -> usize {
         self.uploads.load(Ordering::SeqCst)
     }
+
+    fn derived_count(&self) -> usize {
+        self.derived.load(Ordering::SeqCst)
+    }
 }
 
 impl EggworkClientFactory for CountingFactory {
@@ -488,6 +494,7 @@ impl EggworkClientFactory for CountingFactory {
             inner: client,
             submits: self.submits.clone(),
             uploads: self.uploads.clone(),
+            derived: self.derived.clone(),
             submitted_handles: self.submitted_handles.clone(),
         }))
     }
@@ -497,6 +504,7 @@ struct CountingClient {
     inner: Arc<dyn EggworkNodeClient>,
     submits: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
+    derived: Arc<AtomicUsize>,
     submitted_handles: Arc<Mutex<Vec<ExecutionHandle>>>,
 }
 
@@ -537,6 +545,19 @@ impl EggworkNodeClient for CountingClient {
     ) -> Result<WorkspaceReady, EggworkClientError> {
         self.inner
             .create_workspace(workspace_id, handle, manifest)
+            .await
+    }
+
+    async fn create_workspace_derived(
+        &self,
+        workspace_id: &EggworkWorkspaceId,
+        handle: &ExecutionHandle,
+        base_manifest_digest: &BlobDigest,
+        patch: &eggwork_core::WorkspaceManifestPatch,
+    ) -> Result<WorkspaceReady, EggworkClientError> {
+        self.derived.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .create_workspace_derived(workspace_id, handle, base_manifest_digest, patch)
             .await
     }
 
@@ -1150,39 +1171,34 @@ async fn live_scheduler_end_to_end_remote_only() {
         services,
         DaemonGeneration::new_unchecked("gen-live-e2e"),
     );
-    let submitted = submission
-        .submit(
-            None,
-            NewJob {
-                workspace_id: workspace.id.clone(),
-                session_id: None,
-                turn_id: None,
-                kind: JobKind::Build,
-                source: JobSource::Interactive,
-                priority: JobPriority::Interactive,
-                payload: JobPayload::ManagedArgv {
-                    argv: vec!["sh".to_string(), "build.sh".to_string()],
-                    cwd: None,
-                },
-                resource_request: ResourceRequest::default(),
-                timeout: None,
-                retry_policy: RetryPolicy::no_retry(),
-                idempotency: IdempotencyClass::SafeRepeat,
-                not_before: None,
-                deadline: None,
-                schedule_id: None,
-                depends_on: Vec::new(),
-                parent_job_id: None,
-                parent_attempt_id: None,
-                parent_call_id: None,
-                parent_program_id: None,
-                parent_instruction_sequence: None,
-                relation_kind: None,
-                target: live_target(),
-            },
-        )
-        .await
-        .unwrap();
+    let job = NewJob {
+        workspace_id: workspace.id.clone(),
+        session_id: None,
+        turn_id: None,
+        kind: JobKind::Build,
+        source: JobSource::Interactive,
+        priority: JobPriority::Interactive,
+        payload: JobPayload::ManagedArgv {
+            argv: vec!["sh".to_string(), "build.sh".to_string()],
+            cwd: None,
+        },
+        resource_request: ResourceRequest::default(),
+        timeout: None,
+        retry_policy: RetryPolicy::no_retry(),
+        idempotency: IdempotencyClass::SafeRepeat,
+        not_before: None,
+        deadline: None,
+        schedule_id: None,
+        depends_on: Vec::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
+        target: live_target(),
+    };
+    let submitted = submission.submit(None, job.clone()).await.unwrap();
     let _handle = scheduler.clone().spawn_run();
     let completed = scheduler
         .wait_for_completion(&submitted.job_id, Duration::from_secs(90))
@@ -1214,6 +1230,25 @@ async fn live_scheduler_end_to_end_remote_only() {
         .await
         .expect("observe terminal execution");
     assert_eq!(snapshot.state, ExecutionState::Succeeded);
+
+    // Reuse the same CodeGG workspace on the same node. The executor's
+    // acknowledged base should make this changed snapshot a derived request.
+    std::fs::write(root.path().join("build.sh"), b"#!/bin/sh\necho changed\n").unwrap();
+    let second = submission.submit(None, job).await.unwrap();
+    let second_completion = scheduler
+        .wait_for_completion(&second.job_id, Duration::from_secs(90))
+        .await
+        .unwrap();
+    assert_eq!(
+        second_completion.status,
+        codegg::scheduler::ExecutorStatus::Completed
+    );
+    assert_eq!(
+        live.factory.derived_count(),
+        1,
+        "second workspace must use M003 derived transfer"
+    );
+    assert_eq!(live.factory.submits().load(Ordering::SeqCst), 2);
     live.shutdown().await;
 }
 

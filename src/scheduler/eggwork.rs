@@ -46,6 +46,7 @@ use eggwork_core::{
     ExecutionSpec, ExecutionState, IsolationRequirement, LeaseId, NetworkRequirement,
     NodeCapabilities, NodeStatus, OutputPolicy, RelativePath, Requirement, ResourceRequirements,
     StdinPolicy, WorkspaceEntry, WorkspaceId as EggworkWorkspaceId, WorkspaceManifest,
+    WorkspaceManifestPatch, WorkspacePatchEntry,
 };
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
@@ -86,6 +87,7 @@ const REQUIRED_EXEC_FEATURE: &str = "exec.argv.v1";
 const REQUIRED_ISOLATION_FEATURE: &str = "isolation.landlock.workspace-rw.v1";
 const NETWORK_DISABLED_FEATURE: &str = "network.disabled.v1";
 const NETWORK_UNRESTRICTED_FEATURE: &str = "network.unrestricted.v1";
+const WORKSPACE_DERIVE_FEATURE: &str = "workspace.derive.v1";
 const POSTURE_CACHE_TTL: Duration = Duration::from_secs(30);
 const POSTURE_FAILURE_CACHE_TTL: Duration = Duration::from_secs(3);
 const MAX_POSTURE_FEATURES: usize = 128;
@@ -210,6 +212,15 @@ pub trait EggworkNodeClient: Send + Sync {
         handle: &ExecutionHandle,
         manifest: &WorkspaceManifest,
     ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError>;
+    async fn create_workspace_derived(
+        &self,
+        _workspace_id: &EggworkWorkspaceId,
+        _handle: &ExecutionHandle,
+        _base_manifest_digest: &BlobDigest,
+        _patch: &WorkspaceManifestPatch,
+    ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+        Err(EggworkClientError::UnsupportedCapability)
+    }
     async fn execute_in_workspace(
         &self,
         spec: &ExecutionSpec,
@@ -312,6 +323,18 @@ impl EggworkNodeClient for NodeClientAdapter {
             .await
     }
 
+    async fn create_workspace_derived(
+        &self,
+        workspace_id: &EggworkWorkspaceId,
+        handle: &ExecutionHandle,
+        base_manifest_digest: &BlobDigest,
+        patch: &WorkspaceManifestPatch,
+    ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+        self.client
+            .create_workspace_derived(workspace_id, handle, base_manifest_digest, patch)
+            .await
+    }
+
     async fn execute_in_workspace(
         &self,
         spec: &ExecutionSpec,
@@ -370,6 +393,59 @@ pub struct EggworkExecutor {
     config: EggworkExecutorConfig,
     factory: Arc<dyn EggworkClientFactory>,
     posture_cache: Mutex<HashMap<String, CachedNodePosture>>,
+    manifest_cache: Mutex<ManifestCache>,
+}
+
+const MAX_ACKNOWLEDGED_MANIFESTS: usize = 256;
+
+#[derive(Default)]
+struct ManifestCache {
+    entries: HashMap<(String, String), CachedManifest>,
+    sequence: u64,
+}
+
+struct CachedManifest {
+    manifest: WorkspaceManifest,
+    digest: BlobDigest,
+    sequence: u64,
+}
+
+impl ManifestCache {
+    fn get(&self, node_id: &str, workspace_id: &str) -> Option<(WorkspaceManifest, BlobDigest)> {
+        self.entries
+            .get(&(node_id.to_owned(), workspace_id.to_owned()))
+            .map(|entry| (entry.manifest.clone(), entry.digest.clone()))
+    }
+
+    fn insert(
+        &mut self,
+        node_id: &str,
+        workspace_id: &str,
+        manifest: WorkspaceManifest,
+        digest: BlobDigest,
+    ) {
+        self.sequence = self.sequence.wrapping_add(1);
+        let key = (node_id.to_owned(), workspace_id.to_owned());
+        self.entries.insert(
+            key,
+            CachedManifest {
+                manifest,
+                digest,
+                sequence: self.sequence,
+            },
+        );
+        while self.entries.len() > MAX_ACKNOWLEDGED_MANIFESTS {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.sequence)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.entries.remove(&oldest);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +480,7 @@ impl EggworkExecutor {
             config,
             factory: Arc::new(NodeClientFactory),
             posture_cache: Mutex::new(HashMap::new()),
+            manifest_cache: Mutex::new(ManifestCache::default()),
         }
     }
 
@@ -415,6 +492,7 @@ impl EggworkExecutor {
             config,
             factory,
             posture_cache: Mutex::new(HashMap::new()),
+            manifest_cache: Mutex::new(ManifestCache::default()),
         }
     }
 
@@ -424,6 +502,9 @@ impl EggworkExecutor {
         self.config = config;
         if let Ok(mut cache) = self.posture_cache.lock() {
             cache.clear();
+        }
+        if let Ok(mut cache) = self.manifest_cache.lock() {
+            cache.entries.clear();
         }
     }
 
@@ -942,6 +1023,7 @@ impl EggworkExecutor {
             Ok(cwd) => cwd,
             Err(e) => return ExecutionOutcome::Failed(format!("eggwork: {e}")),
         };
+        let snapshot_started = Instant::now();
         let snapshot = match build_snapshot(&ctx.workspace_root) {
             Ok(snapshot) => snapshot,
             Err(e) => return ExecutionOutcome::Failed(format!("eggwork: workspace snapshot: {e}")),
@@ -997,21 +1079,144 @@ impl EggworkExecutor {
             )
             .await;
         let workspace_id = deterministic_workspace_id(&ctx.job.job_id, &ctx.attempt_id);
-        if let Err(e) = upload_snapshot(client, ctx, &snapshot).await {
-            if ctx.cancellation.is_cancelled() {
-                return self.cancel_before_submit(ctx, &e).await;
+        let workspace_key = ctx.job.workspace_id.to_string();
+        let base = self
+            .manifest_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&node.node_id, &workspace_key));
+        let base_hit = base.is_some();
+        let derived = if policy.derive_supported {
+            base.and_then(|(base_manifest, base_digest)| {
+                make_manifest_patch(&base_manifest, &base_digest, &snapshot.manifest).map(|patch| {
+                    let full_size =
+                        full_workspace_request_bytes(&workspace_id, handle, &snapshot.manifest);
+                    let derived_size =
+                        derived_workspace_request_bytes(&workspace_id, handle, &patch);
+                    (base_manifest, base_digest, patch, derived_size, full_size)
+                })
+            })
+            .filter(|(_, _, _, derived_size, full_size)| derived_size < full_size)
+        } else {
+            None
+        };
+        let mut transfer_mode = if derived.is_some() { "derived" } else { "full" };
+        let derived_request_bytes = derived.as_ref().map(|(_, _, _, bytes, _)| *bytes);
+        let base_status = if base_hit { "hit" } else { "miss" };
+        tracing::info!(node_id = %node.node_id, transfer_mode, base_status, manifest_entries = snapshot.manifest.entries.len(), manifest_request_bytes = full_workspace_request_bytes(&workspace_id, handle, &snapshot.manifest), patch_request_bytes = ?derived_request_bytes, snapshot_elapsed_ms = snapshot_started.elapsed().as_millis(), "Eggwork workspace transfer planned");
+        let transfer_started = Instant::now();
+        let ready = if let Some((_base_manifest, base_digest, patch, _patch_bytes, _full_bytes)) =
+            derived
+        {
+            let changed_digests = patch
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    WorkspacePatchEntry::File { digest, .. } => Some(digest.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) =
+                upload_snapshot_digests(client, ctx, &snapshot, &changed_digests).await
+            {
+                if ctx.cancellation.is_cancelled() {
+                    return self.cancel_before_submit(ctx, &error).await;
+                }
+                return ExecutionOutcome::Failed(error);
             }
-            return ExecutionOutcome::Failed(e);
-        }
+            match op_timeout(client.create_workspace_derived(
+                &workspace_id,
+                handle,
+                &base_digest,
+                &patch,
+            ))
+            .await
+            {
+                Ok(ready) => Some(ready),
+                Err(EggworkClientError::Api {
+                    status: 409,
+                    ref code,
+                    ..
+                }) if code == "base_manifest_missing" => {
+                    transfer_mode = "derived-miss-full";
+                    tracing::info!(node_id = %node.node_id, transfer_mode = "derived-miss-full", "Eggwork retained base missing; retrying full materialization");
+                    if ctx.cancellation.is_cancelled() {
+                        return self
+                            .cancel_before_submit(
+                                ctx,
+                                "cancelled after derived base miss, before full fallback",
+                            )
+                            .await;
+                    }
+                    if let Err(error) = upload_snapshot(client, ctx, &snapshot).await {
+                        if ctx.cancellation.is_cancelled() {
+                            return self.cancel_before_submit(ctx, &error).await;
+                        }
+                        return ExecutionOutcome::Failed(error);
+                    }
+                    if ctx.cancellation.is_cancelled() {
+                        return self
+                            .cancel_before_submit(
+                                ctx,
+                                "cancelled during full fallback, before workspace create",
+                            )
+                            .await;
+                    }
+                    match create_remote_workspace(client, &workspace_id, handle, &snapshot.manifest)
+                        .await
+                    {
+                        Ok(ready) => Some(ready),
+                        Err(error) => return ExecutionOutcome::Failed(error),
+                    }
+                }
+                Err(error) => {
+                    return ExecutionOutcome::Failed(format!(
+                        "eggwork: derived workspace creation failed: {error}"
+                    ))
+                }
+            }
+        } else {
+            if let Err(error) = upload_snapshot(client, ctx, &snapshot).await {
+                if ctx.cancellation.is_cancelled() {
+                    return self.cancel_before_submit(ctx, &error).await;
+                }
+                return ExecutionOutcome::Failed(error);
+            }
+            match create_remote_workspace(client, &workspace_id, handle, &snapshot.manifest).await {
+                Ok(ready) => Some(ready),
+                Err(error) => return ExecutionOutcome::Failed(error),
+            }
+        };
         if ctx.cancellation.is_cancelled() {
             return self
-                .cancel_before_submit(ctx, "cancelled after upload, before submit")
+                .cancel_before_submit(ctx, "cancelled after workspace ready, before submit")
                 .await;
         }
-        if let Err(e) =
-            create_remote_workspace(client, &workspace_id, handle, &snapshot.manifest).await
-        {
-            return ExecutionOutcome::Failed(e);
+        let Some(ready) = ready else {
+            unreachable!("workspace creation returns ready or fails")
+        };
+        let local_digest = match snapshot.manifest.digest() {
+            Ok(digest) => digest,
+            Err(error) => {
+                return ExecutionOutcome::Failed(format!(
+                    "eggwork: cannot digest workspace manifest: {error}"
+                ))
+            }
+        };
+        if ready.manifest_digest != local_digest {
+            return ExecutionOutcome::Failed(
+                "eggwork: node acknowledged a different workspace manifest digest; refusing submit"
+                    .into(),
+            );
+        }
+        tracing::info!(node_id = %node.node_id, transfer_mode, transfer_elapsed_ms = transfer_started.elapsed().as_millis(), "Eggwork workspace transfer complete");
+        if let Ok(mut cache) = self.manifest_cache.lock() {
+            cache.insert(
+                &node.node_id,
+                &workspace_key,
+                snapshot.manifest.clone(),
+                local_digest,
+            );
         }
         let spec = match build_spec(argv, remote_cwd, timeout, policy) {
             Ok(spec) => spec,
@@ -1441,13 +1646,18 @@ async fn preflight(
     {
         tracing::warn!(node_id = %node.node_id, "Eggwork node network access is unrestricted and unadvertised (legacy feature contract)");
     }
-    Ok(ExecutionPolicy { isolation, network })
+    Ok(ExecutionPolicy {
+        isolation,
+        network,
+        derive_supported: consistent_features.contains(WORKSPACE_DERIVE_FEATURE),
+    })
 }
 
 #[derive(Debug, Clone)]
 struct ExecutionPolicy {
     isolation: IsolationRequirement,
     network: NetworkRequirement,
+    derive_supported: bool,
 }
 
 /// Map a payload cwd to an Eggwork-relative cwd rooted at the workspace
@@ -1627,17 +1837,28 @@ async fn upload_snapshot(
     ctx: &JobExecutionContext,
     snapshot: &WorkspaceSnapshot,
 ) -> Result<(), String> {
-    let mut digests: Vec<BlobDigest> = snapshot
+    let digests = snapshot
         .files
         .values()
-        .map(|f| BlobDigest::from_bytes(&f.bytes))
-        .collect();
+        .map(|file| BlobDigest::from_bytes(&file.bytes))
+        .collect::<Vec<_>>();
+    upload_snapshot_digests(client, ctx, snapshot, &digests).await
+}
+
+async fn upload_snapshot_digests(
+    client: &Arc<dyn EggworkNodeClient>,
+    ctx: &JobExecutionContext,
+    snapshot: &WorkspaceSnapshot,
+    digests: &[BlobDigest],
+) -> Result<(), String> {
+    let mut digests = digests.to_vec();
     digests.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     digests.dedup_by(|a, b| a.as_str() == b.as_str());
     let missing = match op_timeout(client.find_missing_blobs(&digests)).await {
         Ok(missing) => missing,
         Err(e) => return Err(format!("eggwork: blob probe failed: {e}")),
     };
+    let mut uploaded_bytes = 0u64;
     let by_digest: HashMap<String, &SnapshotFile> = snapshot
         .files
         .values()
@@ -1655,12 +1876,18 @@ async fn upload_snapshot(
         )])
         .boxed();
         match op_timeout(client.upload_blob(digest, file.bytes.len() as u64, stream)).await {
-            Ok(()) => {}
+            Ok(()) => uploaded_bytes = uploaded_bytes.saturating_add(file.bytes.len() as u64),
             Err(e) => {
                 return Err(format!("eggwork: blob upload failed: {e}"));
             }
         }
     }
+    tracing::info!(
+        blobs_probed = digests.len(),
+        blobs_uploaded = missing.len(),
+        uploaded_bytes,
+        "Eggwork workspace blob transfer complete"
+    );
     Ok(())
 }
 
@@ -1669,10 +1896,102 @@ async fn create_remote_workspace(
     workspace_id: &EggworkWorkspaceId,
     handle: &ExecutionHandle,
     manifest: &WorkspaceManifest,
-) -> Result<(), String> {
+) -> Result<eggwork_client::WorkspaceReady, String> {
     match op_timeout(client.create_workspace(workspace_id, handle, manifest)).await {
-        Ok(_) => Ok(()),
+        Ok(ready) => Ok(ready),
         Err(e) => Err(format!("eggwork: workspace creation failed: {e}")),
+    }
+}
+
+fn make_manifest_patch(
+    base: &WorkspaceManifest,
+    base_digest: &BlobDigest,
+    current: &WorkspaceManifest,
+) -> Option<WorkspaceManifestPatch> {
+    if base.digest().ok()?.as_str() != base_digest.as_str() {
+        return None;
+    }
+    let previous: std::collections::BTreeMap<_, _> = base
+        .entries
+        .iter()
+        .map(|entry| (entry.path().as_str().to_owned(), entry))
+        .collect();
+    let next: std::collections::BTreeMap<_, _> = current
+        .entries
+        .iter()
+        .map(|entry| (entry.path().as_str().to_owned(), entry))
+        .collect();
+    let mut entries = Vec::new();
+    for (path, old) in &previous {
+        match next.get(path) {
+            None => entries.push(WorkspacePatchEntry::Remove {
+                path: RelativePath::new(path).ok()?,
+            }),
+            Some(new) if *new != *old => entries.push(workspace_patch_upsert(new)?),
+            Some(_) => {}
+        }
+    }
+    for (path, new) in &next {
+        if !previous.contains_key(path) {
+            entries.push(workspace_patch_upsert(new)?);
+        }
+    }
+    entries.sort_by(|a, b| a.path().as_str().cmp(b.path().as_str()));
+    let patch = WorkspaceManifestPatch {
+        schema_version: 1,
+        base_manifest_digest: base_digest.clone(),
+        entries,
+    };
+    (patch.apply_to(base).ok()? == *current).then_some(patch)
+}
+
+fn full_workspace_request_bytes(
+    workspace_id: &EggworkWorkspaceId,
+    handle: &ExecutionHandle,
+    manifest: &WorkspaceManifest,
+) -> usize {
+    serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "workspace_id": workspace_id,
+        "handle": handle,
+        "manifest": manifest,
+    }))
+    .map(|bytes| bytes.len())
+    .unwrap_or(usize::MAX)
+}
+
+fn derived_workspace_request_bytes(
+    workspace_id: &EggworkWorkspaceId,
+    handle: &ExecutionHandle,
+    patch: &WorkspaceManifestPatch,
+) -> usize {
+    serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "workspace_id": workspace_id,
+        "handle": handle,
+        "patch": patch,
+    }))
+    .map(|bytes| bytes.len())
+    .unwrap_or(usize::MAX)
+}
+
+fn workspace_patch_upsert(entry: &WorkspaceEntry) -> Option<WorkspacePatchEntry> {
+    match entry {
+        WorkspaceEntry::Directory { path } => {
+            Some(WorkspacePatchEntry::Directory { path: path.clone() })
+        }
+        WorkspaceEntry::File {
+            path,
+            digest,
+            size_bytes,
+            executable,
+        } => Some(WorkspacePatchEntry::File {
+            path: path.clone(),
+            digest: digest.clone(),
+            size_bytes: *size_bytes,
+            executable: *executable,
+        }),
+        WorkspaceEntry::Symlink { .. } => None,
     }
 }
 
@@ -2062,6 +2381,30 @@ mod tests {
             })
         }
 
+        async fn create_workspace_derived(
+            &self,
+            workspace_id: &EggworkWorkspaceId,
+            handle: &ExecutionHandle,
+            base_manifest_digest: &BlobDigest,
+            patch: &WorkspaceManifestPatch,
+        ) -> Result<eggwork_client::WorkspaceReady, EggworkClientError> {
+            let _ = base_manifest_digest;
+            let manifest = patch
+                .apply_to(&WorkspaceManifest {
+                    schema_version: 1,
+                    entries: Vec::new(),
+                })
+                .map_err(|_| EggworkClientError::InvalidResponse)?;
+            Ok(eggwork_client::WorkspaceReady {
+                schema_version: 1,
+                workspace_id: workspace_id.clone(),
+                execution_id: handle.execution_id.clone(),
+                generation: handle.generation,
+                manifest_digest: manifest.digest().expect("derived manifest digest"),
+                logical_bytes: manifest.logical_bytes(),
+            })
+        }
+
         async fn execute_in_workspace(
             &self,
             spec: &ExecutionSpec,
@@ -2254,6 +2597,7 @@ mod tests {
         let policy = ExecutionPolicy {
             isolation: IsolationRequirement::Required,
             network: NetworkRequirement::Unrestricted,
+            derive_supported: false,
         };
         let spec = build_spec(&["true".into()], None, None, policy).unwrap();
         assert_eq!(spec.command.isolation, IsolationRequirement::Required);
@@ -2292,6 +2636,7 @@ mod tests {
             ExecutionPolicy {
                 isolation: IsolationRequirement::None,
                 network: NetworkRequirement::Disabled,
+                derive_supported: false,
             },
         )
         .unwrap();
@@ -2633,5 +2978,123 @@ mod tests {
         assert_eq!(completion.status, ExecutorStatus::Cancelled);
         assert!(fake.uploaded.lock().unwrap().is_empty());
         assert!(fake.cancelled.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn canonical_patch_recomposes_added_changed_removed_and_executable_entries() {
+        let path = |value| RelativePath::new(value).unwrap();
+        let mut old = WorkspaceManifest {
+            schema_version: 1,
+            entries: vec![
+                WorkspaceEntry::Directory { path: path("src") },
+                WorkspaceEntry::File {
+                    path: path("src/main.rs"),
+                    digest: BlobDigest::from_bytes(b"old"),
+                    size_bytes: 3,
+                    executable: false,
+                },
+                WorkspaceEntry::File {
+                    path: path("remove.txt"),
+                    digest: BlobDigest::from_bytes(b"gone"),
+                    size_bytes: 4,
+                    executable: false,
+                },
+            ],
+        };
+        let mut current = WorkspaceManifest {
+            schema_version: 1,
+            entries: vec![
+                WorkspaceEntry::Directory { path: path("src") },
+                WorkspaceEntry::File {
+                    path: path("src/main.rs"),
+                    digest: BlobDigest::from_bytes(b"new"),
+                    size_bytes: 3,
+                    executable: true,
+                },
+                WorkspaceEntry::File {
+                    path: path("new.txt"),
+                    digest: BlobDigest::from_bytes(b"new file"),
+                    size_bytes: 8,
+                    executable: false,
+                },
+            ],
+        };
+        let stable_entries = (0..32)
+            .map(|index| WorkspaceEntry::File {
+                path: RelativePath::new(format!("stable-{index:02}.txt")).unwrap(),
+                digest: BlobDigest::from_bytes(b"unchanged"),
+                size_bytes: 9,
+                executable: false,
+            })
+            .collect::<Vec<_>>();
+        old.entries.extend(stable_entries.clone());
+        current.entries.extend(stable_entries);
+        let base_digest = old.digest().unwrap();
+        let unchanged = make_manifest_patch(&old, &base_digest, &old).unwrap();
+        assert!(unchanged.entries.is_empty());
+        let patch = make_manifest_patch(&old, &base_digest, &current).unwrap();
+        assert_eq!(patch.apply_to(&old).unwrap(), current);
+        let workspace_id = EggworkWorkspaceId::new("workspace-1").unwrap();
+        let handle = ExecutionHandle {
+            execution_id: ExecutionId::new("exec-1").unwrap(),
+            generation: ExecutionGeneration::new(1).unwrap(),
+            lease_id: LeaseId::new("lease-1").unwrap(),
+        };
+        assert!(
+            derived_workspace_request_bytes(&workspace_id, &handle, &patch)
+                < full_workspace_request_bytes(&workspace_id, &handle, &current)
+        );
+        assert!(patch
+            .entries
+            .windows(2)
+            .all(|pair| pair[0].path().as_str() < pair[1].path().as_str()));
+        assert!(patch.entries.iter().any(|entry| matches!(entry, WorkspacePatchEntry::Remove { path } if path.as_str() == "remove.txt")));
+        assert!(patch.entries.iter().any(|entry| matches!(entry, WorkspacePatchEntry::File { path, executable: true, .. } if path.as_str() == "src/main.rs")));
+        assert!(patch.entries.iter().any(|entry| matches!(entry, WorkspacePatchEntry::File { path, .. } if path.as_str() == "new.txt")));
+    }
+
+    #[test]
+    fn acknowledged_manifest_cache_is_node_scoped_and_bounded() {
+        let manifest = WorkspaceManifest {
+            schema_version: 1,
+            entries: Vec::new(),
+        };
+        let digest = manifest.digest().unwrap();
+        let mut cache = ManifestCache::default();
+        cache.insert("node-a", "workspace", manifest.clone(), digest.clone());
+        assert!(cache.get("node-b", "workspace").is_none());
+        assert_eq!(cache.get("node-a", "workspace").unwrap().1, digest);
+        for index in 0..=MAX_ACKNOWLEDGED_MANIFESTS {
+            cache.insert(
+                "node-a",
+                &format!("ws-{index}"),
+                manifest.clone(),
+                manifest.digest().unwrap(),
+            );
+        }
+        assert_eq!(cache.entries.len(), MAX_ACKNOWLEDGED_MANIFESTS);
+        assert!(cache.get("node-a", "workspace").is_none());
+    }
+
+    #[test]
+    fn node_configuration_replacement_invalidates_acknowledged_manifests() {
+        let mut executor = EggworkExecutor::new(EggworkExecutorConfig::default());
+        let manifest = WorkspaceManifest {
+            schema_version: 1,
+            entries: Vec::new(),
+        };
+        executor.manifest_cache.lock().unwrap().insert(
+            "node-a",
+            "workspace",
+            manifest.clone(),
+            manifest.digest().unwrap(),
+        );
+        executor.replace_config(EggworkExecutorConfig::default());
+        assert!(executor
+            .manifest_cache
+            .lock()
+            .unwrap()
+            .get("node-a", "workspace")
+            .is_none());
     }
 }
