@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M001R — Signal Preregistration After Evaluation Corrective
 
-Status: active (implementation in progress; baseline `bdd0f3b3`)
+Status: implemented (positive close; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001r-status.md`; implementation `43a95f64`, receipt fp `eda1f6b6…`)
 
 Repository baseline: `ce088e9153b821d8473372c7c04786a4d90ab6ae`
 

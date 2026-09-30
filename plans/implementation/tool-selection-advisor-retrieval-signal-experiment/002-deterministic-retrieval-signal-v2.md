@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M002 — Deterministic Retrieval Signal V2
 
-Status: blocked on M001R
+Status: ready for handoff (M001R closed positively; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001r-status.md`; frozen receipt `assets/tool-advisor/retrieval-signal-m001r-preregistration.json` fp `eda1f6b6…`)
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 

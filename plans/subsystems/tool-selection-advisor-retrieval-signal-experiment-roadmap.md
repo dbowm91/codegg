@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active — M001R ready after C001 disposition B
+Status: active — M001R closed positively, M002 ready
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -198,7 +198,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001r-signal-preregistration-after-evaluation-corrective.md`
 
-Status: ready (C001 closed disposition B with no ranker blocker; see `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`).
+Status: closed positively (see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001r-status.md`; receipt `assets/tool-advisor/retrieval-signal-m001r-preregistration.json` fp `eda1f6b6…`).
 
 M001R freezes Signal V2 and conditional projection degrees of freedom against the corrected inferable retrieval target. It exists so the blocked historical M001 is never silently reopened.
 
@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M001R.
+Status: ready for handoff (M001R closed positively; frozen receipt fp `eda1f6b6…`).
 
 Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
 
