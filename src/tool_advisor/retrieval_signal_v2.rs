@@ -1,20 +1,18 @@
-//! M002 deterministic Retrieval Signal V2 (lexical half, default features).
+//! M002 deterministic Retrieval Signal V2 (lexical + semantic, full 8-mode).
 //!
 //! Implements the M001R-frozen Signal V2 representation and the deterministic
-//! lexical frontier without learned weights. Semantic MiniLM variants (§4 of
-//! the M002 plan) need the `tool-advisor-encoder-training` feature
-//! (currently broken by `candle-core 0.11` nightly-only `stdarch_neon_f16`
-//! items) plus the reference MiniLM manifest
-//! (`target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json`,
-//! absent here), so they are preregistered-but-unmeasured in this module:
-//! descriptor/query text construction and the embedding cache-key contract
-//! are implemented and tested here, while encoder invocation and semantic
-//! ranking live behind the encoder-training gate.
+//! frontier without learned weights. Lexical modes run on default features;
+//! semantic MiniLM variants (§4 of the M002 plan) run behind the
+//! `tool-advisor-encoder-training` feature using the frozen reference MiniLM
+//! manifest (`target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json`).
+//! Descriptor/query text construction and the embedding cache-key contract
+//! are shared; encoder invocation and semantic ranking live behind the
+//! encoder-training gate.
 //!
-//! Scope boundary: experiment-local representation and BM25 frontier only.
-//! `ToolCatalog` behavior is unchanged; historical v1 semantics are reused
-//! verbatim for the baseline mode; no per-tool alias is added; v3/v4 select
-//! nothing.
+//! Scope boundary: experiment-local representation and deterministic frontier
+//! only. `ToolCatalog` behavior is unchanged; historical v1 semantics are
+//! reused verbatim for the baseline mode; no per-tool alias is added;
+//! v3/v4 select nothing.
 
 use super::context_v2::AdvisorContextV2;
 use super::retrieval_relevance::{
@@ -42,14 +40,25 @@ pub const LEXICAL_MODES: [&str; 4] = [
     "field-weighted-bm25-v2",
     "normalized-token-bm25-v2",
 ];
-/// Semantic modes preregistered but unmeasured without the encoder toolchain.
+/// Semantic modes measured behind `tool-advisor-encoder-training`.
 pub const SEMANTIC_MODES: [&str; 4] = [
     "semantic-flat-v2-mean",
     "semantic-field-labelled-v2-mean",
     "rrf-v2",
     "normalized-union-v2",
 ];
-/// Frontier receipt path (interim: lexical modes only until semantic arms run).
+/// Full deterministic grid (M001R §3, 8 modes).
+pub const ALL_MODES: [&str; 8] = [
+    "bm25-flat-v1-baseline",
+    "descriptor-v2-flat-bm25",
+    "field-weighted-bm25-v2",
+    "normalized-token-bm25-v2",
+    "semantic-flat-v2-mean",
+    "semantic-field-labelled-v2-mean",
+    "rrf-v2",
+    "normalized-union-v2",
+];
+/// Frontier receipt path (full 8-mode once semantic arms are measured).
 pub const SIGNAL_V2_FRONTIER_ASSET: &str =
     "assets/tool-advisor/retrieval-signal-m002-frontier.json";
 /// Universes and shortlists, unchanged from M001R/M004.
@@ -581,9 +590,110 @@ pub fn lexical_ordering(case: &ToolAdvisorCase, mode: &str) -> Result<Vec<(Strin
     }
 }
 
+// ---- deterministic semantic helpers (encoder-training gate) ----
+
+#[cfg(feature = "tool-advisor-encoder-training")]
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
+    let mut dot = 0.0f64;
+    let mut left_norm = 0.0f64;
+    let mut right_norm = 0.0f64;
+    for (l, r) in left.iter().zip(right.iter()) {
+        dot += f64::from(*l) * f64::from(*r);
+        left_norm += f64::from(*l) * f64::from(*l);
+        right_norm += f64::from(*r) * f64::from(*r);
+    }
+    let denom = left_norm.sqrt() * right_norm.sqrt();
+    if denom <= f64::EPSILON {
+        0.0
+    } else {
+        dot / denom
+    }
+}
+
+#[cfg(feature = "tool-advisor-encoder-training")]
+fn fuse_rrf_v2(lexical: &[(String, f64)], semantic: &[(String, f64)]) -> Vec<(String, f64)> {
+    use super::retrieval_signal::RRF_K;
+    let mut ranks: std::collections::HashMap<String, (Option<usize>, Option<usize>)> =
+        std::collections::HashMap::new();
+    for (rank, (name, _)) in lexical.iter().enumerate() {
+        ranks.entry(name.clone()).or_insert((None, None)).0 = Some(rank);
+    }
+    for (rank, (name, _)) in semantic.iter().enumerate() {
+        ranks.entry(name.clone()).or_insert((None, None)).1 = Some(rank);
+    }
+    let mut fused: Vec<(String, f64)> = ranks
+        .into_iter()
+        .map(|(name, (lex_rank, sem_rank))| {
+            let mut score = 0.0;
+            if let Some(r) = lex_rank {
+                score += 1.0 / (RRF_K + r as f64);
+            }
+            if let Some(r) = sem_rank {
+                score += 1.0 / (RRF_K + r as f64);
+            }
+            (name, score)
+        })
+        .collect();
+    fused.sort_by(|l, r| l.0.cmp(&r.0));
+    fused.sort_by(|l, r| {
+        r.1.partial_cmp(&l.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| l.0.cmp(&r.0))
+    });
+    fused
+}
+
+#[cfg(feature = "tool-advisor-encoder-training")]
+fn fuse_normalized_union_v2(
+    lexical: &[(String, f64)],
+    semantic: &[(String, f64)],
+) -> Vec<(String, f64)> {
+    use super::retrieval_signal::UNION_ALPHA;
+    let normalize = |scores: &[(String, f64)]| -> std::collections::HashMap<String, f64> {
+        let max = scores.iter().map(|(_, s)| *s).fold(0.0f64, f64::max);
+        let min = scores.iter().map(|(_, s)| *s).fold(f64::INFINITY, f64::min);
+        let range = max - min;
+        scores
+            .iter()
+            .map(|(n, s)| {
+                let norm = if range <= f64::EPSILON {
+                    0.0
+                } else {
+                    (s - min) / range
+                };
+                (n.clone(), norm)
+            })
+            .collect()
+    };
+    let lex_norm = normalize(lexical);
+    let sem_norm = normalize(semantic);
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (n, _) in lexical {
+        names.insert(n.clone());
+    }
+    for (n, _) in semantic {
+        names.insert(n.clone());
+    }
+    let mut fused: Vec<(String, f64)> = names
+        .into_iter()
+        .map(|n| {
+            let l = lex_norm.get(&n).copied().unwrap_or(0.0);
+            let s = sem_norm.get(&n).copied().unwrap_or(0.0);
+            (n, (1.0 - UNION_ALPHA) * l + UNION_ALPHA * s)
+        })
+        .collect();
+    fused.sort_by(|l, r| l.0.cmp(&r.0));
+    fused.sort_by(|l, r| {
+        r.1.partial_cmp(&l.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| l.0.cmp(&r.0))
+    });
+    fused
+}
+
 // ---- frontier measurement against the corrected inferable target ----
 
-/// One measured frontier point (lexical modes only in this module).
+/// One measured frontier point (all 8 deterministic modes once semantic arms run).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FrontierPoint {
     pub mode: String,
@@ -624,7 +734,7 @@ pub struct PersistentMissRow {
     pub in_k32: bool,
 }
 
-/// Lexical frontier receipt (interim until semantic arms are measured).
+/// Deterministic Signal V2 frontier receipt (full 8-mode when semantic arms measured).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignalV2FrontierReceipt {
     pub schema_version: u16,
@@ -925,6 +1035,445 @@ pub fn measure_lexical_frontier() -> Result<SignalV2FrontierReceipt> {
     Ok(receipt)
 }
 
+/// Measure the full 8-mode deterministic frontier (lexical + semantic).
+///
+/// Encoder-training gate only. Semantic definitions (frozen for M002):
+///
+/// - `semantic-flat-v2-mean`: flat descriptor/query text, mean pooling, cosine.
+/// - `semantic-field-labelled-v2-mean`: field-labelled texts, mean pooling, cosine.
+/// - `rrf-v2`: RRF(K=60) fusion of `field-weighted-bm25-v2` + `semantic-flat-v2-mean`.
+/// - `normalized-union-v2`: normalized score union (alpha=0.5) of the same pair.
+///
+/// Query embeddings use `encode_context` (query as context, empty candidate);
+/// descriptor embeddings use `encode_with_pooling("", descriptor, Mean)` with
+/// a descriptor-only cache keyed by the five-factor [`SemanticCacheKey`].
+/// No weights train; MiniLM stays frozen; no per-tool aliases.
+#[cfg(feature = "tool-advisor-encoder-training")]
+pub fn measure_full_frontier() -> Result<SignalV2FrontierReceipt> {
+    use super::retrieval_signal::PREREG_ENCODER_MANIFEST;
+    use super::sequence_encoder::{CandleBertSequenceEncoder, PoolingStrategy};
+    use candle_core::Device;
+
+    let cases = super::builtin_cases().context("load corpus")?;
+    let view = build_derived_view(&cases).context("derived view")?;
+    if view.fingerprint != EXPECTED_DERIVED_VIEW_FINGERPRINT {
+        return Err(anyhow!("derived view drifted"));
+    }
+    let eligible: BTreeMap<(String, String), bool> = view
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                (entry.case_id.clone(), entry.candidate.clone()),
+                entry.retrieval_eligible,
+            )
+        })
+        .collect();
+    let partition = super::partition_cases(&cases);
+    let dev: Vec<ToolAdvisorCase> = partition
+        .dev_cases
+        .iter()
+        .map(|index| cases[*index].clone())
+        .collect();
+
+    let prereg_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SIGNAL_PREREG_ASSET_PATH);
+    let prereg_fp = if let Ok(bytes) = std::fs::read(&prereg_path) {
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).context("parse prereg receipt")?;
+        value
+            .get("fingerprint")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unreadable")
+            .to_string()
+    } else {
+        "absent".to_string()
+    };
+
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(PREREG_ENCODER_MANIFEST);
+    let encoder = CandleBertSequenceEncoder::load(&manifest_path, &Device::Cpu)
+        .context("load frozen MiniLM encoder")?;
+    let encoder_tokenizer_version = format!(
+        "{}:{}",
+        encoder.assets.manifest.architecture,
+        encoder
+            .assets
+            .manifest
+            .hashes
+            .get("vocabulary")
+            .cloned()
+            .unwrap_or_default()
+    );
+    let surface_fingerprint = EXPECTED_DERIVED_VIEW_FINGERPRINT.to_string();
+
+    let modes: Vec<String> = ALL_MODES.iter().map(|s| s.to_string()).collect();
+    let mut points = Vec::new();
+    let mut orderings: BTreeMap<(String, usize, String), Vec<(String, f64)>> = BTreeMap::new();
+    let mut latencies: BTreeMap<(String, usize), Vec<u128>> = BTreeMap::new();
+    let mut descriptor_bytes: BTreeMap<(String, usize), usize> = BTreeMap::new();
+    let mut descriptor_cache: BTreeMap<SemanticCacheKey, Vec<f32>> = BTreeMap::new();
+
+    for universe in FRONTIER_UNIVERSES {
+        let expanded = expand_universe_local(&dev, universe).context("expand dev")?;
+        // Precompute lexical field-weighted orderings for fusion reuse.
+        let mut lex_fw: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
+        for case in &expanded {
+            lex_fw.insert(case.case_id.clone(), order_field_weighted_v2(case));
+        }
+        for mode in &modes {
+            let mut latched = Vec::new();
+            let mut bytes = 0usize;
+            for case in &expanded {
+                let started = Instant::now();
+                let ordered = if LEXICAL_MODES.contains(&mode.as_str()) {
+                    lexical_ordering(case, mode)?
+                } else {
+                    // Semantic arms.
+                    let deferred: Vec<&ToolAdvisorCandidate> = case
+                        .candidates
+                        .iter()
+                        .filter(|c| c.disclosure == "deferred")
+                        .collect();
+                    let query = RetrievalQueryV2::from_benchmark_context(&case.context);
+                    let (query_text, desc_text_fn): (String, fn(&RetrievalDescriptorV2) -> String) =
+                        match mode.as_str() {
+                            "semantic-flat-v2-mean" => {
+                                (query.flat_text(), RetrievalDescriptorV2::flat_text)
+                            }
+                            "semantic-field-labelled-v2-mean" => (
+                                query.field_labelled_text(),
+                                RetrievalDescriptorV2::field_labelled_text,
+                            ),
+                            "rrf-v2" | "normalized-union-v2" => {
+                                (query.flat_text(), RetrievalDescriptorV2::flat_text)
+                            }
+                            _ => return Err(anyhow!("unsupported semantic mode {mode}")),
+                        };
+                    // Query embedding (mean pooling).
+                    let query_emb = encoder
+                        .encode_context(&query_text, PoolingStrategy::Mean)
+                        .context("encode query")?;
+                    // Descriptor embeddings with descriptor-only cache.
+                    // For fusion modes we need semantic-flat scores; compute once.
+                    let semantic_flat_scores = if mode == "rrf-v2" || mode == "normalized-union-v2"
+                    {
+                        let mut flat_scores = Vec::new();
+                        for cand in &deferred {
+                            let desc = RetrievalDescriptorV2::from_candidate(cand, None);
+                            let key = semantic_cache_key(
+                                &desc,
+                                &encoder_tokenizer_version,
+                                "mean",
+                                &surface_fingerprint,
+                            );
+                            let emb = if let Some(hit) = descriptor_cache.get(&key) {
+                                hit.clone()
+                            } else {
+                                let e = encoder
+                                    .encode_with_pooling(
+                                        "",
+                                        &desc_text_fn(&desc),
+                                        PoolingStrategy::Mean,
+                                    )
+                                    .context("encode descriptor")?;
+                                descriptor_cache.insert(key, e.clone());
+                                e
+                            };
+                            flat_scores
+                                .push((cand.name.clone(), cosine_similarity(&query_emb, &emb)));
+                        }
+                        Some(flat_scores)
+                    } else {
+                        None
+                    };
+                    let semantic_scores = if mode == "semantic-flat-v2-mean"
+                        || mode == "semantic-field-labelled-v2-mean"
+                    {
+                        let mut s = Vec::new();
+                        for cand in &deferred {
+                            let desc = RetrievalDescriptorV2::from_candidate(cand, None);
+                            let key = semantic_cache_key(
+                                &desc,
+                                &encoder_tokenizer_version,
+                                "mean",
+                                &surface_fingerprint,
+                            );
+                            let emb = if let Some(hit) = descriptor_cache.get(&key) {
+                                hit.clone()
+                            } else {
+                                let e = encoder
+                                    .encode_with_pooling(
+                                        "",
+                                        &desc_text_fn(&desc),
+                                        PoolingStrategy::Mean,
+                                    )
+                                    .context("encode descriptor")?;
+                                descriptor_cache.insert(key, e.clone());
+                                e
+                            };
+                            s.push((cand.name.clone(), cosine_similarity(&query_emb, &emb)));
+                        }
+                        s
+                    } else {
+                        semantic_flat_scores.clone().unwrap_or_default()
+                    };
+                    let mut ordered = match mode.as_str() {
+                        "semantic-flat-v2-mean" | "semantic-field-labelled-v2-mean" => {
+                            let mut o = semantic_scores;
+                            o.sort_by(|l, r| l.0.cmp(&r.0));
+                            o.sort_by(|l, r| {
+                                r.1.partial_cmp(&l.1)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                                    .then_with(|| l.0.cmp(&r.0))
+                            });
+                            // Complete with zero-score tail for determinism.
+                            let known: BTreeSet<String> =
+                                o.iter().map(|(n, _)| n.clone()).collect();
+                            for cand in &deferred {
+                                if !known.contains(&cand.name) {
+                                    o.push((cand.name.clone(), 0.0));
+                                }
+                            }
+                            o.sort_by(|l, r| l.0.cmp(&r.0));
+                            o.sort_by(|l, r| {
+                                r.1.partial_cmp(&l.1)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                                    .then_with(|| l.0.cmp(&r.0))
+                            });
+                            o
+                        }
+                        "rrf-v2" => {
+                            let lex = &lex_fw[&case.case_id];
+                            fuse_rrf_v2(lex, &semantic_scores)
+                        }
+                        "normalized-union-v2" => {
+                            let lex = &lex_fw[&case.case_id];
+                            fuse_normalized_union_v2(lex, &semantic_scores)
+                        }
+                        _ => return Err(anyhow!("unsupported semantic mode {mode}")),
+                    };
+                    // Ensure full universe coverage.
+                    let known: BTreeSet<String> = ordered.iter().map(|(n, _)| n.clone()).collect();
+                    for cand in &deferred {
+                        if !known.contains(&cand.name) {
+                            ordered.push((cand.name.clone(), 0.0));
+                        }
+                    }
+                    ordered.sort_by(|l, r| l.0.cmp(&r.0));
+                    ordered.sort_by(|l, r| {
+                        r.1.partial_cmp(&l.1)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| l.0.cmp(&r.0))
+                    });
+                    ordered
+                };
+                latched.push(started.elapsed().as_millis());
+                if mode != "bm25-flat-v1-baseline" {
+                    bytes += case
+                        .candidates
+                        .iter()
+                        .filter(|c| c.disclosure == "deferred")
+                        .map(|c| RetrievalDescriptorV2::from_candidate(c, None).encoded_bytes())
+                        .sum::<usize>();
+                }
+                orderings.insert((mode.clone(), universe, case.case_id.clone()), ordered);
+            }
+            latencies.insert((mode.clone(), universe), latched);
+            descriptor_bytes.insert((mode.clone(), universe), bytes);
+        }
+    }
+
+    let gate_for = |universe: usize| -> f64 {
+        match universe {
+            64 => 0.99,
+            128 => 0.98,
+            _ => 0.95,
+        }
+    };
+
+    for universe in FRONTIER_UNIVERSES {
+        let expanded = expand_universe_local(&dev, universe).context("expand dev")?;
+        for mode in &modes {
+            for k in FRONTIER_KS {
+                let mut relevant = 0usize;
+                let mut recovered = 0usize;
+                let mut violations = 0usize;
+                for case in &expanded {
+                    let inferable = inferable_for_case(&case.case_id, &eligible);
+                    let allowed = eligible_deferred_names_local(case);
+                    let ordered = &orderings[&(mode.clone(), universe, case.case_id.clone())];
+                    let top: BTreeSet<String> = ordered
+                        .iter()
+                        .take(k)
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    for name in &top {
+                        if !allowed.contains(name) {
+                            violations += 1;
+                        }
+                    }
+                    for tool in inferable {
+                        relevant += 1;
+                        if top.contains(&tool) {
+                            recovered += 1;
+                        }
+                    }
+                }
+                let recall = if relevant == 0 {
+                    1.0
+                } else {
+                    recovered as f64 / relevant as f64
+                };
+                let gate = gate_for(universe);
+                let mut latched = latencies[&(mode.clone(), universe)].clone();
+                latched.sort_unstable();
+                let mean = if latched.is_empty() {
+                    0.0
+                } else {
+                    latched.iter().sum::<u128>() as f64 / latched.len() as f64
+                };
+                let p95 = latched
+                    .get((latched.len() as f64 * 0.95).floor() as usize)
+                    .copied()
+                    .unwrap_or(0);
+                let max = latched.iter().copied().max().unwrap_or(0);
+                points.push(FrontierPoint {
+                    mode: mode.clone(),
+                    universe,
+                    k,
+                    inferable_relevant: relevant,
+                    inferable_recovered: recovered,
+                    inferable_recall: recall,
+                    violations,
+                    mean_latency_ms: mean,
+                    p95_latency_ms: p95 as f64,
+                    max_latency_ms: max,
+                    descriptor_bytes: descriptor_bytes[&(mode.clone(), universe)],
+                    gate,
+                    passes: recall >= gate && violations == 0,
+                });
+            }
+        }
+    }
+
+    let expanded_64 = expand_universe_local(&dev, 64).context("expand 64")?;
+    let mut tools: BTreeSet<String> = BTreeSet::new();
+    for case in &expanded_64 {
+        for tool in inferable_for_case(&case.case_id, &eligible) {
+            tools.insert(tool);
+        }
+    }
+    let mut per_tool = Vec::new();
+    for tool in tools {
+        let mut cases_count = 0usize;
+        let mut hit_16 = 0usize;
+        let mut hit_24 = 0usize;
+        let mut hit_32 = 0usize;
+        for case in &expanded_64 {
+            if !inferable_for_case(&case.case_id, &eligible).contains(&tool) {
+                continue;
+            }
+            cases_count += 1;
+            for (k, hit) in [(16, &mut hit_16), (24, &mut hit_24), (32, &mut hit_32)] {
+                let mut placed = false;
+                for mode in &modes {
+                    let ordered = &orderings[&(mode.clone(), 64, case.case_id.clone())];
+                    if ordered.iter().take(k).any(|(name, _)| name == &tool) {
+                        placed = true;
+                        break;
+                    }
+                }
+                if placed {
+                    *hit += 1;
+                }
+            }
+        }
+        per_tool.push(PerToolRecall {
+            tool,
+            inferable_cases: cases_count,
+            recovered_at_16: hit_16,
+            recovered_at_24: hit_24,
+            recovered_at_32: hit_32,
+        });
+    }
+    per_tool.sort_by(|l, r| l.tool.cmp(&r.tool));
+
+    let mut persistent_misses = Vec::new();
+    for case in &expanded_64 {
+        for tool in inferable_for_case(&case.case_id, &eligible) {
+            if !["glob", "table_filter", "write", "lsp_rename"].contains(&tool.as_str()) {
+                continue;
+            }
+            let v1 = &orderings[&(
+                "bm25-flat-v1-baseline".to_string(),
+                64,
+                case.case_id.clone(),
+            )];
+            let v1_rank = v1.iter().position(|(name, _)| name == &tool);
+            let mut best: Option<(usize, String)> = None;
+            for mode in &modes {
+                if mode == "bm25-flat-v1-baseline" {
+                    continue;
+                }
+                let ordered = &orderings[&(mode.clone(), 64, case.case_id.clone())];
+                if let Some(rank) = ordered.iter().position(|(name, _)| name == &tool) {
+                    let improves = best.as_ref().is_none_or(|(br, _)| rank < *br);
+                    if improves {
+                        best = Some((rank, mode.clone()));
+                    }
+                }
+            }
+            let (best_rank, best_mode) = best
+                .map(|(r, m)| (Some(r), m))
+                .unwrap_or((None, "none".to_string()));
+            persistent_misses.push(PersistentMissRow {
+                tool: tool.clone(),
+                case_id: case.case_id.clone(),
+                v1_rank,
+                best_v2_rank: best_rank,
+                best_v2_mode: best_mode.clone(),
+                in_k16: best_rank.is_some_and(|r| r < 16),
+                in_k24: best_rank.is_some_and(|r| r < 24),
+                in_k32: best_rank.is_some_and(|r| r < 32),
+            });
+        }
+    }
+    persistent_misses.sort_by(|l, r| l.tool.cmp(&r.tool).then_with(|| l.case_id.cmp(&r.case_id)));
+
+    let mut schema_present = 0usize;
+    let mut schema_absent = 0usize;
+    for case in &expanded_64 {
+        for tool in inferable_for_case(&case.case_id, &eligible) {
+            let candidate = case.candidates.iter().find(|c| c.name == tool);
+            let has_schema = candidate
+                .is_some_and(|c| RetrievalDescriptorV2::from_candidate(c, None).has_schema());
+            if has_schema {
+                schema_present += 1;
+            } else {
+                schema_absent += 1;
+            }
+        }
+    }
+
+    let mut receipt = SignalV2FrontierReceipt {
+        schema_version: RETRIEVAL_SIGNAL_SCHEMA_VERSION,
+        protocol: "m002-deterministic-signal-v2-frontier-v1".to_string(),
+        prereg_protocol: SIGNAL_PREREG_PROTOCOL.to_string(),
+        prereg_fingerprint: prereg_fp,
+        derived_view: PREREG_DERIVED_VIEW.to_string(),
+        derived_view_fingerprint: EXPECTED_DERIVED_VIEW_FINGERPRINT.to_string(),
+        modes_measured: modes,
+        modes_deferred: Vec::new(),
+        points,
+        per_tool,
+        persistent_misses,
+        schema_present_inferable: schema_present,
+        schema_absent_inferable: schema_absent,
+        fingerprint: String::new(),
+    };
+    receipt.fingerprint = frontier_fingerprint(&receipt)?;
+    Ok(receipt)
+}
+
 /// Deterministic projection of the receipt: wall-clock latencies are
 /// informational only and excluded from the fingerprint and drift
 /// comparison so repeated measurements of identical rankings agree.
@@ -1099,15 +1648,73 @@ mod tests {
         let stored: SignalV2FrontierReceipt =
             serde_json::from_slice(&bytes).expect("parse frontier");
         let fresh = measure_lexical_frontier().expect("fresh frontier");
+        // Stored file may be lexical-only (4 modes) or full 8-mode after
+        // semantic arms. On default features, compare the lexical subset
+        // deterministically (excluding wall-clock latencies).
+        let lexical_modes: std::collections::BTreeSet<String> =
+            LEXICAL_MODES.iter().map(|s| s.to_string()).collect();
+        let stored_lexical: Vec<&FrontierPoint> = stored
+            .points
+            .iter()
+            .filter(|p| lexical_modes.contains(&p.mode))
+            .collect();
         assert_eq!(
-            deterministic_projection(&stored),
-            deterministic_projection(&fresh),
-            "committed frontier drifted"
+            stored_lexical.len(),
+            fresh.points.len(),
+            "stored lexical subset size drifted"
         );
+        for fresh_point in &fresh.points {
+            let match_point = stored_lexical
+                .iter()
+                .find(|p| {
+                    p.mode == fresh_point.mode
+                        && p.universe == fresh_point.universe
+                        && p.k == fresh_point.k
+                })
+                .expect("lexical point missing in stored file");
+            assert_eq!(
+                match_point.inferable_relevant, fresh_point.inferable_relevant,
+                "relevant drift {} u{} k{}",
+                fresh_point.mode, fresh_point.universe, fresh_point.k
+            );
+            assert_eq!(
+                match_point.inferable_recovered, fresh_point.inferable_recovered,
+                "recovered drift {} u{} k{}",
+                fresh_point.mode, fresh_point.universe, fresh_point.k
+            );
+            assert!(
+                (match_point.inferable_recall - fresh_point.inferable_recall).abs() < 1e-12,
+                "recall drift {} u{} k{}",
+                fresh_point.mode,
+                fresh_point.universe,
+                fresh_point.k
+            );
+            assert_eq!(
+                match_point.violations, fresh_point.violations,
+                "violations drift {} u{} k{}",
+                fresh_point.mode, fresh_point.universe, fresh_point.k
+            );
+            assert_eq!(
+                match_point.gate, fresh_point.gate,
+                "gate drift {} u{} k{}",
+                fresh_point.mode, fresh_point.universe, fresh_point.k
+            );
+            assert_eq!(
+                match_point.descriptor_bytes, fresh_point.descriptor_bytes,
+                "descriptor bytes drift {} u{} k{}",
+                fresh_point.mode, fresh_point.universe, fresh_point.k
+            );
+        }
         // Latencies are informational: they must be present and sane, not equal.
         for point in &stored.points {
             assert!(point.p95_latency_ms <= point.max_latency_ms as f64);
         }
+        // Preregistration binding holds in both files.
+        assert_eq!(stored.prereg_fingerprint, fresh.prereg_fingerprint);
+        assert_eq!(
+            stored.derived_view_fingerprint,
+            fresh.derived_view_fingerprint
+        );
     }
 
     /// Generate the interim lexical frontier asset. Run explicitly:
@@ -1135,6 +1742,92 @@ mod tests {
             );
         }
         eprintln!("fingerprint={}", receipt.fingerprint);
+    }
+
+    /// Generate the full 8-mode frontier asset (encoder-training gate).
+    /// Run explicitly with toolchain 1.98.1:
+    /// `RUSTUP_TOOLCHAIN=1.98.1 cargo test --locked
+    ///  --features tool-advisor-encoder-training -p codegg --lib --
+    ///  tool_advisor::retrieval_signal_v2::tests::generate_full_frontier_asset --
+    ///  --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(feature = "tool-advisor-encoder-training")]
+    fn generate_full_frontier_asset() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let receipt = super::measure_full_frontier().expect("full frontier");
+        assert_eq!(receipt.modes_measured.len(), 8);
+        assert!(receipt.modes_deferred.is_empty());
+        assert_eq!(receipt.points.len(), 8 * 3 * 3);
+        let path = root.join(super::SIGNAL_V2_FRONTIER_ASSET);
+        super::write_frontier_atomic(&path, &receipt).expect("write full frontier");
+        for point in receipt.points.iter().filter(|p| p.k == 16) {
+            eprintln!(
+                "{} u{} k{}: {}/{}={:.4} violations={} p95={:.1}ms bytes={}",
+                point.mode,
+                point.universe,
+                point.k,
+                point.inferable_recovered,
+                point.inferable_relevant,
+                point.inferable_recall,
+                point.violations,
+                point.p95_latency_ms,
+                point.descriptor_bytes
+            );
+        }
+        eprintln!("fingerprint={}", receipt.fingerprint);
+        eprintln!(
+            "per_tool={} persistent_misses={} schema_present={} schema_absent={}",
+            receipt.per_tool.len(),
+            receipt.persistent_misses.len(),
+            receipt.schema_present_inferable,
+            receipt.schema_absent_inferable
+        );
+    }
+
+    /// Full frontier structure gate (encoder-training only, runs in normal suite).
+    /// Checks the committed file already contains the full 8-mode measurement
+    /// without re-running the heavy encoder sweep here.
+    #[test]
+    #[cfg(feature = "tool-advisor-encoder-training")]
+    fn full_frontier_committed_structure() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = root.join(super::SIGNAL_V2_FRONTIER_ASSET);
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("SKIP: full frontier asset not yet generated");
+                return;
+            }
+        };
+        let stored: super::SignalV2FrontierReceipt =
+            serde_json::from_slice(&bytes).expect("parse frontier");
+        // If still lexical-only, skip (generator not yet run).
+        if stored.modes_measured.len() == 4 {
+            eprintln!("SKIP: full frontier not yet measured (lexical-only file)");
+            return;
+        }
+        assert_eq!(
+            stored.modes_measured.len(),
+            8,
+            "full frontier must have 8 modes"
+        );
+        assert!(stored.modes_deferred.is_empty());
+        assert_eq!(stored.points.len(), 72);
+        for mode in super::ALL_MODES {
+            assert!(
+                stored.modes_measured.contains(&mode.to_string()),
+                "missing mode {mode}"
+            );
+        }
+        for point in &stored.points {
+            assert_eq!(
+                point.inferable_relevant, 53,
+                "dev inferable count must be 53"
+            );
+            assert!(point.violations == 0, "zero authority violations required");
+            assert!(point.p95_latency_ms <= point.max_latency_ms as f64);
+        }
     }
 
     #[test]
