@@ -1,6 +1,6 @@
 # CI/Test Throughput Post-Closure Corrective C001 — Closure Evidence, Cache Qualification, and Documentation Reconciliation
 
-Status: active (unblocked by C002 closure `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`)
+Status: implemented (closure `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`, measured negative sccache disposition)
 
 Repository baseline reviewed: `4f7e508976e70fbec0e645bd530b63fe3c8393c1`
 

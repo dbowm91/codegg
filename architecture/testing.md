@@ -396,7 +396,8 @@ with serial-within and run-alone heavies. If wall-clock regresses:
 3. **Selective feature flags** — use `--features` instead of
    `--all-features` for targeted CI runs (unchanged).
 
-### CI/test throughput final state (M001–M005 closure, 2026-09-25)
+### CI/test throughput final state (M001–M005 closure, 2026-09-25;
+### C001 post-closure baselines, 2026-09-30)
 
 Routine CI remains one bounded non-release job. The current settings
 and consolidation are the result of the closed M001–M005 workstream
@@ -422,32 +423,67 @@ clippy 2m08s, prebuild warm 4 s, build phase 7m51s, exec 362s,
 11726 tests passed / 1 skipped). The full CI economy policy
 section above remains the authoritative summary.
 
-### M005 — Compiler-result cache and same-job overlap (negative dispositions)
+C001 post-C002 baselines (final reverted tree, no sccache, no
+`CARGO_INCREMENTAL` override; test growth to 11830 from Eggplan M002
++ plugin hermetic fixes):
 
-**sccache disposition: not retained.** The routine workflow already
-uses `Swatinem/rust-cache@v2` (added at M001 review, expanded at
-M002 to cover `crates/eggwork-test-node`) backed by the GitHub
-Actions cache. That cache stores crate dependencies by rustc version
-+ lockfile + Cargo.toml hash + the configured env-vars
-(`Swatinem/rust-cache` documentation, 2026-09-25 review). Adding a
-second `sccache` layer on top would:
+- Main/relevant-change live path (authoritative): control PR
+  `c001-control-incremental` run `36771911506` attempt 1 — 18m13s,
+  build 8m30s, exec 369s, 11830/5, `live_required=true`; attempt 2
+  (warm rerun) — 17m55s, build 8m22s, exec 383s; main push
+  `36760308368` — 17m45s, 11830 pass, live included.
+- Ordinary unrelated-PR fast path: PR `c001-unrelated-fastpath-v2` run
+  `36776772880` — 18m15s total, Clippy 2m06s, build 9m12s, exec 356s,
+  11817 passed / 5 skipped, `live_required=false`, prebuild skipped,
+  `eggwork_remote_execution_live` omitted via `-E 'not
+  binary(eggwork_remote_execution_live)'`. Detector correctly reports
+  false for non-live changes (e.g. `src/tool_advisor/` comment-only);
+  docs-only PRs skip CI via `paths-ignore` and are not baselines.
 
-- double-cache every object, with the second layer keyed off a
-  larger hash (object key) than the first (rustc + lockfile hash);
-- require an externally-supplied backend secret to be useful
-  off-hosted (the M005 plan forbids external credentials); and
-- risk cache poisoning if a Cargo or rustc change made the
-  artifacts incompatible across rustc versions, and the
-  Swatinem-rust-cache rotation would not catch it.
+### M005 — Compiler-result cache and same-job overlap (negative dispositions;
+### C001 measured sccache disposition supersedes the unmeasured M005 cache reasoning)
 
-A bounded sccache probe (one probe commit, hosted run with
-`RUSTC_WRAPPER=sccache`, cold + warm-cache comparisons) was
-considered and rejected upfront for those reasons. The
-`Swatinem/rust-cache` cache currently uses restore keys
-`v0-rust-verify-Linux-x64-{env-hash}-{...}` and saves ~1 GiB per
-run; the restore time on warm hits is consistently <2 s and the
-build-phase savings on warm hits (vs cold ~10 min) are already
-absorbed into the 7m51s budget on warm runs.
+**sccache disposition: not retained (C001 measured negative).** The routine
+workflow uses `Swatinem/rust-cache@v2` (M001 review, expanded at M002 to
+cover `crates/eggwork-test-node`) backed by the GitHub Actions cache. C001
+executed the previously omitted bounded hosted A/B (preregistration
+`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-measurement-preregistration.md`;
+candidate `mozilla-actions/sccache-action@v0.0.11`, sccache v0.18.0,
+`SCCACHE_GHA_ENABLED=true`, `RUSTC_WRAPPER=sccache`,
+`CARGO_INCREMENTAL=0` explicit in both arms, `contents: read` retained, no
+secret):
+
+- Control (post-C002, `CARGO_INCREMENTAL=0` explicit, no sccache): PR
+  `c001-control-incremental` run `36771911506` attempt 1 — 18m13s total,
+  Clippy 2m22s, build 8m30s, exec 369s, 11830 passed / 5 skipped, live
+  included; attempt 2 (warm rerun) — 17m55s, Clippy 2m16s, build 8m22s,
+  exec 383s, same scope.
+- Candidate seed/cold (same + sccache, first population) run `36772006989` —
+  15m33s, Clippy 1m50s, build 6m58s, exec 330s, sccache 0 hits / 10 misses
+  (477 non-cacheable: multiple-input-files 238, crate-type 230), 0 errors.
+- Candidate warm (same branch, cache restored) run `36776697828` — 16m26s,
+  Clippy 2m14s, build 6m52s, exec 389s, sccache 10/10 hits (100% on the 10
+  executed), 0 misses, 0 errors.
+- Candidate reuse (small leaf comment, most crates unchanged) run
+  `36778759740` — 17m41s, Clippy 2m16s, build 8m04s, exec 384s, sccache 6
+  hits / 4 misses (60%), 0 errors.
+
+Only 10/487 (2%) compile requests are sccache-cacheable in this workspace;
+warm-vs-seed gain from 100% hits is 6s build. Seed (0 hits) already beats
+control by 92s build, proving the large vs-control delta is confounding
+(runner/rust-cache variance), not sccache hits. Realistic reuse gains only
+18–26s build vs warm control, below the preregistered 45s build / 30s total
+threshold requiring two comparable observations. Retention thresholds not
+met; candidate fully reverted (no `RUSTC_WRAPPER`, no sccache action, no
+`CARGO_INCREMENTAL` override in the final tree).
+
+M005's unmeasured premises are superseded and corrected: `Swatinem/rust-cache`
+does not provide equivalent compiler-result caching (workspace crates are
+opt-in, not default), and the supported sccache GHA backend uses
+Actions-provided runtime credentials with no external secret. The negative
+disposition stands on measured evidence (low cacheable fraction, minimal
+hit benefit, threshold miss on reuse), not on the prior assumptions. M001–M004
+conclusions and the same-job-overlap rejection below are unchanged.
 
 **Critical-path overlap disposition: rejected.** Same-job overlap
 candidates (parallelizing cheap static guards against the Cargo
