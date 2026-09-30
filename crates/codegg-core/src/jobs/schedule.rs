@@ -424,6 +424,7 @@ pub fn missed_run_targets(
 }
 
 #[allow(dead_code)]
+#[allow(clippy::ptr_arg)]
 fn _ensure_pathbuf_used(_p: &PathBuf) {}
 #[allow(dead_code)]
 fn _ensure_arc_used<T>(_a: &Arc<T>) {}

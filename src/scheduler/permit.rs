@@ -87,14 +87,12 @@ impl ResourcePermitGuard {
     /// capacity (or for keeping it in use). Returns the reserved
     /// dimensions.
     pub fn detach(mut self) -> PermitDimensions {
-        let dimensions = self
-            .inner
-            .take()
-            .map(|inner| inner.dimensions)
-            .unwrap_or_default();
         // Drop runs after this returns; take clears `inner` so the
         // Drop impl sees `None` and does not double-release.
-        dimensions
+        self.inner
+            .take()
+            .map(|inner| inner.dimensions)
+            .unwrap_or_default()
     }
 
     pub fn dimensions(&self) -> Option<&PermitDimensions> {

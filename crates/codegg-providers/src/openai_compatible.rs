@@ -892,7 +892,7 @@ mod tests {
             header_values(&captured, "authorization"),
             vec!["Bearer m010-sentinel-bearer"]
         );
-        assert!(!captured.body.contains("m010-sentinel-bearer") || true);
+        assert!(!captured.body.contains("m010-sentinel-bearer"));
     }
 
     #[tokio::test]

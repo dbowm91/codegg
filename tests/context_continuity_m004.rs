@@ -452,7 +452,6 @@ async fn m004_eight_compaction_trajectory() {
                 .as_deref()
                 != Some(checkpoint_id.as_str())
                 || previous.is_none() && epoch == 0
-                || true
         );
 
         // Install atomically with the durable event.
@@ -533,8 +532,7 @@ async fn m004_eight_compaction_trajectory() {
             assert!(
                 current_task.contains("strict parser")
                     || current_task.contains("fix discount")
-                    || !current_task.contains("port discount validation")
-                    || true,
+                    || !current_task.contains("port discount validation"),
                 "epoch {epoch}: current task progressed"
             );
         }

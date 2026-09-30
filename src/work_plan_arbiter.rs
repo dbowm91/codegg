@@ -10,11 +10,13 @@
 //! GoalVerification remains the final authority for Goal completion; the
 //! WorkPlan assessment is an additional prerequisite, not a replacement.
 
-use codegg_core::work_plan::{
-    assess_work_plan, WorkItem, WorkPlan, WorkPlanCompletionAssessment, WorkPlanEvidenceSnapshot,
-    WorkPlanStore,
-};
+use codegg_core::work_plan::{WorkItem, WorkPlan, WorkPlanCompletionAssessment, WorkPlanStore};
 use sqlx::SqlitePool;
+
+use crate::work_plan_eggplan::{
+    assess_work_plan_with_eggplan, revalidate_subject_for_completion, EggplanBackedAssessment,
+    SUBJECT_CHANGED_DIAGNOSTIC,
+};
 
 pub const MAX_ARBITER_MESSAGE_CHARS: usize = 1000;
 
@@ -86,13 +88,16 @@ pub fn build_required_work_message(
 /// Assess the active plan for a session, if any.
 ///
 /// Returns `None` when no active plan exists (legacy behavior preserved) or
-/// `Some((plan, items, assessment))` otherwise. Storage/evidence failures
-/// yield an `Inconclusive` assessment decision via [`decide_from_assessment`],
-/// never silent completion.
+/// `Some((plan, items, assessment))` otherwise. Git-backed supported-evidence
+/// plans are assessed through the staged Eggplan facade; terminal history,
+/// non-Git workspaces, unsupported evidence, and missing workspace context
+/// use the explicit legacy engines with diagnostics. Storage/evidence
+/// failures yield an `Inconclusive` assessment decision via
+/// [`decide_from_assessment`], never silent completion.
 pub async fn assess_active_plan(
     pool: &SqlitePool,
     session_id: &str,
-) -> Result<Option<(WorkPlan, Vec<WorkItem>, WorkPlanCompletionAssessment)>, String> {
+) -> Result<Option<(WorkPlan, Vec<WorkItem>, EggplanBackedAssessment)>, String> {
     let store = WorkPlanStore::new(pool.clone());
     let plan = store
         .active_for_session(session_id)
@@ -105,21 +110,15 @@ pub async fn assess_active_plan(
         .list_items(&plan.id)
         .await
         .map_err(|error| error.to_string())?;
-    let evidence = crate::work_plan_evidence::assemble(pool, &items)
-        .await
-        .unwrap_or_else(|_| WorkPlanEvidenceSnapshot::empty());
-    Ok(Some((
-        plan.clone(),
-        items.clone(),
-        assess_work_plan(&plan, &items, &evidence),
-    )))
+    let backed = assess_work_plan_with_eggplan(pool, &plan, &items).await?;
+    Ok(Some((plan, items, backed)))
 }
 
 /// Assess the plan bound to a Goal, if any.
 pub async fn assess_goal_plan(
     pool: &SqlitePool,
     goal_id: &str,
-) -> Result<Option<(WorkPlan, Vec<WorkItem>, WorkPlanCompletionAssessment)>, String> {
+) -> Result<Option<(WorkPlan, Vec<WorkItem>, EggplanBackedAssessment)>, String> {
     let store = WorkPlanStore::new(pool.clone());
     let plan = store
         .active_for_goal(goal_id)
@@ -132,14 +131,8 @@ pub async fn assess_goal_plan(
         .list_items(&plan.id)
         .await
         .map_err(|error| error.to_string())?;
-    let evidence = crate::work_plan_evidence::assemble(pool, &items)
-        .await
-        .unwrap_or_else(|_| WorkPlanEvidenceSnapshot::empty());
-    Ok(Some((
-        plan.clone(),
-        items.clone(),
-        assess_work_plan(&plan, &items, &evidence),
-    )))
+    let backed = assess_work_plan_with_eggplan(pool, &plan, &items).await?;
+    Ok(Some((plan, items, backed)))
 }
 
 pub fn decide_from_assessment(assessment: &WorkPlanCompletionAssessment) -> ArbiterDecision {
@@ -184,7 +177,7 @@ pub async fn check_ordinary_completion(
 ) -> Result<Option<ArbiterDecision>, String> {
     match assess_active_plan(pool, session_id).await? {
         None => Ok(None),
-        Some((_plan, _items, assessment)) => Ok(Some(decide_from_assessment(&assessment))),
+        Some((_plan, _items, backed)) => Ok(Some(decide_from_assessment(&backed.assessment))),
     }
 }
 
@@ -202,7 +195,7 @@ pub async fn check_goal_completion_gate(
 ) -> Result<ArbiterDecision, String> {
     match assess_goal_plan(pool, goal_id).await? {
         None => Ok(ArbiterDecision::AllowCompletion),
-        Some((_plan, _items, assessment)) => Ok(decide_from_assessment(&assessment)),
+        Some((_plan, _items, backed)) => Ok(decide_from_assessment(&backed.assessment)),
     }
 }
 
@@ -263,17 +256,58 @@ pub async fn record_verifier_feedback(
 /// is `Complete` and budgets have not expired. When budgets expired first,
 /// remaining state is preserved and the plan is left untouched so a later
 /// turn can resume from durable revisions.
+///
+/// For Eggplan-backed assessments the current subject is re-captured
+/// immediately before the CAS and must still equal the assessed subject
+/// (bounded S1/S2 revalidation, not a filesystem transaction). Drift,
+/// capture failure, or a lost workspace context blocks completion, preserves
+/// plan state, writes no current subject into historical evidence, and
+/// reports `Ok(false)`; the next boundary re-assesses against the new
+/// subject. Legacy-engine assessments keep the pre-M002 direct CAS path.
 pub async fn maybe_complete_plan_on_turn_end(
     pool: &SqlitePool,
     plan: &WorkPlan,
-    assessment: &WorkPlanCompletionAssessment,
+    backed: &EggplanBackedAssessment,
     budget_expired: bool,
 ) -> Result<bool, String> {
     if budget_expired {
         return Ok(false);
     }
-    if !matches!(assessment, WorkPlanCompletionAssessment::Complete { .. }) {
+    if !matches!(
+        backed.assessment,
+        WorkPlanCompletionAssessment::Complete { .. }
+    ) {
         return Ok(false);
+    }
+    if backed.engine == crate::work_plan_eggplan::AssessmentEngine::EggplanGit {
+        let Some(assessed) = backed.subject.as_ref() else {
+            tracing::warn!(
+                plan_id = %plan.id.as_str(),
+                diagnostic = SUBJECT_CHANGED_DIAGNOSTIC,
+                "eggplan-backed completion blocked: assessed subject missing"
+            );
+            return Ok(false);
+        };
+        match revalidate_subject_for_completion(pool, plan, assessed).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    plan_id = %plan.id.as_str(),
+                    diagnostic = SUBJECT_CHANGED_DIAGNOSTIC,
+                    "eggplan-backed completion blocked: source changed before completion CAS"
+                );
+                return Ok(false);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    plan_id = %plan.id.as_str(),
+                    diagnostic = SUBJECT_CHANGED_DIAGNOSTIC,
+                    error = %error.to_string(),
+                    "eggplan-backed completion blocked: revalidation unavailable"
+                );
+                return Ok(false);
+            }
+        }
     }
     let store = WorkPlanStore::new(pool.clone());
     match store

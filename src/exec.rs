@@ -339,12 +339,10 @@ impl ExecMode {
             if let Some(ref result) = output.result {
                 println!("{}", result);
             }
-        } else {
-            if let (Some(ref error), Some(ref code)) = (&output.error, &output.code) {
-                eprintln!("Error [{}]: {}", code, error);
-            } else if let Some(ref error) = output.error {
-                eprintln!("Error: {}", error);
-            }
+        } else if let (Some(ref error), Some(ref code)) = (&output.error, &output.code) {
+            eprintln!("Error [{}]: {}", code, error);
+        } else if let Some(ref error) = output.error {
+            eprintln!("Error: {}", error);
         }
     }
 

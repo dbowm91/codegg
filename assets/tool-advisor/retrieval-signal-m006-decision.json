@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "protocol": "retrieval-signal-m006-decision-v1",
+  "repository_baseline": "7259292ef371ecd116e8911f9c2ddca7032e2a2e",
+  "dataset": "assets/tool-advisor/corpus.jsonl",
+  "dataset_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "dev_partition_fingerprint": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "decision": {
+    "target": "current-step-only",
+    "rationale": "current-step-only: retrieval is for tools inferable from the bounded current-step AdvisorContextV2 query. Each of the three implicit-secondary labels (table_filter@filesystem-semantic-013, write@verification-semantic-105, lsp_rename@research-semantic-125) is a grade-2 supporting-workflow step whose query is fully explained by a co-relevant sibling tool (read/coverage/summarize respectively) with zero descriptor, schema, or paraphrase cue for the labeled tool (M001 receipt sibling-explicit proof). Scoring all-plausible-workflow recall would therefore measure hidden workflow knowledge, not model signal. Graded recall is rejected because M001 preregistered no secondary weights, so reduced weight would not make an uninferable label inferable. The surviving gate-critical miss (glob@filesystem-semantic-003, query-paraphrase) is inferable and defines the precise Signal V2 gap to test.",
+    "repository_baseline": "7259292ef371ecd116e8911f9c2ddca7032e2a2e"
+  },
+  "exclusion_rule": "current-step-only: implicit-secondary rows leave the gate-critical set (supporting-workflow steps are not current-step needs); all other rows stay",
+  "included_occurrences": [
+    {
+      "tool": "glob",
+      "case_id": "filesystem-semantic-003-variant-1",
+      "partition": "dev",
+      "relevance_grade": 3,
+      "preferred_order_position": 0,
+      "is_primary_highest_grade": true,
+      "serialized_query": "advisor-context-v2\ncurrent_objective: Locate every test fixture matching rollback_tag under quoted transcript t-4402 (ref fi-0007)\n",
+      "candidate_name": "glob",
+      "candidate_description": "Find files by path pattern",
+      "candidate_category": "ReadOnly",
+      "candidate_disclosure": "deferred",
+      "live_schema_fields": [
+        {
+          "name": "path",
+          "field_type": "string",
+          "description": "Directory to search in (default: current directory)",
+          "required": false
+        },
+        {
+          "name": "pattern",
+          "field_type": "string",
+          "description": "Glob pattern to match",
+          "required": true
+        }
+      ],
+      "bm25_rank": 256,
+      "bm25_score_model": "mirrored-catalog-bm25-v1",
+      "bm25_score": 0.0,
+      "semantic_rank_quoted": 256,
+      "fused_rank_quoted": 256,
+      "fused_margin_quoted": -0.2537,
+      "lexical_overlap_terms": [],
+      "nearest_wrong_candidates": [
+        "browser_test",
+        "test_run",
+        "coverage",
+        "fixture_deferred_000",
+        "fixture_deferred_001"
+      ],
+      "inferability": "query-paraphrase",
+      "inferability_rationale": "query expresses 'locate', a generic paraphrase of descriptor verb 'find' with no exact descriptor term present",
+      "inferability_support": "Locate every test fixtur"
+    }
+  ],
+  "excluded_occurrences": [
+    {
+      "tool": "lsp_rename",
+      "case_id": "research-semantic-125-variant-1",
+      "inferability": "implicit-secondary",
+      "rule": "current-step-only: implicit-secondary rows leave the gate-critical set (supporting-workflow steps are not current-step needs); all other rows stay"
+    },
+    {
+      "tool": "table_filter",
+      "case_id": "filesystem-semantic-013-variant-1",
+      "inferability": "implicit-secondary",
+      "rule": "current-step-only: implicit-secondary rows leave the gate-critical set (supporting-workflow steps are not current-step needs); all other rows stay"
+    },
+    {
+      "tool": "write",
+      "case_id": "verification-semantic-105-variant-1",
+      "inferability": "implicit-secondary",
+      "rule": "current-step-only: implicit-secondary rows leave the gate-critical set (supporting-workflow steps are not current-step needs); all other rows stay"
+    }
+  ],
+  "rederived_eligible_relevant": {
+    "128": 69,
+    "256": 69,
+    "64": 69
+  },
+  "required_hits": {
+    "required_hits_128": 68,
+    "required_hits_256": 66,
+    "required_hits_64": 69
+  },
+  "occurrence_weights": {
+    "glob@filesystem-semantic-003-variant-1": 1.0
+  },
+  "m002_unblocked": true,
+  "verdict": "M002 unblocked: re-derived gate-critical set under current-step-only is fully inferable (1 included, 3 excluded); deterministic Signal V2 sweep authorized on the re-derived denominators"
+}

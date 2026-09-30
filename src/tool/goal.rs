@@ -302,7 +302,7 @@ impl Tool for GoalRequestCompletionTool {
             .await
             .map_err(ToolError::Execution)?;
         if let Some((bound_plan, bound_items, assessment)) = goal_plan.as_ref() {
-            let gate = crate::work_plan_arbiter::decide_from_assessment(assessment);
+            let gate = crate::work_plan_arbiter::decide_from_assessment(&assessment.assessment);
             match gate {
                 crate::work_plan_arbiter::ArbiterDecision::AllowCompletion
                 | crate::work_plan_arbiter::ArbiterDecision::NeedsUserJudgment(_) => {}
@@ -312,7 +312,7 @@ impl Tool for GoalRequestCompletionTool {
                         "verdict": "not_met",
                         "goal_id": goal.id,
                         "work_plan_id": bound_plan.id.as_str(),
-                        "work_plan_assessment": assessment.reason_code(),
+                        "work_plan_assessment": assessment.assessment.reason_code(),
                         "next_action": prompt,
                     })
                     .to_string());
@@ -379,7 +379,8 @@ impl Tool for GoalRequestCompletionTool {
                         .await
                         .map_err(ToolError::Execution)?
                 {
-                    let gate = crate::work_plan_arbiter::decide_from_assessment(&assessment);
+                    let gate =
+                        crate::work_plan_arbiter::decide_from_assessment(&assessment.assessment);
                     if !matches!(
                         gate,
                         crate::work_plan_arbiter::ArbiterDecision::AllowCompletion
@@ -390,7 +391,7 @@ impl Tool for GoalRequestCompletionTool {
                             "verdict": "not_met",
                             "goal_id": goal.id,
                             "work_plan_id": bound_plan.id.as_str(),
-                            "work_plan_assessment": assessment.reason_code(),
+                            "work_plan_assessment": assessment.assessment.reason_code(),
                             "next_action": "bound WorkPlan still has required work; resolve it before requesting Goal completion",
                         })
                         .to_string());

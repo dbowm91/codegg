@@ -589,7 +589,7 @@ async fn ordinary_large_plan_full_trajectory() {
         .unwrap()
         .expect("active plan");
     assert!(matches!(
-        assessment,
+        assessment.assessment,
         WorkPlanCompletionAssessment::Complete { .. }
     ));
     assert!(
@@ -1538,8 +1538,17 @@ async fn cancel_vs_completion_assessment() {
     let items = store.list_items(&plan.id).await.unwrap();
     let evidence = work_plan_evidence::assemble(&pool, &items).await.unwrap();
     let assessment = assess_work_plan(&cancelled, &items, &evidence);
+    let backed = codegg::work_plan_eggplan::EggplanBackedAssessment {
+        assessment,
+        engine: codegg::work_plan_eggplan::AssessmentEngine::TerminalHistory,
+        eggplan_completion_family: None,
+        eggplan_reason_codes: Vec::new(),
+        mapping_digest: None,
+        subject: None,
+        engine_detail: "test wrapper".to_string(),
+    };
     assert!(
-        maybe_complete_plan_on_turn_end(&pool, &cancelled, &assessment, false)
+        maybe_complete_plan_on_turn_end(&pool, &cancelled, &backed, false)
             .await
             .is_err(),
         "cancelled plan must not close as completed"
@@ -2589,7 +2598,7 @@ async fn eight_transition_trajectory_with_epoch_reset() {
         .unwrap()
         .expect("active plan");
     assert!(matches!(
-        assessment,
+        assessment.assessment,
         WorkPlanCompletionAssessment::Complete { .. }
     ));
     assert!(

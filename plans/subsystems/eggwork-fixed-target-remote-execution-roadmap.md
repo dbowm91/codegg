@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001+C001+M002+M002a closed, M003 blocked on Eggwork Workspace/Artifact M004, M004 deferred
+Status: active; M001+C001+M002+M002a+M003 closed, M004 deferred
 
 Canonical authority:
 
@@ -159,7 +159,7 @@ Pin the corrected Eggwork revision and prove CodeGG's production mTLS path execu
 
 Class: infrastructure/capability
 
-Status: blocked on Eggwork Workspace/Artifact M004 closure
+Status: closed; Eggwork Workspace/Artifact M004 closed at upstream `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c` (closure `plans/closure/workspace-artifact-transport/004-status.md`). CodeGG closure: `plans/closure/eggwork-fixed-target-remote-execution/003-completion-status.md`.
 
 Implementation plan:
 
@@ -169,6 +169,7 @@ Upstream prerequisite:
 
 - Eggwork `plans/implementation/workspace-artifact-transport/004-reusable-manifest-cas-and-derived-materialization.md`
 - planning commit `ed0fc838bd006103021f1fb4749f579cabc2db87`
+- closed implementation and contract: Eggwork `e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c`
 
 Objective:
 
@@ -180,7 +181,7 @@ M003 deliberately keeps local full snapshot construction authoritative; it optim
 
 Class: capability
 
-Status: deferred; M002 target policy and M002a restricted live qualification are closed. Still blocked on workspace optimization (M003) and the stable AgentRun worker-entry contract.
+Status: deferred; M002 target policy, M002a restricted live qualification, and M003 workspace optimization are closed. Still blocked on the stable AgentRun worker-entry contract.
 
 Objective:
 

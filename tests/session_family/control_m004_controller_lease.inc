@@ -1004,6 +1004,151 @@ async fn reaper_releases_on_turn_completed_event() {
     assert!(cleared, "reaper must release the lease on TurnCompleted");
 }
 
+// C002 WP2: immediate `TurnFailed` publication with no readiness
+// sleep/yield. The reaper's subscription exists when
+// `spawn_turn_reaper` returns, so this terminal event cannot be lost.
+// Fails under the pre-C002 ordering where the receiver was created
+// inside the spawned task.
+#[tokio::test(flavor = "current_thread")]
+async fn reaper_releases_on_turn_failed_event() {
+    let fixture = lease_fixture("reaper-failed").await;
+    fixture
+        .daemon
+        .spawn_turn_reaper(fixture.session_id.clone(), fixture.turn_id.clone());
+    fixture
+        .daemon
+        .event_log
+        .publish(
+            Some(fixture.session_id.clone()),
+            Some(fixture.turn_id.clone()),
+            codegg::protocol::core::CoreEvent::TurnFailed {
+                session_id: fixture.session_id.clone(),
+                turn_id: Some(fixture.turn_id.clone()),
+                message: "boom".to_string(),
+            },
+        )
+        .await;
+    let store = SessionControllerStore::new(fixture.team.pool().clone());
+    let mut cleared = false;
+    for _ in 0..100 {
+        if store.get(&fixture.session_id).await.unwrap().is_none() {
+            cleared = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(cleared, "reaper must release the lease on TurnFailed");
+}
+
+// C002 WP2: terminal events for other sessions/turns must not release
+// this turn's lease, and the matching terminal must still release
+// afterwards.
+#[tokio::test(flavor = "current_thread")]
+async fn reaper_ignores_unrelated_terminal_events() {
+    let fixture = lease_fixture("reaper-unrelated").await;
+    fixture
+        .daemon
+        .spawn_turn_reaper(fixture.session_id.clone(), fixture.turn_id.clone());
+    for (sid, tid) in [
+        ("sess-m004-other".to_string(), fixture.turn_id.clone()),
+        (fixture.session_id.clone(), "turn-m004-other".to_string()),
+    ] {
+        fixture
+            .daemon
+            .event_log
+            .publish(
+                Some(sid.clone()),
+                Some(tid.clone()),
+                codegg::protocol::core::CoreEvent::TurnCompleted {
+                    session_id: sid,
+                    turn_id: tid,
+                    stop_reason: "completed".to_string(),
+                },
+            )
+            .await;
+    }
+    // Short settle bound: the reaper filters each envelope as it
+    // arrives, so a retained lease after unrelated terminals proves
+    // the filter held.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let store = SessionControllerStore::new(fixture.team.pool().clone());
+    assert!(
+        store.get(&fixture.session_id).await.unwrap().is_some(),
+        "unrelated terminal events must not release the lease"
+    );
+    fixture
+        .daemon
+        .event_log
+        .publish(
+            Some(fixture.session_id.clone()),
+            Some(fixture.turn_id.clone()),
+            codegg::protocol::core::CoreEvent::TurnCompleted {
+                session_id: fixture.session_id.clone(),
+                turn_id: fixture.turn_id.clone(),
+                stop_reason: "completed".to_string(),
+            },
+        )
+        .await;
+    let mut cleared = false;
+    for _ in 0..100 {
+        if store.get(&fixture.session_id).await.unwrap().is_none() {
+            cleared = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        cleared,
+        "matching terminal must still release after unrelated events"
+    );
+}
+
+// C002 WP2: repeat the immediate-publish scenario across fresh
+// fixtures to expose scheduling-order regressions without turning
+// the test into a benchmark.
+#[tokio::test(flavor = "current_thread")]
+async fn reaper_immediate_publish_repeated() {
+    for i in 0..10 {
+        let tag = format!("reaper-repeat-{i}");
+        let fixture = lease_fixture(&tag).await;
+        fixture
+            .daemon
+            .spawn_turn_reaper(fixture.session_id.clone(), fixture.turn_id.clone());
+        let event = if i % 2 == 0 {
+            codegg::protocol::core::CoreEvent::TurnCompleted {
+                session_id: fixture.session_id.clone(),
+                turn_id: fixture.turn_id.clone(),
+                stop_reason: "completed".to_string(),
+            }
+        } else {
+            codegg::protocol::core::CoreEvent::TurnFailed {
+                session_id: fixture.session_id.clone(),
+                turn_id: Some(fixture.turn_id.clone()),
+                message: "boom".to_string(),
+            }
+        };
+        fixture
+            .daemon
+            .event_log
+            .publish(
+                Some(fixture.session_id.clone()),
+                Some(fixture.turn_id.clone()),
+                event,
+            )
+            .await;
+        let store = SessionControllerStore::new(fixture.team.pool().clone());
+        let mut cleared = false;
+        for _ in 0..100 {
+            if store.get(&fixture.session_id).await.unwrap().is_none() {
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(cleared, "iteration {i}: immediate terminal must release");
+    }
+}
+
 // ── Submit acquisition + races ───────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

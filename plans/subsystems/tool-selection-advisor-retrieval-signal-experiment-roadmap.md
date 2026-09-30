@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active
+Status: closed (negative-valid)
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -156,9 +156,10 @@ M004 operating point   M003 learned projection
 M005 fresh v4 qualification
 ```
 
-- M001 is ready.
-- M002 is blocked on M001.
-- M003 is conditional: only if M002 does not clear the frozen dev recall gates and M001 found no evaluation-label defect.
+- M001 is blocked (evaluation hard stop; audit + preregistration complete).
+- M006 is closed positively and unblocked M002 (decision `current-step-only`, re-derived 69 per universe, receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`).
+- M006 resolved the relevance question; M008 closed the tokenizer clarification and M009 closed semantic cache arm identity. The first full M002 sweep exposed a derived-label projection defect; M010 corrected it before M002's valid negative frontier run.
+- M003 is conditional on M002's valid negative result and the positive current-step inferability re-audit in M006; the historical blocked M001 closure remains unchanged.
 - M004 requires either positive M002 or positive M003.
 - M005 requires positive M004.
 
@@ -170,9 +171,18 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/001-signal-sufficiency-audit-and-preregistration.md`
 
-Status: ready.
+Status: blocked (historical closure). M006 later resolved the relevance-target blocker; M002 completed with a valid negative result and M003 completed with a valid negative result. This historical M001 status is retained unchanged.
 
-Audit every persistent miss at case level, determine whether the relevance label is inferable from allowed query state, freeze Retrieval Signal V2 field/normalization boundaries, and preregister deterministic and learned experiment degrees of freedom.
+Audit complete and preregistration frozen, but the §4 hard stop
+triggered: three gate-critical labels are supporting-workflow steps, not
+current-step needs (closure
+`plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`;
+receipt `assets/tool-advisor/retrieval-signal-m001-preregistration.json`
+with `m002_ready=false`). M006 later resolved the relevance-target
+  blocker. M007 supplied the scoring details; M008 froze distinct lexical
+  tokenizers and BM25F term accounting; M009 froze semantic cache arm identity.
+  M002's frozen preregistration receipt fingerprint is
+  `4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e`.
 
 ### M002 — Deterministic Retrieval Signal V2
 
@@ -180,9 +190,25 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/002-deterministic-retrieval-signal-v2.md`
 
-Status: blocked on M001.
+Status: closed negative-valid — complete frontier receipt `assets/tool-advisor/retrieval-signal-m002-frontier.json` found no operating point clearing the frozen gates and recorded zero authority violations; final closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-completion-status.md` (initial blocked decision preserved in `002-status.md`).
 
-Implement versioned field-aware query/descriptor construction and measure the same 64/128/256-tool dev frontier without training.
+Implement versioned field-aware query/descriptor construction and measure the 64/128/256-tool dev frontier without training, on M006's re-derived denominators and only using the corrected frozen receipt.
+
+### M009 — Semantic cache arm identity corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/009-semantic-cache-arm-identity-corrective.md`
+
+Status: closed — arm identity is in the preregistration cache contract and runtime cache key; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/009-status.md`.
+
+### M010 — Current-step label projection corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/010-current-step-label-projection-corrective.md`
+
+Status: closed — closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/010-status.md`; M006 projection and pre-encoder fingerprint checks pass. M002's final corrected frontier is closed negative-valid.
 
 ### M003 — Frozen-encoder learned retrieval projection
 
@@ -190,9 +216,9 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: blocked/conditional on M002.
+Status: closed (negative-valid) — the complete 81-point M003 projection sweep cleared no frozen retrieval gates; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/003-status.md`. M004 and M005 remain blocked because no positive retrieval result exists.
 
-If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
+The frozen projection grid used train-only graded positives and pre-frozen hard negatives. No arm cleared dev retrieval gates; no artifact was selected. See the M003 closure for receipt, verification, and resource-measurement limitation.
 
 ### M004 — Retrieval + promotion operating point
 
@@ -213,6 +239,40 @@ Plan:
 Status: blocked on M004.
 
 Build a new zero-leakage, order-balanced semantic holdout and run one separately preregistered release-mode qualification of the complete retrieval + span-packed ranker + promotion stack.
+
+### M006 — Retrieval evaluation corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/006-retrieval-evaluation-corrective.md`
+
+Status: closed (positive) — decision `current-step-only` recorded with rationale, gate-critical set re-derived (1 included / 3 excluded), M002 unblocked (receipt `assets/tool-advisor/retrieval-signal-m006-decision.json`; closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`).
+
+Registered by the M001 §4 hard stop (closure
+`plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`).
+Decides the intended relevance target (all plausible workflow tools,
+current-step tools only, or graded recall), re-derives the gate-critical
+label set mechanically over frozen M001 rows without relabeling history,
+and unblocks M002 iff the re-derived set is fully inferable. Owns a
+negative workstream close otherwise.
+
+### M007 — M002 preregistration reproducibility corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/007-m002-preregistration-reproducibility-corrective.md`
+
+Status: closed — every arm is reproducible from the frozen receipt (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/007-status.md`).
+
+M007 froze scoring weights and semantic encodings without inspecting M002 dev outcomes. M008 closed the tokenizer/frequency distinction. M009 owns a semantic cache arm identity defect found during source review before the M002 sweep; M002 remains blocked until M009 closes.
+
+### M008 — Lexical-arm tokenization corrective
+
+Plan:
+
+- `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/008-lexical-arm-tokenization-corrective.md`
+
+Status: closed — the corrected typed preregistration and receipt define distinct occurrence-preserving flat/BM25F tokenization and normalized/deduplicated tokenization, with BM25F query/document frequency, IDF, and average-length rules; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/008-status.md`. No M002 measurement occurred before closure.
 
 ## 8. Exit conditions
 

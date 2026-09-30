@@ -1,0 +1,172 @@
+{
+  "spec": {
+    "schema_version": 1,
+    "protocol": "retrieval-signal-m002-preregistration-v1",
+    "relevance_decision_receipt": "assets/tool-advisor/retrieval-signal-m006-decision.json",
+    "denominators": {
+      "universe_sizes": [
+        64,
+        128,
+        256
+      ],
+      "eligible_relevant_each": 69,
+      "required_hits": {
+        "64": 69,
+        "128": 68,
+        "256": 66
+      }
+    },
+    "k_values": [
+      16,
+      24,
+      32
+    ],
+    "gates": {
+      "64": 0.99,
+      "128": 0.98,
+      "256": 0.95,
+      "authority_violations": 0
+    },
+    "bm25": {
+      "k1": 1.5,
+      "b": 0.75,
+      "idf": "ln(1 + (N - df + 0.5)/(df + 0.5))",
+      "query_tf": "raw term frequency after the arm-specific tokenizer",
+      "document_length": "sum of token occurrences after the arm-specific tokenizer",
+      "flat_average_length": "mean document token count over every candidate in that case universe",
+      "field_document_frequency": "count candidate documents containing the term in any descriptor field",
+      "field_average_length": "mean field token count over every candidate, including empty fields",
+      "zero_score_tie_break": "canonical_name ascending"
+    },
+    "normalization": {
+      "unicode": "NFKC then full lowercase",
+      "tokenization": "split on non-alphanumeric; decompose snake/kebab/camel identifiers; deduplicate preserving first occurrence",
+      "stemming": "none",
+      "synonyms": "none"
+    },
+    "lexical_arms": [
+      {
+        "name": "v1-bm25-baseline",
+        "query": "AdvisorContextV2 serialized context",
+        "descriptor": "canonical name + description",
+        "tokenizer": "existing ToolCatalog tokenizer/scorer; unchanged baseline implementation"
+      },
+      {
+        "name": "signal-v2-flat-bm25",
+        "query": "RetrievalQueryV2::flat_text",
+        "descriptor": "RetrievalDescriptorV2::flat_text",
+        "tokenizer": "lowercase Unicode text; split on every non-alphanumeric character; preserve repeated tokens; no identifier decomposition",
+        "scorer": "BM25 constants above; query and document term frequency count occurrences"
+      },
+      {
+        "name": "signal-v2-field-weighted-bm25",
+        "query_fields": [
+          {
+            "name": "current_objective",
+            "weight": 3.0
+          },
+          {
+            "name": "current_task",
+            "weight": 3.0
+          },
+          {
+            "name": "next_steps",
+            "weight": 1.0
+          },
+          {
+            "name": "unresolved_signal",
+            "weight": 2.0
+          },
+          {
+            "name": "capability_cue",
+            "weight": 2.0
+          }
+        ],
+        "descriptor_fields": [
+          {
+            "name": "canonical_name",
+            "weight": 4.0
+          },
+          {
+            "name": "identifier_tokens",
+            "weight": 3.0
+          },
+          {
+            "name": "description",
+            "weight": 1.0
+          },
+          {
+            "name": "category_disclosure",
+            "weight": 0.5
+          },
+          {
+            "name": "schema_fields",
+            "weight": 2.0
+          },
+          {
+            "name": "normalization",
+            "weight": 0.0
+          }
+        ],
+        "tokenizer": "same occurrence-preserving lowercase Unicode/alphanumeric-boundary tokenizer as signal-v2-flat-bm25, applied independently to each field",
+        "scorer": "BM25F: per term qtf=sum(query_field_weight*raw field term frequency); weighted_tf=sum(descriptor_field_weight*raw field term frequency/(1-b+b*field_length/field_average_length)); IDF uses document presence in any descriptor field; score=sum(IDF*qtf*(k1+1)*weighted_tf/(k1+weighted_tf)); average lengths are means over all candidates and empty fields count as length zero"
+      },
+      {
+        "name": "signal-v2-normalized-bm25",
+        "query": "signal_tokens(RetrievalQueryV2::flat_text)",
+        "descriptor": "signal_tokens(RetrievalDescriptorV2::flat_text)",
+        "tokenizer": "NFKC; full Unicode lowercase; split on non-alphanumeric; decompose snake/kebab/camel identifiers; deduplicate preserving first occurrence; no stemming or synonyms",
+        "scorer": "BM25 constants above; normalized unique tokens each count once"
+      }
+    ],
+    "semantic_arms": [
+      {
+        "name": "signal-v2-flat",
+        "query": "unlabelled RetrievalQueryV2 field values in frozen field order",
+        "descriptor": "RetrievalDescriptorV2::flat_text"
+      },
+      {
+        "name": "signal-v2-field-labelled-descriptor",
+        "query": "unlabelled RetrievalQueryV2 field values in frozen field order",
+        "descriptor": "RetrievalDescriptorV2::field_labelled_text"
+      },
+      {
+        "name": "signal-v2-field-labelled-query",
+        "query": "RetrievalQueryV2::serialize with frozen field labels",
+        "descriptor": "RetrievalDescriptorV2::flat_text"
+      }
+    ],
+    "pooling_variants": [
+      "mean",
+      "cls"
+    ],
+    "semantic_scoring": "Cross each semantic arm with both pooling variants. Encode query and descriptor independently using CandleBertSequenceEncoder::encode_context(text, pooling), whose token budget is MAX_PAIR_TOKENS=256. L2-normalize vectors, rank cosine dot product descending, and tie-break canonical_name ascending.",
+    "encoder_asset": {
+      "repository": "sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "required_files": [
+        "config.json",
+        "model.safetensors",
+        "vocab.txt",
+        "tokenizer_config.json or special_tokens_map.json",
+        "LICENSE"
+      ],
+      "manifest_path": "target/tool-advisor/reference-assets/all-minilm-l6-v2/manifest.json",
+      "verification": "ResolvedAssets validates manifest SHA-256 for config, vocabulary, weights, and license; no network or download path"
+    },
+    "cache_key_fields": [
+      "representation_schema_version",
+      "semantic_arm",
+      "descriptor_fingerprint",
+      "encoder_tokenizer_version",
+      "pooling",
+      "surface_fingerprint"
+    ],
+    "encoder_tokenizer_version": "all-MiniLM-L6-v2@1110a243fdf4706b3f48f1d95db1a4f5529b4d41 plus verified manifest hashes for config/vocabulary/weights",
+    "surface_fingerprint": "SHA-256 over sorted (canonical_name, disclosure, descriptor_fingerprint_v2) tuples for every candidate in the expanded case universe; query fields are excluded",
+    "cache_contents": "descriptor embeddings only; query embeddings are never cached",
+    "authority": "rank only candidates already present and deferred in the frozen expanded universe; no candidate creation, filtering, or authority decision",
+    "selection": "best per-arm operating point uses smallest K, then lower p95 latency, then lower descriptor bytes/cache size, then lexical mode name; no post-hoc variants or parameter changes"
+  },
+  "sha256": "4e90a05434fc839ba5f0191b590bf80c2bf796f0b0bfb9aed21b0a939ceff36e"
+}

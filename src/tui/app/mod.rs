@@ -13909,11 +13909,10 @@ mod remote_protocol_tests {
         // was never stored because the effect was rejected.
         let snap_auto = automation_client.build_remote_snapshot(automation_client.remote_sequence);
         assert!(
-            snap_auto
+            !snap_auto
                 .plugin_panels
                 .iter()
-                .find(|v| v.id == "multi-client:panel-1")
-                .is_none(),
+                .any(|v| v.id == "multi-client:panel-1"),
             "automation client must not have the panel in snapshot"
         );
     }

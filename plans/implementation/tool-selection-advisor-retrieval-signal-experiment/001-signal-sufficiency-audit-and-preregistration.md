@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M001 — Signal Sufficiency Audit and Preregistration
 
-Status: ready for handoff
+Status: blocked — evaluation hard stop, closure recorded at `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`; M006 resolved relevance and M007 froze M002's scoring details, so M002 is now ready
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 

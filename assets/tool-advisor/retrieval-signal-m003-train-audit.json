@@ -1,0 +1,1268 @@
+{
+  "schema_version": 1,
+  "protocol": "retrieval-signal-m003-train-audit-v1",
+  "audit_taxonomy_version": 1,
+  "audit_taxonomy_sha256": "919053a208e98776f8401248db8058b57b2011b4ab26efa29f86cb93b2001404",
+  "m006_decision_sha256": "24e3783f1cc1c3d8934bac1592607702966112554db8ca1215087f90cfd09756",
+  "dataset_sha256": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "dev_partition_sha256": "b804b7d8c3ea981d2f53e32d37357aa39501159f8fc37bfded64c8fc38dc52a9",
+  "train_partition_sha256": "c67df3caf97f05b5b62e2599d933c72dc511132da4e9c98fc2d184de2f190fdf",
+  "optimizer_input_sha256": "b1aec285c2bcc93ebb0945385dbc6cc2b1bbe42f77010b7432dfd16bf5a1b0ba",
+  "train_cases": 132,
+  "train_cases_with_labels": 102,
+  "optimizer_cases": 102,
+  "labels_by_class": {
+    "descriptor-incomplete": 2,
+    "implicit-secondary": 19,
+    "query-explicit": 113,
+    "query-paraphrase": 4
+  },
+  "labels_by_grade": {
+    "2": 72,
+    "3": 66
+  },
+  "labels": [
+    {
+      "case_id": "context-semantic-133-variant-1",
+      "tool": "plan_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'plan'",
+      "supporting_query_text": "plan entry for metric_si",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-137-variant-1",
+      "tool": "plan_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'plan'",
+      "supporting_query_text": "plan entry for prompt_ca",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-143-variant-1",
+      "tool": "context_read",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'read'",
+      "supporting_query_text": "Read artifact trace_span",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-143-variant-1",
+      "tool": "goal_get",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'goal'",
+      "supporting_query_text": "goal The transcript ment",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-146-variant-1",
+      "tool": "context_read",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'read'",
+      "supporting_query_text": "Read artifact secret_vau",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-146-variant-1",
+      "tool": "goal_get",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'goal'",
+      "supporting_query_text": "goal",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-147-variant-1",
+      "tool": "goal_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'goal'",
+      "supporting_query_text": "goal that tracks session",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-148-variant-1",
+      "tool": "plan_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'plan'",
+      "supporting_query_text": "plan entry for rollback_",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-149-variant-1",
+      "tool": "context_read",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'read'",
+      "supporting_query_text": "Read the persisted artif",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "context-semantic-149-variant-1",
+      "tool": "process_list",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'context_read' (query-explicit via 'Read the persisted artif'); no descriptor, schema, or paraphrase cue for 'process_list' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Read the persisted artifact rollout_plan recorded in catalog page cp-8802 (ref co-0022)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "filesystem-semantic-000-variant-1",
+      "tool": "git_log",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'history'",
+      "supporting_query_text": "history view hv-1211 (re",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-000-variant-1",
+      "tool": "read",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'read'",
+      "supporting_query_text": "Read the module rate_lim",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-000-variant-2",
+      "tool": "read",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'read'",
+      "supporting_query_text": "Read the module retry_bu",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-005-variant-1",
+      "tool": "list_dir",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'list'",
+      "supporting_query_text": "List the entries of memo",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-006-variant-1",
+      "tool": "write",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'write'",
+      "supporting_query_text": "write completed The tran",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-009-variant-1",
+      "tool": "write",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'files'",
+      "supporting_query_text": "files) output, but that ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-014-variant-1",
+      "tool": "read",
+      "grade": 3,
+      "class": "query-paraphrase",
+      "rationale": "allowed query expresses generic action 'open' in the frozen action family of descriptor verb 'read'",
+      "supporting_query_text": "Open",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-015-variant-1",
+      "tool": "lint",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'write' (query-explicit via 'Persist'); no descriptor, schema, or paraphrase cue for 'lint' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Persist the generated notes for health_gate into plan annex pa-5502 (ref fi-0020)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "filesystem-semantic-015-variant-1",
+      "tool": "write",
+      "grade": 2,
+      "class": "descriptor-incomplete",
+      "rationale": "query expresses schema cue 'the' present in the live tool contract but absent from v1 retrieval text",
+      "supporting_query_text": "the generated notes for ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-016-variant-1",
+      "tool": "read",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'write' (query-explicit via 'write completed'); no descriptor, schema, or paraphrase cue for 'read' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Create status board sb-1311 (ref fi-0021) for secret_vault and confirm the write completed",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "filesystem-semantic-016-variant-1",
+      "tool": "write",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'write'",
+      "supporting_query_text": "write completed",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-018-variant-1",
+      "tool": "read",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'read'",
+      "supporting_query_text": "Read the module auth_tok",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-018-variant-1",
+      "tool": "semantic_search",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'read' (query-explicit via 'Read the module auth_tok'); no descriptor, schema, or paraphrase cue for 'semantic_search' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Read the module auth_token at fixture index fi-7702 (ref fi-0023) and report its public exports",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "filesystem-semantic-019-variant-1",
+      "tool": "glob",
+      "grade": 3,
+      "class": "query-paraphrase",
+      "rationale": "query expresses 'locate', a generic paraphrase of descriptor verb 'find' with no exact descriptor term present",
+      "supporting_query_text": "Locate every test fixtur",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "filesystem-semantic-021-variant-1",
+      "tool": "write",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'write'",
+      "supporting_query_text": "write completed",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-044-variant-1",
+      "tool": "git_log",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'history'",
+      "supporting_query_text": "history of event_bus in ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-046-variant-1",
+      "tool": "git_log",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'log'",
+      "supporting_query_text": "log sl-6601 (ref gi-0005",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-054-variant-1",
+      "tool": "git_diff",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'diff'",
+      "supporting_query_text": "diff The transcript ment",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-054-variant-1",
+      "tool": "git_status",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'status'",
+      "supporting_query_text": "status for canary_probe ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-058-variant-1",
+      "tool": "browser_test",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'git_diff' (query-explicit via 'diff touching token_buck'); no descriptor, schema, or paraphrase cue for 'browser_test' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Show the unstaged diff touching token_bucket inside config overlay co-1412 (ref gi-0019)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "git-semantic-058-variant-1",
+      "tool": "git_diff",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'diff'",
+      "supporting_query_text": "diff touching token_buck",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-059-variant-1",
+      "tool": "git_log",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'history'",
+      "supporting_query_text": "history of audit_trail i",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-060-variant-1",
+      "tool": "git_log",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'history'",
+      "supporting_query_text": "history of watch_stream ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-064-variant-1",
+      "tool": "git_log",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'history'",
+      "supporting_query_text": "history of query_planner",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-065-variant-1",
+      "tool": "git_diff",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'diff'",
+      "supporting_query_text": "diff",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "git-semantic-065-variant-1",
+      "tool": "git_status",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'status'",
+      "supporting_query_text": "status for secret_vault ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-070-variant-1",
+      "tool": "lsp_hover",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation of fixture",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-071-variant-1",
+      "tool": "lsp_definition",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'lsp_hover' (query-explicit via 'documentation for watch_'); no descriptor, schema, or paraphrase cue for 'lsp_definition' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Show the documentation for watch_stream as seen from catalog page cp-8801 (ref ls-0010) The transcript mentions goal_get (Show the active goal) output, but that",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "lsp-semantic-071-variant-1",
+      "tool": "lsp_hover",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for watch_",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-074-variant-1",
+      "tool": "browser_test",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'lsp_hover' (query-explicit via 'documentation for task_q'); no descriptor, schema, or paraphrase cue for 'browser_test' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Show the documentation for task_queue as seen from workspace snapshot ws-0102 (ref ls-0013) The transcript mentions goal_get (Show the active goal) output, but ",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "lsp-semantic-074-variant-1",
+      "tool": "lsp_hover",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for task_q",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-076-variant-1",
+      "tool": "lsp_hover",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for dep_lo",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-078-variant-1",
+      "tool": "json_edit",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'lsp_definition' (query-explicit via 'definition of config_man'); no descriptor, schema, or paraphrase cue for 'json_edit' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Jump to the definition of config_manifest referenced from quoted transcript t-4402 (ref ls-0017) The transcript mentions read (Read bounded file contents) outpu",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "lsp-semantic-078-variant-1",
+      "tool": "lsp_definition",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'definition'",
+      "supporting_query_text": "definition of config_man",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-079-variant-1",
+      "tool": "lsp_hover",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation of key_rin",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-079-variant-1",
+      "tool": "lsp_rename",
+      "grade": 2,
+      "class": "query-paraphrase",
+      "rationale": "query expresses 'renaming', a generic paraphrase of descriptor verb 'rename' with no exact descriptor term present",
+      "supporting_query_text": "renaming it",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-080-variant-1",
+      "tool": "lsp_definition",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'definition'",
+      "supporting_query_text": "definition of prompt_cac",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-082-variant-1",
+      "tool": "lsp_references",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "allowed query expresses generic action 'find' in the frozen action family of descriptor verb 'find'",
+      "supporting_query_text": "Find",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-082-variant-1",
+      "tool": "shell_exec",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'lsp_references' (query-explicit via 'Find'); no descriptor, schema, or paraphrase cue for 'shell_exec' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Find every reference to retry_budget across config overlay co-1411 (ref ls-0021)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "lsp-semantic-085-variant-1",
+      "tool": "lsp_definition",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'definition'",
+      "supporting_query_text": "definition of audit_trai",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "lsp-semantic-086-variant-1",
+      "tool": "lsp_hover",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for merge_",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-155-variant-1",
+      "tool": "plugin_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'search'",
+      "supporting_query_text": "Search the catalog for a",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-156-variant-1",
+      "tool": "plugin_enable",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'enable'",
+      "supporting_query_text": "Enable the extension for",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-156-variant-2",
+      "tool": "browser_test",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'browser'",
+      "supporting_query_text": "browser tests Later revi",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-157-variant-1",
+      "tool": "plugin_install",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'install'",
+      "supporting_query_text": "install the match",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-157-variant-1",
+      "tool": "plugin_search",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'search'",
+      "supporting_query_text": "Search the catalog for a",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-157-variant-2",
+      "tool": "plugin_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'plugin'",
+      "supporting_query_text": "plugin_search step is st",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-159-variant-1",
+      "tool": "plugin_install",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'install'",
+      "supporting_query_text": "Install the extension th",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-162-variant-1",
+      "tool": "browser_test",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'browser'",
+      "supporting_query_text": "browser test bundle exer",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-163-variant-1",
+      "tool": "plugin_enable",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'enable'",
+      "supporting_query_text": "Enable the installed ext",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-163-variant-1",
+      "tool": "write",
+      "grade": 2,
+      "class": "descriptor-incomplete",
+      "rationale": "query expresses schema cue 'file' present in the live tool contract but absent from v1 retrieval text",
+      "supporting_query_text": "file contents) output, b",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-164-variant-1",
+      "tool": "plugin_enable",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'enable'",
+      "supporting_query_text": "Enable the installed ext",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-164-variant-1",
+      "tool": "table_filter",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'plugin_enable' (query-explicit via 'Enable the installed ext'); no descriptor, schema, or paraphrase cue for 'table_filter' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Enable the installed extension backing key_ring in snapshot log sl-6601 (ref pl-0015) The transcript mentions read (Read bounded file contents) output, but that",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "plugin-semantic-167-variant-1",
+      "tool": "browser_test",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'browser'",
+      "supporting_query_text": "browser test bundle exer",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-168-variant-1",
+      "tool": "plugin_install",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'install'",
+      "supporting_query_text": "Install the extension th",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-170-variant-1",
+      "tool": "plugin_enable",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'enable'",
+      "supporting_query_text": "Enable the extension for",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "plugin-semantic-172-variant-1",
+      "tool": "browser_test",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'browser'",
+      "supporting_query_text": "browser test bundle exer",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-110-variant-1",
+      "tool": "web_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for retry_",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-112-variant-1",
+      "tool": "docs_lookup",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor phrase 'look up'",
+      "supporting_query_text": "Look up the API of watch",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-113-variant-1",
+      "tool": "docs_lookup",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor phrase 'look up'",
+      "supporting_query_text": "Look up the API of confi",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-113-variant-1",
+      "tool": "summarize",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'summarize'",
+      "supporting_query_text": "summarize the result",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-113-variant-2",
+      "tool": "docs_lookup",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'docs'",
+      "supporting_query_text": "docs_lookup step is stil",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-116-variant-1",
+      "tool": "web_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for index_",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-117-variant-1",
+      "tool": "docs_lookup",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor phrase 'look up'",
+      "supporting_query_text": "Look up the API of query",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-118-variant-1",
+      "tool": "fetch_url",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'fetch'",
+      "supporting_query_text": "Fetch the reference page",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-120-variant-1",
+      "tool": "fetch_url",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'fetch'",
+      "supporting_query_text": "Fetch the reference page",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-120-variant-1",
+      "tool": "lsp_definition",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'fetch_url' (query-explicit via 'Fetch the reference page'); no descriptor, schema, or paraphrase cue for 'lsp_definition' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Fetch the reference page for key_ring linked from snapshot log sl-6602 (ref re-0015) as text The transcript mentions read (Read bounded file contents) output, b",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "research-semantic-122-variant-1",
+      "tool": "web_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for lease_",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "research-semantic-123-variant-1",
+      "tool": "web_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'documentation'",
+      "supporting_query_text": "documentation for seed_b",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-022-variant-1",
+      "tool": "git_status",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'status'",
+      "supporting_query_text": "status board sb-1311 (re",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-022-variant-1",
+      "tool": "grep",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'literal'",
+      "supporting_query_text": "literal token audit_trai",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-022-variant-2",
+      "tool": "grep",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'grep'",
+      "supporting_query_text": "grep step is still pendi",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-028-variant-1",
+      "tool": "process_list",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'semantic_search' (query-explicit via 'Locate'); no descriptor, schema, or paraphrase cue for 'process_list' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Locate code semantically related to trace_span near workspace snapshot ws-0102 (ref se-0011) The transcript mentions read (Read bounded file contents) output, b",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "search-semantic-028-variant-1",
+      "tool": "semantic_search",
+      "grade": 2,
+      "class": "query-paraphrase",
+      "rationale": "allowed query expresses generic action 'locate' in the frozen action family of descriptor verb 'search'",
+      "supporting_query_text": "Locate",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-029-variant-1",
+      "tool": "semantic_search",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'search'",
+      "supporting_query_text": "Search semantically for ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-029-variant-1",
+      "tool": "symbol_search",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'search'",
+      "supporting_query_text": "Search semantically for ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-031-variant-1",
+      "tool": "semantic_search",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'search'",
+      "supporting_query_text": "Search semantically for ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-031-variant-1",
+      "tool": "symbol_search",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'search'",
+      "supporting_query_text": "Search semantically for ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-032-variant-1",
+      "tool": "symbol_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'symbol'",
+      "supporting_query_text": "symbol named merge_queue",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-039-variant-1",
+      "tool": "grep",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'literal'",
+      "supporting_query_text": "literal uses of seed_bun",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-039-variant-1",
+      "tool": "symbol_search",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'symbol'",
+      "supporting_query_text": "symbol declaration",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-040-variant-1",
+      "tool": "symbol_search",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'symbol'",
+      "supporting_query_text": "symbol named task_queue ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "search-semantic-042-variant-1",
+      "tool": "grep",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'literal'",
+      "supporting_query_text": "literal token render_pip",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-178-variant-1",
+      "tool": "process_list",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'list'",
+      "supporting_query_text": "List the processes curre",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-178-variant-1",
+      "tool": "typecheck",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'process_list' (query-explicit via 'List the processes curre'); no descriptor, schema, or paraphrase cue for 'typecheck' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "List the processes currently running log_shipper under config overlay co-1412 (ref sh-0005)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "shell-semantic-178-variant-2",
+      "tool": "process_list",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'process'",
+      "supporting_query_text": "processes currently runn",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-179-variant-1",
+      "tool": "env_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'environment'",
+      "supporting_query_text": "environment for trace_sp",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-183-variant-1",
+      "tool": "env_get",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor phrase 'environment variables'",
+      "supporting_query_text": "environment variables co",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-183-variant-1",
+      "tool": "test_run",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'env_get' (query-explicit via 'environment variables co'); no descriptor, schema, or paraphrase cue for 'test_run' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Read the environment variables configuring health_gate in status board sb-1311 (ref sh-0012) The transcript mentions write (Write content to files) output, but ",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "shell-semantic-186-variant-1",
+      "tool": "process_list",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'list'",
+      "supporting_query_text": "List the processes curre",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-186-variant-1",
+      "tool": "table_filter",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'process_list' (query-explicit via 'List the processes curre'); no descriptor, schema, or paraphrase cue for 'table_filter' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "List the processes currently running query_planner under workspace snapshot ws-0102 (ref sh-0015)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "shell-semantic-187-variant-1",
+      "tool": "env_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor phrase 'environment variables'",
+      "supporting_query_text": "environment variables co",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-188-variant-1",
+      "tool": "shell_exec",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'shell'",
+      "supporting_query_text": "shell history",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-189-variant-1",
+      "tool": "process_list",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'list'",
+      "supporting_query_text": "List the processes curre",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-193-variant-1",
+      "tool": "process_list",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'list'",
+      "supporting_query_text": "List the processes curre",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-194-variant-1",
+      "tool": "env_get",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'environment'",
+      "supporting_query_text": "environment for quota_po",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-195-variant-1",
+      "tool": "process_list",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'list'",
+      "supporting_query_text": "List the processes curre",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "shell-semantic-195-variant-1",
+      "tool": "web_search",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'process_list' (query-explicit via 'List the processes curre'); no descriptor, schema, or paraphrase cue for 'web_search' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "List the processes currently running secret_vault under fixture index fi-7701 (ref sh-0024)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "structured-semantic-198-variant-1",
+      "tool": "json_edit",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'json'",
+      "supporting_query_text": "JSON document artifact_c",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-198-variant-1",
+      "tool": "json_query",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'json'",
+      "supporting_query_text": "JSON document artifact_c",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-198-variant-2",
+      "tool": "json_edit",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'json'",
+      "supporting_query_text": "JSON document query_plan",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-199-variant-1",
+      "tool": "json_edit",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'json'",
+      "supporting_query_text": "JSON document index_shar",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-202-variant-1",
+      "tool": "json_edit",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'edit'",
+      "supporting_query_text": "Edit document quota_pool",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-203-variant-1",
+      "tool": "json_edit",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'edit'",
+      "supporting_query_text": "Edit document render_pip",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-207-variant-1",
+      "tool": "json_query",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'json'",
+      "supporting_query_text": "JSON path config_manifes",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-207-variant-1",
+      "tool": "lsp_references",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'json_query' (query-explicit via 'JSON path config_manifes'); no descriptor, schema, or paraphrase cue for 'lsp_references' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Query the JSON path config_manifest inside document config overlay co-1411 (ref st-0016)",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "structured-semantic-212-variant-1",
+      "tool": "table_filter",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'filter'",
+      "supporting_query_text": "Filter the tabular expor",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-213-variant-1",
+      "tool": "env_get",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'schema_validate' (query-explicit via 'schema'); no descriptor, schema, or paraphrase cue for 'env_get' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Validate diff_viewer from catalog page cp-8802 (ref st-0022) against its declared schema",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "structured-semantic-213-variant-1",
+      "tool": "schema_validate",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'schema'",
+      "supporting_query_text": "schema",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "structured-semantic-215-variant-1",
+      "tool": "json_query",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'query'",
+      "supporting_query_text": "Query path trace_span in",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-089-variant-1",
+      "tool": "lint",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint feature_flag at wor",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-090-variant-1",
+      "tool": "test_run",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'run'",
+      "supporting_query_text": "run its focused tests",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-090-variant-1",
+      "tool": "typecheck",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'check'",
+      "supporting_query_text": "check dep_lock in fixtur",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-090-variant-2",
+      "tool": "typecheck",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'typecheck'",
+      "supporting_query_text": "typecheck step is still ",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-091-variant-1",
+      "tool": "coverage",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'coverage'",
+      "supporting_query_text": "coverage",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-091-variant-1",
+      "tool": "lint",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint watch_stream at quo",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-091-variant-2",
+      "tool": "lint",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint artifact_cache at m",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-092-variant-1",
+      "tool": "typecheck",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'check'",
+      "supporting_query_text": "check event_bus in snaps",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-093-variant-1",
+      "tool": "typecheck",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses descriptor term 'check'",
+      "supporting_query_text": "check prompt_cache in pl",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-094-variant-1",
+      "tool": "coverage",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'coverage'",
+      "supporting_query_text": "coverage of task_queue e",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-095-variant-1",
+      "tool": "test_run",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'run'",
+      "supporting_query_text": "Run the focused tests co",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-098-variant-1",
+      "tool": "lint",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint key_ring at audit e",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-099-variant-1",
+      "tool": "lint",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint the module policy_t",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-100-variant-1",
+      "tool": "test_run",
+      "grade": 3,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'run'",
+      "supporting_query_text": "Run the focused tests co",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-102-variant-1",
+      "tool": "coverage",
+      "grade": 2,
+      "class": "implicit-secondary",
+      "rationale": "grade 2 shares the case-highest grade with co-relevant 'lint' (query-explicit via 'Lint the module secret_v'); no descriptor, schema, or paraphrase cue for 'coverage' is expressed, so the label represents a later/supporting workflow step not inferable from allowed query state",
+      "supporting_query_text": "Lint the module secret_vault inside runbook excerpt rb-3301 (ref ve-0019) for style violations",
+      "optimizer_included": false
+    },
+    {
+      "case_id": "verification-semantic-102-variant-1",
+      "tool": "lint",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint the module secret_v",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-109-variant-1",
+      "tool": "coverage",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'coverage'",
+      "supporting_query_text": "coverage",
+      "optimizer_included": true
+    },
+    {
+      "case_id": "verification-semantic-109-variant-1",
+      "tool": "lint",
+      "grade": 2,
+      "class": "query-explicit",
+      "rationale": "query directly expresses canonical identifier token 'lint'",
+      "supporting_query_text": "Lint schema_registry at ",
+      "optimizer_included": true
+    }
+  ]
+}

@@ -1611,14 +1611,12 @@ impl Component for ConnectDialog {
                     )
                 } else if value.is_empty() {
                     format!("> {}_", " ".repeat(60))
+                } else if self.step == ConnectStep::EnterApiKey {
+                    let mask = crate::auth::mask_secret(value);
+                    let length_hint = format!(" ({} chars)", value.chars().count());
+                    format!("> {}{}{}", mask, length_hint, " ".repeat(8))
                 } else {
-                    if self.step == ConnectStep::EnterApiKey {
-                        let mask = crate::auth::mask_secret(value);
-                        let length_hint = format!(" ({} chars)", value.chars().count());
-                        format!("> {}{}{}", mask, length_hint, " ".repeat(8))
-                    } else {
-                        format!("> {}_", value)
-                    }
+                    format!("> {}_", value)
                 };
 
                 lines.push(Line::from(Span::styled(

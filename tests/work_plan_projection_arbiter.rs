@@ -218,10 +218,10 @@ async fn unfinished_plan_blocks_completion_and_complete_plan_exits() {
         .unwrap()
         .expect("active plan");
     assert!(matches!(
-        assessment.2,
+        assessment.2.assessment,
         codegg_core::work_plan::WorkPlanCompletionAssessment::Complete { .. }
     ));
-    let decision = codegg::work_plan_arbiter::decide_from_assessment(&assessment.2);
+    let decision = codegg::work_plan_arbiter::decide_from_assessment(&assessment.2.assessment);
     assert_eq!(
         decision,
         codegg::work_plan_arbiter::ArbiterDecision::AllowCompletion
@@ -276,8 +276,19 @@ async fn budget_expiry_preserves_remaining_state() {
         .await
         .unwrap();
     let assessment = codegg_core::work_plan::assess_work_plan(&plan, &items, &evidence);
+    // Budget-expiry short-circuits before any engine/subject logic, so the
+    // wrapper engine is irrelevant to this test.
+    let backed = codegg::work_plan_eggplan::EggplanBackedAssessment {
+        assessment,
+        engine: codegg::work_plan_eggplan::AssessmentEngine::LegacyNoWorkspaceContext,
+        eggplan_completion_family: None,
+        eggplan_reason_codes: Vec::new(),
+        mapping_digest: None,
+        subject: None,
+        engine_detail: "test wrapper".to_string(),
+    };
     let closed =
-        codegg::work_plan_arbiter::maybe_complete_plan_on_turn_end(&pool, &plan, &assessment, true)
+        codegg::work_plan_arbiter::maybe_complete_plan_on_turn_end(&pool, &plan, &backed, true)
             .await
             .unwrap();
     assert!(!closed, "budget expiry must preserve remaining state");

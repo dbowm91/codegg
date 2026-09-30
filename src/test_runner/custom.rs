@@ -300,6 +300,9 @@ mod tests {
     }
 
     #[test]
+    // Intentional non-emptiness guard on the allowlist constant (see
+    // test_emergency_default_model_constant_not_empty for rationale).
+    #[allow(clippy::const_is_empty)]
     fn allowlist_is_nonempty() {
         assert!(!CUSTOM_COMMAND_ALLOWLIST.is_empty());
         for entry in CUSTOM_COMMAND_ALLOWLIST {

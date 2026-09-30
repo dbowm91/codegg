@@ -1,13 +1,14 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M003 — Frozen-Encoder Retrieval Projection
 
-Status: blocked/conditional on M002
+Status: implemented
 
-Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
+Repository baseline: `99af426f`
 
 Hard dependencies:
 
-- M001 positive inferability/preregistration;
-- M002 valid negative result (deterministic Signal V2 did not clear the gates).
+- M001 positive current-step inferability/preregistration re-audit, recorded by M006 (`plans/closure/tool-selection-advisor-retrieval-signal-experiment/006-status.md`); the original blocked M001 closure remains historical evidence.
+- M002 valid negative result (deterministic Signal V2 did not clear the gates), formally closed at `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-completion-status.md`.
+- Positive M011 train-partition inferability audit and optimizer-input freeze, corrected and closed by M012: `plans/closure/tool-selection-advisor-retrieval-signal-experiment/012-status.md`; receipt `assets/tool-advisor/retrieval-signal-m003-train-audit.json`. M006 re-audited only the M001 dev gate-critical miss set, not M003's optimizer labels.
 
 Source roadmap:
 
@@ -156,6 +157,41 @@ Close negatively if:
 - projection latency materially breaks the existing turn-side envelope.
 
 Transformer fine-tuning would require a new plan.
+
+## 10a. Frozen realization choices before the sweep
+
+The M001 receipt freezes the model grid and loss weights, while this plan
+leaves a few deterministic realization details open. Before looking at any
+M003 development result, freeze these details in
+`projection_contract()` in `src/tool_advisor/retrieval_signal_m003.rs`; its
+SHA-256 is copied to the receipt.
+
+- Encode `RetrievalQueryV2::flat_text` and `RetrievalDescriptorV2::flat_text`
+  with the pinned, frozen MiniLM and mean pooling; L2-normalize projected
+  vectors before cosine scoring.
+- Initialize projection weights with the preregistered seed using a
+  deterministic xorshift uniform distribution bounded by `sqrt(6/fan_in)`;
+  initialize biases to zero. Use AdamW with zero weight decay, train-partition
+  order, seeded Fisher-Yates order per epoch, and exactly five epochs.
+- Use in-batch multi-positive log-softmax. Rows sharing the same relevant tool
+  identity are positives; grade 3 has weight 1.0 and grade 2 has weight 0.5.
+- Mine seven distinct hard-negative identities from the union of candidate
+  identities in the filtered historical train partition. Combine current
+  catalog BM25 rank and frozen MiniLM cosine rank by rank sum, reserving the
+  best same-family candidate when one exists. Freeze the identity list and its
+  hash before fitting.
+- The hard-negative term is the mean `relu(0.2 - positive_cosine +
+  negative_cosine)` at weight 0.5. Apply the same hinge to selected same-family
+  negatives at weight 0.1. No-tool rows remain outside projection training.
+- A candidate is eligible only if the frozen recall gates and zero-authority
+  requirement pass, unknown/renamed MRR is within 0.02 of the frozen-embedding
+  baseline, family recall is within 0.03, and name-masked recall exceeds the
+  description-only lexical baseline. Choose the lowest parameter count, then
+  lowest passing K, then lowest measured projection latency.
+
+These are implementation details of the declared loss/grid, not new search
+dimensions. The contract hash and all 81 outcomes must be committed before any
+v3 diagnostic is opened.
 
 ## 11. Verification
 

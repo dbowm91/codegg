@@ -63,41 +63,39 @@ pub fn diff_files(old: &str, new: &str, path: &str) -> Vec<FileDiff> {
                 content: change.value().trim_end().to_string(),
             });
             in_change = true;
-        } else {
-            if in_change {
-                context_buffer.push(DiffLine {
-                    kind: DiffKind::Context,
-                    content: change.value().trim_end().to_string(),
-                });
+        } else if in_change {
+            context_buffer.push(DiffLine {
+                kind: DiffKind::Context,
+                content: change.value().trim_end().to_string(),
+            });
 
-                if context_buffer.len() > max_context * 2 {
-                    let final_lines: Vec<DiffLine> = context_buffer
-                        .drain(..context_buffer.len() - max_context)
-                        .collect();
-                    current_hunk_lines.extend(final_lines);
+            if context_buffer.len() > max_context * 2 {
+                let final_lines: Vec<DiffLine> = context_buffer
+                    .drain(..context_buffer.len() - max_context)
+                    .collect();
+                current_hunk_lines.extend(final_lines);
 
-                    if !current_hunk_lines.is_empty() {
-                        hunks.push(DiffHunk {
-                            old_start: current_old_start.unwrap_or(0),
-                            new_start: current_new_start.unwrap_or(0),
-                            lines: std::mem::take(&mut current_hunk_lines),
-                        });
-                    }
-
-                    current_old_start = None;
-                    current_new_start = None;
-                    in_change = false;
+                if !current_hunk_lines.is_empty() {
+                    hunks.push(DiffHunk {
+                        old_start: current_old_start.unwrap_or(0),
+                        new_start: current_new_start.unwrap_or(0),
+                        lines: std::mem::take(&mut current_hunk_lines),
+                    });
                 }
-            } else {
-                if current_hunk_lines.is_empty() {
-                    current_old_start = Some(this_old);
-                    current_new_start = Some(this_new);
-                }
-                context_buffer.push(DiffLine {
-                    kind: DiffKind::Context,
-                    content: change.value().trim_end().to_string(),
-                });
+
+                current_old_start = None;
+                current_new_start = None;
+                in_change = false;
             }
+        } else {
+            if current_hunk_lines.is_empty() {
+                current_old_start = Some(this_old);
+                current_new_start = Some(this_new);
+            }
+            context_buffer.push(DiffLine {
+                kind: DiffKind::Context,
+                content: change.value().trim_end().to_string(),
+            });
         }
     }
 

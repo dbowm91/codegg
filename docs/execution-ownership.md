@@ -102,6 +102,10 @@ process-spawn owner: all execution happens remotely via `eggwork-client`
 renewal, remote cancel). Scheduler admission, the permit lifetime, and
 attempt provenance apply unchanged; the permit spans the whole remote
 lifetime and remote failure never falls back to local execution. The
+executor may use a bounded, restart-cold acknowledged-manifest cache and
+Eggwork's explicitly advertised `workspace.derive.v1` transfer; the full
+local snapshot remains provenance authority, and the node's ready digest is
+checked before command submission. The
 companion static guard `scripts/check_eggwork_target_routing.py`
 pins target-first routing, crate confinement, and handle persistence.
 
