@@ -1,6 +1,6 @@
 # Eggwork Remote Execution M003 — Content-Aware Derived Workspace Transfer
 
-Status: ready for handoff
+Status: closed (`plans/closure/eggwork-fixed-target-remote-execution/003-status.md`; implementation `1ce377ce`; hosted CI run `36745285774` success)
 
 Source roadmap:
 

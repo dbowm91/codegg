@@ -1,6 +1,6 @@
 # Eggwork Fixed-Target Remote Execution Roadmap
 
-Status: active roadmap; M001+C001+M002+M002a closed, M003 ready for handoff, M004 deferred
+Status: active roadmap; M001+C001+M002+M002a+M003 closed, M004 deferred
 
 Canonical authority:
 
