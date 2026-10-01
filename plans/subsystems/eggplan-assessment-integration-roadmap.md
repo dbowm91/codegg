@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active roadmap; M001 closed, M002 closed
+Status: active roadmap; M001/M002 closed, M003 ready
 
 Canonical authority:
 
@@ -13,15 +13,15 @@ Canonical authority:
 External assessment substrate:
 
 - Eggplan repository: `https://github.com/eggstack/eggplan`
-- Eggplan integration blocker head reviewed:
-  `a4edb31b90f5f8a8a47e244110aa69747a0ac4bc`
-- Eggplan pure CodeGG bridge implementation:
+- Eggplan M002 pure bridge implementation:
   `088968bd58680ae2b3741e2f1feb0614e0ff81a0`
-- Eggplan staged-adoption plan:
-  `plans/implementation/codegg-integration/002-staged-eggplan-assessment-adoption.md`
-- current CodeGG M001 handoff baseline:
-  `f5f8d96d7b7371c8583196c58d36ef7b3118ed3c`
-- current CodeGG storage layout: v66; M001 owns additive v67
+- Eggplan M003 binding-contract planning registration:
+  `6ba3db24efb8ed5952be8c5a522a9c4c52f7ed63`
+- Eggplan M003 plan:
+  `plans/implementation/codegg-integration/003-repository-plan-binding-contract.md`
+- current CodeGG planning baseline:
+  `9e93e949e1a4abcc91fd7755d929a54fd6531160`
+- current CodeGG storage layout: v67; M003 owns additive v68
 - current pinned Eggwork revision:
   `6cc813418c3f14740a635fef79208e85219175bb`
 
@@ -168,20 +168,41 @@ permissive regression and no CodeGG runtime/storage ownership transfer.
 
 ### M003 — Repository Plan binding
 
-Status: dependency-ready; implementation plan not yet registered.
+Status: ready for coordinated handoff.
+
+CodeGG plan:
+
+- `plans/implementation/eggplan-assessment-integration/004-repository-plan-binding-and-writeback.md`
+
+Eggplan contract plan:
+
+- `eggstack/eggplan:plans/implementation/codegg-integration/003-repository-plan-binding-contract.md`
+- planning registration `6ba3db24efb8ed5952be8c5a522a9c4c52f7ed63`
 
 M002 closed positively at `ffa1c15e654776c3ebe1022f4ce7de2582bc5d98`
-with exact-head hosted qualification `36760308368`. The dependency gate is
-therefore satisfied.
+with exact-head hosted qualification `36760308368`.
 
-Allow a CodeGG session/WorkOrder to reference an Eggplan repository Plan and
-feed CodeGG job/run/test/artifact observations back through the qualified
-adapter contract. Repository identity translation and long-lived Plan binding
-belong here, not M001.
+M003 binds an explicit existing repository-local Eggplan Plan to a CodeGG
+session or one-shot shared-workspace WorkOrder occurrence. Eggplan becomes
+canonical for the bound Plan's intent/lifecycle/evidence/closure; CodeGG keeps
+a reconciled execution mirror and remains scheduler/session/worktree owner.
+
+The implementation owns v68 binding persistence, independently proves
+CodeGG-workspace <-> Eggplan `epr_*` identity before subject translation,
+writes repository lifecycle/evidence first, reconciles interrupted mirror
+updates, and closes only through Eggplan guarded finalization.
+
+Mutation-capable AutoIsolated WorkOrders are intentionally unsupported because
+managed worktrees do not reliably contain the repository-local untracked
+`.eggplan` state root. No state copy or silent unbound fallback is allowed.
 
 ## 5. Parallelism
 
-M001 is independent of:
+M003 may proceed independently of unrelated tool-advisor, Eggwork M004, and
+other closed/corrective workstreams. It is coordinated only with the Eggplan
+M003 compatibility-contract implementation.
+
+Historical note — M001 was independent of:
 
 - further Eggwork M003 workspace-transfer optimization; M002/M002a are already
   closed and their current snapshot/policy surface is the M001 baseline;
@@ -194,7 +215,12 @@ Do not serialize those unrelated workstreams on this roadmap.
 
 ## 6. Verification strategy
 
-M001/M002 qualification must cover:
+M003 qualification adds repository identity proof, v68 binding/restart,
+cross-store reconciliation, terminal evidence writeback, guarded repository
+closure, and one-shot WorkOrder inheritance to the historical M001/M002
+matrix below.
+
+M001/M002 qualification covered:
 
 - clean and dirty Git subjects;
 - staged, unstaged, untracked, deleted, symlink, and bounded submodule state;
