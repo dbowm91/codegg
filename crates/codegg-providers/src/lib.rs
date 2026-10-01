@@ -30,7 +30,6 @@ pub mod openrouter;
 pub mod responses_api;
 pub mod retry;
 pub mod setup_catalog;
-pub mod sse_parser;
 pub mod text_tool_parser;
 pub mod vertex;
 pub mod wire;

@@ -189,6 +189,10 @@ pub fn encode_openai_chat(
         if let Some(object) = body.as_object_mut() {
             object.remove("tool_choice");
         }
+    } else if request.tools.as_ref().is_some_and(Vec::is_empty) {
+        // The canonical IR normalizes absent and empty tool collections;
+        // preserve the existing OpenAI Chat distinction at the CodeGG edge.
+        body["tools"] = Value::Array(Vec::new());
     }
     let assistant_text: Vec<String> = crate::project_tool_call_history(&request.messages)
         .iter()
@@ -241,7 +245,28 @@ where
     B: AsRef<[u8]> + Send + 'static,
     E: Display + Send + 'static,
 {
-    let decoder = SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+    shared_stream(
+        stream,
+        eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse,
+        chunk_timeout,
+        policy,
+    )
+}
+
+/// Adapt a provider byte stream with the pinned kernel's family-specific SSE decoder.
+pub fn shared_stream<S, B, E>(
+    stream: S,
+    adapter: eggpool_wire::codec::StreamAdapterKind,
+    chunk_timeout: Option<Duration>,
+    policy: Option<std::sync::Arc<crate::ProviderWirePolicy>>,
+) -> crate::EventStream
+where
+    S: Stream<Item = Result<B, E>> + Send + Unpin + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: Display + Send + 'static,
+{
+    let openai_policy = adapter == eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse;
+    let decoder = SharedStreamDecoder::new(adapter);
     Box::pin(unfold(
         (stream, decoder, VecDeque::new(), false),
         move |(mut stream, mut decoder, mut pending, mut finished)| {
@@ -249,7 +274,12 @@ where
             async move {
                 loop {
                     if let Some(event) = pending.pop_front() {
-                        if let Some(event) = normalize_openai_event(event, policy.as_deref()) {
+                        let event = if openai_policy {
+                            normalize_openai_event(event, policy.as_deref())
+                        } else {
+                            normalize_private_reasoning_event(event, policy.as_deref())
+                        };
+                        if let Some(event) = event {
                             return Some((event, (stream, decoder, pending, finished)));
                         }
                         continue;
@@ -294,6 +324,20 @@ where
             }
         },
     ))
+}
+
+fn normalize_private_reasoning_event(
+    event: Result<ChatEvent, ProviderError>,
+    policy: Option<&crate::ProviderWirePolicy>,
+) -> Option<Result<ChatEvent, ProviderError>> {
+    match event {
+        Ok(ChatEvent::ReasoningDelta(_))
+            if !policy.is_some_and(|policy| policy.include_reasoning_content) =>
+        {
+            None
+        }
+        other => Some(other),
+    }
 }
 
 fn normalize_openai_event(
@@ -560,7 +604,20 @@ fn canonical_message(message: &Message, allow_private_reasoning: bool) -> Canoni
         } => {
             let mut message = semantic_message(
                 CanonicalRole::Tool,
-                vec![CanonicalContentBlock::text(content.as_str())],
+                vec![CanonicalContentBlock {
+                    kind: CanonicalBlockKind::ToolResult,
+                    text: Some(content.to_string()),
+                    media: None,
+                    call_id: Some(tool_call_id.to_string()),
+                    name: None,
+                    arguments: None,
+                    tool_input: None,
+                    tool_kind: eggpool_wire::ir::CanonicalToolKind::Function,
+                    is_error: false,
+                    signature: None,
+                    cache_control: None,
+                    prompt_cache_breakpoint: None,
+                }],
             );
             message.tool_call_id = Some(tool_call_id.to_string());
             message
@@ -622,6 +679,10 @@ fn semantic_message(role: CanonicalRole, content: Vec<CanonicalContentBlock>) ->
 
 fn text_block(text: &str) -> CanonicalContentBlock {
     CanonicalContentBlock::text(text)
+}
+
+pub fn system_message(text: &str) -> CanonicalMessage {
+    semantic_message(CanonicalRole::System, vec![text_block(text)])
 }
 
 fn response_format(format: &ResponseFormat) -> Map<String, Value> {
@@ -791,6 +852,22 @@ mod tests {
         assert!(generic.get("max_tokens").is_none());
         assert!(generic.get("response_format").is_none());
         assert!(generic.get("reasoning_effort").is_none());
+
+        let mut empty_tools = request.clone();
+        empty_tools.tools = Some(Vec::new());
+        let openai = crate::openai::OpenAiProvider::new(crate::openai::OpenAiConfig::default())
+            .build_body(&empty_tools);
+        assert_eq!(openai["tools"], serde_json::json!([]));
+        assert_eq!(openai["tool_choice"], "auto");
+        let generic = crate::openai_compatible::OpenAiCompatibleProvider::simple(
+            "generic",
+            "Generic",
+            "key",
+            "https://example.test/v1",
+        )
+        .build_body(&empty_tools);
+        assert_eq!(generic["tools"], serde_json::json!([]));
+        assert!(generic.get("tool_choice").is_none());
     }
 
     #[test]
