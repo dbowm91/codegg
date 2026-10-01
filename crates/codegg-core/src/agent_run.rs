@@ -426,6 +426,10 @@ fn run_transition_allowed(from: AgentRunStatus, to: AgentRunStatus) -> bool {
 }
 
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait AgentRunStore: Send + Sync {
     async fn create_or_get(
         &self,

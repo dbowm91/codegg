@@ -132,6 +132,10 @@ pub fn validate_security_context_request(request: &serde_json::Value) -> Result<
 /// tested without a live language server: a `#[cfg(test)]` recording target
 /// captures the exact request forwarded through the adapter.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 trait TypedHunkSourceContextTarget: Send + Sync {
     async fn execute_hunk_source_context_typed(
         &self,

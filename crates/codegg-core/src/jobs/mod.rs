@@ -1607,6 +1607,10 @@ pub struct AttemptCompletion {
 /// responsible for persisting every lifecycle transition before or
 /// atomically with externally visible state changes.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait JobStore: Send + Sync {
     /// Persist a new job. Returns the assigned record including its
     /// generated `JobId`.

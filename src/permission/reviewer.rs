@@ -585,6 +585,10 @@ pub struct ReviewerExchange {
 /// holds no approval authority: the service loop validates tools, bounds,
 /// staleness, and schema.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait ReviewerModelBackend: Send + Sync {
     async fn step(&self, prompt: &ReviewerPrompt) -> Result<String, ReviewerError>;
     fn model_id(&self) -> String;
@@ -594,6 +598,10 @@ pub trait ReviewerModelBackend: Send + Sync {
 /// [`REVIEWER_ALLOWED_TOOLS`] and must never invoke the approval router,
 /// spawn subagents, or mutate state.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait ReviewerInvestigator: Send + Sync {
     async fn investigate(
         &self,

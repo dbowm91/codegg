@@ -412,6 +412,10 @@ impl TrainingSink for LocalSpoolSink {
 }
 
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait RemoteTransport: Send + Sync {
     async fn send(&self, endpoint: &str, bearer_token: Option<&str>, body: String) -> Result<()>;
 }

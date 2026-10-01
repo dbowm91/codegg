@@ -271,6 +271,10 @@ impl JobExecutionContext {
 /// `NoopProgressSink` discards; production wiring plugs a bus sink
 /// into the TUI / event log.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait JobProgressSink: Send + Sync {
     async fn progress(&self, _job_id: &JobId, _message: &str) {}
 }
@@ -284,6 +288,10 @@ impl JobProgressSink for NoopProgressSink {}
 /// (or per `JobKind` family). Validation is synchronous and cheap;
 /// `execute` does the real work.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait JobExecutor: Send + Sync {
     fn kind(&self) -> ExecutorKind;
     fn supports(&self, kind: JobKind) -> bool;

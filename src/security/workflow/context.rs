@@ -14,6 +14,10 @@ use super::types::*;
 /// Implementations must be `Send + Sync` so enrichment can run concurrently.
 /// Errors are captured as notes, never panics.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait SecurityContextExecutor: Send + Sync {
     async fn security_context(
         &self,
@@ -113,6 +117,10 @@ impl SecurityContextExecutor for FixtureSecurityContextExecutor {
 /// Executor boundary for `hunkSourceContext` LSP requests in the
 /// security review workflow. Mirrors [`SecurityContextExecutor`].
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait HunkSourceContextExecutor: Send + Sync {
     /// Execute a hunk source navigation request and return the response.
     async fn execute_hunk_source_context(

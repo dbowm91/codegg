@@ -46,6 +46,10 @@ pub struct ContextArtifact {
 }
 
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait ContextArtifactStore: Send + Sync {
     async fn put(&self, artifact: ContextArtifact) -> anyhow::Result<()>;
     async fn get(&self, handle: &str) -> anyhow::Result<Option<ContextArtifact>>;

@@ -15,6 +15,10 @@ pub enum DispatchError {
 }
 
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait JobDispatcher: Send + Sync {
     async fn dispatch_created_job(&self, job: JobRecord) -> Result<(), DispatchError>;
 }
