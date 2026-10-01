@@ -1,6 +1,6 @@
 # Provider Wire-Kernel Consolidation Milestone 002 — OpenAI-Family Shared-Wire Cutover
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `94a4b3a0`
 
