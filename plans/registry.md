@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Desktop frontend and IDE foundation | active | `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` | M001 ready; M002-M004 dependency-gated; M005-M006 deferred | ADR-0010 accepted. M001 shared frontend client runtime is ready now. M002 waits on M001; M003 waits on M001 (M002 operational only for Windows); M004 waits on M003. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
 | CI and test throughput optimization | closed | `plans/subsystems/ci-test-throughput-optimization-roadmap.md` | M001-M005 closed; historical closure retained | M001-M005 closures remain immutable historical evidence. Final predecessor main/live run `36196068239` attempt 3: 17m17s total, 7m51s build, 362.537s exec, 11,726 passed / 1 skipped. Post-closure evidence defects are owned by the separate C001 corrective below. |
 | CI/test throughput optimization post-closure corrective | closed | `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` | C002 closed; C001 closed (measured negative sccache) | C001 closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`; sccache rejected on hosted A/B, docs reconciled, unrelated-PR baseline recorded). No active milestone remains in this line. |
@@ -81,6 +82,7 @@ non-passing evidence.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Desktop frontend and IDE foundation | M001 shared frontend client runtime | **ready** | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | Accepted ADR-0010; closed singleton/protocol/session-projection foundations. Extract `codegg-client`, configurable frontend identity/capabilities, and reusable local daemon connect/start before any Tauri work. |
 | Eggwork fixed-target remote execution | M003 content-aware derived workspace transfer | **closed** | `plans/implementation/eggwork-fixed-target-remote-execution/003-content-aware-derived-workspace-transfer.md` | Closure: `plans/closure/eggwork-fixed-target-remote-execution/003-status.md` (implementation `1ce377ce`; hosted `36745285774` success, live derived reuse under required isolation; Eggwork pin `e6a5d82e`). M004 stays deferred on the AgentRun worker-entry contract. |
 | CI/test throughput optimization post-closure corrective | C002 hosted CI timing-flake stabilization | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | Closure: `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md` (implementation `696ec282`; hosted `36748429660` attempts 1–3 green with live Eggwork). C001 unblocked to ready. |
 | CI/test throughput optimization post-closure corrective | C001 closure evidence + cache qualification + doc reconciliation | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/001-closure-evidence-cache-qualification-and-doc-reconciliation.md` | Closure: `plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md` (measured negative sccache; docs reconciled; unrelated-PR baseline recorded). No successor; nothing unblocked. |
@@ -142,6 +144,8 @@ non-passing evidence.
 
 ## Current execution order and dependency gates
 
+**Desktop frontend/IDE foundation gate:** ADR-0010 is accepted and `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` is active. M001 (`plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md`) is ready for immediate handoff and must extract the reusable native client/connect-start boundary before GUI dependencies enter the repository. M002 portable local IPC and M003 Tauri shell are blocked on M001; M002 is operational rather than hard for Linux/macOS M003, but is required before Windows desktop qualification. M004 desktop session/control-plane proof is blocked on M003. M005 document/buffer and M006 IDE-shell work remain deliberately deferred until M004 closure.
+
 **CI/test throughput optimization corrective gate:** Historical M001-M005 remain closed and immutable. C002 is closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`; implementation `696ec282`; hosted `36748429660` attempts 1–3 green with live Eggwork). C001 is closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`; measured negative sccache, docs reconciled, unrelated-PR baseline recorded). No active milestone remains in this workstream.
 
 **Eggwork remote execution gate:** M002 and M002a are closed. CodeGG production mTLS execution of required `workspace_rw` Landlock is live-qualified on Eggwork `6cc813418c3f14740a635fef79208e85219175bb`; see `plans/closure/eggwork-fixed-target-remote-execution/002a-status.md`. Disabled networking remains unsupported and fail-closed. M003 is closed (`plans/closure/eggwork-fixed-target-remote-execution/003-status.md`; implementation `1ce377ce`; hosted `36745285774` success, live derived reuse under required isolation). M004 is the only remaining milestone in this workstream and stays deferred on the stable AgentRun worker-entry contract alone.
@@ -196,6 +200,9 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Desktop frontend and IDE foundation | M002 portable local daemon transport | Hard-blocked on M001 shared client runtime. Windows closure additionally requires live runtime evidence and explicit restrictive named-pipe ACLs; default Windows pipe security is not acceptable. |
+| Desktop frontend and IDE foundation | M003 Tauri desktop shell + secure bridge | Hard-blocked on M001. M002 is operational only for Windows qualification; Linux/macOS may proceed once M001 closes. |
+| Desktop frontend and IDE foundation | M004 desktop session/control-plane vertical slice | Hard-blocked on M003. Uses canonical projections/control ownership; editor/document/PTY GUI work is outside this milestone. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 | Tool-selection advisor post-closure corrective | M004 live small-model trajectory qualification | C004 closed with disposition B (no useful gain): no positive offline disposition exists, so the live study stays blocked pending a new model-architecture experiment; original operator/provider/trajectory/resource prerequisites were never satisfied either. |
@@ -414,7 +421,7 @@ These remain outside active handoff unless concrete product priority/evidence ma
 
 - distribution expansion beyond the closed Linux/macOS binary+installer slice, including Homebrew/deb/rpm/Nix, Windows installer support, signing/notarization, SBOM/provenance and package-manager automation;
 - expanding Windows from opportunistic compatibility to a guaranteed support tier;
-- full web/desktop/mobile frontends;
+- full web/mobile frontends and desktop work beyond the registered `desktop-frontend-ide-foundation` M001-M004 foundation; editor document/buffer and full IDE-shell work remain deferred until that foundation closes;
 - arbitrary LSP `workspace/executeCommand` support;
 - binary topology split or separate daemon/TUI packaging without measured deployment need;
 - replacing RustPython with a custom Tool Program parser;
