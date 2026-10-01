@@ -1,6 +1,6 @@
 # Provider Wire-Kernel Consolidation Milestone 001 — Shared-Wire Bridge and Parity Qualification
 
-Status: active
+Status: implemented
 
 Repository baseline: `53dea47f` (rebased on latest `origin/main`)
 
