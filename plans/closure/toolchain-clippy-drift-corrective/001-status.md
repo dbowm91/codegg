@@ -75,12 +75,14 @@ Local (darwin aarch64):
 - Focused tests: attribute-only change; no touched module needed new tests.
   The existing suites covering the touched crates pass in hosted CI below.
 
-Hosted (CI / verify, PR #88):
+Hosted (CI / verify, PR #88, final head):
 
-- Run `36912603806`, verify job `110557954083`: **success** in 20m32s.
-  Workspace Clippy step green on stable 1.99.0; workspace tests green
-  (11,830-test sweep; one transient `asset_refresh` coalescing timeout on
-  the first attempt, green on `--failed` rerun with no code change).
+- Run `36929519004`, verify job `110595046733`: **success** in 18m28s —
+  Workspace Clippy green on stable 1.99.0 and workspace tests green.
+- Earlier run `36912603806` on the fix head likewise succeeded (20m32s;
+  one transient `asset_refresh` coalescing timeout on the first attempt,
+  green on `--failed` rerun with no code change — timing flake, unrelated
+  to this corrective).
 
 ## 5. Invariant review
 
@@ -127,7 +129,7 @@ the fix) and for all downstream advisor work.
 ## 12. Registry updates
 
 - `plans/registry.md`: toolchain corrective rows move to closed with this
-  closure and implementation `877666be`; hosted run `36912603806` recorded
+  closure and implementation `877666be`; hosted run `36929519004` recorded
   as the green evidence.
 - Blocked-work audit: no registered plan lists this corrective as a hard
   dependency; the retrieval-signal C001 closure it enables is recorded
