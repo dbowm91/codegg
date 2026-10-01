@@ -1,6 +1,6 @@
 # Provider Wire-Kernel Consolidation Milestone 003 — Anthropic/Gemini Cutover and Wire Retirement
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `dcea3ea`
 
