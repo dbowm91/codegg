@@ -26,7 +26,6 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Desktop frontend and IDE foundation | active | `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` | M001 ready; M002-M004 dependency-gated; M005-M006 deferred | ADR-0010 accepted. M001 shared frontend client runtime is ready now. M002 waits on M001; M003 waits on M001 (M002 operational only for Windows); M004 waits on M003. |
-| Provider wire-kernel consolidation | closing | `plans/subsystems/provider-wire-kernel-consolidation-roadmap.md` | M003 closure review | Implementation landed at `524cecf`; closure evidence is being reviewed. |
 | Search / eggsearch legacy backend retirement corrective | blocked | `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md` | M001-M002 blocked | M001 waits on eggsearch CodeGG legacy-search-parity M003 plus a qualifying tagged release; M002 waits on CodeGG M001. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
 | CI and test throughput optimization | closed | `plans/subsystems/ci-test-throughput-optimization-roadmap.md` | M001-M005 closed; historical closure retained | M001-M005 closures remain immutable historical evidence. Final predecessor main/live run `36196068239` attempt 3: 17m17s total, 7m51s build, 362.537s exec, 11,726 passed / 1 skipped. Post-closure evidence defects are owned by the separate C001 corrective below. |
@@ -149,7 +148,7 @@ non-passing evidence.
 
 ## Current execution order and dependency gates
 
-**Provider wire-kernel consolidation gate:** EggPool request-admission-wire M006 is closed at immutable revision `f05b18b7358d9a4125d1e20c491151eec265e403`. CodeGG M001 is closed at `plans/closure/provider-wire-kernel-consolidation/001-status.md`; its bridge/policy projection and differential matrix do not cut over production codecs. M002 is closed; M003 implementation is committed at `524cecf` and its closure review is underway. Direct-provider transport/auth/retry remains CodeGG-owned; Bedrock and hosted/stateful Responses are excluded.
+**Provider wire-kernel consolidation gate:** EggPool request-admission-wire M006 is closed at immutable revision `f05b18b7358d9a4125d1e20c491151eec265e403`. CodeGG M001 is closed at `plans/closure/provider-wire-kernel-consolidation/001-status.md`; its bridge/policy projection and differential matrix do not cut over production codecs. M001-M003 are closed at their closure records. The standard OpenAI/Anthropic/Gemini codecs and stream parsers use the shared pinned wire kernel; Bedrock and hosted/stateful Responses remain specialized. Direct-provider transport/auth/retry remains CodeGG-owned; Bedrock and hosted/stateful Responses are excluded.
 
 
 **Desktop frontend/IDE foundation gate:** ADR-0010 is accepted and `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` is active. M001 (`plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md`) is ready for immediate handoff and must extract the reusable native client/connect-start boundary before GUI dependencies enter the repository. M002 portable local IPC and M003 Tauri shell are blocked on M001; M002 is operational rather than hard for Linux/macOS M003, but is required before Windows desktop qualification. M004 desktop session/control-plane proof is blocked on M003. M005 document/buffer and M006 IDE-shell work remain deliberately deferred until M004 closure.
@@ -233,7 +232,6 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| Provider wire-kernel consolidation | M003 closure review | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md`; implementation `524cecf`; closure evidence in progress. |
 | Project Work Orders and Task View — UX fidelity corrective | C001 closed | `plans/subsystems/project-work-orders-task-view-ux-corrective-addendum.md`; `plans/implementation/project-work-orders-task-view-corrective/001-human-task-ux-and-trigger-surface.md`; `plans/closure/project-work-orders-task-view-corrective/001-status.md` (implementation `1bd77c6d`); predecessor M003/M005/M007 closure records; accepted ADR-0005/ADR-0004 |
 | Provider /connect restoration — managed-key CI corrective | C001 closed | `plans/subsystems/provider-connect-restoration-ci-corrective-addendum.md`; `plans/implementation/provider-connect-restoration-ci-corrective/001-managed-key-concurrency-ci-corrective.md`; `plans/closure/provider-connect-restoration-ci-corrective/001-status.md`; hosted run 35483642396 |
 | Workspace migration test-contract CI corrective | C001 closed | `plans/subsystems/workspace-migration-test-contract-ci-corrective-addendum.md`; `plans/implementation/workspace-migration-test-contract-ci-corrective/001-canonical-storage-layout-assertions.md`; `plans/closure/workspace-migration-test-contract-ci-corrective/001-status.md`; hosted run 35483642396 |
@@ -265,6 +263,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 ## Recently closed or conditionally closed work
 
+| Provider wire-kernel consolidation | M003 Anthropic/Gemini cutover + duplicate wire retirement | closed | `plans/closure/provider-wire-kernel-consolidation/003-status.md` | `524cecf`; provider suite (174), transcript suite (22), workspace Clippy/check and static guards pass; baseline scheduler cancellation failures documented; no registered downstream plan was unblocked. |
 | Provider wire-kernel consolidation | M002 OpenAI-family shared-wire cutover | closed | `plans/closure/provider-wire-kernel-consolidation/002-status.md` | `dcea3ea`; OpenAI-family provider suite and static guards pass; workspace cancellation failure reproduced on untouched `origin/main`; M003 unblocked to ready after dependency audit. |
 | Provider wire-kernel consolidation | M001 shared-wire bridge + parity qualification | closed | `plans/closure/provider-wire-kernel-consolidation/001-status.md` | `94a4b3a0`; Rust 1.89 provider suite (174), transcript suite (21), Clippy, boundary guard and formatting pass; M002 unblocked to ready after dependency audit. |
 
