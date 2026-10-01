@@ -1,0 +1,1058 @@
+{
+  "schema_version": 1,
+  "protocol": "late-interaction-m001-v1",
+  "prereg_fingerprint": "04bea8a8893b279dd42e9d78e34d9787f48b7441d610551e3a0f2b4eb4c0cc62",
+  "derived_view_fingerprint": "23edef17d0e4f4ac71d4e4b65349585cfc9b3c08d49cd4f7ac47e3bad12b5479",
+  "minilm_manifest_hashes": {
+    "config": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+    "license": "87a06e8a0696c2568d0cfe9082218f50b96fe330a7e137a377598fb02541078c",
+    "vocabulary": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    "weights": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"
+  },
+  "points": [
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 64,
+      "k": 16,
+      "inferable_relevant": 53,
+      "inferable_recovered": 29,
+      "inferable_recall": 0.5471698113207547,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 64,
+      "k": 24,
+      "inferable_relevant": 53,
+      "inferable_recovered": 29,
+      "inferable_recall": 0.5471698113207547,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 64,
+      "k": 32,
+      "inferable_relevant": 53,
+      "inferable_recovered": 29,
+      "inferable_recall": 0.5471698113207547,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 128,
+      "k": 16,
+      "inferable_relevant": 53,
+      "inferable_recovered": 26,
+      "inferable_recall": 0.49056603773584906,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 128,
+      "k": 24,
+      "inferable_relevant": 53,
+      "inferable_recovered": 28,
+      "inferable_recall": 0.5283018867924528,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 128,
+      "k": 32,
+      "inferable_relevant": 53,
+      "inferable_recovered": 28,
+      "inferable_recall": 0.5283018867924528,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 256,
+      "k": 16,
+      "inferable_relevant": 53,
+      "inferable_recovered": 24,
+      "inferable_recall": 0.4528301886792453,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 256,
+      "k": 24,
+      "inferable_relevant": 53,
+      "inferable_recovered": 25,
+      "inferable_recall": 0.4716981132075472,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "exact-maxsim-v1",
+      "universe": 256,
+      "k": 32,
+      "inferable_relevant": 53,
+      "inferable_recovered": 26,
+      "inferable_recall": 0.49056603773584906,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 64,
+      "k": 16,
+      "inferable_relevant": 53,
+      "inferable_recovered": 47,
+      "inferable_recall": 0.8867924528301887,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 64,
+      "k": 24,
+      "inferable_relevant": 53,
+      "inferable_recovered": 47,
+      "inferable_recall": 0.8867924528301887,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 64,
+      "k": 32,
+      "inferable_relevant": 53,
+      "inferable_recovered": 47,
+      "inferable_recall": 0.8867924528301887,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 128,
+      "k": 16,
+      "inferable_relevant": 53,
+      "inferable_recovered": 47,
+      "inferable_recall": 0.8867924528301887,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 128,
+      "k": 24,
+      "inferable_relevant": 53,
+      "inferable_recovered": 47,
+      "inferable_recall": 0.8867924528301887,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 128,
+      "k": 32,
+      "inferable_relevant": 53,
+      "inferable_recovered": 47,
+      "inferable_recall": 0.8867924528301887,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 256,
+      "k": 16,
+      "inferable_relevant": 53,
+      "inferable_recovered": 46,
+      "inferable_recall": 0.8679245283018868,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 256,
+      "k": 24,
+      "inferable_relevant": 53,
+      "inferable_recovered": 46,
+      "inferable_recall": 0.8679245283018868,
+      "violations": 0,
+      "passes": false
+    },
+    {
+      "mode": "lexical-maxsim-union-v1",
+      "universe": 256,
+      "k": 32,
+      "inferable_relevant": 53,
+      "inferable_recovered": 46,
+      "inferable_recall": 0.8679245283018868,
+      "violations": 0,
+      "passes": false
+    }
+  ],
+  "label_ranks": [
+    {
+      "case_id": "filesystem-semantic-001-variant-1",
+      "tool": "read",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 64,
+      "lexical_rank_u64": 64,
+      "m002_union_rank_u64": 63
+    },
+    {
+      "case_id": "filesystem-semantic-002-variant-1",
+      "tool": "write",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 63,
+      "maxsim_rank_u128": 127,
+      "maxsim_rank_u256": 255,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "filesystem-semantic-003-variant-1",
+      "tool": "glob",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 63,
+      "lexical_rank_u64": 3,
+      "m002_union_rank_u64": 64
+    },
+    {
+      "case_id": "filesystem-semantic-007-variant-1",
+      "tool": "read",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "filesystem-semantic-012-variant-1",
+      "tool": "write",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "filesystem-semantic-013-variant-1",
+      "tool": "read",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "filesystem-semantic-017-variant-1",
+      "tool": "read",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "search-semantic-026-variant-1",
+      "tool": "semantic_search",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "search-semantic-030-variant-1",
+      "tool": "grep",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 62,
+      "maxsim_rank_u128": 126,
+      "maxsim_rank_u256": 254,
+      "union_rank_u64": 62,
+      "lexical_rank_u64": 4,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "search-semantic-035-variant-1",
+      "tool": "replace",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "search-semantic-036-variant-1",
+      "tool": "semantic_search",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "search-semantic-037-variant-1",
+      "tool": "grep",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 64,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 4
+    },
+    {
+      "case_id": "search-semantic-038-variant-1",
+      "tool": "semantic_search",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "search-semantic-041-variant-1",
+      "tool": "grep",
+      "relevance_class": "CurrentStep",
+      "task_family": "search",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 3,
+      "lexical_rank_u64": 3,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "git-semantic-047-variant-1",
+      "tool": "git_log",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 3,
+      "lexical_rank_u64": 64,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "git-semantic-047-variant-2",
+      "tool": "git_log",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "git-semantic-048-variant-1",
+      "tool": "git_status",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "git-semantic-050-variant-1",
+      "tool": "git_log",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 63,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "git-semantic-051-variant-1",
+      "tool": "git_log",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 64,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "git-semantic-052-variant-1",
+      "tool": "git_diff",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "git-semantic-053-variant-1",
+      "tool": "git_blame",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "git-semantic-053-variant-1",
+      "tool": "git_log",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 3,
+      "maxsim_rank_u128": 3,
+      "maxsim_rank_u256": 3,
+      "union_rank_u64": 5,
+      "lexical_rank_u64": 4,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "git-semantic-055-variant-1",
+      "tool": "git_blame",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 64,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "git-semantic-061-variant-1",
+      "tool": "git_blame",
+      "relevance_class": "CurrentStep",
+      "task_family": "git",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 3,
+      "lexical_rank_u64": 63,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "lsp-semantic-068-variant-1",
+      "tool": "lsp_definition",
+      "relevance_class": "CurrentStep",
+      "task_family": "lsp",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 3,
+      "maxsim_rank_u256": 19,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "lsp-semantic-068-variant-2",
+      "tool": "lsp_definition",
+      "relevance_class": "CurrentStep",
+      "task_family": "lsp",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "lsp-semantic-069-variant-1",
+      "tool": "lsp_definition",
+      "relevance_class": "CurrentStep",
+      "task_family": "lsp",
+      "maxsim_rank_u64": 6,
+      "maxsim_rank_u128": 38,
+      "maxsim_rank_u256": 82,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "lsp-semantic-069-variant-2",
+      "tool": "lsp_references",
+      "relevance_class": "CurrentStep",
+      "task_family": "lsp",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "lsp-semantic-075-variant-1",
+      "tool": "lsp_rename",
+      "relevance_class": "CurrentStep",
+      "task_family": "lsp",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "verification-semantic-101-variant-1",
+      "tool": "lint",
+      "relevance_class": "CurrentStep",
+      "task_family": "verification",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "verification-semantic-105-variant-1",
+      "tool": "coverage",
+      "relevance_class": "CurrentStep",
+      "task_family": "verification",
+      "maxsim_rank_u64": 62,
+      "maxsim_rank_u128": 126,
+      "maxsim_rank_u256": 254,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "verification-semantic-106-variant-1",
+      "tool": "lint",
+      "relevance_class": "CurrentStep",
+      "task_family": "verification",
+      "maxsim_rank_u64": 63,
+      "maxsim_rank_u128": 127,
+      "maxsim_rank_u256": 255,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "research-semantic-111-variant-1",
+      "tool": "docs_lookup",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 62,
+      "maxsim_rank_u128": 126,
+      "maxsim_rank_u256": 254,
+      "union_rank_u64": 50,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "research-semantic-111-variant-2",
+      "tool": "summarize",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "research-semantic-119-variant-1",
+      "tool": "fetch_url",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 20,
+      "maxsim_rank_u256": 78,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "research-semantic-121-variant-1",
+      "tool": "summarize",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 64,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "research-semantic-124-variant-1",
+      "tool": "fetch_url",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 2,
+      "maxsim_rank_u256": 2,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "research-semantic-125-variant-1",
+      "tool": "summarize",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "research-semantic-127-variant-1",
+      "tool": "summarize",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "research-semantic-129-variant-1",
+      "tool": "summarize",
+      "relevance_class": "CurrentStep",
+      "task_family": "research",
+      "maxsim_rank_u64": 63,
+      "maxsim_rank_u128": 127,
+      "maxsim_rank_u256": 255,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "context-semantic-134-variant-1",
+      "tool": "plan_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "context",
+      "maxsim_rank_u64": 2,
+      "maxsim_rank_u128": 2,
+      "maxsim_rank_u256": 2,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "context-semantic-135-variant-1",
+      "tool": "goal_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "context",
+      "maxsim_rank_u64": 63,
+      "maxsim_rank_u128": 126,
+      "maxsim_rank_u256": 241,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "context-semantic-139-variant-1",
+      "tool": "plan_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "context",
+      "maxsim_rank_u64": 54,
+      "maxsim_rank_u128": 103,
+      "maxsim_rank_u256": 206,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "context-semantic-145-variant-1",
+      "tool": "context_read",
+      "relevance_class": "CurrentStep",
+      "task_family": "context",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "context-semantic-150-variant-1",
+      "tool": "plan_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "context",
+      "maxsim_rank_u64": 2,
+      "maxsim_rank_u128": 2,
+      "maxsim_rank_u256": 2,
+      "union_rank_u64": 2,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 2
+    },
+    {
+      "case_id": "context-semantic-151-variant-1",
+      "tool": "goal_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "context",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "plugin-semantic-171-variant-1",
+      "tool": "plugin_enable",
+      "relevance_class": "CurrentStep",
+      "task_family": "plugin",
+      "maxsim_rank_u64": 62,
+      "maxsim_rank_u128": 126,
+      "maxsim_rank_u256": 254,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "shell-semantic-180-variant-1",
+      "tool": "env_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "shell",
+      "maxsim_rank_u64": 3,
+      "maxsim_rank_u128": 14,
+      "maxsim_rank_u256": 30,
+      "union_rank_u64": 3,
+      "lexical_rank_u64": 3,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "shell-semantic-182-variant-1",
+      "tool": "env_get",
+      "relevance_class": "CurrentStep",
+      "task_family": "shell",
+      "maxsim_rank_u64": 15,
+      "maxsim_rank_u128": 24,
+      "maxsim_rank_u256": 53,
+      "union_rank_u64": 3,
+      "lexical_rank_u64": 3,
+      "m002_union_rank_u64": 3
+    },
+    {
+      "case_id": "structured-semantic-196-variant-1",
+      "tool": "schema_validate",
+      "relevance_class": "CurrentStep",
+      "task_family": "structured",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "structured-semantic-196-variant-2",
+      "tool": "schema_validate",
+      "relevance_class": "CurrentStep",
+      "task_family": "structured",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "structured-semantic-200-variant-1",
+      "tool": "json_query",
+      "relevance_class": "CurrentStep",
+      "task_family": "structured",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 2,
+      "m002_union_rank_u64": 1
+    },
+    {
+      "case_id": "structured-semantic-210-variant-1",
+      "tool": "json_query",
+      "relevance_class": "CurrentStep",
+      "task_family": "structured",
+      "maxsim_rank_u64": 1,
+      "maxsim_rank_u128": 1,
+      "maxsim_rank_u256": 1,
+      "union_rank_u64": 1,
+      "lexical_rank_u64": 1,
+      "m002_union_rank_u64": 1
+    }
+  ],
+  "per_tool_maxsim_u64_k16": {
+    "context_read": [
+      1,
+      0
+    ],
+    "coverage": [
+      1,
+      0
+    ],
+    "docs_lookup": [
+      1,
+      0
+    ],
+    "env_get": [
+      2,
+      2
+    ],
+    "fetch_url": [
+      2,
+      2
+    ],
+    "git_blame": [
+      3,
+      3
+    ],
+    "git_diff": [
+      1,
+      1
+    ],
+    "git_log": [
+      5,
+      5
+    ],
+    "git_status": [
+      1,
+      1
+    ],
+    "glob": [
+      1,
+      0
+    ],
+    "goal_get": [
+      2,
+      1
+    ],
+    "grep": [
+      3,
+      0
+    ],
+    "json_query": [
+      2,
+      2
+    ],
+    "lint": [
+      2,
+      0
+    ],
+    "lsp_definition": [
+      3,
+      3
+    ],
+    "lsp_references": [
+      1,
+      1
+    ],
+    "lsp_rename": [
+      1,
+      1
+    ],
+    "plan_get": [
+      3,
+      2
+    ],
+    "plugin_enable": [
+      1,
+      0
+    ],
+    "read": [
+      4,
+      0
+    ],
+    "replace": [
+      1,
+      0
+    ],
+    "schema_validate": [
+      2,
+      2
+    ],
+    "semantic_search": [
+      3,
+      3
+    ],
+    "summarize": [
+      5,
+      0
+    ],
+    "write": [
+      2,
+      0
+    ]
+  },
+  "unknown_recall_u64_k16": 0.9245283018867925,
+  "unknown_lexical_baseline_u64_k16": 0.8301886792452831,
+  "masked_recall_u64_k16": 0.9433962264150944,
+  "masked_lexical_baseline_u64_k16": 0.8301886792452831,
+  "family_recall_u64_k16": {
+    "context": {
+      "exact-maxsim-v1": 0.5,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 1.0
+    },
+    "filesystem": {
+      "exact-maxsim-v1": 0.0,
+      "field-weighted-lexical": 0.8571428571428571,
+      "lexical-maxsim-union-v1": 0.7142857142857143
+    },
+    "git": {
+      "exact-maxsim-v1": 1.0,
+      "field-weighted-lexical": 0.5,
+      "lexical-maxsim-union-v1": 1.0
+    },
+    "lsp": {
+      "exact-maxsim-v1": 1.0,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 1.0
+    },
+    "plugin": {
+      "exact-maxsim-v1": 0.0,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 1.0
+    },
+    "research": {
+      "exact-maxsim-v1": 0.25,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 0.75
+    },
+    "search": {
+      "exact-maxsim-v1": 0.42857142857142855,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 0.7142857142857143
+    },
+    "shell": {
+      "exact-maxsim-v1": 1.0,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 1.0
+    },
+    "structured": {
+      "exact-maxsim-v1": 1.0,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 1.0
+    },
+    "verification": {
+      "exact-maxsim-v1": 0.0,
+      "field-weighted-lexical": 1.0,
+      "lexical-maxsim-union-v1": 1.0
+    }
+  },
+  "current_step_recall_u64_k16": {
+    "exact-maxsim-v1": 0.5471698113207547,
+    "field-weighted-lexical": 0.8867924528301887,
+    "lexical-maxsim-union-v1": 0.8867924528301887
+  },
+  "explicit_next_step_recall_u64_k16": {
+    "exact-maxsim-v1": 1.0,
+    "field-weighted-lexical": 1.0,
+    "lexical-maxsim-union-v1": 1.0
+  },
+  "m002_residual_ranks": [
+    {
+      "case_id": "filesystem-semantic-001-variant-1",
+      "tool": "read",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 64,
+      "lexical_rank_u64": 64,
+      "m002_union_rank_u64": 63
+    },
+    {
+      "case_id": "filesystem-semantic-003-variant-1",
+      "tool": "glob",
+      "relevance_class": "CurrentStep",
+      "task_family": "filesystem",
+      "maxsim_rank_u64": 64,
+      "maxsim_rank_u128": 128,
+      "maxsim_rank_u256": 256,
+      "union_rank_u64": 63,
+      "lexical_rank_u64": 3,
+      "m002_union_rank_u64": 64
+    }
+  ],
+  "m002_attribution_reproduces_receipt": true,
+  "resources": {
+    "reference_host": "macos aarch64",
+    "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "descriptor_precompute_ms": 357578,
+    "descriptor_cache_entries": 369,
+    "descriptor_cache_bytes": 20388060,
+    "descriptor_cache_bytes_256": 20388060,
+    "query_encode_p50_ms": 11.548499999999999,
+    "query_encode_p95_ms": 16.726875,
+    "maxsim_p50_ms": 21.031083,
+    "maxsim_p95_ms": 69.784583,
+    "total_retrieval_p50_ms": 34.582542000000004,
+    "total_retrieval_p95_ms": 86.828292,
+    "total_retrieval_max_ms": 113,
+    "query_token_count_p50": 31,
+    "query_token_count_p95": 59,
+    "query_token_count_max": 74,
+    "descriptor_token_count_p50": 36,
+    "descriptor_token_count_p95": 44,
+    "descriptor_token_count_max": 48,
+    "encoder_forwards_per_query": 1,
+    "attribution_pooled_forwards_per_query": 2,
+    "process_rss_bytes": null,
+    "cold_load_ms": 367679
+  },
+  "empty_queries": 0,
+  "empty_descriptors": 0,
+  "queries_truncated": 0,
+  "descriptors_truncated": 0,
+  "disposition": "D",
+  "fingerprint": "755d555dc19148c465d7f144d0b3b6da20eb4e53431678a98c071c037a36252a"
+}
