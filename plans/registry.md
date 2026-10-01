@@ -26,7 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Desktop frontend and IDE foundation | active | `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` | M001 ready; M002-M004 dependency-gated; M005-M006 deferred | ADR-0010 accepted. M001 shared frontend client runtime is ready now. M002 waits on M001; M003 waits on M001 (M002 operational only for Windows); M004 waits on M003. |
-| Provider wire-kernel consolidation | closing | `plans/subsystems/provider-wire-kernel-consolidation-roadmap.md` | M002 closure review; M003 blocked | M001 is closed; M002 implementation is committed and broad closure verification is in progress. M003 waits on positive M002 closure. |
+| Provider wire-kernel consolidation | active | `plans/subsystems/provider-wire-kernel-consolidation-roadmap.md` | M003 ready | M001 and M002 are closed; M003 is ready after the M002 dependency audit. |
 | Search / eggsearch legacy backend retirement corrective | blocked | `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md` | M001-M002 blocked | M001 waits on eggsearch CodeGG legacy-search-parity M003 plus a qualifying tagged release; M002 waits on CodeGG M001. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
 | CI and test throughput optimization | closed | `plans/subsystems/ci-test-throughput-optimization-roadmap.md` | M001-M005 closed; historical closure retained | M001-M005 closures remain immutable historical evidence. Final predecessor main/live run `36196068239` attempt 3: 17m17s total, 7m51s build, 362.537s exec, 11,726 passed / 1 skipped. Post-closure evidence defects are owned by the separate C001 corrective below. |
@@ -84,8 +84,7 @@ non-passing evidence.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Provider wire-kernel consolidation | M002 OpenAI-family shared-wire cutover | **closing** | `plans/implementation/provider-wire-kernel-consolidation/002-openai-family-shared-wire-cutover.md` | Implementation landed; provider, transcript, and gateway contract checks pass. Full workspace closure verification remains in progress. |
-| Provider wire-kernel consolidation | M003 Anthropic/Gemini cutover + wire retirement | **blocked** | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md` | Hard-blocked on M002 closure. |
+
 | Search / eggsearch legacy backend retirement corrective | M001 parity release adoption + provider contract | **blocked** | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | Hard/operational blocker: eggsearch legacy-search-parity M003 accepted and a tagged release carrying that qualified provider surface. |
 | Search / eggsearch legacy backend retirement corrective | M002 builtin external-search backend retirement | **blocked** | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Hard-blocked on CodeGG M001. Removes the duplicate `src/search/*` / builtin webfetch execution owner while preserving stable wrappers, research orchestration, local coding tools, and disabled mode. |
 | Desktop frontend and IDE foundation | M001 shared frontend client runtime | **ready** | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | Accepted ADR-0010; closed singleton/protocol/session-projection foundations. Extract `codegg-client`, configurable frontend identity/capabilities, and reusable local daemon connect/start before any Tauri work. |
@@ -266,7 +265,8 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 ## Recently closed or conditionally closed work
 
-| Provider wire-kernel consolidation | M001 shared-wire bridge + parity qualification | closed | `plans/closure/provider-wire-kernel-consolidation/001-status.md` | `94a4b3a0`; Rust 1.89 provider suite (174), transcript suite (21), Clippy, boundary guard and formatting pass; M002 unblocked to ready after dependency audit; M003 stays blocked on M002. |
+| Provider wire-kernel consolidation | M002 OpenAI-family shared-wire cutover | closed | `plans/closure/provider-wire-kernel-consolidation/002-status.md` | `dcea3ea`; OpenAI-family provider suite and static guards pass; workspace cancellation failure reproduced on untouched `origin/main`; M003 unblocked to ready after dependency audit. |
+| Provider wire-kernel consolidation | M001 shared-wire bridge + parity qualification | closed | `plans/closure/provider-wire-kernel-consolidation/001-status.md` | `94a4b3a0`; Rust 1.89 provider suite (174), transcript suite (21), Clippy, boundary guard and formatting pass; M002 unblocked to ready after dependency audit. |
 
 | Eggplan assessment integration | M001 durable execution-subject provenance | closed | `plans/closure/eggplan-assessment-integration/001-status.md` | `418fdc85` implementation; hosted CI run `36106606574` green; CodeGG M002 and Eggplan CodeGG Integration M002 are ready. Follow-up corrective C002 closed (`plans/closure/eggplan-assessment-integration/002-status.md`): AgentRun-link predicate fix, bridge fixtures, ownership guard. |
 
