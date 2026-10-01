@@ -7,7 +7,7 @@
 //! and does not receive policy or execution authority.
 
 use anyhow::{anyhow, Context, Result};
-use candle_core::{DType, Device, Tensor, Var, D};
+use candle_core::{DType, Device, IndexOp, Tensor, Var, D};
 use candle_nn::{
     embedding, linear, AdamW, Embedding, Linear, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap,
 };
@@ -217,6 +217,14 @@ impl WordPieceTokenizer {
         }
         out
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenEmbeddingSequence {
+    /// Non-special content token ids, aligned one-to-one with `vectors`.
+    pub token_ids: Vec<u32>,
+    /// Raw unnormalized per-token hidden states (model dim each).
+    pub vectors: Vec<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1064,6 +1072,60 @@ impl CandleBertSequenceEncoder {
         Ok(self
             .model
             .forward(&input_ids, &token_type_ids, Some(&attention_mask))?)
+    }
+
+    /// Per-token representations of one text for late-interaction scoring.
+    ///
+    /// The text is tokenized with the encoder vocabulary, deterministically
+    /// tail-truncated to `max_tokens` content tokens (mirroring
+    /// [`packed_encoding`](Self::packed_encoding)), wrapped as
+    /// `[CLS] tokens [SEP]`, and forwarded once. Returned `token_ids` are
+    /// the non-special content ids aligned one-to-one with `vectors` (raw,
+    /// unnormalized hidden states, model dim). Special tokens and padding
+    /// are excluded; no token strings or runtime text are stored.
+    ///
+    /// Empty (or whitespace-only) input yields an empty sequence instead of
+    /// an error so retrieval callers can fail closed for that candidate.
+    /// Deterministic on CPU for fixed weights/tokenizer within f32
+    /// arithmetic. Exactly one encoder forward per call.
+    pub fn encode_token_sequence(
+        &self,
+        text: &str,
+        max_tokens: usize,
+    ) -> Result<TokenEmbeddingSequence> {
+        let budget = max_tokens.clamp(1, MAX_PACKED_TOKENS);
+        let mut content = self.tokenizer.tokenize_text(text);
+        while content.len() > budget {
+            content.pop();
+        }
+        if content.is_empty() {
+            return Ok(TokenEmbeddingSequence {
+                token_ids: Vec::new(),
+                vectors: Vec::new(),
+            });
+        }
+        let cls = self
+            .tokenizer
+            .token_id("[CLS]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [CLS]"))?;
+        let sep = self
+            .tokenizer
+            .token_id("[SEP]")
+            .ok_or_else(|| anyhow!("vocabulary is missing [SEP]"))?;
+        let mut input_ids = Vec::with_capacity(content.len() + 2);
+        input_ids.push(cls);
+        input_ids.extend_from_slice(&content);
+        input_ids.push(sep);
+        let len = input_ids.len();
+        let hidden = self.forward_ids(&input_ids, &vec![0u32; len], &vec![1u32; len])?;
+        let mut token_ids = Vec::with_capacity(content.len());
+        let mut vectors = Vec::with_capacity(content.len());
+        for (index, id) in content.iter().enumerate() {
+            let row = hidden.i((0, index + 1))?.to_vec1::<f32>()?;
+            token_ids.push(*id);
+            vectors.push(row);
+        }
+        Ok(TokenEmbeddingSequence { token_ids, vectors })
     }
 
     /// Build a single bounded context-plus-marked-descriptors input. Marker
@@ -2465,5 +2527,102 @@ mod tests {
             .expect("packed");
         assert_eq!(packed.candidate_indices, vec![0, 1]);
         assert!(packed.dropped_candidate_indices.is_empty());
+    }
+
+    /// Late interaction M001: token sequences exclude specials and align
+    /// ids one-to-one with vectors.
+    #[test]
+    fn token_sequence_excludes_specials_and_aligns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let seq = encoder
+            .encode_token_sequence("inspect project", 128)
+            .expect("token sequence");
+        let expected_ids = encoder.tokenizer.tokenize_text("inspect project");
+        assert_eq!(expected_ids.len(), 2);
+        assert_eq!(seq.token_ids, expected_ids);
+        assert_eq!(seq.vectors.len(), 2);
+        for vector in &seq.vectors {
+            assert_eq!(vector.len(), 8);
+            assert!(vector.iter().all(|value| value.is_finite()));
+        }
+        // Raw hidden states are not pre-normalized; MaxSim normalizes.
+        let norms: Vec<f32> = seq
+            .vectors
+            .iter()
+            .map(|v| v.iter().map(|x| x * x).sum::<f32>().sqrt())
+            .collect();
+        assert!(norms.iter().all(|n| n.is_finite() && *n > 0.0));
+    }
+
+    /// Late interaction M001: over-budget input truncates deterministically
+    /// from the tail, mirroring packed_encoding.
+    #[test]
+    fn token_sequence_truncates_from_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let text = "inspect project read files send email inspect project";
+        let full = encoder.tokenizer.tokenize_text(text);
+        assert!(full.len() > 3);
+        let seq = encoder
+            .encode_token_sequence(text, 3)
+            .expect("token sequence");
+        assert_eq!(seq.token_ids, full[..3]);
+        assert_eq!(seq.vectors.len(), 3);
+        let again = encoder
+            .encode_token_sequence(text, 3)
+            .expect("token sequence again");
+        assert_eq!(seq, again);
+    }
+
+    /// Late interaction M001: empty input yields an empty sequence (fail
+    /// closed) instead of an error.
+    #[test]
+    fn token_sequence_empty_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        for text in ["", "   "] {
+            let seq = encoder.encode_token_sequence(text, 128).expect("empty ok");
+            assert!(seq.token_ids.is_empty());
+            assert!(seq.vectors.is_empty());
+        }
+    }
+
+    /// Late interaction M001: returned rows match the underlying forward
+    /// with [CLS]/[SEP] rows dropped.
+    #[test]
+    fn token_sequence_matches_forward_ids_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_tiny_fixture(dir.path());
+        let encoder =
+            CandleBertSequenceEncoder::load(&manifest, &Device::Cpu).expect("encoder load");
+        let content = encoder.tokenizer.tokenize_text("read files send email");
+        let cls = encoder.tokenizer.token_id("[CLS]").expect("cls");
+        let sep = encoder.tokenizer.token_id("[SEP]").expect("sep");
+        let mut input_ids = vec![cls];
+        input_ids.extend_from_slice(&content);
+        input_ids.push(sep);
+        let len = input_ids.len();
+        let hidden = encoder
+            .forward_ids(&input_ids, &vec![0u32; len], &vec![1u32; len])
+            .expect("forward");
+        let seq = encoder
+            .encode_token_sequence("read files send email", 128)
+            .expect("token sequence");
+        assert_eq!(seq.token_ids, content);
+        for (index, vector) in seq.vectors.iter().enumerate() {
+            let expected = hidden
+                .i((0, index + 1))
+                .expect("row")
+                .to_vec1::<f32>()
+                .expect("vec");
+            assert_eq!(*vector, expected);
+        }
     }
 }
