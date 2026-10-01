@@ -266,6 +266,45 @@ async fn peer_death_releases_pending_request_with_error() {
 }
 
 #[tokio::test]
+async fn protocol_version_mismatch_fails_the_handshake() {
+    let socket = std::env::temp_dir().join(format!(
+        "codegg-version-mismatch-{}.sock",
+        uuid::Uuid::new_v4()
+    ));
+    let listener = UnixListener::bind(&socket).expect("bind fake daemon");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept client");
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.expect("read ClientHello");
+        let hello = CoreFrame::ServerHello(ServerHello {
+            daemon_id: "wrong-version-daemon".into(),
+            protocol_version: PROTOCOL_VERSION + 1,
+            server_capabilities: server_capabilities(),
+            client_id: "wrong-version-client".into(),
+        });
+        write
+            .write_all(format!("{}\n", serde_json::to_string(&hello).unwrap()).as_bytes())
+            .await
+            .expect("send mismatched ServerHello");
+        write.flush().await.expect("flush mismatched ServerHello");
+    });
+
+    let result = LocalSocketClient::connect(
+        format!("unix://{}", socket.display()),
+        FrontendDescriptor::new("codegg-gui-test", ClientKind::Gui, gui_capabilities()),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(codegg_client::ClientError::Handshake(message)) if message.contains("protocol version mismatch")),
+        "a protocol mismatch must be an explicit handshake error"
+    );
+    server.await.expect("mismatched protocol fixture");
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
 async fn gui_disconnect_does_not_close_a_concurrent_tui_client() {
     let socket = std::env::temp_dir().join(format!("codegg-pair-{}.sock", uuid::Uuid::new_v4()));
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
@@ -481,5 +520,41 @@ async fn unresponsive_endpoint_does_not_consume_the_daemon_startup_budget() {
         "one stale endpoint must not consume the full startup deadline"
     );
     server.await.expect("stale endpoint fixture");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn child_exit_before_readiness_returns_a_typed_startup_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join(format!("codegg-bad-child-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).expect("create fixture directory");
+    let socket = root.join("core.sock");
+    let executable = root.join("daemon-child");
+    std::fs::write(&executable, "#!/bin/sh\nexit 17\n").expect("write failing child");
+    let mut permissions = std::fs::metadata(&executable)
+        .expect("read child permissions")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).expect("make child executable");
+
+    let result = connect_or_start_local_daemon(
+        LocalDaemonOptions {
+            endpoint: format!("unix://{}", socket.display()),
+            endpoint_argument: socket.to_string_lossy().into_owned(),
+            lock_path: root.join("daemon.lock"),
+            log_path: root.join("daemon.log"),
+            executable: Some(executable),
+            autostart: true,
+            startup_timeout: Duration::from_secs(2),
+            poll_interval: Duration::from_millis(10),
+        },
+        FrontendDescriptor::new("codegg-gui-test", ClientKind::Gui, gui_capabilities()),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(codegg_client::ClientError::ChildExited(status)) if status.contains("17")),
+        "early child exit should retain its actionable status"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
