@@ -304,6 +304,6 @@ Provider-profile metadata deduplication is a separate potential successor and is
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 001 — shared-wire bridge and parity qualification | closing | `plans/implementation/provider-wire-kernel-consolidation/001-shared-wire-bridge-and-parity-qualification.md` | — | Closure review |
-| 002 — OpenAI-family shared-wire cutover | blocked | `plans/implementation/provider-wire-kernel-consolidation/002-openai-family-shared-wire-cutover.md` | — | M001 |
+| 001 — shared-wire bridge and parity qualification | closed | `plans/implementation/provider-wire-kernel-consolidation/001-shared-wire-bridge-and-parity-qualification.md` | `plans/closure/provider-wire-kernel-consolidation/001-status.md` | — |
+| 002 — OpenAI-family shared-wire cutover | ready | `plans/implementation/provider-wire-kernel-consolidation/002-openai-family-shared-wire-cutover.md` | — | — |
 | 003 — Anthropic/Gemini cutover and duplicate wire retirement | blocked | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md` | — | M002 |

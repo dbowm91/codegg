@@ -1,8 +1,8 @@
 # Provider Wire-Kernel Consolidation Milestone 002 — OpenAI-Family Shared-Wire Cutover
 
-Status: blocked
+Status: ready for handoff
 
-Repository baseline: `daaed6cee4697f7f565084e44629e186a941f093`
+Repository baseline: `94a4b3a0`
 
 Source roadmap:
 
@@ -25,7 +25,7 @@ Move CodeGG's production OpenAI Chat and OpenAI-compatible provider family onto 
 
 ## 2. Why this milestone is ready
 
-Blocked on CodeGG M001 closure. M001 must supply the immutable upstream pin, semantic bridge, resolved wire-policy projection, and a positive provider parity matrix for every provider included here.
+CodeGG M001 is positively closed at `plans/closure/provider-wire-kernel-consolidation/001-status.md`. It supplies the immutable upstream pin, semantic bridge, resolved wire-policy projection, and qualified OpenAI-family bridge behavior. M002 owns the production-path parity and cutover evidence for each provider in scope.
 
 ## 3. Current implementation evidence
 
