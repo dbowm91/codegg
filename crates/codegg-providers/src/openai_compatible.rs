@@ -12,7 +12,6 @@ use futures_util::StreamExt;
 use http::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
-use std::sync::LazyLock;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -21,45 +20,6 @@ pub enum ToolChoice {
     Required,
     None,
     Specific(String),
-}
-
-#[derive(Debug, Clone, Default)]
-struct RequestPolicy {
-    reasoning_field: Option<&'static str>,
-    thinking_field: Option<&'static str>,
-    tool_aliases: &'static [(&'static str, &'static str)],
-    argument_aliases: &'static [(&'static str, &'static str, &'static str)],
-}
-
-// This is the bounded wire projection of the declarative adapter contract.
-// It intentionally contains no provider credentials, transport settings, or
-// executable behavior.  Matching is explicit and exclusion-aware; it is not
-// a model-name substring heuristic.
-const LAGUNA_TOOL_ALIASES: &[(&str, &str)] = &[("bash", "shell")];
-const LAGUNA_ARGUMENT_ALIASES: &[(&str, &str, &str)] = &[("shell", "command", "cmd")];
-static LAGUNA_MODEL_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"laguna-(m|xs|s)").expect("built-in adapter regex"));
-static LAGUNA_EXCLUSION_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(base|embed)").expect("built-in adapter exclusion regex"));
-
-fn request_policy(provider: &str, model: &str) -> RequestPolicy {
-    let provider = provider.to_ascii_lowercase();
-    let model = model.to_ascii_lowercase();
-    let supported_provider = matches!(
-        provider.as_str(),
-        "local" | "vllm" | "sglang" | "openai" | "openai-compatible" | "poolside"
-    );
-    let laguna_model = LAGUNA_MODEL_RE.is_match(&model) && !LAGUNA_EXCLUSION_RE.is_match(&model);
-    if supported_provider && laguna_model {
-        RequestPolicy {
-            reasoning_field: Some("reasoning_content"),
-            thinking_field: Some("enable_thinking"),
-            tool_aliases: LAGUNA_TOOL_ALIASES,
-            argument_aliases: LAGUNA_ARGUMENT_ALIASES,
-        }
-    } else {
-        RequestPolicy::default()
-    }
 }
 
 #[derive(Clone)]
@@ -222,7 +182,12 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
-        let adapter = request_policy(&self.id, &request.model);
+        let adapter = request
+            .context
+            .wire_policy
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
         let mut messages: Vec<serde_json::Value> = Vec::new();
         for msg in project_tool_call_history(&request.messages).iter() {
             match msg {
@@ -389,27 +354,29 @@ impl OpenAiCompatibleProvider {
     }
 }
 
-fn reasoning_field(adapter: &RequestPolicy) -> Option<&str> {
-    adapter.reasoning_field
-}
-
-fn thinking_transform(adapter: &RequestPolicy) -> Option<(&str, Option<String>)> {
+fn reasoning_field(adapter: &crate::ProviderWirePolicy) -> Option<&str> {
     adapter
-        .thinking_field
-        .map(|field| (field, Some("true".to_string())))
+        .include_reasoning_content
+        .then_some("reasoning_content")
 }
 
-fn wire_tool_name(adapter: &RequestPolicy, name: &str) -> String {
+fn thinking_transform(adapter: &crate::ProviderWirePolicy) -> Option<(&str, Option<String>)> {
+    adapter
+        .enable_thinking
+        .map(|enabled| ("enable_thinking", Some(enabled.to_string())))
+}
+
+fn wire_tool_name(adapter: &crate::ProviderWirePolicy, name: &str) -> String {
     adapter
         .tool_aliases
-        .iter()
-        .find_map(|(canonical, wire)| (*canonical == name).then_some(*wire))
+        .get(name)
+        .map(String::as_str)
         .unwrap_or(name)
         .to_string()
 }
 
 fn alias_parameter_properties(
-    adapter: &RequestPolicy,
+    adapter: &crate::ProviderWirePolicy,
     tool_name: &str,
     parameters: &mut serde_json::Value,
 ) {
@@ -420,19 +387,18 @@ fn alias_parameter_properties(
     else {
         return;
     };
-    for (alias_tool, canonical, wire) in adapter.argument_aliases {
-        if *alias_tool != wire_name {
-            continue;
-        }
-        if let Some(schema) = properties.remove(*canonical) {
-            properties.insert((*wire).to_string(), schema);
+    if let Some(aliases) = adapter.argument_aliases.get(&wire_name) {
+        for (canonical, wire) in aliases {
+            if let Some(schema) = properties.remove(canonical) {
+                properties.insert(wire.clone(), schema);
+            }
         }
     }
 }
 
 fn normalize_openai_event(
     event: Result<crate::ChatEvent, ProviderError>,
-    adapter: &RequestPolicy,
+    adapter: &crate::ProviderWirePolicy,
 ) -> Option<Result<crate::ChatEvent, ProviderError>> {
     match event {
         Ok(crate::ChatEvent::ReasoningDelta(_)) if reasoning_field(adapter).is_none() => None,
@@ -441,13 +407,13 @@ fn normalize_openai_event(
             let canonical_name = adapter
                 .tool_aliases
                 .iter()
-                .find_map(|(canonical, wire)| (*wire == wire_name).then_some(*canonical))
+                .find_map(|(canonical, wire)| (wire == &wire_name).then_some(canonical.as_str()))
                 .unwrap_or(wire_name.as_str());
             if let Some(args) = call.arguments.as_object_mut() {
-                for (tool, canonical, wire) in adapter.argument_aliases {
-                    if *tool == wire_name {
-                        if let Some(value) = args.remove(*wire) {
-                            args.insert((*canonical).to_string(), value);
+                if let Some(aliases) = adapter.argument_aliases.get(&wire_name) {
+                    for (canonical, wire) in aliases {
+                        if let Some(value) = args.remove(wire) {
+                            args.insert(canonical.clone(), value);
                         }
                     }
                 }
@@ -579,7 +545,12 @@ impl Provider for OpenAiCompatibleProvider {
         let stream = resp.bytes_stream().map_err(ProviderError::from)?;
         let buffer = String::new();
         let provider_name = self.name.clone();
-        let adapter = request_policy(&self.id, &request.model);
+        let adapter = request
+            .context
+            .wire_policy
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
 
         tracing::debug!("{}: starting stream processing", provider_name);
 
@@ -819,6 +790,7 @@ mod tests {
             reasoning_effort: None,
             context: ProviderRequestContext {
                 session_id: session_id.map(Arc::from),
+                ..Default::default()
             },
         }
     }

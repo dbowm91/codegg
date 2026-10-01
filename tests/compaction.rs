@@ -283,6 +283,7 @@ mod tests {
             "test-model",
             ProviderRequestContext {
                 session_id: Some(Arc::from("session-compaction")),
+                ..Default::default()
             },
         )
         .await

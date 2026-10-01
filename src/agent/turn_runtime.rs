@@ -225,8 +225,9 @@ impl TurnRuntime for DefaultTurnRuntime {
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
             .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
         let session_id = canonical_session_id.as_str().to_owned();
-        let provider_context = ProviderRequestContext {
+        let mut provider_context = ProviderRequestContext {
             session_id: Some(Arc::from(canonical_session_id.as_str())),
+            ..Default::default()
         };
 
         let notification_service = Arc::new(match pool.clone() {
@@ -278,6 +279,30 @@ impl TurnRuntime for DefaultTurnRuntime {
         // ── Model profile / task-state policy ────────────────────────
         let resolved_adapter = crate::model_profile::ModelProfileResolver::new(&config)
             .resolve_adapter(Some(&provider_name), &model_name);
+        let mut wire_policy = crate::provider::ProviderWirePolicy {
+            tool_aliases: resolved_adapter.tool_aliases.clone(),
+            argument_aliases: resolved_adapter.argument_aliases.clone(),
+            tool_choice: resolved_adapter.tool_choice.clone(),
+            max_parallel_tools: resolved_adapter.max_parallel_tools,
+            ..Default::default()
+        };
+        for transform in &resolved_adapter.transforms {
+            match transform {
+                crate::model_profile::RequestTransform::SetRequestField { field, .. }
+                    if field == "reasoning_content" =>
+                {
+                    wire_policy.include_reasoning_content = true;
+                    wire_policy.allow_private_reasoning_round_trip = true;
+                }
+                crate::model_profile::RequestTransform::SetThinkingParameter { field, value }
+                    if field == "enable_thinking" =>
+                {
+                    wire_policy.enable_thinking = value.as_deref().map(|value| value == "true");
+                }
+                _ => {}
+            }
+        }
+        provider_context.wire_policy = Some(Arc::new(wire_policy));
         let model_profile = resolved_adapter.profile.clone();
         let task_state_policy = model_profile.task_state_policy.clone();
 

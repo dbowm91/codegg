@@ -619,7 +619,7 @@ mod tests {
             text: text.to_string().into(),
             visibility: ReasoningVisibility::Private,
         };
-        let request = ChatRequest {
+        let mut request = ChatRequest {
             messages: vec![
                 Message::User {
                     content: vec![text_content("Run uname")],
@@ -645,6 +645,18 @@ mod tests {
             reasoning_effort: None,
             context: Default::default(),
         };
+        request.context.wire_policy =
+            Some(std::sync::Arc::new(codegg::provider::ProviderWirePolicy {
+                tool_aliases: std::collections::BTreeMap::from([("bash".into(), "shell".into())]),
+                argument_aliases: std::collections::BTreeMap::from([(
+                    "shell".into(),
+                    std::collections::BTreeMap::from([("command".into(), "cmd".into())]),
+                )]),
+                allow_private_reasoning_round_trip: true,
+                include_reasoning_content: true,
+                enable_thinking: Some(true),
+                ..Default::default()
+            }));
         let body = provider.build_body(&request);
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
@@ -683,7 +695,7 @@ mod tests {
                 }],
                 tool_calls: vec![],
             }],
-            model: "qwen3".to_string(),
+            model: "poolside/Laguna-M.1".to_string(),
             ..make_chat_request(Vec::new())
         };
         let message = &provider.build_body(&request)["messages"][0];

@@ -194,6 +194,10 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
 - **Tool aliases are bidirectional**: The resolver keeps both directions
   so provider wire calls can be normalized to canonical names before
   permission and broker execution.
+- **Provider wire policy is projected once**: The owning CodeGG layer copies
+  aliases, argument aliases, and explicitly declared private-reasoning
+  permission into `ProviderRequestContext.wire_policy`. Provider modules
+  consume this bounded value and do not independently match model names.
 - **Text tool repair is model-specific**: Controlled by adapter; never
   a generic text-to-action parser.
 

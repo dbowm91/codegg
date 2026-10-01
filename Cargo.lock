@@ -1066,6 +1066,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "eggfetch-core",
+ "eggpool-wire",
  "futures-util",
  "hex",
  "hmac",
@@ -1878,6 +1879,18 @@ version = "0.1.0"
 source = "git+https://github.com/eggstack/eggpool?rev=d70b5963#d70b5963daa373bd16e193637dc2210723418d9c"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "eggpool-wire"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggpool?rev=f05b18b7358d9a4125d1e20c491151eec265e403#f05b18b7358d9a4125d1e20c491151eec265e403"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
 ]
 
 [[package]]

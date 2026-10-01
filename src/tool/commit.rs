@@ -505,6 +505,7 @@ mod tests {
         };
         let context = ProviderRequestContext {
             session_id: Some(Arc::from("session-commit")),
+            ..Default::default()
         };
 
         let result = generate_commit_message_with_provider(

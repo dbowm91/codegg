@@ -400,6 +400,27 @@ SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
 
 ## Provider Implementations
 
+### Shared wire kernel qualification
+
+`crates/codegg-providers/src/wire.rs` is CodeGG's semantic bridge to the
+immutable-pinned `eggpool-wire` crate. It converts `ChatRequest` values to the
+kernel's canonical request and maps canonical stream events and completed tool
+calls back to `ChatEvent`. The bridge uses a per-stream decoder and bounded
+tool-call accumulator; it does not own transport, retries, cancellation, or
+credentials.
+
+The bridge remains qualification-only until the provider-family cutover
+milestones close. Existing provider modules remain production owners of
+request encoding and SSE decoding during that phase. OpenAI Chat's current
+`max_tokens` field is preserved by a closed CodeGG bridge transform because
+the shared canonical codec emits `max_completion_tokens` by default.
+
+`ProviderRequestContext.wire_policy` carries an immutable, conservative
+projection of the resolved CodeGG model adapter: canonical tool aliases,
+argument aliases, and explicit permission for private reasoning round-trip.
+Callers without a projection receive the conservative default. The provider
+crate does not infer model policy from model names.
+
 ### Anthropic (`anthropic.rs`)
 
 - Base URL: `https://api.anthropic.com`

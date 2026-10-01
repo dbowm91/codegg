@@ -851,7 +851,10 @@ impl ReviewerModelBackend for ProviderReviewerBackend {
             response_format: Some(crate::provider::ResponseFormat::JsonObject),
             thinking_budget: None,
             reasoning_effort: None,
-            context: ProviderRequestContext { session_id: None },
+            context: ProviderRequestContext {
+                session_id: None,
+                ..Default::default()
+            },
         };
         let mut stream = self
             .provider

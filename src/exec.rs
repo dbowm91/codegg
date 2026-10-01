@@ -202,6 +202,7 @@ impl ExecMode {
             reasoning_effort: None,
             context: ProviderRequestContext {
                 session_id: Some(invocation_session_id.into()),
+                ..Default::default()
             },
         };
 
