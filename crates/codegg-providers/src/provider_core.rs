@@ -81,6 +81,10 @@ pub fn openai_tool_arguments_value(arguments: &serde_json::Value) -> serde_json:
 }
 
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;

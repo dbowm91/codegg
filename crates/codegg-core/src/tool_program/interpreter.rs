@@ -672,6 +672,10 @@ pub struct CompletedCall {
 /// Abstraction for tool broker invocation. The interpreter never
 /// touches I/O directly; it delegates through this trait.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait BrokerCallback: Send + Sync {
     /// Execute a tool call through the broker.
     async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError>;

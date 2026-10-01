@@ -56,6 +56,10 @@ pub enum ConnectionError {
 /// this small trait also permits daemon tests to use an in-memory store
 /// without creating a second persistence model.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait ConnectionStore: Send + Sync {
     async fn get(
         &self,

@@ -61,6 +61,10 @@ pub enum RuntimeError {
 /// Implementations handle the actual execution of plugin commands (process,
 /// WASM, builtin, etc.) and return protocol-level responses.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait PluginRuntime: Send + Sync {
     /// Execute a plugin invocation and return a structured response.
     async fn invoke(&self, invocation: PluginInvocation) -> Result<PluginResponse, RuntimeError>;

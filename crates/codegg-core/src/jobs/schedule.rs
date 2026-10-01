@@ -228,6 +228,10 @@ pub enum ScheduleError {
 
 /// Storage trait for durable schedule records.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait ScheduleStore: Send + Sync {
     /// Persist a new schedule.
     async fn create(&self, template: ScheduleTemplate) -> Result<ScheduleRecord, ScheduleError>;
@@ -276,6 +280,10 @@ pub struct ClaimedOccurrence {
 /// translate a `JobTemplate` into a `JobId` exactly once per
 /// occurrence.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait OccurrenceMaterializer: Send + Sync {
     async fn materialize(
         &self,

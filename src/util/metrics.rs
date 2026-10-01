@@ -105,6 +105,10 @@ pub mod inner {
         }
 
         pub fn dec(&self) {
+            // `fetch_update` was renamed `try_update` in stable 1.99; the
+            // scoped allow keeps the 1.89 MSRV floor building warning-free.
+            // Revisit once the floor moves past 1.99.
+            #[allow(deprecated)]
             let _ = self
                 .0
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {

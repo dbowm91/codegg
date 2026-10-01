@@ -13,6 +13,10 @@ pub enum TtsProvider {
 }
 
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait TtsEngine: Send + Sync {
     async fn speak(&self, text: &str) -> Result<(), AppError>;
     async fn stop(&self) -> Result<(), AppError>;

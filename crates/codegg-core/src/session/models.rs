@@ -204,6 +204,10 @@ pub struct UsageRecord {
 }
 
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait SessionSummaryProvider: Send + Sync {
     async fn generate_summary(&self, conversation: &str) -> Result<String, crate::error::AppError>;
     async fn generate_title(&self, conversation: &str) -> Result<String, crate::error::AppError>;

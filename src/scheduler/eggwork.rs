@@ -200,6 +200,10 @@ pub type BoxEventStream =
 /// [`NodeClient`]; tests substitute a scripted fake so no TLS fixture or
 /// live node is required.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait EggworkNodeClient: Send + Sync {
     async fn capabilities(&self) -> Result<NodeCapabilities, EggworkClientError>;
     async fn status(&self) -> Result<NodeStatus, EggworkClientError>;

@@ -265,6 +265,10 @@ fn transition(
 }
 
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait WorktreeStore: Send + Sync {
     async fn insert_reserved(&self, record: WorktreeRecord) -> Result<(), WorktreeServiceError>;
     async fn get(&self, id: &WorktreeId) -> Result<Option<WorktreeRecord>, WorktreeServiceError>;
@@ -296,6 +300,10 @@ pub trait WorktreeStore: Send + Sync {
 /// depend on the agent runtime; the daemon supplies this adapter from its
 /// durable run store.
 #[async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait WorktreeOwnerResolver: Send + Sync {
     async fn is_terminal(&self, owner: &AgentRunId) -> Result<bool, String>;
 }

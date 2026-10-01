@@ -162,6 +162,10 @@ pub enum WorkspaceError {
 /// same database as sessions. Tests can substitute an in-memory store
 /// without touching SQLite.
 #[async_trait::async_trait]
+// Stable >=1.99 flags the #[must_use] injected by the async-trait expansion
+// (the desugared future is already must_use). Suppressed at the macro site;
+// no behavior change.
+#[allow(clippy::double_must_use)]
 pub trait WorkspaceStore: Send + Sync {
     async fn upsert(&self, record: &WorkspaceRecord) -> Result<(), WorkspaceError>;
     async fn load_by_id(&self, id: &str) -> Result<Option<WorkspaceRecord>, WorkspaceError>;
