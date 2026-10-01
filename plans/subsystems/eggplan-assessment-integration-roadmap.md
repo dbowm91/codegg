@@ -168,7 +168,11 @@ permissive regression and no CodeGG runtime/storage ownership transfer.
 
 ### M003 — Repository Plan binding
 
-Status: deferred; blocked on positive M002.
+Status: dependency-ready; implementation plan not yet registered.
+
+M002 closed positively at `ffa1c15e654776c3ebe1022f4ce7de2582bc5d98`
+with exact-head hosted qualification `36760308368`. The dependency gate is
+therefore satisfied.
 
 Allow a CodeGG session/WorkOrder to reference an Eggplan repository Plan and
 feed CodeGG job/run/test/artifact observations back through the qualified
