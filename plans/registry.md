@@ -26,6 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Desktop frontend and IDE foundation | active | `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` | M001 ready; M002-M004 dependency-gated; M005-M006 deferred | ADR-0010 accepted. M001 shared frontend client runtime is ready now. M002 waits on M001; M003 waits on M001 (M002 operational only for Windows); M004 waits on M003. |
+| Provider wire-kernel consolidation | active | `plans/subsystems/provider-wire-kernel-consolidation-roadmap.md` | M001 blocked; M002-M003 dependency-gated | M001 hard-blocked on EggPool request-admission-wire M006 closure + immutable consumer revision. M002 waits on M001; M003 waits on M002. |
 | Search / eggsearch legacy backend retirement corrective | blocked | `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md` | M001-M002 blocked | M001 waits on eggsearch CodeGG legacy-search-parity M003 plus a qualifying tagged release; M002 waits on CodeGG M001. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
 | CI and test throughput optimization | closed | `plans/subsystems/ci-test-throughput-optimization-roadmap.md` | M001-M005 closed; historical closure retained | M001-M005 closures remain immutable historical evidence. Final predecessor main/live run `36196068239` attempt 3: 17m17s total, 7m51s build, 362.537s exec, 11,726 passed / 1 skipped. Post-closure evidence defects are owned by the separate C001 corrective below. |
@@ -83,6 +84,9 @@ non-passing evidence.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Provider wire-kernel consolidation | M001 shared-wire bridge + parity qualification | **blocked** | `plans/implementation/provider-wire-kernel-consolidation/001-shared-wire-bridge-and-parity-qualification.md` | Hard-blocked on EggPool request-admission-wire M006 closure and its immutable consumer revision; upstream planning registered at `597d522dd2b7f1281c5a793ad8a107547360ea79`. |
+| Provider wire-kernel consolidation | M002 OpenAI-family shared-wire cutover | **blocked** | `plans/implementation/provider-wire-kernel-consolidation/002-openai-family-shared-wire-cutover.md` | Hard-blocked on positive CodeGG M001 closure/parity matrix. |
+| Provider wire-kernel consolidation | M003 Anthropic/Gemini cutover + wire retirement | **blocked** | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md` | Hard-blocked on M002 closure. |
 | Search / eggsearch legacy backend retirement corrective | M001 parity release adoption + provider contract | **blocked** | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | Hard/operational blocker: eggsearch legacy-search-parity M003 accepted and a tagged release carrying that qualified provider surface. |
 | Search / eggsearch legacy backend retirement corrective | M002 builtin external-search backend retirement | **blocked** | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Hard-blocked on CodeGG M001. Removes the duplicate `src/search/*` / builtin webfetch execution owner while preserving stable wrappers, research orchestration, local coding tools, and disabled mode. |
 | Desktop frontend and IDE foundation | M001 shared frontend client runtime | **ready** | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | Accepted ADR-0010; closed singleton/protocol/session-projection foundations. Extract `codegg-client`, configurable frontend identity/capabilities, and reusable local daemon connect/start before any Tauri work. |
@@ -147,6 +151,9 @@ non-passing evidence.
 
 ## Current execution order and dependency gates
 
+**Provider wire-kernel consolidation gate:** EggPool planning commit `597d522dd2b7f1281c5a793ad8a107547360ea79` registers request-admission-wire M006 as the upstream external semantic-producer contract. CodeGG M001 is deliberately blocked until that milestone closes with canonical-origin semantics, a surface-oriented encode/options API, bounded completed-tool-call accumulation, source-isolated consumer evidence, and an immutable revision. M001 then establishes the CodeGG bridge/policy projection and differential matrix without production cutover; M002 migrates the OpenAI family; M003 migrates Anthropic/Gemini and retires duplicate standard wire code. Direct-provider transport/auth/retry remains CodeGG-owned; Bedrock and hosted/stateful Responses are excluded.
+
+
 **Desktop frontend/IDE foundation gate:** ADR-0010 is accepted and `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` is active. M001 (`plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md`) is ready for immediate handoff and must extract the reusable native client/connect-start boundary before GUI dependencies enter the repository. M002 portable local IPC and M003 Tauri shell are blocked on M001; M002 is operational rather than hard for Linux/macOS M003, but is required before Windows desktop qualification. M004 desktop session/control-plane proof is blocked on M003. M005 document/buffer and M006 IDE-shell work remain deliberately deferred until M004 closure.
 
 **CI/test throughput optimization corrective gate:** Historical M001-M005 remain closed and immutable. C002 is closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md`; implementation `696ec282`; hosted `36748429660` attempts 1–3 green with live Eggwork). C001 is closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`; measured negative sccache, docs reconciled, unrelated-PR baseline recorded). No active milestone remains in this workstream.
@@ -203,6 +210,9 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Provider wire-kernel consolidation | M001 shared-wire bridge + parity qualification | EggPool request-admission-wire M006 must close and record the immutable `eggpool-wire` revision. Do not pin intermediate EggPool `main`. |
+| Provider wire-kernel consolidation | M002 OpenAI-family shared-wire cutover | Hard-blocked on CodeGG M001 positive closure and provider-family parity matrix. |
+| Provider wire-kernel consolidation | M003 Anthropic/Gemini cutover + duplicate wire retirement | Hard-blocked on M002 closure. |
 | Search / eggsearch legacy backend retirement corrective | M001 parity release adoption + provider contract | Eggsearch CodeGG legacy-search-parity M003 must close and a qualifying tagged eggsearch release must exist. |
 | Search / eggsearch legacy backend retirement corrective | M002 builtin external-search backend retirement | Hard-blocked on CodeGG M001. |
 | Desktop frontend and IDE foundation | M002 portable local daemon transport | Hard-blocked on M001 shared client runtime. Windows closure additionally requires live runtime evidence and explicit restrictive named-pipe ACLs; default Windows pipe security is not acceptable. |
