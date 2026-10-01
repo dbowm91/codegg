@@ -1,6 +1,8 @@
 # Tool-Selection Advisor Late-Interaction Retriever M004 — Retrieval, Ranker, and Promotion Operating Point
 
-Status: blocked on eligible M001/M002/M003 retrieval candidate
+Status: blocked on eligible M001/M002/M003 retrieval candidate — TERMINAL:
+no candidate qualified (M001 D), so M004 never opens. No operating point
+is frozen in this workstream.
 
 Repository baseline: `c4cc6c5b3c9154428b8560a60aa0129624435dfe`
 

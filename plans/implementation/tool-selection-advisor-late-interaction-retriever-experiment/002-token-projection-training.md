@@ -1,6 +1,8 @@
 # Tool-Selection Advisor Late-Interaction Retriever M002 — Token Projection Training
 
-Status: blocked/conditional on M001 disposition B
+Status: blocked/conditional on M001 disposition B — TERMINAL: M001 closed
+with disposition D (no architectural signal), so M002 never opens. No
+training occurs in this workstream.
 
 Repository baseline: `c4cc6c5b3c9154428b8560a60aa0129624435dfe`
 

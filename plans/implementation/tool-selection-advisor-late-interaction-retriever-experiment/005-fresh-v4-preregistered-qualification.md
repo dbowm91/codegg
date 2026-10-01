@@ -1,6 +1,7 @@
 # Tool-Selection Advisor Late-Interaction Retriever M005 — Fresh V4 Preregistered Qualification
 
-Status: blocked on positive M004
+Status: blocked on positive M004 — TERMINAL: M004 never opens (M001 D),
+so M005 never opens. No v4 holdout is consumed in this workstream.
 
 Repository baseline: `c4cc6c5b3c9154428b8560a60aa0129624435dfe`
 
