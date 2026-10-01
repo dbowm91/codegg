@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration M003 — Repository Plan Binding and Writeback
 
-Status: ready for coordinated handoff
+Status: closed (`plans/closure/eggplan-assessment-integration/004-m003-status.md`; implementation `53dea47f`; Eggplan pin `3f7c603`; hosted `36938461935` success)
 
 Repository baseline:
 

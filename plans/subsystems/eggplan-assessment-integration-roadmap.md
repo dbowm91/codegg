@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active roadmap; M001/M002 closed, M003 ready
+Status: closed; M001/M002/M003 closed
 
 Canonical authority:
 
@@ -21,7 +21,7 @@ External assessment substrate:
   `plans/implementation/codegg-integration/003-repository-plan-binding-contract.md`
 - current CodeGG planning baseline:
   `9e93e949e1a4abcc91fd7755d929a54fd6531160`
-- current CodeGG storage layout: v67; M003 owns additive v68
+- current CodeGG storage layout: v68 (M003 additive)
 - current pinned Eggwork revision:
   `6cc813418c3f14740a635fef79208e85219175bb`
 
@@ -168,7 +168,10 @@ permissive regression and no CodeGG runtime/storage ownership transfer.
 
 ### M003 — Repository Plan binding
 
-Status: ready for coordinated handoff.
+Status: closed. Closure:
+`plans/closure/eggplan-assessment-integration/004-m003-status.md`
+(implementation `53dea47f`; Eggplan pin `3f7c603`; hosted
+`36938461935` success).
 
 CodeGG plan:
 
@@ -244,3 +247,9 @@ This roadmap closes when CodeGG can use Eggplan as a pure assessment substrate
 for WorkPlan evidence without manufacturing historical source identity,
 changing execution ownership, or creating a second plan/scheduler persistence
 authority.
+
+Met at M003 closure: Eggplan is the canonical Plan/evidence/closure authority
+for a bound plan, CodeGG owns a reconciled durable mirror plus all execution
+and scheduling authority, historical source identity is proven rather than
+manufactured, and no second plan/scheduler persistence authority exists. The
+roadmap is closed; M003's §7 evidence is in the M003 closure record.

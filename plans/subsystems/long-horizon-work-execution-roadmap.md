@@ -355,10 +355,13 @@ The M001-M005 long-horizon WorkPlan roadmap remains historically closed. A
 later cross-repository adoption effort must not reopen or transfer WorkPlan
 storage/runtime ownership merely to reuse generic assessment semantics.
 
-The active integration authority is:
+The integration authority is (now closed end to end):
 
-- `plans/subsystems/eggplan-assessment-integration-roadmap.md`;
-- M001 `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md`.
+- `plans/subsystems/eggplan-assessment-integration-roadmap.md` — M001, C002,
+  M002, and M003 are all closed;
+- M001 `plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md`;
+- M003 `plans/implementation/eggplan-assessment-integration/004-repository-plan-binding-and-writeback.md`
+  (closure `plans/closure/eggplan-assessment-integration/004-m003-status.md`).
 
 That handoff has been revalidated against current CodeGG
 `f5f8d96d7b7371c8583196c58d36ef7b3118ed3c` after Eggwork M002/M002a
@@ -372,16 +375,18 @@ completed jobs/runs do not durably record the exact source subject they
 observed. That primitive is attempt-scoped execution provenance, not a
 WorkPlan-domain field.
 
-Until the integration M001 closes:
+The historical M001-era boundary, kept as evidence rather than a live gate:
 
 - existing CodeGG WorkPlan assessment remains authoritative in production;
 - historical status-only evidence behavior remains unchanged;
-- Eggplan-backed differential adoption stays blocked;
+- Eggplan-backed differential adoption was blocked pending integration M001;
 - Projection/Todo/Goal/checkpoint/context-epoch ownership remains exactly as
   qualified by this closed roadmap.
 
-A positive integration M001 closure may unblock the separately registered
-Eggplan assessment-adoption milestone; it does not reopen M001-M005 here.
+Integration M001 closed, which unblocked Eggplan assessment adoption; M002 then
+adopted the staged engine, and M003 completed the line by making the Eggplan
+repository Plan canonical for a bound plan. No block remains on this workstream,
+and the integration closures did not reopen M001-M005 here.
 
 ## 12. Milestone status
 
