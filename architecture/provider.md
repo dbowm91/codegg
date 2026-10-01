@@ -400,7 +400,7 @@ SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
 
 ## Provider Implementations
 
-### Shared wire kernel qualification
+### Shared wire kernel and provider cutover
 
 `crates/codegg-providers/src/wire.rs` is CodeGG's semantic bridge to the
 immutable-pinned `eggpool-wire` crate. It converts `ChatRequest` values to the
@@ -409,17 +409,26 @@ calls back to `ChatEvent`. The bridge uses a per-stream decoder and bounded
 tool-call accumulator; it does not own transport, retries, cancellation, or
 credentials.
 
-The bridge remains qualification-only until the provider-family cutover
-milestones close. Existing provider modules remain production owners of
-request encoding and SSE decoding during that phase. OpenAI Chat's current
-`max_tokens` field is preserved by a closed CodeGG bridge transform because
-the shared canonical codec emits `max_completion_tokens` by default.
+M001 qualified the bridge without changing production ownership. M002 now
+routes native OpenAI, Azure OpenAI, OpenRouter, CodeGG Zen, and the shared
+OpenAI-compatible transport through `encode_openai_chat` and
+`openai_chat_stream`. Compatible presets and wrappers use the same transport
+core. Provider modules still own endpoint construction, credentials, headers,
+discovery, HTTP status handling, chunk-idle deadlines, and cancellation.
+OpenAI Chat's current `max_tokens` field is preserved by a closed CodeGG
+bridge transform because the shared canonical codec emits
+`max_completion_tokens` by default. `scripts/check_provider_wire_cutover.py`
+guards the migrated provider modules against restoring a second OpenAI SSE
+parser.
+
+Anthropic and Gemini production cutover remains M003 scope. Bedrock Converse
+and hosted/stateful Responses retain specialized paths.
 
 `ProviderRequestContext.wire_policy` carries an immutable, conservative
 projection of the resolved CodeGG model adapter: canonical tool aliases,
-argument aliases, and explicit permission for private reasoning round-trip.
-Callers without a projection receive the conservative default. The provider
-crate does not infer model policy from model names.
+argument aliases, closed reasoning transforms, tool choice, and parallel-tool
+constraints. Callers without a projection receive conservative behavior. The
+provider crate does not infer model policy from model names.
 
 ### Anthropic (`anthropic.rs`)
 

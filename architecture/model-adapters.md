@@ -198,6 +198,9 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
   aliases, argument aliases, and explicitly declared private-reasoning
   permission into `ProviderRequestContext.wire_policy`. Provider modules
   consume this bounded value and do not independently match model names.
+  OpenAI Chat request encoding and stream normalization use that same
+  projection through `codegg-providers::wire`; adapter aliases are restored
+  before tool authorization, and private reasoning stays filtered by default.
 - **Text tool repair is model-specific**: Controlled by adapter; never
   a generic text-to-action parser.
 

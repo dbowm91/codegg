@@ -1,7 +1,7 @@
 //! CodeGG semantic bridge to the pinned `eggpool-wire` sans-I/O kernel.
 //!
-//! This module is qualification-only in M001. Provider transports and their
-//! legacy serializers remain authoritative until their cutover milestones.
+//! Provider transports remain CodeGG-owned; standard provider-family grammar
+//! and streaming decoding are delegated to the pinned shared kernel.
 
 use eggpool_wire::{
     encode_request_for_surface,
@@ -13,7 +13,9 @@ use eggpool_wire::{
     profile::WireSurface,
     CanonicalToolCallAccumulator, RequestEncodeOptions,
 };
+use futures_util::{stream::unfold, Stream, StreamExt};
 use serde_json::{Map, Value};
+use std::{collections::VecDeque, fmt::Display, time::Duration};
 
 use crate::openai_compatible::ToolChoice;
 use crate::{
@@ -161,6 +163,173 @@ pub fn encode(
         }
     }
     Ok(value)
+}
+
+/// Encode the common OpenAI Chat request grammar through the shared kernel.
+pub fn encode_openai_chat(
+    request: &ChatRequest,
+    tool_choice: Option<&ToolChoice>,
+    include_stream_usage: bool,
+) -> Result<Value, ProviderError> {
+    let mut canonical = canonical_request(request, tool_choice);
+    if request.tools.is_none() {
+        // The shared codec validates that a selected tool choice has a tool
+        // collection. Existing CodeGG providers omitted tool choice entirely
+        // when the request had no tools field.
+        canonical.tool_choice = None;
+    }
+    let mut body = encode(
+        &canonical,
+        WireSurface::OpenaiChatCompletions,
+        include_stream_usage,
+    )?;
+    // Historical CodeGG providers emitted tool_choice only when callers
+    // supplied a tools field, including an explicitly empty one.
+    if request.tools.is_none() {
+        if let Some(object) = body.as_object_mut() {
+            object.remove("tool_choice");
+        }
+    }
+    let assistant_text: Vec<String> = crate::project_tool_call_history(&request.messages)
+        .iter()
+        .filter_map(|message| match message {
+            Message::Assistant { content, .. } => Some(
+                content
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect();
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for (message, text) in messages
+            .iter_mut()
+            .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+            .zip(assistant_text)
+        {
+            // Preserve CodeGG's established Chat Completions assistant
+            // content spelling, including text accompanying tool calls.
+            message["content"] = Value::String(text);
+        }
+    }
+    Ok(body)
+}
+
+/// Preserve a provider's previously qualified OpenAI-compatible omission
+/// contract for optional fields it does not accept.
+pub fn omit_openai_fields(body: &mut Value, fields: &[&str]) {
+    if let Some(object) = body.as_object_mut() {
+        for field in fields {
+            object.remove(*field);
+        }
+    }
+}
+
+/// Adapt an OpenAI Chat byte stream through the shared SSE decoder. Optional
+/// chunk timeout remains transport policy and is supplied by the wrapper.
+pub fn openai_chat_stream<S, B, E>(
+    stream: S,
+    policy: Option<std::sync::Arc<crate::ProviderWirePolicy>>,
+    chunk_timeout: Option<Duration>,
+) -> crate::EventStream
+where
+    S: Stream<Item = Result<B, E>> + Send + Unpin + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: Display + Send + 'static,
+{
+    let decoder = SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+    Box::pin(unfold(
+        (stream, decoder, VecDeque::new(), false),
+        move |(mut stream, mut decoder, mut pending, mut finished)| {
+            let policy = policy.clone();
+            async move {
+                loop {
+                    if let Some(event) = pending.pop_front() {
+                        if let Some(event) = normalize_openai_event(event, policy.as_deref()) {
+                            return Some((event, (stream, decoder, pending, finished)));
+                        }
+                        continue;
+                    }
+                    if finished {
+                        return None;
+                    }
+                    let next = if let Some(timeout) = chunk_timeout {
+                        match tokio::time::timeout(timeout, stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                return Some((
+                                    Err(ProviderError::Stream("stream chunk timeout".into())),
+                                    (stream, decoder, pending, true),
+                                ));
+                            }
+                        }
+                    } else {
+                        stream.next().await
+                    };
+                    match next {
+                        Some(Ok(bytes)) => match decoder.push(bytes.as_ref()) {
+                            Ok(events) => pending.extend(events.into_iter().map(Ok)),
+                            Err(error) => {
+                                pending.push_back(Err(error));
+                                finished = true;
+                            }
+                        },
+                        Some(Err(error)) => {
+                            pending.push_back(Err(ProviderError::Stream(error.to_string())));
+                            finished = true;
+                        }
+                        None => {
+                            finished = true;
+                            match decoder.finish() {
+                                Ok(events) => pending.extend(events.into_iter().map(Ok)),
+                                Err(error) => pending.push_back(Err(error)),
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    ))
+}
+
+fn normalize_openai_event(
+    event: Result<ChatEvent, ProviderError>,
+    policy: Option<&crate::ProviderWirePolicy>,
+) -> Option<Result<ChatEvent, ProviderError>> {
+    let Some(policy) = policy else {
+        return Some(event);
+    };
+    match event {
+        Ok(ChatEvent::ReasoningDelta(_)) if !policy.include_reasoning_content => {
+            // Preserve the existing conservative policy: private deltas are
+            // visible only to explicitly opted-in compatible adapters.
+            None
+        }
+        Ok(ChatEvent::ToolCall(mut call)) => {
+            let wire_name = call.name.to_string();
+            let canonical = policy
+                .tool_aliases
+                .iter()
+                .find_map(|(name, alias)| (alias == &wire_name).then_some(name.as_str()))
+                .unwrap_or(wire_name.as_str());
+            if let Some(args) = call.arguments.as_object_mut() {
+                if let Some(aliases) = policy.argument_aliases.get(&wire_name) {
+                    for (name, alias) in aliases {
+                        if let Some(value) = args.remove(alias) {
+                            args.insert(name.clone(), value);
+                        }
+                    }
+                }
+            }
+            call.name = canonical.to_string().into();
+            Some(Ok(ChatEvent::ToolCall(call)))
+        }
+        other => Some(other),
+    }
 }
 
 /// Convert one decoded canonical stream event to CodeGG events, accumulating
@@ -556,6 +725,75 @@ mod tests {
     }
 
     #[test]
+    fn production_openai_gateway_builders_keep_transport_specific_body_contracts() {
+        let request = ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".into()),
+                }],
+            }],
+            model: "deployment-model".into(),
+            tools: Some(vec![crate::ToolDefinition {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
+                defer_loading: None,
+            }]),
+            system: None,
+            temperature: Some(0.2),
+            top_p: Some(0.7),
+            max_tokens: Some(300),
+            response_format: Some(ResponseFormat::JsonObject),
+            thinking_budget: None,
+            reasoning_effort: Some("high".into()),
+            context: Default::default(),
+        };
+        let azure = crate::azure::AzureProvider::new("key".into(), "https://example.test".into())
+            .build_body(&request)
+            .unwrap();
+        assert!(azure.get("model").is_none());
+        assert_eq!(azure["stream_options"]["include_usage"], true);
+        assert!(azure.get("tool_choice").is_none());
+        assert_eq!(azure["max_tokens"], 300);
+        assert_eq!(azure["temperature"], 0.2);
+        assert!(azure.get("response_format").is_none());
+        assert!(azure.get("reasoning_effort").is_none());
+
+        let router = crate::openrouter::OpenRouterProvider::new("key".into())
+            .build_body(&request)
+            .unwrap();
+        assert_eq!(router["model"], "deployment-model");
+        assert!(router.get("stream_options").is_none());
+        assert!(router.get("tool_choice").is_none());
+        assert_eq!(router["max_tokens"], 300);
+        assert!(router.get("response_format").is_none());
+        assert!(router.get("reasoning_effort").is_none());
+
+        let zen = crate::opencode_zen::OpencodeZenProvider::new("key".into())
+            .build_body(&request)
+            .unwrap();
+        assert_eq!(zen["model"], "deployment-model");
+        assert!(zen.get("stream_options").is_none());
+        assert!(zen.get("tool_choice").is_none());
+        assert_eq!(zen["max_tokens"], 300);
+        assert!(zen.get("response_format").is_none());
+        assert!(zen.get("reasoning_effort").is_none());
+
+        let generic = crate::openai_compatible::OpenAiCompatibleProvider::simple(
+            "generic",
+            "Generic",
+            "key",
+            "https://example.test/v1",
+        )
+        .build_body(&request);
+        assert!(generic.get("temperature").is_none());
+        assert!(generic.get("top_p").is_none());
+        assert!(generic.get("max_tokens").is_none());
+        assert!(generic.get("response_format").is_none());
+        assert!(generic.get("reasoning_effort").is_none());
+    }
+
+    #[test]
     fn malformed_complete_tool_arguments_fail_closed() {
         let event = |event_type, delta: Option<&str>| CanonicalEvent {
             event_type,
@@ -819,6 +1057,20 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event.contains("TextDelta")));
+    }
+
+    #[tokio::test]
+    async fn production_openai_stream_adapter_flushes_terminal_event_at_eof() {
+        use futures_util::StreamExt;
+
+        let vector = eggpool_wire::stream_conformance_vectors()
+            .into_iter()
+            .find(|vector| vector.name == "chat_success")
+            .expect("upstream OpenAI success vector");
+        let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(vector.bytes)]);
+        let output: Vec<_> = openai_chat_stream(stream, None, None).collect().await;
+        assert!(output.iter().all(Result::is_ok));
+        assert!(matches!(output.last(), Some(Ok(ChatEvent::Finish { .. }))));
     }
 
     #[test]
