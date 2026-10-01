@@ -191,7 +191,7 @@ M002 is not a hard dependency for a Linux/macOS M003 implementation because the 
 
 ### Milestone 001 — Shared frontend client runtime
 
-Status: ready.
+Status: closing.
 
 Primary class: infrastructure.
 
@@ -384,7 +384,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 
 | Milestone | Status | Implementation plan | Hard/operational blocker |
 |---|---|---|---|
-| M001 shared frontend client runtime | active | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | implementation on `impl/desktop-frontend-ide-foundation` |
+| M001 shared frontend client runtime | closing | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | implementation landed; closure evidence review underway |
 | M002 portable local daemon transport | blocked | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | M001 hard; live Windows runtime evidence for Windows closure |
 | M003 Tauri desktop shell + secure bridge | blocked | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | M001 hard; M002 operational only for Windows |
 | M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | M003 hard |
