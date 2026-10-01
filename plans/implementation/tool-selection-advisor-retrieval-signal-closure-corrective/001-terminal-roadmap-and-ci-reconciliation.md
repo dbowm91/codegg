@@ -1,6 +1,10 @@
 # Tool-Selection Advisor Retrieval-Signal Closure Corrective C001 — Terminal Roadmap and CI Reconciliation
 
-Status: ready for handoff
+Status: closed
+
+Closure record:
+
+- `plans/closure/tool-selection-advisor-retrieval-signal-closure-corrective/001-status.md`
 
 Repository baseline: `a9f65b56089c7b521810dc2f5c26ffafd729cbf7`
 

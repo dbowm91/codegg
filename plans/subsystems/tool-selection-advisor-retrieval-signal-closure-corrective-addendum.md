@@ -1,6 +1,10 @@
 # Tool-Selection Advisor Retrieval-Signal Closure Corrective Addendum
 
-Status: active
+Status: closed
+
+Closure:
+
+- `plans/closure/tool-selection-advisor-retrieval-signal-closure-corrective/001-status.md`
 
 Repository planning baseline: `a9f65b56089c7b521810dc2f5c26ffafd729cbf7`
 
