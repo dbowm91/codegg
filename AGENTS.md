@@ -24,12 +24,13 @@ are allowed in tests (`clippy.toml`).
   `src/lib.rs` re-exports `codegg_protocol as protocol`, `codegg_providers as provider`,
   and `codegg_config as config` — there is no `src/protocol/`, `src/provider/`,
   or `src/config/` implementation directory.
-- `crates/`: 9 crates (+ root = 10 workspace members in `Cargo.toml`) — `codegg-core` (domain types: bus, jobs, session,
+- `crates/`: 10 crates (+ root = 11 workspace members in `Cargo.toml`) — `codegg-core` (domain types: bus, jobs, session,
   storage, workspace; must stay UI/server/plugin/auth-free, enforced by
   `scripts/check-core-boundary.sh`), `codegg-config`, `codegg-protocol`,
   `codegg-providers`, `codegg-git` (typed git ops + risk), `egglsp` (authoritative LSP;
   `src/lsp/` is a thin shim), `egggit` (read-only git facts), `eggsentry` (security
-  scanning), `eggcontext` (tokens). `crates/egglsp-test-server/` is NOT a member; it
+  scanning), `eggcontext` (tokens), `codegg-client` (frontend-side native client).
+  `crates/egglsp-test-server/` is NOT a member; it
   builds the `codegg-lsp-test-server` binary behind `lsp-test-support`.
 - Workspace ownership: root `Cargo.toml` `[workspace.package]`/`[workspace.dependencies]`
   own shared versions/default policy; members use `*.workspace = true` plus only their

@@ -215,9 +215,16 @@ transport from the underlying agent and session logic.
 | `core::daemon_bootstrap` | `hydrate_workspace_registry`, `recover_state`, `recover_jobs`, `start_event_bridge`, `initialize_recovery_sequence` | Startup hydration, event bridge, turn/job recovery, and replay. `initialize_recovery_sequence` is the canonical in-process hydrate -> bridge -> recover order. |
 | `core::daemon_refresh` | `refresh_project_context`, `refresh_project_activation`, `activate_project_workspace`, `project_health`, `refresh_runtime_assets` | Runtime refresh coordinators plus shared workspace/binding resolvers. All refresh flows through the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_shutdown` | `Drop`, `abort_background_handles` | Joined shutdown: cancel precedes joins; aborts projection-maintenance and worktree-reconcile tasks in order. Scheduler loop stays detached by design. |
-| `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Singleton daemon lifecycle, user-scoped path resolution, flock-based lock, connect-or-start helper. |
+| `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Daemon-owned lock/metadata lifecycle and compatibility-facing connect-or-start API. |
 | `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles pool, memory_store, legacy_agent (subagent_pool), turn_runtime, lsp_service, workspace_services, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always has a default TurnRuntime; override via `with_turn_runtime()`. |
 | `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL-over-socket and JSONL-over-stdio transports. Also contains `daemon_socket` for daemon-side socket accept loop. |
+
+Frontend identity, local endpoint/path resolution, socket transport, and
+connect/reuse/start orchestration live in the leaf `codegg-client` crate.
+Root `SocketCoreClient` and `connect_or_start_daemon` preserve existing root
+APIs while adapting the extracted client. Daemon lock ownership, metadata,
+listener binding, and core construction remain root-owned. See
+[`client.md`](client.md).
 | `core::transport::projection` | projection stream management | Connection-local projection subscription, cursor, and forwarding state. |
 | `core::event_log` | `EventLog` | In-memory event ring buffer with optional SQLite-backed projection sink. |
 | `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
@@ -242,9 +249,10 @@ pub trait CoreClient: Send + Sync {
 }
 ```
 
-`subscribe()` is event-capable for the in-process client. The stdio and
-socket clients currently expose request/response transport and return an
-empty receiver.
+`subscribe()` is event-capable for in-process and local-socket clients.
+Stdio currently exposes request/response transport and returns an empty
+receiver. `SocketCoreClient` adapts `codegg-client::LocalSocketClient` and
+forwards its bounded event stream.
 
 ### Core Clients
 

@@ -319,6 +319,11 @@ Tagged enum with ~41 variants. Major groups:
 `protocol_version`, and `ClientCapabilities`. `ServerHello` carries
 `daemon_id`, `protocol_version`, `ServerCapabilities`, and `client_id`.
 
+The trusted frontend composition selects these values with
+`codegg_client::FrontendDescriptor`; renderer input does not choose its
+connection identity or capabilities. The descriptor changes client-side
+composition only and does not grant authorization.
+
 `ClientCapabilities` includes `visual_notifications`, `desktop_notifications`,
 `audio`, `tts`, `multi_session_view`, and 7 `plugin_ui_*` capability flags.
 

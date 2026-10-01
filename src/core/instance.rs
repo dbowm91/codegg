@@ -29,8 +29,6 @@ use tokio::sync::Mutex;
 use crate::error::AppError;
 use crate::protocol::core::PROTOCOL_VERSION;
 
-use super::CoreClient;
-
 /// What this binary invocation is doing with respect to the core runtime.
 ///
 /// The default for ordinary TUI startup is [`DaemonClient`](Self::DaemonClient),
@@ -98,28 +96,27 @@ impl DaemonPaths {
     ///
     /// `CODEGG_DAEMON_HOME` overrides the root directory.
     pub fn resolve() -> Self {
-        let override_root = std::env::var("CODEGG_DAEMON_HOME").ok().map(PathBuf::from);
-        let root = override_root.unwrap_or_else(default_user_runtime_root);
-        Self::with_root(root)
+        let shared = codegg_client::LocalDaemonPaths::resolve();
+        Self::with_root(shared.root)
     }
 
     /// Resolve the canonical daemon paths, applying an explicit endpoint or
     /// `CODEGG_CORE_ENDPOINT` to the socket while retaining the user-scoped
     /// lock, metadata, and log paths.
     pub fn resolve_for_endpoint(explicit_endpoint: Option<&str>) -> Self {
-        let endpoint = explicit_endpoint
-            .map(str::to_owned)
-            .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
-        let paths = Self::resolve();
-        endpoint
-            .as_deref()
-            .map(Self::normalize_endpoint)
-            .map_or(paths.clone(), |socket| paths.with_socket(socket))
+        let shared = codegg_client::LocalDaemonPaths::resolve_for_endpoint(explicit_endpoint);
+        Self {
+            root: shared.root,
+            lock_path: shared.lock_path,
+            metadata_path: shared.metadata_path,
+            socket_path: shared.socket_path,
+            log_path: shared.log_path,
+        }
     }
 
     /// Normalize a filesystem socket path or `unix://` endpoint.
     pub fn normalize_endpoint(endpoint: &str) -> PathBuf {
-        PathBuf::from(endpoint.strip_prefix("unix://").unwrap_or(endpoint))
+        codegg_client::LocalDaemonPaths::normalize_endpoint(endpoint)
     }
 
     /// Construct paths rooted at `root`. Used by production and by tests.
@@ -461,232 +458,79 @@ impl ConnectOrStartOptions {
 pub async fn connect_or_start_daemon(
     options: ConnectOrStartOptions,
 ) -> Result<ConnectOrStartOutcome, DaemonConnectError> {
+    connect_or_start_daemon_with_descriptor(
+        options,
+        codegg_client::FrontendDescriptor::new(
+            "codegg-tui",
+            crate::protocol::frames::ClientKind::Tui,
+            crate::core::transport::SocketCoreClient::tui_client_capabilities(),
+        ),
+    )
+    .await
+}
+
+/// Connect to or start the singleton daemon using the supplied trusted
+/// frontend identity. The descriptor is composition-owned and never accepted
+/// from renderer input.
+pub async fn connect_or_start_daemon_with_descriptor(
+    options: ConnectOrStartOptions,
+    descriptor: codegg_client::FrontendDescriptor,
+) -> Result<ConnectOrStartOutcome, DaemonConnectError> {
     let endpoint = options.paths.endpoint_uri();
     options
         .paths
         .ensure_root()
         .map_err(DaemonConnectError::Io)?;
-
-    let deadline = tokio::time::Instant::now() + options.startup_timeout;
-
-    // 1. Try connecting directly. A socket is not ready until the complete
-    // handshake and bounded control-plane identity probe succeed.
-    if let Some((client, daemon_id)) = verified_connect_until(&endpoint, deadline).await {
-        return Ok(ConnectOrStartOutcome {
-            client,
-            daemon_id,
-            endpoint,
-            started_pid: None,
-        });
-    }
-
-    // Connection refused or socket missing — try startup if allowed.
-    if !options.autostart {
-        let lock_held = is_lock_held(&options.paths.lock_path)?;
-        if lock_held {
-            let md = DaemonInstanceGuard::read_metadata(&options.paths.metadata_path);
-            return Err(DaemonConnectError::InconsistentState {
-                endpoint,
-                detail: match md {
-                    Some(m) => format!(
-                        "lock held by daemon {} (pid {}) but socket unreachable",
-                        m.daemon_id, m.pid
-                    ),
-                    None => "lock held by another process and socket unreachable".to_string(),
-                },
-            });
-        }
-        return Err(DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
-            "no daemon running at {} (autostart disabled)",
-            endpoint
-        ))));
-    }
-
-    // 2. Spawn a detached child process that runs the singleton daemon.
-    let exe = options
-        .executable
-        .clone()
-        .or_else(|| std::env::var_os("CODEGG_DAEMON_EXECUTABLE").map(PathBuf::from))
-        .or_else(|| std::env::current_exe().ok())
-        .ok_or_else(|| {
-            DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
-                "cannot resolve daemon executable"
-            )))
-        })?;
-    let log = options
-        .paths
-        .open_log_file()
-        .map_err(DaemonConnectError::Io)?;
-    let log_for_stderr = log.try_clone().map_err(|e| {
-        DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
-            "failed to duplicate daemon log {}: {}",
-            options.paths.log_path.display(),
-            e
-        )))
-    })?;
-    let socket_arg = options.paths.socket_path_str();
-    let mut command = tokio::process::Command::new(exe);
-    command
-        .args([
-            "daemon",
-            "start",
-            "--endpoint",
-            socket_arg.as_str(),
-            "--force-take-lock",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(log))
-        .stderr(std::process::Stdio::from(log_for_stderr));
-    detach_daemon_process(&mut command);
-    let mut child = command.spawn().map_err(|e| {
-        DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
-            "failed to spawn daemon: {}",
-            e
-        )))
-    })?;
-    let child_pid = child.id().unwrap_or(0);
-
-    // 3. Poll for readiness. If this child loses the singleton race and
-    // exits, perform one final verified probe before classifying the exit.
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            // The losing starter can exit before the lock winner has bound
-            // its socket. Keep probing through the original deadline so the
-            // frontend converges on that winner instead of reporting the
-            // harmless helper exit as a startup failure.
-            while tokio::time::Instant::now() < deadline {
-                if let Some((client, daemon_id)) = verified_connect_until(&endpoint, deadline).await
-                {
-                    return Ok(ConnectOrStartOutcome {
-                        client,
-                        daemon_id,
-                        endpoint,
-                        started_pid: Some(child_pid),
-                    });
-                }
-                tokio::time::sleep(
-                    options
-                        .poll_interval
-                        .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-                )
-                .await;
-            }
-            return Err(DaemonConnectError::ChildExited {
-                endpoint,
-                detail: format!(
-                    "daemon child exited with {:?}; see {}",
-                    status,
-                    options.paths.log_path.display()
-                ),
-            });
-        }
-        if let Some((client, daemon_id)) = verified_connect_until(&endpoint, deadline).await {
-            tokio::spawn(async move {
-                if let Err(error) = child.wait().await {
-                    tracing::debug!("autostarted daemon reaper failed: {}", error);
-                }
-            });
-            return Ok(ConnectOrStartOutcome {
-                client,
-                daemon_id,
-                endpoint,
-                started_pid: Some(child_pid),
-            });
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(DaemonConnectError::StartupTimeout {
-                endpoint,
-                timeout: options.startup_timeout,
-                log_path: options.paths.log_path,
-            });
-        }
-        tokio::time::sleep(
-            options
-                .poll_interval
-                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-        )
-        .await;
-    }
-}
-
-async fn verified_connect_until(
-    endpoint: &str,
-    deadline: tokio::time::Instant,
-) -> Option<(crate::core::transport::SocketCoreClient, String)> {
-    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-    if remaining.is_zero() {
-        return None;
-    }
-    let result = tokio::time::timeout(remaining, async {
-        let client = crate::core::transport::SocketCoreClient::connect(endpoint)
-            .await
-            .ok()?;
-        let response = client.request(snapshot_request()).await.ok()?;
-        match response {
-            crate::protocol::core::CoreResponse::SnapshotDaemon { daemon_id, .. } => {
-                Some((client, daemon_id))
-            }
-            _ => None,
-        }
-    })
+    let started = codegg_client::connect_or_start_local_daemon(
+        codegg_client::LocalDaemonOptions {
+            endpoint: endpoint.clone(),
+            endpoint_argument: options.paths.socket_path_str(),
+            lock_path: options.paths.lock_path.clone(),
+            log_path: options.paths.log_path.clone(),
+            executable: options.executable,
+            autostart: options.autostart,
+            startup_timeout: options.startup_timeout,
+            poll_interval: options.poll_interval,
+        },
+        descriptor,
+    )
     .await
-    .ok()
-    .flatten();
-    result
-}
-
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn detach_daemon_process(command: &mut tokio::process::Command) {
-    // The daemon is user-scoped and must outlive the frontend that happened
-    // to start it. A new session prevents terminal/process-group teardown
-    // from coupling their lifetimes.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
+    .map_err(|error| match error {
+        codegg_client::ClientError::StartupTimeout => DaemonConnectError::StartupTimeout {
+            endpoint: endpoint.clone(),
+            timeout: options.startup_timeout,
+            log_path: options.paths.log_path.clone(),
+        },
+        codegg_client::ClientError::InconsistentSingleton(detail) => {
+            let metadata = DaemonInstanceGuard::read_metadata(&options.paths.metadata_path);
+            DaemonConnectError::InconsistentState {
+                endpoint: endpoint.clone(),
+                detail: match metadata {
+                    Some(metadata) => format!(
+                        "lock held by daemon {} (pid {}); {}",
+                        metadata.daemon_id, metadata.pid, detail
+                    ),
+                    None => detail,
+                },
             }
-            Ok(())
-        });
-    }
+        }
+        codegg_client::ClientError::ChildExited(detail) => DaemonConnectError::ChildExited {
+            endpoint: endpoint.clone(),
+            detail: format!("{detail}; see {}", options.paths.log_path.display()),
+        },
+        other => DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(other.to_string()))),
+    })?;
+    Ok(ConnectOrStartOutcome {
+        client: crate::core::transport::SocketCoreClient::from_client(started.client),
+        daemon_id: started.daemon_id,
+        endpoint: started.endpoint,
+        started_pid: started.started_pid,
+    })
 }
-
-#[cfg(not(unix))]
-fn detach_daemon_process(_command: &mut tokio::process::Command) {}
 
 // -----------------------------------------------------------------------------
 // helpers
 // -----------------------------------------------------------------------------
-
-fn default_user_runtime_root() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("codegg");
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(xrd) = std::env::var_os("XDG_RUNTIME_DIR") {
-            return PathBuf::from(xrd).join("codegg");
-        }
-        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-            return PathBuf::from(xdg).join("codegg");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("codegg");
-        }
-    }
-    PathBuf::from("/tmp").join("codegg")
-}
 
 #[cfg(unix)]
 fn open_lock_file(path: &Path) -> Result<std::fs::File, AppError> {
@@ -753,56 +597,6 @@ fn try_flock_exclusive(_file: &std::fs::File) -> Result<bool, AppError> {
     )))
 }
 
-/// Probe whether the daemon lock is held. Best-effort hint only: the lock
-/// may change hands between this check and any caller action. Callers must
-/// treat `Ok(true)` as "do not unlink/steal" and re-validate under a held
-/// FD where correctness matters.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn is_lock_held(lock_path: &Path) -> Result<bool, AppError> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let open = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_CLOEXEC)
-        .open(lock_path);
-    let file = match open {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
-    use std::os::fd::AsRawFd;
-    let fd = file.as_raw_fd();
-    // Try to acquire LOCK_EX | LOCK_NB. If it succeeds the lock is free; if
-    // it fails with EWOULDBLOCK the lock is held.
-    let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if ret == 0 {
-        // Release immediately so we don't hold it.
-        if unsafe { libc::flock(fd, libc::LOCK_UN) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(false)
-    } else {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EWOULDBLOCK)
-            || error.raw_os_error() == Some(libc::EAGAIN)
-        {
-            Ok(true)
-        } else {
-            Err(error.into())
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn is_lock_held(_lock_path: &Path) -> Result<bool, AppError> {
-    // Fail closed: non-Unix cannot reliably probe the lock, so report an
-    // error instead of a misleading "not held".
-    Err(AppError::Other(anyhow::anyhow!(
-        "daemon singleton lock probe is unsupported on non-Unix platforms"
-    )))
-}
-
 static ATOMIC_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), AppError> {
@@ -844,14 +638,6 @@ fn set_user_only_permissions(path: &Path) {
 
 #[cfg(not(unix))]
 fn set_user_only_permissions(_path: &Path) {}
-
-fn snapshot_request() -> crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>
-{
-    crate::core::new_request(
-        "connect-or-start-status".to_string(),
-        crate::protocol::core::CoreRequest::SnapshotDaemon,
-    )
-}
 
 /// Construct a `DaemonInstanceMetadata` for the current process.
 pub fn current_process_metadata(

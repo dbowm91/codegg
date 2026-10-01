@@ -1,5 +1,22 @@
 # Client Module
 
+## Native local frontend client (in progress)
+
+`crates/codegg-client` is the reusable frontend-side native client. It owns
+`FrontendDescriptor`, bounded `ClientError` classifications, local daemon
+path discovery, the multiplexed CoreFrame Unix client, and connect/reuse/start
+orchestration. It depends on `codegg-protocol` and contains no daemon authority.
+`FrontendDescriptor` fields are private and selected by trusted composition
+code. The root `SocketCoreClient` and `connect_or_start_daemon` APIs remain
+compatibility adapters for the existing `CoreClient` and daemon lifecycle
+types; both delegate to the shared implementation.
+
+`LocalSocketClient` owns one reader task, bounded request/event channels,
+request correlation, handshake/client identity, and reconnect. The TUI starts
+it with an explicit TUI descriptor. A headless GUI-kind consumer can use the
+same API without importing TUI or daemon modules. Disconnect only releases
+frontend-owned transport tasks; daemon-owned turns and jobs continue.
+
 ## Purpose
 
 WebSocket client for remote TUI connections. Handles URL normalization,

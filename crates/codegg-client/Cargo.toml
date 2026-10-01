@@ -1,0 +1,25 @@
+[package]
+name = "codegg-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Frontend-side CodeGG native protocol client contracts"
+
+[dependencies]
+codegg-protocol.workspace = true
+dashmap.workspace = true
+dirs.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "process", "sync", "time"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

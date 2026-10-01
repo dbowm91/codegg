@@ -24,6 +24,8 @@ crates/
                      file watching
   codegg-protocol/   Core protocol types: CoreRequest, CoreResponse,
                      CoreEvent, TuiMessage, UiNode, UiEffect
+  codegg-client/     Frontend descriptor, local daemon paths, native
+                     CoreFrame client, connect/reuse/start
   codegg-providers/  LLM provider implementations, auth types,
                      CircuitBreaker
   codegg-git/        Typed Git operation model, argv parser, risk
@@ -43,7 +45,7 @@ Non-member binary crate:
                        Cargo.toml behind lsp-test-support feature)
 ```
 
-Workspace members (10 total): root `codegg` + 9 crates under `crates/`.
+Workspace members (11 total): root `codegg` + 10 crates under `crates/`.
 
 ## Workspace Dependency Ownership
 

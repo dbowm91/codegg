@@ -2955,7 +2955,9 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
 }
 
 async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
-    use codegg::core::instance::{connect_or_start_daemon, ConnectOrStartOptions, CoreRuntimeMode};
+    use codegg::core::instance::{
+        connect_or_start_daemon_with_descriptor, ConnectOrStartOptions, CoreRuntimeMode,
+    };
 
     let project_dir = env::current_dir()
         .ok()
@@ -3196,13 +3198,20 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 .and_then(|d| d.startup_timeout_ms)
                 .unwrap_or(10_000),
         );
-        let outcome = connect_or_start_daemon(ConnectOrStartOptions {
-            paths,
-            autostart: auto_start,
-            startup_timeout,
-            poll_interval: std::time::Duration::from_millis(100),
-            executable: None,
-        })
+        let outcome = connect_or_start_daemon_with_descriptor(
+            ConnectOrStartOptions {
+                paths,
+                autostart: auto_start,
+                startup_timeout,
+                poll_interval: std::time::Duration::from_millis(100),
+                executable: None,
+            },
+            codegg_client::FrontendDescriptor::new(
+                "codegg-tui",
+                codegg::protocol::frames::ClientKind::Tui,
+                codegg::core::transport::SocketCoreClient::tui_client_capabilities(),
+            ),
+        )
         .await;
         match outcome {
             Ok(out) => {
