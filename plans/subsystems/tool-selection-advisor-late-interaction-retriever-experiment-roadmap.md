@@ -1,6 +1,9 @@
 # Tool-Selection Advisor Late-Interaction Retriever Experiment Roadmap
 
-Status: active — M001 blocked on retrieval-signal closure corrective C001
+Status: closed (negative) — M001 closed with disposition D (no
+architectural signal); M002/M003/M004/M005 never opened. Terminal state
+recorded by M001 closure
+(`plans/closure/tool-selection-advisor-late-interaction-retriever-experiment/001-status.md`).
 
 Repository planning baseline: `c4cc6c5b3c9154428b8560a60aa0129624435dfe`
 
@@ -128,7 +131,8 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-late-interaction-retriever-experiment/001-frozen-exact-maxsim-baseline.md`
 
-Status: blocked on retrieval-signal closure corrective C001.
+Status: closed negatively (disposition D — best mode 29/53 at u64/K16;
+see closure record). M002/M003 are skipped per the preregistered rules.
 
 Expose bounded token hidden states from the existing encoder, preregister an exact MaxSim contract, and evaluate frozen late interaction with no learned parameters.
 
@@ -138,7 +142,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-late-interaction-retriever-experiment/002-token-projection-training.md`
 
-Status: blocked/conditional on positive architectural signal from M001.
+Status: never opened (terminal — requires M001 disposition B; M001 closed D).
 
 Train only small linear token projections before MaxSim. This is intentionally distinct from the failed pooled-projection experiment.
 
@@ -148,7 +152,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-late-interaction-retriever-experiment/003-top-layer-late-interaction-finetuning.md`
 
-Status: blocked/conditional on M002 near-gate result with clean generalization.
+Status: never opened (terminal — requires M002 near-gate B; M002 never opened).
 
 Fine-tune only the top one or two MiniLM layers plus the selected token projection. Full-model tuning is out of scope.
 
@@ -158,7 +162,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-late-interaction-retriever-experiment/004-retrieval-ranker-promotion-operating-point.md`
 
-Status: blocked on an eligible M001/M002/M003 retrieval candidate.
+Status: never opened (terminal — no eligible M001/M002/M003 candidate).
 
 Freeze K/resources/cache behavior, integrate the frozen span-packed ranker, and qualify candidate-relevance promotion separately from abstention.
 
@@ -168,7 +172,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-late-interaction-retriever-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked on positive M004.
+Status: never opened (terminal — requires positive M004; M004 never opened).
 
 Run one fresh, zero-leakage, release-mode qualification of the complete retrieval + ranker + promotion stack.
 

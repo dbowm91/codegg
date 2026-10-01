@@ -1,6 +1,7 @@
 # Tool-Selection Advisor Late-Interaction Retriever M001 — Frozen Exact MaxSim Baseline
 
-Status: blocked on retrieval-signal closure corrective C001
+Status: implemented — closed negatively (disposition D; see
+`plans/closure/tool-selection-advisor-late-interaction-retriever-experiment/001-status.md`)
 
 Repository baseline: `c4cc6c5b3c9154428b8560a60aa0129624435dfe`
 

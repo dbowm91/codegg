@@ -1,6 +1,8 @@
 # Tool-Selection Advisor Late-Interaction Retriever M003 — Top-Layer Late-Interaction Fine-Tuning
 
-Status: blocked/conditional on M002 disposition B
+Status: blocked/conditional on M002 disposition B — TERMINAL: M001 closed
+with disposition D, so M002 never opens and M003 never opens. No encoder
+tuning occurs in this workstream.
 
 Repository baseline: `c4cc6c5b3c9154428b8560a60aa0129624435dfe`
 
