@@ -1,6 +1,10 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active — M001R closed positively, M002 closed (negative-but-valid), M003 closed (negative, nothing frozen)
+Status: closed (negative) — M001 blocked/closed by hard stop, evaluation-semantics
+corrective C001 closed (disposition B), M001R closed positively, M002 closed
+(negative-but-valid), M003 closed (negative, nothing frozen); M004/M005 not
+reached (no eligible retrieval candidate). Terminal state reconciled by
+retrieval-signal closure corrective C001.
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -169,12 +173,26 @@ M005 fresh v4 qualification
 ```
 
 - M001 is blocked/closed after reaching its planned evaluation-target hard stop.
-- Retrieval-evaluation corrective C001 is the only ready handoff.
-- M001R is blocked on corrective disposition B.
-- M002 is blocked on positive M001R.
-- M003 remains conditional on a valid negative M002.
-- M004 is blocked; it may become eligible either from corrective disposition A (existing unchanged retrieval clears the corrected target) or from positive M002/M003.
-- M005 requires positive M004.
+  Closure: `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001-status.md`.
+- Retrieval-evaluation corrective C001 is closed with disposition B (real
+  inferable signal gap confirmed; corrected target frozen).
+  Closure: `plans/closure/tool-selection-advisor-retrieval-evaluation-semantics-corrective/001-status.md`.
+- M001R is closed positively (Signal V2 + conditional projection degrees of
+  freedom preregistered against the corrected target).
+  Closure: `plans/closure/tool-selection-advisor-retrieval-signal-experiment/001r-status.md`.
+- M002 is closed negative-but-valid (best deterministic mode 51/53, no gates cleared).
+  Closure: `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`.
+- M003 is closed negative (0/288 projection arms clear the gates; no artifact frozen).
+  Closure: `plans/closure/tool-selection-advisor-retrieval-signal-experiment/003-status.md`.
+- M004 was never reached: neither M002 nor M003 produced an eligible retrieval
+  candidate, so no operating point was frozen. It remains blocked/not reached.
+- M005 was never reached: M004 never opened. It remains blocked/not reached.
+- Retrieval-signal closure corrective C001 owns only terminal planning/CI
+  reconciliation; it reopens no retrieval/model work.
+
+A future architecture experiment must be registered as a separate workstream,
+not as M006 of this roadmap. (The late-interaction retriever experiment is
+such a separate workstream.)
 
 ## 7. Milestones
 
@@ -228,7 +246,8 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/004-retrieval-and-promotion-operating-point.md`
 
-Status: blocked on positive M002 or M003.
+Status: blocked/not reached (terminal — neither M002 nor M003 produced an
+eligible retrieval candidate, so no operating point was ever frozen).
 
 Freeze the smallest/cheapest dev retrieval point that clears the existing recall gates, then attach the already-separated candidate-relevance promotion calibration.
 
@@ -238,7 +257,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked on M004.
+Status: blocked/not reached (terminal — M004 never opened).
 
 Build a new zero-leakage, order-balanced semantic holdout and run one separately preregistered release-mode qualification of the complete retrieval + span-packed ranker + promotion stack.
 
