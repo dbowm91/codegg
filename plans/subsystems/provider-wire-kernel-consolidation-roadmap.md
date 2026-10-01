@@ -1,6 +1,6 @@
 # Provider Wire-Kernel Consolidation Roadmap
 
-Status: active
+Status: closing
 
 Long-term references:
 
@@ -306,4 +306,4 @@ Provider-profile metadata deduplication is a separate potential successor and is
 |---|---|---|---|---|
 | 001 — shared-wire bridge and parity qualification | closed | `plans/implementation/provider-wire-kernel-consolidation/001-shared-wire-bridge-and-parity-qualification.md` | `plans/closure/provider-wire-kernel-consolidation/001-status.md` | — |
 | 002 — OpenAI-family shared-wire cutover | closed | `plans/implementation/provider-wire-kernel-consolidation/002-openai-family-shared-wire-cutover.md` | `plans/closure/provider-wire-kernel-consolidation/002-status.md` | — |
-| 003 — Anthropic/Gemini cutover and duplicate wire retirement | active | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md` | — | — |
+| 003 — Anthropic/Gemini cutover and duplicate wire retirement | closing | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md` | — | — |
