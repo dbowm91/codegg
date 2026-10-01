@@ -33,10 +33,8 @@ blocked/not reached.
 | Ownership classification (§4/§5) | Transient/toolchain + unrelated-current-head: new 1.99.0 lint on `#[must_use]` injected by async-trait 0.1.89 (`expand.rs:69`); flagged files byte-identical `7b509faf`..head with zero authored `must_use`; M002/M003 touch only `src/tool_advisor/*` |
 | Fix only if owned | Not owned → no source edit in this line; separate corrective registered and closed |
 | Roadmap terminal (§5) | `plans/subsystems/tool-selection-advisor-retrieval-signal-experiment-roadmap.md`: closed (negative), completed-history dependency graph, M004/M005 blocked/not reached, future work is a separate workstream |
-| Registry terminal (§6) | Experiment row closed-negative; corrective row active→closed; C001 row ready→active→closed; M004/M005 rows terminal; gate prose records classification + owner |
-| Closure record (§9) | This file |
+| Registry terminal (§6) | Experiment row closed-negative; corrective row active→closed; C001 row ready→active→closed; M004/M005 rows terminal; gate prose records classification + owner || Closure record (§9) | This file (hosted evidence: run `36929519004` success) |
 | No new architecture (§11) | Nothing in `f4e00752` touches scoring, models, gates, or v4 |
-
 ## 3. Production implementation evidence
 
 No production code changed in this corrective by design. Planning-only
@@ -68,13 +66,11 @@ Local (darwin aarch64):
   `git rev-parse HEAD` recorded the 1.89.0 vs 1.99.0 split behind the
   classification.
 
-Hosted (CI / verify, PR #88):
+Hosted (CI / verify, PR #88, final head):
 
-- Run `36912603806`, verify job `110557954083`: **success** in 20m32s —
+- Run `36929519004`, verify job `110595046733`: **success** in 18m28s —
   Workspace Clippy green on stable 1.99.0 (the toolchain fix verified
-  where it counts) and workspace tests green (one transient
-  `asset_refresh` coalescing timeout on first attempt, green on `--failed`
-  rerun without code change).
+  where it counts) and workspace tests green.
 
 ## 5. Invariant review
 
