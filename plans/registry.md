@@ -26,6 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Desktop frontend and IDE foundation | active | `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md` | M001 ready; M002-M004 dependency-gated; M005-M006 deferred | ADR-0010 accepted. M001 shared frontend client runtime is ready now. M002 waits on M001; M003 waits on M001 (M002 operational only for Windows); M004 waits on M003. |
+| Search / eggsearch legacy backend retirement corrective | blocked | `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md` | M001-M002 blocked | M001 waits on eggsearch CodeGG legacy-search-parity M003 plus a qualifying tagged release; M002 waits on CodeGG M001. |
 | Dependency security and workspace consolidation | active | `plans/subsystems/dependency-security-workspace-consolidation-roadmap.md` | M001-M006 and CodeGG M005 follow-up closed | Eggup now supplies the immutable-pinned generalized update interface; evidence is `plans/closure/dependency-security-workspace-consolidation/007-codegg-eggup-adoption.md`. |
 | CI and test throughput optimization | closed | `plans/subsystems/ci-test-throughput-optimization-roadmap.md` | M001-M005 closed; historical closure retained | M001-M005 closures remain immutable historical evidence. Final predecessor main/live run `36196068239` attempt 3: 17m17s total, 7m51s build, 362.537s exec, 11,726 passed / 1 skipped. Post-closure evidence defects are owned by the separate C001 corrective below. |
 | CI/test throughput optimization post-closure corrective | closed | `plans/subsystems/ci-test-throughput-optimization-post-closure-corrective-addendum.md` | C002 closed; C001 closed (measured negative sccache) | C001 closed (`plans/closure/ci-test-throughput-optimization-post-closure-corrective/001-status.md`; sccache rejected on hosted A/B, docs reconciled, unrelated-PR baseline recorded). No active milestone remains in this line. |
@@ -82,6 +83,8 @@ non-passing evidence.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
+| Search / eggsearch legacy backend retirement corrective | M001 parity release adoption + provider contract | **blocked** | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | Hard/operational blocker: eggsearch legacy-search-parity M003 accepted and a tagged release carrying that qualified provider surface. |
+| Search / eggsearch legacy backend retirement corrective | M002 builtin external-search backend retirement | **blocked** | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Hard-blocked on CodeGG M001. Removes the duplicate `src/search/*` / builtin webfetch execution owner while preserving stable wrappers, research orchestration, local coding tools, and disabled mode. |
 | Desktop frontend and IDE foundation | M001 shared frontend client runtime | **ready** | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | Accepted ADR-0010; closed singleton/protocol/session-projection foundations. Extract `codegg-client`, configurable frontend identity/capabilities, and reusable local daemon connect/start before any Tauri work. |
 | Eggwork fixed-target remote execution | M003 content-aware derived workspace transfer | **closed** | `plans/implementation/eggwork-fixed-target-remote-execution/003-content-aware-derived-workspace-transfer.md` | Closure: `plans/closure/eggwork-fixed-target-remote-execution/003-status.md` (implementation `1ce377ce`; hosted `36745285774` success, live derived reuse under required isolation; Eggwork pin `e6a5d82e`). M004 stays deferred on the AgentRun worker-entry contract. |
 | CI/test throughput optimization post-closure corrective | C002 hosted CI timing-flake stabilization | closed | `plans/implementation/ci-test-throughput-optimization-post-closure-corrective/002-hosted-ci-timing-flake-stabilization.md` | Closure: `plans/closure/ci-test-throughput-optimization-post-closure-corrective/002-status.md` (implementation `696ec282`; hosted `36748429660` attempts 1–3 green with live Eggwork). C001 unblocked to ready. |
@@ -200,6 +203,8 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Search / eggsearch legacy backend retirement corrective | M001 parity release adoption + provider contract | Eggsearch CodeGG legacy-search-parity M003 must close and a qualifying tagged eggsearch release must exist. |
+| Search / eggsearch legacy backend retirement corrective | M002 builtin external-search backend retirement | Hard-blocked on CodeGG M001. |
 | Desktop frontend and IDE foundation | M002 portable local daemon transport | Hard-blocked on M001 shared client runtime. Windows closure additionally requires live runtime evidence and explicit restrictive named-pipe ACLs; default Windows pipe security is not acceptable. |
 | Desktop frontend and IDE foundation | M003 Tauri desktop shell + secure bridge | Hard-blocked on M001. M002 is operational only for Windows qualification; Linux/macOS may proceed once M001 closes. |
 | Desktop frontend and IDE foundation | M004 desktop session/control-plane vertical slice | Hard-blocked on M003. Uses canonical projections/control ownership; editor/document/PTY GUI work is outside this milestone. |
@@ -428,7 +433,7 @@ These remain outside active handoff unless concrete product priority/evidence ma
 - production hosted Tool Program transport;
 - seccomp, namespace, container, or remote-execution sandbox expansion;
 - persistent search indexing;
-- deletion of the explicitly configured legacy search fallback absent new compatibility evidence;
+- search-backend retirement is no longer unregistered/deferred: new compatibility evidence is owned by `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md`, currently blocked on the upstream eggsearch parity qualification/release;
 - automatic dependency-update bots or continuous binary-size/audit gates;
 - OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now closed;
 - generalized OAuth/provider credential-store unification absent a token-set abstraction justified by multiple consumers;
