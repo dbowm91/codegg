@@ -1164,6 +1164,26 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::SessionCreate),
         ),
+        // Eggplan M003 repository Plan binding is an explicit,
+        // host/user-authorized operation. It requires session-creation
+        // authority in the direct project scope: it creates durable runtime
+        // state and takes over plan ownership, so a read-only principal can
+        // neither bind nor inspect another principal's binding.
+        R::WorkPlanBindRepository { .. } => OperationDescriptor::new(
+            "work_plan_bind_repository",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
+        R::WorkPlanRepositoryBinding { .. } => OperationDescriptor::new(
+            "work_plan_repository_binding",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionRead),
+        ),
+        R::WorkOrderBindRepository { .. } => OperationDescriptor::new(
+            "work_order_bind_repository",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
     }
 }
 
@@ -2048,6 +2068,17 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::WorkOrderTriggerRevoke {
             trigger_id: String::new(),
+        },
+        R::WorkPlanBindRepository {
+            session_id: String::new(),
+            eggplan_plan_id: String::new(),
+        },
+        R::WorkPlanRepositoryBinding {
+            session_id: String::new(),
+        },
+        R::WorkOrderBindRepository {
+            work_order_id: String::new(),
+            eggplan_plan_id: String::new(),
         },
     ]
 }

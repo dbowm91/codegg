@@ -560,6 +560,13 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("goal_done", "agent_delegate"),
     ("goal_checkpoint", "agent_delegate"),
     ("goal_set_budget", "agent_delegate"),
+    // Eggplan M003: binding a repository Plan takes over plan authority for a
+    // session, which is the same durable plan/goal authority surface as
+    // `goal_set`; the binding request for a work order is work-order
+    // lifecycle. The bounded status read is a project-keyed read like
+    // `goal_show` and stays uninstrumented below.
+    ("work_plan_bind_repository", "agent_delegate"),
+    ("work_order_bind_repository", "work_order_lifecycle"),
     ("edit_checkpoint_undo", "file_mutate"),
     ("edit_checkpoint_undo_latest", "file_mutate"),
     ("edit_checkpoint_reapply", "file_mutate"),
@@ -736,6 +743,7 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "edit_checkpoint_get",
     "edit_checkpoint_list",
     "goal_show",
+    "work_plan_repository_binding",
     "active_goal_load",
     "todo_list",
     "workspace_list",

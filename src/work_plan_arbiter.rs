@@ -348,6 +348,11 @@ pub async fn record_verifier_feedback(
 /// is `Complete` and budgets have not expired. When budgets expired first,
 /// remaining state is preserved and the plan is left untouched so a later
 /// turn can resume from durable revisions.
+///
+/// A plan bound to an Eggplan repository Plan is refused outright: its
+/// closure authority is `RepositoryStore::finalize_closure`, reached through
+/// the M003 binding service, and the ordinary CodeGG `Completed`
+/// transition must never stand in for guarded repository closure.
 pub async fn maybe_complete_plan_on_turn_end(
     pool: &SqlitePool,
     plan: &WorkPlan,
@@ -356,6 +361,17 @@ pub async fn maybe_complete_plan_on_turn_end(
 ) -> Result<bool, String> {
     if budget_expired {
         return Ok(false);
+    }
+    let binding_service =
+        crate::work_plan_repository_binding::RepositoryBindingService::new(pool.clone());
+    if binding_service.binding_tables_available().await
+        && binding_service
+            .load_binding(&plan.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+    {
+        return Err("repository_bound_plan_requires_guarded_closure".to_string());
     }
     if !matches!(assessment, WorkPlanCompletionAssessment::Complete { .. }) {
         return Ok(false);

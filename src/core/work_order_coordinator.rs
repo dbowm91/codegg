@@ -389,6 +389,73 @@ impl super::daemon::CoreDaemon {
         Ok(materialized)
     }
 
+    /// Resolve the canonical project workspace root for a work order.
+    ///
+    /// Used by the Eggplan M003 binding request path, which must validate a
+    /// repository-local state root against the concrete shared workspace
+    /// rather than a caller-supplied path.
+    pub async fn project_workspace_root(
+        &self,
+        project: &ProjectId,
+    ) -> Result<std::path::PathBuf, String> {
+        let pool = self
+            .pool
+            .clone()
+            .ok_or_else(|| "materialization_failed: coordinator has no pool".to_string())?;
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT workspace_id FROM workspace_project_binding WHERE project_id = ? AND status = 'resolved' LIMIT 1",
+        )
+        .bind(project.as_str())
+        .fetch_optional(&pool)
+        .await
+        .map_err(|error| format!("materialization_failed: {error}"))?;
+        let (workspace_id,) = row.ok_or_else(|| {
+            "materialization_failed: project has no resolved workspace binding".to_string()
+        })?;
+        let record = self
+            .workspaces
+            .resolve(&codegg_core::workspace::WorkspaceId::new_unchecked(
+                &workspace_id,
+            ))
+            .await
+            .ok_or_else(|| "materialization_failed: workspace is not registered".to_string())?;
+        Ok(record.canonical_root.clone())
+    }
+
+    /// Eggplan M003 binding service handle for occurrence materialization.
+    fn repository_binding_service(
+        &self,
+    ) -> Result<crate::work_plan_repository_binding::RepositoryBindingService, String> {
+        let pool = self
+            .pool
+            .clone()
+            .ok_or_else(|| "coordinator has no durable pool".to_string())?;
+        Ok(crate::work_plan_repository_binding::RepositoryBindingService::new(pool))
+    }
+
+    /// Materialize the occurrence session's repository binding against the
+    /// concrete shared workspace, before the initial turn is submitted.
+    async fn materialize_occurrence_binding(
+        &self,
+        request: &codegg_core::work_plan::RepositoryWorkOrderBinding,
+        project: &ProjectId,
+        occurrence: &WorkOrderOccurrence,
+    ) -> Result<(), String> {
+        let service = self
+            .repository_binding_service()
+            .map_err(|error| format!("eggplan_binding_unavailable: {error}"))?;
+        let workspace_root = self.project_workspace_root(project).await?;
+        let session_id = occurrence
+            .session_id
+            .as_deref()
+            .ok_or_else(|| "eggplan_binding_unavailable: occurrence has no session".to_string())?;
+        service
+            .materialize_work_order_binding(request, session_id, &workspace_root)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("{}: {}", error.code, error.detail))
+    }
+
     /// Materialize one ready occurrence: claim → workspace → session → job
     /// → running. Returns `true` when the occurrence reached running.
     /// Any step may instead record bounded attention (model unavailable,
@@ -445,7 +512,72 @@ impl super::daemon::CoreDaemon {
         // mutation-capable unless the workspace policy explicitly shares.
         let is_mutation = !matches!(work_order.workspace_policy, Some(WorkspacePolicy::Shared));
         let is_git = self.project_has_git_repository(&project).await;
-        match resolve_workspace_action(work_order.workspace_policy, is_git, is_mutation) {
+        let action = resolve_workspace_action(work_order.workspace_policy, is_git, is_mutation);
+        // Eggplan M003 §18: a bound occurrence only supports shared
+        // repository state. A managed worktree does not reliably carry the
+        // repository-local untracked `.eggplan` root, and the state root is
+        // never copied into one. Attention is recorded and nothing launches.
+        let service = match self.repository_binding_service() {
+            Ok(service) => service,
+            Err(diagnostic) => {
+                let attention = self
+                    .work_orders
+                    .transition_occurrence(
+                        &project,
+                        &claimed.id,
+                        OccurrenceState::NeedsAttention,
+                        Some(AttentionCode::MaterializationFailed),
+                        Some(&format!("eggplan_binding_unavailable: {diagnostic}")),
+                        now_ms,
+                    )
+                    .await?;
+                self.publish_occurrence_changed(&attention, "attention")
+                    .await;
+                return Ok(false);
+            }
+        };
+        let binding_request = match service.work_order_binding(work_order.id.as_str()).await {
+            Ok(request) => request,
+            Err(error) => {
+                let attention = self
+                    .work_orders
+                    .transition_occurrence(
+                        &project,
+                        &claimed.id,
+                        OccurrenceState::NeedsAttention,
+                        Some(AttentionCode::MaterializationFailed),
+                        Some(&format!("eggplan_binding_unavailable: {error}")),
+                        now_ms,
+                    )
+                    .await?;
+                self.publish_occurrence_changed(&attention, "attention")
+                    .await;
+                return Ok(false);
+            }
+        };
+        if let Some(_request) = binding_request.as_ref() {
+            if let Err(error) =
+                crate::work_plan_repository_binding::RepositoryBindingService::require_shared_repository_state(
+                    &action,
+                )
+            {
+                let attention = self
+                    .work_orders
+                    .transition_occurrence(
+                        &project,
+                        &claimed.id,
+                        OccurrenceState::NeedsAttention,
+                        Some(AttentionCode::MaterializationFailed),
+                        Some(&format!("{}: {}", error.code, error.detail)),
+                        now_ms,
+                    )
+                    .await?;
+                self.publish_occurrence_changed(&attention, "attention")
+                    .await;
+                return Ok(false);
+            }
+        }
+        match action {
             WorkspaceAction::NeedsAttention { diagnostic, .. } => {
                 let attention = self
                     .work_orders
@@ -545,6 +677,36 @@ impl super::daemon::CoreDaemon {
                         .persist_session_link(&project, &claimed.id, &session_id, now_ms)
                         .await?;
                 }
+                Err(diagnostic) => {
+                    let attention = self
+                        .work_orders
+                        .transition_occurrence(
+                            &project,
+                            &claimed.id,
+                            OccurrenceState::NeedsAttention,
+                            Some(AttentionCode::MaterializationFailed),
+                            Some(&diagnostic),
+                            now_ms,
+                        )
+                        .await?;
+                    self.publish_occurrence_changed(&attention, "attention")
+                        .await;
+                    return Ok(false);
+                }
+            }
+        }
+
+        // Eggplan M003 §18 materialization ordering: re-open and validate the
+        // repository state root, prove identity, revalidate plan lifecycle and
+        // intent digest, and create the occurrence session's mirror *before*
+        // the initial turn is submitted. Failure records Attention; the
+        // occurrence never launches unbound.
+        if let Some(request) = binding_request {
+            match self
+                .materialize_occurrence_binding(&request, &project, &current)
+                .await
+            {
+                Ok(()) => {}
                 Err(diagnostic) => {
                     let attention = self
                         .work_orders

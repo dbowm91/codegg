@@ -383,23 +383,60 @@ impl Tool for WorkPlanUpdateItemTool {
                     ));
                 }
             }
-            let (updated_plan, updated_item) = store
-                .transition_item(
-                    &item_id,
-                    expected_revision,
-                    new_status,
-                    blocker,
-                    next_action,
-                )
-                .await
-                .map_err(|error| match error {
-                    codegg_core::work_plan::WorkPlanError::Conflict { expected, found } => {
-                        ToolError::Execution(format!(
-                            "stale work item revision: expected {expected}, found {found}"
-                        ))
-                    }
-                    other => ToolError::Execution(other.to_string()),
-                })?;
+            // A bound repository item is a canonical repository lifecycle
+            // operation: the repository commits first and the CodeGG mirror
+            // follows (M003 §12/§15). Unbound items keep the M002 path.
+            let binding_service =
+                crate::work_plan_repository_binding::RepositoryBindingService::new(
+                    self.pool.clone(),
+                );
+            let bound = if binding_service.binding_tables_available().await {
+                binding_service
+                    .load_binding(&plan.id)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?
+            } else {
+                None
+            };
+            let (updated_plan, updated_item) = if bound.is_some() {
+                let workspace_root =
+                    crate::work_plan_eggplan::session_workspace_root(&self.pool, &self.session_id)
+                        .await
+                        .ok_or_else(|| {
+                            ToolError::Execution(
+                                "bound work plan has no resolvable canonical workspace".to_string(),
+                            )
+                        })?;
+                binding_service
+                    .update_bound_item(
+                        &item_id,
+                        expected_revision,
+                        new_status,
+                        blocker,
+                        next_action,
+                        &workspace_root,
+                    )
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?
+            } else {
+                store
+                    .transition_item(
+                        &item_id,
+                        expected_revision,
+                        new_status,
+                        blocker,
+                        next_action,
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        codegg_core::work_plan::WorkPlanError::Conflict { expected, found } => {
+                            ToolError::Execution(format!(
+                                "stale work item revision: expected {expected}, found {found}"
+                            ))
+                        }
+                        other => ToolError::Execution(other.to_string()),
+                    })?
+            };
             let items = store
                 .list_items(&updated_plan.id)
                 .await
@@ -445,21 +482,56 @@ impl Tool for WorkPlanUpdateItemTool {
             ));
         }
         let patch = codegg_core::work_plan::model::WorkItemPatch {
-            blocker: blocker.map(Some),
-            next_action: next_action.map(Some),
+            blocker: blocker.clone().map(Some),
+            next_action: next_action.clone().map(Some),
             ..Default::default()
         };
-        let (updated_plan, updated_item) = store
-            .update_item(&item_id, expected_revision, patch)
-            .await
-            .map_err(|error| match error {
-                codegg_core::work_plan::WorkPlanError::Conflict { expected, found } => {
-                    ToolError::Execution(format!(
-                        "stale work item revision: expected {expected}, found {found}"
-                    ))
-                }
-                other => ToolError::Execution(other.to_string()),
-            })?;
+        let binding_service =
+            crate::work_plan_repository_binding::RepositoryBindingService::new(self.pool.clone());
+        let bound = if binding_service.binding_tables_available().await {
+            binding_service
+                .load_binding(&plan.id)
+                .await
+                .map_err(|error| ToolError::Execution(error.to_string()))?
+        } else {
+            None
+        };
+        // A bound item's blocker/next-action is repository-canonical, so it
+        // routes through the same repository-first service as a status change
+        // (M003 §12: Todo feedback inherits this one-way service).
+        let (updated_plan, updated_item) = if bound.is_some() {
+            let workspace_root =
+                crate::work_plan_eggplan::session_workspace_root(&self.pool, &self.session_id)
+                    .await
+                    .ok_or_else(|| {
+                        ToolError::Execution(
+                            "bound work plan has no resolvable canonical workspace".to_string(),
+                        )
+                    })?;
+            binding_service
+                .update_bound_item(
+                    &item_id,
+                    expected_revision,
+                    current.status,
+                    blocker,
+                    next_action,
+                    &workspace_root,
+                )
+                .await
+                .map_err(|error| ToolError::Execution(error.to_string()))?
+        } else {
+            store
+                .update_item(&item_id, expected_revision, patch)
+                .await
+                .map_err(|error| match error {
+                    codegg_core::work_plan::WorkPlanError::Conflict { expected, found } => {
+                        ToolError::Execution(format!(
+                            "stale work item revision: expected {expected}, found {found}"
+                        ))
+                    }
+                    other => ToolError::Execution(other.to_string()),
+                })?
+        };
         let items = store
             .list_items(&updated_plan.id)
             .await

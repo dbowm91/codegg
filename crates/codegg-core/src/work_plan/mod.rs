@@ -11,6 +11,7 @@ pub mod epoch_policy;
 pub mod evidence;
 pub mod model;
 pub mod projection;
+pub mod repository_binding;
 pub mod store;
 pub mod todo_projection;
 
@@ -46,6 +47,10 @@ pub use projection::{
     lookup_item_summary, project_work_plan, WorkPlanItemSummary, WorkPlanProjection,
     WorkPlanProjectionParams, MAX_PROJECTION_BYTES, MAX_PROJECTION_ITEMS,
     MAX_PROJECTION_OBJECTIVE_CHARS, MAX_PROJECTION_TEXT_CHARS,
+};
+pub use repository_binding::{
+    RepositoryBindingState, RepositoryBindingStore, RepositoryItemBinding, RepositoryPlanBinding,
+    RepositoryWorkOrderBinding, WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS,
 };
 pub use store::{WorkPlanStore, WORK_PLAN_SCHEMA_STATEMENTS};
 pub use todo_projection::{

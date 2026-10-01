@@ -76,6 +76,7 @@ pub mod util;
 pub mod work_plan_arbiter;
 pub mod work_plan_eggplan;
 pub mod work_plan_evidence;
+pub mod work_plan_repository_binding;
 pub mod work_plan_todo_sync;
 
 pub use tts::TtsEngine;

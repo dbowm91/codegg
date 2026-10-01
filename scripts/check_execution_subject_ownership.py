@@ -110,12 +110,42 @@ def main() -> int:
             f"crates/egggit/src/subject.rs; found: {definition_sites}"
         )
 
-    # 1b. Callers of the capture entry point are confined to the
-    # scheduler-owned boundary (+ re-export + tests).
+    # 1a. The administrative-exclusion capture entry point (M003) is also
+    # defined exactly once in the approved Git owner.
+    excluding_sites = []
+    for path in list(ROOT.joinpath("crates").rglob("*.rs")) + list(
+        ROOT.joinpath("src").rglob("*.rs")
+    ):
+        rel = str(path.relative_to(ROOT))
+        for i, line in code_lines(rel):
+            if re.search(r"\bfn capture_git_source_subject_excluding\s*\(", line):
+                excluding_sites.append(f"{rel}:{i}")
+    excluding_files = {site.rsplit(":", 1)[0] for site in excluding_sites}
+    if excluding_files != {"crates/egggit/src/subject.rs"} or len(excluding_sites) != 1:
+        fail(
+            "capture_git_source_subject_excluding must be defined exactly once in "
+            f"crates/egggit/src/subject.rs; found: {excluding_sites}"
+        )
+
+    # 1b. Callers of the capture entry points are confined to the governed
+    # owners: the scheduler boundary, the M002 assessment facade, the M003
+    # repository-binding identity proof (+ crate re-export and tests).
+    # Capture ownership is never widened to a new caller without adding that
+    # owner here explicitly.
     allowed_caller_prefixes = (
         "crates/egggit/src/",
         "src/scheduler/",
         "tests/",
+    )
+    # Files allowed to call the plain capture form, because they read the
+    # *current* subject for a bounded assessment/identity decision and never
+    # persist provenance.
+    allowed_plain_capture_files = (
+        "src/work_plan_eggplan.rs",
+    )
+    # Files allowed to call the exclusion form only.
+    allowed_excluding_capture_files = (
+        "src/work_plan_repository_binding.rs",
     )
     for path in list(ROOT.joinpath("crates").rglob("*.rs")) + list(
         ROOT.joinpath("src").rglob("*.rs")
@@ -124,8 +154,18 @@ def main() -> int:
         if rel.startswith(allowed_caller_prefixes) or "/tests/" in rel:
             continue
         for i, line in code_lines(rel):
-            if "capture_git_source_subject" in line:
-                fail(f"{rel}:{i}: subject capture outside the scheduler-owned boundary")
+            if "capture_git_source_subject" not in line:
+                continue
+            if rel in allowed_excluding_capture_files:
+                if "capture_git_source_subject_excluding" not in line:
+                    fail(
+                        f"{rel}:{i}: the binding module may only call the approved "
+                        "exclusion capture form"
+                    )
+                continue
+            if rel in allowed_plain_capture_files:
+                continue
+            fail(f"{rel}:{i}: subject capture outside the governed capture owners")
 
     # 2. The evidence resolvers never capture and never read live state.
     evidence = read("src/work_plan_evidence.rs")

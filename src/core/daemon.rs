@@ -2823,6 +2823,8 @@ impl CoreDaemon {
             | CoreRequest::GoalClear { session_id }
             | CoreRequest::GoalDone { session_id }
             | CoreRequest::TodoList { session_id }
+            | CoreRequest::WorkPlanBindRepository { session_id, .. }
+            | CoreRequest::WorkPlanRepositoryBinding { session_id }
             | CoreRequest::ActiveGoalLoad { session_id }
             | CoreRequest::GoalSetBudget { session_id, .. }
             | CoreRequest::SnapshotSession { session_id }
@@ -2839,6 +2841,10 @@ impl CoreDaemon {
             CoreRequest::GoalSet { session_id, .. }
             | CoreRequest::GoalFromFile { session_id, .. }
             | CoreRequest::GoalCheckpoint { session_id, .. } => Some(session_id),
+            CoreRequest::WorkOrderBindRepository { work_order_id, .. } => {
+                let _ = work_order_id;
+                None
+            }
             CoreRequest::JobSubmit { spec } => spec.session_id.as_deref(),
             CoreRequest::ScheduleCreate { spec } => spec.session_id.as_deref(),
             CoreRequest::RunRerun {

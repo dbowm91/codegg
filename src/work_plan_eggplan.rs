@@ -46,10 +46,9 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
-/// Exact immutable Eggplan revision consumed by M002.
-pub const EGGPLAN_PIN: &str = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8";
-/// Eggplan repository the pin belongs to.
-pub const EGGPLAN_REPO: &str = "https://github.com/eggstack/eggplan.git";
+/// Exact immutable Eggplan revision consumed by M002/M003. Owned by the
+/// M003 binding module so both facades can never drift apart.
+pub use crate::work_plan_repository_binding::{EGGPLAN_PIN, EGGPLAN_REPO};
 /// Fixed CodeGG-host evidence provider identity. Trust is host
 /// code, never serialized WorkPlan evidence text.
 pub const EGGPLAN_PROVIDER_ID: &str = "epp_codegg_host";
@@ -60,9 +59,13 @@ const MAX_TEXT_CHARS: usize = 200;
 const MAX_REASON_CHARS: usize = 500;
 const MAX_ID_CHARS: usize = 128;
 
-/// Explicit assessment-engine selection (M002 §6).
+/// Explicit assessment-engine selection (M002 §6, extended by M003 §14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssessmentEngine {
+    /// A live repository Plan binding is authoritative; assessment reads
+    /// canonical repository state and never falls back when repository
+    /// access fails (M003 §14).
+    EggplanRepositoryBound,
     EggplanGit,
     LegacyNonGit,
     LegacyUnsupportedEvidence,
@@ -71,6 +74,7 @@ pub enum AssessmentEngine {
 impl AssessmentEngine {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::EggplanRepositoryBound => "eggplan_repository_bound",
             Self::EggplanGit => "eggplan_git",
             Self::LegacyNonGit => "legacy_non_git",
             Self::LegacyUnsupportedEvidence => "legacy_unsupported_evidence",
@@ -278,7 +282,10 @@ fn job_timeout_secs(job: &JobRecord) -> Option<u64> {
 /// Returns `Err(reason)` (`verification_unavailable`) when the durable
 /// record cannot reconstruct exact execution semantics; callers must
 /// not hash ref/job ids as a substitute.
-fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest, String> {
+///
+/// Shared with the M003 repository-binding service so bound evidence
+/// writeback reuses the one authoritative digest derivation.
+pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest, String> {
     let target_class = target_class(&job.target);
     let job_timeout = job_timeout_secs(job);
     // Each arm yields the execution-semantic fields; the digest covers
@@ -1202,6 +1209,31 @@ pub async fn assess_with_engine(
     plan: &WorkPlan,
     items: &[WorkItem],
 ) -> Result<EggplanBackedAssessment, AssessmentAdapterError> {
+    // A live repository Plan binding takes precedence over the transient
+    // `EggplanGit` engine (M003 §14). Repository access failure is never
+    // softened into a legacy fallback: a bound plan fails closed. A catalog
+    // without the v68 binding tables has no bindings at all, so it keeps the
+    // exact pre-M003 selection.
+    if let Some(root) = workspace_root {
+        let binding_service =
+            crate::work_plan_repository_binding::RepositoryBindingService::new(pool.clone());
+        let bound = if binding_service.binding_tables_available().await {
+            match binding_service.load_binding(&plan.id).await {
+                Ok(found) => found,
+                Err(error) => {
+                    return Err(AssessmentAdapterError::new(
+                        "repository_binding_unavailable",
+                        format!("{error}"),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        if bound.is_some() {
+            return assess_bound_plan_with_repository(pool, root, plan, items).await;
+        }
+    }
     let Some(root) = workspace_root else {
         return Ok(legacy_backed(pool, plan, items, AssessmentEngine::LegacyNonGit).await);
     };
@@ -1224,6 +1256,67 @@ pub async fn assess_with_engine(
         }
         Err(error) => Err(error),
     }
+}
+
+/// M003 bound assessment: reconcile, sync terminal evidence at the
+/// mutating/completion boundary, then read canonical repository state.
+///
+/// This never reconstructs acceptance semantics from the CodeGG mirror, and
+/// it never falls back to the transient `EggplanGit` or legacy engines when
+/// repository access fails.
+pub async fn assess_bound_plan_with_repository(
+    pool: &SqlitePool,
+    workspace_root: &Path,
+    plan: &WorkPlan,
+    items: &[WorkItem],
+) -> Result<EggplanBackedAssessment, AssessmentAdapterError> {
+    use crate::work_plan_repository_binding::RepositoryBindingService;
+    let service = RepositoryBindingService::new(pool.clone());
+    let binding = service
+        .load_binding(&plan.id)
+        .await
+        .map_err(|error| {
+            AssessmentAdapterError::new("repository_binding_unavailable", format!("{error}"))
+        })?
+        .ok_or_else(|| {
+            AssessmentAdapterError::new(
+                "repository_binding_missing",
+                "assessment engine selected a bound plan without a live binding",
+            )
+        })?;
+    let bound = service
+        .assess_bound_plan(&binding, workspace_root)
+        .await
+        .map_err(|error| match error.code {
+            "repository_identity_mismatch"
+            | "repository_binding_conflict"
+            | "repository_plan_missing"
+            | "repository_plan_corrupt"
+            | "repository_plan_structure_changed"
+            | "repository_revision_regressed" => {
+                AssessmentAdapterError::new("repository_binding_conflict", error.detail)
+            }
+            code => AssessmentAdapterError::new(code, error.detail),
+        })?;
+    let assessment =
+        crate::work_plan_repository_binding::project_bound_completion(items, &bound.assessment);
+    Ok(EggplanBackedAssessment {
+        assessment,
+        engine: AssessmentEngine::EggplanRepositoryBound,
+        eggplan_completion_family: Some(
+            crate::work_plan_repository_binding::assessment_status_str(&bound.assessment.status)
+                .to_string(),
+        ),
+        eggplan_reason_codes: bound
+            .assessment
+            .reasons
+            .iter()
+            .map(|reason| format!("{reason:?}"))
+            .collect(),
+        mapping_digest: Some(bound.subject.dirty_digest.clone().unwrap_or_default()),
+        subject_revision: Some(bound.revision.to_string()),
+        subject: Some(bound.subject),
+    })
 }
 
 async fn legacy_backed(
@@ -1381,14 +1474,17 @@ mod tests {
             manifest.contains(&format!("rev = \"{EGGPLAN_PIN}\"")),
             "root Cargo.toml must pin the exact reviewed Eggplan revision"
         );
-        // Only the pure assessment crates may appear as production
-        // dependencies; repo/cli/projection/markdown/integrations are out.
+        // Only the pure assessment crates plus the M003 file-backed store may
+        // appear as production dependencies; cli/projection/markdown/
+        // integrations stay out (also pinned by
+        // `scripts/check_work_plan_repository_binding.py`).
         for line in manifest.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("eggplan-") {
                 assert!(
                     trimmed.starts_with("eggplan-core")
-                        || trimmed.starts_with("eggplan-codegg-compat"),
+                        || trimmed.starts_with("eggplan-codegg-compat")
+                        || trimmed.starts_with("eggplan-repo"),
                     "unexpected Eggplan dependency: {trimmed}"
                 );
             }
@@ -1403,10 +1499,8 @@ mod tests {
                 } else if package.contains("name = \"eggplan-codegg-compat\"") {
                     saw_compat = true;
                 } else {
-                    // eggplan-repo enters the lock only as a dev-dependency
-                    // of the compat crate's own test suite; it must never
-                    // be a production dependency of codegg (covered by the
-                    // manifest assertion above).
+                    // `eggplan-repo` is the M003 application-layer store.
+                    // Nothing else may appear.
                     assert!(
                         package.contains("name = \"eggplan-repo\""),
                         "unexpected Eggplan package in lock: {}",

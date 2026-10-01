@@ -1989,11 +1989,26 @@ async fn legacy_session_without_workplan_uses_legacy_behavior() {
         )
         .await
         .unwrap();
-    sqlx::query("DROP TABLE IF EXISTS work_item")
+    // The parent must be dropped first: with foreign keys enabled SQLite
+    // runs an implicit child `DELETE` when dropping a table that children
+    // still reference, and that fails once a child table is itself gone. The
+    // M003 binding tables go too so the rewound run really re-creates every
+    // table from 59 to `STORAGE_LAYOUT_VERSION`.
+    sqlx::query("DROP TABLE IF EXISTS work_plan")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("DROP TABLE IF EXISTS work_plan")
+    for table in [
+        "work_plan_eggplan_binding",
+        "work_plan_eggplan_item_binding",
+        "work_order_eggplan_binding",
+    ] {
+        sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DROP TABLE IF EXISTS work_item")
         .execute(&pool)
         .await
         .unwrap();

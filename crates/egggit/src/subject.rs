@@ -63,12 +63,41 @@ async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, SubjectCaptureError>
 pub async fn capture_git_source_subject(
     root: &Path,
 ) -> Result<GitSourceSubject, SubjectCaptureError> {
-    capture_inner(root, 0).await
+    capture_inner(root, 0, &[]).await
+}
+
+/// Capture the same subject while excluding one administrative directory
+/// (and all descendants) from the dirty-state identity.
+///
+/// The exclusion is the governed equivalent of the repository-administrative
+/// root that Eggplan's own `GitSubjectSource::excluding_path` drops: an
+/// untracked, non-source administrative directory must not make two
+/// otherwise-identical Git subjects disagree. The excluded path must be a
+/// single normal relative path inside the worktree; anything else fails
+/// closed rather than silently widening the exclusion.
+///
+/// The digest scheme is byte-identical to
+/// [`capture_git_source_subject`] for the same worktree once the excluded
+/// path has no dirty state, so previously persisted provenance keeps
+/// comparing equal.
+pub async fn capture_git_source_subject_excluding(
+    root: &Path,
+    excluded_relative_path: &Path,
+) -> Result<GitSourceSubject, SubjectCaptureError> {
+    if excluded_relative_path.as_os_str().is_empty()
+        || excluded_relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(SubjectCaptureError::UnsafePath);
+    }
+    capture_inner(root, 0, &[excluded_relative_path.to_path_buf()]).await
 }
 
 async fn capture_inner(
     root: &Path,
     submodule_depth: usize,
+    excluded: &[PathBuf],
 ) -> Result<GitSourceSubject, SubjectCaptureError> {
     const MAX_SUBMODULE_DEPTH: usize = 4;
     if submodule_depth > MAX_SUBMODULE_DEPTH {
@@ -142,7 +171,29 @@ async fn capture_inner(
         if records.len() >= MAX_PATHS {
             return Err(SubjectCaptureError::BoundsExceeded);
         }
+        let relative =
+            PathBuf::from(std::str::from_utf8(path).map_err(|_| SubjectCaptureError::UnsafePath)?);
+        if relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err(SubjectCaptureError::UnsafePath);
+        }
+        // An excluded administrative subtree contributes no source state, so
+        // it is dropped before both the cleanliness decision and the digest.
+        if excluded
+            .iter()
+            .any(|excluded| relative == *excluded || relative.starts_with(excluded))
+        {
+            continue;
+        }
         records.push((path.to_vec(), flags));
+    }
+    if records.is_empty() {
+        return Ok(GitSourceSubject {
+            revision,
+            dirty_digest: None,
+        });
     }
     records.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut hasher = Sha256::new();
@@ -190,7 +241,8 @@ async fn capture_inner(
                     if submodule_depth == MAX_SUBMODULE_DEPTH {
                         return Err(SubjectCaptureError::BoundsExceeded);
                     }
-                    let nested = Box::pin(capture_inner(&absolute, submodule_depth + 1)).await?;
+                    let nested =
+                        Box::pin(capture_inner(&absolute, submodule_depth + 1, excluded)).await?;
                     hasher.update(b"submodule\0");
                     hasher.update(nested.revision.as_bytes());
                     if let Some(digest) = nested.dirty_digest {

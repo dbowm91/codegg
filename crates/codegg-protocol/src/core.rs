@@ -2161,6 +2161,29 @@ pub enum CoreRequest {
     TodoList {
         session_id: String,
     },
+    /// Bind an existing, repository-local Eggplan Plan to this session's
+    /// CodeGG runtime mirror (Eggplan M003).
+    ///
+    /// Host/user-authorized only: it is never a model-selected planning tool,
+    /// and it accepts no state-root path, URL, provider policy, or parent
+    /// traversal. The repository-local `.eggplan` root under the canonical
+    /// workspace is the only accepted state location.
+    WorkPlanBindRepository {
+        session_id: String,
+        eggplan_plan_id: String,
+    },
+    /// Bounded repository-binding status for the session's active plan.
+    WorkPlanRepositoryBinding {
+        session_id: String,
+    },
+    /// Author a one-shot WorkOrder binding request for a repository-local
+    /// Eggplan Plan (Eggplan M003). The model-facing WorkOrder tool cannot
+    /// substitute repository paths or provider policy; this operation takes
+    /// only a plan identity.
+    WorkOrderBindRepository {
+        work_order_id: String,
+        eggplan_plan_id: String,
+    },
     /// Load the active goal snapshot (and progress) for a session.
     ActiveGoalLoad {
         session_id: String,

@@ -276,12 +276,16 @@ codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
-# Eggplan staged assessment adoption (M002). Exactly one immutable
-# reviewed revision; only the pure assessment crates are consumed.
-# eggplan-repo/cli/projection/markdown/integrations must never enter
-# the production graph (static guard in WP1 tests).
-eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8", default-features = false }
-eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "0d4a6af7adc6f80f975aca1bfe9bae04e2eb27d8", default-features = false }
+# Eggplan staged assessment adoption (M002) and repository Plan binding
+# (M003). Exactly one immutable reviewed revision; only the pure assessment
+# crates plus the file-backed `eggplan-repo` store are consumed.
+# eggplan-cli/projection/markdown/integrations must never enter the
+# production graph (static guard `check_work_plan_repository_binding.py`).
+# `eggplan-repo` is application-layer only: `codegg-core` stays free of every
+# Eggplan crate.
+eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev = "3f7c603315131bb169bfdd2bb575531d228532b1", default-features = false }
+eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "3f7c603315131bb169bfdd2bb575531d228532b1", default-features = false }
+eggplan-repo = { git = "https://github.com/eggstack/eggplan.git", rev = "3f7c603315131bb169bfdd2bb575531d228532b1", default-features = false }
 
 # Eggwork fixed-target remote execution substrate (M001/M002a/M003).
 # Pinned to the upstream immutable revision that carries Workspace M004

@@ -1942,10 +1942,26 @@ impl AgentLoop {
             {
                 Ok(Some((plan, _items, backed))) if plan.goal_id.is_none() => {
                     let budget_expired = self.check_limits().is_some();
-                    // EggplanGit completions revalidate S2 before the CAS;
-                    // explicit legacy engines keep the legacy close path.
+                    // A bound repository plan closes only through Eggplan
+                    // guarded finalization (M003 §16): the repository is the
+                    // closure authority and the CodeGG mirror follows.
                     let completed = if budget_expired {
                         Ok(false)
+                    } else if backed.engine
+                        == crate::work_plan_eggplan::AssessmentEngine::EggplanRepositoryBound
+                    {
+                        let service =
+                            crate::work_plan_repository_binding::RepositoryBindingService::new(
+                                pool.clone(),
+                            );
+                        match service.load_binding(&plan.id).await {
+                            Ok(Some(binding)) => service
+                                .finalize_bound_plan(&binding, &self.workspace_root)
+                                .await
+                                .map_err(|error| error.to_string()),
+                            Ok(None) => Ok(false),
+                            Err(error) => Err(error.to_string()),
+                        }
                     } else if backed.engine
                         == crate::work_plan_eggplan::AssessmentEngine::EggplanGit
                     {

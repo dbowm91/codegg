@@ -223,6 +223,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 67 {
         migrate_and_record(pool, 67).await?;
     }
+    if current_version < 68 {
+        migrate_and_record(pool, 68).await?;
+    }
 
     Ok(())
 }
@@ -302,6 +305,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             65 => migrate_v65(&mut tx).await?,
             66 => migrate_v66(&mut tx).await?,
             67 => migrate_v67(&mut tx).await?,
+            68 => migrate_v68(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2721,6 +2725,22 @@ async fn migrate_v66(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// Eggplan M003 repository Plan binding: durable mirror identity,
+/// reconciliation state, the per-item id map, and the host-authored
+/// work-order binding request. Purely additive tables — no historical
+/// plan, work order, job, or item row is modified, and no row is
+/// backfilled. Absent rows mean "unbound", which is exactly the
+/// pre-M003 behavior.
+async fn migrate_v68(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
     Ok(())
 }
 /// Hot-path lookup indexes: `job_attempt.run_id` backs the

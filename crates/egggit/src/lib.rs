@@ -55,7 +55,10 @@ pub use refs::{
 };
 pub use status::RepoStatus;
 pub use status_v2::{DirtySummary, OperationState, RichRepoStatus, StatusEntry};
-pub use subject::{capture_git_source_subject, GitSourceSubject, SubjectCaptureError};
+pub use subject::{
+    capture_git_source_subject, capture_git_source_subject_excluding, GitSourceSubject,
+    SubjectCaptureError,
+};
 pub use worktree::WorktreeInfo;
 
 use thiserror::Error;

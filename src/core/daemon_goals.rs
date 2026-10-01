@@ -512,6 +512,90 @@ impl CoreDaemon {
                     }),
                 }
             }
+            // Eggplan M003: explicit, host-authorized repository Plan
+            // binding. No state-root path, URL, or provider policy is
+            // accepted; the repository-local `.eggplan` root under the
+            // canonical workspace is the only state location.
+            CoreRequest::WorkPlanBindRepository {
+                session_id,
+                eggplan_plan_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let service =
+                    crate::work_plan_repository_binding::RepositoryBindingService::new(pool);
+                match service
+                    .bind_session_plan(&session_id, &eggplan_plan_id)
+                    .await
+                {
+                    Ok(binding) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({
+                            "work_plan_id": binding.work_plan_id.as_str(),
+                            "workspace_id": binding.workspace_id,
+                            "codegg_repository_id": binding.codegg_repository_id,
+                            "eggplan_repository_id": binding.eggplan_repository_id,
+                            "eggplan_plan_id": binding.eggplan_plan_id,
+                            "last_seen_plan_revision": binding.last_seen_plan_revision,
+                            "binding_state": binding.binding_state.as_str(),
+                        }),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: error.code.to_string(),
+                        message: error.detail,
+                    }),
+                }
+            }
+            // Eggplan M003: bounded binding status. Never exposes an
+            // absolute state-root path.
+            CoreRequest::WorkPlanRepositoryBinding { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let service = crate::work_plan_repository_binding::RepositoryBindingService::new(
+                    pool.clone(),
+                );
+                let store = codegg_core::work_plan::WorkPlanStore::new(pool);
+                let active = match store.active_for_session(&session_id).await {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "work_plan_lookup_failed".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(plan) = active else {
+                    return Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "bound": false }),
+                    });
+                };
+                match service.binding_status(&plan.id).await {
+                    Ok(Some(status)) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({
+                            "bound": true,
+                            "work_plan_id": plan.id.as_str(),
+                            "binding": serde_json::to_value(&status).unwrap_or_default(),
+                        }),
+                    }),
+                    Ok(None) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({
+                            "bound": false,
+                            "work_plan_id": plan.id.as_str(),
+                        }),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: error.code.to_string(),
+                        message: error.detail,
+                    }),
+                }
+            }
             CoreRequest::TodoList { session_id } => {
                 let Some(pool) = self.pool.clone() else {
                     return Ok(CoreResponse::Error {

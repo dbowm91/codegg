@@ -64,6 +64,7 @@ impl CoreDaemon {
                 | CoreRequest::WorkOrderTriggerList { .. }
                 | CoreRequest::WorkOrderTriggerGet { .. }
                 | CoreRequest::WorkOrderTriggerRevoke { .. }
+                | CoreRequest::WorkOrderBindRepository { .. }
         )
     }
 
@@ -84,6 +85,7 @@ impl CoreDaemon {
                 | CoreRequest::WorkOrderLaneAttach { .. }
                 | CoreRequest::WorkOrderTriggerCreate { .. }
                 | CoreRequest::WorkOrderTriggerRevoke { .. }
+                | CoreRequest::WorkOrderBindRepository { .. }
         )
     }
 
@@ -134,6 +136,107 @@ impl CoreDaemon {
                         })
                     }
                     Err(error) => Ok(work_order_error(error)),
+                }
+            }
+            // Eggplan M003: author a one-shot repository Plan binding
+            // request for an existing work order. The request stores pinned
+            // identities and a structural intent digest; it grants no
+            // scheduler authority and accepts no repository path.
+            CoreRequest::WorkOrderBindRepository {
+                work_order_id,
+                eggplan_plan_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let project = match codegg_core::work_order::work_order_project(
+                    &pool,
+                    &work_order_id,
+                )
+                .await
+                {
+                    Some(project) => project,
+                    None => {
+                        return Ok(CoreResponse::Error {
+                            code: "work_order_not_found".to_string(),
+                            message: format!("work order {work_order_id} not found"),
+                        });
+                    }
+                };
+                let work_order_id = match WorkOrderId::parse(&work_order_id) {
+                    Ok(parsed) => parsed,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "work_order_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let work_order = match self
+                    .work_orders
+                    .get_work_order(&project, &work_order_id)
+                    .await
+                {
+                    Ok(Some(found)) => found,
+                    Ok(None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "work_order_not_found".to_string(),
+                            message: format!("work order {work_order_id} not found"),
+                        });
+                    }
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "work_order_lookup_failed".to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let workspace_root = match self.project_workspace_root(&project).await {
+                    Ok(root) => root,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "work_order_workspace_unavailable".to_string(),
+                            message: error,
+                        });
+                    }
+                };
+                let service =
+                    crate::work_plan_repository_binding::RepositoryBindingService::new(pool);
+                match service
+                    .bind_work_order_plan_id(
+                        work_order_id.as_str(),
+                        work_order.repeat_count,
+                        &eggplan_plan_id,
+                        &workspace_root,
+                    )
+                    .await
+                {
+                    Ok(request) => {
+                        self.after_work_order_mutation(
+                            authority,
+                            authz_decision,
+                            &work_order,
+                            "bind_repository",
+                            false,
+                        )
+                        .await;
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "work_order_id": request.work_order_id,
+                                "codegg_repository_id": request.codegg_repository_id,
+                                "eggplan_repository_id": request.eggplan_repository_id,
+                                "eggplan_plan_id": request.eggplan_plan_id,
+                                "intent_digest": request.intent_digest,
+                            }),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: error.code.to_string(),
+                        message: error.detail,
+                    }),
                 }
             }
             CoreRequest::WorkOrderBatchCreate { request } => {

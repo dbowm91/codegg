@@ -270,6 +270,67 @@ production graph (static pin/boundary guard in-module).
 - Differential parity: `tests/work_plan_eggplan_differential.rs`
   (28 cases incl. the S1/S2 race); no permissive delta is accepted.
 
+## M003 repository Plan binding and writeback
+
+Authority: the Eggplan repository `Plan` is canonical. CodeGG owns
+execution only and keeps a durable *mirror* for display; no assessment
+semantics are ever reconstructed from the mirror.
+`src/work_plan_repository_binding.rs` is the sole production owner of
+`eggplan_repo::RepositoryStore` and of the historical-subject
+translation; `codegg-core` stays Eggplan-free behind the generic
+persistence seam in `work_plan/repository_binding.rs`. Static
+ownership/migration guard:
+`scripts/check_work_plan_repository_binding.py`.
+
+- Binding: `RepositoryBindingService::bind_plan` proves identity,
+  validates the plan shape, and mirrors plan + items atomically.
+  `.eggplan` must already exist — `RepositoryStore::open_read_only`
+  gates before the mutating `open`, so binding never auto-initializes a
+  repository. Two live CodeGG plans may not bind the same repository
+  Plan. Identity proof is per binding and per work-order occurrence.
+- Subjects: `egggit::capture_git_source_subject_excluding` excludes
+  `.eggplan`, so the governed host subject stays byte-identical before
+  and after every binding writeback. Identity compares repository id,
+  revision, and clean/dirty state; the two owners hash different
+  canonical manifests, so dirty-digest bytes are not comparable across
+  them.
+- `AssessmentEngine::EggplanRepositoryBound` supersedes `EggplanGit` for
+  a bound plan. A live binding takes precedence; a repository access
+  failure fails closed with `repository_binding_unavailable` and is
+  never softened into a legacy fallback. A catalog without the v68
+  binding tables has no bindings and keeps the exact pre-M003 selection.
+- Reconciliation (`reconcile_bound_plan`) re-reads the durable row,
+  re-proves repository identity, and derives the projection from
+  repository state. Structural change, repository-plan loss, identity
+  change, and revision regression are hard errors; only repository
+  progress reconciles. Mirror writes are display-only and re-driven by
+  every bound operation.
+- Cross-store ordering: CodeGG expected revision is validated, then
+  reconcile, then the repository `compare_and_swap`, then the mirror and
+  the observed revision. A crash after the repository CAS is repaired by
+  reconciliation; the repository is never rolled back.
+- Guarded closure: a bound plan cannot use ordinary completion
+  (`repository_bound_plan_requires_guarded_closure`). The arbiter
+  routes to the guarded service, which reconciles, syncs terminal
+  evidence, and closes from the repository. Lifecycle drift never
+  auto-closes a plan with open items.
+- Host-only operations: `WorkPlanBindRepository`,
+  `WorkPlanRepositoryBinding` (bounded read), and
+  `WorkOrderBindRepository` are explicit host/user actions, never model
+  tool calls. `work_plan_bind_repository` audits as
+  `agent_delegate` (plan/goal authority, like `goal_set`);
+  `work_order_bind_repository` as `work_order_lifecycle`; the status
+  read stays uninstrumented (like `goal_show`).
+- Work orders: a serialized `WorkOrderBindRepository` is resolved on the
+  owning work order and materialized as a mirror before the first turn.
+  A shared-workspace work order may not carry a conflicting plan; the
+  own workspace is the single shared workspace.
+- Storage v68 adds `work_plan_eggplan_binding`,
+  `work_plan_eggplan_item_binding`, and `work_order_eggplan_binding`
+  (append/replace only, no destructive path).
+- Tests: `tests/work_plan_repository_binding.rs` (34 cases) plus the
+  core binding-persistence suite.
+
 ## Invariants & Gotchas
 
 - `WorkPlanId` (`wp_`) / `WorkItemId` (`wi_`) are distinct types from

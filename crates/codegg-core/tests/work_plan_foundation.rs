@@ -136,12 +136,26 @@ async fn pre_migration_database_gains_empty_tables_without_touching_goals() {
         .await
         .unwrap();
     // Simulate a pre-M002 database: drop the new tables and rewind the
-    // version marker, keeping the goal row intact.
-    sqlx::query("DROP TABLE IF EXISTS work_item")
+    // version marker, keeping the goal row intact. The parent must go first;
+    // dropping it while a child FK still exists makes SQLite run an implicit
+    // child `DELETE`, which fails once the child itself is gone. The M003
+    // binding tables are dropped too so the rewound run really re-creates
+    // every table from 59 to `STORAGE_LAYOUT_VERSION`.
+    sqlx::query("DROP TABLE IF EXISTS work_plan")
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("DROP TABLE IF EXISTS work_plan")
+    for table in [
+        "work_plan_eggplan_binding",
+        "work_plan_eggplan_item_binding",
+        "work_order_eggplan_binding",
+    ] {
+        sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DROP TABLE IF EXISTS work_item")
         .execute(&pool)
         .await
         .unwrap();
