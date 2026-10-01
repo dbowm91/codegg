@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment Roadmap
 
-Status: active — M001R closed positively, M002 closed (negative-but-valid), M003 ready
+Status: active — M001R closed positively, M002 closed (negative-but-valid), M003 closed (negative, nothing frozen)
 
 Repository planning baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
@@ -218,7 +218,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/003-frozen-encoder-retrieval-projection.md`
 
-Status: ready (unblocked by valid negative M002; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`).
+Status: closed (negative; see `plans/closure/tool-selection-advisor-retrieval-signal-experiment/003-status.md`; implementation `2df9a5f7`, receipt fp `67acca39…`, 0/288 arms clear the gates, unknown/masked guards fail, no artifact frozen).
 
 If needed, train small asymmetric query/descriptor projection heads over frozen MiniLM embeddings using train-only graded positives and hard negatives; select on dev retrieval quality/generalization.
 

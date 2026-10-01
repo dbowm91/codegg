@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Retrieval-Signal Experiment M003 — Frozen-Encoder Retrieval Projection
 
-Status: ready (unblocked by valid negative M002 closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/002-status.md`)
+Status: implemented (closure `plans/closure/tool-selection-advisor-retrieval-signal-experiment/003-status.md`, negative, 0/288 arms clear, nothing frozen)
 
 Repository baseline: `1093ad0e3285e8ee66684e8a7f3401a200c0596e`
 
