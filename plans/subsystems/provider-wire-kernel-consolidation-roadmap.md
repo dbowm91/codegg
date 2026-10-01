@@ -304,6 +304,6 @@ Provider-profile metadata deduplication is a separate potential successor and is
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 001 — shared-wire bridge and parity qualification | blocked | `plans/implementation/provider-wire-kernel-consolidation/001-shared-wire-bridge-and-parity-qualification.md` | — | EggPool request-admission-wire M006 must close and publish an immutable consumer revision |
+| 001 — shared-wire bridge and parity qualification | active | `plans/implementation/provider-wire-kernel-consolidation/001-shared-wire-bridge-and-parity-qualification.md` | — | None; EggPool request-admission-wire M006 closed at immutable revision `f05b18b7358d9a4125d1e20c491151eec265e403e` |
 | 002 — OpenAI-family shared-wire cutover | blocked | `plans/implementation/provider-wire-kernel-consolidation/002-openai-family-shared-wire-cutover.md` | — | M001 |
 | 003 — Anthropic/Gemini cutover and duplicate wire retirement | blocked | `plans/implementation/provider-wire-kernel-consolidation/003-anthropic-gemini-cutover-and-wire-retirement.md` | — | M002 |

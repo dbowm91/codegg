@@ -1,8 +1,8 @@
 # Provider Wire-Kernel Consolidation Milestone 001 — Shared-Wire Bridge and Parity Qualification
 
-Status: blocked
+Status: active
 
-Repository baseline: `daaed6cee4697f7f565084e44629e186a941f093`
+Repository baseline: `53dea47f` (rebased on latest `origin/main`)
 
 Source roadmap:
 
@@ -28,11 +28,7 @@ The milestone must also eliminate the architectural need for `openai_compatible.
 
 ## 2. Why this milestone is ready
 
-It is not yet ready for implementation.
-
-Hard blocker: EggPool request-admission-wire M006, registered by EggPool planning commit `597d522dd2b7f1281c5a793ad8a107547360ea79`, must close and record the exact immutable revision that provides canonical-origin requests, consumer-oriented surface encoding/options, and bounded completed-tool-call accumulation. Do not pin an intermediate EggPool `main` revision.
-
-Once that closure exists, no other hard dependency is expected.
+EggPool request-admission-wire M006 is closed. Its closure records the immutable consumer revision `f05b18b7358d9a4125d1e20c491151eec265e403`, which provides canonical-origin requests, consumer-oriented surface encoding/options, and bounded completed-tool-call accumulation. No other hard dependency remains.
 
 ## 3. Current implementation evidence
 
