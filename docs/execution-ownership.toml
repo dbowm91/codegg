@@ -338,3 +338,8 @@ reason = "Bounded installation diagnostics only: --version identity probe of the
 path = "src/tool_advisor/sequence_qualification.rs"
 owner = "standalone_compat"
 reason = "Experiment-only release qualification owns five bounded child-process model-load probes and bounded ps RSS observation; no user-turn or daemon execution path"
+
+[[site]]
+path = "src/tool_advisor/late_interaction.rs"
+owner = "standalone_compat"
+reason = "Experiment-only M001 measurement owns one bounded rustc --version identity probe for receipt toolchain metadata; no user-turn or daemon execution path"
