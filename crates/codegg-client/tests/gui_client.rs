@@ -91,6 +91,11 @@ async fn gui_consumer_uses_native_client_without_root_or_tui_imports() {
                 request_ids.push(request.request_id);
             }
         }
+        write
+            .write_all(b"{malformed frame}\n")
+            .await
+            .expect("send malformed frame");
+        write.flush().await.expect("flush malformed frame");
         for (request_id, event_seq) in request_ids.into_iter().zip([2, 1]) {
             let response = CoreFrame::Response {
                 request_id,
@@ -120,6 +125,8 @@ async fn gui_consumer_uses_native_client_without_root_or_tui_imports() {
     .expect("connect GUI client");
     assert_eq!(client.daemon_id().await.unwrap(), "fake-daemon");
     assert_eq!(client.client_id().await.as_deref(), Some("gui-client-id"));
+    let dropped_events = client.subscribe();
+    drop(dropped_events);
     let request_a = client.request(RequestEnvelope {
         protocol_version: PROTOCOL_VERSION,
         request_id: "gui-snapshot-a".into(),
