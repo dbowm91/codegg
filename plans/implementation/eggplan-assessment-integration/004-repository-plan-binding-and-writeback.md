@@ -10,8 +10,10 @@ Repository baseline:
   `ffa1c15e654776c3ebe1022f4ce7de2582bc5d98`
 - Eggplan M003 contract plan registration:
   `6ba3db24efb8ed5952be8c5a522a9c4c52f7ed63`
-- Eggplan current M002-qualified bridge:
-  `088968bd58680ae2b3741e2f1feb0614e0ff81a0`
+- Eggplan M003 implementation/pin:
+  `3f7c603315131bb169bfdd2bb575531d228532b1`
+- Eggplan hosted native/MSRV qualification:
+  `36868055136` (success on exact pin)
 
 Source roadmap:
 
@@ -72,8 +74,9 @@ The CodeGG WorkPlan mirror is never an independent source of truth once bound.
 
 ## 3. Eggplan dependencies
 
-After the coordinated Eggplan M003 pure projection contract lands, update the
-existing exact Eggplan pin to that immutable implementation revision.
+The coordinated Eggplan M003 pure projection contract is implemented and
+qualified at `3f7c603315131bb169bfdd2bb575531d228532b1`. Update the existing
+exact Eggplan pin to that immutable revision when beginning implementation.
 
 Production root-package dependencies allowed for M003:
 
