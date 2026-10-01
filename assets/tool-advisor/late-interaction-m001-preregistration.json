@@ -1,0 +1,52 @@
+{
+  "aggregation": "mean-of-max-dot",
+  "cache_key_version": "late-interaction-cache-v1",
+  "contract_version": "late-interaction-m001-v1",
+  "corpus_fingerprint": "06da7e530799df915c12ceaefe1076e40b70047c6f4276f37d70685e2c2d3582",
+  "derived_view_fingerprint": "23edef17d0e4f4ac71d4e4b65349585cfc9b3c08d49cd4f7ac47e3bad12b5479",
+  "descriptor_cap_evidence": {
+    "note": "static deferred-descriptor flat texts across u64/u128/u256 expansions (n=114688 occurrences, 20 unique counts 10..39); renamed variants bounded by construction, verified post-hoc by descriptors_truncated==0",
+    "p100": "39",
+    "p50": "38",
+    "p95": "39"
+  },
+  "descriptor_token_cap": 96,
+  "gates": {
+    "recall_128_min": 0.98,
+    "recall_256_min": 0.95,
+    "recall_64_min": 0.99
+  },
+  "minilm_architecture": "bert-sequence-encoder-candle-v1/candle-0.11",
+  "minilm_manifest_hashes": {
+    "config": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+    "license": "87a06e8a0696c2568d0cfe9082218f50b96fe330a7e137a377598fb02541078c",
+    "vocabulary": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    "weights": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db"
+  },
+  "modes": [
+    "exact-maxsim-v1",
+    "lexical-maxsim-union-v1"
+  ],
+  "norm_epsilon": 1e-12,
+  "protocol": "late-interaction-m001-prereg-v1",
+  "query_cap_evidence": {
+    "note": "train-partition benchmark queries only (n=132); no dev/test text",
+    "p100": "65",
+    "p50": "31",
+    "p95": "59"
+  },
+  "query_token_cap": 96,
+  "resource_limits": {
+    "descriptor_cache_bytes_256_max": "67108864",
+    "query_encoder_forwards_per_turn": "1",
+    "warm_retrieval_p95_ms_max": "1000"
+  },
+  "schema_version": 1,
+  "signal_v2_protocol": "m001r-preregistered-signal-v2-v1",
+  "special_token_filter": "exclude-cls-sep-padding",
+  "tiebreak": "score-desc-name-asc",
+  "truncation": "tail",
+  "union_alpha": 0.5,
+  "union_lexical_mode": "field-weighted-bm25-v2",
+  "fingerprint": "04bea8a8893b279dd42e9d78e34d9787f48b7441d610551e3a0f2b4eb4c0cc62"
+}
