@@ -1,15 +1,23 @@
 # Eggplan Assessment Integration M003 C001 — Dirty-Subject Provenance and Bound Evidence Requalification
 
-Status: implemented (conditionally closed — see `plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`)
+Status: closed (`plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`;
+implementations `36ec9322` and `6fd8d9f3`; Eggplan pin
+`0dd33b761e85f1364320a9208aaebd5be281c6a5`)
 
 Repository baseline:
 
 - CodeGG reviewed planning baseline before corrective registration: `ffbd0bc9de09055fbd2df293a6cdd8b4b04a8e98`
 - historical M003 implementation: `53dea47f414641c3f9756c3f8f181f6208be8115`
 - historical M003 closure: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
-- current Eggplan M003 pin: `3f7c603315131bb169bfdd2bb575531d228532b1`
+- Eggplan M003 pin (historical, still the M003 closure pin):
+  `3f7c603315131bb169bfdd2bb575531d228532b1`
 - Eggplan C001 planning registration:
   `ee92edc1cf035010fe86ea2382694cc18a0dce45`
+- Eggplan C001 fingerprint contract implementation:
+  `352a0f782b0166aad8e850185019d78ec162d487`, portability repairs `faa6c87`
+  and `0dd33b7`
+- Eggplan C001 revision consumed by this implementation:
+  `0dd33b761e85f1364320a9208aaebd5be281c6a5` (hosted `37063328954`)
 
 Source roadmap:
 

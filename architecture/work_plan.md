@@ -293,15 +293,23 @@ ownership/migration guard:
   and after every binding writeback. Binding identity uses the E1/C/E2
   sandwich (Eggplan capture, CodeGG capture, Eggplan capture): E1 must
   equal E2 exactly or binding fails closed with
-  `repository_subject_changed_during_identity_proof`. Identity compares
-  repository id, revision, and clean/dirty state; the two owners hash
-  different canonical manifests, so dirty-digest bytes are not comparable
-  across them. For dirty executions CodeGG persists the exact
-  Eggplan-compatible digest at execution time
+  `repository_subject_changed_during_identity_proof`. Both Eggplan
+  halves are captured through
+  `eggplan_repo::capture_git_subject_fingerprint` against Eggplan pin
+  `0dd33b761e85f1364320a9208aaebd5be281c6a5` (C001): the bounded
+  repository-ID-free compatibility contract that returns exactly the
+  revision, clean/dirty state, and dirty digest Eggplan assessment will
+  later require, and whose bytes Eggplan freezes in a golden matrix. The
+  repository identity is never read from the capture; it comes from the
+  store. Identity compares repository id, revision, and clean/dirty state;
+  the two owners hash different canonical manifests, so dirty-digest bytes
+  are not comparable across them. For dirty executions CodeGG persists the
+  exact Eggplan-compatible digest at execution time
   (`ExecutionSubjectRevision` v2 `eggplan_dirty_digest`, captured by the
-  single helper in `src/execution_subject_capture.rs`); bound dirty
-  translation uses only that persisted digest, and dirty v1 provenance
-  fails closed with `legacy_dirty_subject_missing_eggplan_digest`
+  single helper in `src/execution_subject_capture.rs` through the same
+  fingerprint API); bound dirty translation uses only that persisted digest,
+  and dirty v1 provenance fails closed with
+  `legacy_dirty_subject_missing_eggplan_digest`
   (C001; closure `plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`).
 - `AssessmentEngine::EggplanRepositoryBound` supersedes `EggplanGit` for
   a bound plan. A live binding takes precedence; a repository access
