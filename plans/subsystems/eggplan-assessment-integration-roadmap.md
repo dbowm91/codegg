@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: closed; M001/M002/M003 closed
+Status: active corrective; M001/M002/M003 closed, C001 dirty-subject corrective ready
 
 Canonical authority:
 
@@ -15,12 +15,16 @@ External assessment substrate:
 - Eggplan repository: `https://github.com/eggstack/eggplan`
 - Eggplan M002 pure bridge implementation:
   `088968bd58680ae2b3741e2f1feb0614e0ff81a0`
-- Eggplan M003 binding-contract planning registration:
-  `6ba3db24efb8ed5952be8c5a522a9c4c52f7ed63`
-- Eggplan M003 plan:
-  `plans/implementation/codegg-integration/003-repository-plan-binding-contract.md`
+- Eggplan M003 implementation pinned by CodeGG:
+  `3f7c603315131bb169bfdd2bb575531d228532b1`
+- Eggplan M003 closure reconciliation:
+  `6644725ae540b19873d7c769e3afeab7bce53d09`
+- Eggplan M003 C001 corrective planning registration:
+  `ee92edc1cf035010fe86ea2382694cc18a0dce45`
+- Eggplan C001 plan:
+  `plans/implementation/codegg-integration/003-c001-dirty-subject-fingerprint-and-bound-evidence-requalification.md`
 - current CodeGG planning baseline:
-  `9e93e949e1a4abcc91fd7755d929a54fd6531160`
+  `ffbd0bc9de09055fbd2df293a6cdd8b4b04a8e98`
 - current CodeGG storage layout: v68 (M003 additive)
 - current pinned Eggwork revision:
   `6cc813418c3f14740a635fef79208e85219175bb`
@@ -199,6 +203,33 @@ Mutation-capable AutoIsolated WorkOrders are intentionally unsupported because
 managed worktrees do not reliably contain the repository-local untracked
 `.eggplan` state root. No state copy or silent unbound fallback is allowed.
 
+### C001 — Dirty-subject provenance and bound evidence requalification
+
+Status: ready for coordinated handoff.
+
+CodeGG plan:
+
+- `plans/implementation/eggplan-assessment-integration/005-m003-c001-dirty-subject-provenance-and-bound-evidence.md`
+
+Eggplan corrective:
+
+- `eggstack/eggplan:plans/implementation/codegg-integration/003-c001-dirty-subject-fingerprint-and-bound-evidence-requalification.md`
+- planning registration `ee92edc1cf035010fe86ea2382694cc18a0dce45`
+
+Post-closure review found that M003's bound dirty evidence path translated the
+CodeGG-native dirty digest into an Eggplan SubjectRevision even though the two
+projects intentionally use different digest encodings. The existing dirty test
+qualified binding only, not dirty execution -> evidence -> completion ->
+guarded closure.
+
+C001 keeps historical M003 closed and repairs only this later defect. Eggplan
+will expose its existing digest as a bounded repository-ID-free fingerprint.
+CodeGG will persist that exact Eggplan-compatible digest alongside native
+attempt provenance, use an E1/C/E2 sandwich for binding-time stability, and
+require the persisted digest for bound dirty historical translation. Legacy
+dirty provenance remains readable but fails closed for bound exact-subject
+evidence; clean and unbound M002 semantics remain unchanged.
+
 ## 5. Parallelism
 
 M003 may proceed independently of unrelated tool-advisor, Eggwork M004, and
@@ -242,6 +273,10 @@ M001/M002 qualification covered:
 - execution-ownership static guards.
 
 ## 7. Completion definition
+
+Historical M003 met the original completion definition. The roadmap is
+temporarily active only for post-closure C001; strict current qualification
+also requires the dirty-subject corrective to close.
 
 This roadmap closes when CodeGG can use Eggplan as a pure assessment substrate
 for WorkPlan evidence without manufacturing historical source identity,
