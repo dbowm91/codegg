@@ -62,9 +62,15 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
-/// Exact immutable Eggplan revision consumed by M003. One reviewed revision
-/// carries both the M002 assessment bridge and the M003 reverse projection.
-pub const EGGPLAN_PIN: &str = "3f7c603315131bb169bfdd2bb575531d228532b1";
+/// Exact immutable Eggplan revision consumed by M003 and its C001 corrective.
+/// One reviewed revision carries the M002 assessment bridge, the M003 reverse
+/// projection, and the C001 bounded repository-ID-free subject fingerprint.
+///
+/// C001 pin `0dd33b76` adds `capture_git_subject_fingerprint`; the M003
+/// projection and assessment contracts are unchanged, and the dirty digest
+/// bytes are identical to the previous pin because Eggplan froze them in a
+/// golden matrix captured from the pre-C001 implementation.
+pub const EGGPLAN_PIN: &str = "0dd33b761e85f1364320a9208aaebd5be281c6a5";
 /// Eggplan repository the pin belongs to.
 pub const EGGPLAN_REPO: &str = "https://github.com/eggstack/eggplan.git";
 /// Repository-local administrative state root, relative to the canonical
