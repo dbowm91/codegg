@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Experiment Roadmap
 
-Status: active
+Status: active — M001 closed positively, M002 ready
 
 Repository planning baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 
@@ -188,7 +188,13 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/001-typed-contracts-state-and-benchmark.md`
 
-Status: **ready**.
+Status: **closed (positive)**.
+
+Closure: `plans/closure/tool-selection-advisor-causal-frontier-experiment/001-status.md`
+(implementation `152613de`; 17-fact/14-outcome ontology, additive seam,
+bounded snapshot, 20 pilot contracts, 168-case benchmark fp `f60dad17…`,
+catalog fp `0ac06de8…`, dev 112 / qual 56, M002 gates frozen; no runtime
+visibility change).
 
 Define the closed state/effect ontology, add the additive contract seam, build a
 host-only state projection, annotate a bounded native pilot set, and freeze a
@@ -200,7 +206,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/002-offline-causal-admissibility-frontier.md`
 
-Status: blocked on positive M001.
+Status: ready (M001 closed positively; frozen benchmark fp `f60dad17…`, catalog fp `0ac06de8…`).
 
 Evaluate deterministic precondition filtering before semantic ranking. Unknown
 contracts remain fallback/discoverable.
