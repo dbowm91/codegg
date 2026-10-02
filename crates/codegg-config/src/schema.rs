@@ -2270,6 +2270,8 @@ pub struct ToolAdvisorConfig {
     pub max_disclosure_schema_bytes: Option<usize>,
     pub training_data: Option<ToolAdvisorTrainingDataConfig>,
     pub remote: Option<ToolAdvisorRemoteConfig>,
+    /// Causal-frontier observe-mode integration (M004). Default off.
+    pub causal_frontier: Option<ToolAdvisorCausalFrontierConfig>,
 }
 
 impl Default for ToolAdvisorConfig {
@@ -2285,6 +2287,26 @@ impl Default for ToolAdvisorConfig {
             max_disclosure_schema_bytes: Some(16 * 1024),
             training_data: None,
             remote: None,
+            causal_frontier: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ToolAdvisorCausalFrontierConfig {
+    /// Causal-frontier request-preparation integration: "off" (default,
+    /// behaviorally identical to main) or "observe" (evaluate the M002
+    /// frontier after `ResolvedToolSurface` resolution and record bounded
+    /// local diagnostics without changing provider definitions, deferral,
+    /// or authority). No active/promote mode exists in M004.
+    pub mode: Option<String>,
+}
+
+impl Default for ToolAdvisorCausalFrontierConfig {
+    fn default() -> Self {
+        Self {
+            mode: Some("off".to_string()),
         }
     }
 }

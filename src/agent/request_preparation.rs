@@ -248,6 +248,63 @@ impl AgentLoop {
         .serialize()
     }
 
+    /// M004 observe-mode switch: default-off experimental config surface
+    /// (`[tool_advisor.causal_frontier] mode = "off" | "observe"`).
+    /// Config omission is behaviorally identical to current main. There is
+    /// no active/promote mode in M004.
+    fn causal_frontier_mode(&self) -> crate::tool_advisor::causal_observe::CausalFrontierMode {
+        crate::tool_advisor::causal_observe::CausalFrontierMode::parse(
+            self.services
+                .config
+                .tool_advisor
+                .as_ref()
+                .and_then(|advisor| advisor.causal_frontier.as_ref())
+                .and_then(|frontier| frontier.mode.as_deref()),
+        )
+    }
+
+    /// Build the bounded host-owned causal state inputs for observe mode.
+    ///
+    /// Every fact comes from its canonical host source (see
+    /// `crate::tool_advisor::causal_frontier` module docs). Two pilot facts
+    /// are unavailable at preparation time and stay absent rather than
+    /// guessed: failed-test evidence (no structured per-turn execution
+    /// status here — ledger result strings are never parsed) and LSP
+    /// preview availability (the turn-local `PreviewArtifactRegistry` is
+    /// not held by the loop at preparation time). Absent facts can only
+    /// abstain the frontier, never widen it.
+    async fn causal_observe_inputs(
+        &self,
+    ) -> crate::tool_advisor::causal_frontier::CausalStateInputs {
+        use crate::tool_advisor::causal_frontier::CausalStateInputs;
+        let mut inputs = CausalStateInputs::default();
+        let goal = if let Some(store) = self.services.goal_store.clone() {
+            store
+                .active_for_session(&self.session_id)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        inputs.apply_goal(goal.as_ref());
+        if let Some(pool) = self.services.todo_pool.clone() {
+            let store = codegg_core::work_plan::WorkPlanStore::new(pool);
+            match store.active_for_session(&self.session_id).await {
+                Ok(Some(plan)) => {
+                    let items = store.list_items(&plan.id).await.unwrap_or_default();
+                    inputs.apply_work_plan(Some(&plan), &items);
+                }
+                _ => inputs.apply_work_plan(None, &[]),
+            }
+        }
+        inputs.apply_ledger(&self.context_ledger);
+        inputs.set_failed_tests(false);
+        inputs.set_security_findings(self.recent_findings.len());
+        inputs.set_context_read_available(self.services.tool_registry.contains("context_read"));
+        inputs
+    }
+
     async fn contextual_immediate_tools(&self) -> std::collections::BTreeSet<String> {
         let context_read_available = self.services.tool_registry.contains("context_read")
             && !self.context_ledger.artifact_handles.is_empty();
@@ -886,6 +943,35 @@ impl AgentLoop {
             "resolved agent tool surface"
         );
         let all_definitions = surface.definitions();
+
+        // M004 observe-only causal frontier: inspect the immutable resolved
+        // surface plus bounded host-owned state and record diagnostics. This
+        // takes `&surface` and returns no definitions: provider definitions
+        // and `defer_loading` bits below are byte-for-byte identical with
+        // observe disabled. Cached preparations return before any surface
+        // exists, so they reuse the last recorded outcome for the same
+        // cache identity rather than evaluating again.
+        if self.causal_frontier_mode()
+            == crate::tool_advisor::causal_observe::CausalFrontierMode::Observe
+        {
+            let inputs = self.causal_observe_inputs().await;
+            let outcome = crate::tool_advisor::causal_observe::evaluate_observe(&surface, &inputs);
+            tracing::debug!(
+                scope = "causal_frontier_observe",
+                surface_fingerprint = %outcome.surface_fingerprint,
+                state_fingerprint = %outcome.state_fingerprint,
+                contract_catalog_fingerprint = %outcome.contract_catalog_fingerprint,
+                admissible = outcome.admissible_count,
+                inadmissible = outcome.inadmissible_count,
+                uncontracted = outcome.uncontracted_count,
+                required = outcome.required_count,
+                evaluation_millis = outcome.evaluation_millis,
+                fallback_reason = ?outcome.fallback_reason,
+                deferred_promotion = ?outcome.deferred_promotion(),
+                "evaluated causal frontier in observe mode"
+            );
+            crate::tool_advisor::causal_observe::record_observe_outcome(&self.session_id, outcome);
+        }
 
         let candidate_deferred: Vec<_> = all_definitions
             .iter()

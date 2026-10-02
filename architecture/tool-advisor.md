@@ -240,3 +240,29 @@ qualification (56) split, exact metric formulas with tie-breaking, and the
  preservation 1.00/1.00, 0 violations, reduction 1.00, median deferred
  promotion 3, p95 ~0.03 ms. Positive M002 unblocks M004 observe integration
  and the optional M003 effect-path experiment.
+
+ ## Causal frontier experiment (M004 observe-mode runtime integration)
+
+ M004 integrates the selected frontier (M002 — M003 has not closed
+ positively) into real request preparation in **observe-only** mode
+ (`src/tool_advisor/causal_observe.rs`). After final `ResolvedToolSurface`
+ resolution and before provider definitions are finalized,
+ `AgentLoop::build_tool_definitions` evaluates the frontier over the
+ immutable surface plus bounded host-owned state and records diagnostics;
+ provider definitions and `defer_loading` bits are byte-for-byte identical
+ with observe disabled (proven live off-vs-on, plus a deterministic replay
+ suite in `tests/causal_observe_replay.rs`).
+
+ Config: default-off `[tool_advisor.causal_frontier] mode = "off" |
+ "observe"` (`ToolAdvisorCausalFrontierConfig`); omission is identical to
+ main, and no active/promote mode exists. Recorded metrics are fingerprints,
+ counts, canonical names, latency, and the fallback/abstention reason only —
+ no prompts, arguments, outputs, contents, or secrets, and no remote
+ telemetry. Actual calls are compared against the session-local observation
+ window at the broker (`observe_tool_call`) as diagnostics; an inadmissible
+ observation never blocks execution. Two pilot facts stay absent at
+ preparation time rather than guessed (structured failed-test status,
+ turn-local LSP preview availability); absence can only abstain the
+ frontier. M004 gates: zero behavior delta, zero authority violations, 100%
+ fallback preservation, p95 <= 5 ms, no sync network I/O, no new background
+ service. Positive M004 unblocks M005 bounded active disclosure.

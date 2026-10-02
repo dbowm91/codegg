@@ -741,6 +741,14 @@ impl ToolBroker {
             BrokerError::Execution(format!("input schema validation failed: {reason}"))
         })?;
 
+        // M004 observe-only: compare the actual call against the session's
+        // latest causal frontier. Evaluation only — an inadmissible
+        // observation is reported through diagnostics and never blocks
+        // execution. No-op when observe recorded nothing for the session.
+        if let Some(ref session_id) = ctx.session_id {
+            crate::tool_advisor::causal_observe::observe_tool_call(session_id, tool_name);
+        }
+
         // M002: when no chain is supplied, preserve legacy single-attempt
         // semantics exactly.
         let mut chain = retry;
