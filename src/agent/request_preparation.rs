@@ -979,7 +979,7 @@ impl AgentLoop {
             .cloned()
             .collect();
         let advisor_context = self.current_advisor_context_v2().await;
-        let promoted_names = project_preturn_promotions(
+        let mut promoted_names = project_preturn_promotions(
             &surface,
             &candidate_deferred,
             &advisor_context,
@@ -998,6 +998,61 @@ impl AgentLoop {
                     .unwrap_or(16),
             },
         );
+
+        // M005 bounded active causal disclosure (opt-in): union at most two
+        // causally admissible deferred tools, within a 16 KiB promoted
+        // schema budget, into the advisor promotion set. Required, core, and
+        // contextual immediacy are untouched: causal names only exempt
+        // definitions from deferral below, exactly like advisor promotions.
+        // Uncontracted tools are never promoted and stay discoverable via
+        // `tool_search`. When the outcome carries no promotion, definitions
+        // are byte-identical to active-disabled preparation.
+        if self.causal_frontier_mode()
+            == crate::tool_advisor::causal_observe::CausalFrontierMode::Active
+        {
+            let mut deferred_schema_bytes = std::collections::BTreeMap::new();
+            for definition in &candidate_deferred {
+                let canonical_name = surface
+                    .wire_to_canonical
+                    .get(&definition.name)
+                    .map(String::as_str)
+                    .unwrap_or(&definition.name);
+                let bytes = definition.parameters.to_string().len();
+                deferred_schema_bytes
+                    .entry(canonical_name.to_string())
+                    .and_modify(|entry| {
+                        if bytes > *entry {
+                            *entry = bytes;
+                        }
+                    })
+                    .or_insert(bytes);
+            }
+            let inputs = self.causal_observe_inputs().await;
+            let outcome = crate::tool_advisor::causal_active::evaluate_active(
+                &surface,
+                &inputs,
+                &deferred_schema_bytes,
+            );
+            tracing::debug!(
+                scope = "causal_frontier_active",
+                surface_fingerprint = %outcome.observe.surface_fingerprint,
+                state_fingerprint = %outcome.observe.state_fingerprint,
+                contract_catalog_fingerprint = %outcome.observe.contract_catalog_fingerprint,
+                promotion_applied = outcome.promotion_applied,
+                promoted = ?outcome.promoted,
+                promoted_schema_bytes = outcome.promoted_schema_bytes,
+                no_change_reason = ?outcome.no_change_reason,
+                active_evaluation_millis = outcome.active_evaluation_millis,
+                "evaluated bounded causal active disclosure"
+            );
+            if outcome.promotion_applied {
+                promoted_names.extend(outcome.promoted.iter().cloned());
+            }
+            crate::tool_advisor::causal_observe::record_observe_outcome(
+                &self.session_id,
+                outcome.observe,
+            );
+        }
 
         // Partition tools into immediate vs deferred based on provider capabilities
         let provider_id = self.services.provider.id();

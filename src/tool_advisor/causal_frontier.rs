@@ -1790,8 +1790,11 @@ impl CausalFrontier {
 
     /// Causally admissible deferred promotion set: admissible contracted
     /// tools that are deferred from the immediately visible palette and not
-    /// in the required bypass. This is the only set M004/M005 may promote;
-    /// required tools are excluded from reduction accounting per the frozen
+    /// in the required bypass. This is the offline promotion domain for
+    /// M002/M004 analysis; M005 active disclosure instead intersects the
+    /// admissible contracted set with the resolution-time deferred universe
+    /// (a palette-core tool can still be deferred in a given preparation).
+    /// Required tools are excluded from reduction accounting per the frozen
     /// tie-breaking rules.
     pub fn deferred_promotion(&self) -> BTreeSet<String> {
         self.admissible_contracted

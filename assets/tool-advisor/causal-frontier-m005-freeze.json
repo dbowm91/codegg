@@ -1,0 +1,43 @@
+{
+  "active_selection_rule": "greedy canonical-name order over admissible contracted deferred candidates; skip a candidate that would exceed the remaining byte budget; stop at max_promotions; deterministic, no scores, no ranking model",
+  "benchmark_asset": "assets/tool-advisor/causal-frontier-v1.jsonl",
+  "benchmark_cases": 168,
+  "benchmark_fingerprint": "f60dad170f3a2527529152628e01dd5f908efb26d325f70a8a80dca2735820e4",
+  "config_surface": "[tool_advisor.causal_frontier] mode = \"off\" | \"observe\" | \"active\" (default off; unknown fails closed to off)",
+  "contract_catalog_fingerprint": "0ac06de84189b093c55481ec190068a7dff5030b868c1ed804af4042cf3fd944",
+  "contract_schema_version": 1,
+  "dev_fingerprint": "09915ce1a88d5dd1e00dc0e40d3838f4cff27a4841a2663a0ed53b9b566ea81a",
+  "downstream_live_suite": "unavailable in this environment: no operator provider credentials and no hosted model access; structural qualification only (disposition B unless live evidence is later supplied under a follow-up plan)",
+  "fallback_behavior": "insufficient structured signal abstains to the full fallback universe with no promotion; frontier construction errors fail closed to the full eligible fallback universe; unknown config values fail closed to off",
+  "frozen_at_milestone": "M005 intake, after positive M004 closure (635213bc)",
+  "holdout_asset": "assets/tool-advisor/causal-frontier-m005-holdout.json",
+  "holdout_minimum_scenarios": 160,
+  "holdout_note": "fresh post-M004-freeze holdout; does not consume the retrieval v4 holdout; every gold decision cites the host fact and contract making it admissible",
+  "max_promotions": 2,
+  "no_active_change_conditions": [
+    "insufficient structured signal (abstain)",
+    "no admissible contracted tool inside the resolved deferred universe (uncontracted-only or inadmissible-only candidate sets)",
+    "empty selection after byte-budget application"
+  ],
+  "ontology_version": 1,
+  "palette_fingerprint": "3bc5516f0963d5b8189b588fd5393a572c697115da9043ce88fb8f035e6b5b2d",
+  "promotion_domain": "admissible contracted tools inside the resolved deferred universe only; required and never-reduce tools are never selected for promotion (they bypass); uncontracted tools are never promoted and stay discoverable via tool_search",
+  "qualification_fingerprint": "010c66befe0fd710e4fd8936433f37dbf99b59a46ab9704bfe74fcb98c0d4139",
+  "qualification_partition_cases": 56,
+  "required_core_preservation": "required and never_reduce tools bypass causal filtering and remain visible; core-palette immediacy unchanged except for causally promoted deferred tools; tool_search discovery universe unchanged",
+  "schema_byte_budget": 16384,
+  "schema_byte_definition": "serialized JSON bytes of the promoted ToolDefinition parameters payload (parameters.to_string().len()), summed over the promoted set",
+  "schema_version": 1,
+  "selected_frontier": "M002 offline causal-admissibility frontier (M003 never closed positively); receipt assets/tool-advisor/causal-frontier-m002-result.json, disposition A",
+  "snapshot_schema_version": 1,
+  "structural_gates": {
+    "authority_violations": 0,
+    "current_step_tool_preservation": 1.0,
+    "median_promoted_deferred_frontier_max": 2,
+    "premature_mutating_exposure": "no increase versus the same resolved surface without causal promotion; premature tools never promoted",
+    "provider_schema_budget": "promoted schema bytes within schema_byte_budget per preparation",
+    "pure_active_eval_p95_ms_max": 5.0,
+    "uncontracted_discovery_preservation": 1.0
+  },
+  "trust_boundary": "no learned or external unverified contracts; only the frozen native static catalog above; a Contract2Tool-style derivation path requires its own plan and attestation design"
+}

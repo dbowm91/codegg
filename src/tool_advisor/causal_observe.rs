@@ -44,12 +44,14 @@ pub const MAX_OBSERVE_SESSIONS: usize = 256;
 pub const CAUSAL_OBSERVE_P95_BUDGET_MS: f64 = 5.0;
 
 /// Causal-frontier request-preparation mode. Default-off; config omission is
-/// behaviorally identical to main. There is no active/promote mode in M004.
+/// behaviorally identical to main. M005 adds the opt-in `Active` bounded
+/// promotion mode; unknown values still fail closed to `Off`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CausalFrontierMode {
     #[default]
     Off,
     Observe,
+    Active,
 }
 
 impl CausalFrontierMode {
@@ -58,6 +60,7 @@ impl CausalFrontierMode {
     pub fn parse(value: Option<&str>) -> Self {
         match value {
             Some("observe") => Self::Observe,
+            Some("active") => Self::Active,
             _ => Self::Off,
         }
     }
@@ -67,6 +70,7 @@ impl CausalFrontierMode {
         match self {
             Self::Off => "off",
             Self::Observe => "observe",
+            Self::Active => "active",
         }
     }
 }
@@ -129,7 +133,10 @@ pub struct CausalObserveOutcome {
 
 impl CausalObserveOutcome {
     /// The deferred promotion the frontier would recommend (empty when the
-    /// state abstains). Returned for diagnostics only; M004 never applies it.
+    /// state abstains). Returned for diagnostics only; M004 never applies
+    /// it, and M005 active disclosure intersects the admissible contracted
+    /// set with the resolution-time deferred universe instead of reusing
+    /// this palette-based proxy.
     pub fn deferred_promotion(&self) -> BTreeSet<String> {
         if self.structured_signal {
             self.admissible_contracted
@@ -352,6 +359,10 @@ mod tests {
         assert_eq!(
             CausalFrontierMode::parse(Some("promote")),
             CausalFrontierMode::Off
+        );
+        assert_eq!(
+            CausalFrontierMode::parse(Some("active")),
+            CausalFrontierMode::Active
         );
         assert_eq!(CausalFrontierMode::default(), CausalFrontierMode::Off);
     }

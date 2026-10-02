@@ -2296,10 +2296,12 @@ impl Default for ToolAdvisorConfig {
 #[serde(default)]
 pub struct ToolAdvisorCausalFrontierConfig {
     /// Causal-frontier request-preparation integration: "off" (default,
-    /// behaviorally identical to main) or "observe" (evaluate the M002
+    /// behaviorally identical to main), "observe" (evaluate the M002
     /// frontier after `ResolvedToolSurface` resolution and record bounded
     /// local diagnostics without changing provider definitions, deferral,
-    /// or authority). No active/promote mode exists in M004.
+    /// or authority), or "active" (opt-in M005 bounded promotion: at most
+    /// two causally admissible deferred tools promoted within a 16 KiB
+    /// schema budget; everything else unchanged).
     pub mode: Option<String>,
 }
 

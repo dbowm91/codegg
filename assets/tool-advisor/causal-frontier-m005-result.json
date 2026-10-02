@@ -1,0 +1,54 @@
+{
+  "active_selection_rule": "greedy canonical-name order over admissible contracted candidates inside the resolved deferred universe; skip over-budget; stop at 2",
+  "authority_violations": 0,
+  "benchmark_fingerprint": "f60dad170f3a2527529152628e01dd5f908efb26d325f70a8a80dca2735820e4",
+  "closure": "plans/closure/tool-selection-advisor-causal-frontier-experiment/005-status.md",
+  "contract_catalog_fingerprint": "0ac06de84189b093c55481ec190068a7dff5030b868c1ed804af4042cf3fd944",
+  "current_step_tool_preservation": 1.0,
+  "disposition": "B",
+  "disposition_summary": "B \u2014 structurally sound, live evidence unavailable",
+  "freeze_asset": "assets/tool-advisor/causal-frontier-m005-freeze.json",
+  "gates": {
+    "authority_violations": 0,
+    "current_step_tool_preservation": 1.0,
+    "median_promoted_deferred_frontier_max": 2,
+    "premature_promotions": 0,
+    "promoted_schema_bytes_max": 16384,
+    "promotions_per_case_max": 2,
+    "pure_active_eval_p95_ms_max": 5.0,
+    "uncontracted_discovery_preservation": 1.0
+  },
+  "holdout_asset": "assets/tool-advisor/causal-frontier-m005-holdout.json",
+  "holdout_oracle_exact_match": "284/284",
+  "holdout_scenarios": 284,
+  "implementation": "uncommitted at receipt write; see closure record",
+  "live_trajectory_evidence": {
+    "available": false,
+    "checks": [
+      "no provider credential names in process environment",
+      "no operator codegg configuration present"
+    ],
+    "models_run": 0,
+    "reason": "no operator provider credentials and no hosted model access in this environment; not silently skipped, recorded here per plan section 5"
+  },
+  "m001_qualification_arm": {
+    "cases": 56,
+    "max_bounded_promotion": 2,
+    "median_bounded_promotion": 2,
+    "premature_promoted": 0
+  },
+  "median_promoted_deferred_frontier": 2,
+  "ontology_version": 1,
+  "palette_fingerprint": "3bc5516f0963d5b8189b588fd5393a572c697115da9043ce88fb8f035e6b5b2d",
+  "premature_mutating_exposure_increase": 0,
+  "premature_promotions": 0,
+  "promoted_schema_bytes_max_observed": 1000,
+  "protocol": "causal-frontier-m005-v1",
+  "pure_active_eval_p95_ms": 1.001,
+  "qualification_fingerprint": "010c66befe0fd710e4fd8936433f37dbf99b59a46ab9704bfe74fcb98c0d4139",
+  "schema_version": 1,
+  "selected_frontier": "M002 (M003 never closed positively); receipt assets/tool-advisor/causal-frontier-m002-result.json, disposition A",
+  "structural_gates": "all pass",
+  "uncontracted_discovery_preservation": 1.0,
+  "holdout_sha256": "a503841284fe0b1ff648e324f6ed834216509e4a1e97d284c6c94e6d4a7981f7"
+}
