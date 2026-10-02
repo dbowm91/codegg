@@ -13,4 +13,10 @@ if rg -n 'crate::(tui|server|agent|provider|tool|storage|scheduler)|codegg::(tui
   exit 1
 fi
 
+if rg -n 'tokio::net::Unix(Stream|Listener)|tokio::net::unix|std::os::unix::net' src/core \
+  --glob '!**/transport/**'; then
+  echo "core code may use Unix IPC primitives only inside local transport adapters" >&2
+  exit 1
+fi
+
 echo "codegg-client dependency boundary passed"

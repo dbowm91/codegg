@@ -1,7 +1,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::{io::ErrorKind, sync::atomic::AtomicU64};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadHalf, WriteHalf,
+};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::task::JoinSet;
@@ -66,21 +69,133 @@ impl SocketWriteObserver {
 
 static NEXT_SOCKET_WRITE_OPERATION: AtomicU64 = AtomicU64::new(1);
 
-/// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
-/// `UnixListener` plus the absolute path. Used by the singleton lifecycle
+trait CoreSocketIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> CoreSocketIo for T {}
+type BoxCoreSocketIo = Box<dyn CoreSocketIo>;
+type CoreSocketWriter = Arc<tokio::sync::Mutex<WriteHalf<BoxCoreSocketIo>>>;
+const MAX_LOCAL_CLIENTS: usize = 64;
+
+pub enum LocalSocketListener {
+    #[cfg(unix)]
+    Unix(UnixListener),
+    #[cfg(windows)]
+    Windows(WindowsPipeListener),
+}
+
+#[cfg(windows)]
+pub struct WindowsPipeListener {
+    name: String,
+    pending: Option<tokio::net::windows::named_pipe::NamedPipeServer>,
+}
+
+#[cfg(windows)]
+impl WindowsPipeListener {
+    const MAX_INSTANCES: usize = MAX_LOCAL_CLIENTS + 1;
+
+    fn bind(endpoint: &Path) -> std::io::Result<Self> {
+        let endpoint = endpoint.to_string_lossy();
+        let endpoint = codegg_client::LocalEndpoint::parse(&endpoint)
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))?;
+        let name = endpoint.native_argument();
+        let mut security = codegg_client::PipeSecurity::current_user()?;
+        let pending = Self::create_server(&name, true, &mut security)?;
+        Ok(Self {
+            name,
+            pending: Some(pending),
+        })
+    }
+
+    fn create_server(
+        name: &str,
+        first: bool,
+        security: &mut codegg_client::PipeSecurity,
+    ) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+        use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+        let mut options = ServerOptions::new();
+        options
+            .first_pipe_instance(first)
+            .reject_remote_clients(true)
+            .pipe_mode(PipeMode::Byte)
+            .max_instances(Self::MAX_INSTANCES);
+        // `PipeSecurity` owns a valid SECURITY_ATTRIBUTES and descriptor for
+        // this call; Tokio passes it synchronously to CreateNamedPipeW.
+        unsafe { options.create_with_security_attributes_raw(name, security.as_mut_ptr()) }
+    }
+
+    async fn accept(&mut self) -> std::io::Result<BoxCoreSocketIo> {
+        // Keep the pending instance stored while `connect()` is in flight:
+        // the outer accept loop races this future with shutdown and task
+        // joins, so cancellation must not drop the only listener instance.
+        self.pending
+            .as_ref()
+            .expect("listener always holds an available pipe instance")
+            .connect()
+            .await?;
+        let server = self
+            .pending
+            .take()
+            .expect("connected instance remains owned by listener");
+        let mut security = codegg_client::PipeSecurity::current_user()?;
+        // Create the next instance before transferring this connected one to
+        // a client task so connects cannot observe a NotFound gap.
+        self.pending = Some(Self::create_server(&self.name, false, &mut security)?);
+        Ok(Box::new(server))
+    }
+}
+
+impl LocalSocketListener {
+    async fn accept(&mut self) -> std::io::Result<BoxCoreSocketIo> {
+        #[cfg(unix)]
+        return match self {
+            Self::Unix(listener) => {
+                let (stream, _) = listener.accept().await?;
+                Ok(Box::new(stream))
+            }
+        };
+        #[cfg(windows)]
+        return match self {
+            Self::Windows(listener) => listener.accept().await,
+        };
+        #[cfg(not(any(unix, windows)))]
+        match *self {}
+    }
+}
+
+/// Bind the platform-local listener to `endpoint`. Used by the singleton lifecycle
 /// path so the caller can decide when to bind (after lock acquisition)
 /// and can pass a pre-bound listener to [`run_core_socket_with_listener`].
-pub fn bind_listener(endpoint: &Path) -> Result<UnixListener, AppError> {
-    if let Some(parent) = endpoint.parent() {
-        let _ = std::fs::create_dir_all(parent);
+pub fn bind_listener(endpoint: &Path) -> Result<LocalSocketListener, AppError> {
+    let endpoint_text = endpoint.to_string_lossy();
+    codegg_client::LocalEndpoint::parse(&endpoint_text).map_err(|error| {
+        AppError::Other(anyhow::anyhow!("invalid local daemon endpoint: {}", error))
+    })?;
+    #[cfg(unix)]
+    {
+        if let Some(parent) = endpoint.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        UnixListener::bind(endpoint)
+            .map_err(|e| {
+                AppError::Other(anyhow::anyhow!(
+                    "failed to bind socket '{}': {}",
+                    endpoint.display(),
+                    e
+                ))
+            })
+            .map(LocalSocketListener::Unix)
     }
-    UnixListener::bind(endpoint).map_err(|e| {
-        AppError::Other(anyhow::anyhow!(
-            "failed to bind socket '{}': {}",
-            endpoint.display(),
-            e
-        ))
-    })
+    #[cfg(windows)]
+    {
+        WindowsPipeListener::bind(endpoint)
+            .map(LocalSocketListener::Windows)
+            .map_err(|e| {
+                AppError::Other(anyhow::anyhow!(
+                    "failed to bind local named pipe '{}': {}",
+                    endpoint.display(),
+                    e
+                ))
+            })
+    }
 }
 
 /// Serve a pre-bound listener until `shutdown` is cancelled. This is the
@@ -89,7 +204,7 @@ pub fn bind_listener(endpoint: &Path) -> Result<UnixListener, AppError> {
 /// token fires.
 pub async fn run_core_socket_with_listener(
     daemon: Arc<CoreDaemon>,
-    listener: UnixListener,
+    listener: LocalSocketListener,
     endpoint: &Path,
     shutdown: CancellationToken,
 ) -> Result<(), AppError> {
@@ -108,7 +223,7 @@ pub async fn run_core_socket_with_listener(
 /// jobs and scheduler semantics are owned elsewhere.
 pub async fn run_core_socket_with_listener_with_timeout(
     daemon: Arc<CoreDaemon>,
-    listener: UnixListener,
+    listener: LocalSocketListener,
     endpoint: &Path,
     shutdown: CancellationToken,
     shutdown_timeout: std::time::Duration,
@@ -130,7 +245,7 @@ pub async fn run_core_socket_with_listener_with_timeout(
 /// response/receiver/activation boundaries without global mutable hooks.
 pub async fn run_core_socket_with_listener_and_seam(
     daemon: Arc<CoreDaemon>,
-    listener: UnixListener,
+    listener: LocalSocketListener,
     endpoint: &Path,
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
@@ -148,7 +263,7 @@ pub async fn run_core_socket_with_listener_and_seam(
 
 pub async fn run_core_socket_with_listener_and_seam_and_observer(
     daemon: Arc<CoreDaemon>,
-    listener: UnixListener,
+    listener: LocalSocketListener,
     endpoint: &Path,
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
@@ -168,7 +283,7 @@ pub async fn run_core_socket_with_listener_and_seam_and_observer(
 
 async fn run_core_socket_with_listener_and_seam_and_observer_with_timeout(
     daemon: Arc<CoreDaemon>,
-    listener: UnixListener,
+    mut listener: LocalSocketListener,
     endpoint: &Path,
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
@@ -179,6 +294,7 @@ async fn run_core_socket_with_listener_and_seam_and_observer_with_timeout(
     let mut clients = JoinSet::new();
 
     loop {
+        let can_accept = clients.len() < MAX_LOCAL_CLIENTS;
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
@@ -190,8 +306,8 @@ async fn run_core_socket_with_listener_and_seam_and_observer_with_timeout(
                     tracing::warn!("Core daemon client task terminated abnormally: {}", error);
                 }
             }
-            accept = listener.accept() => {
-                let (stream, _addr) = accept
+            accept = listener.accept(), if can_accept => {
+                let stream = accept
                     .map_err(|e| AppError::Other(anyhow::anyhow!("accept failed: {}", e)))?;
                 let daemon = Arc::clone(&daemon);
                 let client_shutdown = shutdown.child_token();
@@ -268,12 +384,13 @@ async fn handle_request_for_client_bounded(
 
 async fn handle_client(
     daemon: Arc<CoreDaemon>,
-    stream: tokio::net::UnixStream,
+    stream: BoxCoreSocketIo,
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
     socket_write_observer: Option<SocketWriteObserver>,
 ) -> Result<(), AppError> {
-    let (read_half, write_half) = stream.into_split();
+    let (read_half, write_half): (ReadHalf<BoxCoreSocketIo>, WriteHalf<BoxCoreSocketIo>) =
+        tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let writer = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -837,7 +954,7 @@ async fn handle_client(
 
 async fn install_projection_receiver(
     daemon: &Arc<CoreDaemon>,
-    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: &CoreSocketWriter,
     projection_state: &Arc<Mutex<ProjectionConnectionState>>,
     subscription_id: &ProjectionSubscriptionId,
     descriptor: &codegg_protocol::projection::replay::ProjectionStreamDescriptor,
@@ -1005,7 +1122,7 @@ async fn projection_forwarder(
     sub_id: ProjectionSubscriptionId,
     stream_id: codegg_protocol::projection::replay::ProjectionStreamId,
     mut rx: tokio::sync::mpsc::Receiver<codegg_protocol::projection::event::ProjectionEnvelope>,
-    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: CoreSocketWriter,
     ready: Arc<tokio::sync::Notify>,
     cancellation: tokio_util::sync::CancellationToken,
 ) {
@@ -1044,7 +1161,7 @@ async fn projection_forwarder(
 #[allow(dead_code)]
 async fn forward_events(
     event_rx: broadcast::Receiver<EventEnvelope<CoreEvent>>,
-    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: CoreSocketWriter,
     filters: Arc<RwLock<Vec<EventFilter>>>,
     cancellation: CancellationToken,
 ) {
@@ -1053,7 +1170,7 @@ async fn forward_events(
 
 async fn forward_events_with_observer(
     mut event_rx: broadcast::Receiver<EventEnvelope<CoreEvent>>,
-    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: CoreSocketWriter,
     filters: Arc<RwLock<Vec<EventFilter>>>,
     cancellation: CancellationToken,
     observer: Option<SocketWriteObserver>,
@@ -1110,14 +1227,14 @@ async fn forward_events_with_observer(
 }
 
 async fn send_frame(
-    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: &CoreSocketWriter,
     frame: &CoreFrame,
 ) -> Result<(), CriticalDeliveryError> {
     send_frame_observed(writer, frame, None, "unobserved", "default").await
 }
 
 async fn send_frame_observed(
-    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: &CoreSocketWriter,
     frame: &CoreFrame,
     observer: Option<&SocketWriteObserver>,
     connection_id: &str,
@@ -1182,7 +1299,7 @@ async fn send_frame_observed(
 }
 
 async fn staged_socket_critical_delivery(
-    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    writer: &CoreSocketWriter,
     frame: &CoreFrame,
     cancellation: &CancellationToken,
     lifecycle_seam: &ProjectionLifecycleSeam,
@@ -1213,9 +1330,14 @@ async fn staged_socket_critical_delivery(
     .await
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_rejects_nonlocal_endpoint_schemes() {
+        assert!(bind_listener(Path::new("tcp://127.0.0.1:9000")).is_err());
+    }
     use crate::protocol::core::{CoreEvent, EventEnvelope, PROTOCOL_VERSION};
     use std::time::Duration;
 
@@ -1325,7 +1447,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn send_frame_reports_closed_unix_writer() {
         let (server, client) = tokio::net::UnixStream::pair().expect("UnixStream pair");
-        let (_read_half, write_half) = server.into_split();
+        let (_, write_half) = tokio::io::split(Box::new(server) as BoxCoreSocketIo);
         let writer = Arc::new(Mutex::new(write_half));
         drop(client);
 
@@ -1337,7 +1459,7 @@ mod tests {
     async fn raw_forwarder_cancellation_releases_receiver_and_shared_state() {
         let (event_tx, event_rx) = broadcast::channel(4);
         let (writer_stream, _peer_stream) = tokio::net::UnixStream::pair().unwrap();
-        let (_, writer_half) = writer_stream.into_split();
+        let (_, writer_half) = tokio::io::split(Box::new(writer_stream) as BoxCoreSocketIo);
         let writer = Arc::new(Mutex::new(writer_half));
         let filters = Arc::new(RwLock::new(Vec::new()));
         let cancellation = CancellationToken::new();
@@ -1365,7 +1487,7 @@ mod tests {
     async fn raw_forwarder_writer_failure_terminates_without_a_retained_receiver() {
         let (event_tx, event_rx) = broadcast::channel(4);
         let (writer_stream, peer_stream) = tokio::net::UnixStream::pair().unwrap();
-        let (_, writer_half) = writer_stream.into_split();
+        let (_, writer_half) = tokio::io::split(Box::new(writer_stream) as BoxCoreSocketIo);
         let writer = Arc::new(Mutex::new(writer_half));
         let filters = Arc::new(RwLock::new(vec![EventFilter {
             session_id: None,
@@ -1467,12 +1589,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn critical_socket_frame_is_readable_after_successful_write() {
         let (writer_stream, reader_stream) = tokio::net::UnixStream::pair().unwrap();
-        let (_, writer_half) = writer_stream.into_split();
+        let (_, writer_half) = tokio::io::split(Box::new(writer_stream) as BoxCoreSocketIo);
         let writer = Arc::new(tokio::sync::Mutex::new(writer_half));
         let frame = CoreFrame::Pong;
         send_frame(&writer, &frame).await.unwrap();
 
-        let (reader_half, _) = reader_stream.into_split();
+        let (reader_half, _) = tokio::io::split(Box::new(reader_stream) as BoxCoreSocketIo);
         let mut reader = BufReader::new(reader_half);
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
@@ -1483,6 +1605,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "daemon_socket_integration_tests.rs"]
 mod daemon_socket_integration_tests;

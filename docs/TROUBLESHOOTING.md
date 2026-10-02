@@ -39,11 +39,16 @@ The ordinary `codegg` frontend is not the daemon's lifetime owner. If it autosta
 
 ### Endpoint overrides
 
-Use `--endpoint /path/to/core.sock` with daemon commands or `codegg attach --endpoint /path/to/core.sock`. The explicit CLI endpoint takes precedence over `CODEGG_CORE_ENDPOINT`; without either, CodeGG uses the platform default under the user-scoped daemon home. All forms use the same lock and metadata root.
+Use `--endpoint /path/to/core.sock` (Unix) or a `npipe://<name>` endpoint
+(Windows) with daemon commands or `codegg attach --endpoint`. The explicit CLI
+endpoint takes precedence over `CODEGG_CORE_ENDPOINT`; without either, CodeGG
+uses the platform default under the user-scoped daemon home. All forms use the
+same lock and metadata root. Windows named-pipe operation remains best-effort
+until live Windows qualification is recorded.
 
 ### Graceful daemon stop
 
-`codegg daemon stop` verifies the live daemon identity before sending SIGTERM. On supported Unix systems SIGTERM and SIGINT follow the same graceful shutdown path. The configured `shutdown_timeout_ms` limits only socket-client draining; after cleanup, the socket, PID file, metadata, and singleton lock are released so a subsequent daemon can start immediately. A timeout is reported without force-killing an unverified PID.
+`codegg daemon stop` verifies the live daemon identity before sending SIGTERM on Unix. SIGTERM and SIGINT follow the same graceful shutdown path. The configured `shutdown_timeout_ms` limits only local-client draining; after cleanup, the endpoint, PID file, metadata, and singleton lock are released so a subsequent daemon can start immediately. A timeout is reported without force-killing an unverified PID. Windows daemon stop is not yet available pending lifecycle qualification.
 
 ### Server mode refuses to start
 

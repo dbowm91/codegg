@@ -5,7 +5,10 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadHalf, WriteHalf,
+};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
@@ -13,6 +16,9 @@ use crate::{ClientError, FrontendDescriptor};
 
 const EVENT_CAPACITY: usize = 256;
 const REQUEST_CAPACITY: usize = 1024;
+trait LocalIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> LocalIo for T {}
+type BoxLocalIo = Box<dyn LocalIo>;
 type PendingRequest = (
     oneshot::Sender<Result<CoreResponse, ClientError>>,
     OwnedSemaphorePermit,
@@ -35,7 +41,7 @@ impl Drop for PendingRequestGuard {
 pub struct LocalSocketClient {
     endpoint: String,
     descriptor: FrontendDescriptor,
-    writer: Arc<Mutex<Option<tokio::net::unix::OwnedWriteHalf>>>,
+    writer: Arc<Mutex<Option<WriteHalf<BoxLocalIo>>>>,
     pending: Arc<DashMap<String, PendingRequest>>,
     request_slots: Arc<Semaphore>,
     events: broadcast::Sender<EventEnvelope<CoreEvent>>,
@@ -54,8 +60,8 @@ impl LocalSocketClient {
         descriptor: FrontendDescriptor,
     ) -> Result<Self, ClientError> {
         let endpoint = endpoint.into();
-        let stream = open_unix(&endpoint).await?;
-        let (read, write) = stream.into_split();
+        let stream = open_local(&endpoint).await?;
+        let (read, write) = tokio::io::split(stream);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let pending = Arc::new(DashMap::<String, PendingRequest>::new());
         let client = Self {
@@ -84,8 +90,8 @@ impl LocalSocketClient {
         self.fail_pending();
         self.closed.store(true, Ordering::Release);
         *self.writer.lock().await = None;
-        let stream = open_unix(&self.endpoint).await?;
-        let (read, write) = stream.into_split();
+        let stream = open_local(&self.endpoint).await?;
+        let (read, write) = tokio::io::split(stream);
         *self.writer.lock().await = Some(write);
         self.closed.store(false, Ordering::Release);
         *self.client_id.lock().await = None;
@@ -217,7 +223,7 @@ impl LocalSocketClient {
 
     fn spawn_reader(
         &self,
-        mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+        mut reader: BufReader<ReadHalf<BoxLocalIo>>,
         pending: Arc<DashMap<String, PendingRequest>>,
         events: broadcast::Sender<EventEnvelope<CoreEvent>>,
     ) {
@@ -345,9 +351,42 @@ fn fail_pending_waiters(pending: &DashMap<String, PendingRequest>) {
     }
 }
 
-async fn open_unix(endpoint: &str) -> Result<UnixStream, ClientError> {
-    let path = endpoint.strip_prefix("unix://").unwrap_or(endpoint);
-    UnixStream::connect(path)
-        .await
-        .map_err(ClientError::Connect)
+async fn open_local(endpoint: &str) -> Result<BoxLocalIo, ClientError> {
+    let endpoint = crate::LocalEndpoint::parse(endpoint).map_err(ClientError::InvalidEndpoint)?;
+    #[cfg(unix)]
+    {
+        let crate::LocalEndpoint::Unix(path) = endpoint;
+        UnixStream::connect(path)
+            .await
+            .map(|stream| Box::new(stream) as BoxLocalIo)
+            .map_err(ClientError::Connect)
+    }
+    #[cfg(windows)]
+    {
+        let crate::LocalEndpoint::WindowsPipe(name) = endpoint;
+        let path = format!(r"\\.\pipe\{name}");
+        let pipe = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(path)
+            .map_err(ClientError::Connect)?;
+        Ok(Box::new(pipe))
+    }
+    #[cfg(not(any(unix, windows)))]
+    Err(ClientError::InvalidEndpoint(format!("{endpoint:?}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_local;
+
+    #[tokio::test]
+    async fn rejects_nonlocal_endpoint_schemes() {
+        #[cfg(unix)]
+        let endpoint = "tcp://127.0.0.1:80";
+        #[cfg(windows)]
+        let endpoint = "unix:///tmp/codegg.sock";
+        assert!(matches!(
+            open_local(endpoint).await,
+            Err(crate::ClientError::InvalidEndpoint(_))
+        ));
+    }
 }

@@ -250,7 +250,7 @@ struct Cli {
     #[arg(long = "stdio", hide = true)]
     stdio: bool,
 
-    /// Core transport endpoint (required for socket mode), e.g. unix:///tmp/codegg-core.sock
+    /// Core transport endpoint (required for socket mode), e.g. unix:///tmp/codegg-core.sock or npipe://codegg-core
     /// Hidden from normal help; see `architecture/core.md`.
     #[arg(long = "core-endpoint", hide = true)]
     core_endpoint: Option<String>,
@@ -1320,19 +1320,22 @@ async fn main() -> Result<(), AppError> {
                     run_daemon(endpoint.clone(), *force_take_lock).await;
                 }
                 DaemonCommand::Stop { endpoint } => {
-                    use codegg::core::instance::DaemonPaths;
-                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
-                    let metadata = match codegg::core::instance::read_metadata_for_paths(&paths) {
-                        Some(metadata) => metadata,
-                        None => {
-                            return Err(AppError::Other(anyhow::anyhow!(
+                    #[cfg(unix)]
+                    {
+                        use codegg::core::instance::DaemonPaths;
+                        let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
+                        let metadata = match codegg::core::instance::read_metadata_for_paths(&paths)
+                        {
+                            Some(metadata) => metadata,
+                            None => {
+                                return Err(AppError::Other(anyhow::anyhow!(
                                 "cannot safely stop daemon at {}: metadata is missing; refusing to use the legacy PID file without live identity evidence",
                                 paths.root.display()
                             )));
-                        }
-                    };
+                            }
+                        };
 
-                    let client = codegg::core::transport::SocketCoreClient::connect(
+                        let client = codegg::core::transport::SocketCoreClient::connect(
                         &paths.endpoint_uri(),
                     )
                     .await
@@ -1344,68 +1347,76 @@ async fn main() -> Result<(), AppError> {
                             e
                         ))
                     })?;
-                    let live_daemon_id = client.daemon_id().await.map_err(|e| {
+                        let live_daemon_id = client.daemon_id().await.map_err(|e| {
                         AppError::Other(anyhow::anyhow!(
                             "cannot safely stop daemon: endpoint did not provide live identity; no signal sent: {}",
                             e
                         ))
                     })?;
 
-                    if live_daemon_id != metadata.daemon_id {
-                        return Err(AppError::Other(anyhow::anyhow!(
+                        if live_daemon_id != metadata.daemon_id {
+                            return Err(AppError::Other(anyhow::anyhow!(
                             "cannot safely stop daemon: live daemon identity {} does not match metadata identity {}; no signal sent",
                             live_daemon_id, metadata.daemon_id
                         )));
-                    }
+                        }
 
-                    let pid = metadata.pid;
-                    let pid_for_signal = i32::try_from(pid).map_err(|_| {
+                        let pid = metadata.pid;
+                        let pid_for_signal = i32::try_from(pid).map_err(|_| {
                         AppError::Other(anyhow::anyhow!(
                             "daemon PID {} cannot be represented by this platform's pid_t; no signal sent",
                             pid
                         ))
                     })?;
-                    let kill_result = unsafe { libc::kill(pid_for_signal, libc::SIGTERM) };
-                    if kill_result != 0 {
-                        return Err(AppError::Other(anyhow::anyhow!(
-                            "daemon identity {} was verified, but SIGTERM to PID {} failed: {}",
-                            metadata.daemon_id,
-                            pid,
-                            std::io::Error::last_os_error()
-                        )));
-                    }
-
-                    println!(
-                        "Sent SIGTERM to daemon (PID {}, generation {})",
-                        pid, metadata.generation
-                    );
-                    let shutdown_timeout = std::time::Duration::from_millis(
-                        Config::load_or_default()
-                            .daemon
-                            .and_then(|daemon| daemon.shutdown_timeout_ms)
-                            .unwrap_or(10_000),
-                    );
-                    let pid_file = paths.socket_path.with_extension("pid");
-                    let wait_result = tokio::time::timeout(shutdown_timeout, async {
-                        while paths.socket_path.exists()
-                            || paths.metadata_path.exists()
-                            || pid_file.exists()
-                        {
-                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        let kill_result = unsafe { libc::kill(pid_for_signal, libc::SIGTERM) };
+                        if kill_result != 0 {
+                            return Err(AppError::Other(anyhow::anyhow!(
+                                "daemon identity {} was verified, but SIGTERM to PID {} failed: {}",
+                                metadata.daemon_id,
+                                pid,
+                                std::io::Error::last_os_error()
+                            )));
                         }
-                    })
-                    .await;
-                    if wait_result.is_err() {
-                        eprintln!(
+
+                        println!(
+                            "Sent SIGTERM to daemon (PID {}, generation {})",
+                            pid, metadata.generation
+                        );
+                        let shutdown_timeout = std::time::Duration::from_millis(
+                            Config::load_or_default()
+                                .daemon
+                                .and_then(|daemon| daemon.shutdown_timeout_ms)
+                                .unwrap_or(10_000),
+                        );
+                        let pid_file = paths.pid_file_path();
+                        let wait_result = tokio::time::timeout(shutdown_timeout, async {
+                            while paths.socket_path.exists()
+                                || paths.metadata_path.exists()
+                                || pid_file.exists()
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                            }
+                        })
+                        .await;
+                        if wait_result.is_err() {
+                            eprintln!(
                             "Daemon did not finish graceful shutdown within {:?}; no force-kill was sent",
                             shutdown_timeout
                         );
+                        }
+                    }
+                    #[cfg(windows)]
+                    {
+                        let _ = endpoint;
+                        return Err(AppError::Other(anyhow::anyhow!(
+                            "graceful daemon stop is not yet available on Windows"
+                        )));
                     }
                 }
                 DaemonCommand::Status { endpoint } => {
                     use codegg::core::instance::DaemonPaths;
                     let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
-                    let pid_file = paths.socket_path.with_extension("pid");
+                    let pid_file = paths.pid_file_path();
                     let md = codegg::core::instance::read_metadata_for_paths(&paths);
                     match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
                         .await
@@ -3681,41 +3692,25 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
                     Err(e) => {
                         if force_take_lock {
                             tracing::warn!(
-                                "Daemon lock is held but socket is unreachable: {}; --force-take-lock is set, attempting recovery",
+                                "Daemon lock is held but socket is unreachable: {}; --force-take-lock cannot override the authoritative lock",
                                 e
                             );
-                            if let Some(metadata) =
-                                DaemonInstanceGuard::read_metadata(&paths.metadata_path)
-                            {
-                                if pid_is_alive(metadata.pid) {
-                                    eprintln!(
-                                        "Daemon PID {} is still alive; refusing to take the lock.",
-                                        metadata.pid
-                                    );
-                                    std::process::exit(1);
-                                }
-                                tracing::warn!(
-                                    "Daemon PID {} is dead; unlinking stale lock and socket",
-                                    metadata.pid
-                                );
-                            } else {
-                                tracing::warn!(
-                                    "No daemon metadata found; unlinking stale lock and socket"
-                                );
-                            }
-                            for stale in [&paths.lock_path, &paths.socket_path] {
-                                if let Err(error) = std::fs::remove_file(stale) {
-                                    if error.kind() != std::io::ErrorKind::NotFound {
-                                        eprintln!(
-                                            "Failed to unlink stale {}: {}; aborting force-take.",
-                                            stale.display(),
-                                            error
-                                        );
-                                        std::process::exit(1);
+                            let pid_note = DaemonInstanceGuard::read_metadata(&paths.metadata_path)
+                                .map(|metadata| match pid_is_alive(metadata.pid) {
+                                    Ok(true) => format!("metadata PID {} is alive", metadata.pid),
+                                    Ok(false) => {
+                                        format!("metadata PID {} is not alive", metadata.pid)
                                     }
-                                }
-                            }
-                            continue;
+                                    Err(error) => format!(
+                                        "metadata PID {} could not be checked: {}",
+                                        metadata.pid, error
+                                    ),
+                                })
+                                .unwrap_or_else(|| "metadata is missing".to_owned());
+                            eprintln!(
+                                "Cannot recover daemon endpoint while its advisory lock is held ({pid_note}); refusing to unlink the authoritative lock."
+                            );
+                            std::process::exit(1);
                         }
                         eprintln!(
                             "Daemon lock is held but socket is unreachable: {}. \
@@ -3746,7 +3741,9 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
             std::process::exit(1);
         }
         Err(_) => {
-            // Stale or missing socket: best-effort cleanup, ignore NotFound.
+            // Unix filesystem sockets can leave stale path entries. Named
+            // pipe objects are released by the OS when their handles close.
+            #[cfg(unix)]
             match std::fs::remove_file(&paths.socket_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -3839,7 +3836,7 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
     // New tooling should read daemon.json, but external scripts may rely
     // on the pid file for `kill`. Deprecated: authoritative identity is the
     // lock + metadata record.
-    let pid_file = paths.socket_path.with_extension("pid");
+    let pid_file = paths.pid_file_path();
     if let Err(error) = tokio::fs::write(&pid_file, std::process::id().to_string()).await {
         tracing::warn!(pid_file = %pid_file.display(), %error, "failed to write legacy PID file");
     }
@@ -3899,10 +3896,11 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         )
         .await;
 
-    // Cleanup: drop pid, socket, metadata (in that order so observers never
-    // see socket-gone + PID-present). Guard's Drop removes metadata; we
-    // explicitly remove the pid and socket files here while holding the lock.
+    // Cleanup: drop pid, Unix socket, and metadata (in that order so observers
+    // never see socket-gone + PID-present). Windows pipe names are not files;
+    // dropping the listener closes the kernel object. Guard removes metadata.
     let _ = std::fs::remove_file(&pid_file);
+    #[cfg(unix)]
     let _ = std::fs::remove_file(&paths.socket_path);
     drop(guard);
     if let Err(e) = serve_result {
@@ -4075,16 +4073,31 @@ async fn cmd_attach(url: &str, token: Option<&str>) -> Result<(), AppError> {
 }
 
 #[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
+fn pid_is_alive(pid: u32) -> Result<bool, std::io::Error> {
     let pid_i32 = match i32::try_from(pid) {
         Ok(p) => p,
-        Err(_) => return false,
+        Err(_) => return Ok(false),
     };
     // Signal 0 checks liveness without sending a signal.
-    unsafe { libc::kill(pid_i32, 0) == 0 }
+    if unsafe { libc::kill(pid_i32, 0) } == 0 {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(std::io::Error::last_os_error()),
+    }
 }
 
-#[cfg(not(unix))]
-fn pid_is_alive(_pid: u32) -> bool {
-    false
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> Result<bool, std::io::Error> {
+    codegg_client::windows_is_process_alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pid_is_alive(_pid: u32) -> Result<bool, std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "process liveness is unavailable on this platform",
+    ))
 }

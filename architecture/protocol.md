@@ -47,7 +47,8 @@ event carries an `EventEnvelope<T>` with `protocol_version`, `event_seq`,
 ### Transport Flows
 
 **In-process (InprocCoreClient)**: Direct function calls.
-**Stdio/Socket**: JSONL over stdin/stdout or Unix socket.
+**Stdio/local daemon**: JSONL over stdin/stdout or a platform-local byte
+stream (Unix domain socket on Unix, current-user named pipe on Windows).
 **Remote TUI (Server)**: WebSocket / HTTP through Axum, with `TuiMessage`
 events pushed to subscribed clients.
 

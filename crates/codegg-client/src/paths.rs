@@ -1,5 +1,77 @@
 use std::path::{Path, PathBuf};
 
+/// Canonical address for a same-machine daemon connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalEndpoint {
+    #[cfg(unix)]
+    Unix(PathBuf),
+    #[cfg(windows)]
+    WindowsPipe(String),
+}
+
+impl LocalEndpoint {
+    /// Parse a platform-local endpoint URI (or its platform-native form).
+    pub fn parse(value: &str) -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            if value.contains("://") && !value.starts_with("unix://") {
+                return Err(format!("unsupported local endpoint scheme: {value}"));
+            }
+            let path = value.strip_prefix("unix://").unwrap_or(value);
+            if path.contains("://") {
+                return Err(format!("unsupported local endpoint scheme: {value}"));
+            }
+            if path.is_empty() {
+                return Err("Unix daemon endpoint path is empty".to_owned());
+            }
+            return Ok(Self::Unix(PathBuf::from(path)));
+        }
+        #[cfg(windows)]
+        {
+            if value.contains("://") && !value.starts_with("npipe://") {
+                return Err(format!("unsupported local endpoint scheme: {value}"));
+            }
+            let name = value.strip_prefix("npipe://").unwrap_or(value);
+            if name.is_empty() {
+                return Err("Windows named-pipe endpoint is empty".to_owned());
+            }
+            let name = name.strip_prefix(r"\\.\pipe\").unwrap_or(name);
+            if name.contains('\\') || name.contains('/') || name.contains('\0') {
+                return Err("Windows pipe name must be a single local name".to_owned());
+            }
+            return Ok(Self::WindowsPipe(name.to_owned()));
+        }
+        #[allow(unreachable_code)]
+        Err("local daemon transport is unsupported on this platform".to_owned())
+    }
+
+    pub fn as_uri(&self) -> String {
+        #[cfg(unix)]
+        return match self {
+            Self::Unix(path) => format!("unix://{}", path.display()),
+        };
+        #[cfg(windows)]
+        return match self {
+            Self::WindowsPipe(name) => format!("npipe://{}", name),
+        };
+        #[cfg(not(any(unix, windows)))]
+        match *self {}
+    }
+
+    pub fn native_argument(&self) -> String {
+        #[cfg(unix)]
+        return match self {
+            Self::Unix(path) => path.to_string_lossy().into_owned(),
+        };
+        #[cfg(windows)]
+        return match self {
+            Self::WindowsPipe(name) => format!(r"\\.\pipe\{name}"),
+        };
+        #[cfg(not(any(unix, windows)))]
+        match *self {}
+    }
+}
+
 /// Frontend-safe view of the shared user-scoped daemon locations.
 #[derive(Debug, Clone)]
 pub struct LocalDaemonPaths {
@@ -30,17 +102,35 @@ impl LocalDaemonPaths {
     }
 
     pub fn with_root(root: PathBuf) -> Self {
+        #[cfg(unix)]
+        let socket_path = root.join("core.sock");
+        #[cfg(windows)]
+        let socket_path = {
+            // Fixed FNV-1a keeps the endpoint stable across Rust releases so
+            // an upgraded frontend and an already-running daemon agree.
+            let hash = root
+                .to_string_lossy()
+                .bytes()
+                .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+                });
+            PathBuf::from(format!(r"\\.\pipe\codegg-{hash:016x}"))
+        };
+        #[cfg(not(any(unix, windows)))]
+        let socket_path = root.join("core.sock");
         Self {
             lock_path: root.join("daemon.lock"),
             metadata_path: root.join("daemon.json"),
-            socket_path: root.join("core.sock"),
+            socket_path,
             log_path: root.join("daemon.log"),
             root,
         }
     }
 
     pub fn normalize_endpoint(endpoint: &str) -> PathBuf {
-        PathBuf::from(endpoint.strip_prefix("unix://").unwrap_or(endpoint))
+        LocalEndpoint::parse(endpoint)
+            .map(|endpoint| PathBuf::from(endpoint.native_argument()))
+            .unwrap_or_else(|_| PathBuf::from(endpoint))
     }
 
     pub fn with_socket(&self, socket_path: PathBuf) -> Self {
@@ -50,7 +140,9 @@ impl LocalDaemonPaths {
     }
 
     pub fn endpoint_uri(&self) -> String {
-        format!("unix://{}", self.socket_path.display())
+        LocalEndpoint::parse(&self.socket_path_str())
+            .map(|endpoint| endpoint.as_uri())
+            .unwrap_or_else(|_| self.socket_path.to_string_lossy().into_owned())
     }
 
     pub fn socket_path_str(&self) -> String {

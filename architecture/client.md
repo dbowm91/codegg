@@ -4,8 +4,12 @@
 
 `crates/codegg-client` is the reusable frontend-side native client. It owns
 `FrontendDescriptor`, bounded `ClientError` classifications, local daemon
-path discovery, the multiplexed CoreFrame Unix client, and connect/reuse/start
-orchestration. It depends on `codegg-protocol` and contains no daemon authority.
+path discovery, typed local endpoint parsing, the multiplexed CoreFrame client,
+and connect/reuse/start orchestration. Its client stream uses Tokio's shared
+byte-stream I/O boundary; Unix uses domain sockets and Windows uses named
+pipes. Windows serving remains unqualified until live security and lifecycle
+evidence is recorded. It depends on `codegg-protocol` and contains no daemon
+authority.
 `FrontendDescriptor` fields are private and selected by trusted composition
 code. The root `SocketCoreClient` and `connect_or_start_daemon` APIs remain
 compatibility adapters for the existing `CoreClient` and daemon lifecycle

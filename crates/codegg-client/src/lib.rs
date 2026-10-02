@@ -8,10 +8,22 @@ use codegg_protocol::frames::{ClientCapabilities, ClientKind};
 mod connect;
 mod local;
 mod paths;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_pipe_security;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_process;
 
 pub use connect::{connect_or_start_local_daemon, LocalDaemonOptions, LocalDaemonOutcome};
 pub use local::LocalSocketClient;
-pub use paths::LocalDaemonPaths;
+pub use paths::{LocalDaemonPaths, LocalEndpoint};
+#[cfg(windows)]
+#[doc(hidden)]
+pub use windows_pipe_security::PipeSecurity;
+#[cfg(windows)]
+#[doc(hidden)]
+pub use windows_process::is_process_alive as windows_is_process_alive;
 
 /// Trusted composition-time identity sent in `ClientHello`.
 #[derive(Debug, Clone)]
@@ -56,6 +68,8 @@ impl FrontendDescriptor {
 /// Bounded error classes shared by frontend adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    #[error("unsupported local daemon endpoint: {0}")]
+    InvalidEndpoint(String),
     #[error("local transport connection failed: {0}")]
     Connect(#[source] std::io::Error),
     #[error("client handshake failed: {0}")]
@@ -115,5 +129,25 @@ mod tests {
             descriptor.protocol_version(),
             codegg_protocol::core::PROTOCOL_VERSION
         );
+    }
+
+    #[test]
+    fn local_endpoint_uses_only_platform_local_schemes() {
+        #[cfg(unix)]
+        let (input, expected_uri, expected_argument) = (
+            "unix:///tmp/codegg.sock",
+            "unix:///tmp/codegg.sock",
+            "/tmp/codegg.sock",
+        );
+        #[cfg(windows)]
+        let (input, expected_uri, expected_argument) = (
+            "npipe://codegg-test",
+            "npipe://codegg-test",
+            r"\\.\pipe\codegg-test",
+        );
+        let endpoint = LocalEndpoint::parse(input).unwrap();
+        assert_eq!(endpoint.as_uri(), expected_uri);
+        assert_eq!(endpoint.native_argument(), expected_argument);
+        assert!(LocalEndpoint::parse("tcp://127.0.0.1:9000").is_err());
     }
 }

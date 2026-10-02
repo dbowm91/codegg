@@ -121,16 +121,13 @@ impl DaemonPaths {
 
     /// Construct paths rooted at `root`. Used by production and by tests.
     pub fn with_root(root: PathBuf) -> Self {
-        let lock_path = root.join("daemon.lock");
-        let metadata_path = root.join("daemon.json");
-        let socket_path = root.join("core.sock");
-        let log_path = root.join("daemon.log");
+        let shared = codegg_client::LocalDaemonPaths::with_root(root);
         Self {
-            root,
-            lock_path,
-            metadata_path,
-            socket_path,
-            log_path,
+            root: shared.root,
+            lock_path: shared.lock_path,
+            metadata_path: shared.metadata_path,
+            socket_path: shared.socket_path,
+            log_path: shared.log_path,
         }
     }
 
@@ -162,12 +159,25 @@ impl DaemonPaths {
 
     /// Socket endpoint suitable for `SocketCoreClient::connect`.
     pub fn endpoint_uri(&self) -> String {
-        format!("unix://{}", self.socket_path.display())
+        codegg_client::LocalEndpoint::parse(&self.socket_path_str())
+            .map(|endpoint| endpoint.as_uri())
+            .unwrap_or_else(|_| self.socket_path.to_string_lossy().into_owned())
     }
 
     /// Socket path as a plain filesystem path.
     pub fn socket_path_str(&self) -> String {
         self.socket_path.to_string_lossy().into_owned()
+    }
+
+    /// Legacy PID record retained for Unix scripts. Windows uses a file under
+    /// the per-user runtime root because named-pipe names are not filesystem paths.
+    pub fn pid_file_path(&self) -> PathBuf {
+        #[cfg(unix)]
+        return self.socket_path.with_extension("pid");
+        #[cfg(windows)]
+        return self.root.join("daemon.pid");
+        #[cfg(not(any(unix, windows)))]
+        self.root.join("daemon.pid")
     }
 
     /// Durable user-scoped plugin activation state. Installation metadata
@@ -233,6 +243,10 @@ pub struct DaemonInstanceMetadata {
     pub generation: String,
     pub pid: u32,
     pub socket_path: PathBuf,
+    /// Platform-neutral URI (`unix://` or `npipe://`) for new metadata.
+    /// Missing in legacy records, where `socket_path` remains the fallback.
+    #[serde(default)]
+    pub endpoint_uri: Option<String>,
     pub protocol_version: u32,
     pub started_at: DateTime<Utc>,
     pub binary_version: String,
@@ -252,16 +266,16 @@ impl DaemonInstanceMetadata {
 
 /// RAII guard that holds the singleton lock for the daemon's lifetime.
 ///
-/// The lock is advisory and exclusive (`flock(LOCK_EX | LOCK_NB)`); the
+/// The lock is advisory and exclusive (`File::try_lock`); the
 /// process holding this guard is the only process allowed to bind the
 /// production socket and to be considered live. When the guard is dropped,
 /// the metadata file is removed and the lock is released.
 ///
-/// Note: the OS releases the underlying flock automatically when the
+/// Note: the OS releases the underlying file lock automatically when the
 /// process exits, even if `drop` is not run (panic, `std::process::exit`,
 /// signal). The `Drop` impl is best-effort cleanup of the metadata file.
 pub struct DaemonInstanceGuard {
-    /// Holds the open lock file; `flock` is released when `_file` is dropped.
+    /// Holds the open lock file; its lock is released when `_lock_file` is dropped.
     _lock_file: std::fs::File,
     /// Path of the lock file (kept for diagnostics).
     pub lock_path: PathBuf,
@@ -294,7 +308,7 @@ impl DaemonInstanceGuard {
     pub fn try_acquire(paths: &DaemonPaths) -> Result<Option<Self>, AppError> {
         paths.ensure_root()?;
         let lock_file = open_lock_file(&paths.lock_path)?;
-        let acquired = try_flock_exclusive(&lock_file)?;
+        let acquired = try_lock_exclusive(&lock_file)?;
         if !acquired {
             return Ok(None);
         }
@@ -570,31 +584,15 @@ fn open_lock_file(path: &Path) -> Result<std::fs::File, AppError> {
         })
 }
 
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn try_flock_exclusive(file: &std::fs::File) -> Result<bool, AppError> {
-    use std::os::fd::AsRawFd;
-    let fd = file.as_raw_fd();
-    // LOCK_NB so we fail fast instead of blocking; the caller treats a
-    // non-zero return (with EWOULDBLOCK) as "lock held by another process".
-    let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if ret == 0 {
-        return Ok(true);
+fn try_lock_exclusive(file: &std::fs::File) -> Result<bool, AppError> {
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(error)) => Err(AppError::Other(anyhow::anyhow!(
+            "daemon singleton lock failed: {}",
+            error
+        ))),
     }
-    let err = std::io::Error::last_os_error();
-    if err.raw_os_error() == Some(libc::EWOULDBLOCK) || err.raw_os_error() == Some(libc::EAGAIN) {
-        return Ok(false);
-    }
-    Err(AppError::Other(anyhow::anyhow!("flock failed: {}", err)))
-}
-
-#[cfg(not(unix))]
-fn try_flock_exclusive(_file: &std::fs::File) -> Result<bool, AppError> {
-    // Singleton enforcement requires flock; fail closed on non-Unix rather
-    // than allowing concurrent daemons (mirrors ExternalCommand disabled).
-    Err(AppError::Other(anyhow::anyhow!(
-        "daemon singleton lock is unsupported on non-Unix platforms"
-    )))
 }
 
 static ATOMIC_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -645,11 +643,15 @@ pub fn current_process_metadata(
     generation: String,
     socket_path: PathBuf,
 ) -> DaemonInstanceMetadata {
+    let endpoint_uri = codegg_client::LocalEndpoint::parse(&socket_path.to_string_lossy())
+        .ok()
+        .map(|endpoint| endpoint.as_uri());
     DaemonInstanceMetadata {
         daemon_id,
         generation,
         pid: std::process::id(),
         socket_path,
+        endpoint_uri,
         protocol_version: PROTOCOL_VERSION,
         started_at: Utc::now(),
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -728,6 +730,7 @@ mod tests {
             generation: "11111111-2222-3333-4444-555555555555".into(),
             pid: 4242,
             socket_path: PathBuf::from("/tmp/codegg/core.sock"),
+            endpoint_uri: Some("unix:///tmp/codegg/core.sock".into()),
             protocol_version: PROTOCOL_VERSION,
             started_at: Utc::now(),
             binary_version: "0.1.0".into(),
@@ -735,6 +738,22 @@ mod tests {
         let json = m.to_json().unwrap();
         let back = DaemonInstanceMetadata::from_json(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn legacy_metadata_without_endpoint_uri_remains_readable() {
+        let legacy = serde_json::json!({
+            "daemon_id": "codegg-deadbeef",
+            "generation": "gen-deadbeef",
+            "pid": 4242,
+            "socket_path": "/tmp/codegg/core.sock",
+            "protocol_version": PROTOCOL_VERSION,
+            "started_at": Utc::now(),
+            "binary_version": "0.1.0"
+        });
+        let metadata = DaemonInstanceMetadata::from_json(&legacy.to_string()).unwrap();
+        assert_eq!(metadata.endpoint_uri, None);
+        assert_eq!(metadata.socket_path, PathBuf::from("/tmp/codegg/core.sock"));
     }
 
     #[test]

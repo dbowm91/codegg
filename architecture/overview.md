@@ -50,7 +50,7 @@ A single user prompt flows through the system along this path:
 
 1. **Connect** — Running plain `codegg` calls `connect_or_start_daemon`
    (`src/core/instance.rs`) which connects to the running user-scoped daemon
-   singleton (guarded by an authoritative `flock`) or starts one.
+   singleton (guarded by an authoritative nonblocking `File::try_lock`) or starts one.
    `--standalone` runs an in-process core instead.
 2. **Transport** — The TUI talks to the core through the `CoreClient`
    facade over Inproc, Stdio, or Socket transports ([core.md](core.md)).
@@ -374,7 +374,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 ## Key Architectural Patterns
 
 ### Singleton Daemon
-Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. Metadata in `daemon.json` is diagnostic only; the lock is authoritative.
+Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds a nonblocking `File::try_lock` for the daemon's lifetime. Metadata in `daemon.json` is diagnostic only; the lock is authoritative.
 
 ### Library-First, MCP-Second
 Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process. The same crates can later expose optional MCP adapter binaries without changing model-facing tool names.
