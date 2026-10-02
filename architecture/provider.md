@@ -29,12 +29,12 @@ in `src/lib.rs`.
 | `crates/codegg-providers/src/gitlab.rs` | GitLab AI gateway |
 | `crates/codegg-providers/src/opencode_zen.rs` | Codegg Zen service |
 | `crates/codegg-providers/src/additional.rs` | Factory functions for OpenAI-compat providers |
+| `crates/codegg-providers/src/wire.rs` | Canonical bridge, shared family codecs, stream decoding, and completed tool-call accumulation |
 | `crates/codegg-providers/src/fallback.rs` | FallbackProvider with circuit breaker |
 | `crates/codegg-providers/src/circuit.rs` | CircuitBreaker implementation |
 | `crates/codegg-providers/src/catalog.rs` | ModelCatalog with live fetch |
 | `crates/codegg-providers/src/discovery.rs` | ModelDiscoveryService with SQLite cache |
 | `crates/codegg-providers/src/models.rs` | Embedded free-tier model definitions |
-| `crates/codegg-providers/src/sse_parser.rs` | SSE parsing for streaming |
 | `crates/codegg-providers/src/text_tool_parser.rs` | Bounded textual tool-call repair |
 | `crates/codegg-providers/src/cache.rs` | Provider response cache |
 | `crates/codegg-providers/src/responses_api.rs` | OpenAI Responses API adapter |
@@ -400,12 +400,44 @@ SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
 
 ## Provider Implementations
 
+### Shared wire kernel and provider cutover
+
+`crates/codegg-providers/src/wire.rs` is CodeGG's semantic bridge to the
+immutable-pinned `eggpool-wire` crate. It converts `ChatRequest` values to the
+kernel's canonical request and maps canonical stream events and completed tool
+calls back to `ChatEvent`. The bridge uses a per-stream decoder and bounded
+tool-call accumulator; it does not own transport, retries, cancellation, or
+credentials.
+
+M001 qualified the bridge without changing production ownership. M002 now
+routes native OpenAI, Azure OpenAI, OpenRouter, CodeGG Zen, and the shared
+OpenAI-compatible transport through `encode_openai_chat` and
+`openai_chat_stream`. Compatible presets and wrappers use the same transport
+core. Provider modules still own endpoint construction, credentials, headers,
+discovery, HTTP status handling, chunk-idle deadlines, and cancellation.
+OpenAI Chat's current `max_tokens` field is preserved by a closed CodeGG
+bridge transform because the shared canonical codec emits
+`max_completion_tokens` by default. `scripts/check_provider_wire_cutover.py`
+guards the migrated provider modules against restoring a second OpenAI SSE
+parser.
+
+M003 routes Anthropic Messages and Gemini GenerateContent through the pinned
+shared codecs and stream adapters. `wire.rs` is the sole standard
+OpenAI/Anthropic/Gemini grammar and parser bridge. Bedrock Converse and
+hosted/stateful Responses retain specialized paths.
+
+`ProviderRequestContext.wire_policy` carries an immutable, conservative
+projection of the resolved CodeGG model adapter: canonical tool aliases,
+argument aliases, closed reasoning transforms, tool choice, and parallel-tool
+constraints. Callers without a projection receive conservative behavior. The
+provider crate does not infer model policy from model names.
+
 ### Anthropic (`anthropic.rs`)
 
 - Base URL: `https://api.anthropic.com`
 - API version: `2023-06-01`
-- SSE streaming with `stream: true`
-- Thinking budget via `thinking.budget_tokens`
+- Shared Anthropic Messages encoding and SSE decoding through `wire.rs`
+- Thinking budget via the canonical reasoning projection
 - Hardcoded models: claude-sonnet-4-20250514, claude-opus-4-20250514,
   claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022
 
@@ -419,8 +451,9 @@ SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
 ### Google (`google.rs`)
 
 - `streamGenerateContent` with SSE
-- Custom `contents` array format
-- Tool defs as `function_declarations` in `tools` array
+- Shared Gemini GenerateContent encoding and SSE decoding through `wire.rs`
+- Tool declarations, function calls/results, images, finish reasons, and usage
+  use the shared Gemini surface
 - Models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash
 
 ### Azure (`azure.rs`)
@@ -481,12 +514,14 @@ Anthropic-compatible and uses a different auth header.
 - Embedded models: big-pickle, minimax-m2.5-free,
   nemotron-3-super-free, qwen3.6-plus-free
 
-## SSE Parsing (`sse_parser.rs`)
+## Shared Wire Bridge (`wire.rs`)
 
-SseParser handles OpenAI-compatible and Anthropic SSE. Tool call streaming
-accumulates arguments across chunks. State preserved via markers:
-`\n__TC__:{json}` (queued tool calls),
-`\n__OAI_STATE__:{json}` (OpenAI tool state).
+The bridge canonicalizes CodeGG `ChatRequest` values and delegates standard
+OpenAI Chat, Anthropic Messages, and Gemini GenerateContent request/stream
+grammar to the pinned `eggpool-wire` kernel. It owns bounded event projection
+and completed tool-call accumulation. Provider modules retain endpoints,
+authentication, transport errors, and connection-specific headers. Static
+guards prevent local duplicate encoders/parsers from returning.
 
 ### Text Tool Repair (`text_tool_parser.rs`)
 

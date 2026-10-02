@@ -506,6 +506,7 @@ mod tests {
             reasoning_effort: None,
             context: codegg_providers::ProviderRequestContext {
                 session_id: Some(Arc::from("session-1")),
+                ..Default::default()
             },
         }
     }

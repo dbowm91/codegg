@@ -1,15 +1,6 @@
 use crate::error::ProviderError;
-use crate::sse_parser::parse_openai_buffer;
-use crate::{
-    assistant_text_content_value, create_http_client, project_tool_call_history, ChatRequest,
-    ContentPart, EventStream, Message, ModelInfo, Provider, MAX_BUFFER_SIZE,
-};
+use crate::{create_http_client, ChatRequest, EventStream, ModelInfo, Provider};
 use async_trait::async_trait;
-use futures_util::stream::unfold;
-use futures_util::StreamExt;
-use serde_json::json;
-
-use std::time::Duration;
 
 #[derive(Clone)]
 pub struct OpencodeZenProvider {
@@ -32,116 +23,15 @@ impl OpencodeZenProvider {
         self
     }
 
-    fn build_body(&self, req: &ChatRequest) -> serde_json::Value {
-        let mut messages: Vec<serde_json::Value> = Vec::new();
-
-        for msg in project_tool_call_history(&req.messages).iter() {
-            match msg {
-                Message::System { content } => {
-                    messages.push(json!({"role": "system", "content": content}));
-                }
-                Message::User { content } => {
-                    let parts: Vec<serde_json::Value> = content
-                        .iter()
-                        .map(|p| match p {
-                            ContentPart::Text { text } => {
-                                json!({"type": "text", "text": text})
-                            }
-                            ContentPart::Image { image_url } => {
-                                json!({
-                                    "type": "image_url",
-                                    "image_url": {"url": image_url.url}
-                                })
-                            }
-                            ContentPart::Reasoning { .. } => json!(""),
-                        })
-                        .collect();
-                    let content_val = if parts.len() == 1
-                        && parts[0].get("type").and_then(|v| v.as_str()) == Some("text")
-                    {
-                        parts[0].get("text").cloned().unwrap_or(json!(""))
-                    } else {
-                        json!(parts)
-                    };
-                    messages.push(json!({"role": "user", "content": content_val}));
-                }
-                Message::Assistant {
-                    content,
-                    tool_calls,
-                } => {
-                    let mut assistant_msg = json!({
-                        "role": "assistant",
-                        "content": assistant_text_content_value(content)
-                    });
-
-                    if !tool_calls.is_empty() {
-                        let tool_calls_json: Vec<serde_json::Value> = tool_calls
-                            .iter()
-                            .map(|tc| {
-                                json!({
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.name,
-                                        "arguments": tc.arguments.to_string(),
-                                    }
-                                })
-                            })
-                            .collect();
-                        assistant_msg["tool_calls"] = serde_json::json!(tool_calls_json);
-                    }
-
-                    messages.push(assistant_msg);
-                }
-                Message::Tool {
-                    tool_call_id,
-                    content,
-                } => {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": content,
-                    }));
-                }
-            }
+    pub(crate) fn build_body(&self, req: &ChatRequest) -> Result<serde_json::Value, ProviderError> {
+        let mut body = crate::wire::encode_openai_chat(req, None, false)?;
+        if req.tools.is_none() {
+            body.as_object_mut().map(|object| object.remove("tools"));
         }
-
-        let mut body = json!({
-            "model": req.model,
-            "messages": messages,
-            "stream": true,
-        });
-
-        if let Some(ref tools) = req.tools {
-            let tool_defs: Vec<serde_json::Value> = tools
-                .iter()
-                .map(|t| {
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters,
-                        }
-                    })
-                })
-                .collect();
-            body["tools"] = json!(tool_defs);
-        }
-
-        if let Some(temp) = req.temperature {
-            body["temperature"] = json!(temp);
-        }
-
-        if let Some(top_p) = req.top_p {
-            body["top_p"] = json!(top_p);
-        }
-
-        if let Some(max) = req.max_tokens {
-            body["max_tokens"] = json!(max);
-        }
-
-        body
+        crate::wire::omit_openai_fields(&mut body, &["response_format", "reasoning_effort"]);
+        body.as_object_mut()
+            .map(|object| object.remove("tool_choice"));
+        Ok(body)
     }
 }
 
@@ -156,7 +46,7 @@ impl Provider for OpencodeZenProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let body = self.build_body(req);
+        let body = self.build_body(req)?;
         let url = format!("{}/chat/completions", self.base_url);
         let api_key = self.api_key.clone();
         let client = self.client.clone();
@@ -203,61 +93,11 @@ impl Provider for OpencodeZenProvider {
         }
 
         let stream = resp.bytes_stream().map_err(ProviderError::from)?;
-        let buffer = String::new();
-
-        tracing::debug!("CodeggZen: starting stream processing");
-
-        Ok(Box::pin(unfold(
-            (stream, buffer),
-            |(mut stream, mut buffer)| async move {
-                loop {
-                    if let Some(event) = parse_openai_buffer(&mut buffer) {
-                        return Some((event, (stream, buffer)));
-                    }
-
-                    if buffer.len() > MAX_BUFFER_SIZE {
-                        tracing::error!("CodeggZen: buffer overflow");
-                        return Some((
-                            Err(ProviderError::Stream(
-                                "response buffer exceeded limit".to_string(),
-                            )),
-                            (stream, buffer),
-                        ));
-                    }
-
-                    // Add a timeout for each chunk to prevent hanging
-                    let chunk_result =
-                        tokio::time::timeout(Duration::from_secs(30), stream.next()).await;
-
-                    let chunk = match chunk_result {
-                        Ok(Some(c)) => c,
-                        Ok(None) => return None,
-                        Err(_) => {
-                            tracing::error!("CodeggZen: stream chunk timeout");
-                            return Some((
-                                Err(ProviderError::Stream("stream chunk timeout".to_string())),
-                                (stream, buffer),
-                            ));
-                        }
-                    };
-
-                    match chunk {
-                        Ok(bytes) => {
-                            let text = String::from_utf8_lossy(&bytes).to_string();
-                            tracing::trace!("CodeggZen: received chunk: {}", text);
-                            buffer.push_str(&text);
-                        }
-                        Err(e) => {
-                            tracing::error!("CodeggZen: stream error: {}", e);
-                            return Some((
-                                Err(ProviderError::Stream(e.to_string())),
-                                (stream, buffer),
-                            ));
-                        }
-                    }
-                }
-            },
-        )))
+        Ok(crate::wire::openai_chat_stream(
+            stream,
+            req.context.wire_policy.clone(),
+            Some(std::time::Duration::from_secs(30)),
+        ))
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {

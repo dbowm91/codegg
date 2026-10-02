@@ -1,18 +1,13 @@
 use crate::auth_types::Credential;
 use crate::error::ProviderError;
-use crate::sse_parser::parse_openai_buffer;
 use crate::{
-    assistant_text_content_value, create_http_client, openai_tool_arguments_value,
-    project_tool_call_history, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
-    ReasoningVisibility, MAX_BUFFER_SIZE,
+    create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
+    ReasoningVisibility,
 };
 use async_trait::async_trait;
-use futures_util::stream::unfold;
-use futures_util::StreamExt;
 use http::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
-use std::sync::LazyLock;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -21,45 +16,6 @@ pub enum ToolChoice {
     Required,
     None,
     Specific(String),
-}
-
-#[derive(Debug, Clone, Default)]
-struct RequestPolicy {
-    reasoning_field: Option<&'static str>,
-    thinking_field: Option<&'static str>,
-    tool_aliases: &'static [(&'static str, &'static str)],
-    argument_aliases: &'static [(&'static str, &'static str, &'static str)],
-}
-
-// This is the bounded wire projection of the declarative adapter contract.
-// It intentionally contains no provider credentials, transport settings, or
-// executable behavior.  Matching is explicit and exclusion-aware; it is not
-// a model-name substring heuristic.
-const LAGUNA_TOOL_ALIASES: &[(&str, &str)] = &[("bash", "shell")];
-const LAGUNA_ARGUMENT_ALIASES: &[(&str, &str, &str)] = &[("shell", "command", "cmd")];
-static LAGUNA_MODEL_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"laguna-(m|xs|s)").expect("built-in adapter regex"));
-static LAGUNA_EXCLUSION_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(base|embed)").expect("built-in adapter exclusion regex"));
-
-fn request_policy(provider: &str, model: &str) -> RequestPolicy {
-    let provider = provider.to_ascii_lowercase();
-    let model = model.to_ascii_lowercase();
-    let supported_provider = matches!(
-        provider.as_str(),
-        "local" | "vllm" | "sglang" | "openai" | "openai-compatible" | "poolside"
-    );
-    let laguna_model = LAGUNA_MODEL_RE.is_match(&model) && !LAGUNA_EXCLUSION_RE.is_match(&model);
-    if supported_provider && laguna_model {
-        RequestPolicy {
-            reasoning_field: Some("reasoning_content"),
-            thinking_field: Some("enable_thinking"),
-            tool_aliases: LAGUNA_TOOL_ALIASES,
-            argument_aliases: LAGUNA_ARGUMENT_ALIASES,
-        }
-    } else {
-        RequestPolicy::default()
-    }
 }
 
 #[derive(Clone)]
@@ -222,134 +178,44 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
-        let adapter = request_policy(&self.id, &request.model);
-        let mut messages: Vec<serde_json::Value> = Vec::new();
-        for msg in project_tool_call_history(&request.messages).iter() {
-            match msg {
-                Message::System { content } => {
-                    messages.push(json!({"role": "system", "content": content}));
-                }
-                Message::User { content } => {
-                    let parts: Vec<serde_json::Value> = content
-                        .iter()
-                        .map(|p| match p {
-                            ContentPart::Text { text } => {
-                                json!({"type": "text", "text": text})
-                            }
-                            ContentPart::Image { image_url } => {
-                                json!({
-                                    "type": "image_url",
-                                    "image_url": {"url": image_url.url}
-                                })
-                            }
-                            ContentPart::Reasoning { .. } => json!(""),
-                        })
-                        .collect();
-                    let content_val = if parts.len() == 1
-                        && parts[0].get("type").and_then(|v| v.as_str()) == Some("text")
-                    {
-                        parts[0].get("text").cloned().unwrap_or(json!(""))
-                    } else {
-                        json!(parts)
-                    };
-                    messages.push(json!({"role": "user", "content": content_val}));
-                }
-                Message::Assistant {
-                    content,
-                    tool_calls,
-                } => {
-                    let content_value = if tool_calls.is_empty() {
-                        assistant_text_content_value(content)
-                    } else {
-                        let text = content
-                            .iter()
-                            .filter_map(|p| match p {
-                                ContentPart::Text { text } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("");
-                        serde_json::Value::String(text)
-                    };
-                    let mut assistant_msg = json!({
-                        "role": "assistant",
-                        "content": content_value,
-                    });
+        self.try_build_body(request).unwrap_or_else(|error| {
+            tracing::error!("shared OpenAI request encoding failed: {}", error);
+            serde_json::Value::Null
+        })
+    }
 
-                    if !tool_calls.is_empty() {
-                        let tool_calls_json: Vec<serde_json::Value> = tool_calls
-                            .iter()
-                            .map(|tc| {
-                                json!({
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": wire_tool_name(&adapter, tc.name.as_str()),
-                                        "arguments": openai_tool_arguments_value(&tc.arguments),
-                                    }
-                                })
-                            })
-                            .collect();
-                        assistant_msg["tool_calls"] = serde_json::json!(tool_calls_json);
-                    }
-
-                    // Laguna's OpenAI-compatible contract requires the
-                    // provider-private reasoning_content field on the next
-                    // assistant turn. Other models must not receive it.
-                    if let Some(reasoning_field) = reasoning_field(&adapter) {
-                        if let Some(reasoning) = content.iter().find_map(|part| match part {
-                            ContentPart::Reasoning { text, visibility }
-                                if *visibility == ReasoningVisibility::Private =>
-                            {
-                                Some(text.as_str())
-                            }
-                            _ => None,
-                        }) {
-                            assistant_msg[reasoning_field] = json!(reasoning);
-                        }
-                    }
-
-                    messages.push(assistant_msg);
-                }
-                Message::Tool {
-                    tool_call_id,
-                    content,
-                } => {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": content,
-                    }));
-                }
-            }
+    fn try_build_body(&self, request: &ChatRequest) -> Result<serde_json::Value, ProviderError> {
+        let adapter = request
+            .context
+            .wire_policy
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        let mut body =
+            crate::wire::encode_openai_chat(request, Some(&self.config.tool_choice), false)?;
+        // The generic compatible contract intentionally did not forward
+        // generation controls; preserve that per M001's provider matrix.
+        crate::wire::omit_openai_fields(
+            &mut body,
+            &[
+                "temperature",
+                "top_p",
+                "max_tokens",
+                "response_format",
+                "reasoning_effort",
+            ],
+        );
+        if request.tools.is_none() {
+            body["tools"] = serde_json::Value::Null;
         }
-
-        let tools_json = request.tools.as_ref().map(|tools| {
-            tools
-                .iter()
-                .map(|tool| {
-                    let mut value = tool.to_openai();
-                    if let Some(function) = value.get_mut("function") {
-                        if let Some(name_value) = function.get_mut("name") {
-                            if let Some(name) = name_value.as_str() {
-                                *name_value = json!(wire_tool_name(&adapter, name));
-                            }
-                        }
-                        if let Some(parameters) = function.get_mut("parameters") {
-                            alias_parameter_properties(&adapter, tool.name.as_str(), parameters);
-                        }
-                    }
-                    value
-                })
-                .collect::<Vec<_>>()
-        });
-
-        let mut body = json!({
-            "model": request.model,
-            "messages": messages,
-            "stream": true,
-            "tools": tools_json,
-        });
+        let has_tools = request
+            .tools
+            .as_ref()
+            .is_some_and(|tools| !tools.is_empty());
+        if !has_tools {
+            body.as_object_mut()
+                .map(|object| object.remove("tool_choice"));
+        }
         if let Some((field, configured_value)) = thinking_transform(&adapter) {
             let value = if configured_value.as_deref() == Some("true") {
                 json!(request.thinking_budget != Some(0))
@@ -360,56 +226,56 @@ impl OpenAiCompatibleProvider {
             };
             body["chat_template_kwargs"] = json!({field: value});
         }
-        let has_tools = request
-            .tools
-            .as_ref()
-            .map(|t| !t.is_empty())
-            .unwrap_or(false);
-        if has_tools {
-            match &self.config.tool_choice {
-                ToolChoice::Auto => {
-                    body["tool_choice"] = json!("auto");
-                }
-                ToolChoice::Required => {
-                    body["tool_choice"] = json!("required");
-                }
-                ToolChoice::None => {
-                    body["tool_choice"] = json!("none");
-                }
-                ToolChoice::Specific(name) => {
-                    body["tool_choice"] = json!({
-                        "type": "function",
-                        "function": {"name": wire_tool_name(&adapter, name)}
-                    });
+        if adapter.include_reasoning_content {
+            let projected_messages = crate::project_tool_call_history(&request.messages);
+            let reasoning = projected_messages
+                .iter()
+                .filter_map(|message| match message {
+                    Message::Assistant { content, .. } => {
+                        Some(content.iter().find_map(|part| match part {
+                            ContentPart::Reasoning {
+                                text,
+                                visibility: ReasoningVisibility::Private,
+                            } => Some(text.as_str()),
+                            _ => None,
+                        }))
+                    }
+                    _ => None,
+                });
+            if let Some(messages) = body["messages"].as_array_mut() {
+                for (message, reasoning) in messages
+                    .iter_mut()
+                    .filter(|message| message["role"] == "assistant")
+                    .zip(reasoning)
+                {
+                    if let Some(reasoning) = reasoning {
+                        message["reasoning_content"] = json!(reasoning);
+                    }
                 }
             }
         }
-
-        body
+        apply_policy_aliases(&mut body, &adapter);
+        Ok(body)
     }
 }
 
-fn reasoning_field(adapter: &RequestPolicy) -> Option<&str> {
-    adapter.reasoning_field
-}
-
-fn thinking_transform(adapter: &RequestPolicy) -> Option<(&str, Option<String>)> {
+fn thinking_transform(adapter: &crate::ProviderWirePolicy) -> Option<(&str, Option<String>)> {
     adapter
-        .thinking_field
-        .map(|field| (field, Some("true".to_string())))
+        .enable_thinking
+        .map(|enabled| ("enable_thinking", Some(enabled.to_string())))
 }
 
-fn wire_tool_name(adapter: &RequestPolicy, name: &str) -> String {
+fn wire_tool_name(adapter: &crate::ProviderWirePolicy, name: &str) -> String {
     adapter
         .tool_aliases
-        .iter()
-        .find_map(|(canonical, wire)| (*canonical == name).then_some(*wire))
+        .get(name)
+        .map(String::as_str)
         .unwrap_or(name)
         .to_string()
 }
 
 fn alias_parameter_properties(
-    adapter: &RequestPolicy,
+    adapter: &crate::ProviderWirePolicy,
     tool_name: &str,
     parameters: &mut serde_json::Value,
 ) {
@@ -420,42 +286,70 @@ fn alias_parameter_properties(
     else {
         return;
     };
-    for (alias_tool, canonical, wire) in adapter.argument_aliases {
-        if *alias_tool != wire_name {
-            continue;
-        }
-        if let Some(schema) = properties.remove(*canonical) {
-            properties.insert((*wire).to_string(), schema);
+    if let Some(aliases) = adapter.argument_aliases.get(&wire_name) {
+        for (canonical, wire) in aliases {
+            if let Some(schema) = properties.remove(canonical) {
+                properties.insert(wire.clone(), schema);
+            }
         }
     }
 }
 
-fn normalize_openai_event(
-    event: Result<crate::ChatEvent, ProviderError>,
-    adapter: &RequestPolicy,
-) -> Option<Result<crate::ChatEvent, ProviderError>> {
-    match event {
-        Ok(crate::ChatEvent::ReasoningDelta(_)) if reasoning_field(adapter).is_none() => None,
-        Ok(crate::ChatEvent::ToolCall(mut call)) => {
-            let wire_name = call.name.to_string();
-            let canonical_name = adapter
-                .tool_aliases
-                .iter()
-                .find_map(|(canonical, wire)| (*wire == wire_name).then_some(*canonical))
-                .unwrap_or(wire_name.as_str());
-            if let Some(args) = call.arguments.as_object_mut() {
-                for (tool, canonical, wire) in adapter.argument_aliases {
-                    if *tool == wire_name {
-                        if let Some(value) = args.remove(*wire) {
-                            args.insert((*canonical).to_string(), value);
+fn apply_policy_aliases(body: &mut serde_json::Value, adapter: &crate::ProviderWirePolicy) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    if let Some(tools) = object
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for tool in tools {
+            let Some(function) = tool.get_mut("function") else {
+                continue;
+            };
+            if let Some(name) = function
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            {
+                function["name"] = json!(wire_tool_name(adapter, &name));
+                if let Some(parameters) = function.get_mut("parameters") {
+                    alias_parameter_properties(adapter, &name, parameters);
+                }
+            }
+        }
+    }
+    if let Some(messages) = object
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for message in messages {
+            if let Some(calls) = message
+                .get_mut("tool_calls")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for call in calls {
+                    if let Some(function) = call.get_mut("function") {
+                        if let Some(name) = function
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                        {
+                            function["name"] = json!(wire_tool_name(adapter, &name));
                         }
                     }
                 }
             }
-            call.name = canonical_name.to_string().into();
-            Some(Ok(crate::ChatEvent::ToolCall(call)))
         }
-        other => Some(other),
+    }
+    if let Some(choice) = object.get_mut("tool_choice") {
+        if let Some(name) = choice
+            .pointer("/function/name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        {
+            choice["function"]["name"] = json!(wire_tool_name(adapter, &name));
+        }
     }
 }
 
@@ -471,7 +365,7 @@ impl Provider for OpenAiCompatibleProvider {
 
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let url = format!("{}/chat/completions", self.config.base_url);
-        let body = self.build_body(request);
+        let body = self.try_build_body(request)?;
 
         if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
             let body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
@@ -577,80 +471,18 @@ impl Provider for OpenAiCompatibleProvider {
         }
 
         let stream = resp.bytes_stream().map_err(ProviderError::from)?;
-        let buffer = String::new();
-        let provider_name = self.name.clone();
-        let adapter = request_policy(&self.id, &request.model);
-
-        tracing::debug!("{}: starting stream processing", provider_name);
-
-        Ok(Box::pin(unfold(
-            (stream, buffer),
-            move |(mut stream, mut buffer)| {
-                let provider_name = provider_name.clone();
-                let adapter = adapter.clone();
-                async move {
-                    loop {
-                        if let Some(event) = parse_openai_buffer(&mut buffer) {
-                            if let Some(event) = normalize_openai_event(event, &adapter) {
-                                return Some((event, (stream, buffer)));
-                            }
-                            continue;
-                        }
-
-                        if buffer.len() > MAX_BUFFER_SIZE {
-                            tracing::error!("{}: response buffer exceeded limit", provider_name);
-                            return Some((
-                                Err(ProviderError::Stream(
-                                    "response buffer exceeded limit".to_string(),
-                                )),
-                                (stream, buffer),
-                            ));
-                        }
-
-                        // Add a timeout for each chunk to prevent hanging
-                        let chunk_result =
-                            tokio::time::timeout(Duration::from_secs(30), stream.next()).await;
-
-                        let chunk = match chunk_result {
-                            Ok(Some(c)) => c,
-                            Ok(None) => {
-                                if buffer.is_empty() {
-                                    return None;
-                                }
-                                if let Some(event) = parse_openai_buffer(&mut buffer) {
-                                    if let Some(event) = normalize_openai_event(event, &adapter) {
-                                        return Some((event, (stream, buffer)));
-                                    }
-                                }
-                                return None;
-                            }
-                            Err(_) => {
-                                tracing::error!("{}: stream chunk timeout", provider_name);
-                                return Some((
-                                    Err(ProviderError::Stream("stream chunk timeout".to_string())),
-                                    (stream, buffer),
-                                ));
-                            }
-                        };
-
-                        match chunk {
-                            Ok(bytes) => {
-                                let text = String::from_utf8_lossy(&bytes).to_string();
-                                tracing::trace!("{}: received chunk: {}", provider_name, text);
-                                buffer.push_str(&text);
-                            }
-                            Err(e) => {
-                                tracing::error!("{} stream error: {}", provider_name, e);
-                                return Some((
-                                    Err(ProviderError::Stream(e.to_string())),
-                                    (stream, buffer),
-                                ));
-                            }
-                        }
-                    }
-                }
-            },
-        )))
+        let wire_policy = Some(
+            request
+                .context
+                .wire_policy
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::new(crate::ProviderWirePolicy::default())),
+        );
+        Ok(crate::wire::openai_chat_stream(
+            stream,
+            wire_policy,
+            Some(Duration::from_secs(30)),
+        ))
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
@@ -819,6 +651,7 @@ mod tests {
             reasoning_effort: None,
             context: ProviderRequestContext {
                 session_id: session_id.map(Arc::from),
+                ..Default::default()
             },
         }
     }

@@ -1,13 +1,6 @@
 use crate::error::ProviderError;
-use crate::sse_parser::parse_anthropic_buffer_with_state;
-use crate::{
-    create_http_client, project_tool_call_history, ChatRequest, ContentPart, EventStream, Message,
-    ModelInfo, Provider, MAX_BUFFER_SIZE,
-};
+use crate::{create_http_client, ChatRequest, EventStream, ModelInfo, Provider};
 use async_trait::async_trait;
-use futures_util::stream::unfold;
-use futures_util::StreamExt;
-use serde_json::json;
 
 #[derive(Clone)]
 pub struct AnthropicProvider {
@@ -52,132 +45,41 @@ impl AnthropicProvider {
     }
 
     pub fn build_body(&self, req: &ChatRequest) -> serde_json::Value {
-        let mut messages: Vec<serde_json::Value> = Vec::new();
+        self.try_build_body(req)
+            .unwrap_or_else(|_| serde_json::Value::Null)
+    }
 
-        for msg in project_tool_call_history(&req.messages).iter() {
-            match msg {
-                Message::System { content: _ } => {}
-                Message::User { content } => {
-                    let parts: Vec<serde_json::Value> = content
-                        .iter()
-                        .map(|p| match p {
-                            ContentPart::Text { text } => {
-                                json!({"type": "text", "text": text})
-                            }
-                            ContentPart::Image { image_url } => {
-                                let (media_type, data) = parse_image_url(&image_url.url);
-                                json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": data,
-                                    }
-                                })
-                            }
-                            ContentPart::Reasoning { .. } => json!({"type": "text", "text": ""}),
-                        })
-                        .collect();
-                    messages.push(json!({"role": "user", "content": parts}));
-                }
-                Message::Assistant {
-                    content,
-                    tool_calls,
-                } => {
-                    let mut parts: Vec<serde_json::Value> = content
-                        .iter()
-                        .map(|p| match p {
-                            ContentPart::Text { text } => {
-                                json!({"type": "text", "text": text})
-                            }
-                            ContentPart::Image { image_url } => {
-                                let (media_type, data) = parse_image_url(&image_url.url);
-                                json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": data,
-                                    }
-                                })
-                            }
-                            ContentPart::Reasoning { .. } => json!({"type": "text", "text": ""}),
-                        })
-                        .collect();
-
-                    for tc in tool_calls {
-                        parts.push(json!({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": tc.arguments,
-                        }));
-                    }
-
-                    messages.push(json!({"role": "assistant", "content": parts}));
-                }
-                Message::Tool {
-                    tool_call_id,
-                    content,
-                } => {
-                    messages.push(json!({
-                        "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": tool_call_id,
-                            "content": content,
-                        }]
-                    }));
+    fn try_build_body(&self, req: &ChatRequest) -> Result<serde_json::Value, ProviderError> {
+        let mut canonical = crate::wire::canonical_request(req, None);
+        if let Some(system) = req.system.as_deref().filter(|_| {
+            !canonical
+                .messages
+                .iter()
+                .any(|message| message.role == eggpool_wire::ir::CanonicalRole::System)
+        }) {
+            canonical
+                .messages
+                .insert(0, crate::wire::system_message(system));
+        }
+        let mut body = crate::wire::encode(
+            &canonical,
+            eggpool_wire::profile::WireSurface::AnthropicMessages,
+            false,
+        )?;
+        // CodeGG's established Messages contract always represents message
+        // content as typed blocks, even when the shared codec can compact text.
+        if let Some(messages) = body
+            .get_mut("messages")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for message in messages {
+                if let Some(text) = message.get("content").and_then(serde_json::Value::as_str) {
+                    message["content"] = serde_json::json!([{"type":"text", "text":text}]);
                 }
             }
         }
-
-        let mut body = json!({
-            "model": req.model,
-            "messages": messages,
-            "stream": true,
-        });
-
-        if let Some(ref system) = req.system {
-            body["system"] = json!([{"type": "text", "text": system}]);
-        }
-
-        if let Some(ref tools) = req.tools {
-            let tool_defs: Vec<serde_json::Value> =
-                tools.iter().map(|t| t.to_anthropic()).collect();
-            body["tools"] = json!(tool_defs);
-        }
-
-        if let Some(temp) = req.temperature {
-            body["temperature"] = json!(temp);
-        }
-
-        if let Some(top_p) = req.top_p {
-            body["top_p"] = json!(top_p);
-        }
-
-        if let Some(max) = req.max_tokens {
-            body["max_tokens"] = json!(max);
-        }
-
-        if let Some(budget) = req.thinking_budget {
-            body["thinking"] = serde_json::json!({
-                "type": "enabled",
-                "budget_tokens": budget
-            });
-        }
-
-        body
+        Ok(body)
     }
-}
-
-fn parse_image_url(url: &str) -> (String, String) {
-    if let Some(data) = url.strip_prefix("data:") {
-        if let Some((media, rest)) = data.split_once(";base64,") {
-            return (media.to_string(), rest.to_string());
-        }
-    }
-    ("image/png".to_string(), url.to_string())
 }
 
 #[async_trait]
@@ -195,7 +97,7 @@ impl Provider for AnthropicProvider {
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let body = self.build_body(req);
+        let body = self.try_build_body(req)?;
         let url = format!("{}/v1/messages", self.base_url);
         let api_key = self.api_key.clone();
         let client = self.client.clone();
@@ -229,59 +131,12 @@ impl Provider for AnthropicProvider {
         }
 
         let stream = resp.bytes_stream().map_err(ProviderError::from)?;
-        let buffer = String::new();
-        let current_tool: Option<(String, String, String)> = None;
-        let args_buffer = String::new();
-
-        Ok(Box::pin(unfold(
-            (stream, buffer, current_tool, args_buffer),
-            |(mut stream, mut buffer, mut current_tool, mut args_buffer)| async move {
-                loop {
-                    if let Some(event) = parse_anthropic_buffer_with_state(
-                        &mut buffer,
-                        &mut current_tool,
-                        &mut args_buffer,
-                    ) {
-                        return Some((event, (stream, buffer, current_tool, args_buffer)));
-                    }
-
-                    let chunk = stream.next().await;
-                    match chunk {
-                        Some(Ok(bytes)) => {
-                            let text = String::from_utf8_lossy(&bytes).to_string();
-                            buffer.push_str(&text);
-                            if buffer.len() > MAX_BUFFER_SIZE {
-                                return Some((
-                                    Err(ProviderError::Stream(
-                                        "response buffer exceeded limit".to_string(),
-                                    )),
-                                    (stream, buffer, current_tool, args_buffer),
-                                ));
-                            }
-                        }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(ProviderError::Stream(e.to_string())),
-                                (stream, buffer, current_tool, args_buffer),
-                            ));
-                        }
-                        None => {
-                            if buffer.is_empty() {
-                                return None;
-                            }
-                            if let Some(event) = parse_anthropic_buffer_with_state(
-                                &mut buffer,
-                                &mut current_tool,
-                                &mut args_buffer,
-                            ) {
-                                return Some((event, (stream, buffer, current_tool, args_buffer)));
-                            }
-                            return None;
-                        }
-                    }
-                }
-            },
-        )))
+        Ok(crate::wire::shared_stream(
+            stream,
+            eggpool_wire::codec::StreamAdapterKind::AnthropicMessagesSse,
+            None,
+            req.context.wire_policy.clone(),
+        ))
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {

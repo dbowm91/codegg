@@ -194,6 +194,14 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
 - **Tool aliases are bidirectional**: The resolver keeps both directions
   so provider wire calls can be normalized to canonical names before
   permission and broker execution.
+- **Provider wire policy is projected once**: The owning CodeGG layer copies
+  aliases, argument aliases, and explicitly declared private-reasoning
+  permission into `ProviderRequestContext.wire_policy`. Provider modules
+  consume this bounded value and do not independently match model names.
+  Standard OpenAI Chat, Anthropic Messages, and Gemini GenerateContent
+  encoding/stream decoding use `codegg-providers::wire`. OpenAI-compatible
+  aliases are restored before tool authorization, and private reasoning
+  round-trip/output remains gated by the resolved policy.
 - **Text tool repair is model-specific**: Controlled by adapter; never
   a generic text-to-action parser.
 

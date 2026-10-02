@@ -1503,6 +1503,7 @@ async fn execute_agent_task(
             session_id: Some(std::sync::Arc::from(
                 subagent_session_id_for_context.as_str(),
             )),
+            ..Default::default()
         },
     };
 

@@ -1,8 +1,8 @@
 # Provider Wire-Kernel Consolidation Milestone 003 — Anthropic/Gemini Cutover and Wire Retirement
 
-Status: blocked
+Status: implemented
 
-Repository baseline: `daaed6cee4697f7f565084e44629e186a941f093`
+Repository baseline: `dcea3ea`
 
 Source roadmap:
 
@@ -25,7 +25,7 @@ Finish shared-wire consolidation by moving Anthropic-compatible and native Googl
 
 ## 2. Why this milestone is ready
 
-Blocked on M002 closure. M002 must prove the shared production transport/bridge seam and leave the upstream pin/policy mapping stable.
+M002 is closed at `plans/closure/provider-wire-kernel-consolidation/002-status.md`. Its production cutover proves the shared transport/bridge seam, and the upstream pin and CodeGG policy projection remain stable.
 
 ## 3. Current implementation evidence
 
@@ -34,7 +34,7 @@ At the pre-cutover baseline:
 - `anthropic.rs` manually builds Messages requests and decodes Anthropic SSE through CodeGG parser state.
 - MiniMax uses an Anthropic-compatible endpoint through a dedicated factory/auth contract.
 - `google.rs` manually constructs `contents`, `functionCall`/`functionResponse`, generation config, multimodal image payloads, and its own SSE parser.
-- `sse_parser.rs` carries OpenAI and Anthropic parsing/argument accumulation.
+- After M002, `sse_parser.rs` is Anthropic-only; OpenAI parsing has been retired.
 - `bedrock.rs` owns AWS SigV4 + ConverseStream syntax and must remain specialized.
 - `responses_api.rs` owns hosted-program/continuation semantics above ordinary stateless wire translation and must remain specialized.
 

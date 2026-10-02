@@ -298,6 +298,7 @@ pub(crate) fn provider_request_context(
 
     ProviderRequestContext {
         session_id: Some(session_id),
+        ..Default::default()
     }
 }
 

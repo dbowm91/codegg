@@ -1033,6 +1033,7 @@ impl AgentLoop {
             provider: Some(self.services.provider.as_ref()),
             provider_context: ProviderRequestContext {
                 session_id: Some(Arc::from(self.session_id.as_str())),
+                ..Default::default()
             },
             cancellation: None,
             baseline: Some(&baseline_snapshot),
@@ -1431,6 +1432,7 @@ impl AgentLoop {
                 provider: Some(self.services.provider.as_ref()),
                 provider_context: ProviderRequestContext {
                     session_id: Some(Arc::from(self.session_id.as_str())),
+                    ..Default::default()
                 },
                 cancellation: None,
                 baseline: Some(&fresh_snapshot),

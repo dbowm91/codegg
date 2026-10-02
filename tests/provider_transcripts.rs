@@ -258,6 +258,28 @@ mod tests {
     }
 
     #[test]
+    fn gemini_request_uses_shared_generate_content_contract() {
+        use codegg::provider::google::GoogleProvider;
+
+        let mut request = make_chat_request(vec![Message::User {
+            content: vec![text_content("inspect this")],
+        }]);
+        request.model = "gemini-test".into();
+        request.max_tokens = Some(321);
+        request.temperature = Some(0.25);
+        let body = GoogleProvider::new("test-key".into()).build_body(&request);
+
+        assert_eq!(body["contents"][0]["role"], "user");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "inspect this");
+        assert_eq!(
+            body["tools"][0]["function_declarations"][0]["name"],
+            "echo_args"
+        );
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 321);
+        assert_eq!(body["generationConfig"]["temperature"], 0.25);
+    }
+
+    #[test]
     fn test_anthropic_serialize_tool_result() {
         use codegg::provider::anthropic::AnthropicProvider;
 
@@ -619,7 +641,7 @@ mod tests {
             text: text.to_string().into(),
             visibility: ReasoningVisibility::Private,
         };
-        let request = ChatRequest {
+        let mut request = ChatRequest {
             messages: vec![
                 Message::User {
                     content: vec![text_content("Run uname")],
@@ -645,6 +667,18 @@ mod tests {
             reasoning_effort: None,
             context: Default::default(),
         };
+        request.context.wire_policy =
+            Some(std::sync::Arc::new(codegg::provider::ProviderWirePolicy {
+                tool_aliases: std::collections::BTreeMap::from([("bash".into(), "shell".into())]),
+                argument_aliases: std::collections::BTreeMap::from([(
+                    "shell".into(),
+                    std::collections::BTreeMap::from([("command".into(), "cmd".into())]),
+                )]),
+                allow_private_reasoning_round_trip: true,
+                include_reasoning_content: true,
+                enable_thinking: Some(true),
+                ..Default::default()
+            }));
         let body = provider.build_body(&request);
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
@@ -683,7 +717,7 @@ mod tests {
                 }],
                 tool_calls: vec![],
             }],
-            model: "qwen3".to_string(),
+            model: "poolside/Laguna-M.1".to_string(),
             ..make_chat_request(Vec::new())
         };
         let message = &provider.build_body(&request)["messages"][0];

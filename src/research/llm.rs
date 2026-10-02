@@ -139,6 +139,7 @@ pub fn provider_context_for_run(run_id: &str) -> ProviderRequestContext {
 
     ProviderRequestContext {
         session_id: Some(session_id.into()),
+        ..Default::default()
     }
 }
 

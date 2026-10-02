@@ -9,6 +9,7 @@ homepage.workspace = true
 description = "LLM provider implementations for codegg"
 
 [dependencies]
+eggpool-wire = { git = "https://github.com/eggstack/eggpool", rev = "f05b18b7358d9a4125d1e20c491151eec265e403" }
 codegg-config.workspace = true
 async-trait.workspace = true
 bytes = "1"

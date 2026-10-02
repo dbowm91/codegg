@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
@@ -213,6 +214,24 @@ pub struct ProviderRequestContext {
     /// This is deliberately narrower than a header map: providers may use it
     /// only for an explicitly configured transport policy.
     pub session_id: Option<Arc<str>>,
+    /// Immutable, conservative model-adapter projection for provider wire
+    /// encoding. It carries no endpoint, credential, or arbitrary headers.
+    pub wire_policy: Option<Arc<ProviderWirePolicy>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProviderWirePolicy {
+    /// Canonical tool name to provider wire name.
+    pub tool_aliases: BTreeMap<String, String>,
+    /// Wire tool name to canonical argument name to wire argument name.
+    pub argument_aliases: BTreeMap<String, BTreeMap<String, String>>,
+    /// Whether private provider reasoning may round-trip in assistant history.
+    pub allow_private_reasoning_round_trip: bool,
+    /// Closed Laguna-compatible reasoning parameter projection.
+    pub include_reasoning_content: bool,
+    pub enable_thinking: Option<bool>,
+    pub tool_choice: Option<String>,
+    pub max_parallel_tools: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

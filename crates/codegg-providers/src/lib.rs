@@ -30,9 +30,9 @@ pub mod openrouter;
 pub mod responses_api;
 pub mod retry;
 pub mod setup_catalog;
-pub mod sse_parser;
 pub mod text_tool_parser;
 pub mod vertex;
+pub mod wire;
 
 pub use auth_types::{
     incompatible_credential_message, mask_secret, AuthConfig, AuthError, AuthResolver, Credential,
@@ -57,8 +57,9 @@ pub use provider_core::{
     credential_capability_for, openai_tool_arguments_value, project_tool_call_history,
     register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
     EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
-    ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ReasoningVisibility,
-    ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE, MAX_REASONING_BYTES,
+    ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ProviderWirePolicy,
+    ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
+    MAX_REASONING_BYTES,
 };
 pub use responses_api::{
     filter_artifacts_for_provider, validate_arguments, validate_call_count, validate_result_size,
