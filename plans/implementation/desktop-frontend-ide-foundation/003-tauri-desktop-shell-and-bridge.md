@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 003 — Tauri Desktop Shell and Secure Bridge
 
-Status: active
+Status: closing
 
 Repository baseline: `86898d1f2bcd9f179c8354ebb4c11a04eed73ac6`
 
