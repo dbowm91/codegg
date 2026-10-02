@@ -1100,7 +1100,19 @@ async fn cleanup_projection_state(
         (cancellation, subscriptions)
     };
 
-    cancellation.cancel();
+    // Fire the connection-level cancellation only when subscriptions were
+    // actually removed. A hello-time capability downgrade on a fresh
+    // connection removes nothing; cancelling here would permanently break
+    // `bounded_critical_delivery` for that connection, so clients that
+    // truthfully declare no session-projection support (e.g. the desktop
+    // GUI before M004) could handshake but never complete a request.
+    // Connection teardown already cancels through its own token before
+    // calling this helper, so skipping the redundant fire when empty
+    // changes nothing there. Each removed subscription is still
+    // individually cancelled, aborted, and joined below.
+    if !subscriptions.is_empty() {
+        cancellation.cancel();
+    }
     let ids = subscriptions
         .iter()
         .map(|(subscription_id, _)| subscription_id.clone())
@@ -1337,6 +1349,29 @@ mod tests {
     #[test]
     fn listener_rejects_nonlocal_endpoint_schemes() {
         assert!(bind_listener(Path::new("tcp://127.0.0.1:9000")).is_err());
+    }
+
+    #[tokio::test]
+    async fn hello_downgrade_cleanup_preserves_live_connection() {
+        // Regression for the desktop C001 live-qualification finding: a
+        // hello-time capability downgrade on a fresh connection removed no
+        // subscriptions, but `cleanup_projection_state` still fired the
+        // connection-level cancellation. Every later critical response
+        // delivery then failed with `Cancelled`, so GUI clients that
+        // truthfully declare no session-projection support could handshake
+        // but never complete a request.
+        use super::super::projection::ProjectionConnectionState;
+        let state = Arc::new(Mutex::new(ProjectionConnectionState::new(
+            "connection-test",
+        )));
+        let token = state.lock().await.cancellation();
+        assert!(!token.is_cancelled());
+        let removed = cleanup_projection_state(&state).await;
+        assert!(removed.is_empty());
+        assert!(
+            !token.is_cancelled(),
+            "empty cleanup must not cancel the live connection"
+        );
     }
     use crate::protocol::core::{CoreEvent, EventEnvelope, PROTOCOL_VERSION};
     use std::time::Duration;

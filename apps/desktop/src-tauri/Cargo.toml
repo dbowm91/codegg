@@ -17,7 +17,7 @@ codegg-client = { path = "../../../crates/codegg-client" }
 codegg-protocol = { path = "../../../crates/codegg-protocol" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.12", features = [] }
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

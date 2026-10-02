@@ -9,10 +9,11 @@ pub struct ConnectionSnapshot {
     pub uptime_seconds: Option<u64>,
     pub active_sessions: Option<usize>,
     pub error: Option<String>,
+    pub connection_generation: u64,
 }
 
 impl ConnectionSnapshot {
-    pub fn disconnected(error: Option<String>) -> Self {
+    pub fn disconnected(error: Option<String>, connection_generation: u64) -> Self {
         Self {
             state: "disconnected".into(),
             daemon_id: None,
@@ -20,6 +21,7 @@ impl ConnectionSnapshot {
             uptime_seconds: None,
             active_sessions: None,
             error,
+            connection_generation,
         }
     }
 }
@@ -38,4 +40,11 @@ pub struct DesktopEvent {
     pub version: u8,
     pub event_seq: u64,
     pub kind: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionInfo {
+    pub subscription_id: String,
+    pub connection_generation: u64,
 }

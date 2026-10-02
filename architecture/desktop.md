@@ -22,13 +22,29 @@ renderer does not access the local daemon transport or accept a raw
 
 ## Bridge
 
-The Rust host owns one optional `LocalSocketClient`. Its narrow commands are
-`desktop_connect`, `desktop_connection_snapshot`, `desktop_project_list`,
-`desktop_subscribe_events`, and `desktop_disconnect`. Project lists request at
-most 50 active projects. A single bounded `codegg-client` subscription is
-filtered to project catalog invalidations and forwarded through a Tauri IPC
-`Channel`, retaining daemon event sequence numbers. Closing the window drops
-host-owned client state; it does not stop the daemon or its work.
+The Rust host owns one optional `LocalSocketClient` plus one explicit
+connection generation and at most one project-event subscription for that
+generation. Its narrow commands are `desktop_connect`,
+`desktop_connection_snapshot`, `desktop_project_list`,
+`desktop_subscribe_events`, `desktop_unsubscribe_events`, and
+`desktop_disconnect`. `desktop_subscribe_events` returns
+`{ subscriptionId, connectionGeneration }`; the forwarder task is stored in a
+`SubscriptionRegistry` (`apps/desktop/src-tauri/src/lifecycle.rs`) and is
+cancelled/joined on replace, unsubscribe, disconnect, or reconnect. Terminal
+cleanup clears the stored owner only when the exiting subscription id still
+matches, so a stale task can never clear a newer subscription. `Channel` send
+failure, event-stream close, and generation mismatch all exit through that
+compare-by-id path. Failed reconnects preserve the current connection and
+never fabricate a newer generation; successful reconnects cancel the stale
+forwarder before installing the new client and bumping the renderer-visible
+`connectionGeneration`. Renderer cleanup always invokes Rust unsubscribe, and
+the React subscription effect is keyed on `connectionGeneration` rather than
+only `connection.state`, so a connected -> connected reconnect re-subscribes.
+Project lists request at most 50 active projects. A single bounded
+`codegg-client` subscription is filtered to project catalog invalidations and
+forwarded through a Tauri IPC `Channel`, retaining daemon event sequence
+numbers. Closing the window drops host-owned client state; it does not stop
+the daemon or its work.
 
 Bridge DTOs are intentionally small: daemon connection state, project display
 summary, and versioned project-catalog invalidation. `npm run bindings:check`

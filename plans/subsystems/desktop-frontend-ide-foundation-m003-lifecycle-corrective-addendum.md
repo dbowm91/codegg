@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — M003 Lifecycle Corrective Addendum
 
-Status: active
+Status: active (C001 conditionally closed; strict closure awaits the visible-window run)
 
 Repository baseline reviewed: `82e289db90c4c7981524b4291986af39a7f881ea`
 
@@ -269,4 +269,4 @@ Stop and register a new plan/ADR if:
 
 | Corrective | Status | Implementation plan | Blocker |
 |---|---|---|---|
-| C001 desktop connection/subscription lifecycle + qualification | ready | `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md` | M003 implementation exists; no code dependency blocker. Display-backed host required for final strict closure evidence. |
+| C001 desktop connection/subscription lifecycle + qualification | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`). Ownership repair + live command-level qualification landed; only the visible-window interaction run remains for strict M003. |
