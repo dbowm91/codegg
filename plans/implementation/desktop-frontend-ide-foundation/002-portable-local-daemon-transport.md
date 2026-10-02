@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 002 — Portable Local Daemon Transport
 
-Status: active
+Status: closing
 
 Repository baseline: `48d274c5ada12568e8683dcbe60f79fbaee3d900`
 
