@@ -241,10 +241,47 @@ qualification (56) split, exact metric formulas with tie-breaking, and the
  promotion 3, p95 ~0.03 ms. Positive M002 unblocks M004 observe integration
  and the optional M003 effect-path experiment.
 
+## Causal frontier experiment (M003 structured effect-path frontier)
+
+M003 tests a bounded effect-path refinement over the positive M002
+admissibility frontier, running only when CodeGG already holds an explicit
+structured desired outcome. Demand comes from typed host state alone:
+frozen benchmark `desired_outcome` pairs validated against the
+TestJob/Commit/Artifact/DelegatedRun-or-AgentRun mapping (plus unmet
+acceptance derivation and explicitly armed preview-apply state at runtime).
+Free-form prose is never consulted — a case whose rationale mentions
+"test" but carries no typed demand abstains to M002 unchanged.
+
+The planner (`find_minimal_effect_path` /
+`plan_effect_path` in `src/tool_advisor/causal_frontier.rs`) treats
+admissible contracted tools as directed transitions from current facts to
+declared outcomes: breadth-first enumeration, maximum depth 3, no repeated
+tool per path, no cycle expansion, deterministic lexicographic tie-break
+after path length, no probabilistic score. Unknown/uncontracted tools are
+outside the graph and stay fallback-discoverable. A path is advisory only.
+
+Integrity: the effect-catalog fingerprint binds every pilot contract to
+its live tool implementation id/version and input-schema fingerprint
+(session-gated tools resolve through lazily constructed handles; no I/O),
+so implementation or schema drift fails closed to the M002 fallback. No
+external/MCP contract participates; no tool output can rewrite a
+contract; every result carries per-tool contract provenance.
+
+Measured M003 outcome on the 54 frozen structured-demand cases (dev 36 /
+qual 18): disposition D (negative) — every demand finds a length-1 path
+and the caller-visible median drops from 3 to 1 (reduction gate passes),
+premature exposure stays 0, authority/fallback invariants hold, p95
+~0.05 ms, but narrowing to demand producers hides plan/goal-state gold
+tools (qual preservation 0.41, 32 false exclusions, 4 of 5 families lose
+gold; only `artifact_recovery` preserves fully). The machine-readable
+receipt (`assets/tool-advisor/causal-frontier-m003-result.json`) is
+verified by test against live recomputation. M003 closes negative, so
+M004 observe integration selects the positive M002 frontier.
+
  ## Causal frontier experiment (M004 observe-mode runtime integration)
 
- M004 integrates the selected frontier (M002 — M003 has not closed
- positively) into real request preparation in **observe-only** mode
+ M004 integrates the selected frontier (M002 — M003 closed negative with
+ disposition D) into real request preparation in **observe-only** mode
  (`src/tool_advisor/causal_observe.rs`). After final `ResolvedToolSurface`
  resolution and before provider definitions are finalized,
  `AgentLoop::build_tool_definitions` evaluates the frontier over the

@@ -40,7 +40,7 @@ Positive M004 unblocks M005 to ready.
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| Objective/selected frontier (§1) | M002 disposition A (`002-status.md`); M003 still active without a positive close, so M004 evaluates the M002 frontier | pass | Replay test pins receipt `disposition == "A"` and live catalog fingerprint equality |
+| Objective/selected frontier (§1) | M002 disposition A (`002-status.md`); M003 closed negative with disposition D (`003-status.md`, merged concurrently — factual correction to this row), so M004 evaluates the M002 frontier | pass | Replay test pins receipt `disposition == "A"` and live catalog fingerprint equality |
 | Integration seam (§2) | Hook in `AgentLoop::build_tool_definitions` after `surface.definitions()` (request_preparation.rs), before deferral partitioning; `evaluate_observe(&surface, …)` borrows | pass | Live delta test proves byte-identical definitions |
 | Configuration (§3) | `ToolAdvisorCausalFrontierConfig { mode }` (`off` default), `[tool_advisor.causal_frontier]`; no active/promote mode; omission ≡ main | pass | `frontier_mode_parses_default_off` (+ unknown → off); off session records nothing in the live test |
 | Runtime diagnostics (§4) | `CausalObserveOutcome`: three fingerprints, four counts, canonical-name sets, latency, fallback reason; `tracing::debug!` only; promotion names only under debug | pass | No prompts/args/outputs/contents/secrets in the struct by construction |
@@ -195,8 +195,10 @@ disclosure + trajectory qualification) moves from `blocked` (requires
 positive M004) to `ready` in the same commit: only a disposition-A
 successor can satisfy its historical positive-successor dependency, and
 this closure is that successor. The optional M003 effect-path experiment
-stays `active` and independent: a negative M003 leaves M002 as the M005
-candidate per the roadmap. No corrective pass is required.
+closed negative with disposition D (`003-status.md`, merged concurrently —
+factual correction: it was still `active` when this record was written),
+confirming M002 as the M005 candidate per the roadmap. No corrective pass
+is required.
 
 ## 12. Registry updates
 
@@ -206,7 +208,9 @@ candidate per the roadmap. No corrective pass is required.
   `ResolvedToolSurface`, config surface — are stable).
 - Active roadmaps table: causal-frontier row current milestone → "M001
   closed (positive); M002 closed (A); M003 active (optional); M004 closed
-  (positive); M005 ready".
+  (positive); M005 ready" (as of this commit; since advanced — M003
+  closed D and M005 closed B in their own records, and the roadmap now
+  reads all-closed).
 - Blocked-work audit: M005 was the only plan gated on M004; it is now
   ready. Order-invariance M005, retrieval-signal M004/M005, and
   late-interaction M002–M005 stay blocked/terminal on their own

@@ -187,7 +187,8 @@ input can steer promotion beyond contract admissibility.
 
 - Implementation plan status → implemented (this commit).
 - Subsystem roadmap M005 section → closed (disposition B); workstream
-  stays active only via the independent optional M003.
+  stays active only via the independent optional M003 (which
+  subsequently closed negative — D, `003-status.md`).
 - `plans/registry.md` causal-frontier rows (this commit).
 - `architecture/tool-advisor.md` gains the M005 bounded-active-
   disclosure section (implementation commit `019bf326`).
@@ -225,9 +226,10 @@ qualification — and none is claimed. Consequences:
   harness (all pinned by hash), but it must re-freeze the downstream
   model/provider set per plan §2 — no threshold tuning after trajectories
   begin.
-- The optional M003 effect-path experiment stays `active` and
-  independent. No corrective pass is required: structural qualification
-  is positive with zero correctness findings.
+- The optional M003 effect-path experiment subsequently closed negative
+  with disposition D (`003-status.md`; factual correction — it was still
+  `active` when this record was written). No corrective pass is required:
+  structural qualification is positive with zero correctness findings.
 
 ## 12. Registry updates
 
@@ -236,7 +238,8 @@ qualification — and none is claimed. Consequences:
 - Active roadmaps table: causal-frontier row current milestone →
   "M001 closed (positive); M002 closed (A); M003 active (optional); M004
   closed (positive); M005 closed (B — opt-in research, live study stays
-  blocked)".
+  blocked)" (as of this commit; since advanced — M003 closed D in its
+  own record and the roadmap row now reads all-closed).
 - Blocked-work audit: no registered plan is unblocked by this closure.
   The two historical live-trajectory rows gated on "M005 records A" remain
   `blocked` (condition not met — B ≠ A). The optional M003 row is

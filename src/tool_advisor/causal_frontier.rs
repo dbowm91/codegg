@@ -2481,6 +2481,1290 @@ pub fn qualify_m002(
     })
 }
 
+// ─── M003 structured effect-path frontier ────────────────────────────────────
+//
+// Bounded effect-path refinement over the positive M002 admissibility
+// frontier. M003 runs ONLY when CodeGG already holds an explicit structured
+// desired outcome (a typed WorkPlan acceptance/evidence demand frozen in
+// the benchmark, an unmet-acceptance demand derived from live host state,
+// or explicitly armed preview-apply state). It never parses free-form
+// prompts into goals: without a typed demand it returns `NoStructuredDemand`
+// and the caller uses the M002 frontier unchanged.
+//
+// The planner treats admissible contracted tools as directed transitions
+// from current facts to declared outcomes, enumerated breadth-first with
+// maximum path depth 3, no repeated tool per path, no cycle expansion,
+// deterministic lexicographic tie-break after path length, and no
+// probabilistic score. A path is advisory: it does not execute tools and
+// does not claim effects have already occurred. Unknown/uncontracted tools
+// are outside the graph and remain fallback-discoverable through M002.
+
+/// Schema version of [`EffectPathFrontier`].
+pub const CAUSAL_EFFECT_PATH_SCHEMA_VERSION: u16 = 1;
+
+/// Schema version of [`CausalM003Report`].
+pub const CAUSAL_M003_REPORT_SCHEMA_VERSION: u16 = 1;
+
+/// Checked-in machine-readable M003 result, relative to the workspace root.
+pub const CAUSAL_M003_RESULT_ASSET: &str = "assets/tool-advisor/causal-frontier-m003-result.json";
+
+/// Maximum effect-path length (plan section 3).
+pub const CAUSAL_M003_MAX_PATH_DEPTH: usize = 3;
+
+/// Pure effect-path computation iterations per structured-demand surface
+/// for the p95 latency gate. State projection and I/O are excluded, as in
+/// M002: only typed demand handling plus bounded path search are timed.
+pub const CAUSAL_M003_LATENCY_ITERATIONS: usize = 1001;
+
+/// Frozen M003 selection gates. The median gate (`2`) is the largest
+/// integer at least 25% below the M002 median promotion (`3`) measured on
+/// the same frozen structured-demand qualification subset (M002 receipt:
+/// qual structured-demand median 3, preservation 1.00, premature
+/// remaining 0).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalM003Gates {
+    /// Pooled gold current-step tool preservation over qualification
+    /// structured-demand cases.
+    pub gold_current_step_preservation: f64,
+    /// Frontier tools outside the eligible surface or from withheld sets.
+    pub authority_violations: u64,
+    /// Uncontracted gold tools retained in the fallback universe.
+    pub uncontracted_fallback_preservation: f64,
+    /// Maximum median caller-visible promoted size over qualification
+    /// structured-demand cases (25%-below-M002 reduction gate).
+    pub median_used_max_structured_demand: usize,
+    /// Maximum p95 pure effect-path computation latency in milliseconds.
+    pub pure_effect_path_p95_ms_max: f64,
+}
+
+impl CausalM003Gates {
+    /// Frozen gate values for the M003 selection decision.
+    pub const fn m003_frozen() -> Self {
+        Self {
+            gold_current_step_preservation: 1.0,
+            authority_violations: 0,
+            uncontracted_fallback_preservation: 1.0,
+            median_used_max_structured_demand: 2,
+            pure_effect_path_p95_ms_max: 5.0,
+        }
+    }
+}
+
+/// Why no structured demand exists. The caller must use the M002
+/// admissibility frontier unchanged; no promotion claim is made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoStructuredDemandReason {
+    /// The case carries no frozen structured desired outcome. Free-form
+    /// text is never consulted, so prose mentioning "test", "commit",
+    /// "fix", "search" or "rename" cannot create a demand.
+    NoDesiredOutcome,
+    /// The evidence kind has no outcome mapping (scheduler jobs).
+    UnsupportedEvidenceKind { evidence: String },
+    /// The frozen outcome and evidence kinds disagree; fail closed rather
+    /// than guess which one the host meant.
+    EvidenceMappingMismatch { outcome: String, evidence: String },
+}
+
+impl NoStructuredDemandReason {
+    /// Stable wire code for this reason.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::NoDesiredOutcome => "no_desired_outcome",
+            Self::UnsupportedEvidenceKind { .. } => "unsupported_evidence_kind",
+            Self::EvidenceMappingMismatch { .. } => "evidence_mapping_mismatch",
+        }
+    }
+}
+
+/// Derive the structured demand for one frozen benchmark case.
+///
+/// Reads ONLY the typed `desired_outcome` field frozen in M001 and checks
+/// it against the allowed host-owned demand mapping (plan section 2):
+/// unmet `TestJob` -> `TestEvidenceProduced`, unmet `Commit` ->
+/// `CommitEvidenceProduced`, unmet `Artifact` -> `ArtifactExpanded`, unmet
+/// `DelegatedRun`/`AgentRun` -> `DelegatedRunProduced`. `SchedulerJob` and
+/// absent evidence kinds abstain; a kind/evidence mismatch fails closed.
+/// `rationale`, `provenance`, `case_id` and `family` are never read.
+pub fn derive_structured_demand(
+    case: &CausalBenchmarkCase,
+) -> Result<CausalDesiredOutcome, NoStructuredDemandReason> {
+    let desired = case
+        .desired_outcome
+        .as_ref()
+        .ok_or(NoStructuredDemandReason::NoDesiredOutcome)?;
+    let expected = match desired.evidence_kind {
+        None => {
+            return Err(NoStructuredDemandReason::UnsupportedEvidenceKind {
+                evidence: "none".to_string(),
+            });
+        }
+        Some(WorkEvidenceKind::TestJob) => CausalOutcome::TestEvidenceProduced,
+        Some(WorkEvidenceKind::Commit) => CausalOutcome::CommitEvidenceProduced,
+        Some(WorkEvidenceKind::Artifact) => CausalOutcome::ArtifactExpanded,
+        Some(WorkEvidenceKind::DelegatedRun) | Some(WorkEvidenceKind::AgentRun) => {
+            CausalOutcome::DelegatedRunProduced
+        }
+        Some(WorkEvidenceKind::SchedulerJob) => {
+            return Err(NoStructuredDemandReason::UnsupportedEvidenceKind {
+                evidence: WorkEvidenceKind::SchedulerJob.as_str().to_string(),
+            });
+        }
+    };
+    if desired.kind != expected {
+        return Err(NoStructuredDemandReason::EvidenceMappingMismatch {
+            outcome: desired.kind.as_str().to_string(),
+            evidence: desired
+                .evidence_kind
+                .map(WorkEvidenceKind::as_str)
+                .unwrap_or("none")
+                .to_string(),
+        });
+    }
+    Ok(desired.clone())
+}
+
+/// Derive structured demands from live host-owned acceptance state.
+///
+/// Mirrors the typed `apply_work_plan` mapping (unmet acceptance plus an
+/// evidence-kind ref): test, commit, artifact, and delegated-run demands.
+/// `SchedulerJob` refs have no outcome mapping and are skipped, matching
+/// the snapshot projection. Results follow [`CausalOutcome::all`]
+/// canonical order, so simultaneous demands are deterministic. An empty
+/// result means the caller must use the M002 frontier unchanged.
+///
+/// Note: the M001 snapshot projects only `DelegatedRun`-typed refs into
+/// `unmet_delegated_run_acceptance`; `AgentRun`-typed refs never set that
+/// fact, so a live `AgentRun` demand cannot arise through this helper
+/// until the projection covers it. The benchmark mapping accepts both
+/// evidence kinds for forward compatibility.
+pub fn derive_unmet_demands(inputs: &CausalStateInputs) -> Vec<CausalDesiredOutcome> {
+    let mut demands = Vec::new();
+    if inputs.unmet_test_acceptance {
+        demands.push(CausalDesiredOutcome {
+            kind: CausalOutcome::TestEvidenceProduced,
+            evidence_kind: Some(WorkEvidenceKind::TestJob),
+        });
+    }
+    if inputs.unmet_commit_acceptance {
+        demands.push(CausalDesiredOutcome {
+            kind: CausalOutcome::CommitEvidenceProduced,
+            evidence_kind: Some(WorkEvidenceKind::Commit),
+        });
+    }
+    if inputs.unmet_delegated_run_acceptance {
+        demands.push(CausalDesiredOutcome {
+            kind: CausalOutcome::DelegatedRunProduced,
+            evidence_kind: Some(WorkEvidenceKind::DelegatedRun),
+        });
+    }
+    if inputs.unmet_artifact_acceptance {
+        demands.push(CausalDesiredOutcome {
+            kind: CausalOutcome::ArtifactExpanded,
+            evidence_kind: Some(WorkEvidenceKind::Artifact),
+        });
+    }
+    demands
+}
+
+/// Derive a workspace-mutation demand from explicit host checked-apply
+/// state. Returns a demand ONLY when the host marks the turn-local LSP
+/// preview as the active next transition (`preview_armed_for_apply`).
+/// Preview availability alone never implies a mutation demand.
+pub fn derive_preview_demand(preview_armed_for_apply: bool) -> Option<CausalDesiredOutcome> {
+    if preview_armed_for_apply {
+        Some(CausalDesiredOutcome {
+            kind: CausalOutcome::WorkspaceMutationProduced,
+            evidence_kind: None,
+        })
+    } else {
+        None
+    }
+}
+
+/// Bounded minimal effect-path search over contracted tools.
+///
+/// Breadth-first enumeration from `initial_facts`: at each level every
+/// queued path extends with every candidate (lexicographic tool-name
+/// order) whose preconditions hold and which is not already on the path.
+/// The first path whose accumulated outcomes cover `demand` is minimal by
+/// construction: levels run shortest-first and paths within a level run
+/// in global lexicographic order, so the first cover is the
+/// shortest-then-lexicographic minimum. No probabilistic score exists.
+///
+/// `fact_enablement` maps a produced outcome to extra facts it makes
+/// available to later steps. M003 passes an empty map: the M001 pilot
+/// ontology declares no outcome-to-fact enablement (every `requires_*`
+/// fact is host state that no tool produces), so every M003 path under
+/// the frozen catalog is a single direct-producer step. The bound
+/// machinery (depth cap, no repeats, no cycle expansion) is implemented
+/// generically and pinned by synthetic tests, so a future ontology with
+/// real enablement inherits the same bounds.
+pub fn find_minimal_effect_path(
+    demand: CausalOutcome,
+    initial_facts: &BTreeSet<CausalStateFact>,
+    candidates: &BTreeMap<String, ToolCausalContract>,
+    fact_enablement: &BTreeMap<CausalOutcome, BTreeSet<CausalStateFact>>,
+    max_depth: usize,
+) -> Option<Vec<String>> {
+    if max_depth == 0 {
+        return None;
+    }
+    let mut ordered: Vec<String> = candidates.keys().cloned().collect();
+    ordered.sort();
+    struct QueueEntry {
+        path: Vec<String>,
+        facts: BTreeSet<CausalStateFact>,
+        outcomes: BTreeSet<CausalOutcome>,
+    }
+    let mut level = vec![QueueEntry {
+        path: Vec::new(),
+        facts: initial_facts.clone(),
+        outcomes: BTreeSet::new(),
+    }];
+    for _ in 0..max_depth {
+        let mut next = Vec::new();
+        for entry in &level {
+            for name in &ordered {
+                if entry.path.iter().any(|step| step == name) {
+                    continue;
+                }
+                let contract = candidates
+                    .get(name)
+                    .expect("ordered names come from candidates");
+                if !contract.is_satisfied_by(&entry.facts) {
+                    continue;
+                }
+                let mut facts = entry.facts.clone();
+                let mut outcomes = entry.outcomes.clone();
+                for outcome in &contract.produces {
+                    outcomes.insert(*outcome);
+                    if let Some(extra) = fact_enablement.get(outcome) {
+                        facts.extend(extra.iter().copied());
+                    }
+                }
+                let mut path = entry.path.clone();
+                path.push(name.clone());
+                if outcomes.contains(&demand) {
+                    return Some(path);
+                }
+                next.push(QueueEntry {
+                    path,
+                    facts,
+                    outcomes,
+                });
+            }
+        }
+        if next.is_empty() {
+            return None;
+        }
+        level = next;
+    }
+    None
+}
+
+/// Plan the minimal effect path for one structured demand over the M002
+/// admissible contracted set.
+///
+/// Only admissible contracted tools enter the graph. Unknown and
+/// uncontracted tools are outside the graph by construction (they are not
+/// in `catalog`), as are inadmissible contracted tools (they are not in
+/// `admissible_contracted`); both stay fallback-discoverable through the
+/// M002 frontier. Returns `None` when no admissible path covers the
+/// demand; the caller then uses the M002 frontier unchanged.
+pub fn plan_effect_path(
+    demand: &CausalDesiredOutcome,
+    facts: &BTreeSet<CausalStateFact>,
+    admissible_contracted: &BTreeSet<String>,
+    catalog: &BTreeMap<String, ToolCausalContract>,
+) -> Option<Vec<String>> {
+    let candidates: BTreeMap<String, ToolCausalContract> = admissible_contracted
+        .iter()
+        .filter_map(|name| {
+            catalog
+                .get(name)
+                .map(|contract| (name.clone(), contract.clone()))
+        })
+        .collect();
+    find_minimal_effect_path(
+        demand.kind,
+        facts,
+        &candidates,
+        &BTreeMap::new(),
+        CAUSAL_M003_MAX_PATH_DEPTH,
+    )
+}
+
+/// Registry backing effect-catalog bindings: the default registry plus
+/// the session-gated pilot tools (`goal_get`, `goal_update_progress`,
+/// `work_plan_get`, `work_plan_update_item`, `context_read`,
+/// `lsp_preview_apply`) constructed over lazy handles, mirroring the M001
+/// seam test. Construction performs no I/O: the pool is lazy, the
+/// artifact store is in-memory, and the LSP service is unconnected.
+/// Contract metadata is static (no session dependence), so bindings are
+/// deterministic for a fixed binary.
+fn effect_binding_registry() -> crate::tool::ToolRegistry {
+    // `SqlitePool::connect_lazy` requires a Tokio context even though it
+    // performs no I/O. Async callers already provide one; sync callers
+    // (offline qualification, unit tests) get a scoped current-thread
+    // runtime that is dropped before return.
+    let owned_runtime: Option<tokio::runtime::Runtime> =
+        if tokio::runtime::Handle::try_current().is_err() {
+            Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("effect-binding runtime builds"),
+            )
+        } else {
+            None
+        };
+    let _context_guard = owned_runtime.as_ref().map(|runtime| runtime.enter());
+    let mut registry = crate::tool::ToolRegistry::with_defaults();
+    let pool = sqlx::SqlitePool::connect_lazy("sqlite::memory:")
+        .expect("lazy pool construction performs no I/O");
+    registry.register(crate::tool::goal::GoalGetTool::new(
+        pool.clone(),
+        "session_effect_binding".to_string(),
+    ));
+    registry.register(crate::tool::goal::GoalUpdateProgressTool::new(
+        pool.clone(),
+        "session_effect_binding".to_string(),
+    ));
+    registry.register(crate::tool::work_plan::WorkPlanGetTool::new(
+        pool.clone(),
+        "session_effect_binding".to_string(),
+    ));
+    registry.register(crate::tool::work_plan::WorkPlanUpdateItemTool::new(
+        pool.clone(),
+        "session_effect_binding".to_string(),
+    ));
+    registry.register(crate::context::ContextReadTool::new(
+        std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+        "session_effect_binding".to_string(),
+    ));
+    let preview_registry: crate::tool::LspPreviewRegistryHandle = std::sync::Arc::new(
+        parking_lot::Mutex::new(egglsp::preview_registry::PreviewArtifactRegistry::new()),
+    );
+    let lsp_service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+        crate::config::schema::LspConfig::default(),
+    ));
+    registry.register(crate::tool::lsp_preview_apply::LspPreviewApplyTool::new(
+        pool,
+        std::path::PathBuf::from("/tmp"),
+        "workspace_effect_binding".to_string(),
+        "session_effect_binding".to_string(),
+        None,
+        std::sync::Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+        lsp_service,
+        preview_registry,
+    ));
+    registry
+}
+
+/// Fingerprint over the effect-path contract catalog: the causal ontology
+/// and contract schema versions plus, per pilot tool, the bound
+/// fingerprint tying the causal payload to the live tool implementation
+/// id/version and input-schema fingerprint (see
+/// [`bind_causal_contract`]). Unlike [`causal_catalog_fingerprint`]
+/// (payload-only), this fingerprint goes stale when a tool implementation
+/// or schema drifts, failing closed to the M002 fallback instead of
+/// planning against outdated effects. Tools that do not resolve in the
+/// live registry bind under an explicit `unresolved-tool` marker so the
+/// gap is visible in the fingerprint rather than silently skipped.
+pub fn effect_catalog_fingerprint() -> String {
+    let registry = effect_binding_registry();
+    let catalog = causal_catalog();
+    let mut entries = Vec::with_capacity(catalog.len());
+    for (name, contract) in catalog.iter() {
+        let bound = match registry.get(name) {
+            Some(tool) => {
+                let live = tool.contract(name, tool.parameters());
+                bind_causal_contract(
+                    name,
+                    contract,
+                    &live.implementation_id,
+                    &live.implementation_version,
+                    &live.input_schema,
+                )
+                .map(|bound| bound.fingerprint)
+                .unwrap_or_else(|_| "binding-error".to_string())
+            }
+            None => "unresolved-tool".to_string(),
+        };
+        entries.push(serde_json::json!({ "tool_name": name, "bound_fingerprint": bound }));
+    }
+    let payload = serde_json::json!({
+        "ontology_version": CAUSAL_ONTOLOGY_VERSION,
+        "contract_schema_version": CAUSAL_CONTRACT_SCHEMA_VERSION,
+        "effect_path_schema_version": CAUSAL_EFFECT_PATH_SCHEMA_VERSION,
+        "contracts": entries,
+    });
+    sha256_hex(payload.to_string().as_bytes())
+}
+
+/// Whether every native pilot tool resolves to a live registry
+/// implementation. A missing binding means the effect catalog cannot
+/// prove implementation identity for that tool.
+pub fn effect_catalog_binding_complete() -> bool {
+    let registry = effect_binding_registry();
+    NATIVE_PILOT_TOOLS
+        .iter()
+        .all(|name| registry.get(name).is_some())
+}
+
+/// Advisory minimal effect-path frontier for one structured demand.
+///
+/// Planning metadata only: it names the tools whose declared effects
+/// cover the demand in the fewest steps, with per-tool contract
+/// provenance. It does not execute tools, authorize calls, or claim
+/// effects have occurred.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectPathFrontier {
+    pub schema_version: u16,
+    pub demand: CausalDesiredOutcome,
+    /// Ordered minimal tool steps covering the demand.
+    pub path: Vec<String>,
+    /// Deduplicated path tools.
+    pub path_tools: BTreeSet<String>,
+    /// Contract provenance source per path tool (native static source).
+    pub tool_provenance: BTreeMap<String, String>,
+    pub snapshot_fingerprint: String,
+    pub contract_catalog_fingerprint: String,
+    pub effect_catalog_fingerprint: String,
+}
+
+impl EffectPathFrontier {
+    /// Whether this frontier is still fresh against a live snapshot and
+    /// effect-catalog fingerprint. State or contract drift invalidates the
+    /// cached result instead of silently reusing it.
+    pub fn is_fresh_against(
+        &self,
+        snapshot_fingerprint: &str,
+        effect_catalog_fingerprint: &str,
+    ) -> bool {
+        self.snapshot_fingerprint == snapshot_fingerprint
+            && self.effect_catalog_fingerprint == effect_catalog_fingerprint
+    }
+}
+
+/// Fail-closed effect-path construction failures. Every other outcome is
+/// an [`EffectPathStatus`] telling the caller to keep the M002 frontier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectPathError {
+    /// A withheld (hidden/denied/unavailable) tool reached frontier input.
+    WithheldInSurface(String),
+    /// A required/never-reduce tool is not on the eligible surface.
+    RequiredNotEligible(String),
+}
+
+impl std::fmt::Display for EffectPathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WithheldInSurface(tool) => {
+                write!(f, "withheld tool {tool} reached effect-path input")
+            }
+            Self::RequiredNotEligible(tool) => {
+                write!(f, "required tool {tool} is not on the eligible surface")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EffectPathError {}
+
+/// Caller disposition for one case. Only [`EffectPathStatus::Path`]
+/// narrows the promotion frontier; every other status means the caller
+/// uses the M002 admissibility frontier unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectPathStatus {
+    /// A minimal effect path covers the structured demand.
+    Path(EffectPathFrontier),
+    /// No typed demand exists; M003 abstains without looking at prose.
+    NoStructuredDemand(NoStructuredDemandReason),
+    /// A typed demand exists but no admissible contracted path covers it
+    /// (every producer is inadmissible under current facts); hiding the
+    /// M002 frontier would be a false exclusion, so M003 abstains.
+    NoAdmissiblePath { demand: CausalDesiredOutcome },
+    /// The live effect catalog differs from the expected fingerprint;
+    /// planning against stale contracts is refused.
+    StaleCatalogFallback { expected: String, observed: String },
+}
+
+impl EffectPathStatus {
+    /// Stable wire code for this status.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Path(_) => "path",
+            Self::NoStructuredDemand(_) => "no_structured_demand",
+            Self::NoAdmissiblePath { .. } => "no_admissible_path",
+            Self::StaleCatalogFallback { .. } => "stale_catalog_fallback",
+        }
+    }
+
+    /// Caller-visible promoted size: the path length when a path exists,
+    /// otherwise the M002 promotion size (the caller keeps M002).
+    pub fn used_size(&self, m002_promotion_size: usize) -> usize {
+        match self {
+            Self::Path(frontier) => frontier.path.len(),
+            Self::NoStructuredDemand(_)
+            | Self::NoAdmissiblePath { .. }
+            | Self::StaleCatalogFallback { .. } => m002_promotion_size,
+        }
+    }
+}
+
+/// Evaluate the structured effect path for one frozen benchmark case.
+///
+/// Returns the M003 status together with the underlying M002 frontier so
+/// scoring can compare both arms on identical inputs. Fails closed only
+/// on authority errors (withheld/required); stale contracts and missing
+/// or uncovered demands are abstention statuses, not errors.
+pub fn evaluate_effect_path(
+    case: &CausalBenchmarkCase,
+    catalog: &BTreeMap<String, ToolCausalContract>,
+    contract_catalog_fingerprint: &str,
+    live_effect_catalog_fingerprint: &str,
+    expected_effect_catalog_fingerprint: &str,
+) -> Result<(EffectPathStatus, CausalFrontier), EffectPathError> {
+    if live_effect_catalog_fingerprint != expected_effect_catalog_fingerprint {
+        let frontier = evaluate_benchmark_case(case, catalog, contract_catalog_fingerprint)
+            .map_err(|err| match err {
+                CausalFrontierError::WithheldInSurface(tool) => {
+                    EffectPathError::WithheldInSurface(tool)
+                }
+                CausalFrontierError::RequiredNotEligible(tool) => {
+                    EffectPathError::RequiredNotEligible(tool)
+                }
+            })?;
+        return Ok((
+            EffectPathStatus::StaleCatalogFallback {
+                expected: expected_effect_catalog_fingerprint.to_string(),
+                observed: live_effect_catalog_fingerprint.to_string(),
+            },
+            frontier,
+        ));
+    }
+    let frontier =
+        evaluate_benchmark_case(case, catalog, contract_catalog_fingerprint).map_err(|err| {
+            match err {
+                CausalFrontierError::WithheldInSurface(tool) => {
+                    EffectPathError::WithheldInSurface(tool)
+                }
+                CausalFrontierError::RequiredNotEligible(tool) => {
+                    EffectPathError::RequiredNotEligible(tool)
+                }
+            }
+        })?;
+    let demand = match derive_structured_demand(case) {
+        Ok(demand) => demand,
+        Err(reason) => return Ok((EffectPathStatus::NoStructuredDemand(reason), frontier)),
+    };
+    match plan_effect_path(
+        &demand,
+        &case.facts,
+        &frontier.admissible_contracted,
+        catalog,
+    ) {
+        Some(path) => {
+            let mut path_tools = BTreeSet::new();
+            let mut tool_provenance = BTreeMap::new();
+            for step in &path {
+                path_tools.insert(step.clone());
+                if let Some(contract) = catalog.get(step) {
+                    tool_provenance.insert(step.clone(), contract.provenance.source.clone());
+                }
+            }
+            Ok((
+                EffectPathStatus::Path(EffectPathFrontier {
+                    schema_version: CAUSAL_EFFECT_PATH_SCHEMA_VERSION,
+                    demand,
+                    path,
+                    path_tools,
+                    tool_provenance,
+                    snapshot_fingerprint: benchmark_case_state_fingerprint(case),
+                    contract_catalog_fingerprint: contract_catalog_fingerprint.to_string(),
+                    effect_catalog_fingerprint: live_effect_catalog_fingerprint.to_string(),
+                }),
+                frontier,
+            ))
+        }
+        None => Ok((EffectPathStatus::NoAdmissiblePath { demand }, frontier)),
+    }
+}
+
+/// Per-case M003 evidence row over structured-demand cases.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectPathCaseRow {
+    pub case_id: String,
+    pub family: String,
+    pub demand_kind: String,
+    pub demand_evidence: String,
+    pub status: String,
+    pub status_detail: String,
+    pub path_length: Option<usize>,
+    pub path_tools: Vec<String>,
+    pub m002_promotion_size: usize,
+    pub m003_used_size: usize,
+    pub gold_current_total: usize,
+    pub gold_current_visible_m002: usize,
+    pub gold_current_visible_m003: usize,
+    /// Gold tools the M002 frontier keeps visible but M003 would hide.
+    pub false_exclusions: Vec<String>,
+    pub premature_baseline: usize,
+    pub premature_m002_remaining: usize,
+    pub premature_m003_remaining: usize,
+    pub uncontracted_gold_total: usize,
+    pub uncontracted_gold_retained: usize,
+}
+
+/// Per-family M003 evidence row over structured-demand cases.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectPathFamilyRow {
+    pub family: String,
+    pub cases: usize,
+    pub path_found: usize,
+    pub gold_current_total: usize,
+    pub gold_current_visible_m003: usize,
+    pub loses_gold_tool: bool,
+    pub median_m002_promotion: usize,
+    pub median_m003_used: usize,
+    pub max_m003_used: usize,
+}
+
+/// Pooled M003 metrics for one structured-demand benchmark partition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectPathPartitionReport {
+    pub cases: usize,
+    pub path_found: usize,
+    pub no_admissible_path: usize,
+    pub abstentions: usize,
+    /// Path lengths over path cases, ascending.
+    pub path_lengths: Vec<usize>,
+    pub median_path_length: usize,
+    pub max_path_length: usize,
+    pub gold_current_total: usize,
+    pub gold_current_visible_m002: usize,
+    pub gold_current_visible_m003: usize,
+    pub gold_current_step_preservation_m002: f64,
+    pub gold_current_step_preservation_m003: f64,
+    /// Gold tools the M002 frontier keeps visible but M003 would hide.
+    pub false_causal_exclusions: usize,
+    /// Families where at least one gold current-step tool leaves the
+    /// caller-visible set under M003, in canonical family order.
+    pub families_losing_gold_tool: Vec<String>,
+    pub premature_baseline: usize,
+    pub premature_m002_remaining: usize,
+    pub premature_m003_remaining: usize,
+    /// Valid demands whose kind has at least one contracted producer.
+    pub contract_demands_covered: usize,
+    pub contract_demands_total: usize,
+    pub contract_coverage: f64,
+    pub uncontracted_gold_total: usize,
+    pub uncontracted_gold_retained: usize,
+    pub uncontracted_fallback_preservation: f64,
+    pub authority_violations: u64,
+    /// M002 used-promotion sizes over the same cases, ascending.
+    pub m002_promotion_sizes: Vec<usize>,
+    pub median_m002_promotion: usize,
+    /// Caller-visible M003 promoted sizes over the same cases, ascending
+    /// (path length when a path exists, else the M002 size).
+    pub m003_used_sizes: Vec<usize>,
+    pub median_m003_used: usize,
+    pub max_m003_used: usize,
+    pub families: Vec<EffectPathFamilyRow>,
+    pub rows: Vec<EffectPathCaseRow>,
+}
+
+/// Score one structured-demand benchmark partition: evaluate the M003
+/// status per case against the M002 reference arm on identical inputs and
+/// pool the plan metrics. Pure measurement — no tuning, no contract
+/// edits, no threshold fitting.
+pub fn score_effect_partition(
+    cases: &[&CausalBenchmarkCase],
+    catalog: &BTreeMap<String, ToolCausalContract>,
+    contract_catalog_fingerprint: &str,
+    live_effect_catalog_fingerprint: &str,
+    expected_effect_catalog_fingerprint: &str,
+) -> Result<EffectPathPartitionReport, EffectPathError> {
+    let mut rows = Vec::with_capacity(cases.len());
+    let mut authority_violations: u64 = 0;
+    for case in cases {
+        let (status, m002_frontier) = evaluate_effect_path(
+            case,
+            catalog,
+            contract_catalog_fingerprint,
+            live_effect_catalog_fingerprint,
+            expected_effect_catalog_fingerprint,
+        )?;
+        if let EffectPathStatus::Path(frontier) = &status {
+            let eligible: BTreeSet<&String> = case.eligible.iter().collect();
+            let withheld: BTreeSet<&String> = case.withheld.iter().collect();
+            for tool in &frontier.path_tools {
+                if !eligible.contains(tool) || withheld.contains(tool) {
+                    authority_violations += 1;
+                }
+            }
+        }
+        let structured = has_structured_signal(&case.facts);
+        let m002_promotion = m002_frontier.promotion_for_use(structured);
+        let m002_visible = m002_frontier.visible_union();
+        let m003_visible: BTreeSet<String> = match &status {
+            EffectPathStatus::Path(frontier) => frontier
+                .path_tools
+                .iter()
+                .chain(m002_frontier.uncontracted_fallback.iter())
+                .chain(m002_frontier.required_visible.iter())
+                .cloned()
+                .collect(),
+            EffectPathStatus::NoStructuredDemand(_)
+            | EffectPathStatus::NoAdmissiblePath { .. }
+            | EffectPathStatus::StaleCatalogFallback { .. } => m002_visible.clone(),
+        };
+        let (demand_kind, demand_evidence) = match &status {
+            EffectPathStatus::Path(frontier) => (
+                frontier.demand.kind.as_str().to_string(),
+                frontier
+                    .demand
+                    .evidence_kind
+                    .map(WorkEvidenceKind::as_str)
+                    .unwrap_or("none")
+                    .to_string(),
+            ),
+            EffectPathStatus::NoAdmissiblePath { demand } => (
+                demand.kind.as_str().to_string(),
+                demand
+                    .evidence_kind
+                    .map(WorkEvidenceKind::as_str)
+                    .unwrap_or("none")
+                    .to_string(),
+            ),
+            EffectPathStatus::NoStructuredDemand(_)
+            | EffectPathStatus::StaleCatalogFallback { .. } => (
+                case.desired_outcome
+                    .as_ref()
+                    .map(|desired| desired.kind.as_str().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                case.desired_outcome
+                    .as_ref()
+                    .and_then(|desired| desired.evidence_kind)
+                    .map(WorkEvidenceKind::as_str)
+                    .unwrap_or("none")
+                    .to_string(),
+            ),
+        };
+        let status_detail = match &status {
+            EffectPathStatus::Path(frontier) => {
+                format!("demand={}", frontier.demand.kind.as_str())
+            }
+            EffectPathStatus::NoStructuredDemand(reason) => reason.code().to_string(),
+            EffectPathStatus::NoAdmissiblePath { demand } => {
+                format!("uncovered_demand={}", demand.kind.as_str())
+            }
+            EffectPathStatus::StaleCatalogFallback { .. } => "stale_effect_catalog".to_string(),
+        };
+        let gold_total = case.gold_current.len();
+        let gold_m002 = case
+            .gold_current
+            .iter()
+            .filter(|tool| m002_visible.contains(*tool))
+            .count();
+        let gold_m003 = case
+            .gold_current
+            .iter()
+            .filter(|tool| m003_visible.contains(*tool))
+            .count();
+        let mut false_exclusions: Vec<String> = case
+            .gold_current
+            .iter()
+            .filter(|tool| m002_visible.contains(*tool) && !m003_visible.contains(*tool))
+            .cloned()
+            .collect();
+        false_exclusions.sort();
+        let premature_baseline = case.gold_premature.len();
+        let premature_m002 = case
+            .gold_premature
+            .iter()
+            .filter(|tool| m002_frontier.admissible_contracted.contains(*tool))
+            .count();
+        let premature_m003 = match &status {
+            EffectPathStatus::Path(frontier) => case
+                .gold_premature
+                .iter()
+                .filter(|tool| frontier.path_tools.contains(*tool))
+                .count(),
+            EffectPathStatus::NoStructuredDemand(_)
+            | EffectPathStatus::NoAdmissiblePath { .. }
+            | EffectPathStatus::StaleCatalogFallback { .. } => premature_m002,
+        };
+        let uncontracted_gold: Vec<&String> = case
+            .gold_current
+            .iter()
+            .filter(|tool| case.uncontracted.iter().any(|name| name == *tool))
+            .collect();
+        let uncontracted_retained = uncontracted_gold
+            .iter()
+            .filter(|tool| m003_visible.contains(**tool))
+            .count();
+        rows.push(EffectPathCaseRow {
+            case_id: case.case_id.clone(),
+            family: case.family.clone(),
+            demand_kind,
+            demand_evidence,
+            status: status.code().to_string(),
+            status_detail,
+            path_length: match &status {
+                EffectPathStatus::Path(frontier) => Some(frontier.path.len()),
+                EffectPathStatus::NoStructuredDemand(_)
+                | EffectPathStatus::NoAdmissiblePath { .. }
+                | EffectPathStatus::StaleCatalogFallback { .. } => None,
+            },
+            path_tools: match &status {
+                EffectPathStatus::Path(frontier) => frontier.path.clone(),
+                EffectPathStatus::NoStructuredDemand(_)
+                | EffectPathStatus::NoAdmissiblePath { .. }
+                | EffectPathStatus::StaleCatalogFallback { .. } => Vec::new(),
+            },
+            m002_promotion_size: m002_promotion.len(),
+            m003_used_size: status.used_size(m002_promotion.len()),
+            gold_current_total: gold_total,
+            gold_current_visible_m002: gold_m002,
+            gold_current_visible_m003: gold_m003,
+            false_exclusions,
+            premature_baseline,
+            premature_m002_remaining: premature_m002,
+            premature_m003_remaining: premature_m003,
+            uncontracted_gold_total: uncontracted_gold.len(),
+            uncontracted_gold_retained: uncontracted_retained,
+        });
+    }
+    let mut path_lengths: Vec<usize> = rows.iter().filter_map(|row| row.path_length).collect();
+    path_lengths.sort_unstable();
+    let mut m002_sizes: Vec<usize> = rows.iter().map(|row| row.m002_promotion_size).collect();
+    m002_sizes.sort_unstable();
+    let mut m003_sizes: Vec<usize> = rows.iter().map(|row| row.m003_used_size).collect();
+    m003_sizes.sort_unstable();
+    let sum = |f: fn(&EffectPathCaseRow) -> usize| rows.iter().map(f).sum::<usize>();
+    let gold_total = sum(|row| row.gold_current_total);
+    let gold_m002 = sum(|row| row.gold_current_visible_m002);
+    let gold_m003 = sum(|row| row.gold_current_visible_m003);
+    let prem_base = sum(|row| row.premature_baseline);
+    let prem_m002 = sum(|row| row.premature_m002_remaining);
+    let prem_m003 = sum(|row| row.premature_m003_remaining);
+    let unc_total = sum(|row| row.uncontracted_gold_total);
+    let unc_retained = sum(|row| row.uncontracted_gold_retained);
+    let false_exclusions = sum(|row| row.false_exclusions.len());
+    let valid_demands: Vec<&EffectPathCaseRow> = rows
+        .iter()
+        .filter(|row| row.status == "path" || row.status == "no_admissible_path")
+        .collect();
+    let covered = valid_demands
+        .iter()
+        .filter(|row| {
+            catalog.values().any(|contract| {
+                contract
+                    .produces
+                    .iter()
+                    .any(|outcome| outcome.as_str() == row.demand_kind)
+            })
+        })
+        .count();
+    let mut families_losing = Vec::new();
+    let mut families = Vec::new();
+    for family in CAUSAL_BENCHMARK_FAMILIES {
+        let family_rows: Vec<&EffectPathCaseRow> =
+            rows.iter().filter(|row| row.family == *family).collect();
+        if family_rows.is_empty() {
+            continue;
+        }
+        let family_gold_total: usize = family_rows.iter().map(|row| row.gold_current_total).sum();
+        let family_gold_m003: usize = family_rows
+            .iter()
+            .map(|row| row.gold_current_visible_m003)
+            .sum();
+        let loses = family_gold_m003 < family_gold_total;
+        if loses {
+            families_losing.push((*family).to_string());
+        }
+        let mut family_m002: Vec<usize> = family_rows
+            .iter()
+            .map(|row| row.m002_promotion_size)
+            .collect();
+        family_m002.sort_unstable();
+        let mut family_m003: Vec<usize> =
+            family_rows.iter().map(|row| row.m003_used_size).collect();
+        family_m003.sort_unstable();
+        families.push(EffectPathFamilyRow {
+            family: (*family).to_string(),
+            cases: family_rows.len(),
+            path_found: family_rows
+                .iter()
+                .filter(|row| row.status == "path")
+                .count(),
+            gold_current_total: family_gold_total,
+            gold_current_visible_m003: family_gold_m003,
+            loses_gold_tool: loses,
+            median_m002_promotion: lower_median_ascending(&family_m002),
+            median_m003_used: lower_median_ascending(&family_m003),
+            max_m003_used: family_m003.last().copied().unwrap_or(0),
+        });
+    }
+    Ok(EffectPathPartitionReport {
+        cases: rows.len(),
+        path_found: rows.iter().filter(|row| row.status == "path").count(),
+        no_admissible_path: rows
+            .iter()
+            .filter(|row| row.status == "no_admissible_path")
+            .count(),
+        abstentions: rows
+            .iter()
+            .filter(|row| {
+                row.status == "no_structured_demand" || row.status == "stale_catalog_fallback"
+            })
+            .count(),
+        median_path_length: if path_lengths.is_empty() {
+            0
+        } else {
+            lower_median_ascending(&path_lengths)
+        },
+        max_path_length: path_lengths.last().copied().unwrap_or(0),
+        path_lengths,
+        gold_current_total: gold_total,
+        gold_current_visible_m002: gold_m002,
+        gold_current_visible_m003: gold_m003,
+        gold_current_step_preservation_m002: if gold_total == 0 {
+            1.0
+        } else {
+            gold_m002 as f64 / gold_total as f64
+        },
+        gold_current_step_preservation_m003: if gold_total == 0 {
+            1.0
+        } else {
+            gold_m003 as f64 / gold_total as f64
+        },
+        false_causal_exclusions: false_exclusions,
+        families_losing_gold_tool: families_losing,
+        premature_baseline: prem_base,
+        premature_m002_remaining: prem_m002,
+        premature_m003_remaining: prem_m003,
+        contract_demands_covered: covered,
+        contract_demands_total: valid_demands.len(),
+        contract_coverage: if valid_demands.is_empty() {
+            1.0
+        } else {
+            covered as f64 / valid_demands.len() as f64
+        },
+        uncontracted_gold_total: unc_total,
+        uncontracted_gold_retained: unc_retained,
+        uncontracted_fallback_preservation: if unc_total == 0 {
+            1.0
+        } else {
+            unc_retained as f64 / unc_total as f64
+        },
+        authority_violations,
+        median_m002_promotion: if m002_sizes.is_empty() {
+            0
+        } else {
+            lower_median_ascending(&m002_sizes)
+        },
+        m002_promotion_sizes: m002_sizes,
+        median_m003_used: if m003_sizes.is_empty() {
+            0
+        } else {
+            lower_median_ascending(&m003_sizes)
+        },
+        max_m003_used: m003_sizes.last().copied().unwrap_or(0),
+        m003_used_sizes: m003_sizes,
+        families,
+        rows,
+    })
+}
+
+/// Pure effect-path computation latency samples in milliseconds, pooled
+/// over every structured-demand surface × `iterations`. Demands,
+/// admissible sets, and facts are precomputed once per surface so only
+/// typed demand handling plus bounded path search are timed; state
+/// projection and I/O are excluded per the plan budget.
+pub fn measure_effect_path_latency_ms(
+    cases: &[&CausalBenchmarkCase],
+    catalog: &BTreeMap<String, ToolCausalContract>,
+    contract_catalog_fingerprint: &str,
+) -> Vec<f64> {
+    struct Precomputed {
+        demand: CausalDesiredOutcome,
+        facts: BTreeSet<CausalStateFact>,
+        admissible: BTreeSet<String>,
+    }
+    let mut surfaces = Vec::new();
+    for case in cases {
+        let Ok(demand) = derive_structured_demand(case) else {
+            continue;
+        };
+        let Ok((_, frontier)) =
+            evaluate_effect_path(case, catalog, contract_catalog_fingerprint, "fp", "fp")
+                .map(|(status, frontier)| (status.code(), frontier))
+        else {
+            continue;
+        };
+        surfaces.push(Precomputed {
+            demand,
+            facts: case.facts.clone(),
+            admissible: frontier.admissible_contracted,
+        });
+    }
+    let mut samples = Vec::with_capacity(surfaces.len() * CAUSAL_M003_LATENCY_ITERATIONS);
+    for surface in &surfaces {
+        for _ in 0..CAUSAL_M003_LATENCY_ITERATIONS {
+            let start = std::time::Instant::now();
+            let path = plan_effect_path(
+                &surface.demand,
+                &surface.facts,
+                &surface.admissible,
+                catalog,
+            );
+            std::hint::black_box(path.as_ref().map(Vec::len));
+            samples.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    samples.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    samples
+}
+
+/// M003 selection disposition over a scored qualification partition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CausalM003Disposition {
+    /// All frozen gates pass: M004 observe integration selects M003.
+    Positive,
+    /// Correctness holds but preservation/reduction gates fail: M003
+    /// closes negative and M004 uses the positive M002 frontier.
+    Negative,
+    /// Correctness failure: stop and register a corrective.
+    ContractFailure,
+}
+
+impl CausalM003Disposition {
+    /// Stable single-letter code, shared with the M002 disposition
+    /// vocabulary under a different protocol string.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Positive => "A",
+            Self::Negative => "D",
+            Self::ContractFailure => "E",
+        }
+    }
+
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::Positive => "A — positive structured effect-path frontier",
+            Self::Negative => {
+                "D — negative: effect-path narrowing is unsafe or unhelpful; M002 remains selected"
+            }
+            Self::ContractFailure => "E — contract/state correctness failure",
+        }
+    }
+}
+
+/// Decide the M003 disposition from scored qualification metrics and the
+/// measured p95 latency. Correctness uses exact integer accounting, so no
+/// float threshold ambiguity can flip D/E; the reduction gate additionally
+/// requires the frozen median cap and an exact integer 25% comparison
+/// (`4 * m003 <= 3 * m002`) against the M002 reference median on the same
+/// structured-demand subset.
+pub fn decide_m003_disposition(
+    metrics: &EffectPathPartitionReport,
+    gates: &CausalM003Gates,
+    p95_ms: f64,
+) -> CausalM003Disposition {
+    let correct = metrics.authority_violations == 0
+        && metrics.uncontracted_gold_retained == metrics.uncontracted_gold_total;
+    if !correct {
+        return CausalM003Disposition::ContractFailure;
+    }
+    let reduction_holds = metrics.median_m003_used <= gates.median_used_max_structured_demand
+        && (metrics.median_m002_promotion == 0
+            || 4 * metrics.median_m003_used <= 3 * metrics.median_m002_promotion);
+    if metrics.gold_current_visible_m003 == metrics.gold_current_total
+        && metrics.families_losing_gold_tool.is_empty()
+        && metrics.premature_m003_remaining <= metrics.premature_m002_remaining
+        && metrics.contract_demands_covered == metrics.contract_demands_total
+        && metrics.contract_demands_total > 0
+        && reduction_holds
+        && p95_ms <= gates.pure_effect_path_p95_ms_max
+    {
+        CausalM003Disposition::Positive
+    } else {
+        CausalM003Disposition::Negative
+    }
+}
+
+/// Machine-readable M003 structured-effect-path qualification result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalM003Report {
+    pub schema_version: u16,
+    pub protocol: String,
+    pub ontology_version: u16,
+    pub contract_schema_version: u16,
+    pub effect_path_schema_version: u16,
+    pub benchmark_asset: String,
+    pub benchmark_fingerprint: String,
+    pub contract_catalog_fingerprint: String,
+    pub effect_catalog_fingerprint: String,
+    pub catalog_binding_complete: bool,
+    pub dev_fingerprint: String,
+    pub qualification_fingerprint: String,
+    pub structured_dev_cases: usize,
+    pub structured_qualification_cases: usize,
+    pub dev: EffectPathPartitionReport,
+    pub qualification: EffectPathPartitionReport,
+    /// Exact integer 25% comparison on qualification medians:
+    /// `4 * m003 <= 3 * m002`.
+    pub reduction_holds_exact: bool,
+    pub latency_iterations_per_surface: usize,
+    pub latency_samples: usize,
+    pub latency_p50_ms: f64,
+    pub latency_p95_ms: f64,
+    pub latency_max_ms: f64,
+    pub gates: CausalM003Gates,
+    pub gate_results: BTreeMap<String, bool>,
+    pub disposition: String,
+    pub disposition_summary: String,
+}
+
+/// Run the full M003 offline qualification: verify the frozen M001 inputs,
+/// score the structured-demand dev and qualification subsets (M003 arm
+/// against the M002 reference arm on identical inputs), measure
+/// pure-computation latency, and decide the disposition. No tunable
+/// parameters exist — the planner has no scores or thresholds — so dev
+/// inspection cannot leak into qualification.
+pub fn qualify_m003(
+    benchmark_jsonl: &str,
+    prereg_json: &str,
+    latency_iterations_per_surface: usize,
+) -> Result<CausalM003Report, String> {
+    let prereg: CausalM001Preregistration =
+        serde_json::from_str(prereg_json).map_err(|err| format!("prereg parse error: {err}"))?;
+    if sha256_hex(benchmark_jsonl.as_bytes()) != prereg.benchmark_fingerprint {
+        return Err("benchmark bytes differ from preregistered fingerprint".into());
+    }
+    let cases = load_causal_benchmark(benchmark_jsonl)?;
+    prereg.verify_against(&cases)?;
+    let catalog = causal_catalog();
+    let contract_fingerprint = causal_catalog_fingerprint();
+    let effect_fingerprint = effect_catalog_fingerprint();
+    let binding_complete = effect_catalog_binding_complete();
+    let dev_ids: BTreeSet<&str> = prereg.dev_case_ids.iter().map(String::as_str).collect();
+    let qual_ids: BTreeSet<&str> = prereg
+        .qualification_case_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let dev_cases: Vec<&CausalBenchmarkCase> = cases
+        .iter()
+        .filter(|case| dev_ids.contains(case.case_id.as_str()) && case.desired_outcome.is_some())
+        .collect();
+    let qual_cases: Vec<&CausalBenchmarkCase> = cases
+        .iter()
+        .filter(|case| qual_ids.contains(case.case_id.as_str()) && case.desired_outcome.is_some())
+        .collect();
+    if dev_cases.is_empty() || qual_cases.is_empty() {
+        return Err("no structured-demand cases in dev or qualification split".into());
+    }
+    let dev = score_effect_partition(
+        &dev_cases,
+        &catalog,
+        &contract_fingerprint,
+        &effect_fingerprint,
+        &effect_fingerprint,
+    )
+    .map_err(|err| format!("dev scoring failed: {err}"))?;
+    let qualification = score_effect_partition(
+        &qual_cases,
+        &catalog,
+        &contract_fingerprint,
+        &effect_fingerprint,
+        &effect_fingerprint,
+    )
+    .map_err(|err| format!("qualification scoring failed: {err}"))?;
+    let latency = measure_effect_path_latency_ms(&qual_cases, &catalog, &contract_fingerprint);
+    if latency.is_empty() {
+        return Err("no latency samples collected".into());
+    }
+    let p50 = nearest_rank_percentile(&latency, 0.50);
+    let p95 = nearest_rank_percentile(&latency, 0.95);
+    let max = *latency.last().unwrap_or(&0.0);
+    let gates = CausalM003Gates::m003_frozen();
+    let disposition = decide_m003_disposition(&qualification, &gates, p95);
+    let reduction_holds_exact = qualification.median_m002_promotion == 0
+        || 4 * qualification.median_m003_used <= 3 * qualification.median_m002_promotion;
+    let mut gate_results = BTreeMap::new();
+    gate_results.insert(
+        "gold_current_step_preservation".to_string(),
+        qualification.gold_current_visible_m003 == qualification.gold_current_total
+            && qualification.gold_current_step_preservation_m003
+                == gates.gold_current_step_preservation,
+    );
+    gate_results.insert(
+        "no_family_loses_gold_tool".to_string(),
+        qualification.families_losing_gold_tool.is_empty(),
+    );
+    gate_results.insert(
+        "authority_violations".to_string(),
+        qualification.authority_violations == gates.authority_violations,
+    );
+    gate_results.insert(
+        "uncontracted_fallback_preservation".to_string(),
+        qualification.uncontracted_gold_retained == qualification.uncontracted_gold_total
+            && qualification.uncontracted_fallback_preservation
+                == gates.uncontracted_fallback_preservation,
+    );
+    gate_results.insert(
+        "median_used_reduction".to_string(),
+        qualification.median_m003_used <= gates.median_used_max_structured_demand
+            && reduction_holds_exact,
+    );
+    gate_results.insert(
+        "premature_non_increasing".to_string(),
+        qualification.premature_m003_remaining <= qualification.premature_m002_remaining,
+    );
+    gate_results.insert(
+        "contract_coverage".to_string(),
+        qualification.contract_demands_covered == qualification.contract_demands_total
+            && qualification.contract_demands_total > 0,
+    );
+    gate_results.insert(
+        "pure_effect_path_p95_ms".to_string(),
+        p95 <= gates.pure_effect_path_p95_ms_max,
+    );
+    Ok(CausalM003Report {
+        schema_version: CAUSAL_M003_REPORT_SCHEMA_VERSION,
+        protocol: "causal-frontier-m003-structured-effect-path".to_string(),
+        ontology_version: CAUSAL_ONTOLOGY_VERSION,
+        contract_schema_version: CAUSAL_CONTRACT_SCHEMA_VERSION,
+        effect_path_schema_version: CAUSAL_EFFECT_PATH_SCHEMA_VERSION,
+        benchmark_asset: CAUSAL_BENCHMARK_ASSET.to_string(),
+        benchmark_fingerprint: prereg.benchmark_fingerprint.clone(),
+        contract_catalog_fingerprint: contract_fingerprint,
+        effect_catalog_fingerprint: effect_fingerprint,
+        catalog_binding_complete: binding_complete,
+        dev_fingerprint: prereg.dev_fingerprint.clone(),
+        qualification_fingerprint: prereg.qualification_fingerprint.clone(),
+        structured_dev_cases: dev_cases.len(),
+        structured_qualification_cases: qual_cases.len(),
+        dev,
+        qualification,
+        reduction_holds_exact,
+        latency_iterations_per_surface,
+        latency_samples: latency.len(),
+        latency_p50_ms: p50,
+        latency_p95_ms: p95,
+        latency_max_ms: max,
+        gates,
+        gate_results,
+        disposition: disposition.code().to_string(),
+        disposition_summary: disposition.summary().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3885,6 +5169,661 @@ mod tests {
         .expect("m002 qualifies for receipt regeneration");
         let path =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CAUSAL_M002_RESULT_ASSET);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&report).expect("receipt serializes"),
+        )
+        .expect("receipt writes");
+        eprintln!("regenerated {}", path.display());
+    }
+
+    // ─── M003 structured effect-path frontier ────────────────────────────
+
+    fn m003_structured_cases() -> Vec<CausalBenchmarkCase> {
+        load_causal_benchmark(BENCHMARK_JSONL)
+            .expect("frozen benchmark loads")
+            .into_iter()
+            .filter(|case| case.desired_outcome.is_some())
+            .collect()
+    }
+
+    fn m003_synth_contract(
+        requires_all: &[CausalStateFact],
+        produces: &[CausalOutcome],
+    ) -> ToolCausalContract {
+        ToolCausalContract {
+            schema_version: CAUSAL_CONTRACT_SCHEMA_VERSION,
+            requires_all: requires_all.iter().copied().collect(),
+            requires_any: Vec::new(),
+            forbids: BTreeSet::new(),
+            produces: produces.iter().copied().collect(),
+            provenance: CausalContractProvenance::new(
+                "static:test-synthetic",
+                "synthetic planner bound test",
+            ),
+        }
+    }
+
+    #[test]
+    fn m003_demand_mapping_covers_typed_sources() {
+        // Every allowed host-owned demand source derives its outcome; kinds
+        // without an outcome mapping abstain.
+        let valid = [
+            (
+                WorkEvidenceKind::TestJob,
+                CausalOutcome::TestEvidenceProduced,
+            ),
+            (
+                WorkEvidenceKind::Commit,
+                CausalOutcome::CommitEvidenceProduced,
+            ),
+            (WorkEvidenceKind::Artifact, CausalOutcome::ArtifactExpanded),
+            (
+                WorkEvidenceKind::DelegatedRun,
+                CausalOutcome::DelegatedRunProduced,
+            ),
+            (
+                WorkEvidenceKind::AgentRun,
+                CausalOutcome::DelegatedRunProduced,
+            ),
+        ];
+        let mut template = m003_structured_cases()
+            .into_iter()
+            .next()
+            .expect("structured cases exist");
+        for (evidence, outcome) in valid {
+            template.desired_outcome = Some(CausalDesiredOutcome {
+                kind: outcome,
+                evidence_kind: Some(evidence),
+            });
+            assert_eq!(
+                derive_structured_demand(&template).expect("typed demand derives"),
+                CausalDesiredOutcome {
+                    kind: outcome,
+                    evidence_kind: Some(evidence),
+                }
+            );
+        }
+        template.desired_outcome = Some(CausalDesiredOutcome {
+            kind: CausalOutcome::DelegatedRunProduced,
+            evidence_kind: Some(WorkEvidenceKind::SchedulerJob),
+        });
+        assert_eq!(
+            derive_structured_demand(&template),
+            Err(NoStructuredDemandReason::UnsupportedEvidenceKind {
+                evidence: "scheduler_job".to_string(),
+            })
+        );
+        template.desired_outcome = Some(CausalDesiredOutcome {
+            kind: CausalOutcome::WorkspaceMutationProduced,
+            evidence_kind: None,
+        });
+        assert_eq!(
+            derive_structured_demand(&template),
+            Err(NoStructuredDemandReason::UnsupportedEvidenceKind {
+                evidence: "none".to_string(),
+            })
+        );
+        template.desired_outcome = Some(CausalDesiredOutcome {
+            kind: CausalOutcome::CommitEvidenceProduced,
+            evidence_kind: Some(WorkEvidenceKind::TestJob),
+        });
+        assert_eq!(
+            derive_structured_demand(&template),
+            Err(NoStructuredDemandReason::EvidenceMappingMismatch {
+                outcome: "commit_evidence_produced".to_string(),
+                evidence: "test_job".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn m003_demand_ignores_free_text() {
+        // The no-goal/plan rationale mentions a "test surface", but without
+        // a typed demand M003 must abstain: prose never creates a demand.
+        let case = load_causal_benchmark(BENCHMARK_JSONL)
+            .expect("frozen benchmark loads")
+            .into_iter()
+            .find(|case| case.case_id == "cf-v1-no_goal_plan-001")
+            .expect("no-goal case exists");
+        assert!(case.desired_outcome.is_none());
+        assert!(case.rationale.contains("test"));
+        assert_eq!(
+            derive_structured_demand(&case),
+            Err(NoStructuredDemandReason::NoDesiredOutcome)
+        );
+    }
+
+    #[test]
+    fn m003_frozen_demands_all_validate() {
+        // Every frozen structured demand in the M001 benchmark carries a
+        // consistent typed outcome/evidence pair.
+        let cases = m003_structured_cases();
+        assert_eq!(cases.len(), 54);
+        for case in &cases {
+            derive_structured_demand(case).expect("frozen demand must validate");
+        }
+    }
+
+    #[test]
+    fn m003_derive_unmet_demands_from_inputs() {
+        let empty = CausalStateInputs::default();
+        assert!(derive_unmet_demands(&empty).is_empty());
+        let inputs = CausalStateInputs {
+            unmet_test_acceptance: true,
+            unmet_commit_acceptance: true,
+            unmet_delegated_run_acceptance: true,
+            unmet_artifact_acceptance: true,
+            ..Default::default()
+        };
+        let demands = derive_unmet_demands(&inputs);
+        let kinds: Vec<CausalOutcome> = demands.iter().map(|demand| demand.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                CausalOutcome::TestEvidenceProduced,
+                CausalOutcome::CommitEvidenceProduced,
+                CausalOutcome::DelegatedRunProduced,
+                CausalOutcome::ArtifactExpanded,
+            ]
+        );
+        let order: Vec<CausalOutcome> = CausalOutcome::all().into_iter().collect();
+        let mut positions: Vec<usize> = kinds
+            .iter()
+            .map(|kind| order.iter().position(|o| o == kind).expect("known outcome"))
+            .collect();
+        let sorted = {
+            let mut ascending = positions.clone();
+            ascending.sort_unstable();
+            ascending
+        };
+        assert_eq!(positions, sorted);
+        positions.clear();
+    }
+
+    #[test]
+    fn m003_preview_demand_armed_only() {
+        assert_eq!(derive_preview_demand(false), None);
+        assert_eq!(
+            derive_preview_demand(true),
+            Some(CausalDesiredOutcome {
+                kind: CausalOutcome::WorkspaceMutationProduced,
+                evidence_kind: None,
+            })
+        );
+    }
+
+    #[test]
+    fn m003_effect_catalog_binds_implementation_identity() {
+        // The effect fingerprint is stable, differs from the payload-only
+        // catalog fingerprint, and moves with implementation/schema
+        // identity through the bound-contract seam.
+        assert_eq!(effect_catalog_fingerprint(), effect_catalog_fingerprint());
+        assert_ne!(effect_catalog_fingerprint(), causal_catalog_fingerprint());
+        let contract = native_causal_contract("test").expect("pilot contract exists");
+        let schema = serde_json::json!({"type": "object"});
+        let first =
+            bind_causal_contract("test", &contract, "codegg/test", "1", &schema).expect("binds");
+        let impl_drift =
+            bind_causal_contract("test", &contract, "codegg/test", "2", &schema).expect("binds");
+        assert_ne!(first.fingerprint, impl_drift.fingerprint);
+        let schema_drift = bind_causal_contract(
+            "test",
+            &contract,
+            "codegg/test",
+            "1",
+            &serde_json::json!({"type": "object", "extra": true}),
+        )
+        .expect("binds");
+        assert_ne!(first.fingerprint, schema_drift.fingerprint);
+    }
+
+    #[test]
+    fn m003_all_pilot_tools_resolve_live() {
+        assert!(effect_catalog_binding_complete());
+    }
+
+    #[test]
+    fn m003_planner_finds_direct_producer() {
+        let catalog = causal_catalog();
+        let admissible: BTreeSet<String> = NATIVE_PILOT_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        let demand = |kind, evidence| CausalDesiredOutcome {
+            kind,
+            evidence_kind: evidence,
+        };
+        assert_eq!(
+            plan_effect_path(
+                &demand(
+                    CausalOutcome::TestEvidenceProduced,
+                    Some(WorkEvidenceKind::TestJob)
+                ),
+                &BTreeSet::new(),
+                &admissible,
+                &catalog,
+            ),
+            Some(vec!["test".to_string()])
+        );
+        let mut facts = BTreeSet::new();
+        facts.insert(CausalStateFact::UnmetCommitAcceptance);
+        assert_eq!(
+            plan_effect_path(
+                &demand(
+                    CausalOutcome::CommitEvidenceProduced,
+                    Some(WorkEvidenceKind::Commit)
+                ),
+                &facts,
+                &admissible,
+                &catalog,
+            ),
+            Some(vec!["commit".to_string()])
+        );
+        let mut artifact_facts = BTreeSet::new();
+        artifact_facts.insert(CausalStateFact::ArtifactHandleAvailable);
+        assert_eq!(
+            plan_effect_path(
+                &demand(
+                    CausalOutcome::ArtifactExpanded,
+                    Some(WorkEvidenceKind::Artifact)
+                ),
+                &artifact_facts,
+                &admissible,
+                &catalog,
+            ),
+            Some(vec!["context_read".to_string()])
+        );
+        assert_eq!(
+            plan_effect_path(
+                &demand(
+                    CausalOutcome::DelegatedRunProduced,
+                    Some(WorkEvidenceKind::DelegatedRun)
+                ),
+                &BTreeSet::new(),
+                &admissible,
+                &catalog,
+            ),
+            Some(vec!["task".to_string()])
+        );
+    }
+
+    #[test]
+    fn m003_planner_bounds_depth_no_repeat_lexicographic() {
+        use CausalOutcome::{
+            CommitEvidenceProduced, FilesInspected, PathsDiscovered, SymbolFactsProduced,
+            TestEvidenceProduced, TextMatchesProduced,
+        };
+        use CausalStateFact::{
+            ActiveGoal, FailedTestEvidence, TestEvidenceAvailable, TouchedFilesAvailable,
+        };
+        // Lexicographic tie-break between two direct producers.
+        let mut tied = BTreeMap::new();
+        tied.insert(
+            "beta".to_string(),
+            m003_synth_contract(&[], &[FilesInspected]),
+        );
+        tied.insert(
+            "alpha".to_string(),
+            m003_synth_contract(&[], &[FilesInspected]),
+        );
+        assert_eq!(
+            find_minimal_effect_path(
+                FilesInspected,
+                &BTreeSet::new(),
+                &tied,
+                &BTreeMap::new(),
+                CAUSAL_M003_MAX_PATH_DEPTH,
+            ),
+            Some(vec!["alpha".to_string()])
+        );
+        // Two-step chain through synthetic enablement; depth 1 is blind.
+        let mut chain = BTreeMap::new();
+        chain.insert(
+            "t_first".to_string(),
+            m003_synth_contract(&[ActiveGoal], &[TestEvidenceProduced]),
+        );
+        chain.insert(
+            "t_second".to_string(),
+            m003_synth_contract(&[TouchedFilesAvailable], &[CommitEvidenceProduced]),
+        );
+        let mut enablement: BTreeMap<CausalOutcome, BTreeSet<CausalStateFact>> = BTreeMap::new();
+        enablement.insert(
+            TestEvidenceProduced,
+            BTreeSet::from([TouchedFilesAvailable]),
+        );
+        let mut start = BTreeSet::new();
+        start.insert(ActiveGoal);
+        assert_eq!(
+            find_minimal_effect_path(
+                CommitEvidenceProduced,
+                &start,
+                &chain,
+                &enablement,
+                CAUSAL_M003_MAX_PATH_DEPTH,
+            ),
+            Some(vec!["t_first".to_string(), "t_second".to_string()])
+        );
+        assert_eq!(
+            find_minimal_effect_path(CommitEvidenceProduced, &start, &chain, &enablement, 1,),
+            None
+        );
+        // Four-step chain exceeds the frozen depth cap but not a deeper
+        // one; cycles terminate without repeating a tool.
+        let mut long = BTreeMap::new();
+        long.insert(
+            "c1".to_string(),
+            m003_synth_contract(&[ActiveGoal], &[FilesInspected]),
+        );
+        long.insert(
+            "c2".to_string(),
+            m003_synth_contract(&[TouchedFilesAvailable], &[PathsDiscovered]),
+        );
+        long.insert(
+            "c3".to_string(),
+            m003_synth_contract(&[TestEvidenceAvailable], &[TextMatchesProduced]),
+        );
+        long.insert(
+            "c4".to_string(),
+            m003_synth_contract(&[FailedTestEvidence], &[SymbolFactsProduced]),
+        );
+        let mut long_enable: BTreeMap<CausalOutcome, BTreeSet<CausalStateFact>> = BTreeMap::new();
+        long_enable.insert(FilesInspected, BTreeSet::from([TouchedFilesAvailable]));
+        long_enable.insert(PathsDiscovered, BTreeSet::from([TestEvidenceAvailable]));
+        long_enable.insert(TextMatchesProduced, BTreeSet::from([FailedTestEvidence]));
+        long_enable.insert(SymbolFactsProduced, BTreeSet::from([ActiveGoal]));
+        assert_eq!(
+            find_minimal_effect_path(
+                SymbolFactsProduced,
+                &start,
+                &long,
+                &long_enable,
+                CAUSAL_M003_MAX_PATH_DEPTH,
+            ),
+            None
+        );
+        assert_eq!(
+            find_minimal_effect_path(SymbolFactsProduced, &start, &long, &long_enable, 4,),
+            Some(vec![
+                "c1".to_string(),
+                "c2".to_string(),
+                "c3".to_string(),
+                "c4".to_string(),
+            ])
+        );
+        assert_eq!(
+            find_minimal_effect_path(
+                FilesInspected,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                CAUSAL_M003_MAX_PATH_DEPTH,
+            ),
+            None
+        );
+        assert_eq!(
+            find_minimal_effect_path(FilesInspected, &BTreeSet::new(), &tied, &BTreeMap::new(), 0,),
+            None
+        );
+    }
+
+    #[test]
+    fn m003_unknown_tools_outside_graph() {
+        // Uncontracted tools can never appear on a path, even when they
+        // are admissible members of the eligible surface.
+        let catalog = causal_catalog();
+        let demand = CausalDesiredOutcome {
+            kind: CausalOutcome::TestEvidenceProduced,
+            evidence_kind: Some(WorkEvidenceKind::TestJob),
+        };
+        let admissible: BTreeSet<String> = ["bash".to_string(), "test".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            plan_effect_path(&demand, &BTreeSet::new(), &admissible, &catalog),
+            Some(vec!["test".to_string()])
+        );
+        let uncontracted_only: BTreeSet<String> = ["bash".to_string()].into_iter().collect();
+        assert_eq!(
+            plan_effect_path(&demand, &BTreeSet::new(), &uncontracted_only, &catalog),
+            None
+        );
+        // No frozen benchmark path ever leaves the native pilot catalog.
+        for case in m003_structured_cases() {
+            let frontier = evaluate_benchmark_case(&case, &catalog, &causal_catalog_fingerprint())
+                .expect("benchmark surfaces evaluate");
+            if let Some(path) = plan_effect_path(
+                &derive_structured_demand(&case).expect("frozen demand validates"),
+                &case.facts,
+                &frontier.admissible_contracted,
+                &catalog,
+            ) {
+                for step in path {
+                    assert!(
+                        NATIVE_PILOT_TOOLS.contains(&step.as_str()),
+                        "path tool {step} is outside the native catalog"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m003_no_admissible_producer_falls_back() {
+        // A typed commit demand with a recorded unresolved error makes the
+        // only producer inadmissible: M003 abstains instead of hiding M002.
+        let catalog = causal_catalog();
+        let mut case = m003_structured_cases()
+            .into_iter()
+            .find(|case| {
+                case.desired_outcome
+                    .as_ref()
+                    .is_some_and(|desired| desired.kind == CausalOutcome::CommitEvidenceProduced)
+            })
+            .expect("commit-demand case exists");
+        case.facts.insert(CausalStateFact::UnresolvedError);
+        let (status, _) =
+            evaluate_effect_path(&case, &catalog, "contract-fp", "effect-fp", "effect-fp")
+                .expect("evaluates");
+        match status {
+            EffectPathStatus::NoAdmissiblePath { demand } => {
+                assert_eq!(demand.kind, CausalOutcome::CommitEvidenceProduced);
+            }
+            other => panic!(
+                "expected no-admissible-path abstention, got {}",
+                other.code()
+            ),
+        }
+    }
+
+    #[test]
+    fn m003_stale_catalog_fails_closed() {
+        let catalog = causal_catalog();
+        let case = m003_structured_cases()
+            .into_iter()
+            .next()
+            .expect("structured cases exist");
+        let (status, _) =
+            evaluate_effect_path(&case, &catalog, "contract-fp", "live-fp", "expected-fp")
+                .expect("evaluates");
+        assert_eq!(status.code(), "stale_catalog_fallback");
+        assert_eq!(status.used_size(7), 7);
+    }
+
+    #[test]
+    fn m003_withheld_fails_closed() {
+        let catalog = causal_catalog();
+        let mut case = m003_structured_cases()
+            .into_iter()
+            .next()
+            .expect("structured cases exist");
+        case.eligible.push("denied_shell_tool".to_string());
+        let err = evaluate_effect_path(&case, &catalog, "contract-fp", "fp", "fp")
+            .expect_err("withheld input must fail");
+        assert_eq!(
+            err,
+            EffectPathError::WithheldInSurface("denied_shell_tool".to_string())
+        );
+    }
+
+    #[test]
+    fn m003_result_carries_provenance_and_fingerprints() {
+        // The advisory result binds the demand, the contract provenance of
+        // every path tool, and both fingerprints for freshness checks.
+        let catalog = causal_catalog();
+        let case = m003_structured_cases()
+            .into_iter()
+            .find(|case| {
+                case.desired_outcome
+                    .as_ref()
+                    .is_some_and(|desired| desired.kind == CausalOutcome::TestEvidenceProduced)
+            })
+            .expect("test-demand case exists");
+        let (status, _) =
+            evaluate_effect_path(&case, &catalog, "contract-fp", "effect-fp", "effect-fp")
+                .expect("evaluates");
+        match status {
+            EffectPathStatus::Path(frontier) => {
+                assert_eq!(frontier.path, vec!["test".to_string()]);
+                assert_eq!(
+                    frontier.tool_provenance.get("test").map(String::as_str),
+                    Some("static:M001-pilot-native")
+                );
+                assert_eq!(
+                    frontier.snapshot_fingerprint,
+                    benchmark_case_state_fingerprint(&case)
+                );
+                assert_eq!(frontier.contract_catalog_fingerprint, "contract-fp");
+                assert_eq!(frontier.effect_catalog_fingerprint, "effect-fp");
+                assert!(frontier
+                    .is_fresh_against(&benchmark_case_state_fingerprint(&case), "effect-fp"));
+                assert!(!frontier
+                    .is_fresh_against(&benchmark_case_state_fingerprint(&case), "other-fp"));
+            }
+            other => panic!("expected a path, got {}", other.code()),
+        }
+    }
+
+    #[test]
+    fn m003_end_to_end_negative_on_frozen_benchmark() {
+        // Full offline qualification over the frozen assets: every
+        // structured demand finds a length-1 path, the caller-visible
+        // median drops from 3 to 1, premature exposure stays at zero, but
+        // narrowing to demand producers hides plan/goal-state gold tools,
+        // so M003 closes negative and M004 keeps the M002 frontier.
+        let report = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
+            .expect("m003 qualifies");
+        assert_eq!(report.structured_dev_cases, 36);
+        assert_eq!(report.structured_qualification_cases, 18);
+        assert_eq!(report.dev.cases, 36);
+        assert_eq!(report.qualification.cases, 18);
+        assert_eq!(report.dev.path_found, 36);
+        assert_eq!(report.qualification.path_found, 18);
+        assert_eq!(report.qualification.no_admissible_path, 0);
+        assert_eq!(report.qualification.abstentions, 0);
+        assert_eq!(report.qualification.median_path_length, 1);
+        assert_eq!(report.qualification.max_path_length, 1);
+        assert_eq!(report.qualification.median_m002_promotion, 3);
+        assert_eq!(report.qualification.median_m003_used, 1);
+        assert!(report.reduction_holds_exact);
+        assert!(report.qualification.gold_current_step_preservation_m003 < 1.0);
+        assert!(!report.qualification.families_losing_gold_tool.is_empty());
+        assert!(!report
+            .qualification
+            .families_losing_gold_tool
+            .contains(&"artifact_recovery".to_string()));
+        assert_eq!(report.qualification.premature_m003_remaining, 0);
+        assert!(
+            report.qualification.premature_m003_remaining
+                <= report.qualification.premature_m002_remaining
+        );
+        assert_eq!(
+            report.qualification.contract_demands_covered,
+            report.qualification.contract_demands_total
+        );
+        assert!(report.catalog_binding_complete);
+        assert_eq!(report.disposition, "D");
+        assert!(!report.gate_results["gold_current_step_preservation"]);
+        assert!(!report.gate_results["no_family_loses_gold_tool"]);
+        assert!(report.gate_results["median_used_reduction"]);
+        assert!(report.gate_results["premature_non_increasing"]);
+        assert!(report.gate_results["contract_coverage"]);
+        assert!(report.gate_results["authority_violations"]);
+        assert!(report.gate_results["uncontracted_fallback_preservation"]);
+        assert!(report.gate_results["pure_effect_path_p95_ms"]);
+        assert!(report.latency_p95_ms <= report.gates.pure_effect_path_p95_ms_max);
+        assert_eq!(report.latency_samples, 18 * CAUSAL_M003_LATENCY_ITERATIONS);
+    }
+
+    #[test]
+    fn m003_checked_in_receipt_matches_recomputation() {
+        // The checked-in receipt is identical in every deterministic field
+        // to live recomputation; only the environment-sensitive latency
+        // measurements are compared by gate rather than equality.
+        const RECEIPT_JSON: &str =
+            include_str!("../../assets/tool-advisor/causal-frontier-m003-result.json");
+        let stored: CausalM003Report =
+            serde_json::from_str(RECEIPT_JSON).expect("stored receipt parses");
+        let fresh = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
+            .expect("m003 requalifies");
+        assert_eq!(stored.schema_version, fresh.schema_version);
+        assert_eq!(stored.protocol, fresh.protocol);
+        assert_eq!(stored.ontology_version, fresh.ontology_version);
+        assert_eq!(
+            stored.contract_schema_version,
+            fresh.contract_schema_version
+        );
+        assert_eq!(
+            stored.effect_path_schema_version,
+            fresh.effect_path_schema_version
+        );
+        assert_eq!(stored.benchmark_fingerprint, fresh.benchmark_fingerprint);
+        assert_eq!(
+            stored.contract_catalog_fingerprint,
+            fresh.contract_catalog_fingerprint
+        );
+        assert_eq!(
+            stored.effect_catalog_fingerprint,
+            fresh.effect_catalog_fingerprint
+        );
+        assert_eq!(
+            stored.catalog_binding_complete,
+            fresh.catalog_binding_complete
+        );
+        assert_eq!(stored.dev_fingerprint, fresh.dev_fingerprint);
+        assert_eq!(
+            stored.qualification_fingerprint,
+            fresh.qualification_fingerprint
+        );
+        assert_eq!(stored.structured_dev_cases, fresh.structured_dev_cases);
+        assert_eq!(
+            stored.structured_qualification_cases,
+            fresh.structured_qualification_cases
+        );
+        assert_eq!(stored.dev, fresh.dev);
+        assert_eq!(stored.qualification, fresh.qualification);
+        assert_eq!(stored.reduction_holds_exact, fresh.reduction_holds_exact);
+        assert_eq!(stored.gates, fresh.gates);
+        assert_eq!(stored.gate_results, fresh.gate_results);
+        assert_eq!(stored.disposition, fresh.disposition);
+        assert_eq!(
+            stored.latency_iterations_per_surface,
+            fresh.latency_iterations_per_surface
+        );
+        assert_eq!(stored.latency_samples, fresh.latency_samples);
+        assert!(stored.latency_p95_ms <= stored.gates.pure_effect_path_p95_ms_max);
+        assert!(fresh.latency_p95_ms <= fresh.gates.pure_effect_path_p95_ms_max);
+    }
+
+    /// Regenerate the checked-in M003 receipt. Ignored by default: run
+    /// explicitly after reviewing the frozen benchmark or catalog inputs.
+    #[test]
+    #[ignore]
+    fn m003_regenerate_checked_in_receipt() {
+        let report = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
+            .expect("m003 qualifies for receipt regeneration");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CAUSAL_M003_RESULT_ASSET);
         std::fs::write(
             &path,
             serde_json::to_vec_pretty(&report).expect("receipt serializes"),

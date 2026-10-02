@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Experiment Roadmap
 
-Status: active — M001 closed positively, M002 closed (A), M003 active (optional), M004 closed positively, M005 closed (B)
+Status: closed — M001 closed positively, M002 closed (A), M003 closed (D, negative), M004 closed positively (M002 selected), M005 closed (B)
 
 Repository planning baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 
@@ -223,10 +223,19 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/003-structured-effect-path-frontier.md`
 
-Status: ready (optional; M002 closed with disposition A — dependency met).
+Status: **closed with disposition D (negative)**.
 
-Use only explicit structured WorkPlan demands to compute a bounded causal path.
-No free-text intent model.
+Closure: `plans/closure/tool-selection-advisor-causal-frontier-experiment/003-status.md`
+(implementation `82fc5b40`; receipt
+`assets/tool-advisor/causal-frontier-m003-result.json`; 54 structured
+cases, 54/54 paths length 1, caller-visible median 1 vs M002 median 3,
+premature 0, p95 ~0.05 ms — but qualification preservation 0.41 with 32
+false exclusions across 4 of 5 families, so M004 selects M002).
+
+Narrowing the M002 admissibility frontier to minimal demand-producer
+paths hides plan/goal-state gold tools the current step genuinely needs.
+The reduction is real but unsafe; the effect-path line ends here with no
+successor.
 
 ### M004 — Observe-mode request-preparation integration
 
@@ -234,13 +243,14 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/004-observe-mode-runtime-integration.md`
 
-Status: closed positively (implementation `635213bc`; closure `plans/closure/tool-selection-advisor-causal-frontier-experiment/004-status.md`).
+Status: closed positively (implementation `635213bc`; closure `plans/closure/tool-selection-advisor-causal-frontier-experiment/004-status.md`; selected frontier M002 — M003 closed negative with disposition D).
 
 Integrate the selected frontier after `ResolvedToolSurface` in observe-only
 mode, with no provider-menu behavior change. M004 evaluated the M002
-frontier (M003 never closed positively): default-off config, bounded local
-diagnostics, byte-identical definitions, session-local observation with a
-never-blocking broker hook, all runtime gates green. M005 is unblocked.
+frontier (M003 closed negative with disposition D): default-off config,
+bounded local diagnostics, byte-identical definitions, session-local
+observation with a never-blocking broker hook, all runtime gates green.
+M005 is unblocked.
 
 ### M005 — Bounded active disclosure and trajectory qualification
 

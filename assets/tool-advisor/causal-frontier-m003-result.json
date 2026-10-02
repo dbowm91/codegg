@@ -1,0 +1,1781 @@
+{
+  "schema_version": 1,
+  "protocol": "causal-frontier-m003-structured-effect-path",
+  "ontology_version": 1,
+  "contract_schema_version": 1,
+  "effect_path_schema_version": 1,
+  "benchmark_asset": "assets/tool-advisor/causal-frontier-v1.jsonl",
+  "benchmark_fingerprint": "f60dad170f3a2527529152628e01dd5f908efb26d325f70a8a80dca2735820e4",
+  "contract_catalog_fingerprint": "0ac06de84189b093c55481ec190068a7dff5030b868c1ed804af4042cf3fd944",
+  "effect_catalog_fingerprint": "94ef4d745c79450f8d4b27a0985551c82fb2f572d7f8eba6aa4718c5edfd7649",
+  "catalog_binding_complete": true,
+  "dev_fingerprint": "09915ce1a88d5dd1e00dc0e40d3838f4cff27a4841a2663a0ed53b9b566ea81a",
+  "qualification_fingerprint": "010c66befe0fd710e4fd8936433f37dbf99b59a46ab9704bfe74fcb98c0d4139",
+  "structured_dev_cases": 36,
+  "structured_qualification_cases": 18,
+  "dev": {
+    "cases": 36,
+    "path_found": 36,
+    "no_admissible_path": 0,
+    "abstentions": 0,
+    "path_lengths": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "median_path_length": 1,
+    "max_path_length": 1,
+    "gold_current_total": 110,
+    "gold_current_visible_m002": 110,
+    "gold_current_visible_m003": 44,
+    "gold_current_step_preservation_m002": 1.0,
+    "gold_current_step_preservation_m003": 0.4,
+    "false_causal_exclusions": 66,
+    "families_losing_gold_tool": [
+      "unmet_test_acceptance",
+      "unmet_commit_acceptance",
+      "failed_tests",
+      "mixed_state"
+    ],
+    "premature_baseline": 104,
+    "premature_m002_remaining": 0,
+    "premature_m003_remaining": 0,
+    "contract_demands_covered": 36,
+    "contract_demands_total": 36,
+    "contract_coverage": 1.0,
+    "uncontracted_gold_total": 0,
+    "uncontracted_gold_retained": 0,
+    "uncontracted_fallback_preservation": 1.0,
+    "authority_violations": 0,
+    "m002_promotion_sizes": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      4,
+      4,
+      4,
+      4,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5
+    ],
+    "median_m002_promotion": 3,
+    "m003_used_sizes": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "median_m003_used": 1,
+    "max_m003_used": 1,
+    "families": [
+      {
+        "family": "unmet_test_acceptance",
+        "cases": 8,
+        "path_found": 8,
+        "gold_current_total": 28,
+        "gold_current_visible_m003": 8,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 3,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "unmet_commit_acceptance",
+        "cases": 8,
+        "path_found": 8,
+        "gold_current_total": 28,
+        "gold_current_visible_m003": 8,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 3,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "artifact_recovery",
+        "cases": 8,
+        "path_found": 8,
+        "gold_current_total": 16,
+        "gold_current_visible_m003": 16,
+        "loses_gold_tool": false,
+        "median_m002_promotion": 0,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "failed_tests",
+        "cases": 8,
+        "path_found": 8,
+        "gold_current_total": 24,
+        "gold_current_visible_m003": 8,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 3,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "mixed_state",
+        "cases": 4,
+        "path_found": 4,
+        "gold_current_total": 14,
+        "gold_current_visible_m003": 4,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 5,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      }
+    ],
+    "rows": [
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-001",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_update_progress",
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-002",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-003",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_update_progress",
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-004",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-005",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_update_progress",
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-006",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-007",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_update_progress",
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-008",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-001",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-002",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 4,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-003",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-004",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 4,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-005",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-006",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 4,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-007",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-008",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 4,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-001",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-002",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-003",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-004",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-005",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-006",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-007",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-008",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-001",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-002",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-003",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-004",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-005",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-006",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-007",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-008",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-mixed_state-001",
+        "family": "mixed_state",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "context_read",
+          "goal_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 2,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-mixed_state-003",
+        "family": "mixed_state",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 2,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-mixed_state-005",
+        "family": "mixed_state",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 2,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-mixed_state-007",
+        "family": "mixed_state",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "context_read",
+          "goal_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 2,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      }
+    ]
+  },
+  "qualification": {
+    "cases": 18,
+    "path_found": 18,
+    "no_admissible_path": 0,
+    "abstentions": 0,
+    "path_lengths": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "median_path_length": 1,
+    "max_path_length": 1,
+    "gold_current_total": 54,
+    "gold_current_visible_m002": 54,
+    "gold_current_visible_m003": 22,
+    "gold_current_step_preservation_m002": 1.0,
+    "gold_current_step_preservation_m003": 0.4074074074074074,
+    "false_causal_exclusions": 32,
+    "families_losing_gold_tool": [
+      "unmet_test_acceptance",
+      "unmet_commit_acceptance",
+      "failed_tests",
+      "mixed_state"
+    ],
+    "premature_baseline": 52,
+    "premature_m002_remaining": 0,
+    "premature_m003_remaining": 0,
+    "contract_demands_covered": 18,
+    "contract_demands_total": 18,
+    "contract_coverage": 1.0,
+    "uncontracted_gold_total": 0,
+    "uncontracted_gold_retained": 0,
+    "uncontracted_fallback_preservation": 1.0,
+    "authority_violations": 0,
+    "m002_promotion_sizes": [
+      0,
+      0,
+      0,
+      0,
+      3,
+      3,
+      3,
+      3,
+      3,
+      3,
+      4,
+      4,
+      5,
+      5,
+      5,
+      5,
+      5,
+      5
+    ],
+    "median_m002_promotion": 3,
+    "m003_used_sizes": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "median_m003_used": 1,
+    "max_m003_used": 1,
+    "families": [
+      {
+        "family": "unmet_test_acceptance",
+        "cases": 4,
+        "path_found": 4,
+        "gold_current_total": 14,
+        "gold_current_visible_m003": 4,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 3,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "unmet_commit_acceptance",
+        "cases": 4,
+        "path_found": 4,
+        "gold_current_total": 14,
+        "gold_current_visible_m003": 4,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 3,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "artifact_recovery",
+        "cases": 4,
+        "path_found": 4,
+        "gold_current_total": 8,
+        "gold_current_visible_m003": 8,
+        "loses_gold_tool": false,
+        "median_m002_promotion": 0,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "failed_tests",
+        "cases": 4,
+        "path_found": 4,
+        "gold_current_total": 12,
+        "gold_current_visible_m003": 4,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 3,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      },
+      {
+        "family": "mixed_state",
+        "cases": 2,
+        "path_found": 2,
+        "gold_current_total": 6,
+        "gold_current_visible_m003": 2,
+        "loses_gold_tool": true,
+        "median_m002_promotion": 5,
+        "median_m003_used": 1,
+        "max_m003_used": 1
+      }
+    ],
+    "rows": [
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-009",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_update_progress",
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-010",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-011",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_update_progress",
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_test_acceptance-012",
+        "family": "unmet_test_acceptance",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-009",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-010",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 4,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-011",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-unmet_commit_acceptance-012",
+        "family": "unmet_commit_acceptance",
+        "demand_kind": "commit_evidence_produced",
+        "demand_evidence": "commit",
+        "status": "path",
+        "status_detail": "demand=commit_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "commit"
+        ],
+        "m002_promotion_size": 4,
+        "m003_used_size": 1,
+        "gold_current_total": 4,
+        "gold_current_visible_m002": 4,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "git",
+          "work_plan_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-009",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-010",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-011",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-artifact_recovery-012",
+        "family": "artifact_recovery",
+        "demand_kind": "artifact_expanded",
+        "demand_evidence": "artifact",
+        "status": "path",
+        "status_detail": "demand=artifact_expanded",
+        "path_length": 1,
+        "path_tools": [
+          "context_read"
+        ],
+        "m002_promotion_size": 0,
+        "m003_used_size": 1,
+        "gold_current_total": 2,
+        "gold_current_visible_m002": 2,
+        "gold_current_visible_m003": 2,
+        "false_exclusions": [],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-009",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-010",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-011",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-failed_tests-012",
+        "family": "failed_tests",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 3,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "verify",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 3,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-mixed_state-009",
+        "family": "mixed_state",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 2,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      },
+      {
+        "case_id": "cf-v1-mixed_state-011",
+        "family": "mixed_state",
+        "demand_kind": "test_evidence_produced",
+        "demand_evidence": "test_job",
+        "status": "path",
+        "status_detail": "demand=test_evidence_produced",
+        "path_length": 1,
+        "path_tools": [
+          "test"
+        ],
+        "m002_promotion_size": 5,
+        "m003_used_size": 1,
+        "gold_current_total": 3,
+        "gold_current_visible_m002": 3,
+        "gold_current_visible_m003": 1,
+        "false_exclusions": [
+          "goal_get",
+          "work_plan_update_item"
+        ],
+        "premature_baseline": 2,
+        "premature_m002_remaining": 0,
+        "premature_m003_remaining": 0,
+        "uncontracted_gold_total": 0,
+        "uncontracted_gold_retained": 0
+      }
+    ]
+  },
+  "reduction_holds_exact": true,
+  "latency_iterations_per_surface": 1001,
+  "latency_samples": 18018,
+  "latency_p50_ms": 0.037667,
+  "latency_p95_ms": 0.048208,
+  "latency_max_ms": 0.292125,
+  "gates": {
+    "gold_current_step_preservation": 1.0,
+    "authority_violations": 0,
+    "uncontracted_fallback_preservation": 1.0,
+    "median_used_max_structured_demand": 2,
+    "pure_effect_path_p95_ms_max": 5.0
+  },
+  "gate_results": {
+    "authority_violations": true,
+    "contract_coverage": true,
+    "gold_current_step_preservation": false,
+    "median_used_reduction": true,
+    "no_family_loses_gold_tool": false,
+    "premature_non_increasing": true,
+    "pure_effect_path_p95_ms": true,
+    "uncontracted_fallback_preservation": true
+  },
+  "disposition": "D",
+  "disposition_summary": "D — negative: effect-path narrowing is unsafe or unhelpful; M002 remains selected"
+}
