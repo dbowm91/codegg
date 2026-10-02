@@ -119,6 +119,19 @@ against local evidence plus the cited receipts.
   Fixing daemon-startup control flow is out of M001 scope; recorded as a
   low finding in §10. Hosted CI is the arbiter (see §12).
 
+### Hosted CI reconciliation (factual correction, post-push)
+
+- Run `36964201769` (closure commit `7165f9a2`) failed exactly one step:
+  hosted Workspace Clippy (rust 1.99.0) flags the same pre-existing
+  `never_loop` at `src/main.rs:3677`. The parent main run `36958183677`
+  failed identically, confirming the drift predates M001.
+- Follow-up `62653a85` removes the vacuous `loop`/`break` (direct match;
+  every other arm exits the process, so no iteration was possible — no
+  behavior change). Local `cargo clippy --workspace --all-targets --locked
+  -- -D warnings` is now fully clean.
+- Run `36964618785` (on `62653a85`, includes this M001 implementation):
+  **success**. The ordinary hosted `verify` gate is green with M001 landed.
+
 ## 5. Invariant review
 
 - `ResolvedToolSurface` remains the only per-turn capability ceiling: no
@@ -195,8 +208,8 @@ contain no repository text beyond tool names and synthetic state labels.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | Local `cargo clippy --workspace --all-targets` reports pre-existing `clippy::never_loop` at untouched `src/main.rs:3677` (daemon singleton acquire loop; every arm breaks or exits; newer local clippy 1.89.0). | None on M001: no M001 file is implicated and `verify.sh quick` is green. | Hosted CI arbiter (pushed branch run). If hosted CI flags it, file a toolchain-drift corrective; do not bundle daemon-startup edits into this experiment line. |
-| low | Hosted CI result pending at closure-write time (local evidence only). | Positive closure assumes ordinary hosted CI green per plan §11. | Reconcile in §12 after push; downgrade/convert this closure if hosted CI disagrees. |
+| low (resolved) | Local and hosted `cargo clippy --workspace --all-targets` reported pre-existing `clippy::never_loop` at untouched `src/main.rs:3677` (hosted run `36958183677` on the parent commit failed identically). | None on M001 evidence; the lint blocked the hosted gate. | Resolved by mechanical follow-up `62653a85` (loop removal, no behavior change; isolated commit outside M001 scope). Local clippy fully clean; hosted run `36964618785` green. No toolchain-drift corrective needed. |
+| low (resolved) | Hosted CI result pending at closure-write time (local evidence only). | Positive closure assumed ordinary hosted CI green per plan §11. | Reconciled: hosted `CI / verify` run `36964618785` success with M001 landed. Assumption holds. |
 
 No medium or higher findings. No corrective pass required.
 
@@ -228,6 +241,6 @@ M001 closed positively. Consequences:
   status ready-for-handoff → closed (pointer to this record).
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/002-*.md`:
   status blocked-on-positive-M001 → ready for handoff.
-- Hosted CI: branch push triggers the ordinary `verify` workflow; the run
-  id will be appended here as a factual correction if it disagrees with
-  local evidence.
+- Hosted CI: ordinary `verify` run `36964618785` success (on `62653a85`,
+  includes this M001 implementation). Prior run `36964201769` failed only
+  on the pre-existing hosted `never_loop` drift, resolved by `62653a85`.
