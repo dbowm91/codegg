@@ -1,12 +1,13 @@
-//! Typed causal contracts, host-owned state projection, and the frozen
-//! stateful benchmark for the tool-selection advisor causal-frontier
-//! experiment (M001).
+//! Typed causal contracts, host-owned state projection, the frozen
+//! stateful benchmark, and the offline causal-admissibility frontier for the
+//! tool-selection advisor causal-frontier experiment (M001/M002).
 //!
 //! This module is the smallest trustworthy substrate for causal tool-menu
 //! experiments. It changes **no runtime disclosure behavior**: nothing here
 //! filters provider definitions, alters broker authorization, or widens
 //! execution authority. The causal frontier is a visibility-only planning
-//! layer evaluated in M002 against the frozen benchmark preregistered here.
+//! layer evaluated offline in M002 against the frozen benchmark preregistered
+//! in M001.
 //!
 //! # Closed ontology
 //!
@@ -1568,6 +1569,915 @@ impl CausalM001Preregistration {
     }
 }
 
+// ─── M002 offline causal-admissibility frontier ────────────────────────────
+//
+// M002 evaluates deterministic precondition filtering over the already
+// resolved eligible surface. It changes no runtime behavior: the frontier is
+// a visibility recommendation computed offline against the frozen M001
+// benchmark, compared against frozen baselines, and frozen into a
+// machine-readable receipt. Uncontracted tools never enter the promotion
+// frontier and remain in the fallback discovery universe; required and
+// never-reduce tools bypass causal suppression; withheld tools fail closed.
+
+/// Schema version of [`CausalFrontier`].
+pub const CAUSAL_FRONTIER_SCHEMA_VERSION: u16 = 1;
+
+/// Schema version of [`CausalM002Report`].
+pub const CAUSAL_M002_REPORT_SCHEMA_VERSION: u16 = 1;
+
+/// Checked-in machine-readable M002 result, relative to the workspace root.
+pub const CAUSAL_M002_RESULT_ASSET: &str = "assets/tool-advisor/causal-frontier-m002-result.json";
+
+/// Frozen M001 benchmark asset, relative to the workspace root.
+pub const CAUSAL_BENCHMARK_ASSET: &str = "assets/tool-advisor/causal-frontier-v1.jsonl";
+
+/// Frozen M001 preregistration asset, relative to the workspace root.
+pub const CAUSAL_PREREG_ASSET: &str =
+    "assets/tool-advisor/causal-frontier-m001-preregistration.json";
+
+/// Frozen derived relevance view used by the historical-label diagnostic.
+pub const CAUSAL_RELEVANCE_ASSET: &str = "assets/tool-advisor/retrieval-relevance-v1.json";
+
+/// Pure frontier-evaluation iterations per qualification surface for the p95
+/// latency gate (M001 prereg formula `pure_frontier_eval_p95_ms`).
+pub const CAUSAL_M002_LATENCY_ITERATIONS: usize = 1001;
+
+/// Whether a canonical tool name is deferred from the immediately visible
+/// palette. Backed live by [`crate::tool::disclosure::CORE_PALETTE`]: names
+/// outside the core palette are promotion candidates, names inside it are
+/// already visible so promoting them is meaningless. The receipt records a
+/// palette fingerprint so later palette edits invalidate M002 evidence
+/// loudly instead of silently shifting the promotion scope.
+pub fn is_palette_deferred(tool_name: &str) -> bool {
+    !crate::tool::disclosure::CORE_PALETTE.contains(&tool_name)
+}
+
+/// Fingerprint of the live core palette backing the deferred-promotion
+/// scope. Bound into [`CausalM002Report`] for drift detection.
+pub fn palette_fingerprint() -> String {
+    sha256_hex(crate::tool::disclosure::CORE_PALETTE.join(",").as_bytes())
+}
+
+/// Why a contracted tool is inadmissible for causal promotion under a fact
+/// set. Exactly one reason is reported per tool, in contract-evaluation
+/// order: missing conjunctive fact, then first unsatisfied disjunctive
+/// group, then present forbidden fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CausalInadmissibilityReason {
+    MissingRequired(CausalStateFact),
+    UnsatisfiedAnyGroup(usize),
+    ForbiddenPresent(CausalStateFact),
+}
+
+impl CausalInadmissibilityReason {
+    /// Stable wire string for this reason (group index rendered decimal).
+    pub fn as_str(self) -> String {
+        match self {
+            Self::MissingRequired(fact) => format!("missing_required:{}", fact.as_str()),
+            Self::UnsatisfiedAnyGroup(index) => format!("unsatisfied_any_group:{index}"),
+            Self::ForbiddenPresent(fact) => format!("forbidden_present:{}", fact.as_str()),
+        }
+    }
+
+    /// First failing precondition of `contract` under `facts`, or `None`
+    /// when the contract is satisfied. Iteration follows canonical
+    /// (BTreeSet/enum-declaration) order, so the reported reason is
+    /// deterministic for a given contract and fact set.
+    pub fn primary_reason(
+        contract: &ToolCausalContract,
+        facts: &BTreeSet<CausalStateFact>,
+    ) -> Option<Self> {
+        for fact in &contract.requires_all {
+            if !facts.contains(fact) {
+                return Some(Self::MissingRequired(*fact));
+            }
+        }
+        for (index, group) in contract.requires_any.iter().enumerate() {
+            if group.is_disjoint(facts) {
+                return Some(Self::UnsatisfiedAnyGroup(index));
+            }
+        }
+        for fact in &contract.forbids {
+            if facts.contains(fact) {
+                return Some(Self::ForbiddenPresent(*fact));
+            }
+        }
+        None
+    }
+}
+
+/// Fail-closed frontier-construction failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CausalFrontierError {
+    /// A withheld (hidden/denied/unavailable) tool reached frontier input.
+    WithheldInSurface(String),
+    /// A required/never-reduce tool is not on the eligible surface.
+    RequiredNotEligible(String),
+}
+
+impl std::fmt::Display for CausalFrontierError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WithheldInSurface(tool) => {
+                write!(f, "withheld tool {tool} reached causal frontier input")
+            }
+            Self::RequiredNotEligible(tool) => {
+                write!(f, "required tool {tool} is not on the eligible surface")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CausalFrontierError {}
+
+/// Inputs to one offline frontier evaluation. Everything is already
+/// post-authority: `eligible` is the resolved surface after
+/// hidden/denied/disabled/parent-ceiling filtering, and `facts` is the
+/// host-owned state for the turn being evaluated.
+pub struct FrontierInputs<'a> {
+    pub eligible: &'a BTreeSet<String>,
+    pub facts: &'a BTreeSet<CausalStateFact>,
+    pub required_visible: &'a BTreeSet<String>,
+    pub never_reduce: &'a BTreeSet<String>,
+    pub withheld: &'a BTreeSet<String>,
+    pub snapshot_fingerprint: &'a str,
+    pub catalog: &'a BTreeMap<String, ToolCausalContract>,
+    pub contract_catalog_fingerprint: &'a str,
+}
+
+/// Offline causal-admissibility frontier for one resolved surface.
+///
+/// A visibility recommendation only: admissible tools are promoted
+/// candidates, inadmissible contracted tools are withheld from promotion
+/// (never from callability), uncontracted tools stay in the fallback
+/// discovery universe, and required tools stay visible. Carries no tool
+/// definitions, no scores, and no provider payloads — only canonical names
+/// and fingerprints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CausalFrontier {
+    pub schema_version: u16,
+    pub admissible_contracted: BTreeSet<String>,
+    pub inadmissible_contracted: BTreeMap<String, CausalInadmissibilityReason>,
+    pub uncontracted_fallback: BTreeSet<String>,
+    pub required_visible: BTreeSet<String>,
+    pub snapshot_fingerprint: String,
+    pub contract_catalog_fingerprint: String,
+}
+
+impl CausalFrontier {
+    /// Evaluate deterministic precondition filtering over the resolved
+    /// surface. Iteration is BTreeSet-ordered by canonical tool name, so
+    /// surface input order cannot affect the result. Fails closed when a
+    /// withheld tool reaches the input or a required tool is missing from
+    /// the eligible surface.
+    pub fn evaluate(inputs: &FrontierInputs<'_>) -> Result<Self, CausalFrontierError> {
+        for tool in inputs.eligible {
+            if inputs.withheld.contains(tool) {
+                return Err(CausalFrontierError::WithheldInSurface(tool.clone()));
+            }
+        }
+        for tool in inputs
+            .required_visible
+            .iter()
+            .chain(inputs.never_reduce.iter())
+        {
+            if !inputs.eligible.contains(tool) {
+                return Err(CausalFrontierError::RequiredNotEligible(tool.clone()));
+            }
+            if inputs.withheld.contains(tool) {
+                return Err(CausalFrontierError::WithheldInSurface(tool.clone()));
+            }
+        }
+        let bypass: BTreeSet<&String> = inputs
+            .required_visible
+            .iter()
+            .chain(inputs.never_reduce.iter())
+            .collect();
+        let mut frontier = Self {
+            schema_version: CAUSAL_FRONTIER_SCHEMA_VERSION,
+            admissible_contracted: BTreeSet::new(),
+            inadmissible_contracted: BTreeMap::new(),
+            uncontracted_fallback: BTreeSet::new(),
+            required_visible: bypass.iter().map(|name| (*name).clone()).collect(),
+            snapshot_fingerprint: inputs.snapshot_fingerprint.to_string(),
+            contract_catalog_fingerprint: inputs.contract_catalog_fingerprint.to_string(),
+        };
+        for tool in inputs.eligible {
+            if bypass.contains(tool) {
+                continue;
+            }
+            match inputs.catalog.get(tool) {
+                Some(contract) => {
+                    match CausalInadmissibilityReason::primary_reason(contract, inputs.facts) {
+                        None => {
+                            frontier.admissible_contracted.insert(tool.clone());
+                        }
+                        Some(reason) => {
+                            frontier
+                                .inadmissible_contracted
+                                .insert(tool.clone(), reason);
+                        }
+                    }
+                }
+                None => {
+                    frontier.uncontracted_fallback.insert(tool.clone());
+                }
+            }
+        }
+        Ok(frontier)
+    }
+
+    /// Causally admissible deferred promotion set: admissible contracted
+    /// tools that are deferred from the immediately visible palette and not
+    /// in the required bypass. This is the only set M004/M005 may promote;
+    /// required tools are excluded from reduction accounting per the frozen
+    /// tie-breaking rules.
+    pub fn deferred_promotion(&self) -> BTreeSet<String> {
+        self.admissible_contracted
+            .iter()
+            .filter(|tool| is_palette_deferred(tool) && !self.required_visible.contains(*tool))
+            .cloned()
+            .collect()
+    }
+
+    /// Promotion set actually used for a case: the deferred promotion when
+    /// the state carries structured signal, empty otherwise. Insufficient
+    /// states abstain to the fallback universe rather than promoting a
+    /// frontier.
+    pub fn promotion_for_use(&self, structured_signal: bool) -> BTreeSet<String> {
+        if structured_signal {
+            self.deferred_promotion()
+        } else {
+            BTreeSet::new()
+        }
+    }
+
+    /// Every tool the frontier keeps visible: admissible promotion,
+    /// uncontracted fallback, and required bypass. Inadmissible contracted
+    /// tools are the only eligible tools excluded.
+    pub fn visible_union(&self) -> BTreeSet<String> {
+        self.admissible_contracted
+            .iter()
+            .chain(self.uncontracted_fallback.iter())
+            .chain(self.required_visible.iter())
+            .cloned()
+            .collect()
+    }
+
+    /// Whether this frontier is still fresh against a live snapshot and
+    /// catalog fingerprint. State or contract drift invalidates the cached
+    /// result instead of silently reusing it.
+    pub fn is_fresh_against(
+        &self,
+        snapshot_fingerprint: &str,
+        contract_catalog_fingerprint: &str,
+    ) -> bool {
+        self.snapshot_fingerprint == snapshot_fingerprint
+            && self.contract_catalog_fingerprint == contract_catalog_fingerprint
+    }
+}
+
+/// State fingerprint for one benchmark case: binds the case identity to its
+/// frozen fact set. Benchmark cases carry facts rather than live snapshots,
+/// so the frontier's snapshot slot records this derivation explicitly.
+pub fn benchmark_case_state_fingerprint(case: &CausalBenchmarkCase) -> String {
+    let facts: Vec<&str> = case.facts.iter().map(|fact| fact.as_str()).collect();
+    let payload = serde_json::json!({
+        "derivation": "causal-benchmark-state-v1",
+        "case_id": case.case_id,
+        "facts": facts,
+    });
+    sha256_hex(payload.to_string().as_bytes())
+}
+
+/// Evaluate the offline frontier for one frozen benchmark case.
+pub fn evaluate_benchmark_case(
+    case: &CausalBenchmarkCase,
+    catalog: &BTreeMap<String, ToolCausalContract>,
+    contract_catalog_fingerprint: &str,
+) -> Result<CausalFrontier, CausalFrontierError> {
+    let inputs = FrontierInputs {
+        eligible: &case.eligible.iter().cloned().collect(),
+        facts: &case.facts,
+        required_visible: &case.required_visible.iter().cloned().collect(),
+        never_reduce: &case.never_reduce.iter().cloned().collect(),
+        withheld: &case.withheld.iter().cloned().collect(),
+        snapshot_fingerprint: &benchmark_case_state_fingerprint(case),
+        catalog,
+        contract_catalog_fingerprint,
+    };
+    CausalFrontier::evaluate(&inputs)
+}
+
+/// Per-case M002 evidence row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalCaseRow {
+    pub case_id: String,
+    pub family: String,
+    pub structured_signal: bool,
+    /// Used promotion set size (empty by abstention policy when no signal).
+    pub promotion_size: usize,
+    pub gold_current_total: usize,
+    pub gold_current_visible: usize,
+    /// Gold premature tools still exposed after filtering (admissible).
+    /// The reduction gate is `1 - remaining / baseline` per the frozen
+    /// formula; a fully effective filter drives this to zero.
+    pub premature_baseline: usize,
+    pub premature_remaining: usize,
+    pub uncontracted_gold_total: usize,
+    pub uncontracted_gold_retained: usize,
+    pub core_projection_size: usize,
+    pub core_projection_premature: usize,
+}
+
+/// Per-family M002 evidence row. Promotion medians cover structured-signal
+/// cases only; families without structured signal report no median.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalFamilyRow {
+    pub family: String,
+    pub cases: usize,
+    pub structured_cases: usize,
+    pub gold_current_total: usize,
+    pub gold_current_visible: usize,
+    pub premature_baseline: usize,
+    pub premature_remaining: usize,
+    pub median_promotion_structured: Option<usize>,
+    pub max_promotion_structured: usize,
+}
+
+/// Pooled M002 metrics for one benchmark partition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalPartitionReport {
+    pub cases: usize,
+    pub structured_cases: usize,
+    pub gold_current_total: usize,
+    pub gold_current_visible: usize,
+    pub gold_current_step_preservation: f64,
+    pub premature_baseline: usize,
+    pub premature_remaining: usize,
+    pub premature_exposure_reduction: f64,
+    pub uncontracted_gold_total: usize,
+    pub uncontracted_gold_retained: usize,
+    pub uncontracted_fallback_preservation: f64,
+    pub authority_violations: u64,
+    pub abstention_violations: u64,
+    /// Used promotion sizes over structured-signal cases, ascending.
+    pub promotion_sizes_structured: Vec<usize>,
+    pub median_promotion_structured: usize,
+    pub max_promotion_structured: usize,
+    /// `|eligible ∩ CORE_PALETTE|` per case, ascending (baseline arm 1).
+    pub core_projection_sizes: Vec<usize>,
+    pub core_projection_premature_total: usize,
+    pub families: Vec<CausalFamilyRow>,
+    pub rows: Vec<CausalCaseRow>,
+}
+
+/// Lower median of an ascending size list (index `(n-1)/2`). All M002
+/// partitions have odd structured-case counts, so lower and upper medians
+/// coincide; the convention is frozen here for determinism regardless.
+fn lower_median_ascending(sorted: &[usize]) -> usize {
+    debug_assert!(!sorted.is_empty());
+    sorted[(sorted.len() - 1) / 2]
+}
+
+/// Score one benchmark partition: evaluate the frontier per case and pool
+/// the M001-preregistered metrics. Pure measurement — no tuning, no
+/// contract edits, no threshold fitting.
+pub fn score_partition(
+    cases: &[&CausalBenchmarkCase],
+    catalog: &BTreeMap<String, ToolCausalContract>,
+    contract_catalog_fingerprint: &str,
+) -> Result<CausalPartitionReport, CausalFrontierError> {
+    let mut rows = Vec::with_capacity(cases.len());
+    let mut authority_violations: u64 = 0;
+    for case in cases {
+        let frontier = evaluate_benchmark_case(case, catalog, contract_catalog_fingerprint)?;
+        let eligible: BTreeSet<&String> = case.eligible.iter().collect();
+        let withheld: BTreeSet<&String> = case.withheld.iter().collect();
+        // Authority audit: every frontier name must be eligible and never
+        // withheld. evaluate() fails closed on withheld input, so this
+        // double-checks output containment as well.
+        for tool in frontier
+            .admissible_contracted
+            .iter()
+            .chain(frontier.uncontracted_fallback.iter())
+            .chain(frontier.required_visible.iter())
+        {
+            if !eligible.contains(tool) || withheld.contains(tool) {
+                authority_violations += 1;
+            }
+        }
+        let structured = has_structured_signal(&case.facts);
+        debug_assert_eq!(structured, !case.insufficient_state);
+        let used_promotion = frontier.promotion_for_use(structured);
+        let visible = frontier.visible_union();
+        let gold_current_total = case.gold_current.len();
+        let gold_current_visible = case
+            .gold_current
+            .iter()
+            .filter(|tool| visible.contains(*tool))
+            .count();
+        let premature_baseline = case.gold_premature.len();
+        let premature_remaining = case
+            .gold_premature
+            .iter()
+            .filter(|tool| frontier.admissible_contracted.contains(*tool))
+            .count();
+        let uncontracted_gold: Vec<&String> = case
+            .gold_current
+            .iter()
+            .filter(|tool| case.uncontracted.iter().any(|name| name == *tool))
+            .collect();
+        // Retained means still discoverable: the fallback universe, or the
+        // required bypass (which preserves visibility at least as strongly).
+        let uncontracted_gold_retained = uncontracted_gold
+            .iter()
+            .filter(|tool| visible.contains(**tool))
+            .count();
+        let core_projection: Vec<&String> = case
+            .eligible
+            .iter()
+            .filter(|tool| !is_palette_deferred(tool))
+            .collect();
+        let core_projection_premature = case
+            .gold_premature
+            .iter()
+            .filter(|tool| !is_palette_deferred(tool))
+            .count();
+        rows.push(CausalCaseRow {
+            case_id: case.case_id.clone(),
+            family: case.family.clone(),
+            structured_signal: structured,
+            promotion_size: used_promotion.len(),
+            gold_current_total,
+            gold_current_visible,
+            premature_baseline,
+            premature_remaining,
+            uncontracted_gold_total: uncontracted_gold.len(),
+            uncontracted_gold_retained,
+            core_projection_size: core_projection.len(),
+            core_projection_premature,
+        });
+    }
+    let structured_rows: Vec<&CausalCaseRow> =
+        rows.iter().filter(|row| row.structured_signal).collect();
+    let mut promotion_sizes: Vec<usize> = structured_rows
+        .iter()
+        .map(|row| row.promotion_size)
+        .collect();
+    promotion_sizes.sort_unstable();
+    let mut core_sizes: Vec<usize> = rows.iter().map(|row| row.core_projection_size).collect();
+    core_sizes.sort_unstable();
+    let sum = |f: fn(&CausalCaseRow) -> usize| rows.iter().map(f).sum::<usize>();
+    let gold_total = sum(|row| row.gold_current_total);
+    let gold_visible = sum(|row| row.gold_current_visible);
+    let prem_base = sum(|row| row.premature_baseline);
+    let prem_remaining = sum(|row| row.premature_remaining);
+    let unc_total = sum(|row| row.uncontracted_gold_total);
+    let unc_retained = sum(|row| row.uncontracted_gold_retained);
+    let abstention_violations = rows
+        .iter()
+        .filter(|row| !row.structured_signal && row.promotion_size > 0)
+        .count() as u64;
+    let mut families: Vec<CausalFamilyRow> = Vec::new();
+    for family in CAUSAL_BENCHMARK_FAMILIES {
+        let family_rows: Vec<&CausalCaseRow> =
+            rows.iter().filter(|row| row.family == *family).collect();
+        if family_rows.is_empty() {
+            continue;
+        }
+        let mut family_sizes: Vec<usize> = family_rows
+            .iter()
+            .filter(|row| row.structured_signal)
+            .map(|row| row.promotion_size)
+            .collect();
+        family_sizes.sort_unstable();
+        families.push(CausalFamilyRow {
+            family: (*family).to_string(),
+            cases: family_rows.len(),
+            structured_cases: family_sizes.len(),
+            gold_current_total: family_rows.iter().map(|row| row.gold_current_total).sum(),
+            gold_current_visible: family_rows.iter().map(|row| row.gold_current_visible).sum(),
+            premature_baseline: family_rows.iter().map(|row| row.premature_baseline).sum(),
+            premature_remaining: family_rows.iter().map(|row| row.premature_remaining).sum(),
+            median_promotion_structured: if family_sizes.is_empty() {
+                None
+            } else {
+                Some(lower_median_ascending(&family_sizes))
+            },
+            max_promotion_structured: family_sizes.last().copied().unwrap_or(0),
+        });
+    }
+    Ok(CausalPartitionReport {
+        cases: rows.len(),
+        structured_cases: structured_rows.len(),
+        gold_current_total: gold_total,
+        gold_current_visible: gold_visible,
+        gold_current_step_preservation: if gold_total == 0 {
+            1.0
+        } else {
+            gold_visible as f64 / gold_total as f64
+        },
+        premature_baseline: prem_base,
+        premature_remaining: prem_remaining,
+        premature_exposure_reduction: if prem_base == 0 {
+            1.0
+        } else {
+            1.0 - prem_remaining as f64 / prem_base as f64
+        },
+        uncontracted_gold_total: unc_total,
+        uncontracted_gold_retained: unc_retained,
+        uncontracted_fallback_preservation: if unc_total == 0 {
+            1.0
+        } else {
+            unc_retained as f64 / unc_total as f64
+        },
+        authority_violations,
+        abstention_violations,
+        median_promotion_structured: if promotion_sizes.is_empty() {
+            0
+        } else {
+            lower_median_ascending(&promotion_sizes)
+        },
+        max_promotion_structured: promotion_sizes.last().copied().unwrap_or(0),
+        promotion_sizes_structured: promotion_sizes,
+        core_projection_sizes: core_sizes,
+        core_projection_premature_total: sum(|row| row.core_projection_premature),
+        families,
+        rows,
+    })
+}
+
+/// Nearest-rank percentile of ascending samples (rank `ceil(p*n)`,
+/// 1-indexed). Used for the p95 pure-evaluation latency gate.
+fn nearest_rank_percentile(sorted: &[f64], rank: f64) -> f64 {
+    debug_assert!(!sorted.is_empty());
+    debug_assert!((0.0..=1.0).contains(&rank));
+    let index = (f64::ceil(rank * sorted.len() as f64) as usize).max(1) - 1;
+    sorted[index.min(sorted.len() - 1)]
+}
+
+/// Pure frontier-evaluation latency samples in milliseconds, pooled over
+/// every surface × `iterations`. Inputs are precomputed once per surface so
+/// only contract precondition checks over the resolved surface are timed;
+/// state projection and I/O are excluded per the prereg formula.
+pub fn measure_frontier_latency_ms(
+    cases: &[&CausalBenchmarkCase],
+    catalog: &BTreeMap<String, ToolCausalContract>,
+    contract_catalog_fingerprint: &str,
+    iterations: usize,
+) -> Vec<f64> {
+    struct Precomputed {
+        eligible: BTreeSet<String>,
+        facts: BTreeSet<CausalStateFact>,
+        required_visible: BTreeSet<String>,
+        never_reduce: BTreeSet<String>,
+        withheld: BTreeSet<String>,
+        snapshot_fingerprint: String,
+    }
+    let surfaces: Vec<Precomputed> = cases
+        .iter()
+        .map(|case| Precomputed {
+            eligible: case.eligible.iter().cloned().collect(),
+            facts: case.facts.clone(),
+            required_visible: case.required_visible.iter().cloned().collect(),
+            never_reduce: case.never_reduce.iter().cloned().collect(),
+            withheld: case.withheld.iter().cloned().collect(),
+            snapshot_fingerprint: benchmark_case_state_fingerprint(case),
+        })
+        .collect();
+    let mut samples = Vec::with_capacity(surfaces.len() * iterations);
+    for surface in &surfaces {
+        let inputs = FrontierInputs {
+            eligible: &surface.eligible,
+            facts: &surface.facts,
+            required_visible: &surface.required_visible,
+            never_reduce: &surface.never_reduce,
+            withheld: &surface.withheld,
+            snapshot_fingerprint: &surface.snapshot_fingerprint,
+            catalog,
+            contract_catalog_fingerprint,
+        };
+        for _ in 0..iterations {
+            let start = std::time::Instant::now();
+            let frontier = CausalFrontier::evaluate(&inputs)
+                .expect("benchmark surfaces evaluate without authority errors");
+            std::hint::black_box(frontier.admissible_contracted.len());
+            samples.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    samples.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    samples
+}
+
+/// M002 selection disposition over a scored qualification partition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CausalM002Disposition {
+    /// All frozen gates pass: M004 observe integration unblocks, and M003
+    /// may run as the optional effect-path experiment.
+    Positive,
+    /// Correctness holds but reduction/menu-quality gates fail: the
+    /// workstream closes negative; no semantic rescue permitted.
+    NoReduction,
+    /// Correctness failure: stop and register a corrective.
+    ContractFailure,
+}
+
+impl CausalM002Disposition {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Positive => "A",
+            Self::NoReduction => "D",
+            Self::ContractFailure => "E",
+        }
+    }
+
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::Positive => "A — positive causal-admissibility architecture",
+            Self::NoReduction => "D — no useful structural reduction",
+            Self::ContractFailure => "E — contract/state correctness failure",
+        }
+    }
+}
+
+/// Decide the M002 disposition from scored qualification metrics and the
+/// measured p95 latency. Correctness gates use exact integer accounting, so
+/// no float threshold ambiguity can flip D/E; the reduction gate compares
+/// the recorded ratio against the frozen minimum.
+pub fn decide_disposition(
+    metrics: &CausalPartitionReport,
+    gates: &CausalM002Gates,
+    p95_ms: f64,
+) -> CausalM002Disposition {
+    let correct = metrics.gold_current_visible == metrics.gold_current_total
+        && metrics.authority_violations == 0
+        && metrics.uncontracted_gold_retained == metrics.uncontracted_gold_total
+        && metrics.abstention_violations == 0;
+    if !correct {
+        return CausalM002Disposition::ContractFailure;
+    }
+    let reduction_holds =
+        metrics.premature_exposure_reduction >= gates.premature_exposure_reduction_min;
+    if reduction_holds
+        && metrics.median_promotion_structured <= gates.median_promotion_set_max_structured
+        && p95_ms <= gates.pure_frontier_eval_p95_ms_max
+    {
+        CausalM002Disposition::Positive
+    } else {
+        CausalM002Disposition::NoReduction
+    }
+}
+
+/// Historical retrieval-label class for one frozen relevance-view candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoricalLabelClass {
+    /// Carries a native contract satisfied with no state facts.
+    AdmissibleAnyState,
+    /// Carries a native contract requiring host state.
+    ContractedStateGated,
+    /// Registered tool without a causal contract: discoverable, never
+    /// promoted.
+    UncontractedKnown,
+    /// No registered tool under this identity.
+    UnavailableUnknown,
+}
+
+/// Classify one historical retrieval label against the live native catalog.
+pub fn classify_historical_label(
+    candidate: &str,
+    is_known_tool: impl Fn(&str) -> bool,
+) -> HistoricalLabelClass {
+    match native_causal_contract(candidate) {
+        Some(contract) if contract.is_satisfied_by(&BTreeSet::new()) => {
+            HistoricalLabelClass::AdmissibleAnyState
+        }
+        Some(_) => HistoricalLabelClass::ContractedStateGated,
+        None if is_known_tool(candidate) => HistoricalLabelClass::UncontractedKnown,
+        None => HistoricalLabelClass::UnavailableUnknown,
+    }
+}
+
+/// Diagnostic-only classification of the distinct current-step candidate
+/// labels in the frozen derived relevance view. The causal benchmark owns
+/// selection; this report only shows where historical retrieval labels fall
+/// under causal contracts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetrievalLabelDiagnostic {
+    pub source_asset: String,
+    pub labels: BTreeMap<String, HistoricalLabelClass>,
+    pub admissible_any_state: usize,
+    pub contracted_state_gated: usize,
+    pub uncontracted_known: usize,
+    pub unavailable_unknown: usize,
+}
+
+/// Distinct `candidate` names among `current-step` entries of the frozen
+/// derived relevance view.
+pub fn historical_label_candidates(relevance_json: &str) -> Result<BTreeSet<String>, String> {
+    let document: serde_json::Value = serde_json::from_str(relevance_json)
+        .map_err(|err| format!("relevance parse error: {err}"))?;
+    let entries = document
+        .get("entries")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "relevance view has no entries array".to_string())?;
+    let mut candidates = BTreeSet::new();
+    for entry in entries {
+        let is_current =
+            entry.get("class").and_then(serde_json::Value::as_str) == Some("current-step");
+        if !is_current {
+            continue;
+        }
+        let name = entry
+            .get("candidate")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "current-step entry without candidate".to_string())?;
+        candidates.insert(name.to_string());
+    }
+    Ok(candidates)
+}
+
+/// Run the historical-label diagnostic over a candidate set.
+pub fn diagnose_retrieval_labels(
+    candidates: &BTreeSet<String>,
+    is_known_tool: impl Fn(&str) -> bool,
+) -> RetrievalLabelDiagnostic {
+    let mut labels = BTreeMap::new();
+    let mut counts = [0usize; 4];
+    for candidate in candidates {
+        let class = classify_historical_label(candidate, &is_known_tool);
+        match class {
+            HistoricalLabelClass::AdmissibleAnyState => counts[0] += 1,
+            HistoricalLabelClass::ContractedStateGated => counts[1] += 1,
+            HistoricalLabelClass::UncontractedKnown => counts[2] += 1,
+            HistoricalLabelClass::UnavailableUnknown => counts[3] += 1,
+        }
+        labels.insert(candidate.clone(), class);
+    }
+    RetrievalLabelDiagnostic {
+        source_asset: CAUSAL_RELEVANCE_ASSET.to_string(),
+        labels,
+        admissible_any_state: counts[0],
+        contracted_state_gated: counts[1],
+        uncontracted_known: counts[2],
+        unavailable_unknown: counts[3],
+    }
+}
+
+/// Machine-readable M002 offline-qualification result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CausalM002Report {
+    pub schema_version: u16,
+    pub protocol: String,
+    pub ontology_version: u16,
+    pub contract_schema_version: u16,
+    pub benchmark_asset: String,
+    pub benchmark_fingerprint: String,
+    pub contract_catalog_fingerprint: String,
+    pub palette_fingerprint: String,
+    pub dev_fingerprint: String,
+    pub qualification_fingerprint: String,
+    pub dev: CausalPartitionReport,
+    pub qualification: CausalPartitionReport,
+    pub latency_iterations_per_surface: usize,
+    pub latency_samples: usize,
+    pub latency_p50_ms: f64,
+    pub latency_p95_ms: f64,
+    pub latency_max_ms: f64,
+    pub gates: CausalM002Gates,
+    pub gate_results: BTreeMap<String, bool>,
+    pub disposition: String,
+    pub disposition_summary: String,
+    pub retrieval_label_diagnostic: RetrievalLabelDiagnostic,
+}
+
+/// Run the full M002 offline qualification: verify the frozen M001 inputs,
+/// score dev (baselines + M002 arm) and qualification (M002 arm, once),
+/// measure pure-evaluation latency, run the historical-label diagnostic,
+/// and decide the disposition. No tunable parameters exist — contract
+/// semantics are frozen in M001 — so dev inspection cannot leak into
+/// qualification: both partitions are scored by the same deterministic
+/// evaluation in one pass, and contracts are never edited afterward.
+pub fn qualify_m002(
+    benchmark_jsonl: &str,
+    prereg_json: &str,
+    relevance_json: &str,
+    latency_iterations_per_surface: usize,
+) -> Result<CausalM002Report, String> {
+    let prereg: CausalM001Preregistration =
+        serde_json::from_str(prereg_json).map_err(|err| format!("prereg parse error: {err}"))?;
+    if sha256_hex(benchmark_jsonl.as_bytes()) != prereg.benchmark_fingerprint {
+        return Err("benchmark bytes differ from preregistered fingerprint".into());
+    }
+    let cases = load_causal_benchmark(benchmark_jsonl)?;
+    prereg.verify_against(&cases)?;
+    let catalog = causal_catalog();
+    let catalog_fingerprint = causal_catalog_fingerprint();
+    let dev_ids: BTreeSet<&str> = prereg.dev_case_ids.iter().map(String::as_str).collect();
+    let qual_ids: BTreeSet<&str> = prereg
+        .qualification_case_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let dev_cases: Vec<&CausalBenchmarkCase> = cases
+        .iter()
+        .filter(|case| dev_ids.contains(case.case_id.as_str()))
+        .collect();
+    let qual_cases: Vec<&CausalBenchmarkCase> = cases
+        .iter()
+        .filter(|case| qual_ids.contains(case.case_id.as_str()))
+        .collect();
+    if dev_cases.len() != prereg.dev_case_ids.len()
+        || qual_cases.len() != prereg.qualification_case_ids.len()
+    {
+        return Err("split ids do not resolve to benchmark cases".into());
+    }
+    let dev = score_partition(&dev_cases, &catalog, &catalog_fingerprint)
+        .map_err(|err| format!("dev scoring failed: {err}"))?;
+    let qualification = score_partition(&qual_cases, &catalog, &catalog_fingerprint)
+        .map_err(|err| format!("qualification scoring failed: {err}"))?;
+    let latency = measure_frontier_latency_ms(
+        &qual_cases,
+        &catalog,
+        &catalog_fingerprint,
+        latency_iterations_per_surface,
+    );
+    if latency.is_empty() {
+        return Err("no latency samples collected".into());
+    }
+    let p50 = nearest_rank_percentile(&latency, 0.50);
+    let p95 = nearest_rank_percentile(&latency, 0.95);
+    let max = *latency.last().unwrap_or(&0.0);
+    let gates = CausalM002Gates::m001_frozen();
+    let disposition = decide_disposition(&qualification, &gates, p95);
+    let mut gate_results = BTreeMap::new();
+    gate_results.insert(
+        "gold_current_step_preservation".to_string(),
+        qualification.gold_current_visible == qualification.gold_current_total
+            && qualification.gold_current_step_preservation == gates.gold_current_step_preservation,
+    );
+    gate_results.insert(
+        "authority_violations".to_string(),
+        qualification.authority_violations == gates.authority_violations,
+    );
+    gate_results.insert(
+        "uncontracted_fallback_preservation".to_string(),
+        qualification.uncontracted_gold_retained == qualification.uncontracted_gold_total
+            && qualification.uncontracted_fallback_preservation
+                == gates.uncontracted_fallback_preservation,
+    );
+    gate_results.insert(
+        "premature_exposure_reduction".to_string(),
+        qualification.premature_exposure_reduction >= gates.premature_exposure_reduction_min,
+    );
+    gate_results.insert(
+        "median_promotion_set_size_structured".to_string(),
+        qualification.median_promotion_structured <= gates.median_promotion_set_max_structured,
+    );
+    gate_results.insert(
+        "pure_frontier_eval_p95_ms".to_string(),
+        p95 <= gates.pure_frontier_eval_p95_ms_max,
+    );
+    gate_results.insert(
+        "insufficient_state_abstention".to_string(),
+        qualification.abstention_violations == 0,
+    );
+    let candidates = historical_label_candidates(relevance_json)?;
+    let registry = crate::tool::ToolRegistry::with_defaults();
+    let known: BTreeSet<String> = registry
+        .list()
+        .into_iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    let diagnostic = diagnose_retrieval_labels(&candidates, |name| known.contains(name));
+    Ok(CausalM002Report {
+        schema_version: CAUSAL_M002_REPORT_SCHEMA_VERSION,
+        protocol: "causal-frontier-m002-offline-admissibility".to_string(),
+        ontology_version: CAUSAL_ONTOLOGY_VERSION,
+        contract_schema_version: CAUSAL_CONTRACT_SCHEMA_VERSION,
+        benchmark_asset: CAUSAL_BENCHMARK_ASSET.to_string(),
+        benchmark_fingerprint: prereg.benchmark_fingerprint.clone(),
+        contract_catalog_fingerprint: catalog_fingerprint,
+        palette_fingerprint: palette_fingerprint(),
+        dev_fingerprint: prereg.dev_fingerprint.clone(),
+        qualification_fingerprint: prereg.qualification_fingerprint.clone(),
+        dev,
+        qualification,
+        latency_iterations_per_surface,
+        latency_samples: latency.len(),
+        latency_p50_ms: p50,
+        latency_p95_ms: p95,
+        latency_max_ms: max,
+        gates,
+        gate_results,
+        disposition: disposition.code().to_string(),
+        disposition_summary: disposition.summary().to_string(),
+        retrieval_label_diagnostic: diagnostic,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2512,5 +3422,471 @@ mod tests {
                 "prereg contract drift for {name}"
             );
         }
+    }
+
+    // ─── M002 regression tests ───────────────────────────────────────────
+
+    fn m002_test_contract(
+        requires_all: &[CausalStateFact],
+        forbids: &[CausalStateFact],
+    ) -> ToolCausalContract {
+        ToolCausalContract {
+            schema_version: CAUSAL_CONTRACT_SCHEMA_VERSION,
+            requires_all: requires_all.iter().copied().collect(),
+            requires_any: Vec::new(),
+            forbids: forbids.iter().copied().collect(),
+            produces: BTreeSet::new(),
+            provenance: CausalContractProvenance::new("test:m002", "m002 regression fixture"),
+        }
+    }
+
+    fn m002_frontier_inputs<'a>(
+        eligible: &'a BTreeSet<String>,
+        facts: &'a BTreeSet<CausalStateFact>,
+        catalog: &'a BTreeMap<String, ToolCausalContract>,
+    ) -> FrontierInputs<'a> {
+        static EMPTY: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
+        let empty = EMPTY.get_or_init(BTreeSet::new);
+        FrontierInputs {
+            eligible,
+            facts,
+            required_visible: empty,
+            never_reduce: empty,
+            withheld: empty,
+            snapshot_fingerprint: "test-snapshot",
+            catalog,
+            contract_catalog_fingerprint: "test-catalog",
+        }
+    }
+
+    fn m002_benchmark_inputs() -> (
+        Vec<CausalBenchmarkCase>,
+        BTreeMap<String, ToolCausalContract>,
+        String,
+    ) {
+        let cases =
+            load_causal_benchmark(BENCHMARK_JSONL).expect("frozen benchmark loads for M002");
+        let catalog = causal_catalog();
+        let fingerprint = causal_catalog_fingerprint();
+        (cases, catalog, fingerprint)
+    }
+
+    fn m002_split(
+        cases: &[CausalBenchmarkCase],
+    ) -> (Vec<&CausalBenchmarkCase>, Vec<&CausalBenchmarkCase>) {
+        let prereg: CausalM001Preregistration =
+            serde_json::from_str(PREREG_JSON).expect("prereg parses for M002");
+        let dev_ids: BTreeSet<&str> = prereg.dev_case_ids.iter().map(String::as_str).collect();
+        let mut dev = Vec::new();
+        let mut qual = Vec::new();
+        for case in cases {
+            if dev_ids.contains(case.case_id.as_str()) {
+                dev.push(case);
+            } else {
+                qual.push(case);
+            }
+        }
+        (dev, qual)
+    }
+
+    #[test]
+    fn m002_required_tool_bypasses_causal_suppression() {
+        // A required tool stays visible even when its contract is
+        // unsatisfied by the state; it never counts as premature exposure.
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            "commit".to_string(),
+            m002_test_contract(&[CausalStateFact::UnmetCommitAcceptance], &[]),
+        );
+        let eligible: BTreeSet<String> = ["commit".to_string()].into_iter().collect();
+        let facts = BTreeSet::new();
+        let required: BTreeSet<String> = ["commit".to_string()].into_iter().collect();
+        static EMPTY: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
+        let empty = EMPTY.get_or_init(BTreeSet::new);
+        let inputs = FrontierInputs {
+            eligible: &eligible,
+            facts: &facts,
+            required_visible: &required,
+            never_reduce: empty,
+            withheld: empty,
+            snapshot_fingerprint: "test-snapshot",
+            catalog: &catalog,
+            contract_catalog_fingerprint: "test-catalog",
+        };
+        let frontier = CausalFrontier::evaluate(&inputs).expect("required bypass evaluates");
+        assert!(frontier.required_visible.contains("commit"));
+        assert!(!frontier.admissible_contracted.contains("commit"));
+        assert!(!frontier.inadmissible_contracted.contains_key("commit"));
+        assert!(frontier.visible_union().contains("commit"));
+        assert!(frontier.deferred_promotion().is_empty());
+    }
+
+    #[test]
+    fn m002_uncontracted_tool_stays_in_fallback() {
+        // Tools without contracts never enter promotion yet remain
+        // discoverable in the fallback universe.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let case = cases
+            .iter()
+            .find(|case| !case.uncontracted.is_empty())
+            .expect("benchmark has uncontracted tools");
+        let frontier = evaluate_benchmark_case(case, &catalog, &fingerprint)
+            .expect("benchmark case evaluates");
+        for tool in &case.uncontracted {
+            // Required-bypassed tools stay visible via the bypass rather
+            // than the fallback; everything else must be in fallback.
+            if case.required_visible.iter().any(|name| name == tool)
+                || case.never_reduce.iter().any(|name| name == tool)
+            {
+                assert!(frontier.required_visible.contains(tool));
+            } else {
+                assert!(
+                    frontier.uncontracted_fallback.contains(tool),
+                    "{tool} must stay in fallback"
+                );
+            }
+            assert!(!frontier.admissible_contracted.contains(tool));
+            assert!(frontier.visible_union().contains(tool));
+        }
+    }
+
+    #[test]
+    fn m002_missing_fact_inadmissibility_is_deterministic() {
+        // Same inputs always produce the same frontier; uncontracted tools
+        // are unaffected by missing facts.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let case = &cases[0];
+        let first = evaluate_benchmark_case(case, &catalog, &fingerprint).expect("evaluates");
+        let second = evaluate_benchmark_case(case, &catalog, &fingerprint).expect("evaluates");
+        assert_eq!(first, second);
+        let reason = first.inadmissible_contracted.get("goal_get");
+        if case.facts.contains(&CausalStateFact::ActiveGoal) {
+            assert!(reason.is_none());
+        } else if case.eligible.iter().any(|tool| tool == "goal_get") {
+            assert_eq!(
+                reason,
+                Some(&CausalInadmissibilityReason::MissingRequired(
+                    CausalStateFact::ActiveGoal
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn m002_contradictory_state_does_not_panic() {
+        // All 17 facts at once (including mutually tense acceptance and
+        // error facts) evaluates without panic and stays within authority.
+        let all_facts: BTreeSet<CausalStateFact> = CausalStateFact::all().into_iter().collect();
+        let eligible: BTreeSet<String> = causal_catalog().keys().cloned().collect();
+        let catalog = causal_catalog();
+        let inputs = m002_frontier_inputs(&eligible, &all_facts, &catalog);
+        let frontier = CausalFrontier::evaluate(&inputs).expect("contradictory state evaluates");
+        for tool in frontier
+            .admissible_contracted
+            .iter()
+            .chain(frontier.uncontracted_fallback.iter())
+        {
+            assert!(eligible.contains(tool));
+        }
+    }
+
+    #[test]
+    fn m002_surface_order_does_not_affect_frontier() {
+        // Frontier input is set-ordered: shuffling the eligible Vec cannot
+        // change the result.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let case = &cases[0];
+        let ordered = evaluate_benchmark_case(case, &catalog, &fingerprint).expect("evaluates");
+        let mut shuffled = case.clone();
+        shuffled.eligible.reverse();
+        let from_shuffled =
+            evaluate_benchmark_case(&shuffled, &catalog, &fingerprint).expect("evaluates");
+        assert_eq!(ordered, from_shuffled);
+    }
+
+    #[test]
+    fn m002_fingerprint_drift_invalidates_frontier() {
+        // State or catalog drift invalidates the cached frontier instead of
+        // silently reusing it.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let case = &cases[0];
+        let frontier = evaluate_benchmark_case(case, &catalog, &fingerprint).expect("evaluates");
+        let state_fp = benchmark_case_state_fingerprint(case);
+        assert!(frontier.is_fresh_against(&state_fp, &fingerprint));
+        assert!(!frontier.is_fresh_against("drifted-state", &fingerprint));
+        assert!(!frontier.is_fresh_against(&state_fp, "drifted-catalog"));
+    }
+
+    #[test]
+    fn m002_withheld_tool_fails_closed() {
+        // A withheld tool reaching frontier input is an error, never a
+        // promotion; frontier output never contains withheld names.
+        let mut case = load_causal_benchmark(BENCHMARK_JSONL).expect("loads")[0].clone();
+        case.withheld.push("read".to_string());
+        let catalog = causal_catalog();
+        let fingerprint = causal_catalog_fingerprint();
+        assert_eq!(
+            evaluate_benchmark_case(&case, &catalog, &fingerprint),
+            Err(CausalFrontierError::WithheldInSurface("read".to_string()))
+        );
+    }
+
+    #[test]
+    fn m002_frontier_carries_no_provider_definitions() {
+        // The frontier serializes to canonical names and fingerprints only:
+        // no definitions, descriptions, scores, or provider payloads.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let case = &cases[0];
+        let frontier = evaluate_benchmark_case(case, &catalog, &fingerprint).expect("evaluates");
+        let value = serde_json::to_value(&frontier).expect("frontier serializes");
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .expect("frontier is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "admissible_contracted",
+                "contract_catalog_fingerprint",
+                "inadmissible_contracted",
+                "required_visible",
+                "schema_version",
+                "snapshot_fingerprint",
+                "uncontracted_fallback",
+            ]
+            .into_iter()
+            .collect::<BTreeSet<&str>>()
+        );
+    }
+
+    #[test]
+    fn m002_dev_baselines_report() {
+        // Dev baselines (arm 1 core-palette projection, arm 2 full eligible
+        // universe) plus the M002 arm reproduce the frozen expectations:
+        // full gold preservation, full premature reduction, median deferred
+        // promotion 3.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let (dev, _) = m002_split(&cases);
+        assert_eq!(dev.len(), 112);
+        let report = score_partition(&dev, &catalog, &fingerprint).expect("dev scores");
+        assert_eq!(report.cases, 112);
+        assert_eq!(report.gold_current_visible, report.gold_current_total);
+        assert_eq!(report.gold_current_step_preservation, 1.0);
+        assert_eq!(report.premature_remaining, 0);
+        assert_eq!(report.premature_exposure_reduction, 1.0);
+        assert_eq!(
+            report.uncontracted_gold_retained,
+            report.uncontracted_gold_total
+        );
+        assert_eq!(report.authority_violations, 0);
+        assert_eq!(report.abstention_violations, 0);
+        assert_eq!(report.median_promotion_structured, 3);
+        // Every dev family preserves its gold tools and exposes no
+        // premature tools after filtering.
+        for family in &report.families {
+            assert_eq!(family.gold_current_visible, family.gold_current_total);
+            assert_eq!(
+                family.premature_remaining, 0,
+                "family {} exposes premature tools",
+                family.family
+            );
+        }
+        // Core-palette projection is populated (baseline arm 1 measures a
+        // real visible-tool count, not an empty scope).
+        assert!(report.core_projection_sizes.iter().all(|size| *size > 0));
+    }
+
+    #[test]
+    fn m002_qualification_gates_freeze_disposition_a() {
+        // The untouched qualification partition scores once, through the
+        // same deterministic evaluation, and every frozen gate passes:
+        // disposition A.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let (_, qual) = m002_split(&cases);
+        assert_eq!(qual.len(), 56);
+        let report = score_partition(&qual, &catalog, &fingerprint).expect("qual scores");
+        assert_eq!(report.gold_current_step_preservation, 1.0);
+        assert_eq!(report.authority_violations, 0);
+        assert_eq!(report.uncontracted_fallback_preservation, 1.0);
+        assert_eq!(report.premature_exposure_reduction, 1.0);
+        assert!(report.median_promotion_structured <= 4);
+        assert_eq!(report.abstention_violations, 0);
+        assert_eq!(
+            decide_disposition(&report, &CausalM002Gates::m001_frozen(), 0.01),
+            CausalM002Disposition::Positive
+        );
+        // No state family loses a gold tool on qualification either.
+        for family in &report.families {
+            assert_eq!(
+                family.gold_current_visible, family.gold_current_total,
+                "family {} loses gold on qual",
+                family.family
+            );
+        }
+    }
+
+    #[test]
+    fn m002_frontier_eval_p95_within_budget() {
+        // Pure frontier evaluation over every qualification surface, 1001
+        // iterations each, stays within the 5 ms p95 budget.
+        let (cases, catalog, fingerprint) = m002_benchmark_inputs();
+        let (_, qual) = m002_split(&cases);
+        let samples = measure_frontier_latency_ms(
+            &qual,
+            &catalog,
+            &fingerprint,
+            CAUSAL_M002_LATENCY_ITERATIONS,
+        );
+        assert_eq!(samples.len(), qual.len() * CAUSAL_M002_LATENCY_ITERATIONS);
+        assert!(
+            nearest_rank_percentile(&samples, 0.95) <= 5.0,
+            "p95 latency exceeds the frozen 5 ms budget"
+        );
+    }
+
+    #[test]
+    fn m002_retrieval_label_diagnostic_reports_frozen_labels() {
+        // Every distinct current-step label in the frozen relevance view is
+        // classified; counts reconcile exactly.
+        const RELEVANCE_JSON: &str =
+            include_str!("../../assets/tool-advisor/retrieval-relevance-v1.json");
+        let candidates =
+            historical_label_candidates(RELEVANCE_JSON).expect("relevance view parses");
+        assert!(!candidates.is_empty());
+        let registry = crate::tool::ToolRegistry::with_defaults();
+        let known: BTreeSet<String> = registry
+            .list()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        let diagnostic = diagnose_retrieval_labels(&candidates, |name| known.contains(name));
+        assert_eq!(
+            diagnostic.admissible_any_state
+                + diagnostic.contracted_state_gated
+                + diagnostic.uncontracted_known
+                + diagnostic.unavailable_unknown,
+            candidates.len()
+        );
+        assert_eq!(diagnostic.labels.len(), candidates.len());
+        // Spot checks against the live native table. Corpus labels use
+        // historical tool identities, so the unknown-identity path is
+        // exercised directly with a synthetic name.
+        assert_eq!(
+            diagnostic.labels.get("read"),
+            Some(&HistoricalLabelClass::AdmissibleAnyState)
+        );
+        assert_eq!(
+            diagnostic.labels.get("goal_get"),
+            Some(&HistoricalLabelClass::ContractedStateGated)
+        );
+        assert_eq!(
+            classify_historical_label("bash", |name| known.contains(name)),
+            HistoricalLabelClass::UncontractedKnown
+        );
+        assert_eq!(
+            classify_historical_label("tool_x99_synthetic", |name| known.contains(name)),
+            HistoricalLabelClass::UnavailableUnknown
+        );
+    }
+
+    #[test]
+    fn m002_qualify_reports_disposition_a() {
+        // End-to-end offline qualification over the frozen assets decides
+        // disposition A with every gate result true.
+        const RELEVANCE_JSON: &str =
+            include_str!("../../assets/tool-advisor/retrieval-relevance-v1.json");
+        let report = qualify_m002(
+            BENCHMARK_JSONL,
+            PREREG_JSON,
+            RELEVANCE_JSON,
+            CAUSAL_M002_LATENCY_ITERATIONS,
+        )
+        .expect("m002 qualifies");
+        assert_eq!(report.disposition, "A");
+        assert_eq!(report.dev.cases, 112);
+        assert_eq!(report.qualification.cases, 56);
+        assert!(report.gate_results.values().all(|passed| *passed));
+        assert!(report.latency_p95_ms <= report.gates.pure_frontier_eval_p95_ms_max);
+        assert_eq!(report.latency_samples, 56 * CAUSAL_M002_LATENCY_ITERATIONS);
+    }
+
+    #[test]
+    fn m002_checked_in_receipt_matches_recomputation() {
+        // The checked-in receipt is byte-identical in every deterministic
+        // field to live recomputation; only the environment-sensitive
+        // latency measurements are compared by gate rather than equality.
+        const RELEVANCE_JSON: &str =
+            include_str!("../../assets/tool-advisor/retrieval-relevance-v1.json");
+        const RECEIPT_JSON: &str =
+            include_str!("../../assets/tool-advisor/causal-frontier-m002-result.json");
+        let stored: CausalM002Report =
+            serde_json::from_str(RECEIPT_JSON).expect("stored receipt parses");
+        let fresh = qualify_m002(
+            BENCHMARK_JSONL,
+            PREREG_JSON,
+            RELEVANCE_JSON,
+            CAUSAL_M002_LATENCY_ITERATIONS,
+        )
+        .expect("m002 requalifies");
+        assert_eq!(stored.schema_version, fresh.schema_version);
+        assert_eq!(stored.protocol, fresh.protocol);
+        assert_eq!(stored.ontology_version, fresh.ontology_version);
+        assert_eq!(
+            stored.contract_schema_version,
+            fresh.contract_schema_version
+        );
+        assert_eq!(stored.benchmark_fingerprint, fresh.benchmark_fingerprint);
+        assert_eq!(
+            stored.contract_catalog_fingerprint,
+            fresh.contract_catalog_fingerprint
+        );
+        assert_eq!(stored.palette_fingerprint, fresh.palette_fingerprint);
+        assert_eq!(stored.dev_fingerprint, fresh.dev_fingerprint);
+        assert_eq!(
+            stored.qualification_fingerprint,
+            fresh.qualification_fingerprint
+        );
+        assert_eq!(stored.dev, fresh.dev);
+        assert_eq!(stored.qualification, fresh.qualification);
+        assert_eq!(stored.gates, fresh.gates);
+        assert_eq!(stored.gate_results, fresh.gate_results);
+        assert_eq!(stored.disposition, fresh.disposition);
+        assert_eq!(
+            stored.retrieval_label_diagnostic,
+            fresh.retrieval_label_diagnostic
+        );
+        assert_eq!(
+            stored.latency_iterations_per_surface,
+            fresh.latency_iterations_per_surface
+        );
+        assert_eq!(stored.latency_samples, fresh.latency_samples);
+        assert!(stored.latency_p95_ms <= stored.gates.pure_frontier_eval_p95_ms_max);
+        assert!(fresh.latency_p95_ms <= fresh.gates.pure_frontier_eval_p95_ms_max);
+    }
+
+    /// Regenerate the checked-in M002 receipt. Ignored by default: run
+    /// explicitly after reviewing contract, benchmark, or palette changes.
+    #[test]
+    #[ignore]
+    fn m002_regenerate_checked_in_receipt() {
+        const RELEVANCE_JSON: &str =
+            include_str!("../../assets/tool-advisor/retrieval-relevance-v1.json");
+        let report = qualify_m002(
+            BENCHMARK_JSONL,
+            PREREG_JSON,
+            RELEVANCE_JSON,
+            CAUSAL_M002_LATENCY_ITERATIONS,
+        )
+        .expect("m002 qualifies for receipt regeneration");
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(CAUSAL_M002_RESULT_ASSET);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&report).expect("receipt serializes"),
+        )
+        .expect("receipt writes");
+        eprintln!("regenerated {}", path.display());
     }
 }

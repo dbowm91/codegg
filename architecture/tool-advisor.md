@@ -214,5 +214,29 @@ No contract may be edited in response to qualification results without a
 new experiment version: the preregistration records the contract-catalog
 fingerprint, the benchmark fingerprint, the family-balanced dev (112) and
 qualification (56) split, exact metric formulas with tie-breaking, and the
-frozen M002 gates (preservation 1.00/1.00, violations 0, reduction >= 0.50,
-median promotion <= 4, p95 <= 5 ms).
+ frozen M002 gates (preservation 1.00/1.00, violations 0, reduction >= 0.50,
+ median promotion <= 4, p95 <= 5 ms).
+
+ ## Causal frontier experiment (M002 offline admissibility)
+
+ M002 evaluates deterministic precondition filtering offline over the
+ already-resolved eligible surface (`CausalFrontier::evaluate` in
+ `src/tool_advisor/causal_frontier.rs`): contracted tools sort into
+ admissible promotion vs. reasoned inadmissibility
+ (`CausalInadmissibilityReason`), uncontracted tools stay in the fallback
+ discovery universe, required/never-reduce tools bypass suppression, and
+ withheld tools fail closed. Only admissible contracted tools deferred from
+ `CORE_PALETTE` form the promotion set, used solely when structured signal
+ exists (insufficient states abstain to the fallback universe). No runtime
+ disclosure, broker, permission, or provider-definition behavior changes.
+
+ Baselines on frozen dev (112): full eligible universe (no filter) and the
+ `CORE_PALETTE` projection; frozen Signal V2 relevance labels are classified
+ diagnostically only (contracted/uncontracted/admissible/unavailable). The
+ untouched qualification partition (56) scores once; the machine-readable
+ receipt (`assets/tool-advisor/causal-frontier-m002-result.json`, disposition
+ A/D/E) is verified by test against live recomputation, with latency compared
+ by gate rather than equality. Measured M002 outcome: disposition A —
+ preservation 1.00/1.00, 0 violations, reduction 1.00, median deferred
+ promotion 3, p95 ~0.03 ms. Positive M002 unblocks M004 observe integration
+ and the optional M003 effect-path experiment.
