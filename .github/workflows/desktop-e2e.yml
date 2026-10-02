@@ -1,0 +1,127 @@
+name: Desktop E2E
+
+# Built-app visible-window qualification for the desktop foundation (C003).
+# Runs the real Tauri window (embedded WebDriver provider) against an
+# isolated daemon: rendered state, real IPC Channel invalidation, visible
+# reconnect, renderer reload, native close, TUI coexistence, explicit
+# autostart, and daemon survival.
+#
+# Root `CI / verify` intentionally has no Tauri/Node/WebKit dependency; this
+# path-gated workflow owns the display-backed qualification instead. Linux
+# (WebKitGTK + xvfb) is the routine hosted qualification. Windows remains
+# M002-gated; macOS runs stay valuable local evidence.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/codegg-client/**'
+      - 'crates/codegg-protocol/**'
+      - 'src/core/transport/**'
+      - 'src/core/daemon_projects.rs'
+      - 'src/core/daemon.rs'
+      - '.github/workflows/desktop-e2e.yml'
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/codegg-client/**'
+      - 'crates/codegg-protocol/**'
+      - 'src/core/transport/**'
+      - 'src/core/daemon_projects.rs'
+      - 'src/core/daemon.rs'
+      - '.github/workflows/desktop-e2e.yml'
+
+# Pinned to 24.04: Tauri 2.12 documents WebKitGTK 4.1 system dependencies
+# there, and ubuntu-latest is migrating to 26 (see CI annotations).
+concurrency:
+  group: desktop-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node is pinned to a currently supported LTS, not inherited ambient.
+      - name: Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Rust 1.90.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+
+      - name: Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            xvfb
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.name "CI Test"
+          git config --global user.email "ci@test.example.com"
+
+      - name: Desktop production boundary guard
+        run: ./scripts/check-desktop-boundary.sh
+
+      - name: Build root daemon binary
+        run: cargo build --locked
+
+      - name: Desktop renderer checks
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run bindings:check
+          npm run build
+
+      - name: Desktop host checks (production configuration)
+        run: |
+          rustup run 1.90.0 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
+          rustup run 1.90.0 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+
+      # Builds the fixture helper plus the desktop-e2e feature app binary
+      # (the only configuration containing the embedded WebDriver server),
+      # then runs the visible-window trajectory under a fake display.
+      # CODEGG_DAEMON_EXECUTABLE pins the daemon to this revision.
+      - name: Built-app WebDriver trajectory
+        env:
+          CODEGG_DAEMON_EXECUTABLE: ${{ github.workspace }}/target/debug/codegg
+        run: xvfb-run -a apps/desktop/e2e/run-e2e.sh
+
+      - name: Upload E2E logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-e2e-logs
+          path: apps/desktop/e2e/logs/
+          if-no-files-found: warn

@@ -16,9 +16,19 @@ tauri-build = { version = "2.5", features = [] }
 codegg-client = { path = "../../../crates/codegg-client" }
 codegg-protocol = { path = "../../../crates/codegg-protocol" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2.12", features = [] }
+# Test-only embedded WebDriver server for the C003 built-app E2E harness.
+# Optional and enabled only through the `desktop-e2e` feature so ordinary
+# production builds never contain automation capabilities.
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
+[features]
+# Built-app visible-window qualification (C003). Only this feature may
+# compile/register `tauri-plugin-wdio-webdriver`. Never enable it for
+# production bundles.
+desktop-e2e = ["tauri-plugin-wdio-webdriver"]
+
 [dev-dependencies]
-serde_json = "1"

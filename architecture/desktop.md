@@ -88,6 +88,48 @@ explicit `desktop_disconnect` via a bounded synchronous `block_on` (2s budget)
 without stopping the daemon; repeated events are idempotent. No correctness
 requirement depends on scheduler timing.
 
+## Built-app E2E boundary (C003)
+
+The M003 visible-window trajectory is repeatable executable coverage, not a
+one-off transcript: WebdriverIO with `@wdio/tauri-service` and the default
+`embedded` provider drives the real Tauri window (real WebView, real `invoke`
+commands, real IPC `Channel` traffic) through existing-daemon reuse, visible
+reconnect, project-catalog invalidation, renderer reload, native close, TUI
+coexistence, explicit-path autostart, and daemon survival
+(`apps/desktop/e2e/specs/`, entry point `apps/desktop/e2e/run-e2e.sh`,
+hosted in `.github/workflows/desktop-e2e.yml` on Linux/WebKitGTK/xvfb).
+
+Test instrumentation never widens production authority:
+
+- the embedded WebDriver server (`tauri-plugin-wdio-webdriver` 1.x) is an
+  optional dependency enabled only by the `desktop-e2e` Cargo feature and
+  registered only under `#[cfg(feature = "desktop-e2e")]`; ordinary
+  `cargo build` / `tauri build` dependency trees contain zero WebDriver crates;
+- the `wdio-webdriver:default` permission lives in the checked-in template
+  `apps/desktop/e2e/capabilities/e2e.json` and is installed as the gitignored,
+  generated `src-tauri/capabilities/e2e.json` only for feature builds (the
+  Tauri build script resolves every `capabilities/*.json` at compile time, so
+  a static test capability would break production builds — the generated file
+  must not exist in a production-clean tree);
+- the production `main` capability keeps an empty permission list, the
+  production CSP keeps local-only origins, and no shell/filesystem/process/
+  HTTP/clipboard/updater/global-shortcut or generic `core_request` bridge
+  exists — all mechanically enforced by `scripts/check-desktop-boundary.sh`,
+  which additionally fails on unconditional plugin registration, on any
+  `tauri-plugin-wdio` (backend execute/mock/log privileges) reference, and on
+  `wdio` references in production config/capability;
+- the deterministic control seam is a separate test process
+  (`src-tauri/src/bin/desktop_e2e_fixture.rs`) speaking the same
+  native-protocol/client crates with an isolated `CODEGG_DAEMON_HOME` (temp
+  scoped, fail-closed), an isolated workspace, an explicit
+  `CODEGG_DAEMON_EXECUTABLE`, bounded timeouts, identity-checked daemon kills,
+  and deterministic cleanup — never the operator's real home or projects;
+- an app binary built with `desktop-e2e` additionally refuses to connect
+  unless `CODEGG_DAEMON_HOME` is set under the OS temp directory
+  (fail-closed `disconnected`, no daemon touched);
+- the renderer exposes only `data-testid` seams plus a visible connection
+  generation; no privileged test command exists on the production bridge.
+
 ## Deferred surfaces
 
 Session creation and projection, editor and terminal, provider credentials,
@@ -100,6 +142,9 @@ From `apps/desktop`, run `npm ci`, `npm run typecheck`, `npm test`,
 `npm run bindings:check`, and `npm run build`. With Tauri system libraries
 installed, run `npm run tauri dev`. Set `CODEGG_DAEMON_EXECUTABLE` to a built
 `codegg` path before connecting/autostarting. For packaging, stage the root
-binary first with `npm run stage:daemon`. Root verification does not invoke
+binary first with `npm run stage:daemon`. For built-app qualification, run
+`CODEGG_DAEMON_EXECUTABLE=<path-to-codegg> ./e2e/run-e2e.sh` (builds the
+`desktop-e2e` feature app plus the fixture helper, runs the WebdriverIO
+trajectory, then restores the production-clean tree). Root verification does not invoke
 Node, WebKitGTK, or the desktop Cargo workspace; `scripts/check-desktop-boundary.sh`
 guards that separation and the renderer authority inventory.

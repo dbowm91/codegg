@@ -55,6 +55,13 @@ vendor/
 node_modules/
 *.tsbuildinfo
 /apps/desktop/src-tauri/binaries/codegg
+# Generated only for desktop-e2e feature builds (see apps/desktop/e2e/build-e2e-app.sh).
+# Production builds must never see this file: the Tauri build script resolves
+# every capabilities/*.json at compile time, and wdio-webdriver:default only
+# exists when the desktop-e2e feature compiles the test-only plugin.
+/apps/desktop/src-tauri/capabilities/e2e.json
+# Supplementary WebdriverIO logs/screenshots (machine assertions are authority).
+/apps/desktop/e2e/logs/
 
 # Python
 __pycache__/

@@ -550,6 +550,32 @@ fn descriptor() -> FrontendDescriptor {
     )
 }
 
+/// C003 E2E fail-closed guard (test-only builds).
+///
+/// An app binary built with the `desktop-e2e` feature refuses to connect
+/// unless `CODEGG_DAEMON_HOME` points under the OS temp directory, so a
+/// stray launch (for example the ambient session created before a spec sets
+/// up its fixture) can never attach to the operator's real daemon home. It
+/// surfaces as a disconnected snapshot, never as a connection. Production
+/// builds are unaffected (this function only exists under the feature).
+#[cfg(feature = "desktop-e2e")]
+fn require_e2e_daemon_home() -> Result<(), String> {
+    let home = std::env::var_os("CODEGG_DAEMON_HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "E2E build: CODEGG_DAEMON_HOME is required".to_owned())?;
+    let tmp = std::env::temp_dir();
+    let temp_scoped = home == tmp
+        || home.starts_with(&tmp)
+        || ["/tmp", "/private/tmp"].iter().any(|dir| {
+            let dir = PathBuf::from(dir);
+            home == dir || home.starts_with(&dir)
+        });
+    if !temp_scoped {
+        return Err("E2E build: CODEGG_DAEMON_HOME must be temp-scoped".into());
+    }
+    Ok(())
+}
+
 fn daemon_executable(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("CODEGG_DAEMON_EXECUTABLE").map(PathBuf::from) {
         return Ok(path);
@@ -602,6 +628,9 @@ async fn desktop_connect(
     app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<ConnectionSnapshot, String> {
+    // C003: test-only builds fail closed before touching any daemon home.
+    #[cfg(feature = "desktop-e2e")]
+    require_e2e_daemon_home()?;
     // Slow preparation runs outside the lifecycle gate; the final commit is
     // atomic under the gate (Finding D) and disconnect-superseding (Finding C).
     let attempt = state.allocate_connect_attempt();
@@ -788,7 +817,18 @@ pub fn run() {
     // triggered here.
     let close_state = Arc::clone(&state);
     let exit_state = Arc::clone(&state);
-    tauri::Builder::default()
+    // C003 built-app E2E seam: the embedded WebDriver server plugin is
+    // registered ONLY under the `desktop-e2e` Cargo feature. Ordinary
+    // production builds never contain automation capabilities; the
+    // `e2e-capability` permission file is inert without this registration.
+    // `tauri-plugin-wdio` (backend execute/mock/log privileges) is
+    // intentionally not used; ordinary WebDriver element interaction plus the
+    // fixture/control seam below covers the M003 trajectory.
+    #[cfg(feature = "desktop-e2e")]
+    let builder = tauri::Builder::default().plugin(tauri_plugin_wdio_webdriver::init());
+    #[cfg(not(feature = "desktop-e2e"))]
+    let builder = tauri::Builder::default();
+    builder
         .manage(Arc::clone(&state))
         .invoke_handler(tauri::generate_handler![
             desktop_connect,
