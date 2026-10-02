@@ -385,7 +385,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | Milestone | Status | Implementation plan | Hard/operational blocker |
 |---|---|---|---|
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
-| M002 portable local daemon transport | closing | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | Implementation landed; Windows live transport and lifecycle evidence remains required for strict closure |
+| M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
 | M003 Tauri desktop shell + secure bridge | ready | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | M001 closed; M002 is operational only for Windows qualification |
 | M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | M003 hard |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
