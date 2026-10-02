@@ -105,6 +105,15 @@ jobs:
           npm run bindings:check
           npm run build
 
+      # tauri.conf.json bundles binaries/codegg as a resource; the Tauri
+      # build script requires it to exist. Stage this revision's binary
+      # (gitignored; C001 operator contract).
+      - name: Stage daemon resource for the desktop bundle
+        working-directory: apps/desktop
+        env:
+          CODEGG_DAEMON_EXECUTABLE: ${{ github.workspace }}/target/debug/codegg
+        run: npm run stage:daemon
+
       - name: Desktop host checks (production configuration)
         run: |
           rustup run 1.90.0 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
