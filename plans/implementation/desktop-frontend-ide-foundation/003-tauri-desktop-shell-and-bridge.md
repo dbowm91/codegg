@@ -1,8 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 003 — Tauri Desktop Shell and Secure Bridge
 
-Status: blocked
+Status: ready for handoff
 
-Repository baseline: `f388689094866fe4ab8b1bf1dafa680516805ad2`
+Repository baseline: `deebc99a39c783eb3f52918fb8f3f2c138cb65b6`
 
 Source roadmap:
 

@@ -163,12 +163,12 @@ The desktop renderer is presentation-only. It receives already-authorized, bound
 closed session projections / daemon singleton / project-session foundations
                               |
                               v
-M001 shared frontend client runtime                         [ready]
+M001 shared frontend client runtime                         [closed]
              |                                \
              | hard                            \ hard
              v                                  v
 M002 portable local daemon IPC                    M003 Tauri shell + secure bridge
-[blocked on M001]                                 [blocked on M001]
+[ready]                                           [ready]
              |                                      |
              | operational for Windows              | hard
              +-------------------+------------------+
@@ -191,7 +191,7 @@ M002 is not a hard dependency for a Linux/macOS M003 implementation because the 
 
 ### Milestone 001 — Shared frontend client runtime
 
-Status: closing.
+Status: closed.
 
 Primary class: infrastructure.
 
@@ -210,7 +210,7 @@ Outcome:
 
 ### Milestone 002 — Portable local daemon transport and singleton lifecycle
 
-Status: blocked on M001.
+Status: ready.
 
 Primary class: infrastructure / invariant.
 
@@ -230,7 +230,7 @@ Outcome:
 
 ### Milestone 003 — Tauri desktop shell and secure bridge
 
-Status: blocked on M001. M002 is an operational dependency only for Windows qualification.
+Status: ready. M002 remains an operational dependency only for Windows qualification.
 
 Primary class: infrastructure.
 
@@ -384,9 +384,9 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 
 | Milestone | Status | Implementation plan | Hard/operational blocker |
 |---|---|---|---|
-| M001 shared frontend client runtime | closing | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | implementation landed; closure evidence review underway |
-| M002 portable local daemon transport | blocked | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | M001 hard; live Windows runtime evidence for Windows closure |
-| M003 Tauri desktop shell + secure bridge | blocked | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | M001 hard; M002 operational only for Windows |
+| M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
+| M002 portable local daemon transport | ready | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | M001 closed; live Windows runtime evidence remains required for Windows closure |
+| M003 Tauri desktop shell + secure bridge | ready | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | M001 closed; M002 is operational only for Windows qualification |
 | M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | M003 hard |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
 | M006 IDE shell | deferred | not yet written | M005 |
