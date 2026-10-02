@@ -210,7 +210,7 @@ Outcome:
 
 ### Milestone 002 — Portable local daemon transport and singleton lifecycle
 
-Status: ready.
+Status: active.
 
 Primary class: infrastructure / invariant.
 
@@ -385,7 +385,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | Milestone | Status | Implementation plan | Hard/operational blocker |
 |---|---|---|---|
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
-| M002 portable local daemon transport | ready | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | M001 closed; live Windows runtime evidence remains required for Windows closure |
+| M002 portable local daemon transport | active | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | M001 closed; live Windows runtime evidence remains required for Windows closure |
 | M003 Tauri desktop shell + secure bridge | ready | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | M001 closed; M002 is operational only for Windows qualification |
 | M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | M003 hard |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
