@@ -1015,6 +1015,274 @@ async fn drifted_or_unstable_evidence_is_never_written_back_as_pass() {
     assert!(f.store.list_observations(&plan.id).expect("obs").is_empty());
 }
 
+// ── C001 dirty-subject provenance and bound evidence ─────────────────────
+
+use codegg::execution_subject_capture::capture_attempt_revision;
+
+/// Capture start/seal revisions through the production v2 helper at the
+/// current dirty worktree state, asserting the C001 shape: native digest
+/// plus the exact Eggplan-compatible digest.
+async fn capture_stable_dirty_pair(
+    f: &Fixture,
+) -> (ExecutionSubjectRevision, ExecutionSubjectRevision) {
+    let (start, start_reason) = capture_attempt_revision(f.workspace_root(), &f.workspace_id).await;
+    let (seal, seal_reason) = capture_attempt_revision(f.workspace_root(), &f.workspace_id).await;
+    assert_eq!(start_reason, None);
+    assert_eq!(seal_reason, None);
+    let (start, seal) = (start.expect("start capture"), seal.expect("seal capture"));
+    assert_eq!(start.state, ExecutionSubjectState::Dirty);
+    assert!(start.dirty_digest.is_some(), "native digest is captured");
+    assert!(
+        start.eggplan_dirty_digest.is_some(),
+        "Eggplan-compatible digest is captured alongside the native one"
+    );
+    assert_ne!(
+        start.dirty_digest, start.eggplan_dirty_digest,
+        "the two owners use intentionally different encodings"
+    );
+    assert_eq!(start, seal, "an unmodified dirty tree seals Stable");
+    (start, seal)
+}
+
+/// Persist one durable test job whose attempt provenance is the given
+/// captured/sealed pair, returning the authoritative verification digest.
+async fn insert_job_with_provenance(
+    f: &Fixture,
+    start: &ExecutionSubjectRevision,
+    seal: &ExecutionSubjectRevision,
+    disposition: ExecutionSubjectDisposition,
+) -> (String, VerificationDigest) {
+    let store = SqliteJobStore::new(f.pool.clone());
+    let job = store
+        .create_job(job_spec(test_payload()))
+        .await
+        .expect("create job");
+    let attempt = store
+        .begin_attempt(&job.job_id, &DaemonGeneration::new())
+        .await
+        .expect("begin attempt");
+    store
+        .mark_attempt_running(&attempt.attempt_id)
+        .await
+        .expect("mark running");
+    store
+        .set_attempt_source_subject_started(
+            &attempt.attempt_id,
+            &ExecutionSubjectProvenance {
+                schema_version: ExecutionSubjectProvenance::SCHEMA_VERSION,
+                captured: Some(start.clone()),
+                sealed: None,
+                disposition: ExecutionSubjectDisposition::Started,
+                seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+                unavailable_reason: None,
+                materialization: None,
+            },
+        )
+        .await
+        .expect("started subject");
+    store
+        .seal_attempt_source_subject(
+            &attempt.attempt_id,
+            &ExecutionSubjectProvenance {
+                schema_version: ExecutionSubjectProvenance::SCHEMA_VERSION,
+                captured: Some(start.clone()),
+                sealed: Some(seal.clone()),
+                disposition,
+                seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+                unavailable_reason: None,
+                materialization: None,
+            },
+        )
+        .await
+        .expect("seal subject");
+    store
+        .finish_attempt(AttemptCompletion {
+            attempt_id: attempt.attempt_id,
+            state: AttemptState::Completed,
+            error: None,
+            run_id: None,
+        })
+        .await
+        .expect("finish attempt");
+    let record = store
+        .get_job(&job.job_id)
+        .await
+        .expect("load job")
+        .expect("job row");
+    let digest = codegg::work_plan_eggplan::verification_digest_for_job(&record)
+        .expect("authoritative verification digest");
+    (job.job_id.to_string(), digest)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dirty_stable_execution_binds_evidence_and_guarded_closes() {
+    let f = fixture().await;
+    // A non-`.eggplan` source file makes the tree dirty for both owners.
+    std::fs::write(f.root.join("base.txt"), b"base dirty\n").expect("dirty the tree");
+    let (start, seal) = capture_stable_dirty_pair(&f).await;
+    let (job_id, digest) =
+        insert_job_with_provenance(&f, &start, &seal, ExecutionSubjectDisposition::Stable).await;
+
+    let mut plan = one_item_plan("dirty evidence end to end");
+    plan.items[0].criteria[0].requirements[0].expected_verification_digest = Some(digest);
+    create_active_repository_plan(&f.store, &mut plan);
+    let service = f.service();
+    let binding = service
+        .bind_session_plan(&f.session_id, plan.id.as_str())
+        .await
+        .expect("dirty same-subject bind still proves identity");
+    let work_item_id = sole_item_id(&f, &binding.work_plan_id).await;
+    attach_evidence(&f, &work_item_id, WorkEvidenceKind::TestJob, &job_id).await;
+
+    let report = service
+        .sync_terminal_evidence(&binding, f.workspace_root())
+        .await
+        .expect("stable dirty evidence syncs");
+    assert_eq!(report.appended, 1);
+
+    // The observation carries the exact Eggplan subject: repository capture
+    // equality, not a converted native digest.
+    let expected_digest = f
+        .store
+        .subject_source()
+        .capture()
+        .expect("repository capture")
+        .dirty_digest
+        .expect("dirty repository capture");
+    assert_eq!(
+        seal.eggplan_dirty_digest.as_deref(),
+        Some(expected_digest.as_str()),
+        "execution-time digest equals the repository capture"
+    );
+    let observations = f.store.list_observations(&plan.id).expect("observations");
+    assert_eq!(observations.len(), 1);
+    let observation = &observations[0];
+    assert_eq!(
+        observation.subject().state,
+        eggplan_core::SubjectState::Dirty
+    );
+    assert_eq!(
+        observation.subject().dirty_digest.as_deref(),
+        Some(expected_digest.as_str())
+    );
+    assert_eq!(
+        observation.subject().repository_id,
+        binding.eggplan_repository_id
+    );
+
+    // Dirty item completion and guarded closure succeed while the same dirty
+    // state stays stable.
+    service
+        .update_bound_item(
+            &work_item_id,
+            current_item_revision(&f, &work_item_id).await,
+            WorkItemStatus::InProgress,
+            None,
+            None,
+            f.workspace_root(),
+        )
+        .await
+        .expect("start work");
+    service
+        .update_bound_item(
+            &work_item_id,
+            current_item_revision(&f, &work_item_id).await,
+            WorkItemStatus::Completed,
+            None,
+            None,
+            f.workspace_root(),
+        )
+        .await
+        .expect("evidence-gated dirty completion");
+    service
+        .finalize_bound_plan(&binding, f.workspace_root())
+        .await
+        .expect("guarded dirty closure");
+    let closed = f.store.get(&plan.id).expect("get");
+    assert_eq!(closed.status, PlanStatus::Closed);
+    let mirror = WorkPlanStore::new(f.pool.clone())
+        .get(&binding.work_plan_id)
+        .await
+        .expect("mirror")
+        .expect("row");
+    assert_eq!(mirror.status, WorkPlanStatus::Completed);
+    assert!(service
+        .load_binding(&binding.work_plan_id)
+        .await
+        .expect("load")
+        .is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dirty_content_change_during_attempt_never_becomes_passing_evidence() {
+    let f = fixture().await;
+    std::fs::write(f.root.join("base.txt"), b"base dirty A\n").expect("dirty A");
+    let (start_opt, _) = capture_attempt_revision(f.workspace_root(), &f.workspace_id).await;
+    let start = start_opt.expect("start capture");
+    // The dirty contents change between start and seal while HEAD and the
+    // dirty classification stay the same.
+    std::fs::write(f.root.join("base.txt"), b"base dirty B\n").expect("dirty B");
+    let (seal_opt, _) = capture_attempt_revision(f.workspace_root(), &f.workspace_id).await;
+    let seal = seal_opt.expect("seal capture");
+    assert_ne!(start, seal, "changed dirty contents drift the provenance");
+
+    let (job_id, digest) =
+        insert_job_with_provenance(&f, &start, &seal, ExecutionSubjectDisposition::Drifted).await;
+    let mut plan = one_item_plan("dirty drift");
+    plan.items[0].criteria[0].requirements[0].expected_verification_digest = Some(digest);
+    create_active_repository_plan(&f.store, &mut plan);
+    let service = f.service();
+    let binding = service
+        .bind_session_plan(&f.session_id, plan.id.as_str())
+        .await
+        .expect("bind");
+    let work_item_id = sole_item_id(&f, &binding.work_plan_id).await;
+    attach_evidence(&f, &work_item_id, WorkEvidenceKind::TestJob, &job_id).await;
+
+    let error = service
+        .sync_terminal_evidence(&binding, f.workspace_root())
+        .await
+        .expect_err("drifted dirty subject is not authoritative evidence");
+    assert_eq!(error.code, "evidence_subject_unstable");
+    assert!(f.store.list_observations(&plan.id).expect("obs").is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn legacy_v1_dirty_provenance_fails_closed_without_backfill() {
+    let f = fixture().await;
+    // Historical v1: native digest only, no Eggplan-compatible projection.
+    let legacy = ExecutionSubjectRevision {
+        schema_version: ExecutionSubjectRevision::SCHEMA_VERSION_V1,
+        subject_kind: ExecutionSubjectKind::Git,
+        repository_identity: codegg_subject_identity(&f),
+        revision: head_oid(f.workspace_root()),
+        state: ExecutionSubjectState::Dirty,
+        dirty_digest: Some("b".repeat(64)),
+        eggplan_dirty_digest: None,
+    };
+    assert!(legacy.validate(), "v1 stays readable");
+    let (job_id, digest) =
+        insert_job_with_provenance(&f, &legacy, &legacy, ExecutionSubjectDisposition::Stable).await;
+    let mut plan = one_item_plan("legacy dirty");
+    plan.items[0].criteria[0].requirements[0].expected_verification_digest = Some(digest);
+    create_active_repository_plan(&f.store, &mut plan);
+    let service = f.service();
+    let binding = service
+        .bind_session_plan(&f.session_id, plan.id.as_str())
+        .await
+        .expect("bind");
+    let work_item_id = sole_item_id(&f, &binding.work_plan_id).await;
+    attach_evidence(&f, &work_item_id, WorkEvidenceKind::TestJob, &job_id).await;
+
+    let error = service
+        .sync_terminal_evidence(&binding, f.workspace_root())
+        .await
+        .expect_err("legacy dirty provenance fails closed");
+    assert_eq!(error.code, "legacy_dirty_subject_missing_eggplan_digest");
+    // No current-worktree backfill: nothing is written.
+    assert!(f.store.list_observations(&plan.id).expect("obs").is_empty());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn in_flight_evidence_is_never_persisted_as_terminal() {
     let f = fixture().await;
@@ -1543,6 +1811,7 @@ fn clean_revision(identity: &str, oid: &str) -> ExecutionSubjectRevision {
         revision: oid.to_string(),
         state: ExecutionSubjectState::Clean,
         dirty_digest: None,
+        eggplan_dirty_digest: None,
     }
 }
 

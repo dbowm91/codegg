@@ -190,29 +190,20 @@ impl JobExecutionContext {
         skipped_oversize: usize,
     ) -> Result<bool, String> {
         use codegg_core::jobs::{
-            ExecutionSubjectDisposition as D, ExecutionSubjectKind as K,
-            ExecutionSubjectMaterialization as M, ExecutionSubjectProvenance as P,
-            ExecutionSubjectRevision as R, ExecutionSubjectSealKind as S,
-            ExecutionSubjectState as T,
+            ExecutionSubjectDisposition as D, ExecutionSubjectMaterialization as M,
+            ExecutionSubjectProvenance as P, ExecutionSubjectSealKind as S,
         };
         let Some(started) = self.source_subject_started.as_ref() else {
             return Err("missing started subject provenance".into());
         };
-        let end = egggit::capture_git_source_subject(&self.workspace_root)
-            .await
-            .ok()
-            .map(|subject| R {
-                schema_version: R::SCHEMA_VERSION,
-                subject_kind: K::Git,
-                repository_identity: format!("codegg-workspace:{}", self.workspace_id.as_str()),
-                revision: subject.revision,
-                state: if subject.dirty_digest.is_some() {
-                    T::Dirty
-                } else {
-                    T::Clean
-                },
-                dirty_digest: subject.dirty_digest,
-            });
+        // C001: seal through the same v2 helper so an Eggplan-digest change
+        // between start and seal surfaces as Drifted.
+        let end = crate::execution_subject_capture::capture_attempt_revision(
+            &self.workspace_root,
+            &self.workspace_id,
+        )
+        .await
+        .0;
         let equal = started
             .captured
             .as_ref()

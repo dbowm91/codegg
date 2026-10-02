@@ -78,6 +78,7 @@ fn clean_revision(identity: &str, oid: &str) -> ExecutionSubjectRevision {
         revision: oid.to_string(),
         state: ExecutionSubjectState::Clean,
         dirty_digest: None,
+        eggplan_dirty_digest: None,
     }
 }
 

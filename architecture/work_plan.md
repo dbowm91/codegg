@@ -290,10 +290,19 @@ ownership/migration guard:
   Plan. Identity proof is per binding and per work-order occurrence.
 - Subjects: `egggit::capture_git_source_subject_excluding` excludes
   `.eggplan`, so the governed host subject stays byte-identical before
-  and after every binding writeback. Identity compares repository id,
-  revision, and clean/dirty state; the two owners hash different
-  canonical manifests, so dirty-digest bytes are not comparable across
-  them.
+  and after every binding writeback. Binding identity uses the E1/C/E2
+  sandwich (Eggplan capture, CodeGG capture, Eggplan capture): E1 must
+  equal E2 exactly or binding fails closed with
+  `repository_subject_changed_during_identity_proof`. Identity compares
+  repository id, revision, and clean/dirty state; the two owners hash
+  different canonical manifests, so dirty-digest bytes are not comparable
+  across them. For dirty executions CodeGG persists the exact
+  Eggplan-compatible digest at execution time
+  (`ExecutionSubjectRevision` v2 `eggplan_dirty_digest`, captured by the
+  single helper in `src/execution_subject_capture.rs`); bound dirty
+  translation uses only that persisted digest, and dirty v1 provenance
+  fails closed with `legacy_dirty_subject_missing_eggplan_digest`
+  (C001; closure `plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`).
 - `AssessmentEngine::EggplanRepositoryBound` supersedes `EggplanGit` for
   a bound plan. A live binding takes precedence; a repository access
   failure fails closed with `repository_binding_unavailable` and is
@@ -328,7 +337,8 @@ ownership/migration guard:
 - Storage v68 adds `work_plan_eggplan_binding`,
   `work_plan_eggplan_item_binding`, and `work_order_eggplan_binding`
   (append/replace only, no destructive path).
-- Tests: `tests/work_plan_repository_binding.rs` (34 cases) plus the
+- Tests: `tests/work_plan_repository_binding.rs` (37 cases incl. the C001
+  dirty stable/drift/legacy matrix) plus the
   core binding-persistence suite.
 
 ## Invariants & Gotchas

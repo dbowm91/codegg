@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Static lint: execution-subject provenance ownership guard (Eggplan M001).
+"""Static lint: execution-subject provenance ownership guard (Eggplan M001, M003 C001).
 
 Enforces the CodeGG-owned provenance invariants from
-``plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md``:
+``plans/implementation/eggplan-assessment-integration/001-durable-execution-subject-provenance.md``
+as repaired by
+``plans/implementation/eggplan-assessment-integration/005-m003-c001-dirty-subject-provenance-and-bound-evidence.md``:
 
   1. Subject capture lives only in the approved Git owner:
      ``capture_git_source_subject`` is defined once in
      ``crates/egggit/src/subject.rs`` and called only from the
-     scheduler-owned boundary (``src/scheduler/``), plus the crate
-     re-export and tests.
+     application-level v2 helper (``src/execution_subject_capture.rs``),
+     the M002 assessment facade (current-subject reads only, never
+     persisted provenance), plus the crate re-export and tests.
+  1b. The administrative-exclusion capture entry point (M003) is defined
+     exactly once in the approved Git owner and called only from the M003
+     repository-binding identity proof.
+  1c. All authoritative attempt-start/seal capture goes through the
+     approved v2 helper ``capture_attempt_revision``: the scheduler
+     boundary never constructs ``ExecutionSubjectRevision`` literals or
+     calls raw capture directly.
   2. ``src/work_plan_evidence.rs`` never captures: no ``egggit`` use, no
      capture/seal calls, no process spawn, no ``current_dir``, no
      provenance writes. Both resolvers load durable attempt provenance
@@ -17,6 +27,12 @@ Enforces the CodeGG-owned provenance invariants from
   4. Provenance authority is ``JobAttempt.source_subject``, never
      ``JobRecord`` fields or free-form job labels.
   5. The v67 migration exists and adds ``source_subject_json``.
+  6. C001 translator rules: the bound historical translator reads only the
+     persisted ``eggplan_dirty_digest`` (never the native ``dirty_digest``)
+     for bound Eggplan subjects; the E1/C/E2 sandwich proof exists with its
+     typed changed-during-proof error; no current-worktree historical
+     backfill helper exists; ``codegg-core`` has no Eggplan crate
+     dependency.
 
 Run:
 
@@ -128,13 +144,14 @@ def main() -> int:
         )
 
     # 1b. Callers of the capture entry points are confined to the governed
-    # owners: the scheduler boundary, the M002 assessment facade, the M003
-    # repository-binding identity proof (+ crate re-export and tests).
-    # Capture ownership is never widened to a new caller without adding that
-    # owner here explicitly.
+    # owners: the application-level v2 helper, the M002 assessment facade
+    # (current-subject reads only), the M003 repository-binding identity
+    # proof (exclusion form only), plus the crate re-export and tests.
+    # The scheduler boundary must go through the v2 helper (rule 1c below),
+    # never raw capture. Capture ownership is never widened to a new caller
+    # without adding that owner here explicitly.
     allowed_caller_prefixes = (
         "crates/egggit/src/",
-        "src/scheduler/",
         "tests/",
     )
     # Files allowed to call the plain capture form, because they read the
@@ -142,6 +159,7 @@ def main() -> int:
     # persist provenance.
     allowed_plain_capture_files = (
         "src/work_plan_eggplan.rs",
+        "src/execution_subject_capture.rs",
     )
     # Files allowed to call the exclusion form only.
     allowed_excluding_capture_files = (
@@ -166,6 +184,37 @@ def main() -> int:
             if rel in allowed_plain_capture_files:
                 continue
             fail(f"{rel}:{i}: subject capture outside the governed capture owners")
+
+    # 1c. All authoritative attempt-start/seal capture goes through the
+    # approved v2 helper. The scheduler boundary must call
+    # `capture_attempt_revision` and must never construct
+    # `ExecutionSubjectRevision` literals or call raw capture directly.
+    for rel in ("src/scheduler/scheduler.rs", "src/scheduler/executor.rs"):
+        text = read(rel)
+        if "capture_attempt_revision" not in text:
+            fail(f"{rel}: authoritative capture must go through capture_attempt_revision")
+        for i, line in code_lines(rel):
+            if "capture_git_source_subject" in line:
+                fail(f"{rel}:{i}: scheduler capture must go through the v2 helper")
+            if re.search(r"ExecutionSubjectRevision\s*\{", line):
+                fail(
+                    f"{rel}:{i}: scheduler must not construct "
+                    "ExecutionSubjectRevision literals (use the v2 helper)"
+                )
+
+    # 1d. Raw Eggplan subject capture is confined to the v2 helper (attempt
+    # provenance) and the binding module (identity proof, assessment,
+    # closure). Tools, the arbiter, and the scheduler never touch it.
+    for path in list(ROOT.joinpath("src").rglob("*.rs")):
+        rel = str(path.relative_to(ROOT))
+        if rel in (
+            "src/execution_subject_capture.rs",
+            "src/work_plan_repository_binding.rs",
+        ) or "/tests/" in rel:
+            continue
+        for i, line in code_lines(rel):
+            if "subject_source()" in line:
+                fail(f"{rel}:{i}: raw Eggplan subject capture outside the governed owners")
 
     # 2. The evidence resolvers never capture and never read live state.
     evidence = read("src/work_plan_evidence.rs")
@@ -245,6 +294,66 @@ def main() -> int:
         fail("migrate_v67 missing in crates/codegg-core/src/session/schema.rs")
     if "source_subject_json" not in schema:
         fail("migrate_v67 must add the source_subject_json column")
+
+    # 6. C001 translator and sandwich rules live in the approved binding
+    # module.
+    binding = read("src/work_plan_repository_binding.rs")
+    if "prove_identity_from_captures" not in binding:
+        fail(
+            "src/work_plan_repository_binding.rs: the E1/C/E2 sandwich core "
+            "prove_identity_from_captures is missing"
+        )
+    if "repository_subject_changed_during_identity_proof" not in binding:
+        fail(
+            "src/work_plan_repository_binding.rs: the typed "
+            "changed-during-proof error is missing"
+        )
+    if binding.count("subject_source()") < 5:
+        fail(
+            "src/work_plan_repository_binding.rs: the identity proof must "
+            "capture the Eggplan side twice (E1/C/E2 sandwich)"
+        )
+    if "legacy_dirty_subject_missing_eggplan_digest" not in binding:
+        fail(
+            "src/work_plan_repository_binding.rs: the legacy-dirty "
+            "fail-closed error is missing"
+        )
+    # The bound translator must read the persisted Eggplan-compatible
+    # digest, never the native digest, as the bound Eggplan digest.
+    translator = binding.split("pub fn translate_historical_subject", 1)
+    if len(translator) != 2:
+        fail("src/work_plan_repository_binding.rs: translate_historical_subject is missing")
+    else:
+        body = translator[1].split("\n// ──", 1)[0]
+        body_code = "\n".join(
+            line.split("//")[0]
+            for line in body.splitlines()
+            if not line.strip().startswith("//")
+        )
+        if "eggplan_dirty_digest" not in body_code:
+            fail(
+                "translate_historical_subject: bound dirty translation must read "
+                "eggplan_dirty_digest"
+            )
+        if ".dirty_digest" in body_code:
+            fail(
+                "translate_historical_subject: the native dirty_digest must never "
+                "feed a bound Eggplan subject"
+            )
+
+    # 6b. No current-worktree historical backfill helper exists anywhere.
+    for path in list(ROOT.joinpath("src").rglob("*.rs")) + list(
+        ROOT.joinpath("crates").rglob("*.rs")
+    ):
+        rel = str(path.relative_to(ROOT))
+        for i, line in code_lines(rel):
+            if re.search(r"fn\s+\w*backfill\w*\s*\(", line) and not in_test_module(path, i):
+                fail(f"{rel}:{i}: no historical backfill helper may exist")
+
+    # 6c. codegg-core stays free of every Eggplan crate dependency.
+    core_manifest = read("crates/codegg-core/Cargo.toml")
+    if re.search(r"^\s*eggplan-", core_manifest, re.MULTILINE):
+        fail("crates/codegg-core/Cargo.toml: codegg-core must not depend on Eggplan crates")
 
     if FAILURES:
         print("execution-subject ownership guard FAILED:")

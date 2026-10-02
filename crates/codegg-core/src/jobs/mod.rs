@@ -1279,6 +1279,17 @@ pub struct JobAttempt {
 }
 
 /// CodeGG-native source identity. This intentionally has no Eggplan dependency.
+///
+/// Schema history (M003 C001):
+///
+/// - v1: native `dirty_digest` only. Historical v1 rows remain readable;
+///   clean v1 still translates to a bound Eggplan subject, but dirty v1
+///   cannot satisfy bound exact-subject evidence because it lacks the
+///   Eggplan-native digest.
+/// - v2: retains the CodeGG-native `dirty_digest` and may carry
+///   `eggplan_dirty_digest`, the exact Eggplan-compatible dirty digest
+///   captured at execution time. The two digests use intentionally
+///   different encodings and are never compared to each other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionSubjectRevision {
@@ -1288,6 +1299,13 @@ pub struct ExecutionSubjectRevision {
     pub revision: String,
     pub state: ExecutionSubjectState,
     pub dirty_digest: Option<String>,
+    /// Exact Eggplan-compatible dirty digest (`sha256:<64-lowercase-hex>`)
+    /// captured at execution time. Present only on v2 dirty revisions
+    /// whose workspace had repository-local Eggplan state; never derived
+    /// from [`Self::dirty_digest`], never backfilled from the current
+    /// worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eggplan_dirty_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1415,10 +1433,30 @@ pub enum ExecutionSubjectUnavailableReason {
 }
 
 impl ExecutionSubjectRevision {
-    pub const SCHEMA_VERSION: u16 = 1;
+    pub const SCHEMA_VERSION: u16 = 2;
+    /// Historical schema version: native `dirty_digest` only, no
+    /// `eggplan_dirty_digest`. Still accepted by [`Self::validate`]; dirty
+    /// v1 rows fail closed for bound exact-subject evidence downstream.
+    pub const SCHEMA_VERSION_V1: u16 = 1;
+    /// Required form of [`Self::eggplan_dirty_digest`]: Eggplan's
+    /// `sha256:<64-lowercase-hex>` dirty-manifest encoding. This is a plain
+    /// string-shape check; `codegg-core` takes no Eggplan crate dependency.
+    pub fn is_valid_eggplan_dirty_digest(value: &str) -> bool {
+        let Some(rest) = value.strip_prefix("sha256:") else {
+            return false;
+        };
+        rest.len() == 64
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
     pub fn validate(&self) -> bool {
-        self.schema_version == Self::SCHEMA_VERSION
-            && !self.repository_identity.is_empty()
+        if self.schema_version != Self::SCHEMA_VERSION
+            && self.schema_version != Self::SCHEMA_VERSION_V1
+        {
+            return false;
+        }
+        if !(!self.repository_identity.is_empty()
             && self.repository_identity.len() <= 256
             && (self.repository_identity.starts_with("codegg-workspace:")
                 || self.repository_identity.starts_with("repository:"))
@@ -1428,15 +1466,31 @@ impl ExecutionSubjectRevision {
             && self
                 .revision
                 .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-            && match self.state {
-                ExecutionSubjectState::Clean => self.dirty_digest.is_none(),
-                ExecutionSubjectState::Dirty => self.dirty_digest.as_ref().is_some_and(|d| {
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+        {
+            return false;
+        }
+        match self.state {
+            ExecutionSubjectState::Clean => {
+                self.dirty_digest.is_none() && self.eggplan_dirty_digest.is_none()
+            }
+            ExecutionSubjectState::Dirty => {
+                let native_ok = self.dirty_digest.as_ref().is_some_and(|d| {
                     d.len() == 64
                         && d.bytes()
                             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-                }),
+                });
+                if !native_ok {
+                    return false;
+                }
+                match self.eggplan_dirty_digest.as_deref() {
+                    // v1 never carried the Eggplan field.
+                    Some(_) if self.schema_version == Self::SCHEMA_VERSION_V1 => false,
+                    Some(digest) => Self::is_valid_eggplan_dirty_digest(digest),
+                    None => true,
+                }
             }
+        }
     }
 
     /// Lossless projection to Eggplan's five-field `SubjectRevision`
@@ -2144,6 +2198,7 @@ mod tests {
             revision: "a".repeat(40),
             state: ExecutionSubjectState::Clean,
             dirty_digest: None,
+            eggplan_dirty_digest: None,
         };
         assert!(clean.validate());
         let mut invalid = clean.clone();
@@ -2164,6 +2219,7 @@ mod tests {
             revision: "a".repeat(40),
             state: ExecutionSubjectState::Clean,
             dirty_digest: None,
+            eggplan_dirty_digest: None,
         };
         let incomplete = ExecutionSubjectProvenance {
             schema_version: 1,
@@ -2195,6 +2251,7 @@ mod tests {
             revision: "a".repeat(40),
             state: ExecutionSubjectState::Clean,
             dirty_digest: None,
+            eggplan_dirty_digest: None,
         };
         let stable = ExecutionSubjectProvenance {
             schema_version: 1,
@@ -2209,5 +2266,116 @@ mod tests {
         let mut drifted = stable;
         drifted.disposition = ExecutionSubjectDisposition::Drifted;
         assert!(!drifted.validate_sealed());
+    }
+
+    // ── M003 C001 nested provenance schema v2 ─────────────────────────
+
+    fn v2_dirty_revision() -> ExecutionSubjectRevision {
+        ExecutionSubjectRevision {
+            schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
+            subject_kind: ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-1".into(),
+            revision: "a".repeat(40),
+            state: ExecutionSubjectState::Dirty,
+            dirty_digest: Some("b".repeat(64)),
+            eggplan_dirty_digest: Some(format!("sha256:{}", "c".repeat(64))),
+        }
+    }
+
+    #[test]
+    fn revision_v1_parse_validate_roundtrip() {
+        // Historical v1 JSON has no Eggplan field and must stay readable.
+        let json = serde_json::json!({
+            "schema_version": 1,
+            "subject_kind": "git",
+            "repository_identity": "codegg-workspace:ws-1",
+            "revision": "a".repeat(40),
+            "state": "dirty",
+            "dirty_digest": "b".repeat(64),
+        });
+        let revision: ExecutionSubjectRevision = serde_json::from_value(json).unwrap();
+        assert_eq!(revision.schema_version, 1);
+        assert_eq!(revision.eggplan_dirty_digest, None);
+        assert!(revision.validate());
+        let roundtrip: ExecutionSubjectRevision =
+            serde_json::from_value(serde_json::to_value(&revision).unwrap()).unwrap();
+        assert_eq!(roundtrip, revision);
+    }
+
+    #[test]
+    fn revision_v2_clean_and_dirty_shapes() {
+        let mut clean = v2_dirty_revision();
+        clean.state = ExecutionSubjectState::Clean;
+        clean.dirty_digest = None;
+        clean.eggplan_dirty_digest = None;
+        assert!(clean.validate());
+        // Clean must not carry either digest.
+        let mut clean_with_native = clean.clone();
+        clean_with_native.dirty_digest = Some("b".repeat(64));
+        assert!(!clean_with_native.validate());
+        let mut clean_with_eggplan = clean.clone();
+        clean_with_eggplan.eggplan_dirty_digest = Some(format!("sha256:{}", "c".repeat(64)));
+        assert!(!clean_with_eggplan.validate());
+
+        // Dirty v2 with both digests is the stable C001 shape.
+        let dirty = v2_dirty_revision();
+        assert!(dirty.validate());
+        let roundtrip: ExecutionSubjectRevision =
+            serde_json::from_value(serde_json::to_value(&dirty).unwrap()).unwrap();
+        assert_eq!(roundtrip, dirty);
+
+        // Dirty v2 without the Eggplan digest is valid but fails closed
+        // later at bound translation (legacy-shaped provenance).
+        let mut native_only = dirty.clone();
+        native_only.eggplan_dirty_digest = None;
+        assert!(native_only.validate());
+    }
+
+    #[test]
+    fn revision_v2_rejects_malformed_eggplan_digest() {
+        let mut revision = v2_dirty_revision();
+        for bad in [
+            "c".repeat(64),
+            format!("sha256:{}", "C".repeat(64)),
+            format!("sha256:{}", "c".repeat(63)),
+            "sha256:xyz".to_string(),
+            String::new(),
+        ] {
+            revision.eggplan_dirty_digest = Some(bad);
+            assert!(!revision.validate(), "malformed digest must be rejected");
+        }
+        // v1 must never carry the Eggplan field.
+        let mut v1 = v2_dirty_revision();
+        v1.schema_version = ExecutionSubjectRevision::SCHEMA_VERSION_V1;
+        assert!(!v1.validate());
+        v1.eggplan_dirty_digest = None;
+        assert!(v1.validate());
+        // Unknown schema versions are rejected.
+        for version in [0, 3, 7, u16::MAX] {
+            let mut unknown = v2_dirty_revision();
+            unknown.schema_version = version;
+            assert!(!unknown.validate(), "schema {version} must be rejected");
+        }
+        // Unknown JSON fields are still rejected.
+        let mut json = serde_json::to_value(v2_dirty_revision()).unwrap();
+        json["unexpected_field"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<ExecutionSubjectRevision>(json).is_err());
+    }
+
+    #[test]
+    fn revision_v2_start_seal_equality_and_drift() {
+        let start = v2_dirty_revision();
+        let sealed_same = start.clone();
+        assert_eq!(start, sealed_same);
+        // An Eggplan-digest change between start and seal is Drifted: the
+        // derived equality carries the v2 field with no extra plumbing.
+        let mut sealed_changed = start.clone();
+        sealed_changed.eggplan_dirty_digest = Some(format!("sha256:{}", "d".repeat(64)));
+        assert!(sealed_changed.validate());
+        assert_ne!(start, sealed_changed);
+        // A native-digest change is likewise Drifted.
+        let mut sealed_native_changed = start.clone();
+        sealed_native_changed.dirty_digest = Some("e".repeat(64));
+        assert_ne!(start, sealed_native_changed);
     }
 }

@@ -69,6 +69,7 @@ fn clean_revision(oid: &str) -> ExecutionSubjectRevision {
         revision: oid.to_string(),
         state: ExecutionSubjectState::Clean,
         dirty_digest: None,
+        eggplan_dirty_digest: None,
     }
 }
 
@@ -460,6 +461,9 @@ fn eggplan_bridge_golden_dirty_subject() {
         revision: "b".repeat(40),
         state: ExecutionSubjectState::Dirty,
         dirty_digest: Some("c".repeat(64)),
+        // C001: M002 unbound projection still uses the native digest only;
+        // the Eggplan-compatible field never crosses this namespace.
+        eggplan_dirty_digest: None,
     };
     assert!(revision.validate());
     let json = serde_json::to_value(revision.to_eggplan_fields()).unwrap();

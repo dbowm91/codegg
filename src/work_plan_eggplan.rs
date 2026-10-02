@@ -525,6 +525,10 @@ async fn capture_current_subject(
             codegg_core::jobs::ExecutionSubjectState::Clean
         },
         dirty_digest: subject.dirty_digest.clone(),
+        // C001: M002 transient current-subject semantics are unchanged. The
+        // Eggplan-compatible field exists only to cross the M003
+        // repository-owned subject boundary via durable attempt provenance.
+        eggplan_dirty_digest: None,
     };
     let fields = revision.to_eggplan_fields();
     let subject_revision = eggplan_subject_from_fields(

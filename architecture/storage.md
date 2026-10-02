@@ -270,6 +270,7 @@ Key storage-layout migrations:
 - **v65**: session-control turn-scoped shared-session controller lease (team-collaboration M004)
 - **v66**: Eggwork fixed-target execution target and remote handle fields
 - **v67**: nullable `job_attempt.source_subject_json` for attempt-scoped execution source provenance; historical rows remain NULL and are never backfilled from a workspace
+- **v68**: `work_plan_eggplan_binding`, `work_plan_eggplan_item_binding`, `work_order_eggplan_binding` (M003; append/replace only). No migration for C001: the physical `source_subject_json` column already stores versioned JSON, and the nested `ExecutionSubjectRevision` evolved additively from schema v1 (native `dirty_digest` only) to schema v2 (plus optional `eggplan_dirty_digest` in `sha256:<hex>` form). Historical v1 rows stay readable; dirty v1 fails closed for bound exact-subject evidence.
 
 ## Testing
 

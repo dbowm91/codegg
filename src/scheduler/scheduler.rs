@@ -29,8 +29,7 @@ use chrono::Utc;
 use codegg_core::agent_run::{AgentRunStore, AgentRunTerminalOutcome};
 use codegg_core::jobs::{
     AttemptCompletion, AttemptId, AttemptState, CancelReason, DaemonGeneration,
-    ExecutionSubjectDisposition, ExecutionSubjectKind, ExecutionSubjectProvenance,
-    ExecutionSubjectRevision, ExecutionSubjectSealKind, ExecutionSubjectState,
+    ExecutionSubjectDisposition, ExecutionSubjectProvenance, ExecutionSubjectSealKind,
     ExecutionSubjectUnavailableReason, ExecutionTarget, FailureClass, JobErrorRecord, JobId,
     JobRecord, JobState, JobStore, JobStoreError,
 };
@@ -1034,38 +1033,14 @@ impl JobScheduler {
 
         // Capture at the scheduler-owned workspace boundary, before any
         // executor side effects. The attempt store is the provenance authority.
+        // C001: one application-level helper captures the native v2 revision
+        // plus the best-effort Eggplan-compatible dirty digest.
         let (captured_subject, capture_reason) =
-            match egggit::capture_git_source_subject(&ctx.workspace_root).await {
-                Ok(subject) => (
-                    Some(ExecutionSubjectRevision {
-                        schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
-                        subject_kind: ExecutionSubjectKind::Git,
-                        repository_identity: format!(
-                            "codegg-workspace:{}",
-                            ctx.workspace_id.as_str()
-                        ),
-                        revision: subject.revision,
-                        state: if subject.dirty_digest.is_some() {
-                            ExecutionSubjectState::Dirty
-                        } else {
-                            ExecutionSubjectState::Clean
-                        },
-                        dirty_digest: subject.dirty_digest,
-                    }),
-                    None,
-                ),
-                Err(egggit::SubjectCaptureError::NotGit) => {
-                    (None, Some(ExecutionSubjectUnavailableReason::NotGit))
-                }
-                Err(egggit::SubjectCaptureError::UnsafePath) => {
-                    (None, Some(ExecutionSubjectUnavailableReason::UnsafePath))
-                }
-                Err(egggit::SubjectCaptureError::BoundsExceeded) => (
-                    None,
-                    Some(ExecutionSubjectUnavailableReason::BoundsExceeded),
-                ),
-                Err(_) => (None, Some(ExecutionSubjectUnavailableReason::CaptureFailed)),
-            };
+            crate::execution_subject_capture::capture_attempt_revision(
+                &ctx.workspace_root,
+                &ctx.workspace_id,
+            )
+            .await;
         let start_provenance = ExecutionSubjectProvenance {
             schema_version: 1,
             captured: captured_subject.clone(),
@@ -1223,24 +1198,14 @@ impl JobScheduler {
                     }
                 };
                 let subject_end = if matches!(&subject_target_for_task, ExecutionTarget::Local) {
-                    egggit::capture_git_source_subject(&subject_root_for_task)
-                        .await
-                        .ok()
-                        .map(|subject| ExecutionSubjectRevision {
-                            schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
-                            subject_kind: ExecutionSubjectKind::Git,
-                            repository_identity: format!(
-                                "codegg-workspace:{}",
-                                subject_workspace_for_task.as_str()
-                            ),
-                            revision: subject.revision,
-                            state: if subject.dirty_digest.is_some() {
-                                ExecutionSubjectState::Dirty
-                            } else {
-                                ExecutionSubjectState::Clean
-                            },
-                            dirty_digest: subject.dirty_digest,
-                        })
+                    // C001: seal through the same v2 helper so an Eggplan-digest
+                    // change between start and seal surfaces as Drifted.
+                    crate::execution_subject_capture::capture_attempt_revision(
+                        &subject_root_for_task,
+                        &subject_workspace_for_task,
+                    )
+                    .await
+                    .0
                 } else {
                     None
                 };

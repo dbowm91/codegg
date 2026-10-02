@@ -259,6 +259,22 @@ pub fn normalize_dirty_digest(hex: &str) -> Result<String, BindingError> {
 /// Independently capture both sides of the identity proof and require them to
 /// describe the same Git state.
 ///
+/// C001 sandwich (plan §7):
+///
+/// ```text
+/// E1 = Eggplan fingerprint (repository subject capture)
+/// C  = CodeGG native capture excluding .eggplan
+/// E2 = Eggplan fingerprint (repository subject capture, repeated)
+/// ```
+///
+/// Binding is valid only when E1 == E2 exactly, C.revision == E1.revision,
+/// and the CodeGG clean/dirty state == E1.state. The repeated Eggplan
+/// capture closes the same-HEAD/same-dirty-classification TOCTOU gap: dirty
+/// contents changing between the two owners' captures while both snapshots
+/// remain dirty now fails closed with
+/// `repository_subject_changed_during_identity_proof` instead of binding a
+/// stale digest.
+///
 /// - CodeGG side: governed `egggit` capture of the canonical workspace with
 ///   the Eggplan administrative root excluded, because an untracked
 ///   administrative directory is not source state and both owners must agree
@@ -269,13 +285,15 @@ pub fn normalize_dirty_digest(hex: &str) -> Result<String, BindingError> {
 /// dirty *content* digests are each recorded in their own owner's canonical
 /// form; the two owners use different canonical manifest encodings, so
 /// claiming byte equality between them would assert an invariant that does
-/// not exist. Disagreement on revision or dirtiness is
+/// not exist. For a dirty binding the E1/E2 Eggplan dirty digest is the
+/// binding's Eggplan-side proven digest; the CodeGG-native digest is
+/// diagnostics only. Disagreement on revision or dirtiness is
 /// `repository_subject_mismatch`, never a warning.
 pub async fn prove_identity(
     relation: &WorkspaceRelation,
     store: &RepositoryStore,
 ) -> Result<IdentityProof, BindingError> {
-    let eggplan_subject = store
+    let e1 = store
         .subject_source()
         .capture()
         .map_err(|error| subject_error("eggplan_subject_capture_failed", error))?;
@@ -290,6 +308,33 @@ pub async fn prove_identity(
             format!("CodeGG subject capture failed: {error:?}"),
         )
     })?;
+    let e2 = store
+        .subject_source()
+        .capture()
+        .map_err(|error| subject_error("eggplan_subject_capture_failed", error))?;
+    prove_identity_from_captures(relation, store.repository_id(), e1, codegg_subject, e2)
+}
+
+/// Deterministic core of [`prove_identity`] over already-taken captures.
+///
+/// This is intentionally a private pure function, not a public authority
+/// injection API: production callers must go through [`prove_identity`],
+/// which takes the three captures itself. Tests exercise the E1/C/E2 cases
+/// through the in-module `#[cfg(test)]` suite.
+fn prove_identity_from_captures(
+    relation: &WorkspaceRelation,
+    eggplan_repository_id: &str,
+    e1: SubjectRevision,
+    codegg_subject: egggit::GitSourceSubject,
+    e2: SubjectRevision,
+) -> Result<IdentityProof, BindingError> {
+    if e1 != e2 {
+        return Err(BindingError::new(
+            "repository_subject_changed_during_identity_proof",
+            "Eggplan subject changed during binding identity proof",
+        ));
+    }
+    let eggplan_subject = e1;
     let codegg_dirty = codegg_subject
         .dirty_digest
         .as_deref()
@@ -319,7 +364,7 @@ pub async fn prove_identity(
             "{CODEGG_SUBJECT_NAMESPACE_PREFIX}{}",
             relation.workspace_id
         ),
-        eggplan_repository_id: store.repository_id().to_string(),
+        eggplan_repository_id: eggplan_repository_id.to_string(),
         revision: eggplan_subject.revision.clone(),
         state: eggplan_subject.state,
         normalized_dirty_digest: eggplan_subject.dirty_digest.clone(),
@@ -327,14 +372,25 @@ pub async fn prove_identity(
     })
 }
 
-/// The single validated historical-subject translator (plan §5.8, §21).
+/// The single validated historical-subject translator (plan §5.8, §21,
+/// repaired by C001).
 ///
 /// A CodeGG historical subject is translated into the Eggplan repository
 /// namespace only through the durable proven binding. The revision, dirty
-/// state, and normalized dirty digest carry through unchanged; only the
-/// repository identity is re-namespaced, and only after the binding proved
-/// both identities describe the same Git state. No other site rewrites
+/// state, and dirty digest carry through unchanged; only the repository
+/// identity is re-namespaced, and only after the binding proved both
+/// identities describe the same Git state. No other site rewrites
 /// `SubjectRevision.repository_id`.
+///
+/// C001 dirty rule: a dirty historical subject translates only through its
+/// persisted Eggplan-compatible digest (`eggplan_dirty_digest`, captured at
+/// execution time). The CodeGG-native `dirty_digest` uses a deliberately
+/// different manifest encoding and is never placed into a bound Eggplan
+/// subject. Dirty v1 provenance (or any dirty revision without the
+/// Eggplan-compatible projection) fails closed with
+/// `legacy_dirty_subject_missing_eggplan_digest`: no current-worktree
+/// recapture, no native-digest conversion, no clean relabel, no unbound or
+/// legacy fallback. Clean v1/v2 provenance translates as before.
 pub fn translate_historical_subject(
     binding: &RepositoryPlanBinding,
     historical: &ExecutionSubjectRevision,
@@ -354,23 +410,30 @@ pub fn translate_historical_subject(
             "binding has no proven identity tuple",
         ));
     }
+    if !historical.validate() {
+        return Err(BindingError::new(
+            "subject_invalid",
+            "historical subject fails provenance validation",
+        ));
+    }
     let (state, dirty) = match historical.state {
         ExecutionSubjectState::Clean => (SubjectState::Clean, None),
-        ExecutionSubjectState::Dirty => (
-            SubjectState::Dirty,
-            Some(
-                historical
-                    .dirty_digest
-                    .as_deref()
-                    .ok_or_else(|| {
-                        BindingError::new(
-                            "subject_invalid",
-                            "dirty historical subject has no dirty digest",
-                        )
-                    })
-                    .and_then(normalize_dirty_digest)?,
-            ),
-        ),
+        ExecutionSubjectState::Dirty => {
+            let eggplan_digest = historical.eggplan_dirty_digest.as_deref().ok_or_else(|| {
+                BindingError::new(
+                    "legacy_dirty_subject_missing_eggplan_digest",
+                    "dirty historical subject predates the Eggplan-compatible \
+                             digest and cannot satisfy bound exact-subject evidence; \
+                             re-execute instead of reconstructing history",
+                )
+            })?;
+            // `validate()` above already proved the form; normalize to the
+            // canonical `sha256:<hex>` spelling before translation.
+            (
+                SubjectState::Dirty,
+                Some(normalize_dirty_digest(eggplan_digest)?),
+            )
+        }
     };
     let subject = SubjectRevision {
         subject_kind: "git".to_string(),
@@ -2454,5 +2517,238 @@ pub fn project_bound_completion(
                 },
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! C001 §7/§8: E1/C/E2 sandwich proof and bound dirty translation.
+    //!
+    //! These run against the private pure core
+    //! [`super::prove_identity_from_captures`] and the public translator so
+    //! the TOCTOU seam is qualified without exposing a public authority
+    //! injection API.
+
+    use super::*;
+
+    const REVISION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NATIVE_DIRTY: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const EGGPLAN_DIRTY: &str =
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const EGGPLAN_DIRTY_OTHER: &str =
+        "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    fn relation() -> WorkspaceRelation {
+        WorkspaceRelation {
+            workspace_id: "ws-test".to_string(),
+            codegg_repository_id: "codegg-workspace:ws-test".to_string(),
+            workspace_root: PathBuf::from("/tmp/codegg-c001-test-root"),
+        }
+    }
+
+    fn eggplan_subject(digest: Option<&str>) -> SubjectRevision {
+        SubjectRevision {
+            subject_kind: "git".to_string(),
+            repository_id: "epr_test".to_string(),
+            revision: REVISION.to_string(),
+            state: if digest.is_some() {
+                SubjectState::Dirty
+            } else {
+                SubjectState::Clean
+            },
+            dirty_digest: digest.map(str::to_string),
+        }
+    }
+
+    fn native_subject(dirty: bool) -> egggit::GitSourceSubject {
+        egggit::GitSourceSubject {
+            revision: REVISION.to_string(),
+            dirty_digest: dirty.then(|| NATIVE_DIRTY.to_string()),
+        }
+    }
+
+    fn binding() -> RepositoryPlanBinding {
+        let now = chrono::Utc::now();
+        RepositoryPlanBinding {
+            work_plan_id: WorkPlanId::generate(),
+            workspace_id: "ws-test".to_string(),
+            codegg_repository_id: "codegg-workspace:ws-test".to_string(),
+            eggplan_repository_id: "epr_test".to_string(),
+            eggplan_plan_id: "epl_test".to_string(),
+            last_seen_plan_revision: 1,
+            intent_digest: "intent".to_string(),
+            projection_digest: "projection".to_string(),
+            binding_state: RepositoryBindingState::Synced,
+            created_at: now,
+            updated_at: now,
+            released_at: None,
+        }
+    }
+
+    fn v2_dirty(eggplan: Option<&str>) -> ExecutionSubjectRevision {
+        ExecutionSubjectRevision {
+            schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
+            subject_kind: codegg_core::jobs::ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-test".to_string(),
+            revision: REVISION.to_string(),
+            state: ExecutionSubjectState::Dirty,
+            dirty_digest: Some(NATIVE_DIRTY.to_string()),
+            eggplan_dirty_digest: eggplan.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn sandwich_stable_dirty_proves_both_digests() {
+        let proof = prove_identity_from_captures(
+            &relation(),
+            "epr_test",
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            native_subject(true),
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+        )
+        .expect("stable dirty sandwich proves");
+        assert_eq!(proof.revision, REVISION);
+        assert_eq!(proof.state, SubjectState::Dirty);
+        assert_eq!(
+            proof.normalized_dirty_digest.as_deref(),
+            Some(EGGPLAN_DIRTY)
+        );
+        // The CodeGG-native digest is diagnostics only, kept in normalized
+        // `sha256:<hex>` spelling next to the Eggplan-side proven digest.
+        assert_eq!(
+            proof.codegg_dirty_digest.as_deref(),
+            Some(format!("sha256:{NATIVE_DIRTY}").as_str())
+        );
+    }
+
+    #[test]
+    fn sandwich_clean_proves_with_no_digests() {
+        let proof = prove_identity_from_captures(
+            &relation(),
+            "epr_test",
+            eggplan_subject(None),
+            native_subject(false),
+            eggplan_subject(None),
+        )
+        .expect("stable clean sandwich proves");
+        assert_eq!(proof.state, SubjectState::Clean);
+        assert_eq!(proof.normalized_dirty_digest, None);
+        assert_eq!(proof.codegg_dirty_digest, None);
+    }
+
+    #[test]
+    fn sandwich_dirty_change_during_proof_fails_closed() {
+        // Same HEAD and still dirty, but contents changed between the two
+        // Eggplan captures: the binding must not be created.
+        let error = prove_identity_from_captures(
+            &relation(),
+            "epr_test",
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            native_subject(true),
+            eggplan_subject(Some(EGGPLAN_DIRTY_OTHER)),
+        )
+        .expect_err("changed digest fails closed");
+        assert_eq!(
+            error.code,
+            "repository_subject_changed_during_identity_proof"
+        );
+    }
+
+    #[test]
+    fn sandwich_revision_move_during_proof_fails_closed() {
+        let mut e2 = eggplan_subject(Some(EGGPLAN_DIRTY));
+        e2.revision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        let error = prove_identity_from_captures(
+            &relation(),
+            "epr_test",
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            native_subject(true),
+            e2,
+        )
+        .expect_err("moved revision fails closed");
+        assert_eq!(
+            error.code,
+            "repository_subject_changed_during_identity_proof"
+        );
+    }
+
+    #[test]
+    fn sandwich_native_revision_mismatch_fails_closed() {
+        let mut native = native_subject(true);
+        native.revision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        let error = prove_identity_from_captures(
+            &relation(),
+            "epr_test",
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            native,
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+        )
+        .expect_err("revision mismatch fails closed");
+        assert_eq!(error.code, "repository_subject_mismatch");
+    }
+
+    #[test]
+    fn sandwich_native_state_mismatch_fails_closed() {
+        let error = prove_identity_from_captures(
+            &relation(),
+            "epr_test",
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            native_subject(false),
+            eggplan_subject(Some(EGGPLAN_DIRTY)),
+        )
+        .expect_err("state mismatch fails closed");
+        assert_eq!(error.code, "repository_subject_mismatch");
+    }
+
+    #[test]
+    fn bound_dirty_translation_uses_only_the_eggplan_digest() {
+        let subject = translate_historical_subject(&binding(), &v2_dirty(Some(EGGPLAN_DIRTY)))
+            .expect("v2 dirty translates");
+        assert_eq!(subject.repository_id, "epr_test");
+        assert_eq!(subject.revision, REVISION);
+        assert_eq!(subject.state, SubjectState::Dirty);
+        assert_eq!(subject.dirty_digest.as_deref(), Some(EGGPLAN_DIRTY));
+        // The CodeGG-native digest must never leak into a bound subject.
+        assert_ne!(subject.dirty_digest.as_deref(), Some(NATIVE_DIRTY));
+    }
+
+    #[test]
+    fn bound_dirty_v1_fails_closed_without_backfill() {
+        let mut legacy = v2_dirty(None);
+        legacy.schema_version = ExecutionSubjectRevision::SCHEMA_VERSION_V1;
+        assert!(legacy.validate());
+        let error = translate_historical_subject(&binding(), &legacy)
+            .expect_err("legacy dirty fails closed");
+        assert_eq!(error.code, "legacy_dirty_subject_missing_eggplan_digest");
+        // A v2 dirty revision without the projection fails the same way.
+        let error = translate_historical_subject(&binding(), &v2_dirty(None))
+            .expect_err("missing projection fails closed");
+        assert_eq!(error.code, "legacy_dirty_subject_missing_eggplan_digest");
+    }
+
+    #[test]
+    fn bound_clean_translation_is_unchanged() {
+        let clean_v1 = ExecutionSubjectRevision {
+            schema_version: ExecutionSubjectRevision::SCHEMA_VERSION_V1,
+            subject_kind: codegg_core::jobs::ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-test".to_string(),
+            revision: REVISION.to_string(),
+            state: ExecutionSubjectState::Clean,
+            dirty_digest: None,
+            eggplan_dirty_digest: None,
+        };
+        let subject =
+            translate_historical_subject(&binding(), &clean_v1).expect("clean v1 translates");
+        assert_eq!(subject.state, SubjectState::Clean);
+        assert_eq!(subject.dirty_digest, None);
+    }
+
+    #[test]
+    fn bound_translation_rejects_unknown_schema() {
+        let mut unknown = v2_dirty(Some(EGGPLAN_DIRTY));
+        unknown.schema_version = 7;
+        let error = translate_historical_subject(&binding(), &unknown)
+            .expect_err("unknown schema fails closed");
+        assert_eq!(error.code, "subject_invalid");
     }
 }

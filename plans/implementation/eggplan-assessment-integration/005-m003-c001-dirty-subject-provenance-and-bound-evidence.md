@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration M003 C001 — Dirty-Subject Provenance and Bound Evidence Requalification
 
-Status: ready for coordinated handoff
+Status: active (implementation in progress)
 
 Repository baseline:
 

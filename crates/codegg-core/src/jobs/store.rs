@@ -2809,6 +2809,9 @@ mod source_subject_tests {
                 revision: "a".repeat(40),
                 state: ExecutionSubjectState::Clean,
                 dirty_digest: None,
+                // Historical v1 shape: no Eggplan-compatible digest. The
+                // store must keep accepting it (C001 readability).
+                eggplan_dirty_digest: None,
             }),
             sealed: None,
             disposition: ExecutionSubjectDisposition::Started,
@@ -2845,7 +2848,6 @@ mod source_subject_tests {
             .await
             .is_err());
     }
-
     #[tokio::test]
     async fn sqlite_v67_round_trips_attempt_subject() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -2883,5 +2885,68 @@ mod source_subject_tests {
             .seal_attempt_source_subject(&attempt.attempt_id, &sealed)
             .await
             .is_err());
+    }
+
+    /// C001 §12: the `source_subject_json` roundtrip preserves the nested v2
+    /// Eggplan-compatible digest, so daemon restart keeps bound dirty
+    /// evidence translatable.
+    #[tokio::test]
+    async fn sqlite_round_trips_v2_eggplan_digest() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let store = SqliteJobStore::new(pool);
+        let job = store.create_job(test_job()).await.unwrap();
+        let attempt = store
+            .begin_attempt(
+                &job.job_id,
+                &crate::jobs::DaemonGeneration::new_unchecked("gen"),
+            )
+            .await
+            .unwrap();
+        let revision = ExecutionSubjectRevision {
+            schema_version: ExecutionSubjectRevision::SCHEMA_VERSION,
+            subject_kind: ExecutionSubjectKind::Git,
+            repository_identity: "codegg-workspace:ws-test".into(),
+            revision: "a".repeat(40),
+            state: ExecutionSubjectState::Dirty,
+            dirty_digest: Some("b".repeat(64)),
+            eggplan_dirty_digest: Some(format!("sha256:{}", "c".repeat(64))),
+        };
+        assert!(revision.validate());
+        let started = ExecutionSubjectProvenance {
+            schema_version: 1,
+            captured: Some(revision.clone()),
+            sealed: None,
+            disposition: crate::jobs::ExecutionSubjectDisposition::Started,
+            seal_kind: ExecutionSubjectSealKind::LiveExecutionEnd,
+            unavailable_reason: None,
+            materialization: None,
+        };
+        store
+            .set_attempt_source_subject_started(&attempt.attempt_id, &started)
+            .await
+            .unwrap();
+        let sealed = ExecutionSubjectProvenance {
+            sealed: Some(revision.clone()),
+            disposition: crate::jobs::ExecutionSubjectDisposition::Stable,
+            ..started.clone()
+        };
+        store
+            .seal_attempt_source_subject(&attempt.attempt_id, &sealed)
+            .await
+            .unwrap();
+        let loaded = store.list_attempts(&job.job_id).await.unwrap()[0]
+            .source_subject
+            .clone()
+            .unwrap();
+        assert_eq!(loaded, sealed);
+        assert_eq!(
+            loaded.sealed.as_ref().unwrap().eggplan_dirty_digest,
+            Some(format!("sha256:{}", "c".repeat(64)))
+        );
     }
 }

@@ -7,8 +7,11 @@ Enforces the CodeGG-owned boundaries from
   1. ``RepositoryStore::open`` / ``open_read_only`` production use is confined
      to the approved application binding module
      (``src/work_plan_repository_binding.rs``), plus the crate re-export and
-     tests. Tools, arbiter, scheduler, and the WorkOrder coordinator never
-     open an Eggplan store.
+     tests. The C001 attempt-capture helper
+     (``src/execution_subject_capture.rs``) may additionally call
+     ``open_read_only`` for the best-effort Eggplan-compatible digest, but
+     never a mutating open. Tools, arbiter, scheduler, and the WorkOrder
+     coordinator never open an Eggplan store.
   2. ``eggplan-repo`` is absent from ``codegg-core`` (and every other
      non-root crate manifest).
   3. Only the validated translator in the binding module rewrites
@@ -92,11 +95,17 @@ def main() -> int:
         if name == APPROVED_OWNER or is_test_path(name):
             continue
         for lineno, line in code_lines(name):
-            if store_call.search(line):
-                fail(
-                    f"{name}:{lineno}: RepositoryStore construction outside the approved "
-                    f"binding module {APPROVED_OWNER}"
-                )
+            match = store_call.search(line)
+            if not match:
+                continue
+            # C001: the attempt-capture helper may open read-only for the
+            # best-effort Eggplan-compatible digest, never a mutating open.
+            if name == "src/execution_subject_capture.rs" and match.group(1) == "open_read_only":
+                continue
+            fail(
+                f"{name}:{lineno}: RepositoryStore construction outside the approved "
+                f"binding module {APPROVED_OWNER}"
+            )
 
     # 2. eggplan-repo is application-layer only.
     for manifest in sorted(ROOT.rglob("Cargo.toml")):
