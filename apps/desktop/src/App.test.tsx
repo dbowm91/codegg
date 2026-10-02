@@ -175,8 +175,7 @@ describe('desktop shell', () => {
     expect(callsAfterReconnect).toBeGreaterThanOrEqual(callsAfterMount);
   });
 
-  it('repeated reconnects do not accumulate subscriptions', async () => {
-    const unsubscribes: ReturnType<typeof vi.fn>[] = [];
+  it('repeated reconnects do not accumulate subscriptions', async () => {    const unsubscribes: ReturnType<typeof vi.fn>[] = [];
     vi.mocked(bridge.subscribe).mockImplementation(async () => {
       const unsubscribe = vi.fn();
       unsubscribes.push(unsubscribe);
@@ -205,5 +204,33 @@ describe('desktop shell', () => {
       expect(unsubscribe).toHaveBeenCalledTimes(1);
     }
     expect(unsubscribes[3]).not.toHaveBeenCalled();
+  });
+
+  it('host rejection from concurrent disconnect leaves no phantom handle', async () => {
+    // C002 linearizes subscribe against disconnect: when disconnect wins,
+    // the host rejects subscribe and the renderer must not retain a phantom
+    // handle. A later reconnect must resubscribe cleanly.
+    vi.mocked(bridge.connect).mockResolvedValueOnce(connected(1));
+    vi.mocked(bridge.subscribe).mockRejectedValueOnce(
+      new Error('desktop is not connected'),
+    );
+    const unsubscribe = vi.fn();
+    vi.mocked(bridge.subscribe).mockImplementationOnce(async () => ({
+      subscriptionId: 'desktop-sub-2',
+      connectionGeneration: 2,
+      unsubscribe,
+    }));
+    const { unmount } = render(<App />);
+    await waitFor(() => expect(bridge.subscribe).toHaveBeenCalledTimes(1));
+    // Reconnect to generation 2; the effect resubscribes after the rejection.
+    vi.mocked(bridge.connect).mockResolvedValueOnce(connected(2));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    });
+    await waitFor(() => expect(bridge.subscribe).toHaveBeenCalledTimes(2));
+    // No phantom handle exists for the rejected attempt, so unmount only
+    // releases the single live subscription.
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 });

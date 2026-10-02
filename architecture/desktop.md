@@ -50,6 +50,44 @@ Bridge DTOs are intentionally small: daemon connection state, project display
 summary, and versioned project-catalog invalidation. `npm run bindings:check`
 compares the TypeScript surface with its Rust DTO definitions.
 
+## Lifecycle linearization and concurrency rules (C002)
+
+One lifecycle transition serialization boundary (`HostState.lifecycle`) defines
+connection/subscription linearization. Linearization points, all under the gate:
+
+- connect commit: attempt-serial check + old-subscription take + client install
+  + generation bump;
+- disconnect / native close / app exit: serial invalidation + generation bump +
+  subscription take + client clear;
+- subscription install: connection snapshot + owner publication.
+
+Rules:
+
+1. one lifecycle transition serialization boundary defines
+   connection/subscription linearization;
+2. network connect/autostart/request work happens outside it;
+3. connect attempt validity is checked inside it immediately before commit;
+4. disconnect advances the connect-attempt epoch inside it;
+5. subscription ownership is published inside it before arming the task;
+6. forwarders never acquire the lifecycle transition boundary while being
+   abort/joined under that same boundary;
+7. if join happens after releasing the boundary, generation/ownership is
+   invalidated before release so the old task cannot publish current events;
+8. renderer generation checks are defense in depth, not host-state correctness
+   authority.
+
+Concretely: `desktop_connect` splits slow preparation (endpoint resolve,
+connect/reuse/autostart, daemon identity, snapshot) outside the gate from the
+atomic commit under the gate; `disconnect_host` advances `connect_serial` under
+the gate so every earlier in-flight connect is stale. Forwarders spawn UNARMED
+(one-shot gate), publish the owner under the gate, and are ARMED only after the
+release; an event queued before publication cannot self-terminate the task. The
+native main-window close/destroy (`WindowEvent::CloseRequested`/`Destroyed`)
+and app exit (`RunEvent::ExitRequested`/`Exit`) run the same host teardown as
+explicit `desktop_disconnect` via a bounded synchronous `block_on` (2s budget)
+without stopping the daemon; repeated events are idempotent. No correctness
+requirement depends on scheduler timing.
+
 ## Deferred surfaces
 
 Session creation and projection, editor and terminal, provider credentials,

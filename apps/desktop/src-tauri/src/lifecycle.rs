@@ -173,6 +173,41 @@ impl SubscriptionRegistry {
     ///
     /// The caller must abort and join the returned task without holding the
     /// registry lock; prefer [`Self::shutdown`] which does both.
+    /// [`Self::take_active`] is the gate-friendly variant: it takes the owner
+    /// without joining so a lifecycle serialization gate is never held across
+    /// a task join. The caller must pass the handle to [`cancel_and_join`]
+    /// after releasing the gate.
+    pub async fn take_active(&self) -> Option<(String, JoinHandle<()>)> {
+        let mut guard = self.inner.lock().await;
+        let owned = guard.active.take()?;
+        guard.last_terminated_id = Some(owned.subscription_id.clone());
+        Some((owned.subscription_id, owned.task))
+    }
+
+    /// Replace the active owner without joining the previous task.
+    ///
+    /// Returns the installed id plus any previous task the caller must join
+    /// after releasing the lifecycle gate. Terminal semantics match
+    /// [`Self::install_with_id`]; only the join is deferred.
+    pub async fn replace_without_join(
+        &self,
+        subscription_id: String,
+        connection_generation: u64,
+        task: JoinHandle<()>,
+    ) -> (String, Option<JoinHandle<()>>) {
+        let previous = {
+            let mut guard = self.inner.lock().await;
+            let previous = guard.active.take().map(|owned| owned.task);
+            guard.active = Some(OwnedSubscription {
+                subscription_id: subscription_id.clone(),
+                connection_generation,
+                task,
+            });
+            previous
+        };
+        (subscription_id, previous)
+    }
+
     pub async fn shutdown(&self) {
         let owned = {
             let mut guard = self.inner.lock().await;
@@ -191,7 +226,7 @@ impl SubscriptionRegistry {
 ///
 /// Abort is the cancellation signal; awaiting the handle provides deterministic
 /// terminal observation and releases the task's `LocalSocketClient` clone.
-async fn cancel_and_join(task: JoinHandle<()>) {
+pub(crate) async fn cancel_and_join(task: JoinHandle<()>) {
     task.abort();
     let _ = task.await;
 }
