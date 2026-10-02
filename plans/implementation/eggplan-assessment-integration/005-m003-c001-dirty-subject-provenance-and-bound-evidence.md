@@ -4,7 +4,7 @@ Status: ready for coordinated handoff
 
 Repository baseline:
 
-- CodeGG current head: `27d211f66ce60f631b2e37df523b9842babca9ac`
+- CodeGG reviewed planning baseline before corrective registration: `ffbd0bc9de09055fbd2df293a6cdd8b4b04a8e98`
 - historical M003 implementation: `53dea47f414641c3f9756c3f8f181f6208be8115`
 - historical M003 closure: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 - current Eggplan M003 pin: `3f7c603315131bb169bfdd2bb575531d228532b1`
