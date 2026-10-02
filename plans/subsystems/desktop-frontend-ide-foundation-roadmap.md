@@ -168,12 +168,12 @@ M001 shared frontend client runtime                         [closed]
              | hard                            \ hard
              v                                  v
 M002 portable local daemon IPC                    M003 Tauri shell + secure bridge
-[ready]                                           [ready]
+[conditionally closed]                            [conditionally closed]
              |                                      |
              | operational for Windows              | hard
              +-------------------+------------------+
                                  v
-M004 desktop session/control-plane vertical slice           [blocked on M003]
+M004 desktop session/control-plane vertical slice           [blocked on strict M003 closure]
                                  |
                                  v
 foundation closure / architecture review
@@ -210,7 +210,7 @@ Outcome:
 
 ### Milestone 002 — Portable local daemon transport and singleton lifecycle
 
-Status: active.
+Status: conditionally closed. Windows live qualification remains outstanding.
 
 Primary class: infrastructure / invariant.
 
@@ -230,7 +230,7 @@ Outcome:
 
 ### Milestone 003 — Tauri desktop shell and secure bridge
 
-Status: ready. M002 remains an operational dependency only for Windows qualification.
+Status: conditionally closed. Linux build/package evidence is recorded; display-backed UI flow and coexistence evidence remain outstanding. M002 remains an operational dependency for Windows qualification.
 
 Primary class: infrastructure.
 
@@ -386,7 +386,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 |---|---|---|---|
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
-| M003 Tauri desktop shell + secure bridge | closing | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Linux implementation and package build landed; display-backed UI flow/coexistence evidence remains outstanding; Windows qualification remains operationally gated |
+| M003 Tauri desktop shell + secure bridge | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Closure: `plans/closure/desktop-frontend-ide-foundation/003-status.md`; Linux build/package passed, but display-backed UI flow/coexistence evidence remains outstanding; Windows qualification remains operationally gated |
 | M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | M003 hard |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
 | M006 IDE shell | deferred | not yet written | M005 |

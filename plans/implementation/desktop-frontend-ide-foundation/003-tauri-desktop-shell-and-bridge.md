@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 003 — Tauri Desktop Shell and Secure Bridge
 
-Status: closing
+Status: conditionally closed
 
 Repository baseline: `86898d1f2bcd9f179c8354ebb4c11a04eed73ac6`
 
@@ -549,6 +549,10 @@ The closure record must include:
 - renderer close/reload lifecycle evidence;
 - exact renderer/Rust/Tauri test commands;
 - unresolved findings and support-platform truth.
+
+Closure disposition: conditionally closed. Evidence and the remaining
+display-backed end-to-end requirement are recorded in
+`plans/closure/desktop-frontend-ide-foundation/003-status.md`.
 
 ## 16. Handoff notes
 
