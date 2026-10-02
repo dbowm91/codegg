@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Experiment Roadmap
 
-Status: active — M001 closed positively, M002 ready
+Status: active — M001 closed positively, M002 closed (A), M003 ready (optional), M004 ready
 
 Repository planning baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 
@@ -211,13 +211,19 @@ Status: ready (M001 closed positively; frozen benchmark fp `f60dad17…`, catalo
 Evaluate deterministic precondition filtering before semantic ranking. Unknown
 contracts remain fallback/discoverable.
 
+Outcome: **closed with disposition A** (implementation `85f26afd`; receipt
+`assets/tool-advisor/causal-frontier-m002-result.json`; qual preservation
+1.00/1.00, 0 violations, reduction 1.00, median deferred promotion 3,
+p95 0.03 ms). Closure:
+`plans/closure/tool-selection-advisor-causal-frontier-experiment/002-status.md`.
+
 ### M003 — Structured effect-path frontier
 
 Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/003-structured-effect-path-frontier.md`
 
-Status: blocked/optional on positive M002.
+Status: ready (optional; M002 closed with disposition A — dependency met).
 
 Use only explicit structured WorkPlan demands to compute a bounded causal path.
 No free-text intent model.
@@ -228,7 +234,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/004-observe-mode-runtime-integration.md`
 
-Status: blocked on positive M002.
+Status: ready (M002 closed with disposition A — dependency met).
 
 Integrate the selected frontier after `ResolvedToolSurface` in observe-only
 mode, with no provider-menu behavior change.

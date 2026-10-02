@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier M002 — Offline Causal Admissibility Frontier
 
-Status: active (M001 closed positively; see `plans/closure/tool-selection-advisor-causal-frontier-experiment/001-status.md`; frozen benchmark `assets/tool-advisor/causal-frontier-v1.jsonl` fp `f60dad17…`, catalog fp `0ac06de8…`, dev 112 / qual 56)
+Status: closed with disposition A — see `plans/closure/tool-selection-advisor-causal-frontier-experiment/002-status.md` (implementation `85f26afd`; receipt `assets/tool-advisor/causal-frontier-m002-result.json`)
 
 Repository baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 
