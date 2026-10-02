@@ -14,7 +14,7 @@ impl OpencodeZenProvider {
         Self {
             api_key,
             client: create_http_client(),
-            base_url: "https://opencode.ai/zen/v1".to_string(),
+            base_url: crate::setup_catalog::OPENCODE_ZEN_BASE_URL.to_string(),
         }
     }
 

@@ -490,11 +490,18 @@ impl Provider for OpenAiCompatibleProvider {
 
         let url = format!("{}/models", self.config.base_url);
 
+        // Shared bounded discovery core limits (same response-byte,
+        // model-count, and string-length bounds as the strict provisioning
+        // probe). Best-effort policy: any transport/status/parse/bound
+        // failure returns the configured seeds unchanged.
+        let options = crate::eggpool::EggpoolProbeOptions::default();
+
         let mut resp = match self
             .client
             .get(&url)
             .map_err(ProviderError::from)?
             .timeout(crate::provider_core::non_streaming_timeout())
+            .max_decoded_body_size(options.response_byte_limit)
             .header(
                 &self.config.auth_header,
                 &self.config.credential.authorization_header_value(),
@@ -513,28 +520,35 @@ impl Provider for OpenAiCompatibleProvider {
             return Ok(models);
         }
 
-        let body: serde_json::Value = match resp.json().await {
-            Ok(b) => b,
+        if resp
+            .content_length()
+            .is_some_and(|length| length > options.response_byte_limit as u64)
+        {
+            return Ok(models);
+        }
+
+        let body = match resp.bytes().await {
+            Ok(bytes) => bytes.to_vec(),
             Err(_) => return Ok(models),
         };
 
-        if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
-            for entry in data {
-                if let Some(id) = entry.get("id").and_then(|v| v.as_str()) {
-                    // Avoid duplicates
-                    if !models.iter().any(|m| m.id == id) {
-                        models.push(ModelInfo {
-                            id: id.to_string(),
-                            name: id.to_string(),
-                            provider: self.id.clone(),
-                            context_window: 128_000,
-                            max_output_tokens: None,
-                            supports_tools: true,
-                            supports_vision: false,
-                            variants: Vec::new(),
-                        });
-                    }
-                }
+        let discovered = match crate::eggpool::parse_compatible_models_response(&body, &options) {
+            Ok(summaries) => summaries,
+            Err(_) => return Ok(models),
+        };
+
+        for summary in discovered {
+            if !models.iter().any(|m| m.id == summary.id) {
+                models.push(ModelInfo {
+                    id: summary.id.clone(),
+                    name: summary.id.clone(),
+                    provider: self.id.clone(),
+                    context_window: 128_000,
+                    max_output_tokens: None,
+                    supports_tools: true,
+                    supports_vision: false,
+                    variants: Vec::new(),
+                });
             }
         }
 
@@ -894,5 +908,113 @@ mod tests {
         assert!(
             matches!(error, ProviderError::Api { ref code, .. } if code == "reserved_header_collision")
         );
+    }
+
+    fn spawn_models_server(status: u16, body: String) -> (String, thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind models server");
+        let addr = listener.local_addr().expect("models server address");
+        let url = format!("http://{addr}");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept models request");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("set models timeout");
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).expect("read models request");
+                if count == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..count]);
+                if raw.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let reason = if status == 200 { "OK" } else { "ERROR" };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            use std::io::Write;
+            stream
+                .write_all(response.as_bytes())
+                .expect("write models response");
+        });
+        (url, handle)
+    }
+
+    fn seed_model(id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "test".to_string(),
+            context_window: 128_000,
+            max_output_tokens: None,
+            supports_tools: true,
+            supports_vision: false,
+            variants: Vec::new(),
+        }
+    }
+
+    fn models_provider(base_url: &str, seeds: Vec<ModelInfo>) -> OpenAiCompatibleProvider {
+        OpenAiCompatibleProvider::new(
+            "test",
+            "Test",
+            OpenAiCompatibleConfig {
+                credential: Credential::api_key("test-key"),
+                base_url: base_url.to_string(),
+                auth_header: "Authorization".to_string(),
+                extra_headers: Vec::new(),
+                models: seeds,
+                tool_choice: ToolChoice::Auto,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn best_effort_models_merges_live_ids_and_keeps_seeds_on_failure() {
+        use crate::Provider as _;
+        // Success merges live IDs without duplicating seeds.
+        let (url, server) = spawn_models_server(
+            200,
+            r#"{"data":[{"id":"live-a"},{"id":"seed-keep","name":"Seed Keep"}]}"#.to_string(),
+        );
+        let provider =
+            models_provider(&url, vec![seed_model("seed-keep"), seed_model("seed-only")]);
+        let models = provider.models().await.expect("best-effort models");
+        server.join().expect("models server joins");
+        let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"seed-keep"));
+        assert!(ids.contains(&"seed-only"));
+        assert!(ids.contains(&"live-a"));
+        assert_eq!(ids.len(), 3);
+
+        // Invalid JSON falls back to seeds unchanged.
+        let (url, server) = spawn_models_server(200, "not-json".to_string());
+        let provider = models_provider(&url, vec![seed_model("seed-only")]);
+        let models = provider.models().await.expect("fallback on invalid JSON");
+        server.join().expect("models server joins");
+        assert_eq!(vec!["seed-only"], ids_of(&models));
+
+        // Oversized count falls back to seeds (bounded core).
+        let many: Vec<String> = (0..300).map(|i| format!(r#"{{"id":"m{i}"}}"#)).collect();
+        let oversized = format!(r#"{{"data":[{}]}}"#, many.join(","));
+        let (url, server) = spawn_models_server(200, oversized);
+        let provider = models_provider(&url, vec![seed_model("seed-only")]);
+        let models = provider.models().await.expect("fallback on oversized");
+        server.join().expect("models server joins");
+        assert_eq!(vec!["seed-only"], ids_of(&models));
+
+        // Non-success status falls back to seeds.
+        let (url, server) = spawn_models_server(500, r#"{"error":"boom"}"#.to_string());
+        let provider = models_provider(&url, vec![seed_model("seed-only")]);
+        let models = provider.models().await.expect("fallback on status");
+        server.join().expect("models server joins");
+        assert_eq!(vec!["seed-only"], ids_of(&models));
+    }
+
+    fn ids_of(models: &[ModelInfo]) -> Vec<&str> {
+        models.iter().map(|m| m.id.as_str()).collect()
     }
 }

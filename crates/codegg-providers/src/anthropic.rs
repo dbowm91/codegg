@@ -16,7 +16,7 @@ impl AnthropicProvider {
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
-            base_url: "https://api.anthropic.com".to_string(),
+            base_url: crate::setup_catalog::ANTHROPIC_BASE_URL.to_string(),
             client: create_http_client(),
             id_override: None,
             name_override: None,

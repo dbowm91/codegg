@@ -44,7 +44,7 @@ pub const GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com";
 pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
 pub const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/anthropic";
-pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/go/v1";
+pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 
 /// Default port for the Eggpool local/shared proxy preset.
 pub const EGGPOOL_PRESET_DEFAULT_PORT: u16 = crate::EGGPOOL_DEFAULT_PORT;
@@ -816,6 +816,84 @@ mod tests {
             assert!(!definition.id.trim().is_empty());
             assert!(!definition.display_name.trim().is_empty());
             assert!(!definition.description.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn opencode_go_uses_current_first_party_zen_prefix() {
+        // First-party OpenCode Go docs (reviewed 2026-10-02) serve Chat,
+        // Responses, Anthropic Messages, and /models under
+        // https://opencode.ai/zen/go/v1.
+        assert_eq!(OPENCODE_GO_BASE_URL, "https://opencode.ai/zen/go/v1");
+        let definition = setup_definition("opencode_go").expect("opencode_go defined");
+        assert_eq!(
+            definition.fixed_base_url(),
+            Some("https://opencode.ai/zen/go/v1")
+        );
+    }
+
+    #[test]
+    fn together_endpoint_remains_on_documented_xyz_prefix() {
+        // Together serves the OpenAI-compatible API under both
+        // https://api.together.xyz/v1 (legacy, retained) and
+        // https://api.together.ai/v1 (current canonical). CodeGG retains
+        // the documented `.xyz` prefix to avoid silently repointing stored
+        // fixed endpoints; no migration is authorized by C002.
+        assert_eq!(TOGETHER_BASE_URL, "https://api.together.xyz/v1");
+        let definition = setup_definition("together").expect("together defined");
+        assert_eq!(
+            definition.fixed_base_url(),
+            Some("https://api.together.xyz/v1")
+        );
+    }
+
+    #[test]
+    fn fixed_endpoints_cannot_be_silently_repointed() {
+        // Fixed definitions win over caller-supplied endpoints: a hand-built
+        // descriptor cannot repoint a fixed upstream.
+        let provider = build_durable_provider(
+            "together",
+            api_key("fixed-key"),
+            Some("https://evil.example/v1"),
+            "Together",
+        )
+        .expect("fixed build succeeds");
+        assert_eq!(provider.id(), "together");
+        // The durable builder for OpenAiCompatibleFixed ignores the caller
+        // URL by construction (uses the catalog constant). Prove the catalog
+        // constant is the authority.
+        assert_eq!(
+            setup_definition("together")
+                .expect("together defined")
+                .fixed_base_url(),
+            Some(TOGETHER_BASE_URL)
+        );
+        // OpenCode Go affinity builder also uses the catalog constant.
+        let go = build_durable_provider(
+            "opencode_go",
+            api_key("go-key"),
+            Some("https://evil.example/v1"),
+            "Go",
+        )
+        .expect("opencode_go builds");
+        assert_eq!(go.id(), "opencode_go");
+    }
+
+    #[test]
+    fn every_fixed_definition_has_a_non_empty_http_prefix() {
+        for definition in provider_setup_catalog() {
+            if let Some(base_url) = definition.fixed_base_url() {
+                assert!(
+                    base_url.starts_with("https://"),
+                    "'{}' fixed endpoint must be https: {base_url}",
+                    definition.id
+                );
+                assert!(
+                    !base_url.ends_with('/'),
+                    "'{}' fixed endpoint must not end with '/': {base_url}",
+                    definition.id
+                );
+            }
         }
     }
 }

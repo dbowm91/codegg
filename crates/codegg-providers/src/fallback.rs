@@ -1,3 +1,15 @@
+//! Library-only ordered-provider fallback primitive (C003).
+//!
+//! NOT the production provider-turn retry owner. Production retry/failover
+//! ownership lives in `src/agent/provider_turn.rs` (same selected
+//! provider/session, canonical [`crate::error::ProviderError::retry_disposition`]
+//! taxonomy, unified [`crate::retry::RetryContext`] budget). This module is
+//! retained as a clearly labeled library/test compatibility surface only:
+//! no production provider registry, session, or turn path may construct it.
+//! A static guard (`scripts/check_provider_resilience_ownership.py`) enforces
+//! that boundary; any future production use requires an explicit planning
+//! change, not a silent import.
+
 #[allow(unused_imports)]
 use super::{ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, TokenUsage};
 use crate::circuit::CircuitBreaker;
@@ -5,6 +17,9 @@ use crate::error::ProviderError;
 #[allow(unused_imports)]
 use async_trait::async_trait;
 
+/// Library-only ordered fallback over explicitly supplied providers.
+///
+/// See module docs: not constructed by production provider/session paths.
 pub struct FallbackProvider {
     providers: Vec<Box<dyn Provider>>,
     status_codes: Vec<u16>,

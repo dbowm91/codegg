@@ -50,14 +50,17 @@ impl Provider for OpenRouterProvider {
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventStream, ProviderError> {
         let body = self.build_body(req)?;
-        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let url = format!(
+            "{}/chat/completions",
+            crate::setup_catalog::OPENROUTER_ENDPOINT
+        );
         let api_key = self.api_key.clone();
         let client = self.client.clone();
         let app_name = self.app_name.clone();
         let app_url = self.app_url.clone();
 
         let req_builder = client
-            .post(url)
+            .post(&url)
             .map_err(ProviderError::from)?
             .header("authorization", &format!("Bearer {}", api_key))
             .header("content-type", "application/json")
