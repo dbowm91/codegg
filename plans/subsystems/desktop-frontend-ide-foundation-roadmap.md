@@ -230,7 +230,7 @@ Outcome:
 
 ### Milestone 003 — Tauri desktop shell and secure bridge
 
-Status: conditionally closed. Follow-up review found a desktop event-subscription ownership defect in addition to the missing display-backed evidence. Corrective C001 is conditionally closed at `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`; ownership repair + live command-level qualification landed, including a protocol-neutral daemon hello-downgrade fix found live). Strict closure awaits only the visible-window interaction run. M002 remains an operational dependency for Windows qualification.
+Status: conditionally closed. C001 is conditionally closed at `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`; original ownership repair + live command-level qualification landed, including a protocol-neutral daemon hello-downgrade fix). Post-C001 source review found narrower lifecycle linearization races; corrective C002 is ready at `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md`. Strict closure requires C002 closure followed by the visible-window interaction run. M002 remains an operational dependency for Windows qualification.
 
 Primary class: infrastructure.
 
@@ -250,7 +250,7 @@ Outcome:
 
 ### Milestone 004 — Desktop session/control-plane vertical slice
 
-Status: blocked on strict M003 closure through corrective C001.
+Status: blocked on strict M003 closure through corrective C002 plus the final visible-window qualification.
 
 Primary class: capability.
 
@@ -387,7 +387,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 |---|---|---|---|
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
-| M003 Tauri desktop shell + secure bridge | conditionally closed; C001 corrective conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Historical closure: `plans/closure/desktop-frontend-ide-foundation/003-status.md`; corrective: `plans/subsystems/desktop-frontend-ide-foundation-m003-lifecycle-corrective-addendum.md`. Event-forwarder ownership/reconnect teardown plus command-level display-backed UI/coexistence evidence landed; visible-window interaction plus Windows qualification remain operationally gated |
-| M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | strict M003 closure after corrective C001 |
+| M003 Tauri desktop shell + secure bridge | conditionally closed; C001 conditional; C002 ready | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Historical closure: `plans/closure/desktop-frontend-ide-foundation/003-status.md`; corrective control: `plans/subsystems/desktop-frontend-ide-foundation-m003-lifecycle-corrective-addendum.md`. C002 must close lifecycle linearization/arming/native-close races before the final visible-window interaction run; Windows qualification remains separately operationally gated |
+| M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | strict M003 closure after C002 + visible-window qualification |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
 | M006 IDE shell | deferred | not yet written | M005 |

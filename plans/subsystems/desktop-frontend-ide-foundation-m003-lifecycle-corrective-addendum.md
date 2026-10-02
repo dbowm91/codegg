@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — M003 Lifecycle Corrective Addendum
 
-Status: active (C001 conditionally closed; strict closure awaits the visible-window run)
+Status: active (C001 conditionally closed; C002 ready; strict closure requires C002 plus the visible-window run)
 
 Repository baseline reviewed: `82e289db90c4c7981524b4291986af39a7f881ea`
 
@@ -48,7 +48,7 @@ This corrective does not reopen the Tauri/toolchain/security architecture. It re
 - A successful reconnect must bind subsequent requests and subscriptions to the same current connection generation.
 - Desktop cleanup never stops the daemon or daemon-owned work.
 - Existing Tauri least-privilege capabilities, local-only CSP, and absence of generic CoreRequest/filesystem/shell/process authority remain unchanged.
-- M004 stays blocked until this corrective closes and M003 is promoted to strict closed.
+- M004 stays blocked until C002 closes, the visible-window qualification passes, and M003 is promoted to strict closed.
 
 ### Capabilities
 
@@ -136,9 +136,21 @@ Plan:
 
 - `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md`
 
-C001 owns both the production defect and the remaining M003 qualification because the latter must exercise the repaired lifecycle rather than the known-defective implementation.
+C001 owns the original detached-forwarder/renderer-cleanup defect and recorded live command-level qualification. It remains conditionally closed.
 
-No second corrective milestone is preregistered. If C001 discovers a separate protocol, daemon, or Tauri security defect, stop and register that independently rather than expanding C001.
+A post-C001 source review found narrower concurrency defects in the final lifecycle transition boundary: subscribe can spawn before ownership publication, subscribe can race connection invalidation/replacement, disconnect does not supersede an already-running connect attempt, and connect supersession is checked separately from final commit. The Rust host also lacks an explicit native window/app teardown hook.
+
+### C002 — Atomic lifecycle transitions, subscription arming, and window teardown
+
+Status: ready.
+
+Plan:
+
+- `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md`
+
+C002 owns only those post-C001 concurrency/lifecycle findings. It must close before the visible-window qualification is accepted as final strict-M003 evidence. The visible-window run remains a separate operational requirement after C002 correctness closes.
+
+If C002 requires a daemon/CoreFrame change, M004 session-projection implementation, broad renderer authority, or a root toolchain change, stop and register that separately rather than expanding this corrective.
 
 ## 7. Cross-cutting requirements
 
@@ -269,4 +281,5 @@ Stop and register a new plan/ADR if:
 
 | Corrective | Status | Implementation plan | Blocker |
 |---|---|---|---|
-| C001 desktop connection/subscription lifecycle + qualification | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`). Ownership repair + live command-level qualification landed; only the visible-window interaction run remains for strict M003. |
+| C001 desktop connection/subscription lifecycle + qualification | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`). Original ownership repair + live command-level qualification landed. Post-C001 source review found narrower transition races now owned by C002. |
+| C002 atomic lifecycle transitions + subscription arming + window teardown | ready | `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md` | No code dependency blocker. Must serialize final connect/disconnect/subscribe transitions, arm tasks only after owner publication, make disconnect supersede in-flight connects, wire native close/app teardown, and prove adversarial interleavings before the final visible-window run. |
