@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Experiment Roadmap
 
-Status: active — M001 closed positively, M002 closed (A), M003 active (optional), M004 closed positively, M005 ready
+Status: active — M001 closed positively, M002 closed (A), M003 active (optional), M004 closed positively, M005 closed (B)
 
 Repository planning baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 
@@ -249,6 +249,20 @@ Plan:
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/005-active-disclosure-trajectory-qualification.md`
 
 Status: ready (positive M004 closed — dependency met; M002 remains the candidate).
+
+Promote only a bounded causally admissible deferred frontier while preserving
+core/required tools and `tool_search`; qualify structural safety plus opt-in
+model trajectories.
+
+Outcome: **closed with disposition B** (implementation `019bf326`; closure
+`plans/closure/tool-selection-advisor-causal-frontier-experiment/005-status.md`;
+receipt `assets/tool-advisor/causal-frontier-m005-result.json`). All
+structural gates pass (284-scenario fresh holdout exact-match, 56-case M001
+qual arm, live abstention path; preservation/discovery 1.00, 0 violations,
+median promotion 2 of bound 2, p95 ~1 ms). Live trajectories were
+unavailable, so active mode remains opt-in research and the historical
+live-primary-model study stays blocked pending a disposition-A attempt with
+live evidence.
 
 Promote only a bounded causally admissible deferred frontier while preserving
 core/required tools and `tool_search`; qualify structural safety plus opt-in
