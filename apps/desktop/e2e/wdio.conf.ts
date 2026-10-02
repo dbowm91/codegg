@@ -21,11 +21,13 @@ import * as path from 'node:path';
 import type { Capabilities, Options } from '@wdio/types';
 import type { TauriCapabilities } from '@wdio/tauri-service';
 
+const e2eDir = import.meta.dirname;
+
 function appBinaryPath(): string {
   const fromEnv = process.env.CODEGG_DESKTOP_APP_BINARY;
   if (fromEnv) return fromEnv;
   return path.join(
-    import.meta.dirname,
+    e2eDir,
     '..',
     'src-tauri',
     'target',
@@ -43,7 +45,13 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   runner: 'local',
   // Explicit order: the reconnect/reload/close trajectory first, explicit
   // autostart second. Each file owns its fixture and isolated daemon home.
-  specs: ['./e2e/specs/m003-lifecycle.e2e.ts', './e2e/specs/m003-autostart.e2e.ts'],
+  // Absolute paths: WDIO resolves spec patterns relative to this config
+  // file's directory, so config-relative literals would silently match
+  // nothing (0 workers) when invoked from the app root.
+  specs: [
+    path.join(e2eDir, 'specs', 'm003-lifecycle.e2e.ts'),
+    path.join(e2eDir, 'specs', 'm003-autostart.e2e.ts'),
+  ],
   maxInstances: 1,
   capabilities: [
     {
@@ -74,7 +82,7 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   connectionRetryTimeout: 120_000,
   // Machine assertions are the closure authority; logs/screenshots below are
   // supplementary artifacts uploaded by the desktop-e2e workflow.
-  outputDir: './e2e/logs',
+  outputDir: path.join(e2eDir, 'logs'),
   // TypeScript configs and specs are compiled on the fly by the CLI's bundled
   // tsx loader; no ts-node autoCompile options are needed (or exist) in v9.
 };
