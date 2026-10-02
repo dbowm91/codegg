@@ -1,8 +1,12 @@
 # Desktop Frontend and IDE Foundation Corrective C001 — Connection/Subscription Lifecycle and Display Qualification
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `82e289db90c4c7981524b4291986af39a7f881ea`
+
+Implementation: `7b17808f` on branch `impl/desktop-connection-subscription-lifecycle`
+
+Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (conditionally closed; visible-WebView evidence outstanding)
 
 Source corrective addendum:
 
