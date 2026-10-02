@@ -129,6 +129,10 @@ impl Tool for ResearchTool {
         "research"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("research")
+    }
+
     fn description(&self) -> &str {
         "Run a deep, multi-source research pipeline and return a synthesized answer with citations. \
          Use this for open-ended, comparative, or multi-hop questions that go beyond a single websearch lookup. \

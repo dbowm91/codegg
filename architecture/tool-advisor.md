@@ -192,3 +192,51 @@ live-provider budget is spent on it, and the live M004 trajectory study
 stays blocked pending a new model-architecture experiment. This demotion is
 a verdict on the architecture, not on the corrected training mechanism,
 which stays in place for any future experiment.
+
+## Causal frontier experiment (M001 foundation)
+
+The causal-frontier workstream replaces semantic retrieval with typed
+host-owned state: a closed fact/outcome ontology
+(`src/tool_advisor/causal_frontier.rs`), an additive `Tool::causal_contract`
+seam plus the `ToolRegistry::causal_contract_of` registry seam, a bounded
+`CausalStateSnapshot` projection, 20 static native pilot contracts, and a
+frozen 168-case stateful benchmark
+(`assets/tool-advisor/causal-frontier-v1.jsonl`) with its M002-gate
+preregistration
+(`assets/tool-advisor/causal-frontier-m001-preregistration.json`).
+
+Invariants: `ResolvedToolSurface` remains the only per-turn capability
+ceiling; causal metadata changes visibility only and never execution
+authority. A missing contract means "not causally classifiable", never
+"forbidden". Snapshots carry booleans, capped counts, and bounded typed ids
+only — never raw output, prompts, file content, secrets, or transcripts.
+No contract may be edited in response to qualification results without a
+new experiment version: the preregistration records the contract-catalog
+fingerprint, the benchmark fingerprint, the family-balanced dev (112) and
+qualification (56) split, exact metric formulas with tie-breaking, and the
+ frozen M002 gates (preservation 1.00/1.00, violations 0, reduction >= 0.50,
+ median promotion <= 4, p95 <= 5 ms).
+
+ ## Causal frontier experiment (M002 offline admissibility)
+
+ M002 evaluates deterministic precondition filtering offline over the
+ already-resolved eligible surface (`CausalFrontier::evaluate` in
+ `src/tool_advisor/causal_frontier.rs`): contracted tools sort into
+ admissible promotion vs. reasoned inadmissibility
+ (`CausalInadmissibilityReason`), uncontracted tools stay in the fallback
+ discovery universe, required/never-reduce tools bypass suppression, and
+ withheld tools fail closed. Only admissible contracted tools deferred from
+ `CORE_PALETTE` form the promotion set, used solely when structured signal
+ exists (insufficient states abstain to the fallback universe). No runtime
+ disclosure, broker, permission, or provider-definition behavior changes.
+
+ Baselines on frozen dev (112): full eligible universe (no filter) and the
+ `CORE_PALETTE` projection; frozen Signal V2 relevance labels are classified
+ diagnostically only (contracted/uncontracted/admissible/unavailable). The
+ untouched qualification partition (56) scores once; the machine-readable
+ receipt (`assets/tool-advisor/causal-frontier-m002-result.json`, disposition
+ A/D/E) is verified by test against live recomputation, with latency compared
+ by gate rather than equality. Measured M002 outcome: disposition A —
+ preservation 1.00/1.00, 0 violations, reduction 1.00, median deferred
+ promotion 3, p95 ~0.03 ms. Positive M002 unblocks M004 observe integration
+ and the optional M003 effect-path experiment.

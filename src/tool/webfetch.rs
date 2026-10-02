@@ -75,6 +75,10 @@ impl Tool for WebFetchTool {
         "webfetch"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("webfetch")
+    }
+
     fn description(&self) -> &str {
         "Fetch and extract text from a single explicit HTTP(S) URL using the configured \
          search backend (eggsearch by default). This is not a crawler or browser. Fetched \

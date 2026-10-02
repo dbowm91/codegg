@@ -67,6 +67,10 @@ impl Tool for TestTool {
         "test"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("test")
+    }
+
     fn description(&self) -> &str {
         "Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context."
     }

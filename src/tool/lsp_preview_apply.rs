@@ -282,6 +282,10 @@ impl Tool for LspPreviewApplyTool {
         "lsp_preview_apply"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("lsp_preview_apply")
+    }
+
     fn description(&self) -> &str {
         "Apply one current reviewed LSP preview by opaque preview ID through checked workspace mutation."
     }

@@ -35,6 +35,10 @@ impl Tool for WebSearchTool {
         "websearch"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("websearch")
+    }
+
     fn description(&self) -> &str {
         "Search the web using the configured search backend (eggsearch by default). \
          Returns compact source cards with titles, URLs, snippets, providers, and trust \

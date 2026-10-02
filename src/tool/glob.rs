@@ -46,6 +46,10 @@ impl Tool for GlobTool {
         "glob"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("glob")
+    }
+
     fn description(&self) -> &str {
         "Find files matching a glob pattern"
     }

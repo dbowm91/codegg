@@ -33,6 +33,10 @@ impl Tool for WriteTool {
         "write"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("write")
+    }
+
     fn description(&self) -> &str {
         "Create or overwrite a file with the given content. Runs auto-formatting after write if configured."
     }

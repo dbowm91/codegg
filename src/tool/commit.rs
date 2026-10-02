@@ -204,6 +204,10 @@ impl Tool for CommitTool {
         "commit"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("commit")
+    }
+
     fn description(&self) -> &str {
         "Create a git commit. Selection controls staging: already-staged (default), stage-paths, or stage-all. LLM generates the message unless `message` is provided."
     }

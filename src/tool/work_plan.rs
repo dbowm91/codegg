@@ -96,6 +96,10 @@ impl Tool for WorkPlanGetTool {
         "work_plan_get"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("work_plan_get")
+    }
+
     fn description(&self) -> &str {
         "Read the durable WorkPlan projection: current/actionable items by default with bounded pagination"
     }
@@ -239,6 +243,10 @@ impl WorkPlanUpdateItemTool {
 impl Tool for WorkPlanUpdateItemTool {
     fn name(&self) -> &str {
         "work_plan_update_item"
+    }
+
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("work_plan_update_item")
     }
 
     fn description(&self) -> &str {

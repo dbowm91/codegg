@@ -23,6 +23,10 @@ impl crate::tool::Tool for ContextReadTool {
         "context_read"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("context_read")
+    }
+
     fn description(&self) -> &str {
         "Read the full content of a stored context artifact by its ctx:// handle. \
          Use this to recover full tool output that was compressed in the model transcript, \

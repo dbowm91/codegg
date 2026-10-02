@@ -2618,6 +2618,10 @@ impl Tool for LspTool {
         "lsp"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("lsp")
+    }
+
     fn description(&self) -> &str {
         "Query LSP server for code intelligence and preview-only edits. Low-level operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, declaration, implementation, documentHighlights, signatureHelp, completion, semanticTokens, renamePreview, formatPreview, sourceActionPreview, codeActionSummaries, codeActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. Workflows: workflow_repair_local repairs a localized issue around a target; workflow_repair_hunk repairs code around diff hunks; workflow_review_file reviews a single file; workflow_review_diff reviews changed files; workflow_security_review runs an enriched security review with optional call hierarchy; workflow_impact performs impact analysis at a symbol; workflow_test_repair repairs a failing test; workflow_interface reviews API boundaries; workflow_cross_repair gathers cross-file repair evidence; workflow_call_neighbors explores call neighborhoods. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }

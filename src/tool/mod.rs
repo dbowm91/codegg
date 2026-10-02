@@ -222,6 +222,19 @@ pub trait Tool: Send + Sync {
     fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> contract::ToolContract {
         contract::ToolContract::legacy(tool_name, input_schema)
     }
+
+    /// Return the tool's causal preconditions/effects contract, if any.
+    ///
+    /// Additive planning metadata for the causal-frontier experiment
+    /// (`crate::tool_advisor::causal_frontier`). The default is `None`:
+    /// a missing contract means "not causally classifiable", never
+    /// "forbidden", and changes no authorization, retry, cache, or
+    /// permission behavior. Pilot native tools override this with a
+    /// static contract from
+    /// `crate::tool_advisor::causal_frontier::native_causal_contract`.
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1205,6 +1218,22 @@ impl ToolRegistry {
     /// Whether a tool with the given name is currently registered.
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
+    }
+
+    /// Registry-owned causal-contract seam for the causal-frontier
+    /// experiment (`crate::tool_advisor::causal_frontier`).
+    ///
+    /// Returns the registered tool's static causal contract, if any.
+    /// `None` means "not causally classifiable" and implies nothing
+    /// about authorization or discoverability. This never affects
+    /// broker, permission, retry, cache, or disclosure behavior.
+    pub fn causal_contract_of(
+        &self,
+        name: &str,
+    ) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        let tool = self.get(name)?;
+        tool.causal_contract()
+            .or_else(|| crate::tool_advisor::causal_frontier::native_causal_contract(name))
     }
 
     /// Run a tool by name, preferring `execute_structured` so that

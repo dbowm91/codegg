@@ -3674,57 +3674,53 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         eprintln!("Failed to prepare daemon home: {}", e);
         std::process::exit(1);
     });
-    let mut guard = loop {
-        match DaemonInstanceGuard::try_acquire(&paths) {
-            Ok(Some(g)) => break g,
-            Ok(None) => {
-                // A healthy daemon is already running. Connect to it and exit 0.
-                match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
-                    .await
-                {
-                    Ok(_client) => {
-                        eprintln!(
-                            "Daemon already running (lock held at {}); not starting a second instance.",
-                            paths.lock_path.display()
-                        );
-                        std::process::exit(0);
-                    }
-                    Err(e) => {
-                        if force_take_lock {
-                            tracing::warn!(
-                                "Daemon lock is held but socket is unreachable: {}; --force-take-lock cannot override the authoritative lock",
-                                e
-                            );
-                            let pid_note = DaemonInstanceGuard::read_metadata(&paths.metadata_path)
-                                .map(|metadata| match pid_is_alive(metadata.pid) {
-                                    Ok(true) => format!("metadata PID {} is alive", metadata.pid),
-                                    Ok(false) => {
-                                        format!("metadata PID {} is not alive", metadata.pid)
-                                    }
-                                    Err(error) => format!(
-                                        "metadata PID {} could not be checked: {}",
-                                        metadata.pid, error
-                                    ),
-                                })
-                                .unwrap_or_else(|| "metadata is missing".to_owned());
-                            eprintln!(
-                                "Cannot recover daemon endpoint while its advisory lock is held ({pid_note}); refusing to unlink the authoritative lock."
-                            );
-                            std::process::exit(1);
-                        }
-                        eprintln!(
-                            "Daemon lock is held but socket is unreachable: {}. \
-                             Refusing to remove the lock. Use 'codegg daemon status' for diagnostics.",
+    let mut guard = match DaemonInstanceGuard::try_acquire(&paths) {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            // A healthy daemon is already running. Connect to it and exit 0.
+            match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
+                Ok(_client) => {
+                    eprintln!(
+                        "Daemon already running (lock held at {}); not starting a second instance.",
+                        paths.lock_path.display()
+                    );
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    if force_take_lock {
+                        tracing::warn!(
+                            "Daemon lock is held but socket is unreachable: {}; --force-take-lock cannot override the authoritative lock",
                             e
+                        );
+                        let pid_note = DaemonInstanceGuard::read_metadata(&paths.metadata_path)
+                            .map(|metadata| match pid_is_alive(metadata.pid) {
+                                Ok(true) => format!("metadata PID {} is alive", metadata.pid),
+                                Ok(false) => {
+                                    format!("metadata PID {} is not alive", metadata.pid)
+                                }
+                                Err(error) => format!(
+                                    "metadata PID {} could not be checked: {}",
+                                    metadata.pid, error
+                                ),
+                            })
+                            .unwrap_or_else(|| "metadata is missing".to_owned());
+                        eprintln!(
+                            "Cannot recover daemon endpoint while its advisory lock is held ({pid_note}); refusing to unlink the authoritative lock."
                         );
                         std::process::exit(1);
                     }
+                    eprintln!(
+                        "Daemon lock is held but socket is unreachable: {}. \
+                         Refusing to remove the lock. Use 'codegg daemon status' for diagnostics.",
+                        e
+                    );
+                    std::process::exit(1);
                 }
             }
-            Err(e) => {
-                eprintln!("Failed to acquire daemon lock: {}", e);
-                std::process::exit(1);
-            }
+        }
+        Err(e) => {
+            eprintln!("Failed to acquire daemon lock: {}", e);
+            std::process::exit(1);
         }
     };
 
