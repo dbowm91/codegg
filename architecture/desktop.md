@@ -105,6 +105,13 @@ Test instrumentation never widens production authority:
   optional dependency enabled only by the `desktop-e2e` Cargo feature and
   registered only under `#[cfg(feature = "desktop-e2e")]`; ordinary
   `cargo build` / `tauri build` dependency trees contain zero WebDriver crates;
+- the E2E app binary is built by `e2e/build-e2e-app.sh`, which additionally
+  strips `devUrl` through a `TAURI_CONFIG` merge patch (production
+  `tauri.conf.json` keeps it for `tauri dev`): a debug binary with `devUrl`
+  set points its window at the vite server and embeds an empty asset set, so
+  without the strip the window renders `about:blank` when no dev server
+  runs. With `devUrl` removed the production bundle from `frontendDist` is
+  embedded and the window loads the real built app;
 - the `wdio-webdriver:default` permission lives in the checked-in template
   `apps/desktop/e2e/capabilities/e2e.json` and is installed as the gitignored,
   generated `src-tauri/capabilities/e2e.json` only for feature builds (the

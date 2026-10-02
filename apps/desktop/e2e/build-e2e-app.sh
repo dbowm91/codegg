@@ -21,8 +21,17 @@ template="$app_root/e2e/capabilities/e2e.json"
 case "${1:-}" in
   build)
     install -m 0644 "$template" "$generated"
-    rustup run 1.90.0 cargo build --manifest-path "$app_root/src-tauri/Cargo.toml" \
-      --locked --features desktop-e2e
+    # Strip devUrl for the E2E build only (production tauri.conf.json keeps
+    # it for `tauri dev`). A debug binary with devUrl set points its window
+    # at the vite server AND embeds an empty asset set
+    # (tauri get_app_url / codegen context), so without this the window
+    # renders about:blank when no dev server runs. TAURI_CONFIG is an
+    # RFC 7396 merge patch: null removes the key. With devUrl gone the
+    # production bundle from frontendDist is embedded and the window loads
+    # the real built app over the Tauri protocol.
+    TAURI_CONFIG='{"build":{"devUrl":null}}' \
+      rustup run 1.90.0 cargo build --manifest-path "$app_root/src-tauri/Cargo.toml" \
+        --locked --features desktop-e2e
     echo "e2e app binary: $app_root/src-tauri/target/debug/codegg-desktop"
     ;;
   clean)

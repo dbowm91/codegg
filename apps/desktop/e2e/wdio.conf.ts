@@ -48,9 +48,12 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   // Absolute paths: WDIO resolves spec patterns relative to this config
   // file's directory, so config-relative literals would silently match
   // nothing (0 workers) when invoked from the app root.
-  // TEMPORARY: diagnostic probe runs first until the harness is green.
+  // Explicit order: the reconnect/reload/close trajectory first, explicit
+  // autostart second. Each file owns its fixture and isolated daemon home.
+  // Absolute paths: WDIO resolves spec patterns relative to this config
+  // file's directory, so config-relative literals would silently match
+  // nothing (0 workers) when invoked from the app root.
   specs: [
-    path.join(e2eDir, 'specs', 'zz-diag.e2e.ts'),
     path.join(e2eDir, 'specs', 'm003-lifecycle.e2e.ts'),
     path.join(e2eDir, 'specs', 'm003-autostart.e2e.ts'),
   ],
