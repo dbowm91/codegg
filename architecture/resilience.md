@@ -157,19 +157,26 @@ pub enum CircuitError { Open(String) }
 
 Implements `Display`, `Error`.
 
-## FallbackProvider Integration
+## FallbackProvider Integration — library-only (C003)
 
-`FallbackProvider` (`crates/codegg-providers/src/fallback.rs`) creates
-one `CircuitBreaker` per provider:
+> `FallbackProvider` (`crates/codegg-providers/src/fallback.rs`) is a
+> library/test compatibility primitive only. It is never constructed on
+> any production provider registry, session, or turn path. Production
+> provider-turn retry/failover ownership lives solely in
+> `src/agent/provider_turn.rs`. A static guard
+> (`scripts/check_provider_resilience_ownership.py`) enforces this.
+
+`FallbackProvider` creates one `CircuitBreaker` per explicitly supplied
+provider when composed directly in library/test code:
 
 ```rust
 CircuitBreaker::new(p.name(), 3, 60, 2)
 ```
 
 - `failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`
-- Checks availability before calling each provider (currently via
-  `is_available()`; a future refactor should migrate to `call()` for
-  atomic admission)
+- Admits each provider via atomic `try_admit()`; terminal stream outcomes
+  are charged exactly once to the same slot breaker so mid-stream failures
+  stay visible to health
 - Records success/failure after each call
 - Exponential backoff between providers: `2^i` seconds (i=0→1s,
   i=1→2s, i=2→4s…), capped at 30s

@@ -47,9 +47,10 @@ pub use connection::{
     ProviderKind, SecretRef, SecretReference, SecretResolutionError, SecretResolver,
 };
 pub use eggpool::{
-    normalize_eggpool_base_url, EggpoolApiKey, EggpoolCancellationToken, EggpoolModelSummary,
-    EggpoolProbe, EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode,
-    EggpoolProbeSummary, EGGPOOL_DEFAULT_PORT,
+    normalize_compatible_base_url, normalize_eggpool_base_url, parse_compatible_models_response,
+    CompatibleProbe, EggpoolApiKey, EggpoolCancellationToken, EggpoolModelSummary, EggpoolProbe,
+    EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode, EggpoolProbeSummary,
+    EGGPOOL_DEFAULT_PORT,
 };
 pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
 pub use provider_core::{

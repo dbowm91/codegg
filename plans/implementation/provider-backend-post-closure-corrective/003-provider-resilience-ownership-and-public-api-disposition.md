@@ -1,6 +1,6 @@
 # Provider Backend Post-Closure Corrective C003 — Provider Resilience Ownership and Public-API Disposition
 
-Status: ready for handoff
+Status: closed (`plans/closure/provider-backend-post-closure-corrective/003-status.md`; implementation `7963db44`; retain library-only)
 
 Repository baseline: `62653a85b09ae10efe5e3c379cc68c96a62050f6`
 

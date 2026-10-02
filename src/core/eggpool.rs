@@ -1903,7 +1903,12 @@ async fn probe_with_options(
     options: codegg_providers::EggpoolProbeOptions,
 ) -> Result<ProbeResult, ProbeReason> {
     let started = Instant::now();
-    let probe = codegg_providers::EggpoolProbe::new(
+    // Provider-neutral compatible validation: explicit http(s) endpoint,
+    // preserved port/path, never injects the Eggpool preset `:11300`.
+    // The Eggpool preset's host-shorthand + default-port handling already
+    // happened in `NormalizedSpec`; the probe must not re-apply it to
+    // generic upstreams.
+    let probe = codegg_providers::CompatibleProbe::new(
         endpoint,
         codegg_providers::EggpoolApiKey::from(api_key),
         options,

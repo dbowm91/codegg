@@ -1,6 +1,6 @@
 # Provider Backend — Post-Closure Corrective Addendum
 
-Status: active
+Status: closed (C001–C003 closed; implementation `7963db44`)
 
 Repository baseline reviewed: `62653a85b09ae10efe5e3c379cc68c96a62050f6`
 
@@ -176,6 +176,6 @@ The addendum closes when:
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 Direct OpenAI endpoint composition correctness | ready | `plans/implementation/provider-backend-post-closure-corrective/001-direct-openai-endpoint-composition-correctness.md` | — | none |
-| C002 Provider catalog and compatible-discovery authority reconciliation | ready | `plans/implementation/provider-backend-post-closure-corrective/002-provider-catalog-and-compatible-discovery-reconciliation.md` | — | none; coordinate with EggPool metadata M001 |
-| C003 Provider resilience ownership and public-API disposition | ready | `plans/implementation/provider-backend-post-closure-corrective/003-provider-resilience-ownership-and-public-api-disposition.md` | — | none |
+| C001 Direct OpenAI endpoint composition correctness | closed | `plans/implementation/provider-backend-post-closure-corrective/001-direct-openai-endpoint-composition-correctness.md` | `plans/closure/provider-backend-post-closure-corrective/001-status.md` | none; nothing unblocked |
+| C002 Provider catalog and compatible-discovery authority reconciliation | closed | `plans/implementation/provider-backend-post-closure-corrective/002-provider-catalog-and-compatible-discovery-reconciliation.md` | `plans/closure/provider-backend-post-closure-corrective/002-status.md` | none; EggPool M001 stayed a non-blocking sibling; nothing unblocked |
+| C003 Provider resilience ownership and public-API disposition | closed (retain library-only) | `plans/implementation/provider-backend-post-closure-corrective/003-provider-resilience-ownership-and-public-api-disposition.md` | `plans/closure/provider-backend-post-closure-corrective/003-status.md` | none; nothing unblocked |

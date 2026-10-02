@@ -136,8 +136,30 @@ No network I/O happens inside the final transaction.
   contract, and the probe strategy. Eggpool is a `ProxyPreset` (default
   port 11300) using the same compatible transport as any local proxy;
   `custom` is the endpoint-requiring generic OpenAI-compatible entry.
-- `CompatibleProbe` reuses the strict `/models` probe (redirect, body,
-  and model-count bounds) via its provider-neutral `Compatible*` aliases.
+- `setup_catalog.rs` is CodeGG's single pre-credential provider-definition
+  authority (C002). Fixed base-URL constants are shared with the
+  `additional` constructors and native defaults (`Anthropic`,
+  `OpenCode Zen`, `MiniMax`, `OpenRouter` route through catalog constants;
+  native OpenAI keeps its literal plus a consistency test to avoid an
+  intra-crate cycle). Fixed definitions win over caller-supplied endpoints
+  so a hand-built descriptor cannot silently repoint a fixed upstream.
+- Compatible endpoint validation is split (C002):
+  `normalize_compatible_base_url()` accepts only explicit `http(s)`
+  endpoints, preserves supplied port/path, and never injects `:11300`;
+  `normalize_eggpool_base_url()` retains the Eggpool preset (host shorthand
+  + default `:11300` + TLS policy). `CompatibleProbe` (generic) backs the
+  provider-neutral `Compatible*` aliases; `EggpoolProbe` remains the preset
+  wrapper. Provisioning (`src/core/eggpool.rs`) validates through the generic
+  probe so custom upstreams without a port never gain `:11300`.
+- Strict provisioning and best-effort runtime discovery share one bounded
+  compatible `/models` core (C002): `parse_compatible_models_response()`
+  with response-byte (1 MiB), model-count (256), and string-length (256)
+  bounds, OpenAI-compatible list-shape normalization, and deterministic
+  duplicate-ID handling. Provisioning fails closed with redacted reason
+  codes; `OpenAiCompatibleProvider::models()` falls back to configured
+  seeds on any transport/status/parse/bound failure. Redirects stay
+  policy-distinct (strict disallows, ordinary client follows) without a
+  second parser.
 - `DirectModels` constructs the provider through the canonical catalog
   builder (`build_durable_provider`, also used by
   `ProviderConnectionFactory`) and calls `Provider::models()` behind the
@@ -145,6 +167,15 @@ No network I/O happens inside the final transaction.
   catalog. Specialized implementations (xAI custom config, OpenCode Go
   session affinity, MiniMax/OpenRouter/Zen native transports) keep their
   own builders instead of being coerced to generic transport.
+- Built-in endpoint dispositions (C002, first-party review 2026-10-02):
+  OpenCode Go corrected to `https://opencode.ai/zen/go/v1` (chat,
+  responses, messages, and `/models` under that prefix per
+  `https://opencode.ai/docs/go/`); Together retained at
+  `https://api.together.xyz/v1` (legacy documented prefix; current
+  canonical `https://api.together.ai/v1` serves the same `/v1` API — no
+  silent repoint authorized). Static model lists are conservative fallback
+  seeds, not exhaustive availability claims; live discovery is preferred
+  where supported and stale-but-valid IDs are documented, not churned.
 - Durable rows preserve implementation identity: native transports keep
   first-class storage keys, everything else stores `other:{id}`, and
   pre-existing `eggpool`/`openai_compatible` rows resolve through the same
@@ -301,7 +332,16 @@ pub type EventStream = Pin<Box<dyn Stream<Item =
     Result<ChatEvent, ProviderError>> + Send>>;
 ```
 
-### FallbackProvider (`fallback.rs:8`)
+### FallbackProvider (`fallback.rs`) — library-only, NOT production
+
+> C003: `FallbackProvider` is retained as a clearly labeled
+> library/test compatibility primitive only. It is never constructed on
+> any production provider registry, session, or turn path. Production
+> provider-turn retry/failover ownership lives solely in
+> `src/agent/provider_turn.rs` with the canonical retry taxonomy and
+> unified retry budget (see below). A static guard
+> (`scripts/check_provider_resilience_ownership.py`) fails if production
+> provider/session code instantiates it.
 
 ```rust
 pub struct FallbackProvider {
@@ -340,7 +380,7 @@ compatibility surface (`true` only for Transient):
 headers where available. `from_http_status()` maps 401/403 to `Auth`
 and preserves numeric status codes so the taxonomy survives.
 
-### Unified retry chain (M002)
+### Unified retry chain (M002) — single production owner
 
 See [retry.md](retry.md). `RetryContext` (`retry.rs`) bounds the whole
 turn: the provider loop consumes the caller chain
@@ -348,7 +388,11 @@ turn: the provider loop consumes the caller chain
 replenishes it. `UnifiedRetryDisposition` composes the taxonomy above
 with tool/scheduler outcomes; `UncertainSideEffect` wins over Transient.
 
-### CircuitBreaker (`circuit.rs:43`)
+C003: `src/agent/provider_turn.rs` is the sole production
+provider-turn retry/failover owner. It preserves the session-selected
+provider/session and never delegates to `FallbackProvider`.
+
+### CircuitBreaker (`circuit.rs`) — generic admission primitive, NOT a turn owner
 
 ```rust
 pub struct CircuitBreaker {
@@ -445,8 +489,15 @@ provider crate does not infer model policy from model names.
 
 - OpenAiConfig: api_key, base_url, provider_id, provider_name,
   requires_org_header, organization, omit_stream_options, tool_choice
-- Factory methods: `default_with_key`, `openai`, `groq`, `xai`,
-  `mistral`, `cerebras`
+- Factory methods: `default_with_key`, `openai`
+- Endpoint contract (C001): `base_url` is the versioned API prefix
+  (default `https://api.openai.com/v1`). `chat_completions_url()`
+  appends exactly one `/chat/completions` after trimming trailing
+  slashes, preserving explicitly configured non-default path prefixes.
+  Invalid/empty/non-HTTP(S) values fail with `invalid_endpoint` before
+  network I/O. Legacy vendor-specific `OpenAiConfig::{groq,xai,mistral,
+  cerebras}` helpers are removed; those vendors use the generic
+  OpenAI-compatible factories in `additional.rs`.
 
 ### Google (`google.rs`)
 
@@ -502,7 +553,7 @@ not emit this header by default.
 | `create_zenmux` | zenmux | (config-only) | String |
 | `create_kilo` | kilo | (config-only) | String |
 | `create_vercel_ai_gateway` | vercel_ai_gateway | (config-only) | String |
-| `create_opencode_go` | opencode_go | https://opencode.ai/go/v1 | Credential |
+| `create_opencode_go` | opencode_go | https://opencode.ai/zen/go/v1 | Credential |
 
 `create_minimax` takes `String` because the MiniMax endpoint is
 Anthropic-compatible and uses a different auth header.

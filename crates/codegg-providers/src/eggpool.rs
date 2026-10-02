@@ -30,13 +30,15 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Provider-neutral aliases for the strict compatible `/models` probe.
+/// New code must use these names; the `Eggpool*` names remain for
+/// compatibility. `CompatibleModelsProbe` uses generic endpoint semantics
+/// (explicit http/https, preserved port/path, never injects `:11300`);
+/// `EggpoolProbe` retains the Eggpool preset (host shorthand + default port).
+pub use CompatibleProbe as CompatibleModelsProbe;
 pub use EggpoolApiKey as CompatibleApiKey;
 pub use EggpoolCancellationToken as CompatibleCancellationToken;
 pub use EggpoolModelSummary as CompatibleModelSummary;
-/// Provider-neutral aliases for the strict compatible `/models` probe.
-/// New code must use these names; the `Eggpool*` names remain for
-/// compatibility.
-pub use EggpoolProbe as CompatibleModelsProbe;
 pub use EggpoolProbeError as CompatibleProbeError;
 pub use EggpoolProbeOptions as CompatibleProbeOptions;
 pub use EggpoolProbeReasonCode as CompatibleProbeReasonCode;
@@ -264,6 +266,68 @@ pub fn normalize_eggpool_base_url(input: &str) -> Result<String, EggpoolProbeErr
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
+/// Normalize a generic OpenAI-compatible base URL.
+///
+/// Provider-neutral semantics for arbitrary compatible upstreams:
+/// requires an explicit `http://` or `https://` endpoint, preserves a
+/// supplied port and path after removing trailing slashes, and never
+/// injects the Eggpool preset default port. Userinfo, query strings,
+/// fragments, control characters, and path traversal are rejected before
+/// any network request is possible.
+pub fn normalize_compatible_base_url(input: &str) -> Result<String, EggpoolProbeError> {
+    let input = input.trim();
+    if input.is_empty() || input.chars().any(char::is_control) {
+        return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+    }
+    if has_path_traversal(input) {
+        return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+    }
+    let mut url = Url::parse(input)
+        .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?;
+
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.port() == Some(0)
+    {
+        return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+    }
+
+    if url
+        .path_segments()
+        .map(|mut segments| segments.any(|segment| segment == ".."))
+        .unwrap_or(false)
+    {
+        return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+    }
+
+    // Never inject a preset port: a missing port stays missing so generic
+    // upstreams keep their origin exactly as configured.
+    let path = url.path().trim_end_matches('/').to_owned();
+    url.set_path(&path);
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
+/// Shared bounded `/models` response parser for strict and best-effort
+/// compatible discovery.
+///
+/// Enforces the single response-byte, model-count, and string-length bounds
+/// from [`EggpoolProbeOptions`], normalizes the supported OpenAI-compatible
+/// list shape (`{"data":[{"id","name"?}]`), and handles duplicate IDs
+/// deterministically (one entry per ID, lexicographically smallest name
+/// wins). Returns the bounded normalized summaries; callers apply their own
+/// failure policy (strict fails, best-effort falls back to seeds).
+pub fn parse_compatible_models_response(
+    body: &[u8],
+    options: &EggpoolProbeOptions,
+) -> Result<Vec<EggpoolModelSummary>, EggpoolProbeError> {
+    let summary = parse_summary(body, options)?;
+    Ok(summary.models)
+}
+
 /// An Eggfetch-backed Eggpool probe.  The API key is private and has no public
 /// accessor, preventing accidental inclusion in redacted result objects.
 pub struct EggpoolProbe {
@@ -291,6 +355,130 @@ impl EggpoolProbe {
     ) -> Result<Self, EggpoolProbeError> {
         validate_options(&options)?;
         let base_url = normalize_eggpool_base_url(base_url.as_ref())?;
+        let api_key = api_key.into();
+        if api_key.0.chars().any(char::is_control) {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+        }
+        let client = eggfetch_core::Client::builder()
+            .timeout(
+                eggfetch_core::Timeout::builder()
+                    .connect(options.connect_timeout)
+                    .total(options.request_timeout)
+                    .build(),
+            )
+            .follow_redirects(false)
+            .build();
+
+        Ok(Self {
+            base_url,
+            api_key,
+            options,
+            client,
+        })
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub async fn probe(
+        &self,
+        cancellation: &EggpoolCancellationToken,
+    ) -> Result<EggpoolProbeSummary, EggpoolProbeError> {
+        match tokio::time::timeout(self.options.overall_timeout, self.probe_inner(cancellation))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Timeout)),
+        }
+    }
+
+    async fn probe_inner(
+        &self,
+        cancellation: &EggpoolCancellationToken,
+    ) -> Result<EggpoolProbeSummary, EggpoolProbeError> {
+        if cancellation.is_cancelled() {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled));
+        }
+
+        let url = format!("{}/models", self.base_url);
+        let mut request = self
+            .client
+            .get(&url)
+            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?
+            .max_decoded_body_size(self.options.response_byte_limit);
+        if !self.api_key.0.is_empty() {
+            let value = format!("Bearer {}", self.api_key.0);
+            request = request
+                .header("authorization", &value)
+                .header("accept", "application/json");
+        }
+
+        let mut response = select_cancel(cancellation, request.send()).await?;
+
+        if cancellation.is_cancelled() {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled));
+        }
+
+        let status = response.status();
+        if status == http::StatusCode::UNAUTHORIZED
+            || status == http::StatusCode::FORBIDDEN
+            || status == http::StatusCode::PROXY_AUTHENTICATION_REQUIRED
+        {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Auth));
+        }
+        if status.is_redirection() {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Redirect));
+        }
+        if !status.is_success() {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Unsupported));
+        }
+
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.options.response_byte_limit as u64)
+        {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Oversized));
+        }
+
+        let body = collect_body_cancellable(&mut response, cancellation).await?;
+        parse_summary(&body, &self.options)
+    }
+}
+
+/// Provider-neutral strict compatible `/models` probe.
+///
+/// Uses [`normalize_compatible_base_url`]: explicit `http(s)` endpoint,
+/// preserved port/path, never injects the Eggpool preset `:11300`.
+/// Transport, redirect, body/count/string bounds, JSON normalization, and
+/// digest semantics are identical to [`EggpoolProbe`]; only endpoint
+/// normalization differs. New generic code must use this type (or its
+/// `CompatibleModelsProbe` alias), never `EggpoolProbe` directly.
+pub struct CompatibleProbe {
+    base_url: String,
+    api_key: EggpoolApiKey,
+    options: EggpoolProbeOptions,
+    client: eggfetch_core::Client,
+}
+
+impl fmt::Debug for CompatibleProbe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompatibleProbe")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key)
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CompatibleProbe {
+    pub fn new(
+        base_url: impl AsRef<str>,
+        api_key: impl Into<EggpoolApiKey>,
+        options: EggpoolProbeOptions,
+    ) -> Result<Self, EggpoolProbeError> {
+        validate_options(&options)?;
+        let base_url = normalize_compatible_base_url(base_url.as_ref())?;
         let api_key = api_key.into();
         if api_key.0.chars().any(char::is_control) {
             return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
@@ -651,6 +839,148 @@ mod tests {
                     .expect_err("input should be rejected")
                     .reason_code(),
                 EggpoolProbeReasonCode::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn generic_compatible_preserves_port_path_and_never_injects_default_port() {
+        // Explicit ports and paths are preserved exactly (trailing slash trimmed).
+        assert_eq!(
+            normalize_compatible_base_url("https://api.example.test/v1"),
+            Ok("https://api.example.test/v1".to_string())
+        );
+        assert_eq!(
+            normalize_compatible_base_url("https://api.example.test/v1/"),
+            Ok("https://api.example.test/v1".to_string())
+        );
+        assert_eq!(
+            normalize_compatible_base_url("https://[::1]:1234/v1/"),
+            Ok("https://[::1]:1234/v1".to_string())
+        );
+        assert_eq!(
+            normalize_compatible_base_url("http://127.0.0.1:8080/custom/prefix/"),
+            Ok("http://127.0.0.1:8080/custom/prefix".to_string())
+        );
+        // No port stays no port: generic validation never injects :11300.
+        assert_eq!(
+            normalize_compatible_base_url("https://api.example.test/v1"),
+            Ok("https://api.example.test/v1".to_string())
+        );
+        assert!(
+            !normalize_compatible_base_url("https://api.example.test/v1")
+                .expect("valid generic endpoint")
+                .contains(":11300")
+        );
+        // Host-only shorthand and non-HTTP(S) inputs are invalid for generic
+        // endpoints; they belong to the Eggpool preset only.
+        for value in [
+            "127.0.0.1",
+            "example.test",
+            "api.example.test/v1",
+            "ftp://example.test/v1",
+            "https://user:pass@example.test",
+            "https://example.test?key=secret",
+            "https://example.test#fragment",
+            "https://example.test/../private",
+            "http://example.test:0",
+            "",
+            "https://example.test/v1\u{7}",
+        ] {
+            assert_eq!(
+                normalize_compatible_base_url(value)
+                    .expect_err("generic input should be rejected")
+                    .reason_code(),
+                EggpoolProbeReasonCode::InvalidInput,
+                "unexpected acceptance for {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compatible_probe_uses_generic_semantics_while_eggpool_keeps_preset() {
+        // Same origin without a port: generic preserves, preset injects.
+        let generic =
+            normalize_compatible_base_url("https://api.example.test/v1").expect("generic valid");
+        let preset =
+            normalize_eggpool_base_url("https://api.example.test/v1").expect("preset valid");
+        assert_eq!(generic, "https://api.example.test/v1");
+        assert_eq!(preset, "https://api.example.test:11300/v1");
+
+        // CompatibleProbe accepts explicit endpoints and preserves them.
+        let compatible = CompatibleProbe::new(
+            "https://api.example.test/v1",
+            "key",
+            EggpoolProbeOptions::default(),
+        )
+        .expect("compatible probe builds");
+        assert_eq!(compatible.base_url(), "https://api.example.test/v1");
+
+        // CompatibleProbe rejects host-only shorthand.
+        assert_eq!(
+            CompatibleProbe::new("127.0.0.1", "key", EggpoolProbeOptions::default())
+                .expect_err("host-only must fail for generic")
+                .reason_code(),
+            EggpoolProbeReasonCode::InvalidInput
+        );
+
+        // EggpoolProbe still accepts host shorthand with default port.
+        let preset_probe = EggpoolProbe::new("127.0.0.1", "key", EggpoolProbeOptions::default())
+            .expect("preset accepts host shorthand");
+        assert_eq!(preset_probe.base_url(), "http://127.0.0.1:11300");
+    }
+
+    #[test]
+    fn shared_parser_enforces_bounds_with_deterministic_dedup() {
+        let options = EggpoolProbeOptions::default();
+        // Duplicate IDs collapse to one entry with smallest name winning.
+        let body = br#"{"data":[{"id":"zeta"},{"id":"alpha","name":"Alpha"},{"id":"zeta","name":"Zeta"}]}"#;
+        let models = parse_compatible_models_response(body, &options).expect("valid bounded body");
+        assert_eq!(
+            models,
+            vec![
+                EggpoolModelSummary {
+                    id: "alpha".to_string(),
+                    name: "Alpha".to_string(),
+                },
+                EggpoolModelSummary {
+                    id: "zeta".to_string(),
+                    name: "Zeta".to_string(),
+                },
+            ]
+        );
+        // Oversized count fails closed.
+        let many: Vec<String> = (0..300).map(|i| format!(r#"{{"id":"m{i}"}}"#)).collect();
+        let oversized = format!(r#"{{"data":[{}]}}"#, many.join(","));
+        assert_eq!(
+            parse_compatible_models_response(oversized.as_bytes(), &options)
+                .expect_err("count must be bounded")
+                .reason_code(),
+            EggpoolProbeReasonCode::Oversized
+        );
+        // Oversized strings fail closed.
+        let long_id = "x".repeat(300);
+        let long_body = format!(r#"{{"data":[{{"id":"{long_id}"}}]}}"#);
+        assert_eq!(
+            parse_compatible_models_response(long_body.as_bytes(), &options)
+                .expect_err("string must be bounded")
+                .reason_code(),
+            EggpoolProbeReasonCode::Oversized
+        );
+        // Invalid JSON and empty fail closed.
+        for (body, expected) in [
+            ("not-json".as_bytes(), EggpoolProbeReasonCode::InvalidJson),
+            (br#"{"data":[]}"#.as_slice(), EggpoolProbeReasonCode::Empty),
+            (
+                br#"{"not":"compatible"}"#.as_slice(),
+                EggpoolProbeReasonCode::Unsupported,
+            ),
+        ] {
+            assert_eq!(
+                parse_compatible_models_response(body, &options)
+                    .expect_err("shape must fail")
+                    .reason_code(),
+                expected
             );
         }
     }

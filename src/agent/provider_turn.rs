@@ -18,8 +18,11 @@
 //! - Backoff is bounded exponential with full jitter plus a capped
 //!   server `Retry-After` hint, and sleeps are cancellation-aware.
 //! - The session-selected provider object is never replaced here; retry
-//!   reuses the same request and provider handle (fallback internals are
-//!   owned by `FallbackProvider`, not by session selection).
+//!   reuses the same request and provider handle. `FallbackProvider`
+//!   (`crates/codegg-providers/src/fallback.rs`) is a library-only
+//!   compatibility primitive and is never constructed on this production
+//!   turn path; provider switching here would require an explicit planning
+//!   change (C003).
 
 use super::r#loop::AgentLoop;
 use crate::bus::events::AppEvent;

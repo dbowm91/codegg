@@ -88,6 +88,15 @@ run_quick() {
     echo "==> python3 scripts/check_provider_wire_cutover.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_wire_cutover.py)
 
+    echo "==> python3 scripts/check_openai_endpoint_composition.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_openai_endpoint_composition.py)
+
+    echo "==> python3 scripts/check_provider_catalog_consistency.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_provider_catalog_consistency.py)
+
+    echo "==> python3 scripts/check_provider_resilience_ownership.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_provider_resilience_ownership.py)
+
     echo "==> python3 scripts/check_eggwork_target_routing.py"
     (cd "$REPO_ROOT" && python3 scripts/check_eggwork_target_routing.py)
 

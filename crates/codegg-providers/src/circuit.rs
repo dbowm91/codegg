@@ -1,3 +1,12 @@
+//! Generic circuit-breaker admission primitive (C003).
+//!
+//! Library-only: decides whether to admit or reject one operation; retry,
+//! backoff, and provider-turn failover policy live with the caller
+//! (`src/agent/provider_turn.rs` + [`crate::error::ProviderError`] taxonomy
+//! for production turns; [`crate::fallback::FallbackProvider`] only for
+//! explicit library/test composition). Not a production provider retry
+//! owner on its own.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
