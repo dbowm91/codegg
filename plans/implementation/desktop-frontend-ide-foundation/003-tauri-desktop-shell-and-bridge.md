@@ -1,8 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 003 — Tauri Desktop Shell and Secure Bridge
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `deebc99a39c783eb3f52918fb8f3f2c138cb65b6`
+Repository baseline: `86898d1f2bcd9f179c8354ebb4c11a04eed73ac6`
 
 Source roadmap:
 
@@ -34,11 +34,15 @@ Introduce the optional CodeGG desktop application shell as a separately tooled T
 
 The milestone is intentionally a shell/foundation milestone. It should render connection/daemon/project summary state and prove the security/toolchain boundary; it must not attempt full session UX, an editor, terminal, or IDE parity.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
-M001 must close first so the desktop Rust host consumes an independently reusable client rather than importing the root application's TUI/core transport implementation.
+M001 is closed and `codegg-client` owns the reusable frontend connection boundary.
+The desktop host can consume that crate without importing the root TUI or
+constructing `CoreDaemon`.
 
-No hard dependency exists on M002 for Linux/macOS because the existing Unix local transport is already the current production path. Windows-specific build/runtime qualification remains gated on M002.
+M002 is conditionally closed. Its Unix transport is qualified, so no hard
+dependency exists for Linux/macOS M003. Windows desktop qualification remains
+gated on M002's live Windows transport and lifecycle evidence.
 
 ## 3. Current external/toolchain evidence
 
