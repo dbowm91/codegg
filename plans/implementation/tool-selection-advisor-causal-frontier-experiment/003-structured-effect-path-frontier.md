@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier M003 — Structured Effect-Path Frontier
 
-Status: active (optional; M002 closed with disposition A — see `plans/closure/tool-selection-advisor-causal-frontier-experiment/002-status.md`)
+Status: closed with disposition D (negative) — see `plans/closure/tool-selection-advisor-causal-frontier-experiment/003-status.md` (implementation `82fc5b40`; receipt `assets/tool-advisor/causal-frontier-m003-result.json`)
 
 Repository baseline: `ffbd0bc9`
 
