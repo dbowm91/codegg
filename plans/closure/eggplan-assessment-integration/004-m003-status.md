@@ -336,3 +336,17 @@ archived as a historical record. Downstream plans are unblocked per
 Candidate follow-up (not a roadmap milestone, not started): an Eggplan-side
 shared dirty-manifest contract so §5.6 digest equality becomes implementable
 without changing the two owners' independence.
+
+## C001 follow-up (additive note, evidence unchanged)
+
+Post-closure corrective C001
+(`plans/implementation/eggplan-assessment-integration/005-m003-c001-dirty-subject-provenance-and-bound-evidence.md`,
+closure `plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`,
+implementation `36ec9322`) repaired the §5.6 dirty-digest limitation recorded
+above under "Residual limitations": dirty executions now persist the exact
+Eggplan-compatible digest at execution time (nested provenance v2), binding
+uses the E1/C/E2 sandwich, and bound dirty translation uses only the
+persisted Eggplan digest while dirty v1 fails closed. This note is
+informational only; the M003 evidence above is historical and unchanged. C001
+is conditionally closed pending the Eggplan C001 fingerprint-API pin and
+hosted requalification.

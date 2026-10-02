@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active corrective; M001/M002/M003 closed, C001 dirty-subject corrective ready
+Status: active corrective; M001/M002/M003 closed, C001 dirty-subject corrective conditionally closed
 
 Canonical authority:
 
@@ -205,7 +205,7 @@ managed worktrees do not reliably contain the repository-local untracked
 
 ### C001 — Dirty-subject provenance and bound evidence requalification
 
-Status: ready for coordinated handoff.
+Status: conditionally closed (`plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`; implementation `36ec9322`).
 
 CodeGG plan:
 
