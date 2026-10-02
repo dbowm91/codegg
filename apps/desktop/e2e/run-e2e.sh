@@ -38,7 +38,11 @@ rustup run 1.90.0 cargo build --manifest-path "$app_root/src-tauri/Cargo.toml" \
 echo "==> building desktop app with the desktop-e2e feature"
 "$app_root/e2e/build-e2e-app.sh" build
 echo "==> running WebdriverIO trajectory (CODEGG_DAEMON_EXECUTABLE=$CODEGG_DAEMON_EXECUTABLE)"
+# The debug app binary resolves its frontendDist (../dist) relative to the
+# working directory, so the runner executes from src-tauri. (A bundled
+# `tauri build` artifact embeds assets instead; the debug binary is the same
+# compiled app without packaging.)
 (
-  cd "$app_root"
-  npx wdio run ./e2e/wdio.conf.ts
+  cd "$app_root/src-tauri"
+  npx wdio run "$app_root/e2e/wdio.conf.ts"
 )
