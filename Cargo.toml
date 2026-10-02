@@ -278,16 +278,25 @@ codegg-core.workspace = true
 codegg-git.workspace = true
 eggsact = "1.2.5"
 
-# Eggplan staged assessment adoption (M002) and repository Plan binding
-# (M003). Exactly one immutable reviewed revision; only the pure assessment
-# crates plus the file-backed `eggplan-repo` store are consumed.
+# Eggplan staged assessment adoption (M002), repository Plan binding (M003),
+# and the dirty-subject fingerprint contract (M003 C001). Exactly one
+# immutable reviewed revision; only the pure assessment crates plus the
+# file-backed `eggplan-repo` store are consumed.
 # eggplan-cli/projection/markdown/integrations must never enter the
 # production graph (static guard `check_work_plan_repository_binding.py`).
 # `eggplan-repo` is application-layer only: `codegg-core` stays free of every
 # Eggplan crate.
-eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev = "3f7c603315131bb169bfdd2bb575531d228532b1", default-features = false }
-eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "3f7c603315131bb169bfdd2bb575531d228532b1", default-features = false }
-eggplan-repo = { git = "https://github.com/eggstack/eggplan.git", rev = "3f7c603315131bb169bfdd2bb575531d228532b1", default-features = false }
+#
+# C001 pin `0dd33b761e85f1364320a9208aaebd5be281c6a5` adds the bounded,
+# repository-ID-free `capture_git_subject_fingerprint`. That API returns the
+# same revision/clean-dirty/dirty-digest triple `RepositoryStore::
+# subject_source().capture()` returns for the same root, options, and
+# exclusion, and its digest bytes are frozen by the Eggplan golden matrix, so
+# the bump cannot change persisted provenance. It additionally fails closed on
+# an administrative exclusion that does not resolve inside the worktree.
+eggplan-codegg-compat = { git = "https://github.com/eggstack/eggplan.git", rev = "0dd33b761e85f1364320a9208aaebd5be281c6a5", default-features = false }
+eggplan-core = { git = "https://github.com/eggstack/eggplan.git", rev = "0dd33b761e85f1364320a9208aaebd5be281c6a5", default-features = false }
+eggplan-repo = { git = "https://github.com/eggstack/eggplan.git", rev = "0dd33b761e85f1364320a9208aaebd5be281c6a5", default-features = false }
 
 # Eggwork fixed-target remote execution substrate (M001/M002a/M003).
 # Pinned to the upstream immutable revision that carries Workspace M004

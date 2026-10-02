@@ -54,7 +54,10 @@ use eggplan_core::{
     EvidenceProviderId, EvidenceStatus, Plan, PlanId, PlanItemId, PlanItemStatus, PlanStatus,
     ProviderDescriptor, ProviderPolicyEntry, ProviderRegistry, SubjectRevision, SubjectState,
 };
-use eggplan_repo::{PlanStore, RepoError, RepositoryStore};
+use eggplan_repo::{
+    capture_git_subject_fingerprint, GitSubjectFingerprintV1, GitSubjectOptions, PlanStore,
+    RepoError, RepositoryStore,
+};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -262,9 +265,9 @@ pub fn normalize_dirty_digest(hex: &str) -> Result<String, BindingError> {
 /// C001 sandwich (plan §7):
 ///
 /// ```text
-/// E1 = Eggplan fingerprint (repository subject capture)
+/// E1 = Eggplan fingerprint (eggplan_repo::capture_git_subject_fingerprint)
 /// C  = CodeGG native capture excluding .eggplan
-/// E2 = Eggplan fingerprint (repository subject capture, repeated)
+/// E2 = Eggplan fingerprint (eggplan_repo::capture_git_subject_fingerprint, repeated)
 /// ```
 ///
 /// Binding is valid only when E1 == E2 exactly, C.revision == E1.revision,
@@ -279,7 +282,14 @@ pub fn normalize_dirty_digest(hex: &str) -> Result<String, BindingError> {
 ///   the Eggplan administrative root excluded, because an untracked
 ///   administrative directory is not source state and both owners must agree
 ///   about it.
-/// - Eggplan side: `RepositoryStore::subject_source().capture()`.
+/// - Eggplan side: `eggplan_repo::capture_git_subject_fingerprint`, the
+///   qualified C001 compatibility contract. It is captured from the bound
+///   repository state root with that root excluded, so it is exactly the
+///   revision/clean-dirty/dirty-digest triple Eggplan assessment will later
+///   compare against, and it fails closed if the administrative root does not
+///   resolve inside the discovered worktree. It is repository-ID-free by
+///   construction; the identity tuple comes from the store, never from the
+///   capture.
 ///
 /// Equality is required on the revision OID and on clean/dirty state. The
 /// dirty *content* digests are each recorded in their own owner's canonical
@@ -293,10 +303,7 @@ pub async fn prove_identity(
     relation: &WorkspaceRelation,
     store: &RepositoryStore,
 ) -> Result<IdentityProof, BindingError> {
-    let e1 = store
-        .subject_source()
-        .capture()
-        .map_err(|error| subject_error("eggplan_subject_capture_failed", error))?;
+    let e1 = eggplan_subject_fingerprint(store)?;
     let codegg_subject = egggit::capture_git_source_subject_excluding(
         &relation.workspace_root,
         Path::new(EGGPLAN_STATE_DIR),
@@ -308,11 +315,26 @@ pub async fn prove_identity(
             format!("CodeGG subject capture failed: {error:?}"),
         )
     })?;
-    let e2 = store
-        .subject_source()
-        .capture()
-        .map_err(|error| subject_error("eggplan_subject_capture_failed", error))?;
+    let e2 = eggplan_subject_fingerprint(store)?;
     prove_identity_from_captures(relation, store.repository_id(), e1, codegg_subject, e2)
+}
+
+/// Capture the Eggplan side of the sandwich through the qualified C001
+/// fingerprint contract.
+///
+/// This is the single Eggplan capture entry point of the binding module. The
+/// repository-ID-free fingerprint is taken from the bound state root with that
+/// root excluded as the administrative root, which is the same worktree,
+/// options, and exclusion `RepositoryStore::subject_source().capture()` would
+/// use; Eggplan freezes those digest bytes and proves the two entry points
+/// agree. The fingerprint carries no repository identity, so the caller pairs
+/// it with `store.repository_id()`.
+fn eggplan_subject_fingerprint(
+    store: &RepositoryStore,
+) -> Result<GitSubjectFingerprintV1, BindingError> {
+    let state_root = store.root();
+    capture_git_subject_fingerprint(state_root, GitSubjectOptions::default(), Some(state_root))
+        .map_err(|error| subject_error("eggplan_subject_capture_failed", error))
 }
 
 /// Deterministic core of [`prove_identity`] over already-taken captures.
@@ -324,9 +346,9 @@ pub async fn prove_identity(
 fn prove_identity_from_captures(
     relation: &WorkspaceRelation,
     eggplan_repository_id: &str,
-    e1: SubjectRevision,
+    e1: GitSubjectFingerprintV1,
     codegg_subject: egggit::GitSourceSubject,
-    e2: SubjectRevision,
+    e2: GitSubjectFingerprintV1,
 ) -> Result<IdentityProof, BindingError> {
     if e1 != e2 {
         return Err(BindingError::new(
@@ -334,7 +356,7 @@ fn prove_identity_from_captures(
             "Eggplan subject changed during binding identity proof",
         ));
     }
-    let eggplan_subject = e1;
+    let eggplan_fingerprint = e1;
     let codegg_dirty = codegg_subject
         .dirty_digest
         .as_deref()
@@ -345,13 +367,13 @@ fn prove_identity_from_captures(
     } else {
         SubjectState::Clean
     };
-    if codegg_subject.revision != eggplan_subject.revision {
+    if codegg_subject.revision != eggplan_fingerprint.revision {
         return Err(BindingError::new(
             "repository_subject_mismatch",
             "CodeGG and Eggplan captured different revisions",
         ));
     }
-    if codegg_state != eggplan_subject.state {
+    if codegg_state != eggplan_fingerprint.state {
         return Err(BindingError::new(
             "repository_subject_mismatch",
             "CodeGG and Eggplan disagree on clean/dirty state",
@@ -365,9 +387,9 @@ fn prove_identity_from_captures(
             relation.workspace_id
         ),
         eggplan_repository_id: eggplan_repository_id.to_string(),
-        revision: eggplan_subject.revision.clone(),
-        state: eggplan_subject.state,
-        normalized_dirty_digest: eggplan_subject.dirty_digest.clone(),
+        revision: eggplan_fingerprint.revision.clone(),
+        state: eggplan_fingerprint.state,
+        normalized_dirty_digest: eggplan_fingerprint.dirty_digest.clone(),
         codegg_dirty_digest: codegg_dirty,
     })
 }
@@ -2546,10 +2568,9 @@ mod tests {
         }
     }
 
-    fn eggplan_subject(digest: Option<&str>) -> SubjectRevision {
-        SubjectRevision {
-            subject_kind: "git".to_string(),
-            repository_id: "epr_test".to_string(),
+    fn eggplan_fingerprint(digest: Option<&str>) -> GitSubjectFingerprintV1 {
+        let fingerprint = GitSubjectFingerprintV1 {
+            schema_version: GitSubjectFingerprintV1::SCHEMA_VERSION,
             revision: REVISION.to_string(),
             state: if digest.is_some() {
                 SubjectState::Dirty
@@ -2557,7 +2578,11 @@ mod tests {
                 SubjectState::Clean
             },
             dirty_digest: digest.map(str::to_string),
-        }
+        };
+        fingerprint
+            .validate()
+            .expect("fingerprint fixture is self-consistent");
+        fingerprint
     }
 
     fn native_subject(dirty: bool) -> egggit::GitSourceSubject {
@@ -2602,9 +2627,9 @@ mod tests {
         let proof = prove_identity_from_captures(
             &relation(),
             "epr_test",
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
             native_subject(true),
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
         )
         .expect("stable dirty sandwich proves");
         assert_eq!(proof.revision, REVISION);
@@ -2626,9 +2651,9 @@ mod tests {
         let proof = prove_identity_from_captures(
             &relation(),
             "epr_test",
-            eggplan_subject(None),
+            eggplan_fingerprint(None),
             native_subject(false),
-            eggplan_subject(None),
+            eggplan_fingerprint(None),
         )
         .expect("stable clean sandwich proves");
         assert_eq!(proof.state, SubjectState::Clean);
@@ -2643,9 +2668,9 @@ mod tests {
         let error = prove_identity_from_captures(
             &relation(),
             "epr_test",
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
             native_subject(true),
-            eggplan_subject(Some(EGGPLAN_DIRTY_OTHER)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY_OTHER)),
         )
         .expect_err("changed digest fails closed");
         assert_eq!(
@@ -2656,12 +2681,12 @@ mod tests {
 
     #[test]
     fn sandwich_revision_move_during_proof_fails_closed() {
-        let mut e2 = eggplan_subject(Some(EGGPLAN_DIRTY));
+        let mut e2 = eggplan_fingerprint(Some(EGGPLAN_DIRTY));
         e2.revision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
         let error = prove_identity_from_captures(
             &relation(),
             "epr_test",
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
             native_subject(true),
             e2,
         )
@@ -2679,9 +2704,9 @@ mod tests {
         let error = prove_identity_from_captures(
             &relation(),
             "epr_test",
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
             native,
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
         )
         .expect_err("revision mismatch fails closed");
         assert_eq!(error.code, "repository_subject_mismatch");
@@ -2692,9 +2717,9 @@ mod tests {
         let error = prove_identity_from_captures(
             &relation(),
             "epr_test",
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
             native_subject(false),
-            eggplan_subject(Some(EGGPLAN_DIRTY)),
+            eggplan_fingerprint(Some(EGGPLAN_DIRTY)),
         )
         .expect_err("state mismatch fails closed");
         assert_eq!(error.code, "repository_subject_mismatch");

@@ -93,8 +93,14 @@ pub async fn capture_attempt_revision(
 ///
 /// - `<workspace_root>/.eggplan` is a directory (otherwise `None` without
 ///   any store I/O, keeping non-Eggplan workspaces on the exact M001 path);
-/// - the repository-local store opens read-only and its subject source
-///   captures successfully;
+/// - the repository-local store opens read-only, proving the workspace really
+///   carries a valid Eggplan store without creating or mutating any state;
+/// - `eggplan_repo::capture_git_subject_fingerprint` captures successfully for
+///   the same worktree with that administrative root excluded. The
+///   fingerprint is the qualified Eggplan C001 compatibility contract: it
+///   returns exactly the revision, clean/dirty state, and dirty digest Eggplan
+///   repository assessment will later require, and it fails closed if the
+///   administrative root does not resolve inside the discovered worktree;
 /// - the Eggplan capture agrees with the native capture on HEAD revision
 ///   and on clean/dirty state (both owners must describe the same Git
 ///   state; the two digest *bytes* are intentionally never compared);
@@ -107,22 +113,26 @@ fn capture_eggplan_compatible_digest(
     workspace_root: &Path,
     native: &egggit::GitSourceSubject,
 ) -> Option<String> {
-    if !workspace_root.join(EGGPLAN_STATE_DIR).is_dir() {
+    let state_root = workspace_root.join(EGGPLAN_STATE_DIR);
+    if !state_root.is_dir() {
         return None;
     }
-    let store =
-        eggplan_repo::RepositoryStore::open_read_only(workspace_root.join(EGGPLAN_STATE_DIR))
-            .ok()?;
-    let subject = store.subject_source().capture().ok()?;
-    if subject.revision != native.revision {
+    eggplan_repo::RepositoryStore::open_read_only(&state_root).ok()?;
+    let fingerprint = eggplan_repo::capture_git_subject_fingerprint(
+        workspace_root,
+        eggplan_repo::GitSubjectOptions::default(),
+        Some(state_root.as_path()),
+    )
+    .ok()?;
+    if fingerprint.revision != native.revision {
         return None;
     }
     let native_dirty = native.dirty_digest.is_some();
-    let eggplan_dirty = subject.state == eggplan_core::SubjectState::Dirty;
+    let eggplan_dirty = fingerprint.state == eggplan_core::SubjectState::Dirty;
     if native_dirty != eggplan_dirty {
         return None;
     }
-    let digest = subject.dirty_digest?;
+    let digest = fingerprint.dirty_digest?;
     if !ExecutionSubjectRevision::is_valid_eggplan_dirty_digest(&digest) {
         return None;
     }

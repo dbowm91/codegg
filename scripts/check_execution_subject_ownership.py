@@ -29,10 +29,11 @@ as repaired by
   5. The v67 migration exists and adds ``source_subject_json``.
   6. C001 translator rules: the bound historical translator reads only the
      persisted ``eggplan_dirty_digest`` (never the native ``dirty_digest``)
-     for bound Eggplan subjects; the E1/C/E2 sandwich proof exists with its
-     typed changed-during-proof error; no current-worktree historical
-     backfill helper exists; ``codegg-core`` has no Eggplan crate
-     dependency.
+     for bound Eggplan subjects; the E1/C/E2 sandwich proof exists, captures
+     the Eggplan side twice through
+     ``eggplan_repo::capture_git_subject_fingerprint``, and carries its typed
+     changed-during-proof error; no current-worktree historical backfill
+     helper exists; ``codegg-core`` has no Eggplan crate dependency.
 
 Run:
 
@@ -204,7 +205,9 @@ def main() -> int:
 
     # 1d. Raw Eggplan subject capture is confined to the v2 helper (attempt
     # provenance) and the binding module (identity proof, assessment,
-    # closure). Tools, the arbiter, and the scheduler never touch it.
+    # closure). Tools, the arbiter, and the scheduler never touch it. The
+    # C001 fingerprint entry point has the same single-owner confinement as
+    # `subject_source()`.
     for path in list(ROOT.joinpath("src").rglob("*.rs")):
         rel = str(path.relative_to(ROOT))
         if rel in (
@@ -215,6 +218,11 @@ def main() -> int:
         for i, line in code_lines(rel):
             if "subject_source()" in line:
                 fail(f"{rel}:{i}: raw Eggplan subject capture outside the governed owners")
+            if "capture_git_subject_fingerprint" in line:
+                fail(
+                    f"{rel}:{i}: raw Eggplan fingerprint capture outside the "
+                    "governed owners"
+                )
 
     # 2. The evidence resolvers never capture and never read live state.
     evidence = read("src/work_plan_evidence.rs")
@@ -308,10 +316,17 @@ def main() -> int:
             "src/work_plan_repository_binding.rs: the typed "
             "changed-during-proof error is missing"
         )
-    if binding.count("subject_source()") < 5:
+    # The sandwich captures the Eggplan side twice through the qualified C001
+    # fingerprint contract: one helper definition plus the E1 and E2 calls.
+    if binding.count("eggplan_subject_fingerprint(") < 3:
         fail(
             "src/work_plan_repository_binding.rs: the identity proof must "
-            "capture the Eggplan side twice (E1/C/E2 sandwich)"
+            "capture the Eggplan-compatible fingerprint twice (E1/C/E2 sandwich)"
+        )
+    if "capture_git_subject_fingerprint" not in binding:
+        fail(
+            "src/work_plan_repository_binding.rs: the identity proof must go "
+            "through eggplan_repo::capture_git_subject_fingerprint"
         )
     if "legacy_dirty_subject_missing_eggplan_digest" not in binding:
         fail(
