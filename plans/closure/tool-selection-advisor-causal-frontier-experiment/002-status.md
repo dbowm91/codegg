@@ -184,7 +184,7 @@ property, unchanged).
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | Hosted CI result pending at closure-write time (local evidence only). | Positive closure assumes ordinary hosted CI green per plan §11. | Reconcile in §12 after push; downgrade/convert this closure if hosted CI disagrees. |
+| low (resolved) | Hosted CI result pending at closure-write time (local evidence only). | Positive closure assumed ordinary hosted CI green per plan §11. | Reconciled: hosted `CI / verify` run `37017387365` success on implementation commit `85f26afd` (includes all M002 code + receipt). Assumption holds. |
 
 No medium or higher findings. No corrective pass required. One
 implementation-time defect was found and fixed before commit (reduction
@@ -226,6 +226,6 @@ M002 closes with disposition A (positive). Consequences:
   status blocked/optional on M002 A → ready (optional; dependency met).
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/004-*.md`:
   status blocked on positive M002 → ready for handoff.
-- Hosted CI: branch push triggers the ordinary `verify` workflow; the run
-  id will be appended here as a factual correction if it disagrees with
-  local evidence.
+- Hosted CI: ordinary `verify` run `37017387365` success (on `85f26afd`,
+  includes all M002 code + receipt). Positive-closure assumption holds;
+  no downgrade.
