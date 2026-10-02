@@ -273,6 +273,112 @@ async fn peer_death_releases_pending_request_with_error() {
 }
 
 #[tokio::test]
+async fn cancelling_request_releases_its_id_for_retry() {
+    let socket = std::env::temp_dir().join(format!("codegg-cancel-{}.sock", uuid::Uuid::new_v4()));
+    let listener = UnixListener::bind(&socket).expect("bind fake daemon");
+    let (first_request_tx, first_request_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept client");
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.expect("read ClientHello");
+        let hello = CoreFrame::ServerHello(ServerHello {
+            daemon_id: "cancel-daemon".into(),
+            protocol_version: PROTOCOL_VERSION,
+            server_capabilities: server_capabilities(),
+            client_id: "cancel-client".into(),
+        });
+        write
+            .write_all(format!("{}\n", serde_json::to_string(&hello).unwrap()).as_bytes())
+            .await
+            .expect("send ServerHello");
+        write.flush().await.expect("flush ServerHello");
+        line.clear();
+        reader.read_line(&mut line).await.expect("read Subscribe");
+
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("read first request");
+        let CoreFrame::Request(request) =
+            serde_json::from_str(line.trim()).expect("decode first request")
+        else {
+            panic!("expected first request");
+        };
+        assert_eq!(request.request_id, "cancel-and-retry");
+        first_request_tx
+            .send(())
+            .expect("notify first request read");
+
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .await
+            .expect("read retried request");
+        let CoreFrame::Request(retry) =
+            serde_json::from_str(line.trim()).expect("decode retried request")
+        else {
+            panic!("expected retried request");
+        };
+        assert_eq!(retry.request_id, request.request_id);
+        let response = CoreFrame::Response {
+            request_id: retry.request_id,
+            response: Box::new(CoreResponse::SnapshotDaemon {
+                event_seq: 1,
+                daemon_id: "cancel-daemon".into(),
+                uptime_secs: 1,
+                active_sessions: vec![],
+                connected_clients: vec![],
+                scheduler_snapshot: None,
+            }),
+        };
+        write
+            .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+            .await
+            .expect("respond to retried request");
+        write.flush().await.expect("flush retried response");
+    });
+
+    let client = LocalSocketClient::connect(
+        format!("unix://{}", socket.display()),
+        FrontendDescriptor::new("codegg-gui-test", ClientKind::Gui, gui_capabilities()),
+    )
+    .await
+    .expect("connect client");
+    let first_client = client.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .request(RequestEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "cancel-and-retry".into(),
+                payload: CoreRequest::SnapshotDaemon,
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), first_request_rx)
+        .await
+        .expect("first request reaches daemon")
+        .expect("first request notification");
+    first.abort();
+    let _ = first.await;
+
+    let response = client
+        .request(RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "cancel-and-retry".into(),
+            payload: CoreRequest::SnapshotDaemon,
+        })
+        .await
+        .expect("retry after cancellation");
+    assert!(matches!(response, CoreResponse::SnapshotDaemon { .. }));
+    drop(client);
+    server.await.expect("cancellation fixture");
+    let _ = std::fs::remove_file(socket);
+}
+
+#[tokio::test]
 async fn protocol_version_mismatch_fails_the_handshake() {
     let socket = std::env::temp_dir().join(format!(
         "codegg-version-mismatch-{}.sock",

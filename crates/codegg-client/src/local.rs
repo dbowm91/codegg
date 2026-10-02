@@ -18,6 +18,17 @@ type PendingRequest = (
     OwnedSemaphorePermit,
 );
 
+struct PendingRequestGuard {
+    request_id: String,
+    pending: Arc<DashMap<String, PendingRequest>>,
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        self.pending.remove(&self.request_id);
+    }
+}
+
 /// Multiplexed local CoreFrame client. One reader owns the stream read half;
 /// request waiters and event subscribers are bounded and connection-scoped.
 #[derive(Clone)]
@@ -133,15 +144,12 @@ impl LocalSocketClient {
                 entry.insert((tx, permit));
             }
         }
-        let write_result = self.write_line(&payload).await;
-        if let Err(error) = write_result {
-            self.pending.remove(&request_id);
-            return Err(error);
-        }
-        rx.await.map_err(|_| {
-            self.pending.remove(&request_id);
-            ClientError::WaiterCancelled
-        })?
+        let _pending_guard = PendingRequestGuard {
+            request_id: request_id.clone(),
+            pending: Arc::clone(&self.pending),
+        };
+        self.write_line(&payload).await?;
+        rx.await.map_err(|_| ClientError::WaiterCancelled)?
     }
 
     pub fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
