@@ -15,6 +15,10 @@ code. The root `SocketCoreClient` and `connect_or_start_daemon` APIs remain
 compatibility adapters for the existing `CoreClient` and daemon lifecycle
 types; both delegate to the shared implementation.
 
+The optional Tauri shell is another trusted GUI composition and consumes only
+this crate. Its JavaScript renderer receives a narrow bridge and never opens
+the local socket itself; see [desktop architecture](desktop.md).
+
 `LocalSocketClient` owns one reader task, bounded request/event channels,
 request correlation, handshake/client identity, and reconnect. The TUI starts
 it with an explicit TUI descriptor. A headless GUI-kind consumer can use the

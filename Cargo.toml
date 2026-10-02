@@ -3,7 +3,7 @@ members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-pro
 # `crates/eggwork-test-node` is a standalone test-fixture workspace (own
 # lockfile): it must resolve `eggwork-server` without this workspace's
 # `sqlx` sqlite linkage (see dev-dependencies comment above).
-exclude = ["crates/eggwork-test-node"]
+exclude = ["crates/eggwork-test-node", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.package]

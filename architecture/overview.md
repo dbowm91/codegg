@@ -6,6 +6,12 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 
 The supported distribution remains one `codegg` executable per target. The daemon is a user-scoped singleton discovered and started by that executable; the TUI and daemon share the same business-logic libraries and invocation contracts. Runtime-safety milestone M007 measured the dependency and release profiles and retained this no-split topology because a daemon/TUI split did not produce a material deployment improvement without adding packaging or ownership complexity. Future role-specific binaries require a new measured deployment constraint and compatibility plan; they are not an advertised installation mode.
 
+An optional Tauri desktop shell lives under `apps/desktop` and is built with
+its own Rust and JavaScript toolchains. Its Rust host uses `codegg-client` to
+connect to or start the existing `codegg` daemon; it is not a second daemon
+binary and does not change the root Cargo workspace's Rust 1.89 contract.
+See [desktop architecture](desktop.md).
+
 ## System Architecture
 
 ```

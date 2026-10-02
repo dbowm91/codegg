@@ -61,6 +61,9 @@ run_quick() {
     echo "==> ./scripts/check-client-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-client-boundary.sh)
 
+    echo "==> ./scripts/check-desktop-boundary.sh"
+    (cd "$REPO_ROOT" && ./scripts/check-desktop-boundary.sh)
+
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 
