@@ -230,7 +230,7 @@ Outcome:
 
 ### Milestone 003 — Tauri desktop shell and secure bridge
 
-Status: conditionally closed. C001 is conditionally closed at `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`; original ownership repair + live command-level qualification landed, including a protocol-neutral daemon hello-downgrade fix). C002 is conditionally closed at `plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md` (implementation `dc32a6ad`; lifecycle serialization gate, atomic connect commit with disconnect supersession, post-publication forwarder arming, and native window/app teardown, with barrier-forced race tests plus an adversarial live-daemon trajectory; hosted CI green is the sole strict-closure condition). Strict closure requires the visible-window interaction run. M002 remains an operational dependency for Windows qualification.
+Status: conditionally closed. C001 and C002 production fixes are landed and conditionally closed. Hosted run `37062733033` containing C002 failed only in the unrelated `interactive_process_sessions::environment_overrides_apply_while_denied_vars_stay_stripped` test after desktop-relevant guards/Clippy passed; the same test passed on prior green run `37051423825`, with no interactive-process file changed by C002. C003 is ready at `plans/implementation/desktop-frontend-ide-foundation-corrective/003-hosted-ci-visible-window-strict-closure.md` to reconcile a green hosted disposition and add the repeatable built-app visible-window/WebDriver qualification. Strict M003 closure occurs only after C003. M002 remains an operational dependency for Windows qualification.
 
 Primary class: infrastructure.
 
@@ -250,7 +250,7 @@ Outcome:
 
 ### Milestone 004 — Desktop session/control-plane vertical slice
 
-Status: blocked on strict M003 closure through conditionally-closed corrective C002 plus the final visible-window qualification.
+Status: blocked on strict M003 closure through ready corrective C003. M004 research is reconciled and the implementation plan is ready to hand off immediately after M003 closes.
 
 Primary class: capability.
 
@@ -260,8 +260,9 @@ Plan:
 
 Outcome:
 
-- project selection and bounded session list/attach/create;
-- canonical projection subscription/replay/resync;
+- project selection via `ProjectList`/`ProjectGet`, project-scoped workspace selection, and bounded session list/attach/create;
+- `codegg-client` loss-aware projection driver built around the production `HeadlessProjectionConsumer`;
+- canonical projection subscribe/replay/resume/ack/resync with typed transport-loss recovery;
 - prompt submission and streamed visible agent activity;
 - permission/question presentation and response through daemon authority;
 - reconnect/restart handling;
@@ -388,6 +389,6 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
 | M003 Tauri desktop shell + secure bridge | conditionally closed; C001 conditional; C002 conditionally closed (hosted CI pending) | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Historical closure: `plans/closure/desktop-frontend-ide-foundation/003-status.md`; corrective control: `plans/subsystems/desktop-frontend-ide-foundation-m003-lifecycle-corrective-addendum.md`. C002 closed lifecycle linearization/arming/native-close races (hosted CI confirmation pending) before the final visible-window interaction run; Windows qualification remains separately operationally gated |
-| M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | strict M003 closure after C002 + visible-window qualification |
+| M004 desktop session/control-plane slice | blocked; research reconciled | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | strict M003 closure after C003. Plan now targets `HeadlessProjectionConsumer`, typed client lag/resync, `ProjectGet` workspace routing, daemon controller leases, and the inherited built-app E2E harness |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
 | M006 IDE shell | deferred | not yet written | M005 |

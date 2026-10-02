@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — M003 Lifecycle Corrective Addendum
 
-Status: active (C001 conditionally closed; C002 conditionally closed; strict closure requires the visible-window run plus hosted CI confirmation)
+Status: active (C001/C002 conditionally closed; C003 ready; strict closure requires hosted-CI reconciliation plus built-app visible-window qualification)
 
 Repository baseline reviewed: `82e289db90c4c7981524b4291986af39a7f881ea`
 
@@ -48,7 +48,7 @@ This corrective does not reopen the Tauri/toolchain/security architecture. It re
 - A successful reconnect must bind subsequent requests and subscriptions to the same current connection generation.
 - Desktop cleanup never stops the daemon or daemon-owned work.
 - Existing Tauri least-privilege capabilities, local-only CSP, and absence of generic CoreRequest/filesystem/shell/process authority remain unchanged.
-- M004 stays blocked until C002 closes, the visible-window qualification passes, and M003 is promoted to strict closed.
+- M004 stays blocked until C003 reconciles hosted CI, the built-app visible-window qualification passes, and M003 is promoted to strict closed.
 
 ### Capabilities
 
@@ -130,7 +130,7 @@ The exact Rust types may differ, but task ownership and generation identity must
 
 ### C001 — Desktop connection/subscription ownership and display-backed qualification
 
-Status: ready.
+Status: conditionally closed (`plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md`; implementation `7b17808f`).
 
 Plan:
 
@@ -142,15 +142,32 @@ A post-C001 source review found narrower concurrency defects in the final lifecy
 
 ### C002 — Atomic lifecycle transitions, subscription arming, and window teardown
 
-Status: ready.
+Status: conditionally closed (`plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md`; implementation `dc32a6ad`).
 
 Plan:
 
 - `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md`
 
-C002 owns only those post-C001 concurrency/lifecycle findings. It must close before the visible-window qualification is accepted as final strict-M003 evidence. The visible-window run remains a separate operational requirement after C002 correctness closes.
+C002 owns only those post-C001 concurrency/lifecycle findings. Production implementation and local/adversarial-live evidence landed. Hosted run `37062733033` later failed in the unrelated `interactive_process_sessions::environment_overrides_apply_while_denied_vars_stay_stripped` test after desktop-relevant guards/Clippy had passed; the same PTY test passed on prior green hosted run `37051423825`, and no interactive-process implementation/test file changed across the desktop C002 delta. C002 therefore remains conditionally closed pending a fresh green hosted disposition rather than being reclassified as a desktop regression.
 
-If C002 requires a daemon/CoreFrame change, M004 session-projection implementation, broad renderer authority, or a root toolchain change, stop and register that separately rather than expanding this corrective.
+### C003 — Hosted-CI reconciliation and built-app visible-window strict closure
+
+Status: ready.
+
+Plan:
+
+- `plans/implementation/desktop-frontend-ide-foundation-corrective/003-hosted-ci-visible-window-strict-closure.md`
+
+C003 owns the final strict-closure evidence:
+
+- obtain/record a green hosted root run containing C002, or separately own any reproducible non-desktop CI defect without weakening the test;
+- add a checked-in built-app WebdriverIO/Tauri harness using a test-only embedded WebDriver provider;
+- prove rendered daemon/project state, real Tauri IPC Channel invalidation, visible reconnect, renderer reload, native close, TUI coexistence, explicit autostart, and daemon survival;
+- mechanically prove the WebDriver test plugin/capability cannot ship in the production desktop build.
+
+C003 contains no session/projection/prompt feature work. M004 remains blocked until C003 strict-closes M003.
+
+If C003 exposes a new product defect rather than an evidence/test-harness issue, stop and register that defect separately instead of declaring M003 closed.
 
 ## 7. Cross-cutting requirements
 
@@ -282,4 +299,5 @@ Stop and register a new plan/ADR if:
 | Corrective | Status | Implementation plan | Blocker |
 |---|---|---|---|
 | C001 desktop connection/subscription lifecycle + qualification | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`). Original ownership repair + live command-level qualification landed. Post-C001 source review found narrower transition races now owned by C002. |
-| C002 atomic lifecycle transitions + subscription arming + window teardown | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md` (implementation `dc32a6ad`). Lifecycle gate, atomic commit with disconnect supersession, post-publication arming, and native close/app teardown landed with barrier-forced race tests plus an adversarial live-daemon trajectory. Strict closure awaits hosted CI green; the visible-window run remains the final M003 gate. |
+| C002 atomic lifecycle transitions + subscription arming + window teardown | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md` (implementation `dc32a6ad`). Production/race/live evidence landed. Hosted run `37062733033` failed in an unrelated PTY environment test; C003 owns green-run reconciliation without weakening that test. |
+| C003 hosted-CI reconciliation + built-app visible-window strict closure | ready | `plans/implementation/desktop-frontend-ide-foundation-corrective/003-hosted-ci-visible-window-strict-closure.md` | No desktop code dependency blocker. Reconcile hosted root CI, add test-only WebdriverIO/Tauri built-app harness, run visible reconnect/Channel/reload/close/autostart/TUI-coexistence trajectory, then strict-close M003 and unblock M004. |
