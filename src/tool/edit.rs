@@ -58,6 +58,10 @@ impl Tool for EditTool {
         "edit"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("edit")
+    }
+
     fn description(&self) -> &str {
         "Surgically search and replace text in a file"
     }

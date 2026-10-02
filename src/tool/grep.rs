@@ -59,6 +59,10 @@ impl Tool for GrepTool {
         "grep"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("grep")
+    }
+
     fn description(&self) -> &str {
         "Search file contents using regular expressions"
     }

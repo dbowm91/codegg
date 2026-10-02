@@ -114,6 +114,10 @@ impl Tool for GitTool {
         "git"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("git")
+    }
+
     fn description(&self) -> &str {
         "Execute git operations. Read-only subcommands (status, diff, log, show, blame, branch, tag, remote, worktree, stash, rev-parse, for-each-ref) return structured JSON results via egggit. Prefer the typed `mutation` action (stage_paths, commit, branch_create, merge, revert, push, reset_hard, clean, …) for local, network, and destructive operations — they route through a snapshot-based executor with state-delta, env hardening, and RunStore persistence. For in-progress operations (merge/rebase/cherry-pick/revert), use `operation_state` (read) and `recover` (write: continue | abort | skip) — these inspect plumbing, refuse cross-operation misuse, and return a typed `RecoveryOutcome`. Conflicts are NOT auto-resolved: edit conflict markers in the worktree, `git add <path>` to stage the resolution, then run `recover` with `continue`."
     }

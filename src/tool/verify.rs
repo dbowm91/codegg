@@ -193,6 +193,10 @@ impl Tool for VerifyTool {
         "verify"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("verify")
+    }
+
     fn description(&self) -> &str {
         "Run bounded, offline workspace verification for supported projects (check, build, lint, typecheck, or format_check). Returns structured status; it does not accept arbitrary commands or auto-fix files."
     }

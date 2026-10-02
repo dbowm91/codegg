@@ -174,6 +174,10 @@ impl Tool for ReadTool {
         "read"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("read")
+    }
+
     fn description(&self) -> &str {
         "Read the contents of a file with line numbers. Images and PDFs are returned as base64."
     }

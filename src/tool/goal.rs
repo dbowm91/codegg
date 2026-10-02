@@ -24,6 +24,10 @@ impl Tool for GoalGetTool {
         "goal_get"
     }
 
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("goal_get")
+    }
+
     fn description(&self) -> &str {
         "Get the current active goal for this session"
     }
@@ -88,6 +92,10 @@ impl GoalUpdateProgressTool {
 impl Tool for GoalUpdateProgressTool {
     fn name(&self) -> &str {
         "goal_update_progress"
+    }
+
+    fn causal_contract(&self) -> Option<crate::tool_advisor::causal_frontier::ToolCausalContract> {
+        crate::tool_advisor::causal_frontier::native_causal_contract("goal_update_progress")
     }
 
     fn description(&self) -> &str {
