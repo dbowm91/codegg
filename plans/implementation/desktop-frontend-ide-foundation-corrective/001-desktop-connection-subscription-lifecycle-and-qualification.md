@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Corrective C001 — Connection/Subscription Lifecycle and Display Qualification
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `82e289db90c4c7981524b4291986af39a7f881ea`
 

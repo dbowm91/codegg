@@ -7,9 +7,10 @@ import { resolve } from 'node:path';
 const rust = readFileSync(resolve('src-tauri/src/bridge.rs'), 'utf8');
 const ts = readFileSync(resolve('src/bridge-types.ts'), 'utf8');
 const expected = {
-  ConnectionSnapshot: ['state', 'daemon_id', 'protocol_version', 'uptime_seconds', 'active_sessions', 'error'],
+  ConnectionSnapshot: ['state', 'daemon_id', 'protocol_version', 'uptime_seconds', 'active_sessions', 'error', 'connection_generation'],
   ProjectSummary: ['project_id', 'display_name', 'lifecycle'],
   DesktopEvent: ['version', 'event_seq', 'kind'],
+  SubscriptionInfo: ['subscription_id', 'connection_generation'],
 };
 for (const [name, fields] of Object.entries(expected)) {
   const rustBlock = rust.match(new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1];

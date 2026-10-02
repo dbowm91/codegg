@@ -7,6 +7,7 @@ export interface ConnectionSnapshot {
   uptimeSeconds: number | null;
   activeSessions: number | null;
   error: string | null;
+  connectionGeneration: number;
 }
 export interface ProjectSummary {
   projectId: string;
@@ -17,4 +18,13 @@ export interface DesktopEvent {
   version: 1;
   eventSeq: number;
   kind: 'project_catalog_changed';
+}
+export interface SubscriptionInfo {
+  subscriptionId: string;
+  connectionGeneration: number;
+}
+export interface SubscriptionHandle {
+  subscriptionId: string;
+  connectionGeneration: number;
+  unsubscribe: () => void;
 }
