@@ -209,7 +209,14 @@ None blocking. Residual notes (not blockers):
 - `check_tool_broker_boundary.py` remains red on pre-existing HEAD lines
   (unchanged by M005; owned by whichever workstream touches those files).
 - Timing tests on this workstream are load-sensitive (see §4 load note);
-  hosted CI is the quiet-room arbiter.
+  hosted CI is the quiet-room arbiter. Hosted reconciliation (factual
+  update): the M005 close push run `37047118019` (commit `e32dfe53`)
+  failed on exactly this sensitivity — `m005_holdout_structural_gates`
+  panicked with `m005-holdout-109: single evaluation over budget`
+  (single-sample 5 ms assertion, scenario 109 mid-run), reproduced green
+  locally 3/3; the subsequent main run `37051423825` (merge commit
+  `41513fd3`, containing M005 + M003) passed `CI / verify` in 16m55s.
+  Classified as the documented load flake; no code or gate change.
 
 ## 11. Roadmap disposition
 

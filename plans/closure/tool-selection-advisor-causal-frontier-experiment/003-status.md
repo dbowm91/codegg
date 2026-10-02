@@ -146,9 +146,15 @@ Local (repo HEAD at implementation commit `82fc5b40`):
   `artifact_recovery` loss-free, premature 0, p95 within budget,
   18018 latency samples).
 
-Hosted CI: implementation commit `82fc5b40` pushed on branch
-`impl/causal-frontier-m003-effect-path`; the ordinary `verify` run is
-pending at closure-write time (see §10 low finding and §12).
+Hosted CI: implementation commit `82fc5b40` was pushed on branch
+`impl/causal-frontier-m003-effect-path` (branch pushes do not trigger
+this workflow — it runs on `pull_request` and `push` to `main`), so the
+ordinary `verify` evidence comes from the merge to main: hosted `CI /
+verify` run `37051423825` **success in 16m55s** on merge commit
+`41513fd3` (contains all M003 code + receipt + the M004/M005 merges).
+Reconciled — see §10. Prior main run `37047118019` failed on an upstream
+M005 single-sample latency flake (`m005-holdout-109: single evaluation
+over budget`), classified in `005-status.md` §10; green on the merge run.
 
 Environment note (operational, no production impact): this host builds
 the workspace with an x86_64 (Rosetta) toolchain while MacPorts
@@ -244,7 +250,7 @@ snapshots (M001 property, unchanged).
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | Hosted CI result pending at closure-write time (local evidence only). | Negative closure assumes ordinary hosted CI green per plan §11. | Reconcile the hosted `CI / verify` run on the implementation branch; downgrade this record if it fails. |
+| low (resolved) | Hosted CI result pending at closure-write time (local evidence only). | Negative closure assumes ordinary hosted CI green per plan §11. | Reconciled: hosted `CI / verify` run `37051423825` success in 16m55s on merge commit `41513fd3` (all M003 code + receipt + M004/M005 merges). Assumption holds. |
 | low (environment) | Local test-binary linking on this host requires a pkg-config/RUSTFLAGS shim (see §4 environment note). | Verification friction only; no production or dependency change. | Future milestones on this host reuse the same shim until the toolchain/sysroot setup is reconciled. |
 
 No medium or higher findings. No corrective pass required. The negative
@@ -304,9 +310,9 @@ before the concurrent main-side closes were merged in):
   pointer; M004 status ready with M002-selected note.
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/003-*.md`:
   status active → closed (pointer to this record).
-- Hosted CI: ordinary `verify` run on branch
-  `impl/causal-frontier-m003-effect-path` pending at closure-write time
-  (see §10). Verification assumption holds pending reconciliation.
+- Hosted CI: branch `impl/causal-frontier-m003-effect-path` pushes do not
+  trigger the workflow; the green run is `37051423825` on merge commit
+  `41513fd3` after the merge to `main` (see §4 and §10 — reconciled).
 - Post-merge reconciliation (factual correction, see §11): M004 closed
   positive (`635213bc`, M002 selected), M005 closed B (`019bf326`), the
   subsystem roadmap status line and its registry row moved
