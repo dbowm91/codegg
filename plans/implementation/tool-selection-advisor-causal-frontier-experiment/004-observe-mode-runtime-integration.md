@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier M004 — Observe-Mode Runtime Integration
 
-Status: active (implementation in progress; M002 closed with disposition A — see `plans/closure/tool-selection-advisor-causal-frontier-experiment/002-status.md`)
+Status: implemented (closed positive — see `plans/closure/tool-selection-advisor-causal-frontier-experiment/004-status.md`)
 
 Repository baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 

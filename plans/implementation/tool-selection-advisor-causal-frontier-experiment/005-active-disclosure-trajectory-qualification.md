@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier M005 — Active Disclosure and Trajectory Qualification
 
-Status: blocked on positive M004
+Status: ready for handoff (unblocked by positive M004 — see `plans/closure/tool-selection-advisor-causal-frontier-experiment/004-status.md`)
 
 Repository baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 

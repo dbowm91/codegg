@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Experiment Roadmap
 
-Status: active — M001 closed positively, M002 closed (A), M003 ready (optional), M004 ready
+Status: active — M001 closed positively, M002 closed (A), M003 active (optional), M004 closed positively, M005 ready
 
 Repository planning baseline: `aa21cfe1763d7ea00d11e582ed4108233e4088a9`
 
@@ -234,10 +234,13 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/004-observe-mode-runtime-integration.md`
 
-Status: ready (M002 closed with disposition A — dependency met).
+Status: closed positively (implementation `635213bc`; closure `plans/closure/tool-selection-advisor-causal-frontier-experiment/004-status.md`).
 
 Integrate the selected frontier after `ResolvedToolSurface` in observe-only
-mode, with no provider-menu behavior change.
+mode, with no provider-menu behavior change. M004 evaluated the M002
+frontier (M003 never closed positively): default-off config, bounded local
+diagnostics, byte-identical definitions, session-local observation with a
+never-blocking broker hook, all runtime gates green. M005 is unblocked.
 
 ### M005 — Bounded active disclosure and trajectory qualification
 
@@ -245,7 +248,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-causal-frontier-experiment/005-active-disclosure-trajectory-qualification.md`
 
-Status: blocked on positive M004.
+Status: ready (positive M004 closed — dependency met; M002 remains the candidate).
 
 Promote only a bounded causally admissible deferred frontier while preserving
 core/required tools and `tool_search`; qualify structural safety plus opt-in
