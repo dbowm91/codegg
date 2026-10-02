@@ -2,6 +2,16 @@
 
 Status: closed (`plans/closure/provider-backend-post-closure-corrective/002-status.md`; implementation `7963db44`)
 
+> Post-closure reconciliation note: endpoint-source assumptions in the body
+> below reflect the planning-time snapshot (notably the Together `.xyz`
+> premise in §2). They are superseded by execution-time first-party review:
+> the canonical Together prefix is `https://api.together.ai/v1` while CodeGG
+> retains `https://api.together.xyz/v1` as a legacy-compatible alias with no
+> runtime migration authorized. Closure §3
+> (`plans/closure/provider-backend-post-closure-corrective/002-status.md`) is
+> authoritative for the executed result. The historical body is preserved
+> unchanged.
+
 Repository baseline: `62653a85b09ae10efe5e3c379cc68c96a62050f6`
 
 Source corrective addendum:

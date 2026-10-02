@@ -62,7 +62,7 @@ Concrete current evidence:
 
 - `setup_catalog.rs` defines `OPENCODE_GO_BASE_URL = "https://opencode.ai/go/v1"`.
 - current first-party OpenCode Go documentation uses `https://opencode.ai/zen/go/v1` for Chat Completions, Responses, Anthropic Messages, and `/models`.
-- CodeGG's Together endpoint `https://api.together.xyz/v1` matches current first-party Together examples; EggPool currently has the inverse drift and has a separate corrective registered.
+- CodeGG's Together endpoint `https://api.together.xyz/v1` is a retained legacy-compatible alias; the current canonical first-party Together prefix is `https://api.together.ai/v1` (accepted C002 closure `plans/closure/provider-backend-post-closure-corrective/002-status.md` §3; no runtime endpoint migration authorized). Historical planning text below that presented `.xyz` as current first-party truth (and EggPool as inversely drifted) is superseded by that execution-time first-party review but preserved for context; EggPool has a separate corrective registered.
 - `crates/codegg-providers/src/eggpool.rs` exposes provider-neutral `Compatible*` aliases, but the underlying constructor still applies Eggpool-specific default-port normalization.
 - `OpenAiCompatibleProvider::models()` independently performs a permissive `/models` fetch/parse while provisioning uses the strict bounded probe. The two paths intentionally differ in failure semantics but unnecessarily duplicate transport/parsing/model-normalization rules.
 - several provider modules still carry static model fallbacks whose freshness is independent of setup-catalog/live-discovery authority.
@@ -86,7 +86,7 @@ This creates a future double-retry/failover hazard and an unclear public-API com
 
 ### C001 — Direct OpenAI endpoint composition correctness
 
-Status: ready.
+Status: closed (closure `plans/closure/provider-backend-post-closure-corrective/001-status.md`; implementation `7963db44`).
 
 Implementation plan:
 
@@ -98,7 +98,7 @@ Priority: highest. This is a current direct-provider correctness defect.
 
 ### C002 — Provider catalog and compatible-discovery authority reconciliation
 
-Status: ready.
+Status: closed (closure `plans/closure/provider-backend-post-closure-corrective/002-status.md`; implementation `7963db44`).
 
 Implementation plan:
 
@@ -110,7 +110,7 @@ Operational coordination: EggPool provider-profile metadata M001 at `58b1e24c8dc
 
 ### C003 — Provider resilience ownership and public-API disposition
 
-Status: ready.
+Status: closed (retain library-only; closure `plans/closure/provider-backend-post-closure-corrective/003-status.md`; implementation `7963db44`).
 
 Implementation plan:
 
@@ -130,7 +130,7 @@ C002 catalog/discovery reconciliation ────────────┤
 C003 resilience ownership/API disposition ───────┘
 ```
 
-C001–C003 are independently ready and may be implemented in parallel if merge conflicts are controlled.
+C001–C003 are closed (see the corrective status table below); the parallel-readiness prose above is historical planning text preserved for context.
 
 C002 has operational cross-repo coordination with EggPool metadata M001 but no hard dependency.
 
