@@ -215,9 +215,16 @@ transport from the underlying agent and session logic.
 | `core::daemon_bootstrap` | `hydrate_workspace_registry`, `recover_state`, `recover_jobs`, `start_event_bridge`, `initialize_recovery_sequence` | Startup hydration, event bridge, turn/job recovery, and replay. `initialize_recovery_sequence` is the canonical in-process hydrate -> bridge -> recover order. |
 | `core::daemon_refresh` | `refresh_project_context`, `refresh_project_activation`, `activate_project_workspace`, `project_health`, `refresh_runtime_assets` | Runtime refresh coordinators plus shared workspace/binding resolvers. All refresh flows through the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_shutdown` | `Drop`, `abort_background_handles` | Joined shutdown: cancel precedes joins; aborts projection-maintenance and worktree-reconcile tasks in order. Scheduler loop stays detached by design. |
-| `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Singleton daemon lifecycle, user-scoped path resolution, flock-based lock, connect-or-start helper. |
+| `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Daemon-owned lock/metadata lifecycle and compatibility-facing connect-or-start API. |
 | `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles pool, memory_store, legacy_agent (subagent_pool), turn_runtime, lsp_service, workspace_services, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always has a default TurnRuntime; override via `with_turn_runtime()`. |
-| `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL-over-socket and JSONL-over-stdio transports. Also contains `daemon_socket` for daemon-side socket accept loop. |
+| `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL over platform-local byte streams and stdio. Also contains `daemon_socket` for the daemon-side accept loop. |
+
+Frontend identity, local endpoint/path resolution, socket transport, and
+connect/reuse/start orchestration live in the leaf `codegg-client` crate.
+Root `SocketCoreClient` and `connect_or_start_daemon` preserve existing root
+APIs while adapting the extracted client. Daemon lock ownership, metadata,
+listener binding, and core construction remain root-owned. See
+[`client.md`](client.md).
 | `core::transport::projection` | projection stream management | Connection-local projection subscription, cursor, and forwarding state. |
 | `core::event_log` | `EventLog` | In-memory event ring buffer with optional SQLite-backed projection sink. |
 | `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
@@ -242,9 +249,10 @@ pub trait CoreClient: Send + Sync {
 }
 ```
 
-`subscribe()` is event-capable for the in-process client. The stdio and
-socket clients currently expose request/response transport and return an
-empty receiver.
+`subscribe()` is event-capable for in-process and local-socket clients.
+Stdio currently exposes request/response transport and returns an empty
+receiver. `SocketCoreClient` adapts `codegg-client::LocalSocketClient` and
+forwards its bounded event stream.
 
 ### Core Clients
 
@@ -252,7 +260,7 @@ empty receiver.
 |------|---------|
 | `InprocCoreClient` | Runs the core in the current process. Constructed via `with_deps(CoreRuntimeDeps, Config)` (preferred) or the legacy convenience constructor. `subscribe()` reads from `daemon.event_log` when a daemon is present; falls back to `GlobalEventBus` in legacy no-daemon mode. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
-| `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses |
+| `SocketCoreClient` | Connects to the platform-local daemon endpoint and exchanges JSONL requests/responses |
 
 ### Protocol
 
@@ -355,9 +363,9 @@ Codegg daemon owns execution at a time. All implementation lives in
 
 | Path | Purpose |
 |------|---------|
-| `daemon.lock` | Advisory exclusive lock on Unix (`flock(LOCK_EX \| LOCK_NB)`) — authoritative identity |
+| `daemon.lock` | Advisory nonblocking `File::try_lock` — authoritative identity |
 | `daemon.json` | Atomic metadata record (diagnostic only) |
-| `core.sock` | Unix domain socket the daemon binds |
+| `core.sock` / named pipe | Platform-local CoreFrame endpoint; Windows implementation is present but live transport/lifecycle qualification is pending |
 | `daemon.log` | Debug log (best-effort, rotated at 10 MB) |
 
 Production locations:
@@ -365,30 +373,36 @@ Production locations:
 - Linux: `${XDG_RUNTIME_DIR:-/tmp}/codegg` (falls back to
   `$HOME/.local/share/codegg` when neither is writable)
 - Other Unix: `/tmp/codegg`
+- Windows: per-user local application data directory
 
 Override via `CODEGG_DAEMON_HOME`.
 
 **`DaemonInstanceGuard`** is an RAII guard that holds the platform lock for the
-daemon's lifetime. On Unix this is a non-blocking exclusive flock; on drop it
+daemon's lifetime. The lock is acquired with nonblocking `File::try_lock`; on drop it
 removes the metadata file (if owned by this guard) and releases the lock. The
-OS also releases the lock automatically on process exit. Windows builds are
-currently compatibility-only and do not enforce the singleton lock; production
-Windows support requires a native `LockFileEx` implementation before the
-singleton guarantee can apply there.
+OS also releases the lock automatically on process exit. The standard library
+maps this API to the platform locking primitive, including `LockFileEx` on
+Windows. Windows live runtime qualification remains required before claiming
+Windows support.
 
 **`DaemonInstanceMetadata`** (`daemon.json`) carries: `daemon_id`,
-`generation` (UUID), `pid`, `socket_path`, `protocol_version`,
-`started_at`, `binary_version`. Written atomically (temp file + rename)
-after socket bind. The lock is authoritative; metadata is diagnostic.
+`generation` (UUID), `pid`, `socket_path` (legacy/native form), optional
+platform-neutral `endpoint_uri`, `protocol_version`, `started_at`, and
+`binary_version`. Written atomically (temp file + rename) after listener bind.
+Legacy records without `endpoint_uri` remain readable. The lock is
+authoritative; metadata is diagnostic.
 
 **`connect_or_start_daemon`** is the canonical frontend entry point
 (`src/core/instance.rs`). It tries a verified connection to the
 user-scoped endpoint; readiness requires a `SnapshotDaemon` identity probe
 response. If unavailable and autostart is enabled, it spawns
-`codegg daemon start --endpoint <socket> --force-take-lock` in a detached
-Unix session (`setsid`), directs stdout/stderr to `daemon.log`, polls for
+`codegg daemon start --endpoint <socket> --force-take-lock`, directs
+stdout/stderr to `daemon.log`, polls for
 readiness with bounded timeout, and reaps the child after readiness without
-making the frontend its lifetime owner. Concurrent starters converge on
+making the frontend its lifetime owner. Unix launches use a detached session;
+Windows launches use an independent child process. Graceful `daemon stop` is
+currently Unix-only; Windows stop/replacement behavior remains a closure
+condition. Concurrent starters converge on
 whichever process owns the singleton lock; if the child exits early, the
 frontend continues probing through the original deadline.
 
@@ -399,17 +413,18 @@ frontend continues probing through the original deadline.
 `DaemonConnectError` variants: `StartupTimeout`, `InconsistentState`,
 `ChildExited`, `Io`.
 
-The ordinary TUI remains a daemon client by default. `SIGINT` and
+The ordinary TUI remains a daemon client by default. On Unix, `SIGINT` and
 `SIGTERM` use the same cancellation path; graceful shutdown stops accepting
 clients, drains within the configured bound, removes the owned
-socket/metadata artifacts, and releases the lock. `daemon stop` verifies
+endpoint/metadata artifacts, and releases the lock. `daemon stop` verifies
 the live wire daemon identity against metadata before signaling and waits
 boundedly for observable cleanup without force-killing an unverified PID.
 
 Endpoint selection is centralized in `DaemonPaths::resolve_for_endpoint`:
 an explicit CLI endpoint wins over `CODEGG_CORE_ENDPOINT`, otherwise the
-platform default is used. Custom sockets reuse the documented user-scoped
-lock, metadata, and log root. The production daemon opens and migrates the
+platform default is used. URI schemes are `unix://` on Unix and `npipe://` on
+Windows; unsupported schemes fail explicitly. Custom endpoints reuse the
+documented user-scoped lock, metadata, and log root. The production daemon opens and migrates the
 user-scoped catalog (`codegg.db`) before normal runtime initialization;
 project-local `.codegg/sessions.db` remains legacy/import storage only.
 

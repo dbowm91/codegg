@@ -53,6 +53,8 @@ vendor/
 
 # Node (for any JS tooling)
 node_modules/
+*.tsbuildinfo
+/apps/desktop/src-tauri/binaries/codegg
 
 # Python
 __pycache__/

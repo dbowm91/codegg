@@ -892,6 +892,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "codegg-client",
  "codegg-config",
  "codegg-core",
  "codegg-git",
@@ -968,6 +969,21 @@ dependencies = [
  "uuid",
  "walkdir",
  "wasmtime",
+]
+
+[[package]]
+name = "codegg-client"
+version = "0.1.0"
+dependencies = [
+ "codegg-protocol",
+ "dashmap",
+ "dirs",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

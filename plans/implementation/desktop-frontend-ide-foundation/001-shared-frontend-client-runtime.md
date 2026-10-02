@@ -1,8 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 001 — Shared Frontend Client Runtime
 
-Status: ready for handoff
+Status: implemented
 
-Repository baseline: `f388689094866fe4ab8b1bf1dafa680516805ad2`
+Repository baseline: `53dea47f414641c3f9756c3f8f181f6208be8115`
 
 Source roadmap:
 

@@ -55,8 +55,10 @@ Local transport selection is handled by `CoreRuntimeMode` (default
 `DaemonClient`):
 
 - `DaemonClient` (default) — connects to or auto-starts the user-scoped
-  singleton daemon via `connect_or_start_daemon` (`src/core/instance.rs`).
-  Uses `SocketCoreClient`.
+  singleton daemon via the root compatibility API
+  `connect_or_start_daemon` (`src/core/instance.rs`). Its connect/start and
+  CoreFrame transport work is implemented in `codegg-client`; the TUI
+  composition supplies its explicit `ClientKind::Tui` descriptor.
 - `StandaloneInproc` — keeps the core in the same process via
   `InprocCoreClient`. Requires `--standalone`.
 - `StandaloneStdio` — spawns `codegg core-stdio` via `StdioCoreClient`.

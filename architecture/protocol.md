@@ -47,7 +47,8 @@ event carries an `EventEnvelope<T>` with `protocol_version`, `event_seq`,
 ### Transport Flows
 
 **In-process (InprocCoreClient)**: Direct function calls.
-**Stdio/Socket**: JSONL over stdin/stdout or Unix socket.
+**Stdio/local daemon**: JSONL over stdin/stdout or a platform-local byte
+stream (Unix domain socket on Unix, current-user named pipe on Windows).
 **Remote TUI (Server)**: WebSocket / HTTP through Axum, with `TuiMessage`
 events pushed to subscribed clients.
 
@@ -318,6 +319,11 @@ Tagged enum with ~41 variants. Major groups:
 `ClientHello` carries `client_name`, `ClientKind` (Tui/Gui/Web/Cli/Automation),
 `protocol_version`, and `ClientCapabilities`. `ServerHello` carries
 `daemon_id`, `protocol_version`, `ServerCapabilities`, and `client_id`.
+
+The trusted frontend composition selects these values with
+`codegg_client::FrontendDescriptor`; renderer input does not choose its
+connection identity or capabilities. The descriptor changes client-side
+composition only and does not grant authorization.
 
 `ClientCapabilities` includes `visual_notifications`, `desktop_notifications`,
 `audio`, `tts`, `multi_session_view`, and 7 `plugin_ui_*` capability flags.

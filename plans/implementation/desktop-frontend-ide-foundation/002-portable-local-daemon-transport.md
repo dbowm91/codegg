@@ -1,8 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 002 — Portable Local Daemon Transport
 
-Status: blocked
+Status: conditionally closed
 
-Repository baseline: `f388689094866fe4ab8b1bf1dafa680516805ad2`
+Repository baseline: `48d274c5ada12568e8683dcbe60f79fbaee3d900`
 
 Source roadmap:
 
@@ -34,11 +34,11 @@ Generalize the singleton daemon's local client/server transport from a Unix-only
 
 The milestone must preserve daemon identity, authorization, CoreFrame framing, request/event ordering, reconnect, and singleton ownership semantics. It improves portability but does not promote Windows to a guaranteed release/support tier.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
-M001 must first establish the reusable `codegg-client` ownership boundary. Implementing Windows named pipes directly in the current root/TUI-specific `SocketCoreClient` would entrench exactly the coupling the desktop foundation is meant to remove.
+M001 is closed with the reusable `codegg-client` ownership boundary in place. The client and daemon now have a shared frontend-neutral seam for endpoint and stream generalization; implementing Windows named pipes in a root/TUI-specific client would reintroduce coupling this boundary removed.
 
-Once M001 closes, the remaining protocol contract is stable: `CoreFrame` is byte-stream/JSONL compatible and does not require Unix-specific semantics.
+With M001 closed, the remaining protocol contract is stable: `CoreFrame` is byte-stream/JSONL compatible and does not require Unix-specific semantics.
 
 ## 3. Current implementation evidence
 

@@ -6,6 +6,12 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 
 The supported distribution remains one `codegg` executable per target. The daemon is a user-scoped singleton discovered and started by that executable; the TUI and daemon share the same business-logic libraries and invocation contracts. Runtime-safety milestone M007 measured the dependency and release profiles and retained this no-split topology because a daemon/TUI split did not produce a material deployment improvement without adding packaging or ownership complexity. Future role-specific binaries require a new measured deployment constraint and compatibility plan; they are not an advertised installation mode.
 
+An optional Tauri desktop shell lives under `apps/desktop` and is built with
+its own Rust and JavaScript toolchains. Its Rust host uses `codegg-client` to
+connect to or start the existing `codegg` daemon; it is not a second daemon
+binary and does not change the root Cargo workspace's Rust 1.89 contract.
+See [desktop architecture](desktop.md).
+
 ## System Architecture
 
 ```
@@ -50,7 +56,7 @@ A single user prompt flows through the system along this path:
 
 1. **Connect** — Running plain `codegg` calls `connect_or_start_daemon`
    (`src/core/instance.rs`) which connects to the running user-scoped daemon
-   singleton (guarded by an authoritative `flock`) or starts one.
+   singleton (guarded by an authoritative nonblocking `File::try_lock`) or starts one.
    `--standalone` runs an in-process core instead.
 2. **Transport** — The TUI talks to the core through the `CoreClient`
    facade over Inproc, Stdio, or Socket transports ([core.md](core.md)).
@@ -266,6 +272,7 @@ Codegg follows a **library-first, MCP-second** tool architecture. Durable tool d
 | `codegg-core` | Domain types: agent convergence, bus, error, goal, identity, jobs, memory, migration, model_profile, project_catalog/discovery/storage, projection_replay, provider_connections, repository_lineage, resilience, run_store, session, snapshot, storage, task_state, tool_program, workspace, workspace_services, worktree | `lib.rs`, `agent_convergence.rs`, `bus/`, `jobs/`, `session/`, `storage/` |
 | `codegg-config` | Configuration schema, paths, loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` |
 | `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, runtime assets DTOs | `core.rs`, `tui.rs` |
+| `codegg-client` | Frontend identity and bounded native client error contracts | `lib.rs` |
 | `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker | `provider_core.rs`, `auth_types.rs`, `circuit.rs` |
 | `codegg-git` | Typed Git operation model (54 operation variants), argv parser, risk classification (11 risk classes) | `operation.rs`, `risk.rs` |
 | `egglsp` | LSP client/service/operations (authoritative implementation) | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
@@ -373,7 +380,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 ## Key Architectural Patterns
 
 ### Singleton Daemon
-Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime. Metadata in `daemon.json` is diagnostic only; the lock is authoritative.
+Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core/instance.rs`) is the canonical entry point. `DaemonInstanceGuard` holds a nonblocking `File::try_lock` for the daemon's lifetime. Metadata in `daemon.json` is diagnostic only; the lock is authoritative.
 
 ### Library-First, MCP-Second
 Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process. The same crates can later expose optional MCP adapter binaries without changing model-facing tool names.

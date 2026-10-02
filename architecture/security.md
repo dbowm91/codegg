@@ -372,6 +372,12 @@ fallback_to_native = true  # only for mcp backend
    Regex-based scanning with `LazyLock` compiled patterns.
 7. **Landlock ABI V1 minimum.** The helper requires `FullyEnforced` +
   `no_new_privs`; partial enforcement is rejected.
+8. **Local daemon endpoints are not principals.** Unix socket permissions and
+   the Windows pipe DACL restrict transport admission; endpoint names do not
+   authorize CoreFrame requests. The Windows pipe uses an explicit protected
+   DACL for the current user and LocalSystem, rejects remote clients, and
+   fails closed if descriptor construction fails. Live Windows access-control
+   and lifecycle qualification is tracked in the desktop foundation plan.
 
 ## Testing
 

@@ -90,7 +90,7 @@ service bus, or DI framework:
 
 | Type | Use |
 |------|-----|
-| `SocketCoreClient` | Default local mode; connects to the user-scoped singleton daemon via Unix socket |
+| `SocketCoreClient` | Default local mode; connects to the user-scoped singleton daemon through the platform-local endpoint |
 | `InprocCoreClient` | Test/embedding mode; runs the core in the current process. Requires `--standalone`. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests over stdin/stdout. Requires `--stdio`. |
 
@@ -106,7 +106,7 @@ Codegg runs exactly one user-scoped daemon per OS user. The lock and metadata li
 Override with `CODEGG_DAEMON_HOME`. Key types in `src/core/instance.rs`:
 
 - **`DaemonPaths`** — resolves lock, metadata, socket, and log paths
-- **`DaemonInstanceGuard`** — RAII guard holding `flock(LOCK_EX | LOCK_NB)` for the daemon's lifetime
+- **`DaemonInstanceGuard`** — RAII guard holding a nonblocking `File::try_lock` for the daemon's lifetime
 - **`DaemonInstanceMetadata`** — atomic `daemon.json` record (diagnostic only; lock is authoritative)
 - **`CoreRuntimeMode`** — `DaemonClient` (default), `StandaloneInproc`, `StandaloneStdio`
 - **`connect_or_start_daemon`** — canonical frontend entry point; connects to the running daemon or auto-starts one

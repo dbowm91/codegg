@@ -158,6 +158,11 @@ path = "src/core/instance.rs"
 owner = "standalone_compat"
 reason = "connect_or_start_daemon may spawn a daemon child process via the codegg binary"
 
+[[site]]
+path = "crates/codegg-client/src/connect.rs"
+owner = "standalone_compat"
+reason = "Frontend connect-or-start launches only the canonical codegg daemon start lifecycle; daemon lock and execution authority remain root-owned"
+
 # ---------------------------------------------------------------------
 # Interactive (long-lived user-controlled PTY/REPL/editor)
 # ---------------------------------------------------------------------
