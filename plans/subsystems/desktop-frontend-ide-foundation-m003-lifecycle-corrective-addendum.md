@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — M003 Lifecycle Corrective Addendum
 
-Status: active (C001 conditionally closed; C002 ready; strict closure requires C002 plus the visible-window run)
+Status: active (C001 conditionally closed; C002 conditionally closed; strict closure requires the visible-window run plus hosted CI confirmation)
 
 Repository baseline reviewed: `82e289db90c4c7981524b4291986af39a7f881ea`
 
@@ -282,4 +282,4 @@ Stop and register a new plan/ADR if:
 | Corrective | Status | Implementation plan | Blocker |
 |---|---|---|---|
 | C001 desktop connection/subscription lifecycle + qualification | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/001-status.md` (implementation `7b17808f`). Original ownership repair + live command-level qualification landed. Post-C001 source review found narrower transition races now owned by C002. |
-| C002 atomic lifecycle transitions + subscription arming + window teardown | ready | `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md` | No code dependency blocker. Must serialize final connect/disconnect/subscribe transitions, arm tasks only after owner publication, make disconnect supersede in-flight connects, wire native close/app teardown, and prove adversarial interleavings before the final visible-window run. |
+| C002 atomic lifecycle transitions + subscription arming + window teardown | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md` (implementation `dc32a6ad`). Lifecycle gate, atomic commit with disconnect supersession, post-publication arming, and native close/app teardown landed with barrier-forced race tests plus an adversarial live-daemon trajectory. Strict closure awaits hosted CI green; the visible-window run remains the final M003 gate. |

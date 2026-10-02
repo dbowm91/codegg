@@ -1,8 +1,13 @@
 # Desktop Frontend and IDE Foundation Corrective C002 — Atomic Lifecycle Transitions, Subscription Arming, and Window Teardown
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `5005389b176545ae9df86d8d74441434aeddaa8b`
+
+Implementation: `dc32a6ad` — conditionally closed at
+`plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md`
+(hosted CI green is the sole strict-closure condition; visible-window run
+remains the M003-level gate).
 
 Source corrective addendum:
 
