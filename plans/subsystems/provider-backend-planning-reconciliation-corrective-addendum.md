@@ -1,6 +1,6 @@
 # Provider Backend — Planning and Documentation Reconciliation Corrective Addendum
 
-Status: active
+Status: closed (C001 closed at `plans/closure/provider-backend-planning-reconciliation/001-status.md`; implementation `8a7c90b5`)
 
 Repository baseline reviewed: `5005389b176545ae9df86d8d74441434aeddaa8b`
 
@@ -41,7 +41,7 @@ This is planning/documentation debt only. Historical closure records remain acce
 
 ### C001 — Provider backend current-authority planning/documentation reconciliation
 
-Status: ready.
+Status: closed.
 
 Implementation plan:
 

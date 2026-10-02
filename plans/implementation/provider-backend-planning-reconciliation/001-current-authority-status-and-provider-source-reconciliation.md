@@ -1,8 +1,13 @@
 # Provider Backend Planning Reconciliation C001 — Current-Authority Status and Provider-Source Reconciliation
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `5005389b176545ae9df86d8d74441434aeddaa8b`
+
+Implementation: `8a7c90b5` — closed at
+`plans/closure/provider-backend-planning-reconciliation/001-status.md`.
+Docs-only; no production/provider behavior change; historical closures
+immutable.
 
 Source corrective addendum:
 
