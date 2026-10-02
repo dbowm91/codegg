@@ -230,13 +230,14 @@ Outcome:
 
 ### Milestone 003 — Tauri desktop shell and secure bridge
 
-Status: conditionally closed. Linux build/package evidence is recorded; display-backed UI flow and coexistence evidence remain outstanding. M002 remains an operational dependency for Windows qualification.
+Status: conditionally closed. Follow-up review found a desktop event-subscription ownership defect in addition to the missing display-backed evidence. Corrective C001 is ready at `plans/implementation/desktop-frontend-ide-foundation-corrective/001-desktop-connection-subscription-lifecycle-and-qualification.md`. M002 remains an operational dependency for Windows qualification.
 
 Primary class: infrastructure.
 
 Plan:
 
 - `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md`
+- corrective control: `plans/subsystems/desktop-frontend-ide-foundation-m003-lifecycle-corrective-addendum.md`
 
 Outcome:
 
@@ -249,7 +250,7 @@ Outcome:
 
 ### Milestone 004 — Desktop session/control-plane vertical slice
 
-Status: blocked on M003.
+Status: blocked on strict M003 closure through corrective C001.
 
 Primary class: capability.
 
@@ -386,7 +387,7 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 |---|---|---|---|
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
-| M003 Tauri desktop shell + secure bridge | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Closure: `plans/closure/desktop-frontend-ide-foundation/003-status.md`; Linux build/package passed, but display-backed UI flow/coexistence evidence remains outstanding; Windows qualification remains operationally gated |
-| M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | M003 hard |
+| M003 Tauri desktop shell + secure bridge | conditionally closed; C001 corrective ready | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Historical closure: `plans/closure/desktop-frontend-ide-foundation/003-status.md`; corrective: `plans/subsystems/desktop-frontend-ide-foundation-m003-lifecycle-corrective-addendum.md`. Event-forwarder ownership/reconnect teardown plus display-backed UI/coexistence evidence remain outstanding; Windows qualification remains operationally gated |
+| M004 desktop session/control-plane slice | blocked | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | strict M003 closure after corrective C001 |
 | M005 document/buffer contract | deferred | not yet written | M004 closure + fresh ownership audit |
 | M006 IDE shell | deferred | not yet written | M005 |
