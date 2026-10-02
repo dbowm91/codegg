@@ -1,6 +1,6 @@
 # Eggplan Assessment Integration Roadmap
 
-Status: active corrective; M001/M002/M003 closed, C001 dirty-subject corrective conditionally closed
+Status: closed/current; M001/M002/M003 closed and C001 closed on the pinned Eggplan fingerprint contract
 
 Canonical authority:
 
@@ -15,7 +15,7 @@ External assessment substrate:
 - Eggplan repository: `https://github.com/eggstack/eggplan`
 - Eggplan M002 pure bridge implementation:
   `088968bd58680ae2b3741e2f1feb0614e0ff81a0`
-- Eggplan M003 implementation pinned by CodeGG:
+- Eggplan M003 implementation pinned by CodeGG (historical M003):
   `3f7c603315131bb169bfdd2bb575531d228532b1`
 - Eggplan M003 closure reconciliation:
   `6644725ae540b19873d7c769e3afeab7bce53d09`
@@ -23,6 +23,13 @@ External assessment substrate:
   `ee92edc1cf035010fe86ea2382694cc18a0dce45`
 - Eggplan C001 plan:
   `plans/implementation/codegg-integration/003-c001-dirty-subject-fingerprint-and-bound-evidence-requalification.md`
+- Eggplan C001 fingerprint contract implementation:
+  `352a0f782b0166aad8e850185019d78ec162d487` plus portability repairs
+  `faa6c87` and `0dd33b7`
+- Eggplan C001 revision currently pinned by CodeGG:
+  `0dd33b761e85f1364320a9208aaebd5be281c6a5` (hosted run `37063328954`,
+  ubuntu/macos/windows/Rust 1.89 green; Eggplan closure
+  `plans/closure/codegg-integration/003-c001-closed.md`)
 - current CodeGG planning baseline:
   `ffbd0bc9de09055fbd2df293a6cdd8b4b04a8e98`
 - current CodeGG storage layout: v68 (M003 additive)
@@ -205,7 +212,10 @@ managed worktrees do not reliably contain the repository-local untracked
 
 ### C001 — Dirty-subject provenance and bound evidence requalification
 
-Status: conditionally closed (`plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`; implementation `36ec9322`).
+Status: closed on the pinned fingerprint contract
+(`plans/closure/eggplan-assessment-integration/005-m003-c001-status.md`;
+implementations `36ec9322` + `6fd8d9f3`; Eggplan pin
+`0dd33b761e85f1364320a9208aaebd5be281c6a5`).
 
 CodeGG plan:
 
@@ -223,12 +233,25 @@ qualified binding only, not dirty execution -> evidence -> completion ->
 guarded closure.
 
 C001 keeps historical M003 closed and repairs only this later defect. Eggplan
-will expose its existing digest as a bounded repository-ID-free fingerprint.
-CodeGG will persist that exact Eggplan-compatible digest alongside native
-attempt provenance, use an E1/C/E2 sandwich for binding-time stability, and
-require the persisted digest for bound dirty historical translation. Legacy
-dirty provenance remains readable but fails closed for bound exact-subject
-evidence; clean and unbound M002 semantics remain unchanged.
+exposed its existing digest as a bounded repository-ID-free fingerprint
+(`eggstack/eggplan@352a0f7` contract, hosted-qualified at `0dd33b7` by run
+`37063328954` across ubuntu/macos/windows/Rust 1.89, closure
+`eggstack/eggplan:plans/closure/codegg-integration/003-c001-closed.md`).
+CodeGG persists that exact Eggplan-compatible digest alongside native attempt
+provenance, uses an E1/C/E2 sandwich for binding-time stability, and requires
+the persisted digest for bound dirty historical translation. Legacy dirty
+provenance remains readable but fails closed for bound exact-subject evidence;
+clean and unbound M002 semantics remain unchanged.
+
+Both Eggplan-side conditions are now discharged: the three Eggplan pins moved
+to `0dd33b7` and both Eggplan capture sites route through
+`eggplan_repo::capture_git_subject_fingerprint` (implementation `6fd8d9f3`).
+The pin bump cannot change persisted provenance because Eggplan freezes those
+digest bytes in a golden matrix and proves the fingerprint entry point returns
+the same value the store's subject source returned for the same root, options,
+and exclusion. The E1/C/E2 identity tuple still comes from the store: a
+fingerprint carries no repository identity. Assessment and guarded-closure
+paths still read the repository's own current subject.
 
 ## 5. Parallelism
 
