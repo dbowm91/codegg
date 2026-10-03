@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — Post-Closure Corrective Addendum
 
-Status: active
+Status: closing
 
 Repository baseline reviewed: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 
@@ -284,4 +284,4 @@ C001 closes only when:
 
 | Corrective | Status | Plan | Blocker |
 |---|---|---|---|
-| C001 M004 prompt-composition error boundary + hosted strict closure | active | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/001-m004-prompt-composition-error-boundary-and-hosted-closure.md` | No code dependency blocker. Hosted root CI is currently red on the new M004 helper; M005 remains deferred until C001 closes. |
+| C001 M004 prompt-composition error boundary + hosted strict closure | closing | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/001-m004-prompt-composition-error-boundary-and-hosted-closure.md` | No code dependency blocker. Hosted root CI is currently red on the new M004 helper; M005 remains deferred until C001 closes. |
