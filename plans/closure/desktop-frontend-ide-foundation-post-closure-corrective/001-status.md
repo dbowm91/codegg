@@ -16,7 +16,8 @@ Repository baseline reviewed: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 Implementation commits:
 
 - `33fce56f` — narrow prompt-composition error boundary, stable request error mapping, workflow path coverage, and selection-store failure regression.
-- `738142d8` — closure-review status transition; hosted evidence is on this exact implementation tree.
+- `738142d8` — closure-review status transition.
+- `bbd2ae31` — final request-level `session_unbound` regression and accepted closure/registry reconciliation.
 
 ## 1. Executive finding
 
@@ -54,12 +55,13 @@ cd apps/desktop && npm ci && npm run typecheck && npm test && npm run bindings:c
 rustup run 1.90.0 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --lib
 ```
 
-The Rust workspace commands were run using the installed Rust 1.89 ARM toolchain. The initial unqualified Rust attempt selected an x86_64 Homebrew linker/toolchain and failed before compilation due to architecture mismatch; rerunning with the repository's Rust 1.89 ARM toolchain succeeded. Root library tests passed (5,087 passed, 6 ignored), the focused selection-store regression passed, lifecycle integration tests passed (8/8), desktop renderer tests passed (18/18), and Tauri host library tests passed (73 passed, 1 ignored). Formatting, Clippy, quick verification, typecheck, and binding checks passed.
+The Rust workspace commands were run using the installed Rust 1.89 ARM toolchain. The initial unqualified Rust attempt selected an x86_64 Homebrew linker/toolchain and failed before compilation due to architecture mismatch; rerunning with the repository's Rust 1.89 ARM toolchain succeeded. Root library tests passed (5,087 passed, 6 ignored before the final unbound-session regression; focused regressions for selection lookup failure and unbound-session mapping both passed), lifecycle integration tests passed (8/8), desktop renderer tests passed (18/18), and Tauri host library tests passed (73 passed, 1 ignored). Formatting, Clippy, quick verification, typecheck, and binding checks passed.
 
 ### Hosted results
 
 - `CI / verify` run `37134452335`: success on `738142d82a78e7cb345e9230fa6372b10e4edf35`.
 - `Desktop E2E` run `37134452312`: success on the same SHA after rerunning its failed job. The initial attempt failed when the E2E immediately queried `message-list` after observing `permission-list`; the failed job passed in full on same-SHA retry. This is recorded as a timing-sensitive assertion; no product defect was reproduced.
+- Final pushed tree `bbd2ae31d80253064996c33dac24f740ac04a3b5`: hosted root CI `37137162756` and Desktop E2E `37137162792` both succeeded. This tree includes the final unbound-session regression.
 
 ## 5. Invariant review
 
