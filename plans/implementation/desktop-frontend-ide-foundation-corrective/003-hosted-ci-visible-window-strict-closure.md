@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Corrective C003 — Hosted-CI Reconciliation and Built-App Visible-Window Strict Closure
 
-Status: ready for handoff
+Status: implemented (closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`)
 
 Repository baseline: `3f222c2e5f957efdbb6a530276ff5b63a095e435`
 

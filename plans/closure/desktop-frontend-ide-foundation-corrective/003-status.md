@@ -1,7 +1,8 @@
 # Desktop Frontend and IDE Foundation Corrective C003 — Closure Status
 
-Status: closing (hosted `CI / verify` reconciliation is GREEN; built-app
-`Desktop E2E` verdict pending on the latest harness fix)
+Status: closed (hosted `CI / verify` reconciliation GREEN; built-app
+`Desktop E2E` trajectory GREEN — all 7 visible-window tests pass on hosted
+Linux/WebKitGTK/xvfb)
 
 Source implementation plan:
 
@@ -29,24 +30,26 @@ Implementation commits:
 - `e86f4d36` — Desktop E2E trajectory: daemon-side catalog read plus full diagnostic capture (fixture `project_list`, host-vs-daemon DIAG, fixture server log artifact)
 - `1e31e8c9` — Desktop E2E fixture: workspace per probe plus probe archival on shutdown (1-workspace-1-project binding; machine-global catalog tidied on shutdown)
 - `84ae31af` — Desktop E2E harness: per-phase WebDriver ports (4445/4446) and reload-mutation diagnostics (one app instance serves one port per invocation)
-- `(this commit)` — Desktop E2E trajectory: hidden `e2e-anchor` window (desktop-e2e only) + `windowLabel: main` session pin so the native-close probe survives its own window destroy; idempotent fixture probe seeding across daemon restarts (same-named reuse, no duplicate rows); strict host≡daemon catalog convergence (presence + count + uniqueness) in both specs; per-phase launcher-log preservation
+- `cc9d9c19` — Desktop E2E trajectory: session-surviving native close (hidden `e2e-anchor` window, desktop-e2e only; `windowLabel: main` session pin) so the native-close probe survives its own window destroy; idempotent fixture probe seeding across daemon restarts (same-named reuse, no duplicate rows); strict host≡daemon catalog convergence (presence + count + uniqueness) in both specs; per-phase launcher-log preservation
 
 Hosted runs (latest):
 
 - `CI / verify` run `37073506756` on `3512d5d8` — SUCCESS (reconciliation verdict; PTY test passed)
-- `Desktop E2E` run `37089690924` on `84ae31af` — FAILURE (post-mortem in §10: closeWindow-on-last-window kills the embedded session; re-`start` stacked a same-named probe — both fixed by this commit; next run pending)
+- `Desktop E2E` run `37089690924` on `84ae31af` — FAILURE (post-mortem in §10: closeWindow-on-last-window kills the embedded session; re-`start` stacked a same-named probe — both fixed by `cc9d9c19`)
+- `Desktop E2E` run `37092317709` on `cc9d9c19` — SUCCESS (closure verdict: lifecycle 5/5 + autostart 2/2, §4)
+- `CI / verify` run `37092317678` on `cc9d9c19` — SUCCESS (closure-commit fresh signal; full workspace suite green)
 
 ## 1. Executive finding
 
-DRAFT. C003 lands the two strict-closure obligations as executable,
+C003 lands the two strict-closure obligations as executable,
 repeatable machinery rather than one-off transcripts:
 
 1. Hosted root-CI reconciliation is recorded without weakening any test
 surface: run `37062733033` is classified as an unrelated PTY-environment
 flake with three-way evidence (identical prior signature with green rerun,
 zero interactive-process files in the desktop delta, 5/5 local passes), the
-test is untouched, and a fresh hosted run on the C003-containing mainline is
-the reconciliation verdict (pending).
+test is untouched, and fresh hosted runs on the C003-containing mainline are
+green with the PTY test passing (`37073506756`, `37092317678`).
 2. The one-off "visible WebView evidence" requirement is replaced by a
 checked-in built-app WebDriver trajectory (WebdriverIO + embedded provider,
 test-only `desktop-e2e` feature, deterministic Rust fixture, dedicated
@@ -64,9 +67,9 @@ native close, TUI coexistence, explicit autostart, and daemon survival.
 | Capability isolation: production `main` stays empty (§5) | `main.json` permissions `[]`; wdio permission lives only in the `e2e/` template + gitignored generated file; Tauri compiles every `capabilities/*.json`, so a static test capability is impossible by construction | pass | Discovered and proven during implementation (generated schemas briefly absorbed test state; reverted) |
 | Mechanical guard extension (§5) | `scripts/check-desktop-boundary.sh` C003 section: optional-dep, feature-map, gated-registration (python), `tauri-plugin-wdio` ban, prod config/capability wdio ban, generated-file absence, template presence | pass local + hosted root CI | Negative-tested (generated file trips the guard) |
 | Deterministic fixture/control seam (§6) | `src-tauri/src/bin/desktop_e2e_fixture.rs`: isolated temp-scoped home, explicit executable, TUI-kind observer, workspace/project register, snapshot, archive/restore, identity-checked stop, reattach, shutdown; proven live via the real TS client | pass (local live) | Never touches the operator home (fail-closed, negative-tested) |
-| Built-app M003 trajectory, cycles ×2 (§7) | `e2e/specs/m003-lifecycle.e2e.ts` (reuse, reconnect, reload, repeat, native close) + `m003-autostart.e2e.ts` (explicit autostart, survival) | pending hosted | `Desktop E2E` run `37089690924` |
+| Built-app M003 trajectory, cycles ×2 (§7) | `e2e/specs/m003-lifecycle.e2e.ts` (reuse, reconnect, reload, repeat, native close) + `m003-autostart.e2e.ts` (explicit autostart, survival) | pass — `Desktop E2E` `37092317709` SUCCESS (lifecycle 5/5, autostart 2/2) | Strict host≡daemon convergence at every checkpoint |
 | CI placement: no Tauri/Node/WebKit in root verify (§8) | Root `ci.yml` untouched; new path-gated `desktop-e2e.yml` (ubuntu-24.04, Node 24, 1.90.0, xvfb) | pass | Root quick green locally |
-| Verification commands (§10) | §4 below | pass local; hosted pending | `test:e2e` runs in the dedicated workflow, not root CI |
+| Verification commands (§10) | §4 below | pass local + hosted | `test:e2e` runs in the dedicated workflow, not root CI |
 | Docs/closure updates (§11) | This record; `architecture/desktop.md` E2E boundary; registry/roadmap/addendum reconciliation | done in closure commit | Predecessor records gain additive notes only |
 
 ## 3. Production implementation evidence
@@ -178,7 +181,9 @@ cargo test -p codegg --test interactive_process_sessions \
 Hosted:
 
 - `CI / verify` run `37073506756` on `3512d5d8` — SUCCESS (19m15s; reconciliation verdict: full workspace suite green including the PTY environment test)
-- `Desktop E2E` run `37089690924` on `84ae31af` — PENDING (built-app verdict)
+- `Desktop E2E` run `37089690924` on `84ae31af` — FAILURE (lifecycle close probe + autostart duplicate probe; post-mortem §10; fixed by `cc9d9c19`)
+- `Desktop E2E` run `37092317709` on `cc9d9c19` — SUCCESS (closure verdict: lifecycle 5/5 — reuse, reconnect, reload ×2, native close — plus autostart 2/2 — explicit autostart, daemon survival; renderer 8/8 + host 26 passed/1 ignored both configs)
+- `CI / verify` run `37092317678` on `cc9d9c19` — SUCCESS (closure-commit fresh signal)
 
 ## 5. Invariant review
 
@@ -273,8 +278,29 @@ privileges) is absent and banned by the guard.
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | medium | `CI / verify` run `37062733033` (C002-containing) failed in `interactive_process_sessions::environment_overrides_apply_while_denied_vars_stay_stripped` | Reconciled by green run `37073506756` (see disposition below) | Fresh hosted run went green with the PTY test passing; classification recorded, test untouched |
-| medium | Built-app visible-window verdict outstanding until hosted `Desktop E2E` completes | Blocks strict M003 closure and M004 unblock | Run `37089690924` — PENDING |
-| low | Later `CI / verify` run `37075319670` (e2e-harness-only commit `b515a8fb`) failed in `causal_observe_replay::live_request_preparation_delta::observe_mode_leaves_live_definitions_byte_identical` (`evaluation_millis < P95 budget`, 0.18s) | None on desktop: same load-sensitive single-sample latency class already classified in causal-frontier M005 closure; commit touched only `apps/desktop/e2e/` | Classified, no scope widened: the green `37073506756` verdict stands; final closure-commit CI is awaited as fresh signal |
+| medium | Built-app visible-window verdict outstanding until hosted `Desktop E2E` completes | Discharged by green run `37092317709` (lifecycle 5/5, autostart 2/2) | Strict M003 closure and M004 unblock proceed (§11) |
+| low | Later `CI / verify` run `37075319670` (e2e-harness-only commit `b515a8fb`) failed in `causal_observe_replay::live_request_preparation_delta::observe_mode_leaves_live_definitions_byte_identical` (`evaluation_millis < P95 budget`, 0.18s) | None on desktop: same load-sensitive single-sample latency class already classified in causal-frontier M005 closure; commit touched only `apps/desktop/e2e/` | Classified, no scope widened; superseded by closure-commit green `37092317678` |
+
+Disposition of run `37089690924` (red `Desktop E2E` on `84ae31af`, resolved by `cc9d9c19`):
+
+- Lifecycle reached generation 5 with all renders matching (5/5 host≡daemon
+  through every reconnect and reload), then failed at `browser.closeWindow()`
+  on the sole window: the embedded server's `close_window` destroys the
+  window, the app exits with its last window, and the embedded WebDriver
+  server dies with it — WebdriverIO's automatic switch to the stale `main`
+  handle then throws inside the probe, and the unconditional `endSession`
+  teardown rejects on the dead driver. Fixed by the hidden `e2e-anchor`
+  window (desktop-e2e only, blank, no second client) plus the
+  `windowLabel: main` session pin; the Rust close/destroy hook still fires
+  for `main` and the daemon still drops exactly the desktop client.
+- Autostart rendered two identical `project-item` rows: the spec's
+  re-`start` against the warm home re-registered the fixture-PID-stable probe
+  name into the persisting catalog. Fixed by same-named live-entry reuse in
+  fixture `cmd_start`; both specs now converge presence + count + uniqueness.
+- Green run `37092317709` proves both fixes: lifecycle 5/5 (including
+  `native close removes the desktop client while daemon and observer
+  survive`) and autostart 2/2 (including `desktop exit leaves the
+  autostarted daemon running and responsive`).
 
 Disposition of run `37062733033` (recorded regardless of pending verdicts):
 
@@ -302,15 +328,20 @@ Disposition of run `37062733033` (recorded regardless of pending verdicts):
 
 ## 11. Roadmap disposition
 
-- C003: **closing** (this record; implementation `eac14e01` + hosted-only
-  harness/workflow fixes through `7244865c`; root-CI reconciliation GREEN
-  via `37073506756`).
-- On green `Desktop E2E` (currently `37089690924`): C003 → **closed**; C001/C002
-  gain strict-closure evidence additively (historical conditional records
-  stand); corrective addendum C001/C002/C003 closed; foundation M003 strict
-  **closed**; M004 `blocked` → `ready` (research-reconciled plan hands off
-  immediately); M005/M006 stay deferred; M002 stays separately conditional
-  for Windows transport/graceful-stop qualification.
+- C003: **closed** (this record; implementation `eac14e01` + hosted-only
+  harness/workflow fixes through `84ae31af` + trajectory fixes in `cc9d9c19`;
+  root-CI reconciliation GREEN via `37073506756` and `37092317678`;
+  built-app trajectory GREEN via `37092317709`).
+- C001/C002 gain strict-closure evidence additively (historical conditional
+  records stand — this record does not rewrite their verdicts); corrective
+  addendum C001/C002/C003 closed; foundation M003 strict **closed**; M004
+  `blocked` → `ready` (research-reconciled plan hands off immediately);
+  M005/M006 stay deferred; M002 stays separately conditional for Windows
+  transport/graceful-stop qualification.
+- Note for a future C002 record pass: its awaited fresh-green-hosted evidence
+  now exists (`37073506756` on `3512d5d8`, `37092317678` on `cc9d9c19`, both
+  C002-containing mainlines with the PTY test passing). Claiming it belongs
+  to that record, not this one.
 - If the PTY test fails repeatedly: register a separate corrective under the
   interactive-process subsystem, keep M003 operationally blocked, do not
   merge that scope into desktop C003 (plan §9/§13).
@@ -320,20 +351,22 @@ Disposition of run `37062733033` (recorded regardless of pending verdicts):
 
 ## 12. Registry updates
 
-DRAFT (same commit as final verdict):
+Applied in the closure commit:
 
 - Dependency-ready table: C003 `ready` → `closed` (this record;
-  implementation `eac14e01`); M004 row `blocked` → `ready` with the strict
-  M003 handoff noted.
+  implementations `eac14e01` through `cc9d9c19`); M004 row added as `ready`
+  with the strict M003 handoff noted.
 - Blocked work: M004 hard-block row retired (unblocked by this closure);
   C003 strict-closure-evidence row retired.
-- Recently-closed: C003 row added (hosted `CI / verify` run id + `Desktop
-  E2E` run id); C002 row gains an additive strict-evidence pointer.
+- Recently-closed: C003 row added (hosted `CI / verify` runs `37073506756`
+  + `37092317678`; `Desktop E2E` run `37092317709`); C002 row gains an
+  additive strict-evidence pointer (verdict unchanged).
 - Active subsystem roadmaps: desktop M003-corrective → C003 closed;
   desktop-foundation → M003 closed, M004 ready.
-- Corrective addendum §11 + foundation roadmap M003/M004 status: strict
-  closure reflected.
-- Implementation plan status: `ready for handoff` → `implemented`.
+- Corrective addendum C003 section + foundation roadmap M003/M004 status:
+  strict closure reflected.
+- Implementation plan status: `ready for handoff` → `implemented`; M004
+  plan status `blocked on strict M003 closure` → `ready for handoff`.
 - Unblock audit (same commit, per process): the only registered plan gated
   on strict M003 is M004 (session/control-plane vertical slice); all its
   other hard dependencies are closed and its interface contracts

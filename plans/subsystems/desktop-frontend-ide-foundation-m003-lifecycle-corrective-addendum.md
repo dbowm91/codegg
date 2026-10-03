@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — M003 Lifecycle Corrective Addendum
 
-Status: active (C001/C002 conditionally closed; C003 ready; strict closure requires hosted-CI reconciliation plus built-app visible-window qualification)
+Status: closed (C001/C002 conditionally closed per their records; C003 closed — hosted-CI reconciliation plus built-app visible-window qualification both green; M003 strict-closed, M004 unblocked to ready)
 
 Repository baseline reviewed: `82e289db90c4c7981524b4291986af39a7f881ea`
 
@@ -152,7 +152,7 @@ C002 owns only those post-C001 concurrency/lifecycle findings. Production implem
 
 ### C003 — Hosted-CI reconciliation and built-app visible-window strict closure
 
-Status: ready.
+Status: closed (`plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; implementations `eac14e01` through `cc9d9c19`; hosted `CI / verify` runs `37073506756` + `37092317678` SUCCESS; hosted `Desktop E2E` run `37092317709` SUCCESS with lifecycle 5/5 + autostart 2/2).
 
 Plan:
 

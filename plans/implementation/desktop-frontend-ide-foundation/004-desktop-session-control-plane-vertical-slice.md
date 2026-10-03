@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 004 — Desktop Session Control-Plane Vertical Slice
 
-Status: blocked on strict M003 closure; research reconciled and implementation-ready once unblocked
+Status: ready for handoff (unblocked by strict M003 closure through closed C003; see `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md` §11)
 
 Repository baseline reviewed: `3f222c2e5f957efdbb6a530276ff5b63a095e435`
 

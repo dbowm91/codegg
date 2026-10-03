@@ -230,7 +230,7 @@ Outcome:
 
 ### Milestone 003 — Tauri desktop shell and secure bridge
 
-Status: conditionally closed. C001 and C002 production fixes are landed and conditionally closed. Hosted run `37062733033` containing C002 failed only in the unrelated `interactive_process_sessions::environment_overrides_apply_while_denied_vars_stay_stripped` test after desktop-relevant guards/Clippy passed; the same test passed on prior green run `37051423825`, with no interactive-process file changed by C002. C003 is ready at `plans/implementation/desktop-frontend-ide-foundation-corrective/003-hosted-ci-visible-window-strict-closure.md` to reconcile a green hosted disposition and add the repeatable built-app visible-window/WebDriver qualification. Strict M003 closure occurs only after C003. M002 remains an operational dependency for Windows qualification.
+Status: closed. C001 and C002 production fixes are landed and conditionally closed per their records. Hosted root-CI reconciliation is green (`CI / verify` runs `37073506756` and `37092317678`, PTY test passing, test untouched) and the repeatable built-app visible-window/WebDriver qualification is green (`Desktop E2E` run `37092317709`: lifecycle 5/5, autostart 2/2) — both owned by closed C003 (`plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`). Strict M003 closure is complete. M004 is unblocked to ready. M002 remains an operational dependency for Windows qualification.
 
 Primary class: infrastructure.
 
@@ -250,7 +250,7 @@ Outcome:
 
 ### Milestone 004 — Desktop session/control-plane vertical slice
 
-Status: blocked on strict M003 closure through ready corrective C003. M004 research is reconciled and the implementation plan is ready to hand off immediately after M003 closes.
+Status: ready (unblocked by strict M003 closure through closed C003). M004 research is reconciled and the implementation plan is ready to hand off.
 
 Primary class: capability.
 
