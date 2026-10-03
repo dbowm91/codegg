@@ -11,11 +11,13 @@
  * the embedded WebDriver server plugin. Production builds never contain it.
  *
  * Each spec file launches the real Tauri window against an isolated daemon
- * owned by the Rust fixture helper (`e2e/fixture-client.ts`). Specs set
- * `CODEGG_DAEMON_HOME`/`CODEGG_DAEMON_EXECUTABLE` in `before` hooks and then
- * take a fresh session, so the app can only ever see the isolated home: an
- * e2e-feature app binary additionally refuses to connect when
- * `CODEGG_DAEMON_HOME` is unset or outside the OS temp directory.
+ * owned by the Rust fixture helper (`e2e/fixture-client.ts`). The embedded
+ * provider spawns the app once per WebdriverIO invocation in the launcher
+ * process, so `e2e/run-e2e.sh` runs one invocation per phase (lifecycle,
+ * then autostart), each with its own fixture server, isolated home, and app
+ * environment inherited from the phase script. An e2e-feature app binary
+ * additionally refuses to connect when `CODEGG_DAEMON_HOME` is unset or
+ * outside the OS temp directory.
  */
 import * as path from 'node:path';
 import type { Capabilities, Options } from '@wdio/types';
@@ -43,13 +45,10 @@ const appBinary = appBinaryPath();
 // toolchain (see test-browser.ts), while the constituent interfaces do.
 export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCapabilities = {
   runner: 'local',
-  // Explicit order: the reconnect/reload/close trajectory first, explicit
-  // autostart second. Each file owns its fixture and isolated daemon home.
-  // Absolute paths: WDIO resolves spec patterns relative to this config
-  // file's directory, so config-relative literals would silently match
-  // nothing (0 workers) when invoked from the app root.
-  // Explicit order: the reconnect/reload/close trajectory first, explicit
-  // autostart second. Each file owns its fixture and isolated daemon home.
+  // Full trajectory in file order. `run-e2e.sh` selects one phase file per
+  // invocation (`--spec`) because each phase needs its own app environment;
+  // a bare `npm run test:e2e` runs both against the ambient environment
+  // (fail-closed: the e2e app refuses to connect outside temp-scoped homes).
   // Absolute paths: WDIO resolves spec patterns relative to this config
   // file's directory, so config-relative literals would silently match
   // nothing (0 workers) when invoked from the app root.

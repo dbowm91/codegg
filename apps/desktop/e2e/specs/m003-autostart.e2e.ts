@@ -1,19 +1,19 @@
 /**
  * m003-autostart.e2e.ts — C003 built-app visible-window trajectory, part 2.
  *
- * Explicit-path autostart: the isolated daemon is stopped, a fresh built
- * desktop is launched with explicit `CODEGG_DAEMON_EXECUTABLE`, a new daemon
- * starts, the window renders connected state, and closing the desktop leaves
- * the autostarted daemon running and responsive.
+ * Explicit-path autostart: the phase script pre-starts the isolated daemon
+ * and then stops it (warm home, dead daemon), so the fresh built desktop
+ * launched for this phase must autostart a new daemon from the explicit
+ * `CODEGG_DAEMON_EXECUTABLE`. The window renders connected state, and closing
+ * the desktop leaves the autostarted daemon running and responsive.
  *
- * Owns its own fixture and isolated home; independent of the lifecycle file
- * apart from execution order (lifecycle first, autostart second).
+ * Same phase discipline as the lifecycle file: the runner owns the fixture
+ * server, the isolated home, and teardown; this file only dials the fixture.
  */
 import { $, $$, expect } from '@wdio/globals';
+import * as fs from 'node:fs';
 import { testBrowser as browser } from '../test-browser.js';
 import { FixtureClient } from '../fixture-client.js';
-
-const ambientDaemonExecutable = process.env.CODEGG_DAEMON_EXECUTABLE;
 
 async function waitConnected(): Promise<void> {
   await browser.waitUntil(
@@ -31,33 +31,27 @@ describe('M003 built-app explicit autostart and daemon survival', () => {
   let probeProject = '';
 
   before(async () => {
-    if (!ambientDaemonExecutable) {
-      throw new Error('CODEGG_DAEMON_EXECUTABLE must point at a daemon binary built from the tested revision');
+    const stateFile = process.env.CODEGG_E2E_STATE_FILE;
+    if (!stateFile || !fs.existsSync(stateFile)) {
+      throw new Error('CODEGG_E2E_STATE_FILE must point at the phase start state (run via e2e/run-e2e.sh)');
     }
-    fixture = await FixtureClient.launch();
-    const started = await fixture.start();
-    firstDaemonId = started.daemon_id;
-    probeProject = started.project_name;
-    // Stop the isolated daemon; the desktop launched below must autostart a
-    // new one from the explicit executable (identity-checked kill).
-    await fixture.stopDaemon();
-    process.env.CODEGG_DAEMON_HOME = fixture.daemonHome();
-    process.env.CODEGG_DAEMON_EXECUTABLE = ambientDaemonExecutable;
-    try {
-      await browser.reloadSession();
-    } catch {
-      // No session yet — the first browser command below creates it.
-    }
+    const prestart = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as {
+      daemon_id: string;
+      project_name: string;
+    };
+    firstDaemonId = prestart.daemon_id;
+    probeProject = prestart.project_name;
+    fixture = await FixtureClient.connect();
+    // The phase daemon was stopped after pre-start, so this reattaches the
+    // fixture observer to whatever daemon is alive (the desktop autostart
+    // below wins the race or already won it — either way one daemon serves
+    // this home).
+    await fixture.start();
   });
 
-  after(async () => {
-    try {
-      await fixture?.shutdown();
-    } finally {
-      fixture = null;
-      delete process.env.CODEGG_DAEMON_HOME;
-      delete process.env.CODEGG_DAEMON_EXECUTABLE;
-    }
+  after(() => {
+    fixture?.disconnect();
+    fixture = null;
   });
 
   function active(): FixtureClient {

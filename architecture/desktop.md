@@ -130,7 +130,15 @@ Test instrumentation never widens production authority:
   native-protocol/client crates with an isolated `CODEGG_DAEMON_HOME` (temp
   scoped, fail-closed), an isolated workspace, an explicit
   `CODEGG_DAEMON_EXECUTABLE`, bounded timeouts, identity-checked daemon kills,
-  and deterministic cleanup — never the operator's real home or projects;
+  and deterministic cleanup — never the operator's real home or projects.
+  It serves newline-delimited JSON commands over a Unix socket (not stdio):
+  the embedded provider spawns the desktop app once per WebdriverIO
+  invocation in the launcher process, so worker-side spec code cannot own the
+  fixture's stdio, but any party can dial the socket. `e2e/run-e2e.sh` runs
+  one WebdriverIO invocation per phase (lifecycle, then autostart), each with
+  its own fixture server, isolated home, pre-started (or
+  started-then-stopped, for autostart) daemon, and app environment inherited
+  from the phase script;
 - an app binary built with `desktop-e2e` additionally refuses to connect
   unless `CODEGG_DAEMON_HOME` is set under the OS temp directory
   (fail-closed `disconnected`, no daemon touched);

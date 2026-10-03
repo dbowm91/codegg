@@ -7,20 +7,17 @@
  * subscription, renderer reload, and native close — with the reconnect/reload
  * cycle repeated twice to catch accumulation.
  *
- * Daemon side is owned by the Rust fixture helper: a TUI-kind observer holds
- * the isolated daemon for the whole file, so every assertion below is backed
- * by real `SnapshotDaemon.connected_clients` counts, not just pixels.
- *
- * Session/env discipline: this file starts its own fixture, points the worker
- * at the isolated home, and takes a fresh session before asserting, so the
- * app under test can only ever see the isolated home. The `after` hook shuts
- * the fixture down and clears the worker env so later files start clean.
+ * Phase discipline (see `e2e/run-e2e.sh`): the phase script starts the
+ * socket fixture and the isolated daemon BEFORE WebdriverIO launches, so the
+ * single app instance the embedded provider spawns inherits the isolated
+ * home from the start. This file only dials the fixture, shares its daemon
+ * via an idempotent `start`, and disconnects afterwards; teardown belongs to
+ * the phase script.
  */
 import { $, $$, expect } from '@wdio/globals';
+import * as fs from 'node:fs';
 import { testBrowser as browser } from '../test-browser.js';
 import { FixtureClient, type DaemonSnapshot } from '../fixture-client.js';
-
-const ambientDaemonExecutable = process.env.CODEGG_DAEMON_EXECUTABLE;
 
 async function statusText(): Promise<string> {
   return await $('[data-testid="connection-status"]').getText();
@@ -62,33 +59,27 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
   let probeProject = '';
 
   before(async () => {
-    if (!ambientDaemonExecutable) {
-      throw new Error('CODEGG_DAEMON_EXECUTABLE must point at a daemon binary built from the tested revision');
+    const stateFile = process.env.CODEGG_E2E_STATE_FILE;
+    if (!stateFile || !fs.existsSync(stateFile)) {
+      throw new Error('CODEGG_E2E_STATE_FILE must point at the phase start state (run via e2e/run-e2e.sh)');
     }
-    fixture = await FixtureClient.launch();
+    const prestart = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as {
+      daemon_id: string;
+      project_name: string;
+    };
+    fixture = await FixtureClient.connect();
+    // Idempotent: shares the phase daemon/observer the runner pre-started.
     const started = await fixture.start();
     daemonId = started.daemon_id;
-    probeProject = started.project_name;
-    process.env.CODEGG_DAEMON_HOME = fixture.daemonHome();
-    process.env.CODEGG_DAEMON_EXECUTABLE = ambientDaemonExecutable;
-    // Fresh session however this file was entered: if a stale ambient launch
-    // exists it is fail-closed (disconnected, no daemon touched); otherwise
-    // the first command below creates the session with the isolated env.
-    try {
-      await browser.reloadSession();
-    } catch {
-      // No session yet — the first browser command below creates it.
+    if (daemonId !== prestart.daemon_id) {
+      throw new Error('fixture daemon changed under the phase — aborting');
     }
+    probeProject = prestart.project_name;
   });
 
-  after(async () => {
-    try {
-      await fixture?.shutdown();
-    } finally {
-      fixture = null;
-      delete process.env.CODEGG_DAEMON_HOME;
-      delete process.env.CODEGG_DAEMON_EXECUTABLE;
-    }
+  after(() => {
+    fixture?.disconnect();
+    fixture = null;
   });
 
   function active(): FixtureClient {
