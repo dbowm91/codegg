@@ -90,7 +90,7 @@ non-passing evidence.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
 |---|---|---|---|---|
-| Shared editor document foundation | M005-B daemon document service + protocol | **active** | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | Implementing process-local canonical text, scoped attachment/writer ownership, bounded `document.v1` protocol, file capability checks, and staged checked-save seam. |
+| Shared editor document foundation | M005-C LSP sync + checked save/external conflict | **ready** | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | M005-B closed at `90df4156`; managed LSP synchronization, checked workspace writes, and external conflict state can now build on stable service hooks. |
 | Desktop frontend/IDE M003 lifecycle corrective | C003 hosted-CI reconciliation + built-app visible-window strict closure | **closed** | `plans/implementation/desktop-frontend-ide-foundation-corrective/003-hosted-ci-visible-window-strict-closure.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md` (implementations `eac14e01` through `cc9d9c19`; hosted `CI / verify` runs `37073506756` + `37092317678` SUCCESS; hosted `Desktop E2E` run `37092317709` SUCCESS with lifecycle 5/5 + autostart 2/2). M003 strict-closed; M004 unblocked to ready. |
 | Desktop frontend and IDE foundation | M004 desktop session/control-plane vertical slice | **closed** | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; strict corrective closure: `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` (implementation `33fce56f`; hosted root CI `37134452335` and Desktop E2E `37134452312` green on `738142d8`). |
 | Desktop frontend/IDE M003 lifecycle corrective | C002 atomic lifecycle transitions + subscription arming + window teardown | **conditionally closed** | `plans/implementation/desktop-frontend-ide-foundation-corrective/002-atomic-lifecycle-transitions-subscription-arming-window-teardown.md` | Closure: `plans/closure/desktop-frontend-ide-foundation-corrective/002-status.md` (implementation `dc32a6ad`). Lifecycle gate, atomic commit with disconnect supersession, post-publication arming, native close/app teardown, barrier-forced race tests + adversarial live trajectory. Strict closure awaits hosted CI green; visible-window qualification follows C002. |
@@ -235,7 +235,6 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Shared editor document foundation | M005-C LSP sync + checked save/external conflict | Hard-blocked on strict M005-B closure. Plan: `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md`. |
 | Shared editor document foundation | M005-D client replica + TUI-first qualification | Hard-blocked on strict M005-C closure. Plan: `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md`; closes parent M005. |
 | Desktop frontend and IDE foundation | M006 TUI IDE vertical slice | Deferred until strict M005-D/parent M005 closure and a fresh TUI IDE presentation audit. Graphical IDE work is not the M006 target. |
 | Search / eggsearch legacy backend retirement corrective | M001 parity release adoption + provider contract | Eggsearch CodeGG legacy-search-parity M003 must close and a qualifying tagged eggsearch release must exist. |
@@ -295,6 +294,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 ## Recently closed or conditionally closed work
 
+| Shared editor document foundation | M005-B daemon document service + protocol | closed | `plans/closure/editor-document-foundation/002-status.md` | Implementation `90df4156`; Rust 1.89 focused service tests (5 passed), package check, and authorization matrix passed. M005-C unblocked to ready. |
 | Shared editor document foundation | M005-A text core + transaction contract | closed | `plans/closure/editor-document-foundation/001-status.md` | Implementation `92e66782`; focused document crate check and five text-core tests passed. M005-B unblocked to ready. |
 
 | Desktop frontend and IDE foundation | M001 shared frontend client runtime | closed | `plans/closure/desktop-frontend-ide-foundation/001-status.md` | Implementations `b5b3348`, `0861c74`, `26d844e`, and `deebc99`; quick verification and focused client/lifecycle tests passed. M002 and M003 unblocked to ready; M004 remains blocked on M003. |

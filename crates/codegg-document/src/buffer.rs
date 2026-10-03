@@ -133,6 +133,19 @@ impl DocumentBuffer {
         }
     }
 
+    /// Replace the complete text while preserving monotonic revision state.
+    /// Used by explicit disk reload transitions, never by disk observers.
+    pub fn replace_text(&mut self, text: impl AsRef<str>) -> Result<DocumentSnapshot> {
+        let next = self
+            .revision
+            .0
+            .checked_add(1)
+            .ok_or(DocumentError::RevisionExhausted)?;
+        self.text = Rope::from(text.as_ref());
+        self.revision = DocumentRevision::new(next);
+        Ok(self.snapshot())
+    }
+
     pub fn apply(
         &mut self,
         transaction: &TextTransaction,

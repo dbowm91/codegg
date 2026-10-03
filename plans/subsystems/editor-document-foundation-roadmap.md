@@ -386,6 +386,6 @@ M005 closes when:
 | Milestone | Status | Plan | Hard blocker |
 |---|---|---|---|
 | M005-A text core and transaction contract | closed | `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` | `plans/closure/editor-document-foundation/001-status.md` |
-| M005-B daemon document service + protocol | ready | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | none |
-| M005-C LSP sync + checked save/external conflict | blocked | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | M005-B |
+| M005-B daemon document service + protocol | closed | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | `plans/closure/editor-document-foundation/002-status.md` |
+| M005-C LSP sync + checked save/external conflict | ready | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | none |
 | M005-D client replica + TUI-first qualification | blocked | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | M005-C |
