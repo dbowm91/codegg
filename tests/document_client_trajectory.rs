@@ -108,6 +108,7 @@ async fn read_only_observer_polls_metadata_without_owning_text_edits() {
             writer: false,
         },
         snapshot("new canonical", 8, true, false),
+        CoreResponse::Ack,
     ]))));
     let observer = Arc::new(DocumentController::new(observer_transport));
     observer
@@ -133,4 +134,6 @@ async fn read_only_observer_polls_metadata_without_owning_text_edits() {
     assert!(observer
         .apply_local(TextTransaction::new(vec![TextEdit::new(0..0, "x")]))
         .is_err());
+    observer.close().await.unwrap();
+    assert_eq!(observer.state().await, DocumentState::Closed);
 }
