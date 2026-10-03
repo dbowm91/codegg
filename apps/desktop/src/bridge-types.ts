@@ -57,6 +57,100 @@ export interface SessionView {
   session: SessionSummaryView;
   routeToken: RouteTokenView;
 }
+// M004 projection presentation (WP C). Bounded, renderer-safe views
+// derived from the canonical snapshot by the Rust host. No raw tool
+// arguments/output, no filesystem paths, no cursor authority.
+export interface MessageView {
+  messageId: string;
+  role: string;
+  text: string;
+  truncated: boolean;
+}
+export interface TurnSummaryView {
+  turnId: string;
+  status: string;
+  updatedAt: number;
+  stopReason: string | null;
+  error: string | null;
+  messageCount: number;
+  toolCount: number;
+  pendingPermissions: number;
+  pendingQuestions: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+export interface ToolSummaryView {
+  toolId: string;
+  toolName: string;
+  status: string;
+  summary: string;
+  hasArtifact: boolean;
+}
+export interface RunSummaryView {
+  runId: string;
+  kind: string;
+  status: string;
+  summary: string;
+}
+export interface JobSummaryView {
+  jobId: string;
+  kind: string;
+  state: string;
+  summary: string;
+}
+export interface SubagentSummaryView {
+  taskId: number;
+  agent: string;
+  description: string;
+  status: string;
+  resultSummary: string | null;
+}
+export interface PendingPermissionView {
+  permissionId: string;
+  tool: string;
+  scopeSummary: string | null;
+  status: string;
+}
+export interface PendingQuestionView {
+  questionId: string;
+  header: string | null;
+  prompt: string;
+  status: string;
+}
+export interface ArtifactHandleView {
+  handle: string;
+  byteLength: number;
+}
+export interface ControllerSummaryView {
+  turnId: string;
+  controllerPrincipal: string;
+  revision: number;
+}
+export interface CursorDiagnosticView {
+  eventSeq: number;
+  driverCursorSeq: number | null;
+  subscriptionKnown: boolean;
+}
+export interface SessionPresentationView {
+  sessionId: string;
+  projectId: string;
+  workspaceId: string;
+  state: string;
+  turn: TurnSummaryView | null;
+  messages: MessageView[];
+  truncatedMessages: number;
+  tools: ToolSummaryView[];
+  runs: RunSummaryView[];
+  jobs: JobSummaryView[];
+  subagents: SubagentSummaryView[];
+  recentTurns: TurnSummaryView[];
+  pendingPermissions: PendingPermissionView[];
+  pendingQuestions: PendingQuestionView[];
+  controller: ControllerSummaryView | null;
+  artifactHandles: ArtifactHandleView[];
+  cursor: CursorDiagnosticView;
+  resyncReason: string | null;
+}
 export interface SubscriptionHandle {
   subscriptionId: string;
   connectionGeneration: number;

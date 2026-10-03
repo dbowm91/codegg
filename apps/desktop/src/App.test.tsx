@@ -8,6 +8,15 @@ vi.mock('./bridge', () => ({
     snapshot: vi.fn(),
     connect: vi.fn(),
     projects: vi.fn(),
+    projectDetail: vi.fn(),
+    workspaceSelect: vi.fn(),
+    sessionList: vi.fn(),
+    sessionOpen: vi.fn(),
+    sessionCreate: vi.fn(),
+    projectionStart: vi.fn(),
+    projectionStop: vi.fn(),
+    projectionCurrent: vi.fn(),
+    subscribeProjection: vi.fn(),
     subscribe: vi.fn(),
     disconnect: vi.fn(),
     unsubscribe: vi.fn(),
@@ -206,8 +215,7 @@ describe('desktop shell', () => {
     expect(unsubscribes[3]).not.toHaveBeenCalled();
   });
 
-  it('host rejection from concurrent disconnect leaves no phantom handle', async () => {
-    // C002 linearizes subscribe against disconnect: when disconnect wins,
+  it('host rejection from concurrent disconnect leaves no phantom handle', async () => {    // C002 linearizes subscribe against disconnect: when disconnect wins,
     // the host rejects subscribe and the renderer must not retain a phantom
     // handle. A later reconnect must resubscribe cleanly.
     vi.mocked(bridge.connect).mockResolvedValueOnce(connected(1));
@@ -232,5 +240,143 @@ describe('desktop shell', () => {
     // releases the single live subscription.
     unmount();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('session route flow', () => {
+  const token = (routeGeneration: number, sessionId: string | null = null) => ({
+    connectionGeneration: 1,
+    routeGeneration,
+    projectId: 'p0',
+    workspaceId: sessionId ? 'w0' : '',
+    sessionId,
+  });
+
+  const detailGen = (routeGeneration: number) => ({
+    projectId: 'p0',
+    displayName: 'Demo project',
+    workspaces: [{ workspaceId: 'w0', displayName: 'Workspace' }],
+    sessionCount: 1,
+    routeToken: token(routeGeneration),
+  });
+
+  const presentation = (sessionId: string, state = 'attached') => ({
+    sessionId,
+    projectId: 'p0',
+    workspaceId: 'w0',
+    state,
+    turn: { turnId: 'turn-1', status: 'active', updatedAt: 7, stopReason: null, error: null, messageCount: 1, toolCount: 0, pendingPermissions: 0, pendingQuestions: 0, inputTokens: 10, outputTokens: 20 },
+    messages: [{ messageId: 'm-1', role: 'assistant', text: 'on it', truncated: false }],
+    truncatedMessages: 0,
+    tools: [],
+    runs: [],
+    jobs: [],
+    subagents: [],
+    recentTurns: [],
+    pendingPermissions: [],
+    pendingQuestions: [],
+    controller: null,
+    artifactHandles: [],
+    cursor: { eventSeq: 42, driverCursorSeq: 42, subscriptionKnown: true },
+    resyncReason: null,
+  });
+
+  beforeEach(() => {
+    vi.mocked(bridge.projectDetail).mockImplementation(async (_projectId: string) => detailGen(1));
+    vi.mocked(bridge.workspaceSelect).mockImplementation(async (_workspaceId: string, routeGeneration: number) => token(routeGeneration + 1));
+    vi.mocked(bridge.sessionList).mockImplementation(async (routeGeneration: number) => ({
+      sessions: [{ sessionId: 's-1', title: 'First', projectId: 'p0', workspaceId: 'w0' }],
+      routeToken: token(routeGeneration, null),
+    }));
+    vi.mocked(bridge.sessionOpen).mockImplementation(async (sessionId: string, routeGeneration: number) => ({
+      session: { sessionId, title: 'First', projectId: 'p0', workspaceId: 'w0' },
+      routeToken: token(routeGeneration, sessionId),
+    }));
+    vi.mocked(bridge.projectionStart).mockImplementation(async (sessionId: string) => presentation(sessionId));
+    vi.mocked(bridge.subscribeProjection).mockImplementation(async () => ({ unsubscribe: vi.fn() }));
+  });
+
+  it('drives projectdetail to workspaceselect to session open and projection', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    expect(await screen.findByTestId('workspace-list')).toBeInTheDocument();
+    expect(bridge.projectDetail).toHaveBeenCalledWith('p0');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    expect(await screen.findByTestId('session-list')).toBeInTheDocument();
+    expect(bridge.workspaceSelect).toHaveBeenCalledWith('w0', 1);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    expect(await screen.findByTestId('projection-state')).toHaveTextContent('attached');
+    expect(bridge.projectionStart).toHaveBeenCalledWith('s-1', 2);
+    expect(await screen.findByText('on it')).toBeInTheDocument();
+    expect(screen.getByTestId('turn-status')).toHaveTextContent('turn-1 / active');
+  });
+
+  it('drops a late session list after a newer route wins', async () => {
+    let resolveList!: (value: { sessions: never[]; routeToken: ReturnType<typeof token> }) => void;
+    vi.mocked(bridge.sessionList).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve as typeof resolveList;
+        }),
+    );
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    // First workspace select hangs on sessionList; supersede the route by
+    // re-selecting the project (new route generation).
+    const firstSelect = (async () => {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('workspace-select-w0'));
+      });
+    })();
+    await waitFor(() => expect(bridge.sessionList).toHaveBeenCalled());
+    vi.mocked(bridge.projectDetail).mockImplementationOnce(async () => detailGen(7));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('route-generation')).toHaveTextContent('7'));
+    await act(async () => {
+      resolveList({ sessions: [], routeToken: token(2, null) });
+    });
+    await firstSelect;
+    // The stale list (generation 2) never renders into the generation-7 route.
+    expect(screen.queryByTestId('session-list')).not.toBeInTheDocument();
+  });
+
+  it('renders resync state and pending items read-only', async () => {
+    vi.mocked(bridge.projectionStart).mockImplementationOnce(async (sessionId: string) => ({
+      ...presentation(sessionId, 'resyncing'),
+      resyncReason: 'gap',
+      pendingPermissions: [{ permissionId: 'perm-1', tool: 'write', scopeSummary: null, status: 'pending' }],
+      pendingQuestions: [{ questionId: 'q-1', header: 'Choice', prompt: 'Pick one', status: 'pending' }],
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    expect(await screen.findByTestId('resync-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('permission-item')).toHaveTextContent('write');
+    expect(screen.getByTestId('question-item')).toHaveTextContent('Pick one');
+    // WP E wires responses; the buttons stay disabled with no authority.
+    expect(screen.getByTitle('Permission responses land in WP E')).toBeDisabled();
   });
 });

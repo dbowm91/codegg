@@ -17,6 +17,18 @@ const expected = {
   SessionSummaryView: ['session_id', 'title', 'project_id', 'workspace_id'],
   SessionListView: ['sessions', 'route_token'],
   SessionView: ['session', 'route_token'],
+  MessageView: ['message_id', 'role', 'text', 'truncated'],
+  TurnSummaryView: ['turn_id', 'status', 'updated_at', 'stop_reason', 'error', 'message_count', 'tool_count', 'pending_permissions', 'pending_questions', 'input_tokens', 'output_tokens'],
+  ToolSummaryView: ['tool_id', 'tool_name', 'status', 'summary', 'has_artifact'],
+  RunSummaryView: ['run_id', 'kind', 'status', 'summary'],
+  JobSummaryView: ['job_id', 'kind', 'state', 'summary'],
+  SubagentSummaryView: ['task_id', 'agent', 'description', 'status', 'result_summary'],
+  PendingPermissionView: ['permission_id', 'tool', 'scope_summary', 'status'],
+  PendingQuestionView: ['question_id', 'header', 'prompt', 'status'],
+  ArtifactHandleView: ['handle', 'byte_length'],
+  ControllerSummaryView: ['turn_id', 'controller_principal', 'revision'],
+  CursorDiagnosticView: ['event_seq', 'driver_cursor_seq', 'subscription_known'],
+  SessionPresentationView: ['session_id', 'project_id', 'workspace_id', 'state', 'turn', 'messages', 'truncated_messages', 'tools', 'runs', 'jobs', 'subagents', 'recent_turns', 'pending_permissions', 'pending_questions', 'controller', 'artifact_handles', 'cursor', 'resync_reason'],
 };
 for (const [name, fields] of Object.entries(expected)) {
   const rustBlock = rust.match(new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1];

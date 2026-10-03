@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 
+use codegg_client::StoppedDriver;
 use codegg_protocol::{
     core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
     dto::Session,
@@ -29,6 +30,7 @@ use super::bridge::{
     ProjectDetailView, RouteTokenView, SessionListView, SessionSummaryView, SessionView,
     WorkspaceView,
 };
+use super::projection::ProjectionOwner;
 use super::HostState;
 
 /// Bounded session summaries per list call. The daemon enforces its own
@@ -37,16 +39,21 @@ use super::HostState;
 pub(crate) const MAX_SESSIONS: usize = 50;
 
 /// Rust-host route state. `roots` holds canonical workspace roots and is
-/// never serialized; only `*_view` DTOs cross the bridge.
+/// never serialized; only `*_view` DTOs cross the bridge. `projection`
+/// is the single live projection owner for the route (WP C);
+/// `stopped` retains a stopped cursor for same-session resume.
 #[derive(Default)]
 pub(crate) struct RouteState {
-    route_generation: u64,
-    connection_generation: u64,
-    project_id: Option<String>,
-    workspace_id: Option<String>,
-    session_id: Option<String>,
-    roots: HashMap<String, String>,
-    workspaces: Vec<WorkspaceView>,
+    pub(crate) route_generation: u64,
+    pub(crate) connection_generation: u64,
+    pub(crate) project_id: Option<String>,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) roots: HashMap<String, String>,
+    pub(crate) workspaces: Vec<WorkspaceView>,
+    pub(crate) projection: Option<ProjectionOwner>,
+    pub(crate) stopped: Option<StoppedDriver>,
+    pub(crate) watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RouteState {
@@ -60,7 +67,7 @@ impl RouteState {
         }
     }
 
-    fn current_token(&self) -> RouteTokenView {
+    pub(crate) fn current_token(&self) -> RouteTokenView {
         let session_id = self.session_id.clone();
         self.token(session_id)
     }
@@ -179,13 +186,20 @@ impl HostState {
         route.roots = roots;
         route.workspaces = workspaces.clone();
         let token = route.current_token();
-        Ok(ProjectDetailView {
+        let view = ProjectDetailView {
             project_id: project.project.project_id,
             display_name: project.project.display_name,
             workspaces,
             session_count: project.session_count,
             route_token: token,
-        })
+        };
+        drop(route);
+        // A new project route invalidates any live projection: stop the
+        // previous owner (cursor retained for a same-session resume) and
+        // join its renderer watchers. The retained stop is dropped on
+        // the next attach for a different session.
+        self.stop_projection_owner().await;
+        Ok(view)
     }
 
     /// Select a workspace from the installed project detail. Clears any
@@ -213,7 +227,12 @@ impl HostState {
         route.route_generation = route.route_generation.saturating_add(1);
         route.workspace_id = Some(workspace_id);
         route.session_id = None;
-        Ok(route.current_token())
+        let token = route.current_token();
+        drop(route);
+        // Workspace switch clears the session selection: stop the live
+        // projection owner with it.
+        self.stop_projection_owner().await;
+        Ok(token)
     }
 
     /// Bounded session list for the current project route. Late

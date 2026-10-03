@@ -6,6 +6,7 @@ import type {
   ProjectSummary,
   RouteTokenView,
   SessionListView,
+  SessionPresentationView,
   SessionView,
   SubscriptionHandle,
   SubscriptionInfo,
@@ -25,13 +26,16 @@ export const bridge = {
     invoke<SessionView>('desktop_session_open', { sessionId, routeGeneration }),
   sessionCreate: (title: string | null, routeGeneration: number) =>
     invoke<SessionView>('desktop_session_create', { title, routeGeneration }),
+  projectionStart: (sessionId: string, routeGeneration: number) =>
+    invoke<SessionPresentationView>('desktop_projection_start', { sessionId, routeGeneration }),
+  projectionStop: () => invoke<RouteTokenView>('desktop_projection_stop'),
+  projectionCurrent: () => invoke<SessionPresentationView>('desktop_projection_current'),
   disconnect: () => invoke<void>('desktop_disconnect'),
   unsubscribe: (subscriptionId: string) =>
     invoke<void>('desktop_unsubscribe_events', { subscriptionId }),
   subscribe: async (
     onEvent: (event: DesktopEvent) => void,
-  ): Promise<SubscriptionHandle> => {
-    const channel = new Channel<DesktopEvent>();
+  ): Promise<SubscriptionHandle> => {    const channel = new Channel<DesktopEvent>();
     channel.onmessage = onEvent;
     const info = await invoke<SubscriptionInfo>('desktop_subscribe_events', {
       channel,
@@ -49,6 +53,23 @@ export const bridge = {
       subscriptionId: info.subscriptionId,
       connectionGeneration: info.connectionGeneration,
       unsubscribe,
+    };
+  },
+  subscribeProjection: async (
+    onView: (view: SessionPresentationView) => void,
+  ): Promise<{ unsubscribe: () => void }> => {
+    const channel = new Channel<SessionPresentationView>();
+    channel.onmessage = onView;
+    await invoke<void>('desktop_projection_subscribe', { channel });
+    let cleaned = false;
+    return {
+      unsubscribe: () => {
+        if (cleaned) return;
+        cleaned = true;
+        channel.onmessage = () => undefined;
+        // The host watcher exits on channel close; stop is explicit
+        // via projectionStop so reload/close teardown stays deliberate.
+      },
     };
   },
 };

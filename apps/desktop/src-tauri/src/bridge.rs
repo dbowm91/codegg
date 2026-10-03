@@ -109,3 +109,154 @@ pub struct SessionView {
     pub session: SessionSummaryView,
     pub route_token: RouteTokenView,
 }
+
+/// One visible projection message. Text is the canonical (already
+/// bounded) text; only public `user`/`assistant`/`tool` roles cross.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageView {
+    pub message_id: String,
+    pub role: String,
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// Coarse turn state for the current/most-recent turn and recent turns.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnSummaryView {
+    pub turn_id: String,
+    pub status: String,
+    pub updated_at: i64,
+    pub stop_reason: Option<String>,
+    pub error: Option<String>,
+    pub message_count: usize,
+    pub tool_count: usize,
+    pub pending_permissions: usize,
+    pub pending_questions: usize,
+    pub input_tokens: Option<usize>,
+    pub output_tokens: Option<usize>,
+}
+
+/// Tool execution summary. Raw arguments/output never cross: `summary`
+/// carries the daemon's summary line (or truncated preview marker) and
+/// `has_artifact` marks output available behind an opaque handle.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolSummaryView {
+    pub tool_id: String,
+    pub tool_name: String,
+    pub status: String,
+    pub summary: String,
+    pub has_artifact: bool,
+}
+
+/// Run summary. `log_dir` is deliberately absent: filesystem paths never
+/// cross the bridge.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummaryView {
+    pub run_id: String,
+    pub kind: String,
+    pub status: String,
+    pub summary: String,
+}
+
+/// Durable job summary (opaque ids only).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobSummaryView {
+    pub job_id: String,
+    pub kind: String,
+    pub state: String,
+    pub summary: String,
+}
+
+/// Delegated subagent activity summary.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentSummaryView {
+    pub task_id: u64,
+    pub agent: String,
+    pub description: String,
+    pub status: String,
+    pub result_summary: Option<String>,
+}
+
+/// Pending (or recently resolved) permission. `scope_summary` is a
+/// display-only string derived from the daemon path; it is never sent
+/// back as authority (WP E responds carry the opaque id + choice only).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPermissionView {
+    pub permission_id: String,
+    pub tool: String,
+    pub scope_summary: Option<String>,
+    pub status: String,
+}
+
+/// Pending (or recently resolved) question.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingQuestionView {
+    pub question_id: String,
+    pub header: Option<String>,
+    pub prompt: String,
+    pub status: String,
+}
+
+/// Opaque artifact handle backing truncated tool output. The renderer
+/// may request a bounded excerpt; it may never fabricate a handle.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactHandleView {
+    pub handle: String,
+    pub byte_length: u64,
+}
+
+/// Controller lease summary. Populated by WP E from `SessionControlGet`;
+/// `None` until then. The principal is display-only: responses
+/// revalidate daemon-side and never accept renderer-supplied identity.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControllerSummaryView {
+    pub turn_id: String,
+    pub controller_principal: String,
+    pub revision: u64,
+}
+
+/// Diagnostic cursor metadata. Non-authority: the renderer must never
+/// use these fields as projection cursor state.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorDiagnosticView {
+    pub event_seq: u64,
+    pub driver_cursor_seq: Option<u64>,
+    pub subscription_known: bool,
+}
+
+/// Bounded presentation of one session projection for the renderer.
+/// Atomic-replace semantics: each view is an independent owned value;
+/// a resync publishes a wholly new view rather than patching the old.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPresentationView {
+    pub session_id: String,
+    pub project_id: String,
+    pub workspace_id: String,
+    pub state: String,
+    pub turn: Option<TurnSummaryView>,
+    pub messages: Vec<MessageView>,
+    pub truncated_messages: usize,
+    pub tools: Vec<ToolSummaryView>,
+    pub runs: Vec<RunSummaryView>,
+    pub jobs: Vec<JobSummaryView>,
+    pub subagents: Vec<SubagentSummaryView>,
+    pub recent_turns: Vec<TurnSummaryView>,
+    pub pending_permissions: Vec<PendingPermissionView>,
+    pub pending_questions: Vec<PendingQuestionView>,
+    pub controller: Option<ControllerSummaryView>,
+    pub artifact_handles: Vec<ArtifactHandleView>,
+    pub cursor: CursorDiagnosticView,
+    pub resync_reason: Option<String>,
+}

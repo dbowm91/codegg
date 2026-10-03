@@ -1,10 +1,12 @@
 mod bridge;
 mod lifecycle;
+mod present;
+mod projection;
 mod route;
 
 use bridge::{
     ConnectionSnapshot, DesktopEvent, ProjectDetailView, ProjectSummary, RouteTokenView,
-    SessionListView, SessionView, SubscriptionInfo,
+    SessionListView, SessionPresentationView, SessionView, SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -179,6 +181,10 @@ impl HostState {
         if let Some(task) = previous {
             cancel_and_join(task).await;
         }
+        // The prior connection's projection owner (if any) belongs to the
+        // dead generation: stop it (cursor retained for resume) so no
+        // stale driver survives a reconnect.
+        self.stop_projection_owner().await;
     }
 
     /// Native main-window/app teardown entry point.
@@ -249,6 +255,10 @@ impl HostState {
         if let Some(task) = previous.0 {
             cancel_and_join(task).await;
         }
+        // A newly installed connection supersedes any projection owner
+        // bound to the prior generation: stop it (cursor retained for
+        // resume) so reconnect never leaves a stale driver attached.
+        self.stop_projection_owner().await;
         Ok(previous.1)
     }
 
@@ -559,7 +569,7 @@ pub(crate) fn descriptor() -> FrontendDescriptor {
             plugin_ui_progress: false,
             workspace_registration: false,
             project_catalog: true,
-            session_projection: false,
+            session_projection: true,
         },
     )
 }
@@ -867,6 +877,44 @@ async fn desktop_session_create(
     state.route_session_create(title, route_generation).await
 }
 
+/// M004 WP C projection commands. Narrow capability classes only:
+/// projection start/stop/current/subscribe for the route-selected
+/// session. No generic `CoreRequest` bridge, no filesystem paths.
+#[tauri::command]
+async fn desktop_projection_start(
+    state: State<'_, Arc<HostState>>,
+    session_id: String,
+    route_generation: u64,
+) -> Result<SessionPresentationView, String> {
+    state.projection_start(session_id, route_generation).await
+}
+
+#[tauri::command]
+async fn desktop_projection_stop(
+    state: State<'_, Arc<HostState>>,
+) -> Result<RouteTokenView, String> {
+    state.stop_projection_owner().await;
+    let route = state.route.lock().await;
+    Ok(route.current_token())
+}
+
+#[tauri::command]
+async fn desktop_projection_current(
+    state: State<'_, Arc<HostState>>,
+) -> Result<SessionPresentationView, String> {
+    state.projection_current().await
+}
+
+#[tauri::command]
+async fn desktop_projection_subscribe(
+    state: State<'_, Arc<HostState>>,
+    channel: Channel<SessionPresentationView>,
+) -> Result<(), String> {
+    state
+        .projection_subscribe_with_sink(Arc::new(projection::ChannelViewSink(channel)))
+        .await
+}
+
 pub fn run() {
     let state = Arc::new(HostState::default());
     // Native window/app teardown (Finding E): main-window close/destroy and
@@ -901,6 +949,10 @@ pub fn run() {
             desktop_session_list,
             desktop_session_open,
             desktop_session_create,
+            desktop_projection_start,
+            desktop_projection_stop,
+            desktop_projection_current,
+            desktop_projection_subscribe,
             desktop_subscribe_events,
             desktop_unsubscribe_events,
             desktop_disconnect
@@ -969,7 +1021,8 @@ mod tests {
         let d = descriptor();
         assert!(matches!(d.client_kind(), ClientKind::Gui));
         assert!(d.capabilities().project_catalog);
-        assert!(!d.capabilities().session_projection && !d.capabilities().multi_session_view);
+        assert!(d.capabilities().session_projection);
+        assert!(!d.capabilities().multi_session_view);
     }
     #[test]
     fn bridge_snapshot_has_stable_state_shape() {
