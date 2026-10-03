@@ -29,6 +29,10 @@
 //!   app autostarted the daemon), shutdown falls back to a best-effort
 //!   `pkill -f` scoped to the phase's unique socket path, then removes the
 //!   home regardless.
+//! - the project catalog itself is machine-global by daemon design (the
+//!   isolated home scopes the socket/lock/logs, not catalog rows), so
+//!   `shutdown` archives every probe project this fixture created, leaving
+//!   the default unarchived view exactly as the phase found it.
 //!
 //! Unix-only (the trajectory is Linux/macOS; Windows remains M002-gated).
 //! Built without any Tauri dependency; the WebDriver spec in
@@ -115,6 +119,12 @@ mod server {
         daemon_executable: PathBuf,
         observer: Option<LocalDaemonOutcome>,
         workspace_id: Option<String>,
+        /// Every probe project id this fixture created, in creation order.
+        /// The project catalog itself is machine-global by daemon design
+        /// (pre-existing C001/C002 property — the isolated home scopes the
+        /// socket/lock/logs, not the catalog rows), so shutdown archives
+        /// each probe to leave the default catalog view exactly as found.
+        created_projects: Vec<String>,
         shutdown: Arc<Notify>,
     }
 
@@ -154,6 +164,7 @@ mod server {
                 daemon_executable,
                 observer: None,
                 workspace_id: None,
+                created_projects: Vec::new(),
                 shutdown,
             })
         }
@@ -235,6 +246,21 @@ mod server {
             if let Some(workspace_id) = self.workspace_id.clone() {
                 return Ok(workspace_id);
             }
+            let workspace_id = self
+                .register_workspace_at(&self.workspace_root.clone())
+                .await?;
+            self.workspace_id = Some(workspace_id.clone());
+            Ok(workspace_id)
+        }
+
+        /// Register the workspace rooted at `root`, returning its id.
+        /// Workspace roots are unique per call site: the catalog binds one
+        /// workspace to at most one project (`workspace_project_binding`), so
+        /// every probe project gets its own workspace and a repeat register
+        /// can never alias an earlier probe.
+        async fn register_workspace_at(&self, root: &std::path::Path) -> Result<String, String> {
+            std::fs::create_dir_all(root)
+                .map_err(|e| format!("create probe workspace root: {e}"))?;
             let client = self.observer_client()?;
             let response = tokio::time::timeout(
                 REQUEST_TIMEOUT,
@@ -242,7 +268,7 @@ mod server {
                     protocol_version: PROTOCOL_VERSION,
                     request_id: uuid::Uuid::new_v4().to_string(),
                     payload: CoreRequest::WorkspaceRegister {
-                        root: self.workspace_root.to_string_lossy().into_owned(),
+                        root: root.to_string_lossy().into_owned(),
                     },
                 }),
             )
@@ -250,19 +276,33 @@ mod server {
             .map_err(|_| "workspace register timed out".to_owned())?
             .map_err(|e| format!("workspace register failed: {e}"))?;
             match response {
-                CoreResponse::WorkspaceSnapshot { workspace } => {
-                    self.workspace_id = Some(workspace.workspace_id.clone());
-                    Ok(workspace.workspace_id)
-                }
+                CoreResponse::WorkspaceSnapshot { workspace } => Ok(workspace.workspace_id),
                 other => Err(format!("unexpected workspace response: {other:?}")),
             }
         }
 
-        async fn register_project_inner(&self, display_name: &str) -> Result<String, String> {
-            let workspace_id = self
-                .workspace_id
-                .clone()
-                .ok_or_else(|| "workspace is not registered".to_owned())?;
+        async fn register_project_inner(&mut self, display_name: &str) -> Result<String, String> {
+            // Fresh workspace per probe project (see register_workspace_at).
+            let sanitized: String = display_name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
+                .take(48)
+                .collect();
+            let root = self.workspace_root.join(format!(
+                "{sanitized}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(0)
+            ));
+            let workspace_id = self.register_workspace_at(&root).await?;
+            self.workspace_id = Some(workspace_id.clone());
             let response = self
                 .request(CoreRequest::ProjectRegister {
                     request: ProjectRegisterRequestDto {
@@ -310,16 +350,19 @@ mod server {
             if fresh {
                 let project_name = format!("e2e-probe-{}", std::process::id());
                 match self.register_project_inner(&project_name).await {
-                    Ok(project_id) => json!({
-                        "id": id,
-                        "ok": true,
-                        "daemon_id": daemon_id,
-                        "endpoint": endpoint,
-                        "started_pid": started_pid,
-                        "workspace_id": workspace_id,
-                        "project_id": project_id,
-                        "project_name": project_name,
-                    }),
+                    Ok(project_id) => {
+                        self.created_projects.push(project_id.clone());
+                        json!({
+                            "id": id,
+                            "ok": true,
+                            "daemon_id": daemon_id,
+                            "endpoint": endpoint,
+                            "started_pid": started_pid,
+                            "workspace_id": workspace_id,
+                            "project_id": project_id,
+                            "project_name": project_name,
+                        })
+                    }
                     Err(e) => fail(id, e),
                 }
             } else {
@@ -369,13 +412,16 @@ mod server {
             }
         }
 
-        async fn cmd_register_project(&self, id: &Value, cmd: &Value) -> Value {
+        async fn cmd_register_project(&mut self, id: &Value, cmd: &Value) -> Value {
             let display_name = cmd
                 .get("display_name")
                 .and_then(Value::as_str)
                 .unwrap_or("e2e-extra-probe");
             match self.register_project_inner(display_name).await {
-                Ok(project_id) => json!({"id": id, "ok": true, "project_id": project_id}),
+                Ok(project_id) => {
+                    self.created_projects.push(project_id.clone());
+                    json!({"id": id, "ok": true, "project_id": project_id})
+                }
                 Err(e) => fail(id, e),
             }
         }
@@ -526,7 +572,32 @@ mod server {
                 .unwrap_or(false)
         }
 
-        fn cleanup(&mut self) {
+        async fn cleanup(&mut self) {
+            // Archive every probe project first: the catalog is machine-global
+            // by daemon design, so this leaves the default (unarchived) view
+            // exactly as the phase found it. Best effort — never fails shutdown.
+            // Runs after the WebdriverIO invocations, so no live renderer can
+            // observe the archival invalidations.
+            let created = std::mem::take(&mut self.created_projects);
+            for project_id in created {
+                if self.observer.is_none() {
+                    break;
+                }
+                let result = self
+                    .request(CoreRequest::ProjectArchive {
+                        project_id: project_id.clone(),
+                    })
+                    .await;
+                match result {
+                    Ok(CoreResponse::ProjectArchived { .. }) => {}
+                    Ok(other) => {
+                        eprintln!("fixture cleanup: archive {project_id} unexpected: {other:?}");
+                    }
+                    Err(e) => {
+                        eprintln!("fixture cleanup: archive {project_id} failed: {e}");
+                    }
+                }
+            }
             if let Some(observer) = &self.observer {
                 if let Some(pid) = observer.started_pid {
                     let _ = std::process::Command::new("kill")
@@ -555,7 +626,7 @@ mod server {
                 "reattach" => Some(self.cmd_reattach(&id).await),
                 "stop_daemon" => Some(self.cmd_stop_daemon(&id).await),
                 "shutdown" => {
-                    self.cleanup();
+                    self.cleanup().await;
                     let response = json!({"id": id, "ok": true});
                     self.shutdown.notify_one();
                     Some(response)
@@ -643,6 +714,9 @@ mod server {
                 }
             }
         }
+        // Crash/accept-failure path: best-effort cleanup (archive probes,
+        // stop the daemon, remove the home) so no test state leaks.
+        fixture.lock().await.cleanup().await;
         Ok(())
     }
 }
