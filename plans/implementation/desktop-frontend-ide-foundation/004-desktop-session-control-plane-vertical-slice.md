@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 004 — Desktop Session Control-Plane Vertical Slice
 
-Status: ready for handoff (unblocked by strict M003 closure through closed C003; see `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md` §11)
+Status: implemented through `995d5cf8`; historical closure recorded at `plans/closure/desktop-frontend-ide-foundation/004-status.md`; current strict closure is conditionally controlled by ready post-closure C001 at `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/001-m004-prompt-composition-error-boundary-and-hosted-closure.md` because hosted root CI `37130587841` is red on an M004-owned Clippy finding while Desktop E2E `37130587855` is green.
 
 Repository baseline reviewed: `3f222c2e5f957efdbb6a530276ff5b63a095e435`
 
