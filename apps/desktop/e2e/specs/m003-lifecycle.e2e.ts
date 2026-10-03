@@ -68,6 +68,37 @@ async function projectTexts(): Promise<string[]> {
   return texts;
 }
 
+// Read-only in-page diagnostics through the page's own bundled Tauri API:
+// distinguishes "host never served it" from "renderer never refreshed".
+async function dumpState(label: string): Promise<void> {
+  try {
+    const state = await browser.execute(() => {
+      const internals = (
+        window as unknown as {
+          __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> };
+        }
+      ).__TAURI_INTERNALS__;
+      if (!internals) return { invoke: false };
+      return internals
+        .invoke('desktop_project_list')
+        .then((projects) => ({
+          invoke: true,
+          hostProjects: (projects as unknown[]).length,
+          status: document.querySelector('[data-testid="connection-status"]')?.textContent,
+          generation: document.querySelector('[data-testid="connection-generation"]')
+            ?.textContent,
+          subscription: document.querySelector('[data-testid="subscription-id"]')
+            ?.textContent,
+          rendered: document.querySelectorAll('[data-testid="project-item"]').length,
+        }))
+        .catch((error: unknown) => ({ invoke: 'error', message: String(error) }));
+    });
+    console.log(`DIAG ${label}: ${JSON.stringify(state)}`);
+  } catch (error) {
+    console.log(`DIAG ${label}: execute failed: ${String(error)}`);
+  }
+}
+
 async function waitForProject(displayName: string): Promise<void> {
   await browser.waitUntil(
     async () => (await projectTexts()).some((text) => text.includes(displayName)),
@@ -148,6 +179,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     // Catalog mutation through the fixture reaches the current renderer with
     // no manual refresh, proving the real Tauri Channel delivery.
     await active().registerProject(extraProject);
+    await dumpState(`after-register-${extraProject}`);
     await waitForProject(extraProject);
     return await connectionGeneration();
   }

@@ -21,6 +21,10 @@ export interface TestBrowser {
   ): Promise<void>;
   refresh(): Promise<void>;
   closeWindow(): Promise<void>;
+  // Raw script execution (proven working). Used only for read-only
+  // in-page diagnostics (document state, host snapshot/project counts via
+  // the page's own bundled Tauri API) — never to drive the app.
+  execute<T>(script: string | ((...args: unknown[]) => T), ...args: unknown[]): Promise<T>;
 }
 
 export const testBrowser: TestBrowser = wdioBrowser as unknown as TestBrowser;

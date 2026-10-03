@@ -114,6 +114,12 @@ run_phase() {
   done
   kill -9 "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true
+  # Keep the isolated daemon log beside the runner logs (supplementary
+  # artifact for post-mortems); the phase home itself is always removed.
+  if [[ -f "$home/daemon-home/daemon.log" ]]; then
+    mkdir -p "$app_root/e2e/logs"
+    cp "$home/daemon-home/daemon.log" "$app_root/e2e/logs/$name-daemon.log" 2>/dev/null || true
+  fi
   rm -rf "$home"
   unset CODEGG_E2E_HOME CODEGG_E2E_SOCKET CODEGG_DAEMON_HOME CODEGG_E2E_STATE_FILE
   return $status
