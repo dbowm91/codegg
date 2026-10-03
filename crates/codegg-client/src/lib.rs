@@ -5,7 +5,9 @@
 
 use codegg_protocol::frames::{ClientCapabilities, ClientKind};
 
+mod compose;
 mod connect;
+mod driver;
 mod local;
 mod paths;
 #[cfg(windows)]
@@ -15,8 +17,16 @@ mod windows_pipe_security;
 #[allow(unsafe_code)]
 mod windows_process;
 
+pub use compose::{
+    compose_turn_submit, ComposerError, PromptIntent, PromptIntentState, TurnSubmitInput,
+    MAX_PROMPT_TEXT_CHARS,
+};
 pub use connect::{connect_or_start_local_daemon, LocalDaemonOptions, LocalDaemonOutcome};
-pub use local::LocalSocketClient;
+pub use driver::{
+    DriverConfig, DriverError, DriverSnapshotView, DriverState, SessionProjectionDriver,
+    StoppedDriver,
+};
+pub use local::{ClientEvent, LocalSocketClient};
 pub use paths::{LocalDaemonPaths, LocalEndpoint};
 #[cfg(windows)]
 #[doc(hidden)]

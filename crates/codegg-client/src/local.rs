@@ -29,6 +29,23 @@ struct PendingRequestGuard {
     pending: Arc<DashMap<String, PendingRequest>>,
 }
 
+/// Loss-aware transport event for projection-primary session drivers.
+///
+/// A broadcast lag is delivered as [`ClientEvent::Lagged`] with the exact
+/// daemon-reported drop count. Drivers must stop applying live events on
+/// `Lagged` and resume/resync from their retained canonical cursor; the
+/// transport never replays the dropped events itself.
+#[derive(Debug, Clone)]
+pub enum ClientEvent {
+    /// One normally delivered daemon event envelope (boxed: envelopes
+    /// are large and lag/close signals must stay small).
+    Event(Box<EventEnvelope<CoreEvent>>),
+    /// The subscriber lagged the shared broadcast by `dropped` events.
+    Lagged { dropped: u64 },
+    /// The transport closed; no further events will arrive.
+    Closed,
+}
+
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
         self.pending.remove(&self.request_id);
@@ -132,6 +149,15 @@ impl LocalSocketClient {
         self.client_id.lock().await.clone()
     }
 
+    /// `true` once the reader task has observed peer death, a protocol
+    /// version mismatch, or an explicit reconnect teardown. Event
+    /// subscribers must treat this as terminal: the shared broadcast
+    /// stays open while any client clone lives, so closure is not
+    /// otherwise observable from a subscribed receiver.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     pub async fn request(
         &self,
         request: RequestEnvelope<CoreRequest>,
@@ -172,6 +198,40 @@ impl LocalSocketClient {
                     Err(broadcast::error::RecvError::Closed) => break,
                     Err(broadcast::error::RecvError::Lagged(dropped)) => {
                         tracing::warn!(dropped, "native client event subscriber lagged");
+                    }
+                }
+            }
+        });
+        rx
+    }
+
+    /// Loss-aware event subscription for projection-primary drivers.
+    ///
+    /// Unlike [`Self::subscribe`], broadcast lag is surfaced as a typed
+    /// [`ClientEvent::Lagged`] condition and terminal closure as
+    /// [`ClientEvent::Closed`] instead of being silently skipped. A
+    /// projection driver must treat `Lagged` as authoritative
+    /// resume/resync — never as lossless delivery.
+    pub fn subscribe_events(&self) -> mpsc::Receiver<ClientEvent> {
+        let (tx, rx) = mpsc::channel(EVENT_CAPACITY);
+        let mut events = self.events.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        if tx.send(ClientEvent::Event(Box::new(event))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        let _ = tx.send(ClientEvent::Closed).await;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                        tracing::warn!(dropped, "native client event subscriber lagged");
+                        if tx.send(ClientEvent::Lagged { dropped }).await.is_err() {
+                            break;
+                        }
                     }
                 }
             }
