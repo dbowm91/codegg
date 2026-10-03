@@ -64,6 +64,18 @@ describe('M003 built-app explicit autostart and daemon survival', () => {
     const daemonIdentity = await $('[data-testid="daemon-identity"]').getText();
     expect(daemonIdentity.length).toBeGreaterThan(0);
     expect(daemonIdentity).not.toBe(firstDaemonId);
+    // The mount subscription must be installed (proves the app bound the
+    // autostarted connection, not just a snapshot).
+    await browser.waitUntil(
+      async () => {
+        const text = await $('[data-testid="subscription-id"]').getText();
+        return text !== '' && text !== '—';
+      },
+      {
+        timeout: 60_000,
+        timeoutMsg: 'renderer subscription was never installed after autostart',
+      },
+    );
     // The daemon-side project catalog survived the restart (same home).
     const items = await $$('[data-testid="project-item"]');
     const texts: string[] = [];

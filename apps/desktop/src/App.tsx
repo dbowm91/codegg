@@ -8,6 +8,11 @@ export function App() {
   const [connection, setConnection] = useState(initial);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [busy, setBusy] = useState(false);
+  // Renderer-visible subscription identity for the active connection
+  // generation. Display-only (mirrors the installed bridge handle); the E2E
+  // trajectory waits on it to prove the re-subscribe landed before mutating
+  // the catalog, instead of racing the async subscribe round-trip.
+  const [subscriptionId, setSubscriptionId] = useState<string | null>(null);
   const generation = useRef(0);
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
@@ -51,16 +56,18 @@ export function App() {
         return;
       }
       handle = subscription;
+      setSubscriptionId(subscription.subscriptionId);
     }).catch(() => undefined);
     return () => {
       cancelled = true;
       handle?.unsubscribe();
+      setSubscriptionId(null);
     };
   }, [connection.state, connection.connectionGeneration]);
   const reconnect = async () => { const current = ++generation.current; setBusy(true); try { const snapshot = await bridge.connect(); if (current === generation.current) { connectionRef.current = snapshot; setConnection(snapshot); if (snapshot.state === 'connected') await refreshProjects(current, snapshot.connectionGeneration); } } catch (error) { if (current === generation.current) { const failed = { ...initial, state: 'disconnected' as const, error: String(error) }; connectionRef.current = failed; setConnection(failed); } } finally { if (current === generation.current) setBusy(false); } };
   return <main>
     <header><div><p className="eyebrow">LOCAL DESKTOP</p><h1>CodeGG</h1></div><span className={`status ${connection.state}`} data-testid="connection-status">{connection.state}</span></header>
-    <section className="panel"><h2>Daemon</h2><dl><dt>Identity</dt><dd data-testid="daemon-identity">{connection.daemonId ?? '—'}</dd><dt>Generation</dt><dd data-testid="connection-generation">{connection.connectionGeneration}</dd><dt>Protocol</dt><dd>{connection.protocolVersion ?? '—'}</dd><dt>Uptime</dt><dd>{connection.uptimeSeconds === null ? '—' : `${connection.uptimeSeconds}s`}</dd><dt>Active sessions</dt><dd>{connection.activeSessions ?? '—'}</dd></dl>
+    <section className="panel"><h2>Daemon</h2><dl><dt>Identity</dt><dd data-testid="daemon-identity">{connection.daemonId ?? '—'}</dd><dt>Generation</dt><dd data-testid="connection-generation">{connection.connectionGeneration}</dd><dt>Subscription</dt><dd data-testid="subscription-id">{subscriptionId ?? '—'}</dd><dt>Protocol</dt><dd>{connection.protocolVersion ?? '—'}</dd><dt>Uptime</dt><dd>{connection.uptimeSeconds === null ? '—' : `${connection.uptimeSeconds}s`}</dd><dt>Active sessions</dt><dd>{connection.activeSessions ?? '—'}</dd></dl>
       {connection.error && <p role="alert">{connection.error}</p>}<button data-testid="reconnect-button" disabled={busy} onClick={() => void reconnect()}>{busy ? 'Connecting…' : 'Reconnect'}</button>
     </section>
     <section className="panel"><h2>Projects <small>{displayedProjects.length} / 50</small></h2>{displayedProjects.length ? <ul data-testid="project-list">{displayedProjects.map((project) => <li key={project.projectId} data-testid="project-item" data-project-id={project.projectId}><span>{project.displayName}</span><small>{project.lifecycle}</small></li>)}</ul> : <p className="muted">No projects registered yet.</p>}</section>

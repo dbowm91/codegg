@@ -142,8 +142,13 @@ Test instrumentation never widens production authority:
 - an app binary built with `desktop-e2e` additionally refuses to connect
   unless `CODEGG_DAEMON_HOME` is set under the OS temp directory
   (fail-closed `disconnected`, no daemon touched);
-- the renderer exposes only `data-testid` seams plus a visible connection
-  generation; no privileged test command exists on the production bridge.
+- the renderer exposes only `data-testid` seams plus visible connection
+  generation and subscription identity; no privileged test command exists on
+  the production bridge. The subscription id is display-only state mirroring
+  the installed bridge handle: the trajectory waits for a fresh subscription
+  before mutating the catalog because a broadcast emitted while no desktop
+  subscriber is installed (reconnect commit takes the old owner; the
+  renderer re-subscribes asynchronously) is lost, not queued.
 
 ## Deferred surfaces
 

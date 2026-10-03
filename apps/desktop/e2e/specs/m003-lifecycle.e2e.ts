@@ -34,6 +34,31 @@ async function connectionGeneration(): Promise<number> {
   return Number.parseInt(await $('[data-testid="connection-generation"]').getText(), 10);
 }
 
+async function subscriptionId(): Promise<string> {
+  const text = await $('[data-testid="subscription-id"]').getText();
+  return text === '—' ? '' : text;
+}
+
+// The host takes the old subscription at reconnect commit, and the renderer
+// re-subscribes asynchronously. Registering the probe before the new owner
+// is installed would broadcast into zero desktop subscribers and lose the
+// invalidation forever, so every mutation waits for a fresh installed
+// subscription first. A renderer that never subscribes fails here distinctly
+// instead of timing out on the project list.
+async function waitForSubscriptionId(previous: string | null): Promise<string> {
+  await browser.waitUntil(
+    async () => {
+      const id = await subscriptionId();
+      return id !== '' && id !== previous;
+    },
+    {
+      timeout: 60_000,
+      timeoutMsg: 'renderer subscription was never installed for the current generation',
+    },
+  );
+  return subscriptionId();
+}
+
 async function projectTexts(): Promise<string[]> {
   const items = await $$('[data-testid="project-item"]');
   const texts: string[] = [];
@@ -57,6 +82,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
   let fixture: FixtureClient | null = null;
   let daemonId = '';
   let probeProject = '';
+  let lastSubId: string | null = null;
 
   before(async () => {
     const stateFile = process.env.CODEGG_E2E_STATE_FILE;
@@ -95,6 +121,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
   it('renders the real daemon identity and the deterministic project catalog', async () => {
     await waitConnected();
     expect(await $('[data-testid="daemon-identity"]').getText()).toBe(daemonId);
+    lastSubId = await waitForSubscriptionId(null);
     await waitForProject(probeProject);
     // Exactly the TUI-kind fixture observer plus one desktop client.
     expectCounts(await active().snapshot(), 2, 1);
@@ -102,12 +129,16 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
 
   async function reconnectCycle(extraProject: string): Promise<number> {
     const before = await connectionGeneration();
+    const beforeSub = lastSubId;
     await $('[data-testid="reconnect-button"]').click();
     await browser.waitUntil(async () => (await connectionGeneration()) > before, {
       timeout: 60_000,
       timeoutMsg: 'visible reconnect did not install a newer connection generation',
     });
     await waitConnected();
+    // The new owner must be installed before mutating: a broadcast emitted
+    // while no desktop subscriber exists is lost, not queued.
+    lastSubId = await waitForSubscriptionId(beforeSub);
     // Reconnect converges to exactly one desktop client, not two.
     const snapshot = await active().waitForSnapshot(
       (s) => s.total_clients === 2 && s.desktop_clients === 1,
@@ -130,6 +161,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     await browser.refresh();
     await waitConnected();
     expect(await $('[data-testid="daemon-identity"]').getText()).toBe(daemonId);
+    lastSubId = await waitForSubscriptionId(lastSubId);
     const snapshot = await active().waitForSnapshot(
       (s) => s.total_clients === 2 && s.desktop_clients === 1,
       { describe: 'one-desktop convergence after reload' },
@@ -144,6 +176,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     await reconnectCycle('e2e-reconnect-probe-2');
     await browser.refresh();
     await waitConnected();
+    lastSubId = await waitForSubscriptionId(lastSubId);
     expectCounts(
       await active().waitForSnapshot(
         (s) => s.total_clients === 2 && s.desktop_clients === 1,
