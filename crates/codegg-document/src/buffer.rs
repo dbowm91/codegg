@@ -42,9 +42,6 @@ impl DocumentSnapshot {
     pub fn is_empty(&self) -> bool {
         self.len_bytes() == 0
     }
-    pub fn to_string(&self) -> String {
-        self.text.to_string()
-    }
     pub fn is_byte_boundary(&self, offset: usize) -> bool {
         offset <= self.len_bytes() && self.text.is_char_boundary(offset)
     }
@@ -107,6 +104,12 @@ impl DocumentSnapshot {
             return Err(DocumentError::InvalidBoundary);
         }
         Ok(offset)
+    }
+}
+
+impl std::fmt::Display for DocumentSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.text.fmt(formatter)
     }
 }
 

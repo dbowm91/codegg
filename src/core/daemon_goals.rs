@@ -1054,6 +1054,7 @@ impl CoreDaemon {
                     record.canonical_root.clone(),
                     lease.locks(),
                     pool,
+                    Some(self.documents.clone()),
                     self.deps.lsp_service.clone(),
                 )
                 .await

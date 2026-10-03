@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +19,80 @@ use codegg_protocol::lsp::{LspPreviewApplyRequestDto, LspPreviewApplyResultDto};
 const MAX_PATCHES: usize = 100;
 const MAX_PATCH_BYTES: usize = 50_000;
 const MAX_STRING_BYTES: usize = 4_096;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckedTextWrite {
+    Written { new_hash: String },
+    Conflict { actual_hash: String },
+}
+
+/// Perform a one-file checked write under the caller's workspace lock. This
+/// is shared by document save while preview apply retains its multi-file
+/// checkpoint/rollback transaction.
+pub(crate) async fn checked_workspace_text_write(
+    workspace_root: &Path,
+    relative_path: &str,
+    expected_hash: &str,
+    text: &str,
+) -> Result<CheckedTextWrite, String> {
+    if text.len() > codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES {
+        return Err("document exceeds the text size limit".into());
+    }
+    let root = workspace_root.canonicalize().map_err(|e| e.to_string())?;
+    let path = crate::tool::util::validate_target_path(Path::new(relative_path), &root)
+        .map_err(|e| e.to_string())?;
+    crate::tool::util::check_path_for_symlinks(&path).map_err(|e| e.to_string())?;
+    let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+    if !canonical.starts_with(&root) || !canonical.is_file() {
+        return Err("document target is not a regular file inside the workspace".into());
+    }
+    if tokio::fs::metadata(&canonical)
+        .await
+        .map_err(|e| e.to_string())?
+        .len()
+        > codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES as u64
+    {
+        return Err("document target exceeds the text size limit".into());
+    }
+    let current = tokio::fs::read(&canonical)
+        .await
+        .map_err(|e| e.to_string())?;
+    let actual_hash = sha256_bytes(&current);
+    if actual_hash != expected_hash {
+        return Ok(CheckedTextWrite::Conflict { actual_hash });
+    }
+
+    let parent = canonical
+        .parent()
+        .ok_or_else(|| "document target has no parent directory".to_string())?;
+    let tmp = parent.join(format!(".codegg-save-{}", uuid::Uuid::new_v4().simple()));
+    let write = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
+        file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &canonical).map_err(|e| e.to_string())?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = write {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    Ok(CheckedTextWrite::Written {
+        new_hash: sha256(text),
+    })
+}
+
+fn sha256_bytes(content: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(content))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LspMutationApplyError {
@@ -84,6 +159,7 @@ pub async fn apply_preview(
     workspace_root: PathBuf,
     locks: Arc<WorkspaceLockTable>,
     pool: sqlx::SqlitePool,
+    documents: Option<Arc<crate::document_service::DocumentService>>,
     lsp_service: Option<Arc<crate::lsp::service::LspService>>,
 ) -> Result<LspPreviewApplyResultDto, LspMutationApplyError> {
     validate_request_shape(&request)?;
@@ -111,6 +187,20 @@ pub async fn apply_preview(
         relative_paths.push(relative);
         normalized.push((path, patch));
     }
+
+    // Document operation gates precede the workspace lock in the global
+    // order shared with checked saves. If any open editor buffer is dirty,
+    // the disk-authoritative preview cannot be based on that stale disk.
+    let _document_guards = if let Some(documents) = &documents {
+        Some(
+            documents
+                .lock_clean_paths(&request.workspace_id, &relative_paths)
+                .await
+                .map_err(LspMutationApplyError::Stale)?,
+        )
+    } else {
+        None
+    };
 
     let patch_views: Vec<egglsp::context::PreviewFilePatch> = request
         .patches
@@ -145,6 +235,16 @@ pub async fn apply_preview(
     }
 
     let _guard = locks.acquire_repository(&canonical_root).await;
+    if let Some(service) = &lsp_service {
+        for (path, _) in &normalized {
+            if service.is_managed_document_dirty(path).await {
+                return Err(LspMutationApplyError::Stale(format!(
+                    "{} has unsaved editor changes; save and regenerate the preview",
+                    path.strip_prefix(&canonical_root).unwrap_or(path).display()
+                )));
+            }
+        }
+    }
     let manager =
         codegg_core::snapshot::checkpoint::EditCheckpointManager::new(pool, canonical_root.clone());
     let pre_states = manager
@@ -380,6 +480,35 @@ mod tests {
         pool
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn checked_workspace_write_conflicts_without_mutation_then_writes_atomically() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "base").expect("seed file");
+        let base = sha256("base");
+        let conflict = checked_workspace_text_write(temp.path(), "main.rs", &"0".repeat(64), "new")
+            .await
+            .expect("checked conflict");
+        assert_eq!(
+            conflict,
+            CheckedTextWrite::Conflict {
+                actual_hash: base.clone()
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("read base"), "base");
+
+        let written = checked_workspace_text_write(temp.path(), "main.rs", &base, "new")
+            .await
+            .expect("checked write");
+        assert_eq!(
+            written,
+            CheckedTextWrite::Written {
+                new_hash: sha256("new")
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&path).expect("read new"), "new");
+    }
+
     fn request(root: &Path, path: &Path, original: &str) -> LspPreviewApplyRequestDto {
         let preview = egglsp::edit::preview_text_edits_for_file(
             "rename",
@@ -481,6 +610,7 @@ mod tests {
             Arc::new(WorkspaceLockTable::new()),
             pool.clone(),
             None,
+            None,
         )
         .await
         .expect("apply");
@@ -523,6 +653,7 @@ mod tests {
             Arc::new(WorkspaceLockTable::new()),
             pool().await,
             None,
+            None,
         )
         .await
         .expect_err("stale preview must fail closed");
@@ -546,6 +677,7 @@ mod tests {
             root.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
             pool().await,
+            None,
             None,
         )
         .await
@@ -572,6 +704,7 @@ mod tests {
             root.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
             pool().await,
+            None,
             None,
         )
         .await

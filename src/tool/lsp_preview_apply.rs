@@ -225,6 +225,7 @@ impl LspPreviewApplyTool {
             self.workspace_root.clone(),
             self.workspace_locks.clone(),
             self.pool.clone(),
+            None,
             Some(self.lsp_service.clone()),
         )
         .await

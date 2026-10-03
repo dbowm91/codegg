@@ -48,3 +48,25 @@ must compare the current disk digest with the document's recorded disk base
 under the existing workspace mutation authority. A mismatch preserves dirty
 text and becomes a conflict. The client must not automatically replay divergent
 local drafts after reconnect.
+
+## LSP, save, and external disk changes
+
+`egglsp` records each open document as `Disk` or `Managed`. Document service
+open/change/snapshot/reload calls synchronize a full managed snapshot. A
+disk-oriented `ensure_file_open_from_disk` call never replaces managed text;
+it retries a stale managed mirror from the registry before semantic work.
+Mirror failure is reported as `lsp_degraded`; it never rejects or rolls back
+canonical editor text.
+
+`DocumentSave` holds the document operation gate and workspace repository lock,
+revalidates the relative target, rereads its SHA-256, and writes through a
+synced sibling temporary file plus atomic rename. A disk-base mismatch writes
+nothing and marks the buffer conflicted. `DocumentReload` requires the current
+writer lease and expected revision. An explicit snapshot boundary detects
+external disk changes: clean buffers refresh and advance revision; dirty
+buffers keep their exact text and become conflicted. Filesystem notifications
+are advisory; tools continue to read and mutate disk through their existing
+authorities. A dirty editor document rejects LSP preview apply until saved and
+the preview is regenerated. The daemon preview apply path takes clean-document
+operation gates before the workspace lock, closing the edit race between its
+dirty check and multi-file write.

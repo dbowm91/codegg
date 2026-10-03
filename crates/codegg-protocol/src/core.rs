@@ -1007,6 +1007,7 @@ pub enum CoreResponse {
     DocumentSnapshot {
         snapshot: DocumentSnapshotDto,
         writer_lease: Option<String>,
+        lsp_degraded: bool,
     },
     DocumentWriterLease {
         document_id: String,
@@ -1014,6 +1015,16 @@ pub enum CoreResponse {
     },
     DocumentChanged {
         revision: u64,
+        lsp_degraded: bool,
+    },
+    DocumentSaved {
+        revision: u64,
+        disk_base_digest: String,
+        lsp_degraded: bool,
+    },
+    DocumentReloaded {
+        revision: u64,
+        lsp_degraded: bool,
     },
     DocumentStatus {
         document_id: String,

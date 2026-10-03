@@ -65,6 +65,7 @@ struct OpenDocument {
     readers: HashMap<String, String>,
     writer: Option<(String, String)>,
     recent: HashMap<String, (String, u64)>,
+    operation: Arc<Mutex<()>>,
 }
 
 impl OpenDocument {
@@ -92,6 +93,13 @@ pub struct DocumentService {
     by_id: DashMap<String, Arc<Mutex<OpenDocument>>>,
     by_key: DashMap<String, String>,
     key_locks: DashMap<String, Weak<Mutex<()>>>,
+}
+
+/// Holds per-document operation gates while an external mutation checks and
+/// updates disk. This prevents an accepted editor transaction from racing
+/// through the clean-buffer preview check.
+pub struct DocumentOperationGuards {
+    _guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 impl DocumentService {
@@ -139,6 +147,11 @@ impl DocumentService {
         if !canonical_target.starts_with(&canonical_root) || !canonical_target.is_file() {
             return Err(DocumentServiceError::InvalidPath);
         }
+        if tokio::fs::metadata(&canonical_target).await?.len()
+            > codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES as u64
+        {
+            return Err(DocumentServiceError::ResourceLimit);
+        }
         let bytes = tokio::fs::read(&canonical_target).await?;
         if bytes.len() > codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES {
             return Err(DocumentServiceError::ResourceLimit);
@@ -165,6 +178,7 @@ impl DocumentService {
             readers: HashMap::new(),
             writer: None,
             recent: HashMap::new(),
+            operation: Arc::new(Mutex::new(())),
         };
         attach(&mut doc, client_id, writable)?;
         let lease = doc.writer.as_ref().map(|(_, lease)| lease.clone());
@@ -250,11 +264,11 @@ impl DocumentService {
         Ok(lease)
     }
 
-    pub async fn detach_document(&self, id: &str, project_id: &str, client: &str) {
+    pub async fn detach_document(&self, id: &str, project_id: &str, client: &str) -> bool {
         if let Some(entry) = self.by_id.get(id).map(|doc| doc.value().clone()) {
             let mut doc = entry.lock().await;
             if doc.key.project_id != project_id {
-                return;
+                return false;
             }
             doc.readers.remove(client);
             if doc
@@ -264,8 +278,20 @@ impl DocumentService {
             {
                 doc.writer = None;
             }
+            let evict = !doc.dirty && doc.readers.is_empty() && doc.writer.is_none();
+            if evict {
+                let key = format!(
+                    "{}\0{}\0{}",
+                    doc.key.project_id, doc.key.workspace_id, doc.key.relative_path
+                );
+                drop(doc);
+                self.by_id.remove(id);
+                self.by_key.remove(&key);
+                return true;
+            }
+            return false;
         }
-        self.evict_clean_unattached().await;
+        false
     }
 
     pub async fn change(
@@ -286,6 +312,8 @@ impl DocumentService {
             .get(id)
             .map(|doc| doc.value().clone())
             .ok_or(DocumentServiceError::NotFound)?;
+        let operation = entry.lock().await.operation.clone();
+        let _operation = operation.lock_owned().await;
         let mut doc = entry.lock().await;
         if doc.key.project_id != project_id {
             return Err(DocumentServiceError::NotFound);
@@ -390,6 +418,69 @@ impl DocumentService {
         Err(DocumentServiceError::SaveNotReady)
     }
 
+    /// Lock changes, saves, and reloads for one document across disk I/O.
+    pub async fn operation_lock(
+        &self,
+        id: &str,
+        project_id: &str,
+        client: &str,
+        lease: &str,
+    ) -> Result<Arc<Mutex<()>>, DocumentServiceError> {
+        let entry = self
+            .by_id
+            .get(id)
+            .map(|doc| doc.value().clone())
+            .ok_or(DocumentServiceError::NotFound)?;
+        let doc = entry.lock().await;
+        if doc.key.project_id != project_id {
+            return Err(DocumentServiceError::NotFound);
+        }
+        if !doc
+            .writer
+            .as_ref()
+            .is_some_and(|(owner, token)| owner == client && token == lease)
+        {
+            return Err(DocumentServiceError::StaleLease);
+        }
+        Ok(doc.operation.clone())
+    }
+
+    pub async fn lock_clean_paths(
+        &self,
+        workspace_id: &str,
+        relative_paths: &[String],
+    ) -> Result<DocumentOperationGuards, String> {
+        let paths: std::collections::HashSet<&str> =
+            relative_paths.iter().map(String::as_str).collect();
+        let documents = self
+            .by_id
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        let mut candidates = Vec::new();
+        for (id, entry) in documents {
+            let doc = entry.lock().await;
+            if doc.key.workspace_id == workspace_id
+                && paths.contains(doc.key.relative_path.as_str())
+            {
+                candidates.push((id, entry.clone(), doc.operation.clone()));
+            }
+        }
+        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut guards = Vec::with_capacity(candidates.len());
+        for (_, _, operation) in &candidates {
+            guards.push(operation.clone().lock_owned().await);
+        }
+        for (id, entry, _) in &candidates {
+            if entry.lock().await.dirty {
+                return Err(format!(
+                    "{id} has unsaved editor changes; save and regenerate the preview"
+                ));
+            }
+        }
+        Ok(DocumentOperationGuards { _guards: guards })
+    }
+
     pub async fn capture_save(
         &self,
         id: &str,
@@ -469,6 +560,47 @@ impl DocumentService {
         }
         doc.conflicted = actual_disk_digest != doc.base_digest;
         Ok(doc.buffer.revision().get())
+    }
+
+    /// Reconcile a disk change at an explicit snapshot boundary. A clean
+    /// buffer advances revision to the verified disk text; a dirty buffer is
+    /// preserved and marked conflicted.
+    pub async fn refresh_clean_from_disk(
+        &self,
+        id: &str,
+        project_id: &str,
+        client: &str,
+        expected_revision: u64,
+        text: String,
+        disk_digest: String,
+    ) -> Result<Option<u64>, DocumentServiceError> {
+        if text.len() > codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES {
+            return Err(DocumentServiceError::ResourceLimit);
+        }
+        let entry = self
+            .by_id
+            .get(id)
+            .map(|doc| doc.value().clone())
+            .ok_or(DocumentServiceError::NotFound)?;
+        let mut doc = entry.lock().await;
+        if doc.key.project_id != project_id || !doc.readers.contains_key(client) {
+            return Err(DocumentServiceError::NotFound);
+        }
+        if doc.buffer.revision().get() != expected_revision {
+            return Err(DocumentServiceError::StaleRevision);
+        }
+        if disk_digest == doc.base_digest {
+            return Ok(None);
+        }
+        if doc.dirty {
+            doc.conflicted = true;
+            return Ok(None);
+        }
+        let snapshot = doc.buffer.replace_text(text)?;
+        doc.base_digest = disk_digest;
+        doc.dirty = false;
+        doc.conflicted = false;
+        Ok(Some(snapshot.revision().get()))
     }
 
     pub async fn reload_verified(
@@ -991,5 +1123,109 @@ mod tests {
                 .unwrap(),
             (2, false, false, true)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_disk_change_refreshes_clean_text_and_preserves_dirty_text_as_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        tokio::fs::write(temp.path().join("clean.rs"), "clean")
+            .await
+            .unwrap();
+        tokio::fs::write(temp.path().join("dirty.rs"), "dirty")
+            .await
+            .unwrap();
+        let service = DocumentService::new();
+        let (clean, _) = service
+            .open(
+                "p".into(),
+                "w".into(),
+                temp.path(),
+                "clean.rs",
+                "reader",
+                false,
+            )
+            .await
+            .unwrap();
+        let refreshed = service
+            .refresh_clean_from_disk(
+                &clean.document_id,
+                "p",
+                "reader",
+                0,
+                "outside".into(),
+                "external-clean".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refreshed, Some(1));
+        let clean_snapshot = service
+            .snapshot(&clean.document_id, "p", "reader")
+            .await
+            .unwrap();
+        assert_eq!(clean_snapshot.text, "outside");
+        assert_eq!(clean_snapshot.revision, 1);
+        assert!(!clean_snapshot.dirty && !clean_snapshot.conflicted);
+        let clean_guard = service
+            .lock_clean_paths("w", &["clean.rs".into()])
+            .await
+            .expect("clean preview target should be guardable");
+        drop(clean_guard);
+
+        let (dirty, _) = service
+            .open(
+                "p".into(),
+                "w".into(),
+                temp.path(),
+                "dirty.rs",
+                "writer",
+                false,
+            )
+            .await
+            .unwrap();
+        let lease = service
+            .acquire_writer(&dirty.document_id, "p", "writer")
+            .await
+            .unwrap();
+        service
+            .change(
+                &dirty.document_id,
+                "p",
+                "writer",
+                &lease,
+                0,
+                "edit",
+                DocumentTransactionDto {
+                    edits: vec![DocumentTextEditDto {
+                        range: DocumentTextRangeDto { start: 5, end: 5 },
+                        insert: " local".into(),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(service
+            .lock_clean_paths("w", &["dirty.rs".into()])
+            .await
+            .is_err());
+        assert_eq!(
+            service
+                .refresh_clean_from_disk(
+                    &dirty.document_id,
+                    "p",
+                    "writer",
+                    1,
+                    "outside".into(),
+                    "external-dirty".into()
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        let dirty_snapshot = service
+            .snapshot(&dirty.document_id, "p", "writer")
+            .await
+            .unwrap();
+        assert_eq!(dirty_snapshot.text, "dirty local");
+        assert!(dirty_snapshot.dirty && dirty_snapshot.conflicted);
     }
 }

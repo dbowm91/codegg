@@ -573,6 +573,9 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("edit_checkpoint_reapply", "file_mutate"),
     ("edit_checkpoint_reapply_latest", "file_mutate"),
     ("lsp_preview_apply", "file_mutate"),
+    // Editor document changes/save/reload share the existing file-mutation
+    // structural action; document bodies and text edits are never metadata.
+    ("document_modify", "file_mutate"),
     ("managed_worktree_cleanup", "worktree_lifecycle"),
     ("managed_worktree_archive", "worktree_lifecycle"),
     ("job_submit", "job_submit"),
@@ -678,6 +681,8 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "asset_refresh_capabilities",
     "asset_refresh_status",
     "audit_capabilities",
+    "document_capabilities",
+    "document_read",
     "connection_list_detail",
     "eggpool_connection_cancel",
     "eggpool_connection_status",
