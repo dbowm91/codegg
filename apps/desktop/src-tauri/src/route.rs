@@ -18,7 +18,7 @@
 //!   token (connection + route generation) remains current, otherwise
 //!   it is stale-dropped without mutating route state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use codegg_client::StoppedDriver;
 use codegg_protocol::{
@@ -57,6 +57,8 @@ pub(crate) struct RouteState {
     pub(crate) stopped: Option<StoppedDriver>,
     pub(crate) watcher: Option<tokio::task::JoinHandle<()>>,
     pub(crate) prompt: Option<codegg_client::PromptIntent>,
+    pub(crate) controller: Option<super::bridge::ControllerSummaryView>,
+    pub(crate) responding: HashSet<String>,
 }
 
 impl RouteState {
@@ -1045,11 +1047,8 @@ mod tests {
 
     #[cfg(unix)]
     async fn expect_no_further_request(daemon: &mut FakeDaemon) {
-        if let Ok((_, payload)) = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            daemon.next_request(),
-        )
-        .await
+        if let Ok((_, payload)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), daemon.next_request()).await
         {
             panic!("unexpected late daemon request: {payload:?}");
         }
@@ -1338,6 +1337,379 @@ mod tests {
         let route = state.route.lock().await;
         assert_eq!(route.project_id.as_deref(), Some("proj-b"));
         assert!(route.session_id.is_none());
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    async fn open_control_route(state: &std::sync::Arc<HostState>) -> RouteTokenView {
+        let token = select_workspace_only(state).await;
+        state
+            .route_session_open("s-1".into(), token.route_generation)
+            .await
+            .expect("open")
+            .route_token
+    }
+
+    #[cfg(unix)]
+    fn controller_fixture(principal: &str, revision: u64) -> CoreResponse {
+        CoreResponse::SessionControl {
+            controller: Some(codegg_protocol::core::SessionControllerDto {
+                session_id: "s-1".into(),
+                turn_id: "turn-1".into(),
+                controller_principal: principal.into(),
+                origin_client: None,
+                revision,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+                last_action: "acquire".into(),
+                last_actor: None,
+                last_reason: None,
+            }),
+            requests: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    /// Server prelude shared by control tests: project detail plus the
+    /// session attach for `s-1`.
+    #[cfg(unix)]
+    async fn control_prelude(daemon: &mut FakeDaemon) {
+        let (id, _) = daemon.next_request().await;
+        daemon
+            .respond(
+                id,
+                detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+            )
+            .await;
+        let (id, payload) = daemon.next_request().await;
+        assert!(
+            matches!(payload, CoreRequest::SessionAttach { .. }),
+            "expected SessionAttach, got {payload:?}"
+        );
+        daemon
+            .respond(
+                id,
+                CoreResponse::Session {
+                    session: session_dto("s-1", "proj-a", "ws-1", "First"),
+                },
+            )
+            .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn control_refresh_installs_controller() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::SessionControlGet { session_id } = payload else {
+                panic!("expected SessionControlGet, got {payload:?}");
+            };
+            assert_eq!(session_id, "s-1");
+            daemon.respond(id, controller_fixture("alice", 3)).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let summary = state
+            .route_control_refresh(token.route_generation)
+            .await
+            .expect("refresh")
+            .expect("controller present");
+        assert_eq!(summary.controller_principal, "alice");
+        assert_eq!(summary.revision, 3);
+        assert_eq!(summary.turn_id, "turn-1");
+        let stored = state.route.lock().await.controller.clone().expect("stored");
+        assert_eq!(stored.controller_principal, "alice");
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn control_refresh_idle_clears_controller() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::SessionControl {
+                        controller: None,
+                        requests: Vec::new(),
+                        truncated: false,
+                    },
+                )
+                .await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let summary = state
+            .route_control_refresh(token.route_generation)
+            .await
+            .expect("refresh");
+        assert!(summary.is_none());
+        assert!(state.route.lock().await.controller.is_none());
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permission_respond_sends_opaque_id_and_refreshes() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            // The respond carries the opaque id + choice only: no
+            // principal, client, turn, or session authority.
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::PermissionRespond {
+                id: pending,
+                choice,
+            } = payload
+            else {
+                panic!("expected PermissionRespond, got {payload:?}");
+            };
+            assert_eq!(pending, "perm:s-1:turn-1:p-1");
+            assert_eq!(choice, "allow");
+            daemon.respond(id, CoreResponse::Ack).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::SessionControlGet { .. }),
+                "expected post-accept refresh, got {payload:?}"
+            );
+            daemon.respond(id, controller_fixture("alice", 4)).await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let summary = state
+            .route_permission_respond(
+                "perm:s-1:turn-1:p-1".into(),
+                "allow".into(),
+                token.route_generation,
+            )
+            .await
+            .expect("respond")
+            .expect("controller present");
+        assert_eq!(summary.revision, 4);
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permission_double_respond_coalesced() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::PermissionRespond { .. }),
+                "expected PermissionRespond, got {payload:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            daemon.respond(id, CoreResponse::Ack).await;
+            let (id, _) = daemon.next_request().await;
+            daemon.respond(id, controller_fixture("alice", 1)).await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let generation = token.route_generation;
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            first_state
+                .route_permission_respond("perm:s-1:turn-1:p-1".into(), "deny".into(), generation)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let duplicate = state
+            .route_permission_respond("perm:s-1:turn-1:p-1".into(), "deny".into(), generation)
+            .await
+            .expect_err("concurrent duplicate coalesces");
+        assert!(
+            duplicate.contains("already in flight"),
+            "unexpected error: {duplicate}"
+        );
+        first.await.expect("join").expect("first accepted");
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permission_cross_session_id_rejected_without_request() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let error = state
+            .route_permission_respond(
+                "perm:s-other:turn-9:p-1".into(),
+                "allow".into(),
+                token.route_generation,
+            )
+            .await
+            .expect_err("cross-session id fails closed");
+        assert!(
+            error.contains("another session"),
+            "unexpected error: {error}"
+        );
+        // The renderer cannot supply principal/client identity: an
+        // invalid choice never reaches the daemon either.
+        let error = state
+            .route_permission_respond(
+                "perm:s-1:turn-1:p-1".into(),
+                "maybe".into(),
+                token.route_generation,
+            )
+            .await
+            .expect_err("invalid choice fails closed");
+        assert!(
+            error.contains("invalid permission choice"),
+            "unexpected error: {error}"
+        );
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn permission_denied_releases_id_for_retry() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            // First attempt: controller lost between render and click.
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Error {
+                        code: "session_control_not_controller".into(),
+                        message: "not the controller".into(),
+                    },
+                )
+                .await;
+            // Retry after the denial is a fresh request, not a wedged id.
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::PermissionRespond { .. }),
+                "expected retried PermissionRespond, got {payload:?}"
+            );
+            daemon.respond(id, CoreResponse::Ack).await;
+            let (id, _) = daemon.next_request().await;
+            daemon.respond(id, controller_fixture("bob", 2)).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let generation = token.route_generation;
+        let error = state
+            .route_permission_respond("perm:s-1:turn-1:p-1".into(), "allow".into(), generation)
+            .await
+            .expect_err("stale controller denied");
+        assert!(
+            error.contains("session_control_not_controller"),
+            "unexpected error: {error}"
+        );
+        let summary = state
+            .route_permission_respond("perm:s-1:turn-1:p-1".into(), "allow".into(), generation)
+            .await
+            .expect("retry accepted")
+            .expect("controller present");
+        assert_eq!(summary.controller_principal, "bob");
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn question_oversize_answers_rejected_locally() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let error = state
+            .route_question_respond(
+                "question:s-1:turn-1:q-1".into(),
+                serde_json::Value::String("x".repeat(70_000)),
+                token.route_generation,
+            )
+            .await
+            .expect_err("oversize answers fail closed");
+        assert!(error.contains("bounded size"), "unexpected error: {error}");
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn control_loss_between_render_and_click_refreshes() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            control_prelude(&mut daemon).await;
+            // Render-time refresh: alice controls revision 1.
+            let (id, _) = daemon.next_request().await;
+            daemon.respond(id, controller_fixture("alice", 1)).await;
+            // Click-time respond: lease moved on; daemon denies.
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Error {
+                        code: "session_control_not_controller".into(),
+                        message: "lease moved".into(),
+                    },
+                )
+                .await;
+            // Post-denial refresh converges on bob's lease.
+            let (id, _) = daemon.next_request().await;
+            daemon.respond(id, controller_fixture("bob", 2)).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = open_control_route(&state).await;
+        let generation = token.route_generation;
+        let rendered = state
+            .route_control_refresh(generation)
+            .await
+            .expect("render-time refresh")
+            .expect("controller present");
+        assert_eq!(rendered.controller_principal, "alice");
+        let error = state
+            .route_question_respond(
+                "question:s-1:turn-1:q-1".into(),
+                serde_json::json!([{"question": "Pick one", "answer": "a"}]),
+                generation,
+            )
+            .await
+            .expect_err("moved lease denied");
+        assert!(
+            error.contains("session_control_not_controller"),
+            "unexpected error: {error}"
+        );
+        let converged = state
+            .route_control_refresh(generation)
+            .await
+            .expect("post-denial refresh")
+            .expect("controller present");
+        assert_eq!(converged.controller_principal, "bob");
+        assert_eq!(converged.revision, 2);
         server.await.expect("server");
     }
 

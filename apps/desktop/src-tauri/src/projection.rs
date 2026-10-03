@@ -175,7 +175,7 @@ impl HostState {
                 (driver, false)
             }
         };
-        let view = present_driver(&driver.current());
+        let view = self.present_with_controller(&driver.current()).await;
         {
             let mut route = self.route.lock().await;
             if self.current_generation() != connection_generation
@@ -211,16 +211,21 @@ impl HostState {
     /// no projection is attached or the owner belongs to a superseded
     /// generation.
     pub(crate) async fn projection_current(&self) -> Result<SessionPresentationView, String> {
-        let route = self.route.lock().await;
-        let Some(owner) = route.projection.as_ref() else {
-            return Err("no session projection attached for the current route".into());
+        let (snapshot_view, controller) = {
+            let route = self.route.lock().await;
+            let Some(owner) = route.projection.as_ref() else {
+                return Err("no session projection attached for the current route".into());
+            };
+            if owner.connection_generation != self.current_generation()
+                || owner.route_generation != route.route_generation
+            {
+                return Err("session projection is stale; reattach".into());
+            }
+            (owner.driver.current(), route.controller.clone())
         };
-        if owner.connection_generation != self.current_generation()
-            || owner.route_generation != route.route_generation
-        {
-            return Err("session projection is stale; reattach".into());
-        }
-        Ok(present_driver(&owner.driver.current()))
+        let mut presented = present_driver(&snapshot_view);
+        presented.controller = controller;
+        Ok(presented)
     }
 
     /// Subscribe a renderer sink to latest-only presentation views.
@@ -251,7 +256,8 @@ impl HostState {
             let mut views = views;
             // Push the current view immediately so subscribe/install is
             // atomic from the renderer's view.
-            if !sink.send_view(present_driver(&views.borrow().clone())) {
+            let snapshot = views.borrow().clone();
+            if !sink.send_view(state.present_with_controller(&snapshot).await) {
                 return;
             }
             loop {
@@ -261,7 +267,8 @@ impl HostState {
                     // view itself is atomic-replace, so coalescing is
                     // lossless at presentation granularity.
                     Ok(Err(_)) => {
-                        if !sink.send_view(present_driver(&views.borrow().clone())) {
+                        let snapshot = views.borrow().clone();
+                        if !sink.send_view(state.present_with_controller(&snapshot).await) {
                             return;
                         }
                         continue;
@@ -278,7 +285,8 @@ impl HostState {
                 {
                     return;
                 }
-                if !sink.send_view(present_driver(&views.borrow().clone())) {
+                let snapshot = views.borrow().clone();
+                if !sink.send_view(state.present_with_controller(&snapshot).await) {
                     return;
                 }
             }

@@ -1,4 +1,5 @@
 mod bridge;
+mod control;
 mod lifecycle;
 mod present;
 mod projection;
@@ -6,8 +7,9 @@ mod prompt;
 mod route;
 
 use bridge::{
-    ConnectionSnapshot, DesktopEvent, ProjectDetailView, ProjectSummary, PromptSubmitView,
-    RouteTokenView, SessionListView, SessionPresentationView, SessionView, SubscriptionInfo,
+    ConnectionSnapshot, ControllerSummaryView, DesktopEvent, ProjectDetailView, ProjectSummary,
+    PromptSubmitView, RouteTokenView, SessionListView, SessionPresentationView, SessionView,
+    SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -893,6 +895,41 @@ async fn desktop_prompt_submit(
         .await
 }
 
+/// M004 WP E control commands. Narrow capability classes only: the
+/// renderer sends opaque pending ids (+ an allowed choice / bounded
+/// answers); daemon-side leases revalidate everything else.
+#[tauri::command]
+async fn desktop_control_refresh(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<Option<ControllerSummaryView>, String> {
+    state.route_control_refresh(route_generation).await
+}
+
+#[tauri::command]
+async fn desktop_permission_respond(
+    state: State<'_, Arc<HostState>>,
+    permission_id: String,
+    choice: String,
+    route_generation: u64,
+) -> Result<Option<ControllerSummaryView>, String> {
+    state
+        .route_permission_respond(permission_id, choice, route_generation)
+        .await
+}
+
+#[tauri::command]
+async fn desktop_question_respond(
+    state: State<'_, Arc<HostState>>,
+    question_id: String,
+    answers: serde_json::Value,
+    route_generation: u64,
+) -> Result<Option<ControllerSummaryView>, String> {
+    state
+        .route_question_respond(question_id, answers, route_generation)
+        .await
+}
+
 /// M004 WP C projection commands. Narrow capability classes only:
 /// projection start/stop/current/subscribe for the route-selected
 /// session. No generic `CoreRequest` bridge, no filesystem paths.
@@ -966,6 +1003,9 @@ pub fn run() {
             desktop_session_open,
             desktop_session_create,
             desktop_prompt_submit,
+            desktop_control_refresh,
+            desktop_permission_respond,
+            desktop_question_respond,
             desktop_projection_start,
             desktop_projection_stop,
             desktop_projection_current,

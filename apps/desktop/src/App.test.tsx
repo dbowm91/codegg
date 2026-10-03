@@ -14,6 +14,9 @@ vi.mock('./bridge', () => ({
     sessionOpen: vi.fn(),
     sessionCreate: vi.fn(),
     promptSubmit: vi.fn(),
+    controlRefresh: vi.fn(),
+    permissionRespond: vi.fn(),
+    questionRespond: vi.fn(),
     projectionStart: vi.fn(),
     projectionStop: vi.fn(),
     projectionCurrent: vi.fn(),
@@ -299,6 +302,9 @@ describe('session route flow', () => {
       routeToken: token(routeGeneration, 's-1'),
     }));
     vi.mocked(bridge.projectionCurrent).mockImplementation(async () => presentation('s-1'));
+    vi.mocked(bridge.controlRefresh).mockResolvedValue(null);
+    vi.mocked(bridge.permissionRespond).mockImplementation(async () => null);
+    vi.mocked(bridge.questionRespond).mockImplementation(async () => null);
     vi.mocked(bridge.subscribeProjection).mockImplementation(async () => ({ unsubscribe: vi.fn() }));
   });
 
@@ -382,8 +388,10 @@ describe('session route flow', () => {
     expect(await screen.findByTestId('resync-banner')).toBeInTheDocument();
     expect(screen.getByTestId('permission-item')).toHaveTextContent('write');
     expect(screen.getByTestId('question-item')).toHaveTextContent('Pick one');
-    // WP E wires responses; the buttons stay disabled with no authority.
-    expect(screen.getByTitle('Permission responses land in WP E')).toBeDisabled();
+    // WP E: pending items carry enabled one-shot controls; the daemon
+    // lease decides authority.
+    expect(screen.getByTestId('permission-allow-perm-1')).not.toBeDisabled();
+    expect(screen.getByTestId('controller-state')).toHaveTextContent('no exclusive controller');
   });
 
   it('submits a prompt once and clears the draft on accept', async () => {
@@ -480,5 +488,70 @@ describe('session route flow', () => {
     });
     // Accepted: the draft clears (the empty draft keeps submit disabled).
     await waitFor(() => expect(screen.getByTestId('prompt-input')).toHaveValue(''));
+  });
+
+  it('answers a permission through the controller lease and refreshes', async () => {
+    vi.mocked(bridge.projectionStart).mockImplementationOnce(async (sessionId: string) => ({
+      ...presentation(sessionId, 'attached'),
+      pendingPermissions: [{ permissionId: 'perm:s-1:turn-1:p-1', tool: 'write', scopeSummary: null, status: 'pending' }],
+    }));
+    vi.mocked(bridge.permissionRespond).mockImplementationOnce(async () => ({
+      turnId: 'turn-1',
+      controllerPrincipal: 'alice',
+      revision: 4,
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('permission-item')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('permission-allow-perm:s-1:turn-1:p-1'));
+    });
+    await waitFor(() => expect(bridge.permissionRespond).toHaveBeenCalledTimes(1));
+    expect(bridge.permissionRespond).toHaveBeenCalledWith('perm:s-1:turn-1:p-1', 'allow', 2);
+    // Success converges on authoritative control state.
+    await waitFor(() => expect(screen.getByTestId('controller-state')).toHaveTextContent('alice @ rev 4'));
+    await waitFor(() => expect(bridge.projectionCurrent).toHaveBeenCalled());
+  });
+
+  it('surfaces a stale-controller denial without clearing the pending item', async () => {
+    vi.mocked(bridge.projectionStart).mockImplementationOnce(async (sessionId: string) => ({
+      ...presentation(sessionId, 'attached'),
+      pendingPermissions: [{ permissionId: 'perm:s-1:turn-1:p-1', tool: 'write', scopeSummary: null, status: 'pending' }],
+    }));
+    vi.mocked(bridge.permissionRespond).mockRejectedValueOnce(
+      new Error('session_control_not_controller: not the controller'),
+    );
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('permission-item')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('permission-deny-perm:s-1:turn-1:p-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('route-error')).toHaveTextContent('session_control_not_controller'));
+    // Denial never clears the pending item; the button re-enables.
+    expect(screen.getByTestId('permission-item')).toBeInTheDocument();
+    expect(screen.getByTestId('permission-deny-perm:s-1:turn-1:p-1')).not.toBeDisabled();
   });
 });

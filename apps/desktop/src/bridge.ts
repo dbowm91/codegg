@@ -1,6 +1,7 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import type {
   ConnectionSnapshot,
+  ControllerSummaryView,
   DesktopEvent,
   ProjectDetailView,
   PromptSubmitView,
@@ -29,6 +30,12 @@ export const bridge = {
     invoke<SessionView>('desktop_session_create', { title, routeGeneration }),
   promptSubmit: (text: string, planMode: boolean, routeGeneration: number) =>
     invoke<PromptSubmitView>('desktop_prompt_submit', { text, planMode, routeGeneration }),
+  controlRefresh: (routeGeneration: number) =>
+    invoke<ControllerSummaryView | null>('desktop_control_refresh', { routeGeneration }),
+  permissionRespond: (permissionId: string, choice: string, routeGeneration: number) =>
+    invoke<ControllerSummaryView | null>('desktop_permission_respond', { permissionId, choice, routeGeneration }),
+  questionRespond: (questionId: string, answers: unknown, routeGeneration: number) =>
+    invoke<ControllerSummaryView | null>('desktop_question_respond', { questionId, answers, routeGeneration }),
   projectionStart: (sessionId: string, routeGeneration: number) =>
     invoke<SessionPresentationView>('desktop_projection_start', { sessionId, routeGeneration }),
   projectionStop: () => invoke<RouteTokenView>('desktop_projection_stop'),

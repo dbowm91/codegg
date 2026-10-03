@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
 import type {
   ConnectionSnapshot,
@@ -34,6 +35,9 @@ export function App() {
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeBusy, setRouteBusy] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [controller, setController] = useState<ControllerSummaryView | null>(null);
+  const [responding, setResponding] = useState<string[]>([]);
+  const [questionDrafts, setQuestionDrafts] = useState<Record<string, string>>({});
   const [promptDraft, setPromptDraft] = useState('');
   const [planMode, setPlanMode] = useState(false);
   const [promptBusy, setPromptBusy] = useState(false);
@@ -200,6 +204,7 @@ export function App() {
       const view = await bridge.projectionStart(sessionId, opened.routeToken.routeGeneration);
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
       setProjection(view);
+      await refreshControl(opened.routeToken.routeGeneration);
     } catch (error) {
       if (request !== routeRequest.current) return;
       setRouteError(String(error));
@@ -223,6 +228,7 @@ export function App() {
       if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
       setProjection(view);
       setNewTitle('');
+      await refreshControl(created.routeToken.routeGeneration);
     } catch (error) {
       if (request !== routeRequest.current) return;
       setRouteError(String(error));
@@ -258,11 +264,69 @@ export function App() {
         if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
         setProjection(view);
       }
+      await refreshControl(accepted.routeToken.routeGeneration);
     } catch (error) {
       if (request !== routeRequest.current) return;
       setRouteError(String(error));
     } finally {
       if (request === routeRequest.current) setPromptBusy(false);
+    }
+  };
+
+  const refreshControl = async (routeGeneration: number) => {
+    try {
+      setController(await bridge.controlRefresh(routeGeneration));
+    } catch (error) {
+      setRouteError(String(error));
+    }
+  };
+
+  const respondPermission = async (permissionId: string, choice: string) => {
+    if (!currentToken || responding.includes(permissionId)) return;
+    const request = ++routeRequest.current;
+    const forConnection = connectionRef.current.connectionGeneration;
+    setResponding((previous) => [...previous, permissionId]);
+    setRouteError(null);
+    try {
+      const summary = await bridge.permissionRespond(permissionId, choice, currentToken.routeGeneration);
+      if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+      setController(summary);
+      const view = await bridge.projectionCurrent();
+      if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+      setProjection(view);
+    } catch (error) {
+      if (request !== routeRequest.current) return;
+      setRouteError(String(error));
+    } finally {
+      if (request === routeRequest.current) setResponding((previous) => previous.filter((id) => id !== permissionId));
+    }
+  };
+
+  const respondQuestion = async (questionId: string) => {
+    if (!currentToken || responding.includes(questionId)) return;
+    const raw = questionDrafts[questionId] ?? '';
+    let answers: unknown;
+    try {
+      answers = raw.trim() ? JSON.parse(raw) : [];
+    } catch {
+      answers = raw;
+    }
+    const request = ++routeRequest.current;
+    const forConnection = connectionRef.current.connectionGeneration;
+    setResponding((previous) => [...previous, questionId]);
+    setRouteError(null);
+    try {
+      const summary = await bridge.questionRespond(questionId, answers, currentToken.routeGeneration);
+      if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+      setController(summary);
+      const view = await bridge.projectionCurrent();
+      if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+      setProjection(view);
+    } catch (error) {
+      if (request !== routeRequest.current) return;
+      setRouteError(String(error));
+    } finally {
+      if (request === routeRequest.current) setResponding((previous) => previous.filter((id) => id !== questionId));
     }
   };
 
@@ -294,8 +358,9 @@ export function App() {
       {projection.state === 'resyncing' && <p data-testid="resync-banner" role="status">Resuming projection — live updates paused.</p>}
       <h3>Messages</h3>{projection.messages.length ? <ul data-testid="message-list">{projection.messages.map((message) => <li key={message.messageId} data-testid="message-item"><strong>{message.role}</strong><p>{message.text}{message.truncated && ' …'}</p></li>)}</ul> : <p className="muted">No visible messages yet.</p>}
       {!!projection.tools.length && <><h3>Tools</h3><ul data-testid="tool-list">{projection.tools.map((tool) => <li key={tool.toolId} data-testid="tool-item">{tool.toolName} — {tool.status} — {tool.summary}{tool.hasArtifact && ' (artifact)'}</li>)}</ul></>}
-      {!!projection.pendingPermissions.length && <><h3>Permissions</h3><ul data-testid="permission-list">{projection.pendingPermissions.map((permission) => <li key={permission.permissionId} data-testid="permission-item">{permission.tool} — {permission.status}<button disabled title="Permission responses land in WP E">Respond</button></li>)}</ul></>}
-      {!!projection.pendingQuestions.length && <><h3>Questions</h3><ul data-testid="question-list">{projection.pendingQuestions.map((question) => <li key={question.questionId} data-testid="question-item">{question.header ?? 'Question'} — {question.prompt} ({question.status})<button disabled title="Question responses land in WP E">Respond</button></li>)}</ul></>}
+      <dl><dt>Controller</dt><dd data-testid="controller-state">{controller ? `${controller.controllerPrincipal} @ rev ${controller.revision}` : 'no exclusive controller'}</dd></dl><button data-testid="control-refresh-button" onClick={() => currentToken && void refreshControl(currentToken.routeGeneration)}>Refresh control</button>
+      {!!projection.pendingPermissions.length && <><h3>Permissions</h3><ul data-testid="permission-list">{projection.pendingPermissions.map((permission) => <li key={permission.permissionId} data-testid="permission-item">{permission.tool} — {permission.status}<button data-testid={`permission-allow-${permission.permissionId}`} disabled={responding.includes(permission.permissionId)} onClick={() => void respondPermission(permission.permissionId, 'allow')}>Allow</button><button data-testid={`permission-deny-${permission.permissionId}`} disabled={responding.includes(permission.permissionId)} onClick={() => void respondPermission(permission.permissionId, 'deny')}>Deny</button></li>)}</ul></>}
+      {!!projection.pendingQuestions.length && <><h3>Questions</h3><ul data-testid="question-list">{projection.pendingQuestions.map((question) => <li key={question.questionId} data-testid="question-item">{question.header ?? 'Question'} — {question.prompt} ({question.status})<textarea data-testid={`question-answer-${question.questionId}`} value={questionDrafts[question.questionId] ?? ''} placeholder='JSON answers, e.g. ["a"]' onChange={(event) => setQuestionDrafts((previous) => ({ ...previous, [question.questionId]: event.target.value }))} /><button data-testid={`question-answer-button-${question.questionId}`} disabled={responding.includes(question.questionId)} onClick={() => void respondQuestion(question.questionId)}>Answer</button></li>)}</ul></>}
       <button data-testid="projection-stop-button" onClick={() => void stopProjection()}>Detach projection</button>
     </section>}
   </main>;
