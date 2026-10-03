@@ -25,6 +25,31 @@ it with an explicit TUI descriptor. A headless GUI-kind consumer can use the
 same API without importing TUI or daemon modules. Disconnect only releases
 frontend-owned transport tasks; daemon-owned turns and jobs continue.
 
+## Loss-aware events and the session projection driver (M004)
+
+`ClientEvent` (`crates/codegg-client/src/event.rs`) is the only
+loss-aware consumption surface beside the untouched `subscribe()`:
+`Event` (an in-window live event), `Lagged` (receiver lag forced a
+typed resync, never log-only loss), and `Closed` (transport shutdown
+publishes disconnected state). `is_closed()` polls shutdown with a 25ms
+liveness budget.
+
+`SessionProjectionDriver` (same crate) owns one session projection
+around `HeadlessProjectionConsumer`: pre-request receiver install,
+exact subscription filtering, ack cadence, resume/replay/resync with a
+fresh-subscribe fallback, stop with unsubscribe plus cursor retention,
+and connection-owned, session-authorized subscription. `StoppedDriver`
+resumes with a fresh subscription id (ids are never reused).
+`artifact_excerpt` reads through a driver task command channel against
+the consumer-validated registry (opaque handle, project binding,
+revision, 64 KiB window); unknown handles and over-range reads are
+typed bounded errors, never paths.
+
+`compose_turn_submit` / `PromptIntent`
+(`crates/codegg-client/src/compose.rs`) is the shared prompt composer:
+the desktop submits opaque text and the daemon resolves durable model,
+agents, and messages. The desktop never composes `TurnSubmit` itself.
+
 ## Purpose
 
 WebSocket client for remote TUI connections. Handles URL normalization,

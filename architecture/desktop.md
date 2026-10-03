@@ -48,7 +48,15 @@ the daemon or its work.
 
 Bridge DTOs are intentionally small: daemon connection state, project display
 summary, and versioned project-catalog invalidation. `npm run bindings:check`
-compares the TypeScript surface with its Rust DTO definitions.
+compares the TypeScript surface with its Rust DTO definitions. The M004
+route/session surface adds `desktop_project_detail`, `desktop_workspace_select`,
+`desktop_session_list/create/open`, `desktop_projection_start/current/stop`,
+`desktop_prompt_submit`, `desktop_control_refresh`,
+`desktop_permission_respond`, `desktop_question_respond`, and
+`desktop_artifact_read`; all stay camelCase-synced across
+`src/bridge-types.ts`, `src/bridge.ts`, and `src-tauri/src/bridge.rs`, and
+route errors propagate daemon codes (e.g. `model_unselected`) instead of
+generic failures.
 
 ## Lifecycle linearization and concurrency rules (C002)
 
@@ -87,6 +95,47 @@ and app exit (`RunEvent::ExitRequested`/`Exit`) run the same host teardown as
 explicit `desktop_disconnect` via a bounded synchronous `block_on` (2s budget)
 without stopping the daemon; repeated events are idempotent. No correctness
 requirement depends on scheduler timing.
+
+## Session/control-plane vertical slice (M004)
+
+Route identity is explicit project+workspace+session
+(`apps/desktop/src-tauri/src/route.rs`). Workspaces come only from an
+authorized `ProjectGet`; canonical roots are Rust-host only and never
+serialized. Every async completion is applied only when its route token
+is current, otherwise stale-dropped; a connection generation change
+invalidates the projection owner and the renderer clears its route and
+requires explicit re-selection.
+
+Projection (`projection.rs`) wraps the canonical
+`SessionProjectionDriver` behind a single `ProjectionOwner` per route:
+stale completions release the subscription, stop retains the cursor,
+and pushes are latest-only atomic replaces. The renderer's push
+subscription subscribes only once a projection view exists for the
+session (`projectionStart` installs the owner before resolving its
+first view), so the effect cannot win the create-vs-subscribe race and
+be rejected with "no session projection attached"; subscribe failures
+retry bounded with backoff and then surface as route errors, never a
+silent swallow that would leave the renderer permanently deaf. Presentation
+(`present.rs`) is a pure bounded view: only `Public` + User/Assistant/
+Tool content renders (raw tool args/output never serialize), with tail
+caps (100 messages / 20 tools / 10 runs-jobs-subagents / 5 recent / 16
+handles) and a non-authoritative cursor diagnostic.
+
+Prompt submission is at-most-once through `CoreRequest::SessionPromptSubmit`
+(`prompt.rs`): the renderer sends opaque text plus plan-mode only, the
+host session-checks and fences on route generation, and the daemon
+resolves the durable model/agents/messages before delegating to the
+identical `TurnSubmit` body. No durable user message is fabricated on
+rejection; the draft stays editable. Active-turn guard gives
+at-most-once; blank/overlong text and unselected/legacy models fail
+closed with typed codes.
+
+Permission/question/controller interaction (`control.rs`) follows ADR-0007
+through daemon controller leases: the renderer sends opaque ids plus
+allowed choices/bounded answers only, the host session-checks each id,
+`RouteState.responding` coalesces repeats, and denials surface without
+upgrading the caller. Artifact reads (`artifact.rs`) use opaque handles
+through the same registry validation; unknown handles are typed errors.
 
 ## Built-app E2E boundary (C003)
 
@@ -134,11 +183,33 @@ Test instrumentation never widens production authority:
   It serves newline-delimited JSON commands over a Unix socket (not stdio):
   the embedded provider spawns the desktop app once per WebdriverIO
   invocation in the launcher process, so worker-side spec code cannot own the
-  fixture's stdio, but any party can dial the socket. `e2e/run-e2e.sh` runs
-  one WebdriverIO invocation per phase (lifecycle, then autostart), each with
-  its own fixture server, isolated home, pre-started (or
-  started-then-stopped, for autostart) daemon, and app environment inherited
-  from the phase script;
+   fixture's stdio, but any party can dial the socket. `e2e/run-e2e.sh` runs
+   one WebdriverIO invocation per phase (lifecycle, then autostart, then the
+   M004 `session` phase), each with its own fixture server, isolated home,
+   pre-started (or started-then-stopped, for autostart) daemon, and app
+   environment inherited from the phase script; the M004 session phase
+   (`e2e/specs/m004-session.e2e.ts`) drives route, projection attach,
+   controller refresh, daemon-resolved prompt failing closed with
+   `model_unselected` (no provider in the fixture daemon; the typed failure
+   is the assertion), a deterministic live turn, reconnect convergence,
+   reload re-drive without session duplication, and native close with
+   daemon/observer survival;
+
+   The live-turn leg arms the session through a test-only loopback mock
+   model server (ephemeral `127.0.0.1` port, serves only
+   `POST */chat/completions` with a counted two-script SSE program: first
+   an out-of-workspace `write` with `finish_reason: tool_calls` to force
+   `PermissionPending`, then final text with `finish_reason: stop`; anything
+   else 404s; request bodies are never logged). The fixture writes a
+   temp-scoped `CODEGG_TUI_CONFIG` naming the mock `base_url` (which also
+   disables env-var provider auto-registration) and selects it through the
+   ordinary `ProviderConnectionCreate` / `SessionSelectionUpdate` daemon
+   APIs; the renderer never carries provider authority. The spec asserts
+   assistant text plus `permission-list`, denies once, then asserts
+   `completed` turn status and final text — all converging through
+   canonical projection. Phase homes redirect `HOME` into the phase home
+   so no operator-global config, credential store, or provider environment
+   leaks into the isolated daemon;
 - an app binary built with `desktop-e2e` additionally refuses to connect
   unless `CODEGG_DAEMON_HOME` is set under the OS temp directory
   (fail-closed `disconnected`, no daemon touched);
@@ -168,9 +239,13 @@ Test instrumentation never widens production authority:
 
 ## Deferred surfaces
 
-Session creation and projection, editor and terminal, provider credentials,
-plugin UI, remote daemon access, signing, and distribution automation are not
-implemented. The shell is infrastructure for later user-facing capability.
+Editor and terminal, provider credentials, plugin UI, remote daemon access,
+signing, and distribution automation are not implemented. A live-turn
+built-app trajectory (assistant text, tool activity, permission round-trip
+against a deterministic offline provider) is deferred: no in-repo provider
+can run a turn without external availability, so M004's E2E prompt leg
+asserts the typed fail-closed path and the live-turn leg waits on a
+test-only deterministic provider fixture as registered follow-up work.
 
 ## Developer commands
 

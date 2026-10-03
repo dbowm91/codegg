@@ -114,42 +114,60 @@ export function App() {
   // each pushed view atomically replaces the previous one. The host
   // watcher exits on generation drift, so pushes are always current;
   // the renderer additionally fences on connection and session.
+  //
+  // Ordering: subscribe only once a projection view exists for the
+  // session. `projectionStart` installs the host owner before it
+  // resolves its first view, so gating on `projection` removes the
+  // create-vs-subscribe race where the effect won and the host
+  // rejected with "no session projection attached". Failures retry
+  // bounded with backoff and then surface loudly; a silent swallow
+  // here leaves the renderer permanently deaf (M004 live-turn).
   useEffect(() => {
     if (!currentToken?.sessionId || connection.state !== 'connected') return;
+    if (!projection || projection.sessionId !== currentToken.sessionId) return;
     const expectedConnection = connection.connectionGeneration;
     const expectedRoute = currentToken.routeGeneration;
     const expectedSession = currentToken.sessionId;
     let cancelled = false;
     let handle: { unsubscribe: () => void } | null = null;
-    void bridge
-      .subscribeProjection((view) => {
-        if (cancelled) return;
-        if (connectionRef.current.connectionGeneration !== expectedConnection) return;
-        if (view.sessionId !== expectedSession) return;
-        setProjection(view);
-      })
-      .then((subscription) => {
-        if (cancelled) {
-          subscription.unsubscribe();
-          return;
-        }
-        if (
-          connectionRef.current.connectionGeneration !== expectedConnection ||
-          currentToken?.routeGeneration !== expectedRoute
-        ) {
+    const current = () =>
+      !cancelled &&
+      connectionRef.current.connectionGeneration === expectedConnection &&
+      currentToken?.routeGeneration === expectedRoute &&
+      currentToken?.sessionId === expectedSession;
+    const attempt = async (left: number): Promise<void> => {
+      if (!current()) return;
+      try {
+        const subscription = await bridge.subscribeProjection((view) => {
+          if (cancelled) return;
+          if (connectionRef.current.connectionGeneration !== expectedConnection) return;
+          if (view.sessionId !== expectedSession) return;
+          setProjection(view);
+        });
+        if (!current()) {
           subscription.unsubscribe();
           return;
         }
         handle = subscription;
-      })
-      .catch(() => undefined);
+      } catch (error) {
+        if (!current()) return;
+        if (left <= 1) {
+          setRouteError(`Projection subscription failed: ${String(error)}`);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await attempt(left - 1);
+      }
+    };
+    void attempt(5);
     return () => {
       cancelled = true;
       handle?.unsubscribe();
     };
-    // Re-subscribe when the attached session or its generations change.
+    // Re-subscribe when the attached session, its projection, or its
+    // generations change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection.state, connection.connectionGeneration, currentToken?.sessionId, currentToken?.routeGeneration]);
+  }, [connection.state, connection.connectionGeneration, currentToken?.sessionId, currentToken?.routeGeneration, projection?.sessionId]);
 
   const selectProject = async (projectId: string) => {
     const request = ++routeRequest.current;

@@ -126,9 +126,13 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 
 **Session Lifecycle (2)**: `SessionLifecycleGet`
 
-**Turn (5)**: `TurnSubmit`, `TurnCancel`, `TurnSteer`, `AgentSelect`,
+**Turn (6)**: `TurnSubmit`, `TurnCancel`, `TurnSteer`, `AgentSelect`,
 `ModelSelect` (M004 compatibility adapter over durable
-`SessionSelectionUpdate`; runtime-only mutation is not authoritative)
+`SessionSelectionUpdate`; runtime-only mutation is not authoritative),
+`SessionPromptSubmit` (M004 desktop prompt path: Turns family,
+ViaSession+AgentInvoke, resolves durable model/agents/messages
+daemon-side then delegates to the identical `TurnSubmit` body, so the
+desktop never composes turns itself)
 
 **Model (1)**: `ModelsRefresh`
 

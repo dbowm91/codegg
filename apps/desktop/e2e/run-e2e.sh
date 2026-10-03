@@ -87,6 +87,13 @@ run_phase() {
   export CODEGG_E2E_SOCKET="$home/fixture.sock"
   export CODEGG_DAEMON_HOME="$home/daemon-home"
   export CODEGG_E2E_WDIO_PORT="$wdio_port"
+  # Redirect HOME into the phase home so no operator-global config file,
+  # credential store, or provider environment leaks into the isolated
+  # daemon (the M004 mock-provider config must be the only provider
+  # wiring). Restored at phase end.
+  local saved_home="$HOME"
+  export HOME="$home/fake-home"
+  mkdir -p "$HOME"
   echo "==> phase $name: home $home"
   "$fixture_bin" serve >"$home/server.log" 2>&1 &
   server_pid=$!
@@ -131,6 +138,7 @@ run_phase() {
   fi
   rm -rf "$home"
   unset CODEGG_E2E_HOME CODEGG_E2E_SOCKET CODEGG_DAEMON_HOME CODEGG_E2E_STATE_FILE CODEGG_E2E_WDIO_PORT
+  export HOME="$saved_home"
   return $status
 }
 

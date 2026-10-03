@@ -15,7 +15,8 @@
 //! over the socket. Each connection carries `{"id":…,"cmd":…}` objects;
 //! responses are `{"id":…,"ok":true,…}` or `{"id":…,"ok":false,"error":"…"}`.
 //! Commands: `start`, `snapshot`, `register_project`, `archive_project`,
-//! `restore_project`, `reattach`, `stop_daemon`, `shutdown`.
+//! `restore_project`, `reattach`, `stop_daemon`, `select_mock_model`,
+//! `shutdown`.
 //!
 //! It never touches the operator's real daemon home or projects:
 //! - `CODEGG_E2E_HOME` (required) must be temp-scoped;
@@ -49,6 +50,10 @@ mod server {
         core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION},
         dto::ProjectRegisterRequestDto,
         frames::{ClientCapabilities, ClientKind},
+        provider::{
+            CreateProviderConnectionRequest, ProviderConnectionScope, ProviderCredentialKind,
+            SecretInput, UpdateSessionSelectionRequest,
+        },
     };
     use serde_json::{json, Value};
     use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -62,6 +67,207 @@ mod server {
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
     const POLL_INTERVAL: Duration = Duration::from_millis(200);
     const DAEMON_DEATH_TIMEOUT: Duration = Duration::from_secs(10);
+    const SELECT_MOCK_MODEL_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Deterministic mock OpenAI-compatible model server (M004 §15 live-turn
+    /// leg). Test-only: loopback-bound on an ephemeral port, serves ONLY
+    /// `POST */chat/completions` with two canned SSE scripts selected by
+    /// request count — the first POST emits assistant text plus one
+    /// out-of-workspace `write` tool call (`finish_reason: tool_calls`), so
+    /// the turn deterministically raises `PermissionPending`; every later
+    /// POST emits final text (`finish_reason: stop`), so denial/follow-up
+    /// iterations always converge. Anything else gets 404. Request bodies
+    /// are never logged (only the counted index); the dummy credential
+    /// lives in a temp-scoped config file and is never a real secret.
+    ///
+    /// No production code is involved: the daemon consumes this through its
+    /// ordinary config-registered `openai` provider (the fixture writes a
+    /// temp `CODEGG_TUI_CONFIG` naming this mock `base_url`, which also
+    /// disables env-var provider auto-registration for determinism) plus
+    /// the ordinary `ProviderConnectionCreate` / `SessionSelectionUpdate`
+    /// daemon APIs. Hand-rolled HTTP/1.1 over Tokio: no new dependencies.
+    mod mock_model {
+        use serde_json::json;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::time::Duration;
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::{TcpListener, TcpStream},
+        };
+
+        pub const MOCK_MODEL_ID: &str = "gpt-4o";
+        const FIRST_TEXT: &str = "Examining your request. ";
+        pub const FINAL_TEXT: &str = "E2E deterministic turn complete.";
+        const TOOL_CALL_ID: &str = "call_e2e_write_1";
+        const COMPLETION_ID: &str = "chatcmpl-e2e-mock-1";
+        const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+
+        pub struct MockModelServer {
+            pub base_url: String,
+        }
+
+        fn sse_chunk(payload: &serde_json::Value) -> String {
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(payload).expect("mock SSE payload serializes")
+            )
+        }
+
+        fn first_response(denied_write_path: &str) -> Vec<u8> {
+            let arguments = serde_json::to_string(&json!({
+                "path": denied_write_path,
+                "content": "e2e deterministic mock write (denied in-spec)",
+            }))
+            .expect("mock tool arguments serialize");
+            let mut body = String::new();
+            body.push_str(&sse_chunk(&json!({
+                "id": COMPLETION_ID, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": FIRST_TEXT}}],
+            })));
+            // Name and arguments ride separate chunks: the opener carries
+            // id+name (emits ToolCallStart), the continuation carries
+            // arguments only keyed by index (emits ArgumentsDelta, which
+            // resolves through the start's index binding). Repeating the
+            // id would emit a second Start and trip ConflictingIdentity.
+            body.push_str(&sse_chunk(&json!({
+                "id": COMPLETION_ID, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": 0, "id": TOOL_CALL_ID,
+                     "function": {"name": "write", "arguments": ""}},
+                ]}}],
+            })));
+            body.push_str(&sse_chunk(&json!({
+                "id": COMPLETION_ID, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": 0, "function": {"arguments": arguments}},
+                ]}}],
+            })));
+            body.push_str(&sse_chunk(&json!({
+                "id": COMPLETION_ID, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            })));
+            body.push_str("data: [DONE]\n\n");
+            body.into_bytes()
+        }
+
+        fn final_response() -> Vec<u8> {
+            let mut body = String::new();
+            body.push_str(&sse_chunk(&json!({
+                "id": COMPLETION_ID, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": FINAL_TEXT}}],
+            })));
+            body.push_str(&sse_chunk(&json!({
+                "id": COMPLETION_ID, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            })));
+            body.push_str("data: [DONE]\n\n");
+            body.into_bytes()
+        }
+
+        fn http_response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let mut response = header.into_bytes();
+            response.extend_from_slice(body);
+            response
+        }
+
+        async fn serve_one(
+            mut stream: TcpStream,
+            count: Arc<AtomicUsize>,
+            denied_write_path: String,
+        ) {
+            // Read just the headers; the canned script never inspects the
+            // body (logging it would capture prompt text).
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut header_end = None;
+            let read_result = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    if raw.len() > MAX_REQUEST_BYTES {
+                        break;
+                    }
+                    match stream.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            raw.extend_from_slice(&buf[..n]);
+                            if let Some(pos) = find_header_end(&raw) {
+                                header_end = Some(pos);
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .await;
+            if read_result.is_err() || header_end.is_none() {
+                return;
+            }
+            let head = String::from_utf8_lossy(&raw[..header_end.expect("header parsed")]);
+            let mut lines = head.lines();
+            let request_line = lines.next().unwrap_or("");
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or("");
+            let path = parts.next().unwrap_or("");
+            let response = if method == "POST" && path.ends_with("/chat/completions") {
+                let index = count.fetch_add(1, Ordering::SeqCst);
+                eprintln!("mock-model: chat completions request #{index}");
+                let body = if index == 0 {
+                    first_response(&denied_write_path)
+                } else {
+                    final_response()
+                };
+                http_response("200 OK", "text/event-stream", &body)
+            } else {
+                eprintln!("mock-model: 404 for {method} {path}");
+                http_response("404 Not Found", "text/plain", b"mock-model: unknown path")
+            };
+            let _ = stream.write_all(&response).await;
+            let _ = stream.shutdown().await;
+        }
+
+        fn find_header_end(raw: &[u8]) -> Option<usize> {
+            raw.windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|pos| pos + 4)
+        }
+
+        pub async fn start(home: &std::path::Path) -> Result<MockModelServer, String> {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(|e| format!("bind mock model server: {e}"))?;
+            let port = listener
+                .local_addr()
+                .map_err(|e| format!("mock model server address: {e}"))?
+                .port();
+            let base_url = format!("http://127.0.0.1:{port}/v1");
+            // Inside the temp phase home (auto-removed) but OUTSIDE the
+            // probe workspace root, so the canned `write` is not
+            // workspace-auto-allowed and deterministically pends.
+            let denied_write_path = home.join("e2e-mock-write.txt").display().to_string();
+            let count = Arc::new(AtomicUsize::new(0));
+            tokio::spawn(async move {
+                loop {
+                    let accepted = listener.accept().await;
+                    let Ok((stream, _)) = accepted else {
+                        break;
+                    };
+                    let count = Arc::clone(&count);
+                    let denied_write_path = denied_write_path.clone();
+                    tokio::spawn(async move {
+                        serve_one(stream, count, denied_write_path).await;
+                    });
+                }
+            });
+            Ok(MockModelServer { base_url })
+        }
+    }
 
     fn fail(id: &Value, message: impl Into<String>) -> Value {
         json!({"id": id, "ok": false, "error": message.into()})
@@ -107,7 +313,11 @@ mod server {
                 plugin_ui_progress: false,
                 workspace_registration: true,
                 project_catalog: true,
-                session_projection: false,
+                // Projection read access: the fixture asserts turn state
+                // (control lease, pending permissions, messages) through
+                // the same canonical snapshot/subscribe paths as the
+                // desktop host. It never responds to permissions/questions.
+                session_projection: true,
             },
         )
     }
@@ -119,6 +329,13 @@ mod server {
         daemon_executable: PathBuf,
         observer: Option<LocalDaemonOutcome>,
         workspace_id: Option<String>,
+        /// Base URL of the deterministic mock model server
+        /// (`mock_model`), once started. The mock is process-scoped: one
+        /// server per fixture, reused across idempotent `start` calls.
+        mock_base_url: Option<String>,
+        /// Durable provider-connection id for the mock, once created via
+        /// `select_mock_model`. Reused while the phase daemon lives.
+        mock_connection_id: Option<String>,
         /// Every probe project id this fixture created, in creation order.
         /// The project catalog itself is machine-global by daemon design
         /// (pre-existing C001/C002 property — the isolated home scopes the
@@ -164,6 +381,8 @@ mod server {
                 daemon_executable,
                 observer: None,
                 workspace_id: None,
+                mock_base_url: None,
+                mock_connection_id: None,
                 created_projects: Vec::new(),
                 shutdown,
             })
@@ -251,6 +470,141 @@ mod server {
                 .await?;
             self.workspace_id = Some(workspace_id.clone());
             Ok(workspace_id)
+        }
+
+        /// Idempotently start the deterministic mock model server and point
+        /// this process (hence any daemon it autostarts) at a temp-scoped
+        /// config naming the mock as the only `openai` provider. A
+        /// config-defined provider disables env-var auto-registration, so
+        /// the phase daemon is deterministic even on machines with real
+        /// provider credentials configured.
+        async fn ensure_mock_model(&mut self) -> Result<String, String> {
+            if let Some(base_url) = self.mock_base_url.clone() {
+                return Ok(base_url);
+            }
+            let server = mock_model::start(&self.home).await?;
+            let config_path = self.home.join("mock-provider.json");
+            std::fs::write(
+                &config_path,
+                serde_json::json!({
+                    "provider": {
+                        "openai": {
+                            "api_key": "e2e-mock-key",
+                            "base_url": server.base_url,
+                        },
+                    },
+                })
+                .to_string(),
+            )
+            .map_err(|e| format!("write mock provider config: {e}"))?;
+            std::env::set_var("CODEGG_TUI_CONFIG", &config_path);
+            self.mock_base_url = Some(server.base_url.clone());
+            Ok(server.base_url)
+        }
+
+        /// Long-timeout daemon request for the mock wiring path: provider
+        /// connection creation probes under a 20s workflow budget.
+        async fn request_slow(&self, payload: CoreRequest) -> Result<CoreResponse, String> {
+            let client = self.observer_client()?;
+            tokio::time::timeout(
+                SELECT_MOCK_MODEL_TIMEOUT,
+                client.request(RequestEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    payload,
+                }),
+            )
+            .await
+            .map_err(|_| "daemon request timed out".to_owned())?
+            .map_err(|e| format!("daemon request failed: {e}"))
+        }
+
+        /// Create (once per phase) the durable `openai` provider connection
+        /// against the mock and select its canned model for `session_id`.
+        /// Goes through the ordinary authorized daemon APIs — no bridge,
+        /// no bypass. The session keeps no selection until this runs, so
+        /// the fail-closed prompt leg stays meaningful.
+        async fn cmd_select_mock_model(&mut self, id: &Value, cmd: &Value) -> Value {
+            let Some(session_id) = cmd.get("session_id").and_then(Value::as_str) else {
+                return fail(id, "select_mock_model requires session_id");
+            };
+            let base_url = match self.mock_base_url.clone() {
+                Some(base_url) => base_url,
+                None => return fail(id, "mock model server is not running (start first)"),
+            };
+            let connection_id = match self.mock_connection_id.clone() {
+                Some(connection_id) => connection_id,
+                None => {
+                    let credential = match SecretInput::new("e2e-mock-key") {
+                        Ok(credential) => credential,
+                        Err(e) => return fail(id, format!("mock credential: {e}")),
+                    };
+                    let response = match self
+                        .request_slow(CoreRequest::ProviderConnectionCreate {
+                            request: CreateProviderConnectionRequest {
+                                provider_id: "openai".to_string(),
+                                endpoint: Some(base_url),
+                                port: None,
+                                tls_policy: None,
+                                credential,
+                                credential_kind: ProviderCredentialKind::ApiKey,
+                                display_name: Some("e2e-mock-openai".to_string()),
+                                scope: ProviderConnectionScope::Personal {
+                                    owner_id: "local-user".to_string(),
+                                },
+                                operation_id: None,
+                            },
+                        })
+                        .await
+                    {
+                        Ok(response) => response,
+                        Err(e) => return fail(id, e),
+                    };
+                    match response {
+                        CoreResponse::ProviderConnectionCreated { result } => {
+                            if result.connection.state != "active" {
+                                return fail(
+                                    id,
+                                    format!(
+                                        "mock connection not selectable: {}",
+                                        result.connection.state
+                                    ),
+                                );
+                            }
+                            self.mock_connection_id = Some(result.connection.id.clone());
+                            result.connection.id
+                        }
+                        CoreResponse::Error { code, message } => {
+                            return fail(id, format!("mock connection create: {code}: {message}"))
+                        }
+                        other => return fail(id, format!("unexpected create response: {other:?}")),
+                    }
+                }
+            };
+            match self
+                .request_slow(CoreRequest::SessionSelectionUpdate {
+                    request: Box::new(UpdateSessionSelectionRequest {
+                        session_id: session_id.to_string(),
+                        connection_id: connection_id.clone(),
+                        model_id: mock_model::MOCK_MODEL_ID.to_string(),
+                        expected_connection_revision: None,
+                        expected_catalog_revision: None,
+                    }),
+                })
+                .await
+            {
+                Ok(CoreResponse::SessionSelectionUpdated { .. }) => json!({
+                    "id": id,
+                    "ok": true,
+                    "connection_id": connection_id,
+                    "model_id": mock_model::MOCK_MODEL_ID,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    fail(id, format!("mock model select: {code}: {message}"))
+                }
+                Ok(other) => fail(id, format!("unexpected select response: {other:?}")),
+                Err(e) => fail(id, e),
+            }
         }
 
         /// Register the workspace rooted at `root`, returning its id.
@@ -344,6 +698,13 @@ mod server {
         }
 
         async fn cmd_start(&mut self, id: &Value) -> Value {
+            // The mock model server must be listening (and its temp
+            // CODEGG_TUI_CONFIG written) BEFORE the daemon spawns, because
+            // the daemon inherits this process's environment and reads the
+            // config-registered `openai` provider at turn time.
+            if let Err(e) = self.ensure_mock_model().await {
+                return fail(id, e);
+            }
             // Idempotent: reuse the held observer when it is still alive so
             // the phase script and the specs can share one daemon/session.
             let mut fresh = false;
@@ -666,6 +1027,7 @@ mod server {
                 "restore_project" => Some(self.cmd_restore_project(&id, cmd).await),
                 "reattach" => Some(self.cmd_reattach(&id).await),
                 "stop_daemon" => Some(self.cmd_stop_daemon(&id).await),
+                "select_mock_model" => Some(self.cmd_select_mock_model(&id, cmd).await),
                 "shutdown" => {
                     self.cleanup().await;
                     let response = json!({"id": id, "ok": true});

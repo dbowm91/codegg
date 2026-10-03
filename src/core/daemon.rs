@@ -5540,7 +5540,7 @@ mod tests {
         ) {
             let resp = daemon
                 .handle_request(crate::core::new_request(
-                    format!("req-sub-{tag}").into(),
+                    format!("req-sub-{tag}"),
                     CoreRequest::ProjectionSubscribe {
                         request:
                             codegg_protocol::projection::replay::ProjectionSubscriptionRequest {

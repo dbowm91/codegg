@@ -305,6 +305,18 @@ impl ProjectionReplayService {
         let mut session_seq = 0u64;
         let mut project_seq = 0u64;
 
+        // Rewritten per-stream envelopes: the persisted row sequence is the
+        // stream-local authority for cursors, gap detection, and replay
+        // ranges, so each envelope's `event_seq` is rewritten to its own
+        // stream's row sequence here. The source envelope carries the
+        // daemon-global log sequence, which diverges from every
+        // stream-local row sequence as soon as unrelated events exist
+        // (M004 live-turn: a fresh session stream held rows 1-4 whose
+        // envelopes read 3-6, so every post-snapshot event looked like a
+        // history gap and the driver resynced forever). The same rewritten
+        // envelope feeds live delivery below so replay and live agree.
+        let mut persisted: Vec<(ProjectionStreamKind, String, ProjectionEnvelope)> = Vec::new();
+
         let mut tx = self.store.begin_tx().await?;
 
         for (stream_kind, proj_envelope) in &projections {
@@ -318,10 +330,13 @@ impl ProjectionReplayService {
             };
 
             let seq = self.store.next_event_seq_tx(&mut tx, sid).await?;
+            let mut envelope = proj_envelope.clone();
+            envelope.event_seq = seq;
             self.store
-                .insert_event_tx(&mut tx, sid, seq, proj_envelope)
+                .insert_event_tx(&mut tx, sid, seq, &envelope)
                 .await?;
             self.store.update_high_water_tx(&mut tx, sid, seq).await?;
+            persisted.push((*stream_kind, sid.to_string(), envelope));
 
             match stream_kind {
                 ProjectionStreamKind::Session => session_seq = seq,
@@ -338,15 +353,14 @@ impl ProjectionReplayService {
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
         // Live delivery uses the ACTUAL persisted stream IDs, not synthetic ones
-        for (stream_kind, proj_envelope) in &projections {
+        for (stream_kind, sid, envelope) in &persisted {
             let stream_id_str = match stream_kind {
                 ProjectionStreamKind::Session => session_stream_id.as_deref(),
                 ProjectionStreamKind::Project => project_stream_id.as_deref(),
             };
-            if let Some(sid) = stream_id_str {
-                let _ = self
-                    .subscriptions
-                    .deliver_to_stream(sid, proj_envelope.clone());
+            if let Some(persisted_sid) = stream_id_str {
+                debug_assert_eq!(persisted_sid, sid.as_str());
+                let _ = self.subscriptions.deliver_to_stream(sid, envelope.clone());
             }
         }
 

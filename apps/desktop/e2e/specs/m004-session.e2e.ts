@@ -153,6 +153,43 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
     expect(await $('[data-testid="prompt-input"]').getValue()).toBe('hello e2e');
   });
 
+  it('runs a deterministic live turn: assistant text, denied write, completion', async () => {
+    // Arm the session with the mock model through the ordinary daemon
+    // selection APIs (fixture-driven, not a desktop bridge command: the
+    // renderer never carries provider authority).
+    const sessionId = await $('[data-testid="route-session"]').getText();
+    const selected = await active().selectMockModel(sessionId);
+    expect(selected.model_id).toBe('gpt-4o');
+    await $('[data-testid="prompt-input"]').setValue('e2e deterministic turn');
+    await $('[data-testid="prompt-submit-button"]').click();
+    // The mock's first response raises PermissionPending for its
+    // out-of-workspace `write`; the assistant text travels the same
+    // ordered projection stream, so both are visible together.
+    await $('[data-testid="permission-list"]').waitForExist({ timeout: 120_000 });
+    const messageText = await $('[data-testid="message-list"]').getText();
+    expect(messageText).toContain('Examining your request.');
+    let denied = false;
+    for (const button of await $$('[data-testid^="permission-deny-"]')) {
+      await button.click();
+      denied = true;
+      break;
+    }
+    expect(denied).toBe(true);
+    // Denial feeds back as a tool result; the mock's second response
+    // finishes the turn. Both converge through canonical projection.
+    await browser.waitUntil(
+      async () => (await $('[data-testid="turn-status"]').getText()).toLowerCase().includes('completed'),
+      { timeout: 180_000, timeoutMsg: 'deterministic turn never completed after denial' },
+    );
+    await browser.waitUntil(
+      async () =>
+        (await $('[data-testid="message-list"]').getText()).includes(
+          'E2E deterministic turn complete.',
+        ),
+      { timeout: 60_000, timeoutMsg: 'final assistant text never rendered' },
+    );
+  });
+
   it('visible reconnect converges the session projection on a new generation', async () => {
     const before = await connectionGeneration();
     await $('[data-testid="reconnect-button"]').click();

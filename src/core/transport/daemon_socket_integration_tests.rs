@@ -1792,6 +1792,124 @@ async fn socket_interrupted_replay_retry_resumes_with_fresh_identity() {
     abort_server(server_handle).await;
 }
 
+/// A cursor resume on an already-live owned subscription is a continuation,
+/// not a birth: the replay batch must be delivered AND the subscription must
+/// stay live (a second resume works, live events keep flowing). Re-running
+/// install/activate on the live id tripped InvalidLifecycle(Live) and
+/// cleaned up the healthy subscription — the M004 desktop session
+/// subscription went deaf ~1s after attach, hiding permission/turn events.
+/// Regression test for the daemon_socket already-live guard.
+#[tokio::test]
+async fn resume_on_live_subscription_keeps_forwarder_alive() {
+    use crate::protocol::core::CoreRequest;
+
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect live-resume client");
+    let (mut reader, mut writer, _client_id, sub_id, cursor) =
+        projection_handshake_and_subscribe_with_cursor(stream, "project-live-resume").await;
+
+    // Resume on the live subscription with its own cursor: the daemon must
+    // answer with a replay batch on the SAME subscription id.
+    let resume_id = "resume-live-1";
+    let resume = CoreFrame::Request(crate::core::new_request(
+        resume_id.to_string(),
+        CoreRequest::ProjectionResume {
+            cursor: cursor.clone(),
+            include_snapshot_if_resync: false,
+        },
+    ));
+    writer
+        .write_all(serde_json::to_string(&resume).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer.write_all(b"\n").await.unwrap();
+    writer.flush().await.unwrap();
+    match read_frame(&mut reader).await.unwrap() {
+        CoreFrame::Response {
+            request_id,
+            response,
+        } if request_id == resume_id => match *response {
+            crate::protocol::core::CoreResponse::ProjectionReplay {
+                subscription_id: Some(resumed_id),
+                ..
+            } => assert_eq!(
+                resumed_id, sub_id,
+                "live resume must continue the same subscription"
+            ),
+            other => panic!("expected ProjectionReplay, got {other:?}"),
+        },
+        other => panic!("expected resume response, got {other:?}"),
+    }
+
+    // The subscription must still be live: a published event arrives on it.
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-live-resume",
+        "session-live-resume",
+        "turn-live-resume",
+        1,
+    )
+    .await;
+    let (live_sub_id, _live_stream_id, live_event) = tokio::time::timeout(
+        Duration::from_millis(400),
+        read_projection_event(&mut reader),
+    )
+    .await
+    .expect("live event must arrive after a live resume")
+    .expect("Unix projection stream must remain open");
+    assert_eq!(live_sub_id, sub_id);
+    assert_eq!(live_event.event_seq, 1);
+
+    // A second resume on the still-live subscription also answers Replay.
+    // Pre-fix the first resume cleaned the subscription up, so this fails.
+    let resume_id_2 = "resume-live-2";
+    let resume_2 = CoreFrame::Request(crate::core::new_request(
+        resume_id_2.to_string(),
+        CoreRequest::ProjectionResume {
+            cursor,
+            include_snapshot_if_resync: false,
+        },
+    ));
+    writer
+        .write_all(serde_json::to_string(&resume_2).unwrap().as_bytes())
+        .await
+        .unwrap();
+    writer.write_all(b"\n").await.unwrap();
+    writer.flush().await.unwrap();
+    // Drain any live event frames before the response (none expected, but
+    // stay robust to forwarder timing).
+    let resumed_again = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match read_frame(&mut reader).await {
+                Some(CoreFrame::Response {
+                    request_id,
+                    response,
+                }) if request_id == resume_id_2 => break *response,
+                Some(_) => continue,
+                None => panic!("stream closed before second resume answered"),
+            }
+        }
+    })
+    .await
+    .expect("second resume must be answered");
+    match resumed_again {
+        crate::protocol::core::CoreResponse::ProjectionReplay {
+            subscription_id: Some(resumed_id),
+            ..
+        } => assert_eq!(
+            resumed_id, sub_id,
+            "second live resume must continue the same subscription"
+        ),
+        other => panic!("expected ProjectionReplay, got {other:?}"),
+    }
+
+    abort_server(server_handle).await;
+}
+
 /// Two consecutive Unix-socket subscriptions on the same project must yield
 /// distinct subscription ids, distinct client ids, and isolated live event
 /// streams. This is the fresh-identity proof that closes Work Package G.

@@ -215,9 +215,20 @@ async fn connect_and_configure(
     path: &str,
     max_connections: u32,
 ) -> Result<SqlitePool, StorageError> {
+    // Per-connection pragmas MUST ride the connect options, not a
+    // post-connect query: a `PRAGMA busy_timeout` executed through the
+    // pool touches exactly one pooled connection, leaving every other
+    // connection at busy_timeout=0 (instant SQLITE_BUSY on transient
+    // contention — observed as dropped projection publications under
+    // concurrent turn + subscription load in M004 E2E). Builder options
+    // apply to every connection the pool opens.
     let options = SqliteConnectOptions::from_str(path)
         .map_err(|e| StorageError::Database(format!("invalid database path {}: {}", path, e)))?
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(30))
+        .foreign_keys(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(max_connections)

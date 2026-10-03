@@ -123,6 +123,19 @@ Every payload field carries a `VisibilityClass` tag:
 
 Lifecycle invariants:
 
+- Persisted row sequence is the stream-local authority. Stored
+  envelopes are rewritten to their own stream's row sequence on
+  persist, and the same rewritten envelope feeds live delivery, so
+  replay and live agree on cursors, gap detection, and replay ranges.
+  The daemon-global log sequence never appears on the wire as a
+  stream cursor (M004 live-turn: global seqs on stream rows made every
+  post-snapshot event look like a history gap).
+- A replay/continuation on an already-live owned subscription is a
+  continuation, not a birth: the daemon delivers the batch and leaves
+  the live receiver/forwarder untouched instead of re-running
+  activation (which trips `InvalidLifecycle(Live)` and destroys the
+  healthy subscription).
+
 - Two compliant reducers with the same `(snapshot, events)` produce
   equivalent serialized snapshots.
 - Out-of-order transitions do not panic; they record a diagnostic

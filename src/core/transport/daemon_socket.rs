@@ -18,8 +18,9 @@ use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 use codegg_protocol::projection::replay::ProjectionSubscriptionId;
 
 use super::projection::{
-    bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionSubscription,
-    ProjectionConnectionState, ProjectionLifecycleBoundary, ProjectionLifecycleSeam,
+    bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionLifecycle,
+    OwnedProjectionSubscription, ProjectionConnectionState, ProjectionLifecycleBoundary,
+    ProjectionLifecycleSeam,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,43 +676,63 @@ async fn handle_client(
                                 break;
                             }
                             if let Some(subscription_id) = response_subscription_id {
-                                if lifecycle_seam
-                                    .checkpoint(
-                                        ProjectionLifecycleBoundary::BeforeActivation,
-                                        &cancellation,
-                                    )
-                                    .await
-                                    .is_err()
-                                {
-                                    cleanup_projection_subscription(
-                                        &daemon,
-                                        &projection_state,
-                                        &subscription_id,
-                                        &client_id,
-                                    )
-                                    .await;
-                                    tracing::warn!(
-                                        "projection activation cancelled before Unix-socket response commit"
-                                    );
-                                    break;
-                                }
-                                let activation = projection_state
+                                // A replay/continuation on an already-live
+                                // owned subscription is not a birth: the
+                                // receiver and forwarder are already
+                                // installed, so deliver the batch and leave
+                                // the live lifecycle untouched. Re-running
+                                // activation here would trip
+                                // InvalidLifecycle(Live) and destroy the
+                                // healthy subscription (M004 live-turn:
+                                // cursor resume ~1s after subscribe cleaned
+                                // up the desktop session subscription, going
+                                // deaf to permission/turn events).
+                                let already_live = projection_state
                                     .lock()
                                     .await
-                                    .activate_after_delivery(&subscription_id);
-                                if let Err(error) = activation {
-                                    cleanup_projection_subscription(
-                                        &daemon,
-                                        &projection_state,
-                                        &subscription_id,
-                                        &client_id,
-                                    )
-                                    .await;
-                                    tracing::warn!(
+                                    .subscription(&subscription_id)
+                                    .is_some_and(|subscription| {
+                                        subscription.lifecycle == OwnedProjectionLifecycle::Live
+                                    });
+                                if !already_live {
+                                    if lifecycle_seam
+                                        .checkpoint(
+                                            ProjectionLifecycleBoundary::BeforeActivation,
+                                            &cancellation,
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        cleanup_projection_subscription(
+                                            &daemon,
+                                            &projection_state,
+                                            &subscription_id,
+                                            &client_id,
+                                        )
+                                        .await;
+                                        tracing::warn!(
+                                        "projection activation cancelled before Unix-socket response commit"
+                                    );
+                                        break;
+                                    }
+                                    let activation = projection_state
+                                        .lock()
+                                        .await
+                                        .activate_after_delivery(&subscription_id);
+                                    if let Err(error) = activation {
+                                        cleanup_projection_subscription(
+                                            &daemon,
+                                            &projection_state,
+                                            &subscription_id,
+                                            &client_id,
+                                        )
+                                        .await;
+                                        tracing::warn!(
                                         "projection activation failed after critical response delivery: {:?}",
                                         error
                                     );
-                                    break;
+                                        break;
+                                    }
                                 }
                             }
                         }

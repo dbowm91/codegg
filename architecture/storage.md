@@ -73,7 +73,15 @@ single batched query:
 |--------|-------|---------|
 | `journal_mode` | `WAL` | Write-Ahead Logging for concurrency |
 | `wal_autocheckpoint` | `1000` | Checkpoint every 1000 pages |
-| `busy_timeout` | `5000` | 5s timeout on busy |
+| `busy_timeout` | `30000` per connection | 30s timeout on busy, applied to every pooled connection |
+
+> Per-connection pragmas must ride `SqliteConnectOptions`, not a
+> post-connect query: a `PRAGMA busy_timeout` executed through the pool
+> touches exactly one pooled connection, leaving the rest at
+> `busy_timeout=0` (instant `SQLITE_BUSY` on transient contention —
+> observed as silently dropped projection publications under concurrent
+> turn + subscription load in M004 E2E). Builder options apply to every
+> connection the pool opens.
 | `synchronous` | `NORMAL` | Balanced performance/safety |
 | `mmap_size` | `268435456` | 256MB memory-mapped I/O |
 | `cache_size` | `-2000` | 2MB page cache |

@@ -204,6 +204,25 @@ export class FixtureClient {
     return String(response['project_id']);
   }
 
+  /**
+   * Select the deterministic mock model for a session: creates the
+   * phase-scoped `openai` provider connection against the mock model
+   * server (once per phase) and applies `SessionSelectionUpdate`
+   * through the ordinary authorized daemon APIs. Generous timeout:
+   * connection creation probes under a 20s workflow budget.
+   */
+  async selectMockModel(sessionId: string): Promise<{ connection_id: string; model_id: string }> {
+    const response = await this.send(
+      'select_mock_model',
+      { session_id: sessionId },
+      90_000,
+    );
+    return {
+      connection_id: String(response['connection_id']),
+      model_id: String(response['model_id']),
+    };
+  }
+
   async archiveProject(projectId: string): Promise<void> {
     await this.send('archive_project', { project_id: projectId });
   }
