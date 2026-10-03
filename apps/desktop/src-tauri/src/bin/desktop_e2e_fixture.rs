@@ -341,6 +341,34 @@ mod server {
             }
         }
 
+        /// Daemon-side project catalog through the same read path the desktop
+        /// app uses. Diagnostic/assertion support: separates daemon truth
+        /// from renderer refresh when an invalidation appears lost.
+        async fn cmd_project_list(&self, id: &Value) -> Value {
+            match self
+                .request(CoreRequest::ProjectList {
+                    include_archived: false,
+                    limit: 50,
+                })
+                .await
+            {
+                Ok(CoreResponse::ProjectList { projects, .. }) => json!({
+                    "id": id,
+                    "ok": true,
+                    "projects": projects
+                        .iter()
+                        .map(|project| json!({
+                            "project_id": project.project_id,
+                            "display_name": project.display_name,
+                            "lifecycle": project.lifecycle,
+                        }))
+                        .collect::<Vec<_>>(),
+                }),
+                Ok(other) => fail(id, format!("unexpected list response: {other:?}")),
+                Err(e) => fail(id, e),
+            }
+        }
+
         async fn cmd_register_project(&self, id: &Value, cmd: &Value) -> Value {
             let display_name = cmd
                 .get("display_name")
@@ -520,6 +548,7 @@ mod server {
             match name {
                 "start" => Some(self.cmd_start(&id).await),
                 "snapshot" => Some(self.cmd_snapshot(&id).await),
+                "project_list" => Some(self.cmd_project_list(&id).await),
                 "register_project" => Some(self.cmd_register_project(&id, cmd).await),
                 "archive_project" => Some(self.cmd_archive_project(&id, cmd).await),
                 "restore_project" => Some(self.cmd_restore_project(&id, cmd).await),

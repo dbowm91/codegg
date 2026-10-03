@@ -70,7 +70,7 @@ async function projectTexts(): Promise<string[]> {
 
 // Read-only in-page diagnostics through the page's own bundled Tauri API:
 // distinguishes "host never served it" from "renderer never refreshed".
-async function dumpState(label: string): Promise<void> {
+async function dumpState(label: string, daemonProjects: string[]): Promise<void> {
   try {
     const state = await browser.execute(() => {
       const internals = (
@@ -78,22 +78,24 @@ async function dumpState(label: string): Promise<void> {
           __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> };
         }
       ).__TAURI_INTERNALS__;
-      if (!internals) return { invoke: false };
+      if (!internals) return Promise.resolve({ invoke: false });
       return internals
         .invoke('desktop_project_list')
-        .then((projects) => ({
-          invoke: true,
-          hostProjects: (projects as unknown[]).length,
-          status: document.querySelector('[data-testid="connection-status"]')?.textContent,
-          generation: document.querySelector('[data-testid="connection-generation"]')
-            ?.textContent,
-          subscription: document.querySelector('[data-testid="subscription-id"]')
-            ?.textContent,
-          rendered: document.querySelectorAll('[data-testid="project-item"]').length,
-        }))
+        .then((projects) =>
+          internals.invoke('desktop_connection_snapshot').then((snapshot) => ({
+            invoke: true,
+            hostProjects: (projects as unknown[]).length,
+            daemonId: (snapshot as { daemonId?: unknown }).daemonId,
+            generation: (snapshot as { connectionGeneration?: unknown }).connectionGeneration,
+            status: document.querySelector('[data-testid="connection-status"]')?.textContent,
+            subscription: document.querySelector('[data-testid="subscription-id"]')
+              ?.textContent,
+            rendered: document.querySelectorAll('[data-testid="project-item"]').length,
+          })),
+        )
         .catch((error: unknown) => ({ invoke: 'error', message: String(error) }));
     });
-    console.log(`DIAG ${label}: ${JSON.stringify(state)}`);
+    console.log(`DIAG ${label}: host=${JSON.stringify(state)} daemon=${JSON.stringify(daemonProjects)}`);
   } catch (error) {
     console.log(`DIAG ${label}: execute failed: ${String(error)}`);
   }
@@ -179,7 +181,11 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     // Catalog mutation through the fixture reaches the current renderer with
     // no manual refresh, proving the real Tauri Channel delivery.
     await active().registerProject(extraProject);
-    await dumpState(`after-register-${extraProject}`);
+    const daemonProjects = await active()
+      .projectList()
+      .then((projects) => projects.map((p) => p.display_name))
+      .catch((error: unknown) => [`fixture-list-error: ${String(error)}`]);
+    await dumpState(`after-register-${extraProject}`, daemonProjects);
     await waitForProject(extraProject);
     return await connectionGeneration();
   }

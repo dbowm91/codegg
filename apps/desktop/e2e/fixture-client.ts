@@ -194,6 +194,11 @@ export class FixtureClient {
     return response['snapshot'] as unknown as DaemonSnapshot;
   }
 
+  async projectList(): Promise<{ project_id: string; display_name: string }[]> {
+    const response = await this.send('project_list');
+    return response['projects'] as { project_id: string; display_name: string }[];
+  }
+
   async registerProject(displayName: string): Promise<string> {
     const response = await this.send('register_project', { display_name: displayName });
     return String(response['project_id']);
