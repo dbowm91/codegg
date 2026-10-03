@@ -509,6 +509,47 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).expect("read new"), "new");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_writer_waits_for_checked_save_workspace_lock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "base").expect("seed file");
+        let locks = Arc::new(WorkspaceLockTable::new());
+        let save_guard = locks.acquire_repository(temp.path()).await;
+        let external_locks = locks.clone();
+        let external_root = temp.path().to_path_buf();
+        let external_path = path.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let external = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            let _guard = external_locks.acquire_repository(&external_root).await;
+            tokio::fs::write(external_path, "external")
+                .await
+                .expect("external write");
+        });
+        started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !external.is_finished(),
+            "external mutation crossed the save lock"
+        );
+        let write = checked_workspace_text_write(temp.path(), "main.rs", &sha256("base"), "saved")
+            .await
+            .expect("checked save");
+        assert_eq!(
+            write,
+            CheckedTextWrite::Written {
+                new_hash: sha256("saved")
+            }
+        );
+        drop(save_guard);
+        external.await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read final"),
+            "external"
+        );
+    }
+
     fn request(root: &Path, path: &Path, original: &str) -> LspPreviewApplyRequestDto {
         let preview = egglsp::edit::preview_text_edits_for_file(
             "rename",

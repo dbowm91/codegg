@@ -1228,4 +1228,64 @@ mod tests {
         assert_eq!(dirty_snapshot.text, "dirty local");
         assert!(dirty_snapshot.dirty && dirty_snapshot.conflicted);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accepted_change_waits_behind_checked_save_operation_gate() {
+        let temp = tempfile::tempdir().unwrap();
+        tokio::fs::write(temp.path().join("main.rs"), "base")
+            .await
+            .unwrap();
+        let service = Arc::new(DocumentService::new());
+        let (opened, _) = service
+            .open(
+                "p".into(),
+                "w".into(),
+                temp.path(),
+                "main.rs",
+                "writer",
+                false,
+            )
+            .await
+            .unwrap();
+        let lease = service
+            .acquire_writer(&opened.document_id, "p", "writer")
+            .await
+            .unwrap();
+        let operation = service
+            .operation_lock(&opened.document_id, "p", "writer", &lease)
+            .await
+            .unwrap();
+        let save_guard = operation.lock_owned().await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task_service = service.clone();
+        let task_id = opened.document_id.clone();
+        let task_lease = lease.clone();
+        let change = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            task_service
+                .change(
+                    &task_id,
+                    "p",
+                    "writer",
+                    &task_lease,
+                    0,
+                    "racing-change",
+                    DocumentTransactionDto {
+                        edits: vec![DocumentTextEditDto {
+                            range: DocumentTextRangeDto { start: 4, end: 4 },
+                            insert: "!".into(),
+                        }],
+                    },
+                )
+                .await
+        });
+        started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !change.is_finished(),
+            "change crossed the save operation gate"
+        );
+        drop(save_guard);
+        assert_eq!(change.await.unwrap().unwrap(), 1);
+    }
 }
