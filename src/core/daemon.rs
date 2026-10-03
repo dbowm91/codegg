@@ -5386,6 +5386,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_prompt_submit_maps_selection_store_failure() {
+        let mut daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+
+        // Keep normal request authorization on the healthy daemon store,
+        // while making the selection service fail at its own persistence
+        // boundary. This exercises the request-level wire mapping.
+        let failed_pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("open isolated selection pool");
+        failed_pool.close().await;
+        let session_store = Arc::new(codegg_core::session::SessionStore::new(failed_pool.clone()));
+        let connection_store =
+            Arc::new(codegg_core::provider_connections::ProviderConnectionStore::new(failed_pool));
+        daemon.selection_service = Some(Arc::new(
+            crate::core::session_selection::SelectionService::new(
+                session_store,
+                connection_store,
+                None,
+            ),
+        ));
+
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "req-prompt-selection-failure".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id,
+                    text: "hello".into(),
+                    plan_mode: false,
+                },
+            ))
+            .await
+            .unwrap();
+        match response {
+            CoreResponse::Error { code, message } => {
+                assert_eq!(code, "selection_lookup_failed");
+                assert!(message.contains("Session selection lookup failed"));
+            }
+            other => panic!("expected selection lookup failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn session_prompt_submit_legacy_reference_fails_closed() {
         let daemon = test_daemon().await;
         let workspace_dir = tempfile::tempdir().unwrap();

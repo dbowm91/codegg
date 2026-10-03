@@ -12,6 +12,30 @@ use crate::protocol::core::{CoreRequest, CoreResponse};
 use super::daemon::CoreDaemon;
 use super::event_log::EventFilter;
 
+/// Narrow domain error for daemon-side prompt composition. Protocol
+/// response construction belongs to the `SessionPromptSubmit` boundary.
+#[derive(Debug)]
+struct PromptCompositionError {
+    code: &'static str,
+    message: String,
+}
+
+impl PromptCompositionError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn into_core_response(self) -> CoreResponse {
+        CoreResponse::Error {
+            code: self.code.to_owned(),
+            message: self.message,
+        }
+    }
+}
+
 impl CoreDaemon {
     pub(crate) async fn handle_turns_request(
         &self,
@@ -438,7 +462,7 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(composed) => composed,
-                    Err(error) => return Ok(error),
+                    Err(error) => return Ok(error.into_core_response()),
                 };
                 return Box::pin(self.handle_turns_request(
                     CoreRequest::TurnSubmit {
@@ -1153,7 +1177,7 @@ impl CoreDaemon {
     /// with `turn_already_active` instead of spawning a second turn.
     pub(crate) const SESSION_PROMPT_MAX_TEXT_CHARS: usize = 200_000;
 
-    pub(crate) async fn resolve_prompt_submit_composition(
+    async fn resolve_prompt_submit_composition(
         &self,
         session_id: &str,
         text: &str,
@@ -1163,58 +1187,58 @@ impl CoreDaemon {
             Vec<crate::protocol::dto::Agent>,
             Vec<crate::protocol::dto::ProviderMessage>,
         ),
-        CoreResponse,
+        PromptCompositionError,
     > {
         if text.trim().is_empty() {
-            return Err(CoreResponse::Error {
-                code: "prompt_text_empty".to_string(),
-                message: "Prompt text must not be empty".to_string(),
-            });
+            return Err(PromptCompositionError::new(
+                "prompt_text_empty",
+                "Prompt text must not be empty",
+            ));
         }
         if text.chars().count() > Self::SESSION_PROMPT_MAX_TEXT_CHARS {
-            return Err(CoreResponse::Error {
-                code: "prompt_text_too_long".to_string(),
-                message: format!(
+            return Err(PromptCompositionError::new(
+                "prompt_text_too_long",
+                format!(
                     "Prompt text exceeds {} characters",
                     Self::SESSION_PROMPT_MAX_TEXT_CHARS
                 ),
-            });
+            ));
         }
-        let selection_service = self.selection_service.as_ref().ok_or(CoreResponse::Error {
-            code: "model_unselected".to_string(),
-            message: format!(
+        let selection_service = self.selection_service.as_ref().ok_or_else(|| {
+            PromptCompositionError::new(
+                "model_unselected",
+                format!(
                 "No model selected for session {session_id}; choose one via SessionSelectionUpdate"
-            ),
+                ),
+            )
         })?;
-        let selection =
-            selection_service
-                .get(session_id)
-                .await
-                .map_err(|error| CoreResponse::Error {
-                    code: "selection_lookup_failed".to_string(),
-                    message: format!("Session selection lookup failed: {error}"),
-                })?;
+        let selection = selection_service.get(session_id).await.map_err(|error| {
+            PromptCompositionError::new(
+                "selection_lookup_failed",
+                format!("Session selection lookup failed: {error}"),
+            )
+        })?;
         let model = match &selection {
             crate::protocol::provider::SessionSelectionDto::Selected { .. } => {
                 crate::core::session_selection::durable_selected_runtime_model(&selection)
             }
             crate::protocol::provider::SessionSelectionDto::LegacyUnresolved { reason, .. } => {
-                return Err(CoreResponse::Error {
-                    code: "model_unresolved".to_string(),
-                    message: format!(
+                return Err(PromptCompositionError::new(
+                    "model_unresolved",
+                    format!(
                         "Session {session_id} carries a legacy model reference that cannot be resolved: {reason}"
                     ),
-                });
+                ));
             }
             crate::protocol::provider::SessionSelectionDto::Unselected {} => None,
         };
         let Some(model) = model else {
-            return Err(CoreResponse::Error {
-                code: "model_unselected".to_string(),
-                message: format!(
+            return Err(PromptCompositionError::new(
+                "model_unselected",
+                format!(
                     "No model selected for session {session_id}; choose one via SessionSelectionUpdate"
                 ),
-            });
+            ));
         };
         // Bind the session to learn its authoritative workspace root
         // for agent resolution. Unknown sessions fail here with
@@ -1222,30 +1246,34 @@ impl CoreDaemon {
         let runtime = self
             .bind_runtime_for_session(session_id)
             .await
-            .map_err(|error| CoreResponse::Error {
-                code: "session_unbound".to_string(),
-                message: format!("session {session_id} has no resolvable workspace: {error}"),
+            .map_err(|error| {
+                PromptCompositionError::new(
+                    "session_unbound",
+                    format!("session {session_id} has no resolvable workspace: {error}"),
+                )
             })?;
         let config = super::load_config_or_default();
         let agents = crate::agent::resolve_agents_with_context(
             &config,
             Some(runtime.workspace_root.as_path()),
         )
-        .map_err(|error| CoreResponse::Error {
-            code: "agents_unresolvable".to_string(),
-            message: format!("Agent configuration cannot be resolved: {error}"),
+        .map_err(|error| {
+            PromptCompositionError::new(
+                "agents_unresolvable",
+                format!("Agent configuration cannot be resolved: {error}"),
+            )
         })?;
         if agents.is_empty() {
-            return Err(CoreResponse::Error {
-                code: "agents_unresolvable".to_string(),
-                message: "No agents available from daemon configuration".to_string(),
-            });
+            return Err(PromptCompositionError::new(
+                "agents_unresolvable",
+                "No agents available from daemon configuration",
+            ));
         }
         let agents = crate::protocol_conversions::agents_to_dtos(agents).map_err(|error| {
-            CoreResponse::Error {
-                code: "agents_invalid".to_string(),
-                message: format!("Resolved agents cannot be submitted: {error}"),
-            }
+            PromptCompositionError::new(
+                "agents_invalid",
+                format!("Resolved agents cannot be submitted: {error}"),
+            )
         })?;
         let messages = vec![crate::protocol::dto::ProviderMessage::User {
             content: vec![crate::protocol::dto::ContentPart::Text {
