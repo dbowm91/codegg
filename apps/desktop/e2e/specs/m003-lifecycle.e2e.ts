@@ -151,6 +151,13 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     expect(snapshot.desktop_clients).toBe(desktop);
   }
 
+  async function daemonProjectNames(): Promise<string[]> {
+    return active()
+      .projectList()
+      .then((projects) => projects.map((p) => p.display_name))
+      .catch((error: unknown) => [`fixture-list-error: ${String(error)}`]);
+  }
+
   it('renders the real daemon identity and the deterministic project catalog', async () => {
     await waitConnected();
     expect(await $('[data-testid="daemon-identity"]').getText()).toBe(daemonId);
@@ -181,11 +188,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     // Catalog mutation through the fixture reaches the current renderer with
     // no manual refresh, proving the real Tauri Channel delivery.
     await active().registerProject(extraProject);
-    const daemonProjects = await active()
-      .projectList()
-      .then((projects) => projects.map((p) => p.display_name))
-      .catch((error: unknown) => [`fixture-list-error: ${String(error)}`]);
-    await dumpState(`after-register-${extraProject}`, daemonProjects);
+    await dumpState(`after-register-${extraProject}`, await daemonProjectNames());
     await waitForProject(extraProject);
     return await connectionGeneration();
   }
@@ -207,6 +210,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     expectCounts(snapshot, 2, 1);
     // Only the current renderer subscription receives the update.
     await active().registerProject('e2e-reload-probe-1');
+    await dumpState('after-register-e2e-reload-probe-1', await daemonProjectNames());
     await waitForProject('e2e-reload-probe-1');
   });
 
@@ -224,6 +228,7 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
       1,
     );
     await active().registerProject('e2e-reload-probe-2');
+    await dumpState('after-register-e2e-reload-probe-2', await daemonProjectNames());
     await waitForProject('e2e-reload-probe-2');
   });
 

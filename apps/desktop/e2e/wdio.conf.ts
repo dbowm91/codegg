@@ -40,6 +40,12 @@ function appBinaryPath(): string {
 
 const appBinary = appBinaryPath();
 
+// One app instance is spawned per WebdriverIO invocation, and the embedded
+// server listens on a fixed port: phases run as separate invocations, so
+// each phase takes its own port (a lingering app from an earlier phase can
+// never capture or confuse a later one).
+const embeddedPort = Number(process.env.CODEGG_E2E_WDIO_PORT ?? 4445);
+
 // `WebdriverIO.Config` is the same intersection, spelled structurally: the
 // global-namespace member does not evaluate under this repo's TypeScript
 // toolchain (see test-browser.ts), while the constituent interfaces do.
@@ -71,6 +77,7 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
       {
         appBinaryPath: appBinary,
         driverProvider: 'embedded',
+        embeddedPort,
       },
     ],
   ],

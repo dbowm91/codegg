@@ -80,12 +80,13 @@ wait_for_socket() {
 }
 
 run_phase() {
-  local name="$1" spec="$2" prestart="$3"
+  local name="$1" spec="$2" prestart="$3" wdio_port="$4"
   local home server_pid status=0
   home="$(mktemp -d "${TMPDIR:-/tmp}/codegg-e2e-XXXXXX")"
   export CODEGG_E2E_HOME="$home"
   export CODEGG_E2E_SOCKET="$home/fixture.sock"
   export CODEGG_DAEMON_HOME="$home/daemon-home"
+  export CODEGG_E2E_WDIO_PORT="$wdio_port"
   echo "==> phase $name: home $home"
   "$fixture_bin" serve >"$home/server.log" 2>&1 &
   server_pid=$!
@@ -123,13 +124,13 @@ run_phase() {
     cp "$home/daemon-home/daemon.log" "$app_root/e2e/logs/$name-daemon.log" 2>/dev/null || true
   fi
   rm -rf "$home"
-  unset CODEGG_E2E_HOME CODEGG_E2E_SOCKET CODEGG_DAEMON_HOME CODEGG_E2E_STATE_FILE
+  unset CODEGG_E2E_HOME CODEGG_E2E_SOCKET CODEGG_DAEMON_HOME CODEGG_E2E_STATE_FILE CODEGG_E2E_WDIO_PORT
   return $status
 }
 
 overall=0
-run_phase lifecycle m003-lifecycle.e2e.ts start || overall=1
-run_phase autostart m003-autostart.e2e.ts start-then-stop || overall=1
+run_phase lifecycle m003-lifecycle.e2e.ts start 4445 || overall=1
+run_phase autostart m003-autostart.e2e.ts start-then-stop 4446 || overall=1
 if ((overall != 0)); then
   echo "E2E trajectory FAILED" >&2
 fi
