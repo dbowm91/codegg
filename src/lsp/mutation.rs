@@ -702,6 +702,59 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn dirty_document_service_rejects_preview_before_disk_write() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("main.rs");
+        std::fs::write(&path, "old\n").expect("write original");
+        let request = request(root.path(), &path, "old\n");
+        let documents = Arc::new(crate::document_service::DocumentService::new());
+        let (opened, _) = documents
+            .open(
+                "project-test".into(),
+                "workspace-test".into(),
+                root.path(),
+                "main.rs",
+                "editor",
+                false,
+            )
+            .await
+            .expect("open managed document");
+        let lease = documents
+            .acquire_writer(&opened.document_id, "project-test", "editor")
+            .await
+            .unwrap();
+        documents
+            .change(
+                &opened.document_id,
+                "project-test",
+                "editor",
+                &lease,
+                0,
+                "dirty-editor",
+                codegg_protocol::document::DocumentTransactionDto {
+                    edits: vec![codegg_protocol::document::DocumentTextEditDto {
+                        range: codegg_protocol::document::DocumentTextRangeDto { start: 4, end: 4 },
+                        insert: "unsaved".into(),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        let error = apply_preview(
+            request,
+            root.path().to_path_buf(),
+            Arc::new(WorkspaceLockTable::new()),
+            pool().await,
+            Some(documents),
+            None,
+        )
+        .await
+        .expect_err("dirty editor target must reject disk preview");
+        assert!(matches!(error, LspMutationApplyError::Stale(_)));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "old\n");
+    }
+
     #[tokio::test]
     async fn edit_only_code_action_uses_the_same_checked_apply_path() {
         let root = tempfile::tempdir().expect("tempdir");

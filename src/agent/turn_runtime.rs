@@ -109,6 +109,8 @@ pub struct TurnRunInput {
     /// Shared LSP service for injecting LSP context into the system prompt.
     /// `None` when LSP is not available (e.g. socket mode).
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Daemon-owned canonical editor buffers for checked preview gating.
+    pub document_service: Option<Arc<crate::document_service::DocumentService>>,
     /// Optional task-aware metadata for assembling LSP context.
     /// When absent, the runtime injects a generic status section.
     /// When present, the runtime collects an `LspContextPacket`
@@ -209,6 +211,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             event_log,
             turn_id,
             lsp_service,
+            document_service,
             lsp_context_input,
             plugin_service,
             execution,
@@ -368,6 +371,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 notification_service: Some(notification_service.clone()),
                 workspace_locks,
                 lsp_service: lsp_service.clone(),
+                document_service,
                 runtime_assets: crate::tool::factory::RuntimeAssetContext {
                     snapshot: asset_snapshot.clone(),
                     pin: asset_pin.clone(),

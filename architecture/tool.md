@@ -34,7 +34,8 @@ be called by Tool Programs.
 Agent file tools remain disk-authoritative even when an editor has unsaved
 text. LSP semantic requests may use a managed editor snapshot, but they do not
 redirect tool reads or writes to the editor buffer. A preview apply targeting
-a dirty managed document is rejected; save and regenerate the preview first.
+a dirty managed document is rejected under the same document operation gate
+used by daemon checked save; save and regenerate the preview first.
 
 The `tool` module provides the built-in tools that the agent can use to
 interact with the filesystem, shell, and external services. It owns the

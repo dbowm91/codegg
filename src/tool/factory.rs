@@ -39,6 +39,8 @@ pub struct SessionToolContext {
     /// the model-facing LSP tool. `None` preserves explicit unavailable
     /// behavior for runtimes without LSP.
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Daemon-owned canonical document state used to serialize preview apply.
+    pub document_service: Option<Arc<crate::document_service::DocumentService>>,
     /// Explicit runtime-owned search/MCP context (M005). When `Some`,
     /// search/evidence wrappers execute against this context instead of
     /// any process-global slot. Turn construction bootstraps this
@@ -96,6 +98,7 @@ pub fn build_session_tool_registry(
         notification_service,
         workspace_locks,
         lsp_service,
+        document_service,
         search_runtime,
         sandbox_profile,
         memory_store,
@@ -146,6 +149,7 @@ pub fn build_session_tool_registry(
         pool: pool.clone(),
         session_id: Some(session_id.to_string()),
         lsp_service,
+        document_service: document_service.clone(),
         lsp_preview_registry: None,
         tool_backends: crate::tool::ToolBackendConfig::from_config(config),
         context_artifact_store: if context_read_enabled {
@@ -201,6 +205,7 @@ pub fn build_session_tool_registry(
             turn_id.clone(),
             workspace_locks_for_preview_apply,
             lsp_service_for_preview_apply,
+            document_service.clone(),
             preview_registry,
         ));
     }

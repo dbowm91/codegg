@@ -67,6 +67,6 @@ external disk changes: clean buffers refresh and advance revision; dirty
 buffers keep their exact text and become conflicted. Filesystem notifications
 are advisory; tools continue to read and mutate disk through their existing
 authorities. A dirty editor document rejects LSP preview apply until saved and
-the preview is regenerated. The daemon preview apply path takes clean-document
-operation gates before the workspace lock, closing the edit race between its
-dirty check and multi-file write.
+the preview is regenerated. Daemon and model-facing preview apply paths take
+clean-document operation gates before the workspace lock, closing the edit
+race between their dirty check and multi-file write.

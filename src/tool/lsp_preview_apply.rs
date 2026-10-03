@@ -46,6 +46,7 @@ pub struct LspPreviewApplyTool {
     turn_id: Option<String>,
     workspace_locks: Arc<codegg_core::workspace_services::WorkspaceLockTable>,
     lsp_service: Arc<crate::lsp::service::LspService>,
+    document_service: Option<Arc<crate::document_service::DocumentService>>,
     preview_registry: LspPreviewRegistryHandle,
     #[cfg(test)]
     apply_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -61,6 +62,7 @@ impl LspPreviewApplyTool {
         turn_id: Option<String>,
         workspace_locks: Arc<codegg_core::workspace_services::WorkspaceLockTable>,
         lsp_service: Arc<crate::lsp::service::LspService>,
+        document_service: Option<Arc<crate::document_service::DocumentService>>,
         preview_registry: LspPreviewRegistryHandle,
     ) -> Self {
         Self {
@@ -71,6 +73,7 @@ impl LspPreviewApplyTool {
             turn_id,
             workspace_locks,
             lsp_service,
+            document_service,
             preview_registry,
             #[cfg(test)]
             apply_barrier: None,
@@ -225,7 +228,7 @@ impl LspPreviewApplyTool {
             self.workspace_root.clone(),
             self.workspace_locks.clone(),
             self.pool.clone(),
-            None,
+            self.document_service.clone(),
             Some(self.lsp_service.clone()),
         )
         .await
@@ -619,6 +622,7 @@ mod tests {
                 crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
                     crate::config::schema::LspConfig::default(),
                 )),
+                None,
                 registry.clone(),
             );
             let contract = tool.contract(tool.name(), tool.parameters());
@@ -673,6 +677,7 @@ mod tests {
                 crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
                     crate::config::schema::LspConfig::default(),
                 )),
+                None,
                 registry.clone(),
             )
             .with_apply_barrier(Arc::new(Barrier::new(2))),

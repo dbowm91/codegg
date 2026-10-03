@@ -44,9 +44,10 @@ fails, the next semantic preparation retries that snapshot. The legacy
 `ensure_file_open_from_disk` path refreshes disk-owned documents only; it leaves
 managed text intact. LSP synchronization errors degrade language intelligence
 without changing canonical editor text.
-The daemon's protocol apply path also holds document operation gates before
-the workspace lock and rejects dirty managed buffers, so save/change and
-preview apply cannot interleave their disk checks.
+Both daemon protocol apply and model-facing checked preview apply receive the
+daemon's `DocumentService`, hold document operation gates before the workspace
+lock, and reject dirty managed buffers, so save/change and preview apply cannot
+interleave their disk checks.
 
 ### Preview runtime ownership and checked apply
 
