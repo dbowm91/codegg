@@ -137,6 +137,7 @@ run_phase() {
 overall=0
 run_phase lifecycle m003-lifecycle.e2e.ts start 4445 || overall=1
 run_phase autostart m003-autostart.e2e.ts start-then-stop 4446 || overall=1
+run_phase session m004-session.e2e.ts start 4447 || overall=1
 if ((overall != 0)); then
   echo "E2E trajectory FAILED" >&2
 fi

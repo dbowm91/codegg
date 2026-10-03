@@ -61,6 +61,7 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
   specs: [
     path.join(e2eDir, 'specs', 'm003-lifecycle.e2e.ts'),
     path.join(e2eDir, 'specs', 'm003-autostart.e2e.ts'),
+    path.join(e2eDir, 'specs', 'm004-session.e2e.ts'),
   ],
   maxInstances: 1,
   capabilities: [
