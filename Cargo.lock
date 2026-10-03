@@ -976,6 +976,8 @@ dependencies = [
 name = "codegg-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "codegg-document",
  "codegg-protocol",
  "dashmap",
  "dirs",

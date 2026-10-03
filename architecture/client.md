@@ -1,6 +1,6 @@
 # Client Module
 
-## Native local frontend client (in progress)
+## Native local frontend client
 
 `crates/codegg-client` is the reusable frontend-side native client. It owns
 `FrontendDescriptor`, bounded `ClientError` classifications, local daemon
@@ -24,6 +24,19 @@ request correlation, handshake/client identity, and reconnect. The TUI starts
 it with an explicit TUI descriptor. A headless GUI-kind consumer can use the
 same API without importing TUI or daemon modules. Disconnect only releases
 frontend-owned transport tasks; daemon-owned turns and jobs continue.
+
+`DocumentController` is the shared `document.v1` replica. It uses the
+`codegg-document` rope core, applies local transactions before transport,
+tracks daemon revision independently, assigns stable change IDs, serializes
+flushes, retains uncertain requests for idempotent retry, and bounds pending
+transactions and bytes. Save flushes accepted local work first. Conflict keeps
+the replica intact; reconnect divergence requires explicit resync/recovery.
+One owned debounce task flushes changes; adjacent unsent insertions coalesce
+only when byte-coordinate rebasing is exact. A replacement transport
+reattaches the same path and reacquires the writer lease; daemon restart/gone
+state keeps the client draft without writing it over disk.
+It owns no cursor, selection, viewport, keymap, or rendering state. The TUI
+adapter wraps this controller and stores only presentation placeholders.
 
 ## Loss-aware events and the session projection driver (M004)
 

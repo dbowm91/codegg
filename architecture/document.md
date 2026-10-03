@@ -39,15 +39,47 @@ Observers use authorized `DocumentStatusGet` revision polling. Document events
 are not sent through the global CoreEvent fanout because that fanout lacks a
 project access filter.
 
-Save and reload return a typed not-ready response in the staged M005-B
-protocol. M005-C replaces that response with workspace-locked checked disk
-mutation; no direct write shortcut exists in the document service.
+Save and reload use workspace-locked checked disk mutation. The client keeps
+its replica dirty until an acknowledged save; a typed disk conflict preserves
+the replica for explicit reload or recovery.
 
 Unsaved editor text is process-local and may be lost on daemon restart. Save
 must compare the current disk digest with the document's recorded disk base
 under the existing workspace mutation authority. A mismatch preserves dirty
 text and becomes a conflict. The client must not automatically replay divergent
 local drafts after reconnect.
+
+## Client replica and TUI boundary (M005-D)
+
+`codegg-client::DocumentController` uses `codegg-document` for rope-backed
+optimistic edits. It keeps daemon revision separate from local text, assigns a
+stable UUID change ID to each queued transaction, serializes flushes, retains
+an uncertain request for idempotent retry, and bounds the queue to 128
+transactions / 4 MiB of inserted text. `apply_local` updates the local
+snapshot synchronously; one controller-owned debounce task flushes the queue.
+Adjacent unsent pure insertions coalesce only when their byte coordinates
+prove the merge; all other transactions keep their original boundaries.
+Reconnect accepts a replacement transport, reattaches the same scoped file,
+reacquires its writer lease, then compares server text/revision against queued
+transaction boundaries. It acknowledges a proven accepted prefix, retries an
+unchanged base with the same IDs, or retains the draft in resync-required
+state. A missing/new document identity becomes `GoneWithLocalDraft`.
+The controller has explicit synced, local-dirty, flushing, conflict,
+disconnected, resync-required, read-only, and gone-with-draft states. It has no
+operational transform: unexpected divergence is retained and surfaced for
+recovery.
+
+The TUI `TuiDocumentSession` is a thin ownership seam over that same
+controller. It stores only presentation cursor, selection, and viewport
+placeholders; it owns no text buffer. Headless and TUI-kind native clients use
+the same `document.v1` controller contract. Status polling is metadata-only;
+an observer resnapshots when the daemon revision changes.
+
+M005 limitations: one writer per document; local drafts are process-local and
+not persisted; agent reads remain disk-authoritative; no CRDT/OT or GUI editor
+is included; and LSP preview apply into a dirty buffer remains rejected. A
+daemon restart may orphan a local draft, which is never automatically written
+over newly opened disk state.
 
 ## LSP, save, and external disk changes
 

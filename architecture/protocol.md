@@ -508,3 +508,8 @@ leaves unsaved text intact. Snapshot responses reconcile external disk changes
 at an explicit boundary: clean text refreshes with a new revision, while dirty
 text is preserved and marked conflicted. Document bodies remain bounded by
 the protocol's 8 MiB limit.
+
+The reusable `codegg-client::DocumentController` calls this same request
+family for TUI and headless native clients. It preserves stable change IDs for
+uncertain retries and uses `DocumentStatusGet` only for observer metadata;
+status revision changes require an explicit authoritative snapshot request.
