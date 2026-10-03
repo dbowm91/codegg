@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::document::{DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
     JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto, ProjectHealthDto,
@@ -996,6 +997,31 @@ pub struct EventEnvelope<T> {
 #[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
+    DocumentCapabilities {
+        capability: String,
+        supported: bool,
+        max_document_bytes: usize,
+        max_edits: usize,
+        max_insert_bytes: usize,
+    },
+    DocumentSnapshot {
+        snapshot: DocumentSnapshotDto,
+        writer_lease: Option<String>,
+    },
+    DocumentWriterLease {
+        document_id: String,
+        writer_lease: String,
+    },
+    DocumentChanged {
+        revision: u64,
+    },
+    DocumentStatus {
+        document_id: String,
+        revision: u64,
+        dirty: bool,
+        conflicted: bool,
+        writer: bool,
+    },
     AssetRefresh {
         report: AssetRefreshReportDto,
     },
@@ -1756,6 +1782,48 @@ pub struct ClientSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {
     Initialize,
+    DocumentCapabilities,
+    DocumentOpen {
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+    },
+    DocumentSnapshotGet {
+        project_id: String,
+        document_id: String,
+    },
+    DocumentStatusGet {
+        project_id: String,
+        document_id: String,
+    },
+    DocumentWriterAcquire {
+        project_id: String,
+        document_id: String,
+    },
+    DocumentChange {
+        project_id: String,
+        document_id: String,
+        writer_lease: String,
+        base_revision: u64,
+        change_id: String,
+        transaction: DocumentTransactionDto,
+    },
+    DocumentSave {
+        project_id: String,
+        document_id: String,
+        writer_lease: String,
+        expected_revision: u64,
+    },
+    DocumentReload {
+        project_id: String,
+        document_id: String,
+        writer_lease: String,
+        expected_revision: u64,
+    },
+    DocumentClose {
+        project_id: String,
+        document_id: String,
+    },
     AssetRefresh {
         request: AssetRefreshRequestDto,
     },

@@ -272,7 +272,7 @@ This proves the foundation, not IDE UX.
 Required:
 
 - one writer + one read-only observer;
-- observer receives revision metadata and resnapshots;
+- observer polls authorized `DocumentStatusGet`, receives revision metadata, and resnapshots;
 - observer cannot change/save/reload;
 - writer disconnect releases lease;
 - authorized second client can acquire writer after cleanup and sees preserved dirty canonical text;

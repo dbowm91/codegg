@@ -895,6 +895,7 @@ dependencies = [
  "codegg-client",
  "codegg-config",
  "codegg-core",
+ "codegg-document",
  "codegg-git",
  "codegg-protocol",
  "codegg-providers",

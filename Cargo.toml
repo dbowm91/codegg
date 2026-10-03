@@ -25,11 +25,11 @@ homepage = "https://github.com/dbowm91/codegg"
 # Internal crates (shared path+version release semantics).
 codegg-config = { version = "=0.1.0", path = "crates/codegg-config" }
 codegg-protocol = { version = "=0.1.0", path = "crates/codegg-protocol" }
+codegg-document = { version = "=0.1.0", path = "crates/codegg-document" }
 codegg-client = { version = "=0.1.0", path = "crates/codegg-client" }
 codegg-providers = { version = "=0.1.0", path = "crates/codegg-providers" }
 codegg-core = { version = "=0.1.0", path = "crates/codegg-core" }
 codegg-git = { version = "=0.1.0", path = "crates/codegg-git" }
-codegg-document = { version = "=0.1.0", path = "crates/codegg-document" }
 egggit = { version = "=0.1.0", path = "crates/egggit" }
 egglsp = { version = "=0.1.0", path = "crates/egglsp" }
 eggsentry = { version = "=0.1.0", path = "crates/eggsentry" }
@@ -269,6 +269,7 @@ image = { version = "0.25", default-features = false, optional = true, features 
 # Extracted tool crates
 codegg-config.workspace = true
 codegg-protocol.workspace = true
+codegg-document.workspace = true
 codegg-client.workspace = true
 codegg-providers.workspace = true
 eggsentry.workspace = true
