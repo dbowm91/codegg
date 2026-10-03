@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Post-Closure Corrective C001 — M004 Prompt-Composition Error Boundary and Hosted Strict Closure
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 
