@@ -11,6 +11,12 @@ const expected = {
   ProjectSummary: ['project_id', 'display_name', 'lifecycle'],
   DesktopEvent: ['version', 'event_seq', 'kind'],
   SubscriptionInfo: ['subscription_id', 'connection_generation'],
+  RouteTokenView: ['connection_generation', 'route_generation', 'project_id', 'workspace_id', 'session_id'],
+  WorkspaceView: ['workspace_id', 'display_name'],
+  ProjectDetailView: ['project_id', 'display_name', 'workspaces', 'session_count', 'route_token'],
+  SessionSummaryView: ['session_id', 'title', 'project_id', 'workspace_id'],
+  SessionListView: ['sessions', 'route_token'],
+  SessionView: ['session', 'route_token'],
 };
 for (const [name, fields] of Object.entries(expected)) {
   const rustBlock = rust.match(new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1];

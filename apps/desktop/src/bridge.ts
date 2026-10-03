@@ -2,7 +2,11 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 import type {
   ConnectionSnapshot,
   DesktopEvent,
+  ProjectDetailView,
   ProjectSummary,
+  RouteTokenView,
+  SessionListView,
+  SessionView,
   SubscriptionHandle,
   SubscriptionInfo,
 } from './bridge-types';
@@ -11,6 +15,16 @@ export const bridge = {
   connect: () => invoke<ConnectionSnapshot>('desktop_connect'),
   snapshot: () => invoke<ConnectionSnapshot>('desktop_connection_snapshot'),
   projects: () => invoke<ProjectSummary[]>('desktop_project_list'),
+  projectDetail: (projectId: string) =>
+    invoke<ProjectDetailView>('desktop_project_detail', { projectId }),
+  workspaceSelect: (workspaceId: string, routeGeneration: number) =>
+    invoke<RouteTokenView>('desktop_workspace_select', { workspaceId, routeGeneration }),
+  sessionList: (routeGeneration: number) =>
+    invoke<SessionListView>('desktop_session_list', { routeGeneration }),
+  sessionOpen: (sessionId: string, routeGeneration: number) =>
+    invoke<SessionView>('desktop_session_open', { sessionId, routeGeneration }),
+  sessionCreate: (title: string | null, routeGeneration: number) =>
+    invoke<SessionView>('desktop_session_create', { title, routeGeneration }),
   disconnect: () => invoke<void>('desktop_disconnect'),
   unsubscribe: (subscriptionId: string) =>
     invoke<void>('desktop_unsubscribe_events', { subscriptionId }),

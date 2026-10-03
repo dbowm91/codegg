@@ -1,7 +1,11 @@
 mod bridge;
 mod lifecycle;
+mod route;
 
-use bridge::{ConnectionSnapshot, DesktopEvent, ProjectSummary, SubscriptionInfo};
+use bridge::{
+    ConnectionSnapshot, DesktopEvent, ProjectDetailView, ProjectSummary, RouteTokenView,
+    SessionListView, SessionView, SubscriptionInfo,
+};
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
     LocalSocketClient,
@@ -52,6 +56,11 @@ struct HostState {
     /// renderer-visible generation so failures never fabricate a generation.
     connect_serial: AtomicU64,
     subscriptions: SubscriptionRegistry,
+    /// M004 route/session controller state (WP B). Separate from the
+    /// catalog `SubscriptionRegistry`: project detail, workspace roots,
+    /// and session selection live here under route-generation fencing.
+    /// Canonical workspace roots in this state are never serialized.
+    route: Mutex<route::RouteState>,
     /// Test-only connected flag for deterministic race tests that must not
     /// require a real daemon socket. Production presence is `client.is_some()`;
     /// tests set this flag plus a non-zero generation to simulate a live
@@ -70,6 +79,7 @@ impl Default for HostState {
             connection_generation: AtomicU64::new(0),
             connect_serial: AtomicU64::new(0),
             subscriptions: SubscriptionRegistry::new(),
+            route: Mutex::new(route::RouteState::default()),
             #[cfg(test)]
             fake_connected: std::sync::atomic::AtomicBool::new(false),
         }
@@ -120,7 +130,7 @@ impl DesktopEventSink for ChannelSink {
 }
 
 impl HostState {
-    fn current_generation(&self) -> u64 {
+    pub(crate) fn current_generation(&self) -> u64 {
         self.connection_generation.load(Ordering::Acquire)
     }
 
@@ -142,7 +152,7 @@ impl HostState {
     /// invalidation + generation bump + subscription take + client clear all
     /// occur under the gate. Forwarder abort/join runs after release (the
     /// forwarder never needs the gate, so no deadlock). Idempotent.
-    async fn disconnect_host(&self) {
+    pub(crate) async fn disconnect_host(&self) {
         self.disconnect_host_with_barrier(None).await;
     }
 
@@ -193,7 +203,11 @@ impl HostState {
     /// generation. Callers must have fenced concurrent attempts already.
     /// Preserved for the live trajectory; production connect uses
     /// [`Self::commit_prepared_connection`] for atomic supersession.
-    async fn install_connection(&self, client: LocalSocketClient, daemon_id: String) -> u64 {
+    pub(crate) async fn install_connection(
+        &self,
+        client: LocalSocketClient,
+        daemon_id: String,
+    ) -> u64 {
         let attempt = self.allocate_connect_attempt();
         self.commit_prepared_connection(attempt, client, daemon_id, None)
             .await
@@ -525,7 +539,7 @@ impl HostState {
     }
 }
 
-fn descriptor() -> FrontendDescriptor {
+pub(crate) fn descriptor() -> FrontendDescriptor {
     FrontendDescriptor::new(
         "codegg-desktop",
         ClientKind::Gui,
@@ -805,6 +819,54 @@ async fn desktop_disconnect(state: State<'_, Arc<HostState>>) -> Result<(), Stri
     Ok(())
 }
 
+/// M004 route commands (WP B). Narrow capability classes only: project
+/// detail/select, session list/open/create. No generic `CoreRequest`
+/// bridge, no filesystem paths from the renderer.
+#[tauri::command]
+async fn desktop_project_detail(
+    state: State<'_, Arc<HostState>>,
+    project_id: String,
+) -> Result<ProjectDetailView, String> {
+    state.route_project_detail(project_id).await
+}
+
+#[tauri::command]
+async fn desktop_workspace_select(
+    state: State<'_, Arc<HostState>>,
+    workspace_id: String,
+    route_generation: u64,
+) -> Result<RouteTokenView, String> {
+    state
+        .route_workspace_select(workspace_id, route_generation)
+        .await
+}
+
+#[tauri::command]
+async fn desktop_session_list(
+    state: State<'_, Arc<HostState>>,
+    route_generation: u64,
+) -> Result<SessionListView, String> {
+    state.route_session_list(route_generation).await
+}
+
+#[tauri::command]
+async fn desktop_session_open(
+    state: State<'_, Arc<HostState>>,
+    session_id: String,
+    route_generation: u64,
+) -> Result<SessionView, String> {
+    state.route_session_open(session_id, route_generation).await
+}
+
+#[tauri::command]
+async fn desktop_session_create(
+    state: State<'_, Arc<HostState>>,
+    title: Option<String>,
+    route_generation: u64,
+) -> Result<SessionView, String> {
+    state.route_session_create(title, route_generation).await
+}
+
 pub fn run() {
     let state = Arc::new(HostState::default());
     // Native window/app teardown (Finding E): main-window close/destroy and
@@ -834,6 +896,11 @@ pub fn run() {
             desktop_connect,
             desktop_connection_snapshot,
             desktop_project_list,
+            desktop_project_detail,
+            desktop_workspace_select,
+            desktop_session_list,
+            desktop_session_open,
+            desktop_session_create,
             desktop_subscribe_events,
             desktop_unsubscribe_events,
             desktop_disconnect
