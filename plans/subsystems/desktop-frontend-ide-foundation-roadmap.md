@@ -17,6 +17,8 @@ Long-term references:
 Accepted architecture:
 
 - `plans/adrs/ADR-0010-desktop-frontend-and-shared-client-boundary.md`
+- `plans/adrs/ADR-0011-editor-document-ownership-and-frontend-replication.md`
+- `plans/subsystems/editor-document-foundation-roadmap.md` — active shared M005 implementation authority
 - `plans/subsystems/session-projections-roadmap.md` — closed frontend-neutral projection/replay dependency
 - `plans/subsystems/tui-project-sessions-roadmap.md` — closed project/session frontend dependency
 - `plans/subsystems/interactive-process-sessions-roadmap.md` — existing PTY protocol foundation
@@ -271,36 +273,46 @@ Outcome:
 
 M004 is the closure boundary for the desktop foundation. It intentionally does not require an editor.
 
-### Milestone 005 — Editor document/buffer and LSP synchronization contract
+### Milestone 005 — Shared editor document/buffer and LSP synchronization foundation
 
-Status: eligible for a fresh ownership audit and planning after M004 strict closure. No implementation handoff is registered; perform the document/buffer ownership audit before drafting one. M002's separate Windows evidence condition does not block a Linux/macOS ownership audit.
+Status: active through the extracted shared roadmap `plans/subsystems/editor-document-foundation-roadmap.md`. ADR-0011 is accepted. M005-A is ready; M005-B through M005-D are registered and dependency-blocked in order. M002's separate Windows evidence condition does not block this root/TUI-first foundation.
 
-Expected direction:
+Ownership direction:
 
-- versioned `open/change/save/close/reload/conflict` document lifecycle;
-- disk content hash/revision and dirty state;
-- bounded text/delta protocol;
-- external-file-change conflict semantics;
-- LSP `didOpen/didChange/didSave/didClose` synchronization;
-- explicit relationship to agent file mutation and worktree changes;
-- no CRDT requirement.
+- daemon-owned ephemeral canonical open-document text/revision;
+- pure frontend-neutral `codegg-document` text/transaction crate;
+- optimistic `codegg-client` document replica/controller;
+- UTF-8 byte-range transactions with explicit stale-revision/resync;
+- checked disk-base hash/save/conflict behavior under existing workspace mutation authority;
+- `egglsp` mirrors canonical unsaved text but does not own editor truth;
+- ordinary agent/model file tools remain disk-authoritative;
+- one writer/document in M005; no CRDT/OT requirement;
+- cursor/selection/viewport/modal editor state remains frontend-owned;
+- TUI is the first qualification frontend;
+- graphical IDE editor integration is long-term and is not a closure dependency.
 
-This milestone will require its own implementation plan and may require a dedicated ADR if repository evidence changes the ownership model.
+Registered implementation line:
 
-### Milestone 006 — IDE shell
+1. `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` — ready.
+2. `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` — blocked on M005-A.
+3. `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` — blocked on M005-B.
+4. `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` — blocked on M005-C and closes parent M005.
 
-Status: deferred; depends on M005.
+### Milestone 006 — TUI IDE vertical slice
 
-Expected presentation direction:
+Status: deferred; depends on strict M005 closure. No implementation handoff is registered yet.
 
-- Monaco editor/diff surfaces;
-- workspace explorer and search;
-- xterm.js-style terminal consuming the existing interactive-process protocol;
+Expected TUI-first presentation/product direction:
+
+- editor view consuming the shared M005 document controller rather than owning a second buffer;
+- workspace/file explorer and search;
 - diagnostics/completion/navigation from `egglsp`;
+- syntax/semantic highlighting and editor motion/keymap decisions;
+- existing interactive-process terminal integration;
 - Git/worktree/run/job/agent views from canonical CodeGG state;
-- agent edit/apply/review workflows.
+- explicit agent edit/apply/review workflows against saved/dirty documents.
 
-No implementation plan is created now because the editor document contract is not yet stable.
+M006 is intentionally TUI-first. Monaco/Tauri graphical IDE work is long-term and should consume the same M005 document foundation later; it is not the next implementation milestone.
 
 ## 8. Cross-cutting security and reliability
 
@@ -390,5 +402,5 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
 | M003 Tauri desktop shell + secure bridge | closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Strict closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; hosted root CI + built-app visible-window E2E green. Historical C001/C002 conditional records remain immutable. Windows qualification remains separately gated by M002 |
 | M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
-| M005 document/buffer contract | eligible for fresh audit/planning; no handoff | not yet written | document/buffer ownership audit before implementation planning |
-| M006 IDE shell | deferred | not yet written | M005 |
+| M005 shared document/buffer foundation | active; M005-A ready | `plans/subsystems/editor-document-foundation-roadmap.md` + four plans under `plans/implementation/editor-document-foundation/` | M005-A none; M005-B→D dependency-ordered. ADR-0011 accepted; TUI-first, GUI editor deferred |
+| M006 TUI IDE vertical slice | deferred | not yet written | strict M005 closure + fresh TUI IDE presentation audit |
