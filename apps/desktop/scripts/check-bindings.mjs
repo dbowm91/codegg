@@ -27,6 +27,7 @@ const expected = {
   PendingPermissionView: ['permission_id', 'tool', 'scope_summary', 'status'],
   PendingQuestionView: ['question_id', 'header', 'prompt', 'status'],
   ArtifactHandleView: ['handle', 'byte_length'],
+  ArtifactExcerptView: ['handle', 'start', 'end', 'content_type', 'content', 'truncated', 'redacted'],
   ControllerSummaryView: ['turn_id', 'controller_principal', 'revision'],
   CursorDiagnosticView: ['event_seq', 'driver_cursor_seq', 'subscription_known'],
   SessionPresentationView: ['session_id', 'project_id', 'workspace_id', 'state', 'turn', 'messages', 'truncated_messages', 'tools', 'runs', 'jobs', 'subagents', 'recent_turns', 'pending_permissions', 'pending_questions', 'controller', 'artifact_handles', 'cursor', 'resync_reason'],

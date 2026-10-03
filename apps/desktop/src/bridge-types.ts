@@ -127,6 +127,17 @@ export interface ArtifactHandleView {
   handle: string;
   byteLength: number;
 }
+// M004 artifact excerpt (WP C remainder). Bounded daemon-cut content for
+// an opaque handle; stale/foreign handles surface as invoke errors.
+export interface ArtifactExcerptView {
+  handle: string;
+  start: number;
+  end: number;
+  contentType: string;
+  content: string;
+  truncated: boolean;
+  redacted: boolean;
+}
 export interface ControllerSummaryView {
   turnId: string;
   controllerPrincipal: string;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ControllerSummaryView } from './bridge-types';
+import type { ArtifactExcerptView, ControllerSummaryView } from './bridge-types';
 import { bridge } from './bridge';
 import type {
   ConnectionSnapshot,
@@ -38,6 +38,8 @@ export function App() {
   const [controller, setController] = useState<ControllerSummaryView | null>(null);
   const [responding, setResponding] = useState<string[]>([]);
   const [questionDrafts, setQuestionDrafts] = useState<Record<string, string>>({});
+  const [excerpt, setExcerpt] = useState<ArtifactExcerptView | null>(null);
+  const [excerptBusy, setExcerptBusy] = useState<string | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [planMode, setPlanMode] = useState(false);
   const [promptBusy, setPromptBusy] = useState(false);
@@ -330,6 +332,24 @@ export function App() {
     }
   };
 
+  const readArtifact = async (handle: string) => {
+    if (!currentToken || excerptBusy) return;
+    const request = ++routeRequest.current;
+    const forConnection = connectionRef.current.connectionGeneration;
+    setExcerptBusy(handle);
+    setRouteError(null);
+    try {
+      const view = await bridge.artifactRead(handle, 0, null, currentToken.routeGeneration);
+      if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+      setExcerpt(view);
+    } catch (error) {
+      if (request !== routeRequest.current) return;
+      setRouteError(String(error));
+    } finally {
+      if (request === routeRequest.current) setExcerptBusy(null);
+    }
+  };
+
   const stopProjection = async () => {
     try {
       const token = await bridge.projectionStop();
@@ -357,10 +377,12 @@ export function App() {
     {projection && <section className="panel"><h2>Session</h2><dl><dt>Projection</dt><dd data-testid="projection-state">{projection.state}</dd><dt>Turn</dt><dd data-testid="turn-status">{projection.turn ? `${projection.turn.turnId} / ${projection.turn.status}` : 'idle'}</dd>{projection.truncatedMessages > 0 && <><dt>Omitted</dt><dd data-testid="truncated-messages">{projection.truncatedMessages} older message(s)</dd></>}<dt>Cursor</dt><dd data-testid="projection-cursor">seq {projection.cursor.eventSeq}</dd></dl>
       {projection.state === 'resyncing' && <p data-testid="resync-banner" role="status">Resuming projection — live updates paused.</p>}
       <h3>Messages</h3>{projection.messages.length ? <ul data-testid="message-list">{projection.messages.map((message) => <li key={message.messageId} data-testid="message-item"><strong>{message.role}</strong><p>{message.text}{message.truncated && ' …'}</p></li>)}</ul> : <p className="muted">No visible messages yet.</p>}
+      {!!projection.artifactHandles.length && <><h3>Artifacts</h3><ul data-testid="artifact-list">{projection.artifactHandles.map((artifact) => <li key={artifact.handle} data-testid="artifact-item">{artifact.handle} ({artifact.byteLength} bytes)<button data-testid={`artifact-read-${artifact.handle}`} disabled={excerptBusy === artifact.handle} onClick={() => void readArtifact(artifact.handle)}>Read excerpt</button></li>)}</ul></>}
       {!!projection.tools.length && <><h3>Tools</h3><ul data-testid="tool-list">{projection.tools.map((tool) => <li key={tool.toolId} data-testid="tool-item">{tool.toolName} — {tool.status} — {tool.summary}{tool.hasArtifact && ' (artifact)'}</li>)}</ul></>}
       <dl><dt>Controller</dt><dd data-testid="controller-state">{controller ? `${controller.controllerPrincipal} @ rev ${controller.revision}` : 'no exclusive controller'}</dd></dl><button data-testid="control-refresh-button" onClick={() => currentToken && void refreshControl(currentToken.routeGeneration)}>Refresh control</button>
       {!!projection.pendingPermissions.length && <><h3>Permissions</h3><ul data-testid="permission-list">{projection.pendingPermissions.map((permission) => <li key={permission.permissionId} data-testid="permission-item">{permission.tool} — {permission.status}<button data-testid={`permission-allow-${permission.permissionId}`} disabled={responding.includes(permission.permissionId)} onClick={() => void respondPermission(permission.permissionId, 'allow')}>Allow</button><button data-testid={`permission-deny-${permission.permissionId}`} disabled={responding.includes(permission.permissionId)} onClick={() => void respondPermission(permission.permissionId, 'deny')}>Deny</button></li>)}</ul></>}
       {!!projection.pendingQuestions.length && <><h3>Questions</h3><ul data-testid="question-list">{projection.pendingQuestions.map((question) => <li key={question.questionId} data-testid="question-item">{question.header ?? 'Question'} — {question.prompt} ({question.status})<textarea data-testid={`question-answer-${question.questionId}`} value={questionDrafts[question.questionId] ?? ''} placeholder='JSON answers, e.g. ["a"]' onChange={(event) => setQuestionDrafts((previous) => ({ ...previous, [question.questionId]: event.target.value }))} /><button data-testid={`question-answer-button-${question.questionId}`} disabled={responding.includes(question.questionId)} onClick={() => void respondQuestion(question.questionId)}>Answer</button></li>)}</ul></>}
+      {excerpt && <div><h3>Excerpt</h3><p data-testid="artifact-excerpt">{excerpt.content}</p><p data-testid="artifact-excerpt-meta">{excerpt.handle} bytes {excerpt.start}-{excerpt.end}{excerpt.truncated ? ' (truncated)' : ''}{excerpt.redacted ? ' (redacted)' : ''}</p></div>}
       <button data-testid="projection-stop-button" onClick={() => void stopProjection()}>Detach projection</button>
     </section>}
   </main>;

@@ -1,5 +1,6 @@
 import { invoke, Channel } from '@tauri-apps/api/core';
 import type {
+  ArtifactExcerptView,
   ConnectionSnapshot,
   ControllerSummaryView,
   DesktopEvent,
@@ -30,6 +31,8 @@ export const bridge = {
     invoke<SessionView>('desktop_session_create', { title, routeGeneration }),
   promptSubmit: (text: string, planMode: boolean, routeGeneration: number) =>
     invoke<PromptSubmitView>('desktop_prompt_submit', { text, planMode, routeGeneration }),
+  artifactRead: (handle: string, start: number, length: number | null, routeGeneration: number) =>
+    invoke<ArtifactExcerptView>('desktop_artifact_read', { handle, start, length, routeGeneration }),
   controlRefresh: (routeGeneration: number) =>
     invoke<ControllerSummaryView | null>('desktop_control_refresh', { routeGeneration }),
   permissionRespond: (permissionId: string, choice: string, routeGeneration: number) =>

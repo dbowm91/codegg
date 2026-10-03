@@ -224,6 +224,21 @@ pub struct ArtifactHandleView {
     pub byte_length: u64,
 }
 
+/// Bounded artifact excerpt (M004 WP C / §12). Content is daemon-cut
+/// to the requested window; `truncated`/`redacted` describe daemon-side
+/// shaping, never renderer inference.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactExcerptView {
+    pub handle: String,
+    pub start: u64,
+    pub end: u64,
+    pub content_type: String,
+    pub content: String,
+    pub truncated: bool,
+    pub redacted: bool,
+}
+
 /// Controller lease summary. Populated by WP E from `SessionControlGet`;
 /// `None` until then. The principal is display-only: responses
 /// revalidate daemon-side and never accept renderer-supplied identity.

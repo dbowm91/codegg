@@ -902,4 +902,126 @@ mod tests {
         }
         assert_eq!(json["messages"][0]["messageId"], "m-1");
     }
+
+    #[test]
+    fn visible_message_tail_is_capped_with_overflow_count() {
+        let mut active = turn("turn-1");
+        for index in 0..150 {
+            active.messages.push_back(message(
+                &format!("m-{index}"),
+                MessageRole::Assistant,
+                VisibilityClass::Public,
+                &format!("text {index}"),
+            ));
+        }
+        let presented = present_snapshot(
+            &snapshot_with_turn(base_snapshot(), active),
+            DriverState::Attached,
+            None,
+            Some(150),
+            true,
+        );
+        // High-frequency text stays bounded: the newest 100 render.
+        assert_eq!(presented.messages.len(), MAX_VISIBLE_MESSAGES);
+        assert_eq!(
+            presented.messages.first().expect("first").message_id,
+            "m-50"
+        );
+        assert_eq!(presented.messages.last().expect("last").message_id, "m-149");
+        assert_eq!(presented.truncated_messages, 50);
+        assert_eq!(presented.turn.expect("turn").message_count, 150);
+    }
+
+    #[test]
+    fn golden_snapshot_fixture_parity() {
+        let mut active = turn("turn-1");
+        active.messages.push_back(message(
+            "m-u",
+            MessageRole::User,
+            VisibilityClass::Public,
+            "do it",
+        ));
+        active.messages.push_back(message(
+            "m-a",
+            MessageRole::Assistant,
+            VisibilityClass::Public,
+            "on it",
+        ));
+        active.tools.push_back(tool(
+            "t-1",
+            ToolArgumentProjection::Summary {
+                summary: "read Cargo.toml".into(),
+            },
+            ToolOutputProjection::Summary {
+                summary: "128 lines".into(),
+            },
+        ));
+        active.pending_permissions.push_back(PermissionProjection {
+            permission_id: "perm-1".into(),
+            tool: "write".into(),
+            path: Some("/work/file.txt".into()),
+            status: PermissionStatus::Pending,
+            created_at: 0,
+            resolved_at: None,
+        });
+        let presented = present_snapshot(
+            &snapshot_with_turn(base_snapshot(), active),
+            DriverState::Attached,
+            None,
+            Some(9),
+            true,
+        );
+        let json = serde_json::to_value(&presented).expect("json");
+        let expected = serde_json::json!({
+            "sessionId": "session-1",
+            "projectId": "proj-a",
+            "workspaceId": "ws-1",
+            "state": "attached",
+            "turn": {
+                "turnId": "turn-1",
+                "status": "active",
+                "updatedAt": 7,
+                "stopReason": null,
+                "error": null,
+                "messageCount": 2,
+                "toolCount": 1,
+                "pendingPermissions": 1,
+                "pendingQuestions": 0,
+                "inputTokens": 10,
+                "outputTokens": 20
+            },
+            "messages": [
+                {"messageId": "m-u", "role": "user", "text": "do it", "truncated": false},
+                {"messageId": "m-a", "role": "assistant", "text": "on it", "truncated": false}
+            ],
+            "truncatedMessages": 0,
+            "tools": [
+                {
+                    "toolId": "t-1",
+                    "toolName": "read",
+                    "status": "completed",
+                    "summary": "read Cargo.toml / 128 lines",
+                    "hasArtifact": false
+                }
+            ],
+            "runs": [],
+            "jobs": [],
+            "subagents": [],
+            "recentTurns": [],
+            "pendingPermissions": [
+                {
+                    "permissionId": "perm-1",
+                    "tool": "write",
+                    "scopeSummary": "/work/file.txt",
+                    "status": "pending"
+                }
+            ],
+            "pendingQuestions": [],
+            "controller": null,
+            "artifactHandles": [],
+            "cursor": {"eventSeq": 42, "driverCursorSeq": 9, "subscriptionKnown": true},
+            "resyncReason": null
+        });
+        assert_eq!(json, expected);
+    }
 }

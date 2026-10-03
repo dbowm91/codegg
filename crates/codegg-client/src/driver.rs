@@ -26,7 +26,9 @@ use codegg_protocol::projection::consumer::{
     HeadlessConnectionState, HeadlessConsumerError, HeadlessEventOutcome,
     HeadlessProjectionConsumer,
 };
-use codegg_protocol::projection::replay::{ProjectionCursor, ProjectionResyncReason};
+use codegg_protocol::projection::replay::{
+    ProjectionArtifactReadOutcome, ProjectionCursor, ProjectionResyncReason,
+};
 use codegg_protocol::projection::snapshot::SessionProjectionSnapshot;
 
 use crate::{ClientError, ClientEvent, LocalSocketClient};
@@ -118,6 +120,18 @@ struct DriverCore {
     ignored_mismatches: u64,
     config: DriverConfig,
     updates: watch::Sender<DriverSnapshotView>,
+}
+
+/// One bounded artifact excerpt request to the driver event loop. The
+/// loop owns the consumer, so handle validation
+/// (`artifact_read_request`) and outcome validation
+/// (`accept_artifact_outcome`) run against live canonical state.
+struct ArtifactReadCommand {
+    project_id: String,
+    handle_id: String,
+    start: u64,
+    end: Option<u64>,
+    reply: oneshot::Sender<Result<ProjectionArtifactReadOutcome, DriverError>>,
 }
 
 impl DriverCore {
@@ -299,10 +313,59 @@ impl DriverCore {
         }
     }
 
+    /// Bounded artifact excerpt through the canonical consumer: the
+    /// authorized handle registry is refreshed first so a stale
+    /// renderer handle fails closed, then the read request is built
+    /// with consumer-side project/revision/bounds validation and the
+    /// outcome is validated before it is returned.
+    async fn on_artifact_read(&mut self, cmd: ArtifactReadCommand) {
+        let outcome = self.read_artifact(&cmd).await;
+        let _ = cmd.reply.send(outcome);
+    }
+
+    async fn read_artifact(
+        &mut self,
+        cmd: &ArtifactReadCommand,
+    ) -> Result<ProjectionArtifactReadOutcome, DriverError> {
+        match self
+            .request(CoreRequest::ProjectionArtifactList {
+                project_id: cmd.project_id.clone(),
+            })
+            .await?
+        {
+            CoreResponse::ProjectionArtifactList { handles } => {
+                self.consumer
+                    .accept_artifact_handles(handles)
+                    .map_err(DriverError::Consumer)?;
+            }
+            other => {
+                return Err(DriverError::Denied(format!(
+                    "unexpected artifact list response: {other:?}"
+                )));
+            }
+        }
+        let payload = self
+            .consumer
+            .artifact_read_request(&cmd.handle_id, cmd.start, cmd.end)
+            .map_err(DriverError::Consumer)?;
+        match self.request(payload).await? {
+            CoreResponse::ProjectionArtifactRead { outcome } => {
+                self.consumer
+                    .accept_artifact_outcome(&outcome)
+                    .map_err(DriverError::Consumer)?;
+                Ok(outcome)
+            }
+            other => Err(DriverError::Denied(format!(
+                "unexpected artifact response: {other:?}"
+            ))),
+        }
+    }
+
     async fn run(
         mut self,
         mut events: mpsc::Receiver<ClientEvent>,
         mut stop: oneshot::Receiver<()>,
+        mut commands: mpsc::Receiver<ArtifactReadCommand>,
     ) -> HeadlessProjectionConsumer {
         // `events` was installed before the subscribe request was sent
         // (attach/resume install it pre-request), preserving the daemon's
@@ -319,6 +382,14 @@ impl DriverCore {
         loop {
             tokio::select! {
                 _ = &mut stop => break,
+                // Disabled once every excerpt handle is gone so a
+                // closed channel can never busy-loop; live delivery
+                // continues until stop.
+                cmd = commands.recv(), if !commands.is_closed() => {
+                    if let Some(cmd) = cmd {
+                        self.on_artifact_read(cmd).await;
+                    }
+                }
                 _ = liveness.tick() => {
                     if self.client.is_closed() {
                         self.consumer.disconnect();
@@ -371,6 +442,7 @@ pub struct SessionProjectionDriver {
     task: Option<tokio::task::JoinHandle<HeadlessProjectionConsumer>>,
     snapshots: watch::Receiver<DriverSnapshotView>,
     stop_tx: Option<oneshot::Sender<()>>,
+    commands: mpsc::Sender<ArtifactReadCommand>,
     session_id: String,
     generation: u64,
 }
@@ -427,11 +499,13 @@ impl SessionProjectionDriver {
         core.converge().await?;
         core.publish(DriverState::Attached);
         let (stop_tx, stop_rx) = oneshot::channel();
-        let task = tokio::spawn(core.run(events, stop_rx));
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let task = tokio::spawn(core.run(events, stop_rx, command_rx));
         Ok(Self {
             task: Some(task),
             snapshots,
             stop_tx: Some(stop_tx),
+            commands: command_tx,
             session_id,
             generation: 1,
         })
@@ -482,11 +556,13 @@ impl SessionProjectionDriver {
         core.converge().await?;
         core.publish(DriverState::Attached);
         let (stop_tx, stop_rx) = oneshot::channel();
-        let task = tokio::spawn(core.run(events, stop_rx));
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let task = tokio::spawn(core.run(events, stop_rx, command_rx));
         Ok(Self {
             task: Some(task),
             snapshots,
             stop_tx: Some(stop_tx),
+            commands: command_tx,
             session_id,
             generation,
         })
@@ -497,6 +573,33 @@ impl SessionProjectionDriver {
         self.snapshots.borrow().clone()
     }
 
+    /// Read one bounded artifact excerpt through the driver event loop.
+    /// The loop refreshes the authorized handle registry from the
+    /// daemon, builds the read with consumer-side validation (opaque
+    /// handle, project binding, revision, 64 KiB window), and validates
+    /// the outcome before returning it. Unknown/stale handles fail
+    /// closed without any path-based read. Requires a live driver;
+    /// a stopped driver reports `JoinFailed`.
+    pub async fn artifact_excerpt(
+        &self,
+        project_id: &str,
+        handle_id: &str,
+        start: u64,
+        end: Option<u64>,
+    ) -> Result<ProjectionArtifactReadOutcome, DriverError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.commands
+            .send(ArtifactReadCommand {
+                project_id: project_id.to_owned(),
+                handle_id: handle_id.to_owned(),
+                start,
+                end,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| DriverError::JoinFailed)?;
+        reply_rx.await.map_err(|_| DriverError::JoinFailed)?
+    }
     /// Subscribe to view updates. The channel is latest-only and
     /// bounded; slow observers coalesce rather than queue.
     pub fn subscribe_views(&self) -> watch::Receiver<DriverSnapshotView> {

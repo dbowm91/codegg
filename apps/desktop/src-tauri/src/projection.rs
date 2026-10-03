@@ -54,10 +54,10 @@ impl ProjectionViewSink for ChannelViewSink {
 
 /// Live projection attachment bound to one route generation.
 pub(crate) struct ProjectionOwner {
-    session_id: String,
-    connection_generation: u64,
-    route_generation: u64,
-    driver: SessionProjectionDriver,
+    pub(crate) session_id: String,
+    pub(crate) connection_generation: u64,
+    pub(crate) route_generation: u64,
+    pub(crate) driver: SessionProjectionDriver,
 }
 
 impl HostState {
@@ -601,6 +601,197 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn artifact_read_round_trip_returns_bounded_excerpt() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(&listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(id, detail_response("proj-a", "ws-1", None))
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("session-1", "proj-a", "ws-1"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+            daemon.respond(id, caps_response()).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+            daemon
+                .respond(id, subscribed_response("sub-art", "session-1"))
+                .await;
+            // Registry refresh first: only daemon-authorized handles read.
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::ProjectionArtifactList { project_id } = payload else {
+                panic!("expected ProjectionArtifactList, got {payload:?}");
+            };
+            assert_eq!(project_id, "proj-a");
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::ProjectionArtifactList {
+                        handles: vec![
+                            codegg_protocol::projection::replay::ProjectionArtifactHandleDto {
+                                handle_id: "handle-1".into(),
+                                kind: codegg_protocol::projection::replay::ArtifactHandleKind::ToolOutput,
+                                project_id: "proj-a".into(),
+                                source_record_id: "tool-1".into(),
+                                content_type: "text/plain".into(),
+                                total_bytes: Some(128),
+                                created_at: 0,
+                                expires_at: None,
+                                revision: 7,
+                                public_summary: None,
+                            },
+                        ],
+                    },
+                )
+                .await;
+            // Opaque handle + bounded window + registry revision; the
+            // renderer never supplies a path.
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::ProjectionArtifactRead {
+                request,
+                project_id,
+                ..
+            } = payload
+            else {
+                panic!("expected ProjectionArtifactRead, got {payload:?}");
+            };
+            assert_eq!(request.handle_id, "handle-1");
+            assert_eq!(request.expected_revision, 7);
+            assert_eq!(request.start, 0);
+            assert_eq!(project_id, "proj-a");
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::ProjectionArtifactRead {
+                        outcome: codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::Ok(
+                            codegg_protocol::projection::replay::ProjectionArtifactReadResponse {
+                                handle_id: "handle-1".into(),
+                                revision: 7,
+                                start: 0,
+                                end: 6,
+                                content_type: "text/plain".into(),
+                                content: "abcdef".into(),
+                                redacted: false,
+                                truncated: true,
+                                note: None,
+                            },
+                        ),
+                    },
+                )
+                .await;
+            let released = daemon.expect_unsubscribe().await;
+            assert_eq!(released, "sub-art");
+        });
+
+        let state = connected_host(&endpoint).await;
+        let token = open_session_one(&state).await;
+        state
+            .projection_start("session-1".into(), token.route_generation)
+            .await
+            .expect("start");
+        let excerpt = state
+            .route_artifact_read("handle-1".into(), 0, None, token.route_generation)
+            .await
+            .expect("excerpt");
+        assert_eq!(excerpt.handle, "handle-1");
+        assert_eq!(excerpt.content, "abcdef");
+        assert!(excerpt.truncated);
+        assert!(!excerpt.redacted);
+        state.stop_projection_owner().await;
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn artifact_read_stale_handle_sends_no_read() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(&listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(id, detail_response("proj-a", "ws-1", None))
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("session-1", "proj-a", "ws-1"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+            daemon.respond(id, caps_response()).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+            daemon
+                .respond(id, subscribed_response("sub-art", "session-1"))
+                .await;
+            // Empty registry: the consumer rejects the stale handle
+            // before any read request is built.
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(
+                payload,
+                CoreRequest::ProjectionArtifactList { .. }
+            ));
+            daemon
+                .respond(id, CoreResponse::ProjectionArtifactList { handles: vec![] })
+                .await;
+            let timed: Result<(String, CoreRequest), _> =
+                tokio::time::timeout(std::time::Duration::from_millis(300), daemon.next_request())
+                    .await;
+            // The stop-time unsubscribe may win the window; anything
+            // else (in particular a read for the stale handle) fails.
+            let released = match timed {
+                Err(_) => daemon.expect_unsubscribe().await,
+                Ok((_, payload)) => {
+                    let CoreRequest::ProjectionUnsubscribe { subscription_id } = payload else {
+                        panic!("unexpected request after stale handle: {payload:?}");
+                    };
+                    subscription_id.as_str().to_string()
+                }
+            };
+            assert_eq!(released, "sub-art");
+        });
+
+        let state = connected_host(&endpoint).await;
+        let token = open_session_one(&state).await;
+        state
+            .projection_start("session-1".into(), token.route_generation)
+            .await
+            .expect("start");
+        let error = state
+            .route_artifact_read("handle-gone".into(), 0, None, token.route_generation)
+            .await
+            .expect_err("stale handle fails closed");
+        assert!(
+            error.contains("UnsafeArtifactHandle") || error.contains("consumer"),
+            "unexpected error: {error}"
+        );
+        // Renderer bounds are enforced before any network request.
+        let error = state
+            .route_artifact_read("handle-1".into(), 0, Some(0), token.route_generation)
+            .await
+            .expect_err("zero length fails closed");
+        assert!(error.contains("out of bounds"), "unexpected error: {error}");
+        state.stop_projection_owner().await;
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn start_attaches_and_current_returns_view() {
         let (endpoint, listener) = short_endpoint();
         let server = tokio::spawn(async move {
@@ -777,6 +968,152 @@ mod tests {
         let error = started.await.expect("join").expect_err("stale start drops");
         assert!(error.contains("stale route"), "unexpected error: {error}");
         assert!(state.test_projection_owner_session().await.is_none());
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn watcher_coalesces_rapid_diagnostics_to_latest() {
+        use codegg_protocol::core::CoreEvent;
+        use codegg_protocol::core::EventEnvelope;
+        use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};
+        use std::sync::Mutex;
+
+        /// A sink that blocks its first view for 300 ms so rapid live
+        /// events coalesce in the latest-only channel behind it.
+        struct GateSink {
+            views: Mutex<Vec<SessionPresentationView>>,
+            notify: tokio::sync::Notify,
+        }
+
+        impl GateSink {
+            fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    views: Mutex::new(Vec::new()),
+                    notify: tokio::sync::Notify::new(),
+                })
+            }
+
+            async fn wait_for_views(sink: &Arc<Self>, count: usize) {
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    let len = sink.views.lock().expect("lock").len();
+                    if len >= count {
+                        return;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        panic!("timed out waiting for {count} views");
+                    }
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        sink.notify.notified(),
+                    )
+                    .await
+                    .ok();
+                }
+            }
+        }
+
+        impl ProjectionViewSink for GateSink {
+            fn send_view(&self, view: SessionPresentationView) -> bool {
+                let first = self.views.lock().expect("lock").is_empty();
+                if first {
+                    // Hold the install view while the burst lands: the
+                    // watch channel must collapse the burst to latest.
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                self.views.lock().expect("lock").push(view);
+                self.notify.notify_waiters();
+                true
+            }
+        }
+
+        const BURST: u64 = 7;
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(&listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(id, detail_response("proj-a", "ws-1", None))
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("session-1", "proj-a", "ws-1"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+            daemon.respond(id, caps_response()).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+            daemon
+                .respond(id, subscribed_response("sub-1", "session-1"))
+                .await;
+            // Let the renderer subscribe (and gate its install view)
+            // before the burst lands.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // Seven contiguous diagnostics: under the default ack
+            // cadence (8) so no ack interleaves with the burst.
+            for seq in 1..=BURST {
+                daemon
+                    .send_frame(&CoreFrame::Event(EventEnvelope {
+                        protocol_version: PROTOCOL_VERSION,
+                        event_seq: seq,
+                        timestamp_ms: 0,
+                        session_id: None,
+                        turn_id: None,
+                        payload: CoreEvent::ProjectionStreamEvent {
+                            subscription_id: ProjectionSubscriptionId::new("sub-1"),
+                            stream_id: stream_descriptor("session-1").stream_id.clone(),
+                            envelope: ProjectionEnvelope::session_event(
+                                seq,
+                                0,
+                                "session-1",
+                                None,
+                                ProjectionEvent::Diagnostic {
+                                    code: "burst".into(),
+                                    message: "rapid".into(),
+                                },
+                            ),
+                        },
+                    }))
+                    .await;
+            }
+            let released = daemon.expect_unsubscribe().await;
+            assert_eq!(released, "sub-1");
+        });
+
+        let state = connected_host(&endpoint).await;
+        let token = open_session_one(&state).await;
+        state
+            .projection_start("session-1".into(), token.route_generation)
+            .await
+            .expect("start");
+        let sink = GateSink::new();
+        state
+            .projection_subscribe_with_sink(sink.clone())
+            .await
+            .expect("subscribe");
+        GateSink::wait_for_views(&sink, 2).await;
+        // Give any straggler a chance to arrive as a third view.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        {
+            let views = sink.views.lock().expect("lock");
+            assert_eq!(
+                views.len(),
+                2,
+                "burst of {BURST} must coalesce to install + latest"
+            );
+            assert_eq!(views[1].cursor.event_seq, BURST);
+            assert!(views.iter().all(|view| view.state == "attached"));
+        }
+        state.stop_projection_owner().await;
+        assert_eq!(state.test_watcher_count().await, 0);
         server.await.expect("server");
     }
 

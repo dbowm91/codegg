@@ -1290,3 +1290,201 @@ fn artifact_read_bounds_match_driver_constructors() {
         "artifact catalogue stays bounded"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn artifact_excerpt_round_trip_returns_validated_outcome() {
+    let (endpoint, listener) = bind().await;
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        hello_exchange(&mut reader, &mut write).await;
+
+        let (id, payload) = next_request(&mut reader).await;
+        assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+        send_response(&mut write, id, caps_response()).await;
+
+        let (id, payload) = next_request(&mut reader).await;
+        assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+        send_response(&mut write, id, subscribed_response("sub-art")).await;
+
+        // The excerpt refreshes the authorized registry first.
+        let (id, payload) = next_request(&mut reader).await;
+        let CoreRequest::ProjectionArtifactList { project_id } = payload else {
+            panic!("expected ProjectionArtifactList, got {payload:?}");
+        };
+        assert_eq!(project_id, FIXTURE_PROJECT_ID);
+        send_response(
+            &mut write,
+            id,
+            CoreResponse::ProjectionArtifactList {
+                handles: vec![ProjectionArtifactHandleDto {
+                    handle_id: "handle-1".into(),
+                    kind: ArtifactHandleKind::ToolOutput,
+                    project_id: FIXTURE_PROJECT_ID.into(),
+                    source_record_id: "tool-1".into(),
+                    content_type: "text/plain".into(),
+                    total_bytes: Some(128),
+                    created_at: 0,
+                    expires_at: None,
+                    revision: 7,
+                    public_summary: None,
+                }],
+            },
+        )
+        .await;
+
+        // The read carries the registry revision and a bounded window;
+        // the handle is opaque (no path anywhere).
+        let (id, payload) = next_request(&mut reader).await;
+        let CoreRequest::ProjectionArtifactRead {
+            request,
+            project_id,
+            ..
+        } = payload
+        else {
+            panic!("expected ProjectionArtifactRead, got {payload:?}");
+        };
+        assert_eq!(request.handle_id, "handle-1");
+        assert_eq!(request.expected_revision, 7);
+        assert_eq!(request.start, 0);
+        assert_eq!(request.end, Some(64 * 1024));
+        assert_eq!(project_id, FIXTURE_PROJECT_ID);
+        send_response(
+            &mut write,
+            id,
+            CoreResponse::ProjectionArtifactRead {
+                outcome: codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::Ok(
+                    codegg_protocol::projection::replay::ProjectionArtifactReadResponse {
+                        handle_id: "handle-1".into(),
+                        revision: 7,
+                        start: 0,
+                        end: 13,
+                        content_type: "text/plain".into(),
+                        content: "hello excerpt".into(),
+                        redacted: false,
+                        truncated: true,
+                        note: None,
+                    },
+                ),
+            },
+        )
+        .await;
+
+        let (id, payload) = next_request(&mut reader).await;
+        assert!(matches!(payload, CoreRequest::ProjectionUnsubscribe { .. }));
+        send_response(
+            &mut write,
+            id,
+            CoreResponse::ProjectionUnsubscribed {
+                subscription_id: ProjectionSubscriptionId::new("sub-art"),
+            },
+        )
+        .await;
+    });
+
+    let client = connect_client(&endpoint).await;
+    let driver = SessionProjectionDriver::attach(client, FIXTURE_SESSION_ID.into())
+        .await
+        .expect("attach");
+    let outcome = driver
+        .artifact_excerpt(FIXTURE_PROJECT_ID, "handle-1", 0, None)
+        .await
+        .expect("excerpt");
+    let codegg_protocol::projection::replay::ProjectionArtifactReadOutcome::Ok(excerpt) = outcome
+    else {
+        panic!("expected Ok excerpt, got {outcome:?}");
+    };
+    assert_eq!(excerpt.content, "hello excerpt");
+    assert!(excerpt.truncated);
+    driver.stop().await.expect("stop");
+    server.await.expect("server task");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn artifact_excerpt_unknown_handle_sends_no_read() {
+    let (endpoint, listener) = bind().await;
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        hello_exchange(&mut reader, &mut write).await;
+
+        let (id, payload) = next_request(&mut reader).await;
+        assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+        send_response(&mut write, id, caps_response()).await;
+
+        let (id, payload) = next_request(&mut reader).await;
+        assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+        send_response(&mut write, id, subscribed_response("sub-art")).await;
+
+        // Empty registry: the consumer rejects the unknown handle
+        // before any read request is built.
+        let (id, payload) = next_request(&mut reader).await;
+        assert!(matches!(
+            payload,
+            CoreRequest::ProjectionArtifactList { .. }
+        ));
+        send_response(
+            &mut write,
+            id,
+            CoreResponse::ProjectionArtifactList { handles: vec![] },
+        )
+        .await;
+
+        // No ProjectionArtifactRead may follow a rejected handle. The
+        // only frame allowed in this window is the stop-time
+        // unsubscribe; decode instead of asserting silence.
+        let mut line = String::new();
+        let late =
+            tokio::time::timeout(Duration::from_millis(300), reader.read_line(&mut line)).await;
+        let unsubscribed_early = match late {
+            Err(_) => false,
+            Ok(_) => match serde_json::from_str::<CoreFrame>(line.trim()) {
+                Ok(CoreFrame::Request(request))
+                    if matches!(request.payload, CoreRequest::ProjectionUnsubscribe { .. }) =>
+                {
+                    send_response(
+                        &mut write,
+                        request.request_id,
+                        CoreResponse::ProjectionUnsubscribed {
+                            subscription_id: ProjectionSubscriptionId::new("sub-art"),
+                        },
+                    )
+                    .await;
+                    true
+                }
+                Ok(frame) => panic!("unexpected frame after rejected excerpt: {frame:?}"),
+                Err(error) => panic!("decode late frame: {error}"),
+            },
+        };
+
+        if !unsubscribed_early {
+            let (id, payload) = next_request(&mut reader).await;
+            assert!(matches!(payload, CoreRequest::ProjectionUnsubscribe { .. }));
+            send_response(
+                &mut write,
+                id,
+                CoreResponse::ProjectionUnsubscribed {
+                    subscription_id: ProjectionSubscriptionId::new("sub-art"),
+                },
+            )
+            .await;
+        }
+    });
+
+    let client = connect_client(&endpoint).await;
+    let driver = SessionProjectionDriver::attach(client, FIXTURE_SESSION_ID.into())
+        .await
+        .expect("attach");
+    let error = driver
+        .artifact_excerpt(FIXTURE_PROJECT_ID, "handle-evil", 0, None)
+        .await
+        .expect_err("unknown handle fails closed");
+    assert!(
+        matches!(error, DriverError::Consumer(_)),
+        "unexpected error: {error:?}"
+    );
+    driver.stop().await.expect("stop");
+    server.await.expect("server task");
+}

@@ -1,3 +1,4 @@
+mod artifact;
 mod bridge;
 mod control;
 mod lifecycle;
@@ -7,9 +8,9 @@ mod prompt;
 mod route;
 
 use bridge::{
-    ConnectionSnapshot, ControllerSummaryView, DesktopEvent, ProjectDetailView, ProjectSummary,
-    PromptSubmitView, RouteTokenView, SessionListView, SessionPresentationView, SessionView,
-    SubscriptionInfo,
+    ArtifactExcerptView, ConnectionSnapshot, ControllerSummaryView, DesktopEvent,
+    ProjectDetailView, ProjectSummary, PromptSubmitView, RouteTokenView, SessionListView,
+    SessionPresentationView, SessionView, SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -895,6 +896,22 @@ async fn desktop_prompt_submit(
         .await
 }
 
+/// M004 WP C artifact command: one bounded excerpt for an opaque
+/// handle owned by the route's live projection. No paths, no ranges
+/// beyond the 64 KiB window, no fabricated handles.
+#[tauri::command]
+async fn desktop_artifact_read(
+    state: State<'_, Arc<HostState>>,
+    handle: String,
+    start: u64,
+    length: Option<u64>,
+    route_generation: u64,
+) -> Result<ArtifactExcerptView, String> {
+    state
+        .route_artifact_read(handle, start, length, route_generation)
+        .await
+}
+
 /// M004 WP E control commands. Narrow capability classes only: the
 /// renderer sends opaque pending ids (+ an allowed choice / bounded
 /// answers); daemon-side leases revalidate everything else.
@@ -1003,6 +1020,7 @@ pub fn run() {
             desktop_session_open,
             desktop_session_create,
             desktop_prompt_submit,
+            desktop_artifact_read,
             desktop_control_refresh,
             desktop_permission_respond,
             desktop_question_respond,

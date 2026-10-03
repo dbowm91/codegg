@@ -17,6 +17,7 @@ vi.mock('./bridge', () => ({
     controlRefresh: vi.fn(),
     permissionRespond: vi.fn(),
     questionRespond: vi.fn(),
+    artifactRead: vi.fn(),
     projectionStart: vi.fn(),
     projectionStop: vi.fn(),
     projectionCurrent: vi.fn(),
@@ -305,6 +306,15 @@ describe('session route flow', () => {
     vi.mocked(bridge.controlRefresh).mockResolvedValue(null);
     vi.mocked(bridge.permissionRespond).mockImplementation(async () => null);
     vi.mocked(bridge.questionRespond).mockImplementation(async () => null);
+    vi.mocked(bridge.artifactRead).mockImplementation(async (handle: string) => ({
+      handle,
+      start: 0,
+      end: 6,
+      contentType: 'text/plain',
+      content: 'abcdef',
+      truncated: true,
+      redacted: false,
+    }));
     vi.mocked(bridge.subscribeProjection).mockImplementation(async () => ({ unsubscribe: vi.fn() }));
   });
 
@@ -522,6 +532,60 @@ describe('session route flow', () => {
     // Success converges on authoritative control state.
     await waitFor(() => expect(screen.getByTestId('controller-state')).toHaveTextContent('alice @ rev 4'));
     await waitFor(() => expect(bridge.projectionCurrent).toHaveBeenCalled());
+  });
+
+  it('reads a bounded artifact excerpt through the opaque handle', async () => {
+    vi.mocked(bridge.projectionStart).mockImplementationOnce(async (sessionId: string) => ({
+      ...presentation(sessionId, 'attached'),
+      artifactHandles: [{ handle: 'handle-1', byteLength: 128 }],
+    }));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('artifact-item')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('artifact-read-handle-1'));
+    });
+    await waitFor(() => expect(bridge.artifactRead).toHaveBeenCalledWith('handle-1', 0, null, 2));
+    expect(await screen.findByTestId('artifact-excerpt')).toHaveTextContent('abcdef');
+    expect(screen.getByTestId('artifact-excerpt-meta')).toHaveTextContent('handle-1 bytes 0-6 (truncated)');
+  });
+
+  it('surfaces a stale-handle failure without content', async () => {
+    vi.mocked(bridge.projectionStart).mockImplementationOnce(async (sessionId: string) => ({
+      ...presentation(sessionId, 'attached'),
+      artifactHandles: [{ handle: 'handle-gone', byteLength: 64 }],
+    }));
+    vi.mocked(bridge.artifactRead).mockRejectedValueOnce(new Error('artifact_not_found'));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('artifact-item')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('artifact-read-handle-gone'));
+    });
+    await waitFor(() => expect(screen.getByTestId('route-error')).toHaveTextContent('artifact_not_found'));
+    expect(screen.queryByTestId('artifact-excerpt')).not.toBeInTheDocument();
   });
 
   it('surfaces a stale-controller denial without clearing the pending item', async () => {
