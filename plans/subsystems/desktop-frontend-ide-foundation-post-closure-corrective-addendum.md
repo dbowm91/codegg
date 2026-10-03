@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — Post-Closure Corrective Addendum
 
-Status: closing
+Status: closed
 
 Repository baseline reviewed: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 
@@ -15,9 +15,9 @@ Historical closure evidence:
 
 Current implementation:
 
-- M004 implementation through `995d5cf8`
-- hosted Desktop E2E run `37130587855` — SUCCESS on `995d5cf8`
-- hosted root CI run `37130587841` — FAILURE on `995d5cf8`, Workspace Clippy
+- M004 implementation plus C001 corrective: `33fce56f`
+- hosted root CI run `37134452335` — SUCCESS on `738142d8`
+- hosted Desktop E2E run `37134452312` — SUCCESS on `738142d8` after failed-job rerun
 
 ## 1. Purpose and corrective trigger
 
@@ -47,7 +47,7 @@ This couples an internal composition helper to the entire protocol response enum
 
 A second, documentation-only defect is now visible: the desktop roadmap and registry disagree about the state of M003/M004, and the M003 lifecycle-corrective row remains marked active despite its addendum/C003 being closed.
 
-This addendum preserves the historical M004 closure record. It does not rewrite that evidence. C001 is the current strict-closure authority.
+This addendum preserves the historical M004 closure record. It does not rewrite that evidence. C001 was the corrective strict-closure authority and is now closed by `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md`.
 
 ## 2. Work classification
 
@@ -82,7 +82,7 @@ No user-facing capability change.
 
 ### C001 — M004 prompt-composition error boundary and hosted strict closure
 
-Status: ready.
+Status: closed.
 
 Plan:
 
@@ -95,6 +95,8 @@ C001 owns:
 3. hosted root-CI + Desktop-E2E confirmation on the corrected head;
 4. current-authority roadmap/registry reconciliation;
 5. strict M004 disposition and M005 dependency release decision.
+
+Closure evidence: `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md`.
 
 ## 5. Current evidence
 
@@ -185,7 +187,7 @@ Prefer tests at both the narrow helper boundary and one request-level mapping bo
 
 ## 9. Verification requirements
 
-The corrective is not closed by local Clippy alone.
+The corrective was not closed by local Clippy alone. Both required hosted workflows passed on the same corrected commit. The initial Desktop E2E attempt failed when the test immediately queried the message list after the permission list appeared; rerunning the failed job on the same SHA passed the full trajectory. This was classified as a timing-sensitive assertion, with no product defect reproduced.
 
 Required local evidence:
 
@@ -237,12 +239,12 @@ Do not rewrite `plans/closure/desktop-frontend-ide-foundation/004-status.md`.
 Instead:
 
 - this addendum becomes current corrective authority;
-- roadmap M004 is recorded as historical closure with active/ready C001 strict-closure corrective;
-- registry desktop foundation row reflects M004 conditionally closed/currently controlled by C001;
+- roadmap M004 is recorded as historical closure plus strict-closed C001 corrective;
+- registry desktop foundation row reflects strict-closed M004 and links both closure records;
 - registry M003 lifecycle-corrective row becomes `closed` because its addendum and C003 strict closure are closed;
 - stale M003/C002 “hosted pending” wording is removed from current-authority roadmap/registry text while historical records remain untouched;
-- M005 remains deferred until C001 closes;
-- after green hosted evidence, create a C001 closure record and promote current M004 disposition to strict closed.
+- M005 becomes eligible for fresh ownership audit/planning once C001 closes; no implementation handoff is automatically registered;
+- after green hosted evidence, create the C001 closure record and promote current M004 disposition to strict closed. Completed in `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md`.
 
 ## 12. M005 unblock rule
 

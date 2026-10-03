@@ -5386,6 +5386,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_prompt_submit_maps_unbound_session_failure() {
+        let mut daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+        seed_prompt_submit_selection(&daemon, &session_id).await;
+        // Force the daemon's authoritative session/workspace binding boundary
+        // to fail after a valid durable model selection has been resolved.
+        daemon.context_resolver = None;
+
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "req-prompt-unbound".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id,
+                    text: "hello".into(),
+                    plan_mode: false,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&response, CoreResponse::Error { code, .. } if code == "session_unbound"),
+            "expected unbound session failure, got {response:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn session_prompt_submit_maps_selection_store_failure() {
         let mut daemon = test_daemon().await;
         let (_dir, session_id) = prompt_submit_session(&daemon).await;

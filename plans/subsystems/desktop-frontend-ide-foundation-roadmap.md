@@ -173,7 +173,7 @@ M002 portable local daemon IPC                    M003 Tauri shell + secure brid
              | operational for Windows              | hard
              +-------------------+------------------+
                                  v
-M004 desktop session/control-plane vertical slice           [historically closed; post-closure C001 ready]
+M004 desktop session/control-plane vertical slice           [strict closed; post-closure C001 closed]
                                  |
                                  v
 foundation closure / architecture review
@@ -182,7 +182,7 @@ foundation closure / architecture review
                     |                          |
                     v                          v
 M005 document/buffer contract            M006 IDE shell
-[deferred; waits on C001 + fresh audit]  [deferred; depends on M005]
+[eligible for fresh audit/planning]      [deferred; depends on M005]
 ```
 
 M002 is not a hard dependency for a Linux/macOS M003 implementation because the existing Unix transport remains valid there. It is an operational dependency before Windows desktop support can be claimed.
@@ -250,7 +250,7 @@ Outcome:
 
 ### Milestone 004 — Desktop session/control-plane vertical slice
 
-Status: historically closed at `plans/closure/desktop-frontend-ide-foundation/004-status.md`, but current strict closure is conditionally controlled by ready post-closure corrective C001 at `plans/subsystems/desktop-frontend-ide-foundation-post-closure-corrective-addendum.md`. Hosted Desktop E2E `37130587855` is green on `995d5cf8`; hosted root CI `37130587841` is red on an M004-owned `clippy::result_large_err` in `resolve_prompt_submit_composition`.
+Status: closed. Historical closure is preserved at `plans/closure/desktop-frontend-ide-foundation/004-status.md`; the strict post-closure corrective is closed at `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md`. Corrected head `738142d8` passed hosted root CI run `37134452335` and Desktop E2E run `37134452312`.
 
 Primary class: capability.
 
@@ -273,7 +273,7 @@ M004 is the closure boundary for the desktop foundation. It intentionally does n
 
 ### Milestone 005 — Editor document/buffer and LSP synchronization contract
 
-Status: deferred; do not implement or register a handoff until post-closure C001 strict-closes current M004 authority and the document ownership problem is re-audited.
+Status: eligible for a fresh ownership audit and planning after M004 strict closure. No implementation handoff is registered; perform the document/buffer ownership audit before drafting one. M002's separate Windows evidence condition does not block a Linux/macOS ownership audit.
 
 Expected direction:
 
@@ -389,6 +389,6 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M001 shared frontend client runtime | closed | `plans/implementation/desktop-frontend-ide-foundation/001-shared-frontend-client-runtime.md` | `plans/closure/desktop-frontend-ide-foundation/001-status.md` |
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
 | M003 Tauri desktop shell + secure bridge | closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Strict closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; hosted root CI + built-app visible-window E2E green. Historical C001/C002 conditional records remain immutable. Windows qualification remains separately gated by M002 |
-| M004 desktop session/control-plane slice | conditionally closed; post-closure C001 ready | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; current corrective: `plans/subsystems/desktop-frontend-ide-foundation-post-closure-corrective-addendum.md`. Desktop E2E `37130587855` green; root CI `37130587841` red on M004 prompt-composition `result_large_err`. C001 must restore hosted green before strict current closure |
-| M005 document/buffer contract | deferred | not yet written | post-closure C001 strict M004 closure + fresh ownership audit |
+| M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
+| M005 document/buffer contract | eligible for fresh audit/planning; no handoff | not yet written | document/buffer ownership audit before implementation planning |
 | M006 IDE shell | deferred | not yet written | M005 |
