@@ -123,6 +123,12 @@ run_phase() {
   if [[ -f "$home/daemon-home/daemon.log" ]]; then
     cp "$home/daemon-home/daemon.log" "$app_root/e2e/logs/$name-daemon.log" 2>/dev/null || true
   fi
+  # The launcher log is overwritten by every `wdio run` invocation, so keep
+  # a per-phase copy beside the per-spec worker logs; without it the earlier
+  # phase's spawn-to-ready evidence is lost.
+  if [[ -f "$app_root/e2e/logs/wdio.log" ]]; then
+    cp "$app_root/e2e/logs/wdio.log" "$app_root/e2e/logs/$name-wdio.log" 2>/dev/null || true
+  fi
   rm -rf "$home"
   unset CODEGG_E2E_HOME CODEGG_E2E_SOCKET CODEGG_DAEMON_HOME CODEGG_E2E_STATE_FILE CODEGG_E2E_WDIO_PORT
   return $status

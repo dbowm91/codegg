@@ -25,6 +25,68 @@ async function waitConnected(): Promise<void> {
   );
 }
 
+async function projectTexts(): Promise<string[]> {
+  const items = await $$('[data-testid="project-item"]');
+  const texts: string[] = [];
+  for (const item of items) {
+    texts.push(await item.getText());
+  }
+  return texts;
+}
+
+// Read-only in-page diagnostics through the page's own bundled Tauri API,
+// mirroring the lifecycle spec: separates "host never served it" from
+// "renderer never refreshed".
+async function dumpState(label: string, daemonProjects: string[]): Promise<void> {
+  try {
+    const state = await browser.execute(() => {
+      const internals = (
+        window as unknown as {
+          __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> };
+        }
+      ).__TAURI_INTERNALS__;
+      if (!internals) return Promise.resolve({ invoke: false });
+      return internals
+        .invoke('desktop_project_list')
+        .then((projects) =>
+          internals.invoke('desktop_connection_snapshot').then((snapshot) => ({
+            invoke: true,
+            hostProjects: (projects as unknown[]).length,
+            daemonId: (snapshot as { daemonId?: unknown }).daemonId,
+            generation: (snapshot as { connectionGeneration?: unknown }).connectionGeneration,
+            status: document.querySelector('[data-testid="connection-status"]')?.textContent,
+            subscription: document.querySelector('[data-testid="subscription-id"]')
+              ?.textContent,
+            rendered: document.querySelectorAll('[data-testid="project-item"]').length,
+          })),
+        )
+        .catch((error: unknown) => ({ invoke: 'error', message: String(error) }));
+    });
+    console.log(`DIAG ${label}: host=${JSON.stringify(state)} daemon=${JSON.stringify(daemonProjects)}`);
+  } catch (error) {
+    console.log(`DIAG ${label}: execute failed: ${String(error)}`);
+  }
+}
+
+// Strict host≡daemon convergence (see the lifecycle spec): presence plus
+// rendered-count equality plus row uniqueness. A re-`start` against the
+// warm phase home once stacked a same-named probe here and presence-only
+// checks let the duplicate through.
+async function waitForCatalog(daemonNames: () => Promise<string[]>, ...expected: string[]): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      const texts = await projectTexts();
+      if (texts.length !== (await daemonNames()).length) return false;
+      if (new Set(texts).size !== texts.length) return false;
+      return expected.every((name) => texts.some((text) => text.includes(name)));
+    },
+    {
+      timeout: 60_000,
+      timeoutMsg: `host render diverged from daemon catalog (expected ${expected.join(', ')})`,
+    },
+  );
+}
+
 describe('M003 built-app explicit autostart and daemon survival', () => {
   let fixture: FixtureClient | null = null;
   let firstDaemonId = '';
@@ -59,6 +121,13 @@ describe('M003 built-app explicit autostart and daemon survival', () => {
     return fixture;
   }
 
+  async function daemonProjectNames(): Promise<string[]> {
+    return active()
+      .projectList()
+      .then((projects) => projects.map((p) => p.display_name))
+      .catch((error: unknown) => [`fixture-list-error: ${String(error)}`]);
+  }
+
   it('autostarts a new isolated daemon and renders connected state', async () => {
     await waitConnected();
     const daemonIdentity = await $('[data-testid="daemon-identity"]').getText();
@@ -76,13 +145,10 @@ describe('M003 built-app explicit autostart and daemon survival', () => {
         timeoutMsg: 'renderer subscription was never installed after autostart',
       },
     );
-    // The daemon-side project catalog survived the restart (same home).
-    const items = await $$('[data-testid="project-item"]');
-    const texts: string[] = [];
-    for (const item of items) {
-      texts.push(await item.getText());
-    }
-    expect(texts.some((text) => text.includes(probeProject))).toBe(true);
+    // The daemon-side project catalog survived the restart (same home):
+    // the pre-start probe renders exactly once — no lost rows, no duplicates.
+    await dumpState('after-autostart', await daemonProjectNames());
+    await waitForCatalog(daemonProjectNames, probeProject);
     // Reattach the observer to the autostarted daemon and prove convergence.
     const liveId = await active().reattach();
     expect(liveId).toBe(daemonIdentity);

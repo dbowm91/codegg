@@ -69,6 +69,14 @@ export const config: Options.Testrunner & Capabilities.WithRequestedTestrunnerCa
       'tauri:options': {
         application: appBinary,
       },
+      // Pin the session to the real window. E2E builds keep a hidden blank
+      // `e2e-anchor` window (see `run()` in src-tauri/src/lib.rs) so the
+      // native-close probe's `main` destroy does not take the automation
+      // session down with it; without the pin the embedded server would bind
+      // whichever window label it lists first.
+      'wdio:tauriServiceOptions': {
+        windowLabel: 'main',
+      },
     } as TauriCapabilities,
   ],
   services: [

@@ -148,7 +148,23 @@ Test instrumentation never widens production authority:
   the installed bridge handle: the trajectory waits for a fresh subscription
   before mutating the catalog because a broadcast emitted while no desktop
   subscriber is installed (reconnect commit takes the old owner; the
-  renderer re-subscribes asynchronously) is lost, not queued.
+  renderer re-subscribes asynchronously) is lost, not queued;
+- E2E builds only keep one hidden blank anchor window (`e2e-anchor`,
+  `about:blank`, never shown, created under `#[cfg(feature =
+  "desktop-e2e")]` in `run()`): closing the last window exits the app, and
+  with it the embedded WebDriver server, so the trajectory's native-close
+  probe would take its own automation session down before observing the
+  daemon-side teardown. The anchor survives the `main` destroy — the Rust
+  close/destroy hook still fires for `main` and the daemon still drops exactly
+  the desktop client — while the session (pinned to `main` through the
+  `wdio:tauriServiceOptions` `windowLabel`, since the embedded server binds
+  whichever label it lists first) and its teardown stay clean. The anchor
+  loads no app URL, so it hosts no renderer and installs no second client,
+  and no spec reads DOM after the close. Every catalog checkpoint converges
+  the full rendered set against the daemon list (presence plus row-count
+  equality plus row uniqueness), and the fixture's probe seeding reuses the
+  same-named live entry across daemon restarts instead of stacking a
+  duplicate the renderer would double-list.
 
 ## Deferred surfaces
 

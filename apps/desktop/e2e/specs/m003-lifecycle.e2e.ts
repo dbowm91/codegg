@@ -101,12 +101,22 @@ async function dumpState(label: string, daemonProjects: string[]): Promise<void>
   }
 }
 
-async function waitForProject(displayName: string): Promise<void> {
+// Strict host≡daemon convergence: every expected probe is present, the
+// rendered row count equals the daemon catalog size (no lost invalidations,
+// no double-listed duplicates), and no two rows share text. Presence-only
+// waits let a duplicated catalog slip through, as the autostart phase
+// proved when a re-`start` stacked a same-named probe.
+async function waitForCatalog(daemonNames: () => Promise<string[]>, ...expected: string[]): Promise<void> {
   await browser.waitUntil(
-    async () => (await projectTexts()).some((text) => text.includes(displayName)),
+    async () => {
+      const texts = await projectTexts();
+      if (texts.length !== (await daemonNames()).length) return false;
+      if (new Set(texts).size !== texts.length) return false;
+      return expected.every((name) => texts.some((text) => text.includes(name)));
+    },
     {
       timeout: 60_000,
-      timeoutMsg: `project ${displayName} never rendered in the real window`,
+      timeoutMsg: `host render diverged from daemon catalog (expected ${expected.join(', ')})`,
     },
   );
 }
@@ -116,6 +126,10 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
   let daemonId = '';
   let probeProject = '';
   let lastSubId: string | null = null;
+  // Catalog names the trajectory has created so far, in order. Every
+  // mutation checkpoint converges the full set, not just the newest probe,
+  // so a lost invalidation or a duplicated row fails loudly.
+  const expectedProjects: string[] = [];
 
   before(async () => {
     const stateFile = process.env.CODEGG_E2E_STATE_FILE;
@@ -162,7 +176,8 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     await waitConnected();
     expect(await $('[data-testid="daemon-identity"]').getText()).toBe(daemonId);
     lastSubId = await waitForSubscriptionId(null);
-    await waitForProject(probeProject);
+    expectedProjects.push(probeProject);
+    await waitForCatalog(daemonProjectNames, ...expectedProjects);
     // Exactly the TUI-kind fixture observer plus one desktop client.
     expectCounts(await active().snapshot(), 2, 1);
   });
@@ -189,7 +204,8 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     // no manual refresh, proving the real Tauri Channel delivery.
     await active().registerProject(extraProject);
     await dumpState(`after-register-${extraProject}`, await daemonProjectNames());
-    await waitForProject(extraProject);
+    expectedProjects.push(extraProject);
+    await waitForCatalog(daemonProjectNames, ...expectedProjects);
     return await connectionGeneration();
   }
 
@@ -211,7 +227,8 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     // Only the current renderer subscription receives the update.
     await active().registerProject('e2e-reload-probe-1');
     await dumpState('after-register-e2e-reload-probe-1', await daemonProjectNames());
-    await waitForProject('e2e-reload-probe-1');
+    expectedProjects.push('e2e-reload-probe-1');
+    await waitForCatalog(daemonProjectNames, ...expectedProjects);
   });
 
   it('repeats reconnect and reload without accumulation (second cycle)', async () => {
@@ -229,7 +246,8 @@ describe('M003 built-app lifecycle (existing daemon, reconnect, reload, close)',
     );
     await active().registerProject('e2e-reload-probe-2');
     await dumpState('after-register-e2e-reload-probe-2', await daemonProjectNames());
-    await waitForProject('e2e-reload-probe-2');
+    expectedProjects.push('e2e-reload-probe-2');
+    await waitForCatalog(daemonProjectNames, ...expectedProjects);
   });
 
   it('native close removes the desktop client while daemon and observer survive', async () => {

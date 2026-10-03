@@ -321,6 +321,28 @@ mod server {
             }
         }
 
+        /// Look up a live project by display name through the same read path
+        /// the desktop app uses. The probe seed name is fixture-PID-derived
+        /// so it is stable across daemon restarts within a phase; reusing it
+        /// keeps `start` idempotent instead of stacking a same-named
+        /// duplicate the renderer would list twice.
+        async fn find_project_by_name(&self, display_name: &str) -> Result<Option<String>, String> {
+            match self
+                .request(CoreRequest::ProjectList {
+                    include_archived: false,
+                    limit: 50,
+                })
+                .await
+            {
+                Ok(CoreResponse::ProjectList { projects, .. }) => Ok(projects
+                    .iter()
+                    .find(|project| project.display_name == display_name)
+                    .map(|project| project.project_id.clone())),
+                Ok(other) => Err(format!("unexpected list response: {other:?}")),
+                Err(e) => Err(e),
+            }
+        }
+
         async fn cmd_start(&mut self, id: &Value) -> Value {
             // Idempotent: reuse the held observer when it is still alive so
             // the phase script and the specs can share one daemon/session.
@@ -349,20 +371,39 @@ mod server {
             let workspace_id = self.workspace_id.clone().expect("workspace registered");
             if fresh {
                 let project_name = format!("e2e-probe-{}", std::process::id());
-                match self.register_project_inner(&project_name).await {
-                    Ok(project_id) => {
-                        self.created_projects.push(project_id.clone());
-                        json!({
-                            "id": id,
-                            "ok": true,
-                            "daemon_id": daemon_id,
-                            "endpoint": endpoint,
-                            "started_pid": started_pid,
-                            "workspace_id": workspace_id,
-                            "project_id": project_id,
-                            "project_name": project_name,
-                        })
-                    }
+                // Restart-tolerant seeding: the phase script may have seeded
+                // this same name before the daemon was stopped (autostart
+                // phase re-`start`s against a warm home whose catalog
+                // persists), so reuse the live entry instead of registering a
+                // same-named duplicate. The original registration is already
+                // tracked for shutdown archival; a reused id is not re-added.
+                match self.find_project_by_name(&project_name).await {
+                    Ok(Some(project_id)) => json!({
+                        "id": id,
+                        "ok": true,
+                        "daemon_id": daemon_id,
+                        "endpoint": endpoint,
+                        "started_pid": started_pid,
+                        "workspace_id": workspace_id,
+                        "project_id": project_id,
+                        "project_name": project_name,
+                    }),
+                    Ok(None) => match self.register_project_inner(&project_name).await {
+                        Ok(project_id) => {
+                            self.created_projects.push(project_id.clone());
+                            json!({
+                                "id": id,
+                                "ok": true,
+                                "daemon_id": daemon_id,
+                                "endpoint": endpoint,
+                                "started_pid": started_pid,
+                                "workspace_id": workspace_id,
+                                "project_id": project_id,
+                                "project_name": project_name,
+                            })
+                        }
+                        Err(e) => fail(id, e),
+                    },
                     Err(e) => fail(id, e),
                 }
             } else {

@@ -849,6 +849,35 @@ pub fn run() {
             }
             _ => {}
         })
+        .setup(|_app| {
+            // C003 built-app E2E anchor: closing the last window exits the app
+            // (and with it the embedded WebDriver server), so the trajectory's
+            // native-close probe would take its own automation session down
+            // with the window and could never observe the daemon-side
+            // teardown. E2E builds only keep one hidden blank anchor window
+            // (no app URL, so no second renderer and no second client) that
+            // survives the `main` destroy: the Rust close/destroy hook still
+            // fires for `main`, the daemon still drops exactly the desktop
+            // client, and the session teardown stays clean. The WebdriverIO
+            // session is pinned to `main` (`windowLabel` in wdio.conf.ts) and
+            // no spec reads DOM after the close, so the anchor is invisible
+            // to every assertion. Production builds have no anchor window.
+            #[cfg(feature = "desktop-e2e")]
+            {
+                let _anchor = tauri::WebviewWindowBuilder::new(
+                    _app,
+                    "e2e-anchor",
+                    tauri::WebviewUrl::External(
+                        "about:blank".parse().expect("about:blank is a valid URL"),
+                    ),
+                )
+                .title("e2e-anchor")
+                .visible(false)
+                .skip_taskbar(true)
+                .build()?;
+            }
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("failed to build CodeGG desktop shell")
         .run(move |_app, event| {
