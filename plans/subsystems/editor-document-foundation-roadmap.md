@@ -147,7 +147,7 @@ No editor widget.
 
 ### M005-C — LSP synchronization, checked save, and external conflict
 
-Status: blocked on M005-B.
+Status: closed. See `plans/closure/editor-document-foundation/003-status.md`.
 
 Plan:
 
@@ -166,7 +166,7 @@ No agent-on-unsaved-buffer semantic change.
 
 ### M005-D — Reusable client replica and TUI-first qualification
 
-Status: blocked on M005-C.
+Status: active.
 
 Plan:
 
@@ -387,5 +387,5 @@ M005 closes when:
 |---|---|---|---|
 | M005-A text core and transaction contract | closed | `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` | `plans/closure/editor-document-foundation/001-status.md` |
 | M005-B daemon document service + protocol | closed | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | `plans/closure/editor-document-foundation/002-status.md` |
-| M005-C LSP sync + checked save/external conflict | ready | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | none |
-| M005-D client replica + TUI-first qualification | blocked | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | M005-C |
+| M005-C LSP sync + checked save/external conflict | closed | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | `plans/closure/editor-document-foundation/003-status.md` |
+| M005-D client replica + TUI-first qualification | active | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | none |

@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation M005-D — Client Replica and TUI-First Qualification
 
-Status: blocked on M005-C
+Status: active
 
 Repository baseline: `43cc33f6e740de33878d78a8fa2de959692cf819`
 

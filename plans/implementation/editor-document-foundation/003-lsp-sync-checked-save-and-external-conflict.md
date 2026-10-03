@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation M005-C — LSP Synchronization, Checked Save, and External Conflict
 
-Status: blocked on M005-B
+Status: implemented
 
 Repository baseline: `43cc33f6e740de33878d78a8fa2de959692cf819`
 
