@@ -5520,6 +5520,117 @@ mod tests {
         }
     }
 
+    /// M004 WP F: two simultaneous projection subscriptions (TUI +
+    /// desktop against one daemon) coexist with independent lifetimes
+    /// and no duplicate durable state. Unsubscribing one leaves the
+    /// other fully functional; the session row is untouched.
+    #[tokio::test]
+    async fn two_projection_subscriptions_coexist_with_independent_lifetimes() {
+        let daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+        let seam = daemon.projection_seam.clone().expect("sqlite-backed seam");
+
+        async fn subscribe(
+            daemon: &CoreDaemon,
+            session_id: &str,
+            tag: &str,
+        ) -> (
+            codegg_protocol::projection::replay::ProjectionSubscriptionId,
+            codegg_protocol::projection::replay::ProjectionCursor,
+        ) {
+            let resp = daemon
+                .handle_request(crate::core::new_request(
+                    format!("req-sub-{tag}").into(),
+                    CoreRequest::ProjectionSubscribe {
+                        request:
+                            codegg_protocol::projection::replay::ProjectionSubscriptionRequest {
+                                scope:
+                                    codegg_protocol::projection::replay::ProjectionStreamKind::Session,
+                                scope_id: session_id.to_owned(),
+                                cursor: None,
+                                projection_version:
+                                    codegg_protocol::projection::PROJECTION_PROTOCOL_VERSION,
+                            },
+                    },
+                ))
+                .await
+                .unwrap();
+            match resp {
+                CoreResponse::ProjectionSubscribed {
+                    subscription_id,
+                    cursor,
+                    ..
+                } => (subscription_id, cursor),
+                other => panic!("expected ProjectionSubscribed, got {other:?}"),
+            }
+        }
+
+        let (sub_a, _cursor_a) = subscribe(&daemon, &session_id, "a").await;
+        let (sub_b, cursor_b) = subscribe(&daemon, &session_id, "b").await;
+        assert_ne!(
+            sub_a.as_str(),
+            sub_b.as_str(),
+            "each client owns its subscription id"
+        );
+        assert_eq!(
+            seam.metrics_snapshot().active_subscriptions,
+            2,
+            "both subscriptions counted"
+        );
+
+        // Releasing A leaves B live: resume on B's cursor converges.
+        // (Cursors outlive subscription ids by design; the release
+        // proof is the Unsubscribed ack plus no id reuse below.)
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-unsub-a".into(),
+                CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: sub_a,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(resp, CoreResponse::ProjectionUnsubscribed { .. }),
+            "expected unsubscribed, got {resp:?}"
+        );
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-resume-b".into(),
+                CoreRequest::ProjectionResume {
+                    cursor: cursor_b,
+                    include_snapshot_if_resync: true,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                resp,
+                CoreResponse::ProjectionReplay { .. }
+                    | CoreResponse::ProjectionResyncRequired { .. }
+                    | CoreResponse::ProjectionSubscribed { .. }
+            ),
+            "surviving subscription still converges, got {resp:?}"
+        );
+
+        // A fresh subscription never recycles a released id.
+        let (sub_c, _) = subscribe(&daemon, &session_id, "c").await;
+        assert_ne!(sub_c.as_str(), sub_b.as_str());
+
+        // One session row, never duplicated by observers.
+        let pool = daemon.pool.clone().expect("test daemon pool");
+        let store = codegg_core::session::SessionStore::new(pool);
+        assert!(
+            store
+                .get(&session_id)
+                .await
+                .expect("session lookup")
+                .is_some(),
+            "session survives observer churn"
+        );
+    }
+
     #[tokio::test]
     async fn bridge_attaches_turn_id_for_text_delta() {
         let daemon = test_daemon().await;

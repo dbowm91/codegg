@@ -555,6 +555,26 @@ mod tests {
             subscription_id.as_str().to_string()
         }
 
+        /// Read an unsubscribe and answer it so the stopping driver
+        /// completes while the socket stays open. Pending client
+        /// requests only complete on a correlated response or peer
+        /// death; tests that continue the dialogue need the former.
+        async fn expect_unsubscribe_and_ack(&mut self) -> String {
+            let (request_id, payload) = self.next_request().await;
+            let CoreRequest::ProjectionUnsubscribe { subscription_id } = payload else {
+                panic!("expected ProjectionUnsubscribe, got {payload:?}");
+            };
+            let released = subscription_id.as_str().to_string();
+            self.respond(
+                request_id,
+                CoreResponse::ProjectionUnsubscribed {
+                    subscription_id: ProjectionSubscriptionId::new(&released),
+                },
+            )
+            .await;
+            released
+        }
+
         async fn send_frame(&mut self, frame: &CoreFrame) {
             use tokio::io::AsyncWriteExt;
             self.writer
@@ -787,6 +807,149 @@ mod tests {
             .expect_err("zero length fails closed");
         assert!(error.contains("out of bounds"), "unexpected error: {error}");
         state.stop_projection_owner().await;
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detach_leaves_daemon_session_intact_for_reattach() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(&listener).await;
+            // First attach: fresh subscribe.
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(id, detail_response("proj-a", "ws-1", None))
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("session-1", "proj-a", "ws-1"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+            daemon.respond(id, caps_response()).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+            daemon
+                .respond(id, subscribed_response("sub-1", "session-1"))
+                .await;
+            let released = daemon.expect_unsubscribe_and_ack().await;
+            assert_eq!(released, "sub-1");
+            // Reattach after detach: the retained cursor resumes with a
+            // fresh subscription id, never reusing the released one.
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(id, detail_response("proj-a", "ws-1", None))
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("session-1", "proj-a", "ws-1"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+            daemon.respond(id, caps_response()).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::ProjectionResume { .. }),
+                "expected cursor resume, got {payload:?}"
+            );
+            daemon
+                .respond(id, empty_replay("sub-2", "session-1", 0))
+                .await;
+            let released = daemon.expect_unsubscribe_and_ack().await;
+            assert_eq!(released, "sub-2");
+        });
+
+        let state = connected_host(&endpoint).await;
+        let token = open_session_one(&state).await;
+        let first = state
+            .projection_start("session-1".into(), token.route_generation)
+            .await
+            .expect("first attach");
+        assert_eq!(first.state, "attached");
+        // Detach releases the frontend subscription only.
+        state.stop_projection_owner().await;
+        assert!(state.test_projection_owner_session().await.is_none());
+        // The daemon session is untouched: re-open (fresh route
+        // generation) and reattach converge again.
+        let token = open_session_one(&state).await;
+        let second = state
+            .projection_start("session-1".into(), token.route_generation)
+            .await
+            .expect("reattach");
+        assert_eq!(second.state, "attached");
+        state.stop_projection_owner().await;
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn socket_death_renders_disconnected_without_route_teardown() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(&listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(id, detail_response("proj-a", "ws-1", None))
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::SessionAttach { .. }));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("session-1", "proj-a", "ws-1"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionCapabilities));
+            daemon.respond(id, caps_response()).await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
+            daemon
+                .respond(id, subscribed_response("sub-1", "session-1"))
+                .await;
+            // Simulate daemon death: close the socket with no further
+            // frames. The 25 ms driver liveness tick must surface a
+            // typed disconnected state rather than a stuck attached UI.
+        });
+
+        let state = connected_host(&endpoint).await;
+        let token = open_session_one(&state).await;
+        state
+            .projection_start("session-1".into(), token.route_generation)
+            .await
+            .expect("start");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let current = state.projection_current().await.expect("current");
+            if current.state == "disconnected" {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("timed out waiting for disconnected state");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        // The route itself is untouched: selection survives transport
+        // death and a later reconnect resumes from here.
+        assert_eq!(
+            state.test_projection_owner_session().await.as_deref(),
+            Some("session-1")
+        );
         server.await.expect("server");
     }
 
