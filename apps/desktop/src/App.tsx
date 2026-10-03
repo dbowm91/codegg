@@ -34,6 +34,9 @@ export function App() {
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeBusy, setRouteBusy] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [promptDraft, setPromptDraft] = useState('');
+  const [planMode, setPlanMode] = useState(false);
+  const [promptBusy, setPromptBusy] = useState(false);
   const routeRequest = useRef(0);
 
   const currentToken: RouteTokenView | null = detail?.routeToken ?? null;
@@ -228,6 +231,41 @@ export function App() {
     }
   };
 
+  const submitPrompt = async () => {
+    if (!currentToken || promptBusy) return;
+    const text = promptDraft;
+    if (!text.trim()) {
+      setRouteError('Prompt must not be empty');
+      return;
+    }
+    const request = ++routeRequest.current;
+    const forConnection = connectionRef.current.connectionGeneration;
+    setPromptBusy(true);
+    setRouteError(null);
+    try {
+      const accepted = await bridge.promptSubmit(text, planMode, currentToken.routeGeneration);
+      if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+      setDetail((previous) => (previous ? { ...previous, routeToken: accepted.routeToken } : previous));
+      setPromptDraft('');
+      // Converge immediately; live projection events keep following.
+      const sessionId = accepted.routeToken.sessionId;
+      if (sessionId && (!projection || projection.sessionId !== sessionId)) {
+        const view = await bridge.projectionStart(sessionId, accepted.routeToken.routeGeneration);
+        if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+        setProjection(view);
+      } else {
+        const view = await bridge.projectionCurrent();
+        if (request !== routeRequest.current || forConnection !== connectionRef.current.connectionGeneration) return;
+        setProjection(view);
+      }
+    } catch (error) {
+      if (request !== routeRequest.current) return;
+      setRouteError(String(error));
+    } finally {
+      if (request === routeRequest.current) setPromptBusy(false);
+    }
+  };
+
   const stopProjection = async () => {
     try {
       const token = await bridge.projectionStop();
@@ -249,6 +287,7 @@ export function App() {
       <h3>Workspaces</h3><ul data-testid="workspace-list">{detail.workspaces.map((workspace) => <li key={workspace.workspaceId}><button data-testid={`workspace-select-${workspace.workspaceId}`} onClick={() => void selectWorkspace(workspace.workspaceId)}>{workspace.displayName}</button></li>)}</ul>
       <h3>Sessions</h3>{sessions.length ? <ul data-testid="session-list">{sessions.map((session) => <li key={session.sessionId} data-testid="session-item" data-session-id={session.sessionId}><button data-testid={`session-open-${session.sessionId}`} onClick={() => void openSession(session.sessionId)}>{session.title || session.sessionId}</button></li>)}</ul> : <p className="muted">No sessions listed yet.</p>}
       <div><input data-testid="session-title-input" value={newTitle} maxLength={120} placeholder="New session title" onChange={(event) => setNewTitle(event.target.value)} /><button data-testid="session-create-button" disabled={routeBusy || !detail.routeToken.workspaceId} onClick={() => void createSession()}>Create session</button></div>
+      {detail.routeToken.workspaceId && <div><h3>Prompt</h3><textarea data-testid="prompt-input" value={promptDraft} placeholder="Ask the session" onChange={(event) => setPromptDraft(event.target.value)} /><label><input type="checkbox" data-testid="plan-mode-checkbox" checked={planMode} onChange={(event) => setPlanMode(event.target.checked)} /> Plan mode</label><button data-testid="prompt-submit-button" disabled={promptBusy || !promptDraft.trim()} onClick={() => void submitPrompt()}>Submit prompt</button></div>}
     </section>}
     {routeError && <p role="alert" data-testid="route-error">{routeError}</p>}
     {projection && <section className="panel"><h2>Session</h2><dl><dt>Projection</dt><dd data-testid="projection-state">{projection.state}</dd><dt>Turn</dt><dd data-testid="turn-status">{projection.turn ? `${projection.turn.turnId} / ${projection.turn.status}` : 'idle'}</dd>{projection.truncatedMessages > 0 && <><dt>Omitted</dt><dd data-testid="truncated-messages">{projection.truncatedMessages} older message(s)</dd></>}<dt>Cursor</dt><dd data-testid="projection-cursor">seq {projection.cursor.eventSeq}</dd></dl>

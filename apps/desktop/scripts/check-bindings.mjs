@@ -17,6 +17,7 @@ const expected = {
   SessionSummaryView: ['session_id', 'title', 'project_id', 'workspace_id'],
   SessionListView: ['sessions', 'route_token'],
   SessionView: ['session', 'route_token'],
+  PromptSubmitView: ['intent_id', 'route_token'],
   MessageView: ['message_id', 'role', 'text', 'truncated'],
   TurnSummaryView: ['turn_id', 'status', 'updated_at', 'stop_reason', 'error', 'message_count', 'tool_count', 'pending_permissions', 'pending_questions', 'input_tokens', 'output_tokens'],
   ToolSummaryView: ['tool_id', 'tool_name', 'status', 'summary', 'has_artifact'],

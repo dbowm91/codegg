@@ -41,7 +41,9 @@ pub(crate) const MAX_SESSIONS: usize = 50;
 /// Rust-host route state. `roots` holds canonical workspace roots and is
 /// never serialized; only `*_view` DTOs cross the bridge. `projection`
 /// is the single live projection owner for the route (WP C);
-/// `stopped` retains a stopped cursor for same-session resume.
+/// `stopped` retains a stopped cursor for same-session resume; `prompt`
+/// is the in-flight/failed prompt intent for at-most-once coalescing
+/// (WP D).
 #[derive(Default)]
 pub(crate) struct RouteState {
     pub(crate) route_generation: u64,
@@ -54,6 +56,7 @@ pub(crate) struct RouteState {
     pub(crate) projection: Option<ProjectionOwner>,
     pub(crate) stopped: Option<StoppedDriver>,
     pub(crate) watcher: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) prompt: Option<codegg_client::PromptIntent>,
 }
 
 impl RouteState {
@@ -71,6 +74,16 @@ impl RouteState {
         let session_id = self.session_id.clone();
         self.token(session_id)
     }
+}
+
+/// Render a daemon rejection with its code so callers (and the WP D
+/// prompt path) can distinguish failure kinds. Anything else stays a
+/// generic unexpected-response failure; both fail closed.
+pub(crate) fn unexpected_daemon_response(response: &CoreResponse) -> String {
+    if let CoreResponse::Error { code, message } = response {
+        return format!("{code}: {message}");
+    }
+    "daemon returned an unexpected response".to_string()
 }
 
 /// `true` when the daemon-returned session is bound to the given
@@ -107,7 +120,9 @@ pub(crate) fn session_summary_view(session: &Session) -> SessionSummaryView {
 }
 
 impl HostState {
-    async fn route_request(&self) -> Result<(codegg_client::LocalSocketClient, u64), String> {
+    pub(crate) async fn route_request(
+        &self,
+    ) -> Result<(codegg_client::LocalSocketClient, u64), String> {
         // Snapshot the client clone; the slow daemon work that follows
         // runs outside every lock.
         let client = self
@@ -281,7 +296,7 @@ impl HostState {
         let token = route.current_token();
         drop(route);
         let CoreResponse::SessionList { sessions } = response else {
-            return Err("daemon returned an unexpected session list response".into());
+            return Err(unexpected_daemon_response(&response));
         };
         Ok(SessionListView {
             sessions: sessions
@@ -315,7 +330,7 @@ impl HostState {
             .await
             .map_err(|error| error.to_string())?;
         let CoreResponse::Session { session } = response else {
-            return Err("daemon returned an unexpected session response".into());
+            return Err(unexpected_daemon_response(&response));
         };
         let mut route = self.route.lock().await;
         if self.current_generation() != connection_generation
@@ -369,7 +384,7 @@ impl HostState {
             .await
             .map_err(|error| error.to_string())?;
         let CoreResponse::Session { session } = response else {
-            return Err("daemon returned an unexpected session response".into());
+            return Err(unexpected_daemon_response(&response));
         };
         let mut route = self.route.lock().await;
         if self.current_generation() != connection_generation
@@ -1013,6 +1028,374 @@ mod tests {
             .await
             .expect("list");
         assert_eq!(listed.sessions.len(), MAX_SESSIONS);
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    async fn select_workspace_only(state: &std::sync::Arc<HostState>) -> RouteTokenView {
+        let detail = state
+            .route_project_detail("proj-a".into())
+            .await
+            .expect("detail");
+        state
+            .route_workspace_select("ws-1".into(), detail.route_token.route_generation)
+            .await
+            .expect("select")
+    }
+
+    #[cfg(unix)]
+    async fn expect_no_further_request(daemon: &mut FakeDaemon) {
+        if let Ok((_, payload)) = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            daemon.next_request(),
+        )
+        .await
+        {
+            panic!("unexpected late daemon request: {payload:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_submit_existing_session_accepted() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+                )
+                .await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("s-1", "proj-a", "ws-1", "First"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::SessionPromptSubmit {
+                session_id,
+                text,
+                plan_mode,
+            } = payload
+            else {
+                panic!("expected SessionPromptSubmit, got {payload:?}");
+            };
+            assert_eq!(session_id, "s-1");
+            assert_eq!(text, "hello desktop");
+            assert!(!plan_mode);
+            daemon.respond(id, CoreResponse::Ack).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        state
+            .route_session_open("s-1".into(), token.route_generation)
+            .await
+            .expect("open");
+        let view = state
+            .route_prompt_submit("hello desktop".into(), false, token.route_generation)
+            .await
+            .expect("submit");
+        assert!(!view.intent_id.is_empty());
+        assert_eq!(view.route_token.session_id.as_deref(), Some("s-1"));
+        // Terminal accept clears the stored intent.
+        assert!(state.route.lock().await.prompt.is_none());
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_double_submit_coalesced() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+                )
+                .await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("s-1", "proj-a", "ws-1", "First"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::SessionPromptSubmit { .. }),
+                "expected SessionPromptSubmit, got {payload:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            daemon.respond(id, CoreResponse::Ack).await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        state
+            .route_session_open("s-1".into(), token.route_generation)
+            .await
+            .expect("open");
+        let first_state = state.clone();
+        let generation = token.route_generation;
+        let first = tokio::spawn(async move {
+            first_state
+                .route_prompt_submit("same text".into(), false, generation)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let duplicate = state
+            .route_prompt_submit("same text".into(), false, generation)
+            .await
+            .expect_err("concurrent duplicate coalesces");
+        assert!(
+            duplicate.contains("already being submitted"),
+            "unexpected error: {duplicate}"
+        );
+        first.await.expect("join").expect("first accepted");
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_create_then_submit_exactly_once() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 1),
+                )
+                .await;
+            // Exactly one creation ...
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::SessionCreate {
+                project_id,
+                workspace_id,
+                ..
+            } = payload
+            else {
+                panic!("expected SessionCreate, got {payload:?}");
+            };
+            assert_eq!(project_id.as_deref(), Some("proj-a"));
+            assert_eq!(workspace_id.as_deref(), Some("ws-1"));
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("s-new", "proj-a", "ws-1", "Fresh"),
+                    },
+                )
+                .await;
+            // ... followed by exactly one submit for the new session.
+            let (id, payload) = daemon.next_request().await;
+            let CoreRequest::SessionPromptSubmit { session_id, .. } = payload else {
+                panic!("expected SessionPromptSubmit, got {payload:?}");
+            };
+            assert_eq!(session_id, "s-new");
+            daemon.respond(id, CoreResponse::Ack).await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        let view = state
+            .route_prompt_submit("fresh session prompt".into(), true, token.route_generation)
+            .await
+            .expect("create-then-submit");
+        assert_eq!(view.route_token.session_id.as_deref(), Some("s-new"));
+        assert_eq!(
+            state.route.lock().await.session_id.as_deref(),
+            Some("s-new")
+        );
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_create_failure_marks_failed_and_sends_no_submit() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::SessionCreate { .. }),
+                "expected SessionCreate, got {payload:?}"
+            );
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Error {
+                        code: "session_create_failed".into(),
+                        message: "disk is gone".into(),
+                    },
+                )
+                .await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        let error = state
+            .route_prompt_submit("doomed".into(), false, token.route_generation)
+            .await
+            .expect_err("create failure surfaces");
+        assert!(
+            error.contains("session_create_failed"),
+            "unexpected error: {error}"
+        );
+        // No session bound, and the failed intent is retained for
+        // same-text retry coalescing.
+        let route = state.route.lock().await;
+        assert!(route.session_id.is_none());
+        assert!(route.prompt.as_ref().is_some_and(|intent| {
+            intent.state() == codegg_client::PromptIntentState::Failed && intent.text() == "doomed"
+        }));
+        drop(route);
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_route_switch_after_create_prevents_submit() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+                )
+                .await;
+            // Hold the create response until the route moves on.
+            let (create_id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::SessionCreate { .. }),
+                "expected SessionCreate, got {payload:?}"
+            );
+            let (get_id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::ProjectGet { .. }),
+                "expected ProjectGet, got {payload:?}"
+            );
+            daemon
+                .respond(
+                    get_id,
+                    detail_response("proj-b", vec![("ws-9", "Nine", Some("/root-b"))], 0),
+                )
+                .await;
+            // Let the switch install before the late create arrives:
+            // the create completion must observe the new generation.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            daemon
+                .respond(
+                    create_id,
+                    CoreResponse::Session {
+                        session: session_dto("s-late", "proj-a", "ws-1", "Late"),
+                    },
+                )
+                .await;
+            expect_no_further_request(&mut daemon).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        let submitting = state.clone();
+        let generation = token.route_generation;
+        let submit = tokio::spawn(async move {
+            submitting
+                .route_prompt_submit("late".into(), false, generation)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        state
+            .route_project_detail("proj-b".into())
+            .await
+            .expect("switch wins");
+        let error = submit.await.expect("join").expect_err("late result drops");
+        assert!(error.contains("discarded"), "unexpected error: {error}");
+        let route = state.route.lock().await;
+        assert_eq!(route.project_id.as_deref(), Some("proj-b"));
+        assert!(route.session_id.is_none());
+        server.await.expect("server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_disconnect_during_submit_discards_result() {
+        let (endpoint, listener) = short_endpoint();
+        let server = tokio::spawn(async move {
+            let mut daemon = FakeDaemon::accept(listener).await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    detail_response("proj-a", vec![("ws-1", "One", Some("/root-a"))], 0),
+                )
+                .await;
+            let (id, _) = daemon.next_request().await;
+            daemon
+                .respond(
+                    id,
+                    CoreResponse::Session {
+                        session: session_dto("s-1", "proj-a", "ws-1", "First"),
+                    },
+                )
+                .await;
+            let (id, payload) = daemon.next_request().await;
+            assert!(
+                matches!(payload, CoreRequest::SessionPromptSubmit { .. }),
+                "expected SessionPromptSubmit, got {payload:?}"
+            );
+            // The daemon still accepts the turn; the host must not
+            // report it against the dead route.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            daemon.respond(id, CoreResponse::Ack).await;
+        });
+
+        let state = routed_host(&endpoint).await;
+        let token = select_workspace_only(&state).await;
+        state
+            .route_session_open("s-1".into(), token.route_generation)
+            .await
+            .expect("open");
+        let submitting = state.clone();
+        let generation = token.route_generation;
+        let submit = tokio::spawn(async move {
+            submitting
+                .route_prompt_submit("gone".into(), false, generation)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        state.disconnect_host().await;
+        let error = submit.await.expect("join").expect_err("dead route drops");
+        assert!(
+            error.contains("discarded")
+                || error.contains("not connected")
+                || error.contains("no current route"),
+            "unexpected error: {error}"
+        );
         server.await.expect("server");
     }
 }

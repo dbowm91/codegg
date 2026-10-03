@@ -106,6 +106,7 @@ impl DaemonRequestFamily {
             CoreRequest::TurnCancel { .. } => Self::Turns,
             CoreRequest::TurnSteer { .. } => Self::Turns,
             CoreRequest::TurnSubmit { .. } => Self::Turns,
+            CoreRequest::SessionPromptSubmit { .. } => Self::Turns,
             CoreRequest::SessionControlGet { .. } => Self::Turns,
             CoreRequest::SessionControlRequest { .. } => Self::Turns,
             CoreRequest::SessionControlTransfer { .. } => Self::Turns,

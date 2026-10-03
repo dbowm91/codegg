@@ -651,6 +651,7 @@ mod tests {
             // Turn steering/cancel + prompt submit.
             "/turn",
             "turn_submit",
+            "session_prompt_submit",
             "turn_steer",
             "turn_cancel",
             // Permission/question answers.

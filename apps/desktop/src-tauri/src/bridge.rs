@@ -110,6 +110,16 @@ pub struct SessionView {
     pub route_token: RouteTokenView,
 }
 
+/// Accepted prompt intent (M004 WP D). The command resolves `Ok` only
+/// once the daemon accepts the turn; failures are `Err` strings and
+/// leave the renderer draft intact.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSubmitView {
+    pub intent_id: String,
+    pub route_token: RouteTokenView,
+}
+
 /// One visible projection message. Text is the canonical (already
 /// bounded) text; only public `user`/`assistant`/`tool` roles cross.
 #[derive(Debug, Clone, Serialize)]

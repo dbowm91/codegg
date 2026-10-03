@@ -3,6 +3,7 @@ import type {
   ConnectionSnapshot,
   DesktopEvent,
   ProjectDetailView,
+  PromptSubmitView,
   ProjectSummary,
   RouteTokenView,
   SessionListView,
@@ -26,6 +27,8 @@ export const bridge = {
     invoke<SessionView>('desktop_session_open', { sessionId, routeGeneration }),
   sessionCreate: (title: string | null, routeGeneration: number) =>
     invoke<SessionView>('desktop_session_create', { title, routeGeneration }),
+  promptSubmit: (text: string, planMode: boolean, routeGeneration: number) =>
+    invoke<PromptSubmitView>('desktop_prompt_submit', { text, planMode, routeGeneration }),
   projectionStart: (sessionId: string, routeGeneration: number) =>
     invoke<SessionPresentationView>('desktop_projection_start', { sessionId, routeGeneration }),
   projectionStop: () => invoke<RouteTokenView>('desktop_projection_stop'),

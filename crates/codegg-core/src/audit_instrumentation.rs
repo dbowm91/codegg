@@ -543,6 +543,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_import_data", "session_create"),
     ("session_fork", "session_create"),
     ("turn_submit", "prompt_submit"),
+    ("session_prompt_submit", "prompt_submit"),
     ("turn_steer", "prompt_submit"),
     ("turn_cancel", "job_cancel"),
     ("agent_select", "agent_delegate"),

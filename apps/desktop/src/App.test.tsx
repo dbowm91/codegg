@@ -13,6 +13,7 @@ vi.mock('./bridge', () => ({
     sessionList: vi.fn(),
     sessionOpen: vi.fn(),
     sessionCreate: vi.fn(),
+    promptSubmit: vi.fn(),
     projectionStart: vi.fn(),
     projectionStop: vi.fn(),
     projectionCurrent: vi.fn(),
@@ -293,6 +294,11 @@ describe('session route flow', () => {
       routeToken: token(routeGeneration, sessionId),
     }));
     vi.mocked(bridge.projectionStart).mockImplementation(async (sessionId: string) => presentation(sessionId));
+    vi.mocked(bridge.promptSubmit).mockImplementation(async (_text: string, _planMode: boolean, routeGeneration: number) => ({
+      intentId: 'intent-1',
+      routeToken: token(routeGeneration, 's-1'),
+    }));
+    vi.mocked(bridge.projectionCurrent).mockImplementation(async () => presentation('s-1'));
     vi.mocked(bridge.subscribeProjection).mockImplementation(async () => ({ unsubscribe: vi.fn() }));
   });
 
@@ -378,5 +384,101 @@ describe('session route flow', () => {
     expect(screen.getByTestId('question-item')).toHaveTextContent('Pick one');
     // WP E wires responses; the buttons stay disabled with no authority.
     expect(screen.getByTitle('Permission responses land in WP E')).toBeDisabled();
+  });
+
+  it('submits a prompt once and clears the draft on accept', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('projection-state')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('prompt-input'), { target: { value: 'hello desktop' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('prompt-submit-button'));
+    });
+    await waitFor(() => expect(bridge.promptSubmit).toHaveBeenCalledTimes(1));
+    expect(bridge.promptSubmit).toHaveBeenCalledWith('hello desktop', false, 2);
+    // Accepted: draft cleared, projection refreshed through current.
+    await waitFor(() => expect(bridge.projectionCurrent).toHaveBeenCalled());
+    expect(screen.getByTestId('prompt-input')).toHaveValue('');
+  });
+
+  it('keeps the draft and surfaces the error on prompt failure', async () => {
+    vi.mocked(bridge.promptSubmit).mockRejectedValueOnce(new Error('model_unselected: no model'));
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('projection-state')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('prompt-input'), { target: { value: 'doomed draft' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('prompt-submit-button'));
+    });
+    await waitFor(() => expect(screen.getByTestId('route-error')).toHaveTextContent('model_unselected'));
+    // Failure restores the editable draft; nothing durable fabricated.
+    expect(screen.getByTestId('prompt-input')).toHaveValue('doomed draft');
+  });
+
+  it('disables submit while a prompt is in flight', async () => {
+    let resolveSubmit!: (value: { intentId: string; routeToken: ReturnType<typeof token> }) => void;
+    vi.mocked(bridge.promptSubmit).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmit = resolve as typeof resolveSubmit;
+        }),
+    );
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('Demo project')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('project-select-p0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('workspace-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workspace-select-w0'));
+    });
+    await waitFor(() => expect(screen.getByTestId('session-list')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('session-open-s-1'));
+    });
+    await waitFor(() => expect(screen.getByTestId('projection-state')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('prompt-input'), { target: { value: 'once' } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('prompt-submit-button'));
+    });
+    await waitFor(() => expect(screen.getByTestId('prompt-submit-button')).toBeDisabled());
+    // A second click while busy cannot issue a second submit.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('prompt-submit-button'));
+    });
+    expect(bridge.promptSubmit).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveSubmit({ intentId: 'intent-9', routeToken: token(2, 's-1') });
+    });
+    // Accepted: the draft clears (the empty draft keeps submit disabled).
+    await waitFor(() => expect(screen.getByTestId('prompt-input')).toHaveValue(''));
   });
 });

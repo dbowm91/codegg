@@ -2804,6 +2804,7 @@ impl CoreDaemon {
             | CoreRequest::SessionRename { session_id, .. }
             | CoreRequest::SessionExport { session_id }
             | CoreRequest::TurnSubmit { session_id, .. }
+            | CoreRequest::SessionPromptSubmit { session_id, .. }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
             | CoreRequest::SessionControlGet { session_id }
@@ -3140,6 +3141,9 @@ impl CoreDaemon {
             codegg_core::audit::AuditAction::PromptSubmit => {
                 let (session, text) = match request {
                     CoreRequest::TurnSubmit {
+                        session_id, text, ..
+                    } => (session_id.clone(), text.clone()),
+                    CoreRequest::SessionPromptSubmit {
                         session_id, text, ..
                     } => (session_id.clone(), text.clone()),
                     CoreRequest::TurnSteer {
@@ -5227,6 +5231,286 @@ mod tests {
             turn_id.starts_with("turn-"),
             "turn_id '{}' should start with 'turn-'",
             turn_id
+        );
+
+        if let Some(value) = previous_openai_key {
+            std::env::set_var("OPENAI_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+    }
+
+    /// M004: shared fixture for `SessionPromptSubmit` tests. Creates
+    /// a session bound to a temp workspace and keeps the directory
+    /// alive for the test body.
+    async fn prompt_submit_session(daemon: &CoreDaemon) -> (tempfile::TempDir, String) {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let (project_id, workspace_id) = seed_test_context(daemon, workspace_dir.path()).await;
+        let create_req = crate::core::new_request(
+            "req-create".into(),
+            CoreRequest::SessionCreate {
+                directory: workspace_dir.path().to_string_lossy().into_owned(),
+                title: None,
+                project_id: Some(project_id),
+                workspace_id: Some(workspace_id),
+            },
+        );
+        let session_id = match daemon.handle_request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+        (workspace_dir, session_id)
+    }
+
+    /// M004: seed one healthy `openai` connection plus a `gpt-4o`
+    /// catalog entry and pin the session selection to it, so
+    /// `SessionPromptSubmit` can resolve a durable model.
+    async fn seed_prompt_submit_selection(daemon: &CoreDaemon, session_id: &str) {
+        use codegg_core::identity::PrincipalId;
+        use codegg_core::provider_connections::{
+            Endpoint, NewProviderConnection, ProviderConnectionStore, ProviderKind, ProviderScope,
+            SecretBindingLocator, SecretRef, TlsPolicy,
+        };
+        let pool = daemon.pool.clone().expect("test daemon pool");
+        let conn_store = ProviderConnectionStore::new(pool.clone());
+        let session_store = codegg_core::session::SessionStore::new(pool.clone());
+        let conn_id = conn_store
+            .create(NewProviderConnection {
+                provider_kind: ProviderKind::OpenAi,
+                display_name: "Prompt submit test".to_string(),
+                endpoint: Endpoint::new("http://prompt-submit.example.com", TlsPolicy::Disabled)
+                    .unwrap(),
+                tls_policy: TlsPolicy::Disabled,
+                scope: ProviderScope::personal(PrincipalId::parse("test-user").unwrap()),
+                secret_binding: Some(
+                    SecretBindingLocator::new(SecretRef::new(), "test-provider", "acct-ps")
+                        .unwrap(),
+                ),
+            })
+            .await
+            .expect("create connection")
+            .id;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        sqlx::query(
+            "INSERT INTO provider_connection_health \
+             (connection_id, revision, status, duration_ms, checked_at, catalog_revision) \
+             VALUES (?, 1, 'healthy', 10, ?, ?)",
+        )
+        .bind(conn_id.as_str())
+        .bind(now)
+        .bind("cat-ps")
+        .execute(&pool)
+        .await
+        .expect("seed health");
+        sqlx::query(
+            "INSERT INTO provider_connection_models \
+             (connection_id, revision, model_id, model_name, context_window, \
+              max_output_tokens, supports_tools, supports_vision) \
+             VALUES (?, 1, 'gpt-4o', 'GPT-4o', 128000, 16384, 1, 1)",
+        )
+        .bind(conn_id.as_str())
+        .execute(&pool)
+        .await
+        .expect("seed model");
+        let outcome = crate::core::session_selection::update_selection(
+            &session_store,
+            &conn_store,
+            session_id,
+            &conn_id,
+            "gpt-4o",
+            None,
+            None,
+        )
+        .await
+        .expect("update selection");
+        assert!(
+            matches!(
+                outcome,
+                crate::core::session_selection::SelectionUpdateOutcome::Updated(_)
+            ),
+            "expected Updated, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_prompt_submit_rejects_blank_and_overlong_text() {
+        let daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+        for (text, code) in [
+            ("   ".to_string(), "prompt_text_empty"),
+            (
+                "x".repeat(CoreDaemon::SESSION_PROMPT_MAX_TEXT_CHARS + 1),
+                "prompt_text_too_long",
+            ),
+        ] {
+            let resp = daemon
+                .handle_request(crate::core::new_request(
+                    "req-prompt".into(),
+                    CoreRequest::SessionPromptSubmit {
+                        session_id: session_id.clone(),
+                        text,
+                        plan_mode: false,
+                    },
+                ))
+                .await
+                .unwrap();
+            assert!(
+                matches!(&resp, CoreResponse::Error { code: c, .. } if c == code),
+                "expected {code}, got {resp:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn session_prompt_submit_fails_closed_without_selection() {
+        let daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-prompt".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id,
+                    text: "hello".into(),
+                    plan_mode: false,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resp, CoreResponse::Error { code, .. } if code == "model_unselected"),
+            "unselected session must fail closed, got {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_prompt_submit_legacy_reference_fails_closed() {
+        let daemon = test_daemon().await;
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let (project_id, _workspace_id) = seed_test_context(&daemon, workspace_dir.path()).await;
+        // A legacy `provider/model` row with no credentialed connection
+        // behind it must not resolve to an invented model.
+        let pool = daemon.pool.clone().expect("test daemon pool");
+        let session_store = codegg_core::session::SessionStore::new(pool);
+        let session = session_store
+            .create(codegg_core::session::CreateSession {
+                project_id,
+                directory: workspace_dir.path().to_string_lossy().into_owned(),
+                title: Some("legacy".to_string()),
+                parent_id: None,
+                workspace_id: None,
+                agent: None,
+                model: Some("openai/gpt-4o".to_string()),
+                tags: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
+            })
+            .await
+            .expect("create legacy session");
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-prompt".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id: session.id,
+                    text: "hello".into(),
+                    plan_mode: false,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resp, CoreResponse::Error { code, .. } if code == "model_unresolved"),
+            "legacy reference must fail closed, got {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn session_prompt_submit_resolves_selection_and_submits() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
+        std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
+
+        let daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+        seed_prompt_submit_selection(&daemon, &session_id).await;
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-prompt".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id: session_id.clone(),
+                    text: "hello from prompt submit".into(),
+                    plan_mode: false,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(resp, CoreResponse::Ack),
+            "expected Ack, got {resp:?}"
+        );
+        let filter = EventFilter {
+            session_id: Some(session_id.clone()),
+            include_global: true,
+            client_id: None,
+        };
+        let events = daemon.event_log.replay_from(0, &filter).await;
+        assert!(
+            events.iter().any(|env| matches!(
+                &env.payload,
+                CoreEvent::TurnStarted { session_id: sid, .. } if sid == &session_id
+            )),
+            "expected TurnStarted for {session_id}"
+        );
+
+        if let Some(value) = previous_openai_key {
+            std::env::set_var("OPENAI_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn session_prompt_submit_duplicate_while_active_rejected() {
+        // At-most-once across reconnect: a second submit for a session
+        // with a still-active turn resolves composition, then the
+        // shared `TurnSubmit` body rejects it instead of spawning a
+        // second turn.
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
+        std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
+
+        let daemon = test_daemon().await;
+        let (_dir, session_id) = prompt_submit_session(&daemon).await;
+        seed_prompt_submit_selection(&daemon, &session_id).await;
+        daemon
+            .bind_runtime_for_session(&session_id)
+            .await
+            .expect("bind runtime for session");
+        let runtime = daemon
+            .sessions
+            .get(&session_id)
+            .expect("bound runtime for session");
+        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-held").await;
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-prompt-dup".into(),
+                CoreRequest::SessionPromptSubmit {
+                    session_id,
+                    text: "duplicate".into(),
+                    plan_mode: false,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&resp, CoreResponse::Error { code, .. } if code == "turn_already_active"),
+            "duplicate submit must not spawn a second turn, got {resp:?}"
         );
 
         if let Some(value) = previous_openai_key {

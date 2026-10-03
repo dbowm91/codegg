@@ -424,6 +424,39 @@ impl CoreDaemon {
 
                 Ok(CoreResponse::Ack)
             }
+            CoreRequest::SessionPromptSubmit {
+                session_id,
+                text,
+                plan_mode,
+            } => {
+                // M004 desktop session slice: resolve the composed
+                // turn daemon-side, then submit through the identical
+                // `TurnSubmit` path above (single recursion, no new
+                // runtime, scheduler, or authority).
+                let (model, agents, messages) = match self
+                    .resolve_prompt_submit_composition(&session_id, &text)
+                    .await
+                {
+                    Ok(composed) => composed,
+                    Err(error) => return Ok(error),
+                };
+                return Box::pin(self.handle_turns_request(
+                    CoreRequest::TurnSubmit {
+                        session_id,
+                        text,
+                        plan_mode,
+                        model,
+                        agents,
+                        current_agent_idx: 0,
+                        messages,
+                    },
+                    request_id,
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await;
+            }
             CoreRequest::PermissionRespond { id, choice } => {
                 let parsed = match choice.as_str() {
                     "allow" => crate::bus::PermissionDecision::AllowOnce,
@@ -1098,5 +1131,127 @@ impl CoreDaemon {
                 })
             }
         }
+    }
+
+    /// M004 desktop session slice: daemon-side composition for
+    /// `SessionPromptSubmit`.
+    ///
+    /// Resolves model/agents/messages the narrow desktop client must
+    /// not assert itself:
+    ///
+    /// - model comes only from the durable session selection
+    ///   (`Selected`); `Unselected`/`LegacyUnresolved`/lookup failure
+    ///   fail closed so the daemon never invents provider identity;
+    /// - agents come from daemon-owned configuration resolved against
+    ///   the session-bound workspace root (same root the ACP
+    ///   `session/prompt` path uses; never a renderer path);
+    /// - messages carry the single user prompt (ACP precedent); the
+    ///   desktop owns no history store to replay.
+    ///
+    /// At-most-once across reconnect derives from the shared
+    /// `TurnSubmit` body: a still-active turn rejects the duplicate
+    /// with `turn_already_active` instead of spawning a second turn.
+    pub(crate) const SESSION_PROMPT_MAX_TEXT_CHARS: usize = 200_000;
+
+    pub(crate) async fn resolve_prompt_submit_composition(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<
+        (
+            String,
+            Vec<crate::protocol::dto::Agent>,
+            Vec<crate::protocol::dto::ProviderMessage>,
+        ),
+        CoreResponse,
+    > {
+        if text.trim().is_empty() {
+            return Err(CoreResponse::Error {
+                code: "prompt_text_empty".to_string(),
+                message: "Prompt text must not be empty".to_string(),
+            });
+        }
+        if text.chars().count() > Self::SESSION_PROMPT_MAX_TEXT_CHARS {
+            return Err(CoreResponse::Error {
+                code: "prompt_text_too_long".to_string(),
+                message: format!(
+                    "Prompt text exceeds {} characters",
+                    Self::SESSION_PROMPT_MAX_TEXT_CHARS
+                ),
+            });
+        }
+        let selection_service = self.selection_service.as_ref().ok_or(CoreResponse::Error {
+            code: "model_unselected".to_string(),
+            message: format!(
+                "No model selected for session {session_id}; choose one via SessionSelectionUpdate"
+            ),
+        })?;
+        let selection =
+            selection_service
+                .get(session_id)
+                .await
+                .map_err(|error| CoreResponse::Error {
+                    code: "selection_lookup_failed".to_string(),
+                    message: format!("Session selection lookup failed: {error}"),
+                })?;
+        let model = match &selection {
+            crate::protocol::provider::SessionSelectionDto::Selected { .. } => {
+                crate::core::session_selection::durable_selected_runtime_model(&selection)
+            }
+            crate::protocol::provider::SessionSelectionDto::LegacyUnresolved { reason, .. } => {
+                return Err(CoreResponse::Error {
+                    code: "model_unresolved".to_string(),
+                    message: format!(
+                        "Session {session_id} carries a legacy model reference that cannot be resolved: {reason}"
+                    ),
+                });
+            }
+            crate::protocol::provider::SessionSelectionDto::Unselected {} => None,
+        };
+        let Some(model) = model else {
+            return Err(CoreResponse::Error {
+                code: "model_unselected".to_string(),
+                message: format!(
+                    "No model selected for session {session_id}; choose one via SessionSelectionUpdate"
+                ),
+            });
+        };
+        // Bind the session to learn its authoritative workspace root
+        // for agent resolution. Unknown sessions fail here with
+        // `session_unbound` before any composition occurs.
+        let runtime = self
+            .bind_runtime_for_session(session_id)
+            .await
+            .map_err(|error| CoreResponse::Error {
+                code: "session_unbound".to_string(),
+                message: format!("session {session_id} has no resolvable workspace: {error}"),
+            })?;
+        let config = super::load_config_or_default();
+        let agents = crate::agent::resolve_agents_with_context(
+            &config,
+            Some(runtime.workspace_root.as_path()),
+        )
+        .map_err(|error| CoreResponse::Error {
+            code: "agents_unresolvable".to_string(),
+            message: format!("Agent configuration cannot be resolved: {error}"),
+        })?;
+        if agents.is_empty() {
+            return Err(CoreResponse::Error {
+                code: "agents_unresolvable".to_string(),
+                message: "No agents available from daemon configuration".to_string(),
+            });
+        }
+        let agents = crate::protocol_conversions::agents_to_dtos(agents).map_err(|error| {
+            CoreResponse::Error {
+                code: "agents_invalid".to_string(),
+                message: format!("Resolved agents cannot be submitted: {error}"),
+            }
+        })?;
+        let messages = vec![crate::protocol::dto::ProviderMessage::User {
+            content: vec![crate::protocol::dto::ContentPart::Text {
+                text: text.to_owned(),
+            }],
+        }];
+        Ok((model, agents, messages))
     }
 }

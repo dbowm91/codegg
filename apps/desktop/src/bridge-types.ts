@@ -57,6 +57,12 @@ export interface SessionView {
   session: SessionSummaryView;
   routeToken: RouteTokenView;
 }
+// M004 prompt submission (WP D). Resolves Ok only once the daemon accepts
+// the turn; failures surface as invoke errors and leave the draft intact.
+export interface PromptSubmitView {
+  intentId: string;
+  routeToken: RouteTokenView;
+}
 // M004 projection presentation (WP C). Bounded, renderer-safe views
 // derived from the canonical snapshot by the Rust host. No raw tool
 // arguments/output, no filesystem paths, no cursor authority.

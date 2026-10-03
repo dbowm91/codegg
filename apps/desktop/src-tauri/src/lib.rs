@@ -2,11 +2,12 @@ mod bridge;
 mod lifecycle;
 mod present;
 mod projection;
+mod prompt;
 mod route;
 
 use bridge::{
-    ConnectionSnapshot, DesktopEvent, ProjectDetailView, ProjectSummary, RouteTokenView,
-    SessionListView, SessionPresentationView, SessionView, SubscriptionInfo,
+    ConnectionSnapshot, DesktopEvent, ProjectDetailView, ProjectSummary, PromptSubmitView,
+    RouteTokenView, SessionListView, SessionPresentationView, SessionView, SubscriptionInfo,
 };
 use codegg_client::{
     connect_or_start_local_daemon, FrontendDescriptor, LocalDaemonOptions, LocalDaemonPaths,
@@ -877,6 +878,21 @@ async fn desktop_session_create(
     state.route_session_create(title, route_generation).await
 }
 
+/// M004 WP D prompt command. One renderer intent becomes at most one
+/// daemon turn; the host coalesces concurrent intents and fences every
+/// completion on the route/connection generation.
+#[tauri::command]
+async fn desktop_prompt_submit(
+    state: State<'_, Arc<HostState>>,
+    text: String,
+    plan_mode: bool,
+    route_generation: u64,
+) -> Result<PromptSubmitView, String> {
+    state
+        .route_prompt_submit(text, plan_mode, route_generation)
+        .await
+}
+
 /// M004 WP C projection commands. Narrow capability classes only:
 /// projection start/stop/current/subscribe for the route-selected
 /// session. No generic `CoreRequest` bridge, no filesystem paths.
@@ -949,6 +965,7 @@ pub fn run() {
             desktop_session_list,
             desktop_session_open,
             desktop_session_create,
+            desktop_prompt_submit,
             desktop_projection_start,
             desktop_projection_stop,
             desktop_projection_current,

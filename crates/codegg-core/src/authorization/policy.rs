@@ -301,6 +301,14 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),
+        // M004 desktop session slice: daemon-resolved prompt submit.
+        // Same authority as `TurnSubmit`; the daemon supplies the
+        // provider identity the client is not trusted to assert.
+        R::SessionPromptSubmit { .. } => OperationDescriptor::new(
+            "session_prompt_submit",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         R::TurnCancel { .. } => OperationDescriptor::new(
             "turn_cancel",
             ScopeKind::ViaSession,
@@ -1375,6 +1383,11 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             agents: Vec::new(),
             current_agent_idx: 0,
             messages: Vec::new(),
+        },
+        R::SessionPromptSubmit {
+            session_id: String::new(),
+            text: String::new(),
+            plan_mode: false,
         },
         R::TurnCancel {
             session_id: String::new(),

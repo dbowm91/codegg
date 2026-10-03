@@ -1927,6 +1927,18 @@ pub enum CoreRequest {
         current_agent_idx: usize,
         messages: Vec<crate::dto::ProviderMessage>,
     },
+    /// M004 desktop session slice: minimal prompt submission. The
+    /// daemon resolves model/agents/messages from durable session
+    /// selection and daemon-owned agent configuration, then submits
+    /// through the same `TurnSubmit` runtime path. Narrow clients
+    /// (desktop) send only user intent; they never resolve or supply
+    /// provider identity. Fails closed when no durable model
+    /// selection exists.
+    SessionPromptSubmit {
+        session_id: String,
+        text: String,
+        plan_mode: bool,
+    },
     TurnCancel {
         session_id: String,
         turn_id: String,
