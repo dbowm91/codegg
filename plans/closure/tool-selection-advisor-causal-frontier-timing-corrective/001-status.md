@@ -191,6 +191,45 @@ job **success**, all 23 steps green:
 Note on the 7 skipped: pre-existing and unrelated to this change. They are not
 attributed to the timing gates, which all executed and passed.
 
+### Second run on identical code (factual correction, recorded per closure rule 1)
+
+A subsequent hosted run on the branch head `b3ad2a31` — run **`37223675386`** —
+is **red**, and this is recorded rather than omitted because it is the same code
+with only `plans/*.md` differing (`git diff cdfd6257 b3ad2a31 --stat` is
+documentation only; the compiled workspace is byte-identical).
+
+- `CI / verify` failed at `Workspace tests` with **1 failed of 6,888 run**,
+  truncating the sweep at 5,292 of 12,180 not run.
+- The failure is `codegg::project_activation::concurrent_same_owner_activation_coalesces_scope_and_bundle`
+  (`tests/project_activation.rs:146`), asserting
+  `results.iter().all(|(lease_id, _)| lease_id == &results[0].0)` — eight
+  concurrently spawned activations of the same owner did not all coalesce onto
+  one lease id. It is a `multi_thread, worker_threads = 2` test, so a loaded
+  shared runner can let a task miss the coalescing window.
+- Desktop E2E run `37223675354` also failed: `m004-session.e2e.ts`,
+  "completed assistant transcript never rendered". The prior E2E run
+  `37222560006` on identical code was green.
+
+Both failures are **outside this corrective's scope and outside its diff**.
+`git diff main...HEAD -- tests/project_activation.rs` is empty, so neither this
+corrective nor any M006-A change touches that test or its subject.
+`concurrent_same_owner_activation_coalesces_scope_and_bundle` passes 12/12
+locally on an unloaded machine, consistent with load sensitivity rather than a
+deterministic defect.
+
+**All five causal timing gates passed in this red run as well**:
+`m005_holdout_structural_gates` (13.340s), `m005_freeze_record_matches_live_contracts`,
+`observe_mode_leaves_live_definitions_byte_identical`,
+`observe_never_mutates_or_suppresses`, and `replay_p95_within_budget`. Two
+hosted runs of identical code, one fully green across all 12,180 tests and one
+red on an unrelated concurrency test, with the causal gates green in both, is
+the strongest available evidence that the timing fix holds.
+
+This is a second, independent pre-existing flake discovered *because* the sweep
+now runs far enough to reach it: at `main` the same fail-fast truncation hid
+everything after roughly test 5,300. It is filed as a new medium finding in §10
+rather than absorbed here.
+
 ## 5. Invariant review
 
 - Both constants remain `5.0` in source; neither constant line appears in the
@@ -275,11 +314,11 @@ grant any capability, relax any authorization, or widen any input path.
 |---|---|---|---|
 | low | The fix accepts that 15 consecutive scheduler preemptions would still fail a gate. | A genuinely sustained-load runner could still produce a false failure. | Accepted trade-off, documented in §6. If it recurs, raise `BUDGET_SAMPLES` rather than touching the constant. |
 | low | `src/tool_advisor/mod.rs:2946` has a loose `elapsed_millis < 1000` (1 s) assertion. | A different defect class with a much looser budget; not a flake source today. | Deliberately out of scope for this corrective (§5). File separately if it ever flakes. |
+| medium | `codegg::project_activation::concurrent_same_owner_activation_coalesces_scope_and_bundle` fails under hosted load: eight concurrent same-owner activations do not all coalesce onto one lease id (`tests/project_activation.rs:146`). Discovered in run `37223675386` on identical code to the green run; passes 12/12 locally; untouched by this PR. A separate `WebKitGTK` E2E failure (`m004-session.e2e.ts`, "completed assistant transcript never rendered") failed in the same window and was green in the prior run. | Keeps the branch red for reasons unrelated to the causal advisor and to M006-A, and re-truncates the sweep at ~5,300 of 12,180 — the exact failure mode this corrective just removed for the advisor gates. | File its own corrective for the project-activation coalescing test and the M004 E2E transcript wait. Do **not** fix it inside this or M006-A: it is a distinct defect in a distinct subsystem, and repeating "classify and defer" is how the causal timing flake survived three hosted runs. |
 
 Neither finding is a blocker, and neither is a regression introduced here.
 
 Resolved by this milestone, for the record:
-
 - The medium finding in `plans/closure/desktop-frontend-ide-foundation/005-status.md`
   §10 (causal advisor timing flake) is discharged. That record is not edited;
   the discharge is recorded here and in the registry.
