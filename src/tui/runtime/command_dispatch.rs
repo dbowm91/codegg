@@ -1523,6 +1523,27 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 reconnect_epoch,
             );
         }
+        TuiCommand::EditorOpened {
+            request_id,
+            generation,
+            result,
+            state,
+        } => {
+            super::super::commands::editor::apply_editor_opened(
+                app, request_id, generation, result, state,
+            );
+        }
+        TuiCommand::EditorOperationFinished {
+            request_id,
+            generation,
+            operation,
+            error,
+            state,
+        } => {
+            super::super::commands::editor::apply_editor_operation_finished(
+                app, request_id, generation, operation, error, state,
+            );
+        }
         TuiCommand::WorkspaceDashboardLoaded {
             request_id,
             generation,

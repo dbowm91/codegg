@@ -2,15 +2,26 @@
 //!
 //! This is an M005 seam only: presentation position is separate from text,
 //! and no widget or second mutable text buffer lives here.
+//!
+//! M006-A makes this the real ownership seam for the TUI editor. The
+//! controller remains the sole owner of canonical text; the presentation
+//! record below holds cursor, selection, viewport, buffer mode, and a
+//! bounded frontend undo history — and **no text**. See
+//! `crate::tui::editor` for the model and the static guard in
+//! `scripts/check_tui_editor_text_authority.py`.
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use codegg_client::{
-    DocumentController, DocumentControllerError, DocumentState, DocumentTransport,
+    DocumentAttachmentInfo, DocumentController, DocumentControllerError, DocumentState,
+    DocumentTransport,
 };
+use codegg_document::DocumentSnapshot;
 use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
 
 use crate::core::CoreClient;
+
+use super::editor::{EditorFocus, EditorMode, EditorUndoEntry};
 
 struct CoreClientTransport(Arc<dyn CoreClient>);
 
@@ -28,17 +39,59 @@ impl DocumentTransport for CoreClientTransport {
     }
 }
 
-/// Presentation-neutral document handle used by future TUI editor flows.
+/// Presentation-neutral document handle used by TUI editor flows.
 pub struct TuiDocumentSession {
     controller: Arc<DocumentController>,
     presentation: TuiDocumentPresentation,
 }
 
+/// Editor presentation state owned by the frontend.
+///
+/// Holds no document text. Every offset is a position into the replica
+/// owned by [`DocumentController`]; text is read on demand through
+/// [`DocumentController::try_snapshot`] and dropped at the end of the call
+/// that needed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TuiDocumentPresentation {
+    /// Cursor position as a UTF-8 byte offset into the local replica.
     pub cursor_byte: usize,
+    /// Active selection, as a byte range into the local replica.
     pub selection: Option<std::ops::Range<usize>>,
+    /// First visible line, zero-based. The hard-wrap viewport is one
+    /// screen row per logical line.
     pub viewport_line: usize,
+    /// Horizontal scroll in display columns.
+    pub viewport_column: usize,
+    /// Buffer edit mode.
+    pub mode: EditorMode,
+    /// Multi-key normal-mode command prefix (`d`, `g`). Bounded to
+    /// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
+    pub pending_command: String,
+    /// Frontend-local undo history of inverse transactions.
+    pub undo: Vec<EditorUndoEntry>,
+    /// Frontend-local redo history of inverse transactions.
+    pub redo: Vec<EditorUndoEntry>,
+    /// Retained undo payload bytes, for the undo memory bound.
+    pub undo_bytes: usize,
+    /// Retained redo payload bytes, for the redo memory bound.
+    pub redo_bytes: usize,
+    /// Which region of the editor route owns keyboard input.
+    pub focus: EditorFocus,
+}
+
+impl TuiDocumentPresentation {
+    /// Reset to a post-open presentation: cursor at the start of the
+    /// document, no selection, no history. Undo never survives opening a
+    /// different document.
+    pub fn reset_for_open(&mut self) {
+        self.cursor_byte = 0;
+        self.selection = None;
+        self.viewport_line = 0;
+        self.viewport_column = 0;
+        self.mode = EditorMode::Normal;
+        super::editor::clear_history(self);
+        self.focus = EditorFocus::Composer;
+    }
 }
 
 impl TuiDocumentSession {
@@ -47,6 +100,19 @@ impl TuiDocumentSession {
             controller: Arc::new(DocumentController::new(Arc::new(CoreClientTransport(
                 client,
             )))),
+            presentation: TuiDocumentPresentation::default(),
+        }
+    }
+
+    /// Adopt an existing controller.
+    ///
+    /// Used to qualify this seam against a scripted transport, and by
+    /// reconnect flows that keep one controller across a transport
+    /// replacement. Ownership and semantics are unchanged: the adopted
+    /// controller is still the sole owner of the text.
+    pub fn from_controller(controller: Arc<DocumentController>) -> Self {
+        Self {
+            controller,
             presentation: TuiDocumentPresentation::default(),
         }
     }
@@ -61,6 +127,20 @@ impl TuiDocumentSession {
 
     pub fn presentation_mut(&mut self) -> &mut TuiDocumentPresentation {
         &mut self.presentation
+    }
+
+    /// Read the current replica for rendering, without retaining it.
+    ///
+    /// The returned snapshot is a handle to the controller's own buffer and
+    /// is dropped at the end of the caller's scope, so the TUI never holds a
+    /// second text buffer.
+    pub fn try_snapshot(&self) -> Option<DocumentSnapshot> {
+        self.controller.try_snapshot().map(|(snapshot, _)| snapshot)
+    }
+
+    /// Non-textual attachment metadata, safe to hold across frames.
+    pub fn attachment_info(&self) -> Option<DocumentAttachmentInfo> {
+        self.controller.try_attachment_info()
     }
 
     pub async fn open(
@@ -149,6 +229,7 @@ mod tests {
             cursor_byte: 2,
             selection: Some(1..3),
             viewport_line: 4,
+            ..TuiDocumentPresentation::default()
         };
         assert_eq!(session.presentation().cursor_byte, 2);
         assert_eq!(

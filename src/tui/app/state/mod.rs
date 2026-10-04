@@ -3,6 +3,7 @@ pub mod async_request;
 pub mod chat;
 pub mod diagnostics;
 pub mod dialog;
+pub mod editor;
 pub mod execution_context;
 pub mod manifest;
 pub mod messages;
@@ -31,6 +32,7 @@ pub use chat::{
 };
 pub use diagnostics::TuiDiagnostics;
 pub use dialog::DialogState;
+pub use editor::{EditorNotice, EditorNoticeSeverity, EditorOperation, EditorState, EditorStatus};
 pub use execution_context::{
     resolve_active as resolve_active_execution_context, ProjectExecutionContext,
 };

@@ -64,6 +64,26 @@ pub enum TuiCommand {
     },
     ReloadSessions,
     OpenTreeDialog,
+    /// Completion of a guarded `DocumentOpen` round trip for the M006-A
+    /// editor. Carries the request id and the editor generation so a
+    /// completion for a closed or switched document is discarded.
+    EditorOpened {
+        request_id: u64,
+        generation: u64,
+        result: Option<String>,
+        state: codegg_client::DocumentState,
+    },
+    /// Completion of a guarded editor lifecycle operation (save,
+    /// reload, resync, close). `operation` decides whether the
+    /// frontend undo history survives: save preserves it, every
+    /// reconciliation transition clears it.
+    EditorOperationFinished {
+        request_id: u64,
+        generation: u64,
+        operation: crate::tui::app::state::EditorOperation,
+        error: Option<String>,
+        state: codegg_client::DocumentState,
+    },
     /// Completion of an async project catalog refresh
     /// (`Multi-Project TUI milestone 1`). Carries the request id so
     /// stale completions (after a new refresh has begun) are dropped
