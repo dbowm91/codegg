@@ -275,7 +275,7 @@ M004 is the closure boundary for the desktop foundation. It intentionally does n
 
 ### Milestone 005 — Shared editor document/buffer and LSP synchronization foundation
 
-Status: closed through `plans/closure/editor-document-foundation/004-status.md` and the extracted shared roadmap `plans/subsystems/editor-document-foundation-roadmap.md`. ADR-0011 is accepted. M005-A through M005-D are closed. M002's separate Windows evidence condition did not block this root/TUI-first foundation.
+Status: conditionally closed. M005-A/B/C remain closed; M005-D has historical closure at `plans/closure/editor-document-foundation/004-status.md`, but current strict M005 closure is controlled by ready post-closure C001 at `plans/subsystems/editor-document-foundation-post-closure-corrective-addendum.md`. ADR-0011 remains accepted. M002's separate Windows evidence condition does not block this root/TUI-first corrective.
 
 Ownership direction:
 
@@ -296,11 +296,11 @@ Registered implementation line:
 1. `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` — closed.
 2. `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` — closed.
 3. `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` — closed.
-4. `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` — closed parent M005; closure: `plans/closure/editor-document-foundation/004-status.md`.
+4. `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` — historical M005-D closure: `plans/closure/editor-document-foundation/004-status.md`; current strict authority is post-closure C001 at `plans/implementation/editor-document-foundation-post-closure-corrective/001-document-controller-linearization-scheduler-and-recovery.md`.
 
 ### Milestone 006 — TUI IDE vertical slice
 
-Status: eligible for fresh TUI IDE vertical-slice planning and a presentation audit. Strict M005 closure is recorded at `plans/closure/editor-document-foundation/004-status.md`. No implementation handoff is registered yet.
+Status: blocked on post-closure M005-D C001. Do not begin the TUI IDE presentation audit or register an M006 implementation handoff until `plans/subsystems/editor-document-foundation-post-closure-corrective-addendum.md` closes. No M006 implementation plan exists.
 
 Expected TUI-first presentation/product direction:
 
@@ -402,5 +402,5 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
 | M003 Tauri desktop shell + secure bridge | closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Strict closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; hosted root CI + built-app visible-window E2E green. Historical C001/C002 conditional records remain immutable. Windows qualification remains separately gated by M002 |
 | M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
-| M005 shared document/buffer foundation | closed | `plans/subsystems/editor-document-foundation-roadmap.md` + four plans under `plans/implementation/editor-document-foundation/` | Closure: `plans/closure/editor-document-foundation/004-status.md`. ADR-0011 accepted; TUI-first, GUI editor deferred |
-| M006 TUI IDE vertical slice | eligible for fresh planning | not yet written | Fresh TUI IDE presentation audit; do not assume an implementation plan exists |
+| M005 shared document/buffer foundation | conditionally closed; post-closure C001 ready | `plans/subsystems/editor-document-foundation-roadmap.md` + four original plans + `plans/implementation/editor-document-foundation-post-closure-corrective/001-document-controller-linearization-scheduler-and-recovery.md` | M005-A/B/C closed; M005-D historical closure preserved. C001 must harden the client controller before strict M005 closure is restored. ADR-0011 accepted; TUI-first, GUI editor deferred |
+| M006 TUI IDE vertical slice | blocked | not yet written | Post-closure M005-D C001 strict closure, then fresh TUI IDE presentation audit |
