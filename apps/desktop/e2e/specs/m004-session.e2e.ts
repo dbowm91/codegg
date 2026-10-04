@@ -163,11 +163,10 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
     await $('[data-testid="prompt-input"]').setValue('e2e deterministic turn');
     await $('[data-testid="prompt-submit-button"]').click();
     // The mock's first response raises PermissionPending for its
-    // out-of-workspace `write`; the assistant text travels the same
-    // ordered projection stream, so both are visible together.
+    // out-of-workspace `write`. Resolve the permission before checking the
+    // rendered transcript because the assistant tool-call message may not be
+    // committed to the session projection until the tool result is recorded.
     await $('[data-testid="permission-list"]').waitForExist({ timeout: 120_000 });
-    const messageText = await $('[data-testid="message-list"]').getText();
-    expect(messageText).toContain('Examining your request.');
     let denied = false;
     for (const button of await $$('[data-testid^="permission-deny-"]')) {
       await button.click();
@@ -182,11 +181,20 @@ describe('M004 built-app session vertical slice (route, projection, control, pro
       { timeout: 180_000, timeoutMsg: 'deterministic turn never completed after denial' },
     );
     await browser.waitUntil(
-      async () =>
-        (await $('[data-testid="message-list"]').getText()).includes(
-          'E2E deterministic turn complete.',
-        ),
-      { timeout: 60_000, timeoutMsg: 'final assistant text never rendered' },
+      async () => {
+        try {
+          const messages = await $('[data-testid="message-list"]');
+          if (!(await messages.isExisting())) return false;
+          const text = await messages.getText();
+          return (
+            text.includes('Examining your request.') &&
+            text.includes('E2E deterministic turn complete.')
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 60_000, timeoutMsg: 'completed assistant transcript never rendered' },
     );
   });
 

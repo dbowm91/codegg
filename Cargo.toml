@@ -359,6 +359,11 @@ path = "tests/lsp_composite_stdio.rs"
 required-features = ["lsp-test-support"]
 
 [[test]]
+name = "document_lsp_integration"
+path = "tests/document_lsp_integration.rs"
+required-features = ["lsp-test-support"]
+
+[[test]]
 name = "projection_transport_real"
 path = "tests/projection_transport_real.rs"
 required-features = ["server"]
