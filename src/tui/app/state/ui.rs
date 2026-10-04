@@ -44,6 +44,12 @@ pub struct UiState {
     pub layout: TuiLayout,
     /// Whether sidebar is visible
     pub sidebar_visible: bool,
+    /// M006-D: whether the file-tree pane holds keyboard focus.
+    ///
+    /// Separate from the editor's own buffer/composer focus so the
+    /// non-modal contract stays explicit: when the tree is focused its keys
+    /// navigate the tree and do not reach the composer.
+    pub tree_focused: bool,
     /// Auto-scroll messages to bottom
     pub auto_scroll: bool,
     /// Show reasoning/thinking sections

@@ -412,6 +412,13 @@ pub struct App {
     /// handle for the `Route::Editor` primary view and the presentation
     /// of controller states and errors. Holds no document text.
     pub editor_state: crate::tui::app::state::EditorState,
+
+    /// M006-D: project-scoped file-tree pane rendered beside the editor.
+    ///
+    /// Navigation state only — the listing is directory *entries*, never
+    /// document text, which stays owned by the M005 controller. Hidden by
+    /// default so the M006-A surface is unchanged until the user asks for it.
+    pub file_tree_state: crate::tui::app::state::file_tree::FileTreeState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -596,6 +603,7 @@ impl App {
                 mode: AppMode::Embedded,
                 remote_status: None,
                 sidebar_visible: true,
+                tree_focused: false,
                 auto_scroll: true,
                 show_thinking: true,
                 show_timestamps: false,
@@ -832,6 +840,7 @@ impl App {
             chat_panel_project: None,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
+            file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
         }
     }
 
@@ -1101,6 +1110,7 @@ impl App {
                 mode: AppMode::Embedded,
                 remote_status: None,
                 sidebar_visible: true,
+                tree_focused: false,
                 auto_scroll: true,
                 show_thinking: true,
                 show_timestamps: false,
@@ -1322,6 +1332,7 @@ impl App {
             chat_panel_project: None,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
+            file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
         }
     }
 

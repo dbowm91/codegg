@@ -1544,6 +1544,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, operation, error, state,
             );
         }
+        TuiCommand::FileTreeListed {
+            request_id,
+            generation,
+            root,
+            listing,
+        } => {
+            super::super::commands::file_tree::apply_listing(
+                app, request_id, generation, root, listing,
+            );
+        }
         TuiCommand::WorkspaceDashboardLoaded {
             request_id,
             generation,

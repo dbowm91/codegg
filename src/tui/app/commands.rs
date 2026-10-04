@@ -84,6 +84,16 @@ pub enum TuiCommand {
         error: Option<String>,
         state: codegg_client::DocumentState,
     },
+    /// Completion of a bounded M006-D workspace tree walk. Carries the
+    /// request id, the tree generation, and the root the walk was issued
+    /// for, so a completion for a superseded walk or a workspace the user
+    /// has left is discarded rather than rendered.
+    FileTreeListed {
+        request_id: u64,
+        generation: u64,
+        root: std::path::PathBuf,
+        listing: crate::tui::file_tree::TreeListing,
+    },
     /// Completion of an async project catalog refresh
     /// (`Multi-Project TUI milestone 1`). Carries the request id so
     /// stale completions (after a new refresh has begun) are dropped

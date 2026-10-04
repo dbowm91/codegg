@@ -58,6 +58,7 @@ pub mod component;
 pub mod dialogs;
 pub mod diff;
 pub mod editor;
+pub mod file_tree;
 pub mod image;
 pub mod messages;
 pub mod notification;

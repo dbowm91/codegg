@@ -544,6 +544,12 @@ impl App {
     /// unaffected.
     fn render_editor_view(&mut self, frame: &mut Frame, area: Rect) {
         let theme = Arc::clone(&self.ui_state.theme);
+        // M006-D: when the tree pane is visible the viewport splits. The tree
+        // is rendered first and borrows only its own state, so the editor's
+        // controller replica is still borrowed and dropped inside its own
+        // render below — the frame holds no document buffer either way.
+        let (tree_area, editor_area) =
+            crate::tui::components::file_tree::split_pane(area, self.file_tree_state.visible);
         let shell = |frame: &mut Frame, message: String, style: Style, area: Rect| {
             let block = Block::default()
                 .title(" Editor (/open <workspace-relative path> · Esc leaves) ")
@@ -555,20 +561,25 @@ impl App {
             frame.render_widget(Paragraph::new(message).style(style), inner);
         };
         let Some(session) = self.editor_state.session.as_ref() else {
+            // The tree is a navigator, not a precondition: it renders even
+            // with no document open, because browsing a workspace is useful
+            // before choosing what to open.
+            self.render_file_tree_pane(frame, tree_area);
             shell(
                 frame,
                 "No document open — use /open <path>".to_string(),
                 Style::default().fg(theme.muted),
-                area,
+                editor_area,
             );
             return;
         };
         let Some(snapshot) = session.try_snapshot() else {
+            self.render_file_tree_pane(frame, tree_area);
             shell(
                 frame,
                 self.editor_state.status.label().to_string(),
                 Style::default().fg(theme.warning),
-                area,
+                editor_area,
             );
             return;
         };
@@ -594,6 +605,7 @@ impl App {
             .map(|notice| notice.message());
         let writable = self.editor_state.is_writer();
         let busy = self.editor_state.is_busy();
+        self.render_file_tree_pane(frame, tree_area);
         if let Some(session) = self.editor_state.session.as_mut() {
             crate::tui::components::editor::EditorWidget {
                 path: &path,
@@ -609,8 +621,26 @@ impl App {
                 presentation: session.presentation_mut(),
                 theme,
             }
-            .render(frame, area);
+            .render(frame, editor_area);
         }
+    }
+
+    /// M006-D: render the project-scoped file tree beside the editor.
+    ///
+    /// Borrows only `file_tree_state` and the theme, and is a no-op when the
+    /// pane is hidden or did not fit, so the M006-A render path is unchanged
+    /// in the default configuration.
+    fn render_file_tree_pane(&self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if !self.file_tree_state.visible {
+            return;
+        }
+        crate::tui::components::file_tree::FileTreeView::new(
+            &self.file_tree_state,
+            self.ui_state.tree_focused,
+            Arc::clone(&self.ui_state.theme),
+        )
+        .render(frame, area);
     }
 
     /// M005: non-modal Workspace primary view. Reads the bounded
