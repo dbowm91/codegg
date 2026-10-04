@@ -496,3 +496,20 @@ cargo test --test headless_projection_consumer # non-TUI CoreResponse consumer
 - `architecture/core.md` — core facade and transport adapters
 - `architecture/server.md` — HTTP/WebSocket server
 - `architecture/plugin.md` — plugin system
+# Editor document protocol
+
+The additive native `document.v1` family exposes capabilities, open, snapshot,
+writer acquisition, status, change, save, reload, and close. Open attaches
+read-only; `file.modify` writer ownership is a separate lease. Changes carry a
+base revision and stable change ID. Save responses report the committed
+revision, disk-base digest, and whether LSP synchronization degraded. A
+`document_disk_conflict` response exposes only structural error metadata and
+leaves unsaved text intact. Snapshot responses reconcile external disk changes
+at an explicit boundary: clean text refreshes with a new revision, while dirty
+text is preserved and marked conflicted. Document bodies remain bounded by
+the protocol's 8 MiB limit.
+
+The reusable `codegg-client::DocumentController` calls this same request
+family for TUI and headless native clients. It preserves stable change IDs for
+uncertain retries and uses `DocumentStatusGet` only for observer metadata;
+status revision changes require an explicit authoritative snapshot request.

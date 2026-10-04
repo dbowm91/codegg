@@ -7,6 +7,7 @@ use codegg_protocol::frames::{ClientCapabilities, ClientKind};
 
 mod compose;
 mod connect;
+mod document;
 mod driver;
 mod local;
 mod paths;
@@ -22,6 +23,7 @@ pub use compose::{
     MAX_PROMPT_TEXT_CHARS,
 };
 pub use connect::{connect_or_start_local_daemon, LocalDaemonOptions, LocalDaemonOutcome};
+pub use document::{DocumentController, DocumentControllerError, DocumentState, DocumentTransport};
 pub use driver::{
     DriverConfig, DriverError, DriverSnapshotView, DriverState, SessionProjectionDriver,
     StoppedDriver,

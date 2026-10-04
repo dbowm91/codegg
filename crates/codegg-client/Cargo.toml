@@ -10,6 +10,8 @@ description = "Frontend-side CodeGG native protocol client contracts"
 
 [dependencies]
 codegg-protocol.workspace = true
+codegg-document = { path = "../codegg-document" }
+async-trait.workspace = true
 dashmap.workspace = true
 dirs.workspace = true
 serde_json.workspace = true

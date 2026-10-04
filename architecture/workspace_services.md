@@ -38,6 +38,12 @@ registry enforces single-flight activation (only one bundle is
 constructed per workspace even under concurrent first acquisition) and a
 configurable cap on the number of simultaneously-active workspaces.
 
+Editor document saves reuse the bundle's `WorkspaceLockTable` at the canonical
+workspace root. The checked text write revalidates a workspace-relative path,
+compares the current SHA-256 with the document's disk base while holding the
+lock, and atomically replaces an existing regular file. It creates no new
+directories or files.
+
 The storage refactor in the same phase moves the daemon's authoritative
 SQLite store out of `<workspace>/.codegg/sessions.db` and into a single
 **user-scoped** location:

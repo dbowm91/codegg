@@ -452,7 +452,9 @@ async fn document_lifecycle_ownership_tracks_open_update_save_close() {
     expect_ok(
         &harness,
         "document lifecycle open_file",
-        service.open_file(&source, INITIAL_SOURCE_TEXT).await,
+        service
+            .open_file_managed(&source, INITIAL_SOURCE_TEXT)
+            .await,
     )
     .await;
 
@@ -473,7 +475,18 @@ async fn document_lifecycle_ownership_tracks_open_update_save_close() {
     expect_ok(
         &harness,
         "document lifecycle update_file",
-        service.update_file(&source, UPDATED_SOURCE_TEXT).await,
+        service
+            .update_file_managed(&source, UPDATED_SOURCE_TEXT)
+            .await,
+    )
+    .await;
+    assert!(service.is_managed_document_dirty(&source).await);
+    // This legacy semantic preparation path reads disk for disk-owned docs;
+    // it must leave managed unsaved text untouched.
+    expect_ok(
+        &harness,
+        "managed document survives disk refresh helper",
+        service.ensure_file_open_from_disk(&source).await,
     )
     .await;
     expect_ok(
@@ -482,6 +495,7 @@ async fn document_lifecycle_ownership_tracks_open_update_save_close() {
         service.save_file(&source, Some(UPDATED_SOURCE_TEXT)).await,
     )
     .await;
+    assert!(!service.is_managed_document_dirty(&source).await);
     expect_ok(
         &harness,
         "document lifecycle close_file",

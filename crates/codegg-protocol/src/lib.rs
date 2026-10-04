@@ -26,6 +26,7 @@
 //!   rely on bounded decoding.
 
 pub mod core;
+pub mod document;
 pub mod dto;
 pub mod frames;
 pub mod interactive_process;

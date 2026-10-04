@@ -2857,6 +2857,7 @@ fn effect_binding_registry() -> crate::tool::ToolRegistry {
         None,
         std::sync::Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
         lsp_service,
+        None,
         preview_registry,
     ));
     registry
@@ -4597,6 +4598,7 @@ mod tests {
             None,
             std::sync::Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             lsp_service,
+            None,
             preview_registry,
         ));
         for name in NATIVE_PILOT_TOOLS {

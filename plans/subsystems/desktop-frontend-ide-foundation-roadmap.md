@@ -183,8 +183,8 @@ foundation closure / architecture review
                     +------------+-------------+
                     |                          |
                     v                          v
-M005 document/buffer contract            M006 IDE shell
-[eligible for fresh audit/planning]      [deferred; depends on M005]
+M005 document/buffer contract            M006 TUI IDE vertical slice
+[closed]                                 [eligible for fresh planning + presentation audit]
 ```
 
 M002 is not a hard dependency for a Linux/macOS M003 implementation because the existing Unix transport remains valid there. It is an operational dependency before Windows desktop support can be claimed.
@@ -275,7 +275,7 @@ M004 is the closure boundary for the desktop foundation. It intentionally does n
 
 ### Milestone 005 — Shared editor document/buffer and LSP synchronization foundation
 
-Status: active through the extracted shared roadmap `plans/subsystems/editor-document-foundation-roadmap.md`. ADR-0011 is accepted. M005-A is ready; M005-B through M005-D are registered and dependency-blocked in order. M002's separate Windows evidence condition does not block this root/TUI-first foundation.
+Status: closed through `plans/closure/editor-document-foundation/004-status.md` and the extracted shared roadmap `plans/subsystems/editor-document-foundation-roadmap.md`. ADR-0011 is accepted. M005-A through M005-D are closed. M002's separate Windows evidence condition did not block this root/TUI-first foundation.
 
 Ownership direction:
 
@@ -293,14 +293,14 @@ Ownership direction:
 
 Registered implementation line:
 
-1. `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` — ready.
-2. `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` — blocked on M005-A.
-3. `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` — blocked on M005-B.
-4. `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` — blocked on M005-C and closes parent M005.
+1. `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` — closed.
+2. `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` — closed.
+3. `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` — closed.
+4. `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` — closed parent M005; closure: `plans/closure/editor-document-foundation/004-status.md`.
 
 ### Milestone 006 — TUI IDE vertical slice
 
-Status: deferred; depends on strict M005 closure. No implementation handoff is registered yet.
+Status: eligible for fresh TUI IDE vertical-slice planning and a presentation audit. Strict M005 closure is recorded at `plans/closure/editor-document-foundation/004-status.md`. No implementation handoff is registered yet.
 
 Expected TUI-first presentation/product direction:
 
@@ -402,5 +402,5 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M002 portable local daemon transport | conditionally closed | `plans/implementation/desktop-frontend-ide-foundation/002-portable-local-daemon-transport.md` | `plans/closure/desktop-frontend-ide-foundation/002-status.md`; live Windows transport/lifecycle evidence and graceful stop remain required for strict closure |
 | M003 Tauri desktop shell + secure bridge | closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Strict closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; hosted root CI + built-app visible-window E2E green. Historical C001/C002 conditional records remain immutable. Windows qualification remains separately gated by M002 |
 | M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
-| M005 shared document/buffer foundation | active; M005-A ready | `plans/subsystems/editor-document-foundation-roadmap.md` + four plans under `plans/implementation/editor-document-foundation/` | M005-A none; M005-B→D dependency-ordered. ADR-0011 accepted; TUI-first, GUI editor deferred |
-| M006 TUI IDE vertical slice | deferred | not yet written | strict M005 closure + fresh TUI IDE presentation audit |
+| M005 shared document/buffer foundation | closed | `plans/subsystems/editor-document-foundation-roadmap.md` + four plans under `plans/implementation/editor-document-foundation/` | Closure: `plans/closure/editor-document-foundation/004-status.md`. ADR-0011 accepted; TUI-first, GUI editor deferred |
+| M006 TUI IDE vertical slice | eligible for fresh planning | not yet written | Fresh TUI IDE presentation audit; do not assume an implementation plan exists |

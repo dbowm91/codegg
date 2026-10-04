@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation M005-D — Client Replica and TUI-First Qualification
 
-Status: blocked on M005-C
+Status: implemented
 
 Repository baseline: `43cc33f6e740de33878d78a8fa2de959692cf819`
 
@@ -272,7 +272,7 @@ This proves the foundation, not IDE UX.
 Required:
 
 - one writer + one read-only observer;
-- observer receives revision metadata and resnapshots;
+- observer polls authorized `DocumentStatusGet`, receives revision metadata, and resnapshots;
 - observer cannot change/save/reload;
 - writer disconnect releases lease;
 - authorized second client can acquire writer after cleanup and sees preserved dirty canonical text;

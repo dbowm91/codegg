@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation M005-B — Daemon Document Service and Native Protocol
 
-Status: blocked on M005-A
+Status: implemented
 
 Repository baseline: `43cc33f6e740de33878d78a8fa2de959692cf819`
 
@@ -177,7 +177,14 @@ Expected responses include:
 - writer/read-only mode;
 - limits/capabilities.
 
-Expected events contain metadata/revisions, not full text:
+An initial implementation of events through the existing global CoreEvent
+broadcast was rejected during implementation review: project scoping is not
+enforced on that fanout, so it could disclose document IDs and revisions to a
+client without access to the document. M005-B therefore exposes an authorized,
+bounded `DocumentStatusGet` metadata poll; no document data is sent through the
+global event stream. Any future push event must use a project-filtered channel.
+
+The event metadata contract, when a scoped transport exists, contains no text:
 
 ```text
 DocumentRevisionChanged

@@ -1138,6 +1138,11 @@ Key patterns: `render_app_to_buffer(app, w, h)`,
 
 ## Related Docs
 
+The `TuiDocumentSession` M005 seam wraps `codegg-client::DocumentController`
+for future editor flows. It owns only presentation cursor/selection/viewport
+placeholders; the shared controller is the single local text replica. M005
+does not add editor widgets, keybindings, or a second TUI text buffer.
+
 - [agent.md](agent.md) — AgentLoop that processes TUI commands
 - [bus.md](bus.md) — GlobalEventBus and event types
 - [session.md](session.md) — Session storage

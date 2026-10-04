@@ -13,6 +13,14 @@ use tokio::sync::RwLock;
 use url::Url;
 
 /// Snapshot of a single open document's state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum OpenDocumentSource {
+    #[default]
+    Disk,
+    Managed,
+}
+
+/// Snapshot of a single open document's state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenDocumentSnapshot {
     pub uri: Url,
@@ -20,6 +28,14 @@ pub struct OpenDocumentSnapshot {
     pub version: i32,
     pub text: String,
     pub dirty: bool,
+    /// Which layer owns synchronized text. Managed text must not be refreshed
+    /// from disk by disk-oriented semantic helpers.
+    #[serde(default)]
+    pub source: OpenDocumentSource,
+    /// Set before sending managed text to the server and cleared only after
+    /// didOpen/didChange succeeds. Semantic helpers retry stale mirrors.
+    #[serde(default)]
+    pub sync_stale: bool,
 }
 
 /// Authoritative registry of open documents per client key.
@@ -54,8 +70,95 @@ impl OpenDocumentRegistry {
                 version,
                 text: txt,
                 dirty: false,
+                source: OpenDocumentSource::Disk,
+                sync_stale: false,
             },
         );
+    }
+
+    /// Mark a successfully opened or updated registry entry editor-managed.
+    pub async fn mark_managed(&self, client_key: &str, uri: &Url) {
+        let mut docs = self.documents.write().await;
+        if let Some(entry) = docs.get_mut(client_key).and_then(|m| m.get_mut(uri)) {
+            entry.source = OpenDocumentSource::Managed;
+        }
+    }
+
+    pub async fn open_managed(
+        &self,
+        client_key: &str,
+        uri: Url,
+        language_id: impl Into<String>,
+        version: i32,
+        text: impl Into<String>,
+        dirty: bool,
+    ) {
+        let mut docs = self.documents.write().await;
+        docs.entry(client_key.to_string()).or_default().insert(
+            uri.clone(),
+            OpenDocumentSnapshot {
+                uri,
+                language_id: language_id.into(),
+                version,
+                text: text.into(),
+                dirty,
+                source: OpenDocumentSource::Managed,
+                sync_stale: true,
+            },
+        );
+    }
+
+    pub async fn change_managed(
+        &self,
+        client_key: &str,
+        uri: &Url,
+        version: i32,
+        text: impl Into<String>,
+        dirty: bool,
+    ) {
+        let mut docs = self.documents.write().await;
+        if let Some(entry) = docs.get_mut(client_key).and_then(|m| m.get_mut(uri)) {
+            entry.version = version;
+            entry.text = text.into();
+            entry.dirty = dirty;
+            entry.source = OpenDocumentSource::Managed;
+            entry.sync_stale = true;
+        }
+    }
+
+    pub async fn managed_snapshot(
+        &self,
+        client_key: &str,
+        uri: &Url,
+    ) -> Option<OpenDocumentSnapshot> {
+        let docs = self.documents.read().await;
+        docs.get(client_key)
+            .and_then(|m| m.get(uri))
+            .filter(|entry| entry.source == OpenDocumentSource::Managed)
+            .cloned()
+    }
+
+    pub async fn set_sync_stale(&self, client_key: &str, uri: &Url, stale: bool) {
+        let mut docs = self.documents.write().await;
+        if let Some(entry) = docs.get_mut(client_key).and_then(|m| m.get_mut(uri)) {
+            if entry.source == OpenDocumentSource::Managed {
+                entry.sync_stale = stale;
+            }
+        }
+    }
+
+    pub async fn source(&self, client_key: &str, uri: &Url) -> Option<OpenDocumentSource> {
+        let docs = self.documents.read().await;
+        docs.get(client_key)
+            .and_then(|m| m.get(uri))
+            .map(|entry| entry.source)
+    }
+
+    pub async fn is_managed_dirty(&self, client_key: &str, uri: &Url) -> bool {
+        let docs = self.documents.read().await;
+        docs.get(client_key)
+            .and_then(|m| m.get(uri))
+            .is_some_and(|entry| entry.source == OpenDocumentSource::Managed && entry.dirty)
     }
 
     /// Record a document change.
@@ -129,6 +232,24 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].language_id, "python");
         assert_eq!(docs[0].version, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_source_survives_change_save_and_replay_snapshot() {
+        let reg = OpenDocumentRegistry::new();
+        let uri = test_uri("/tmp/managed.py");
+        reg.open("client", uri.clone(), "py", 1, "unsaved").await;
+        assert_eq!(
+            reg.source("client", &uri).await,
+            Some(OpenDocumentSource::Disk)
+        );
+        reg.mark_managed("client", &uri).await;
+        reg.change("client", &uri, 2, "new unsaved").await;
+        reg.save("client", &uri).await;
+        let replay = reg.open_documents("client").await;
+        assert_eq!(replay[0].source, OpenDocumentSource::Managed);
+        assert_eq!(replay[0].text, "new unsaved");
+        assert!(!replay[0].dirty);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -91,7 +91,7 @@ pub use diagnostics::{
     LspDiagnosticSource,
 };
 pub use doctor::{build_doctor_report, render_doctor_report, LspDoctorReport};
-pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
+pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot, OpenDocumentSource};
 pub use error::LspError;
 pub use evidence_adapter::{EvidenceOperation, ServiceLspEvidenceProvider};
 pub use evidence_collector::{
