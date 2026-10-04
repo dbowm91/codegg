@@ -133,3 +133,12 @@ authorities. A dirty editor document rejects LSP preview apply until saved and
 the preview is regenerated. Daemon and model-facing preview apply paths take
 clean-document operation gates before the workspace lock, closing the edit
 race between their dirty check and multi-file write.
+
+The TUI's `/review` surface (M006-E) sits in front of that apply and does not
+weaken it. A review shows the change destined for a *saved* document and waits
+for an explicit accept; a dirty-buffer target is refused by the same daemon
+check as before, and the refusal is shown verbatim rather than paraphrased, so
+a user who edits after generating a candidate is still told to save and
+regenerate. Merging an apply into a *dirty* buffer — rather than refusing it —
+is not in scope for M006-E and is deferred to a future ADR; the rejection in
+`src/lsp/mutation.rs` is unchanged by that milestone.

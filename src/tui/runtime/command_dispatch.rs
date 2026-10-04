@@ -1554,6 +1554,22 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, root, listing,
             );
         }
+        TuiCommand::ChangeReviewAccepted {
+            request_id,
+            generation,
+            written_files,
+            checkpoint_id,
+            error,
+        } => {
+            super::super::commands::change_review::apply_completion(
+                app,
+                request_id,
+                generation,
+                written_files,
+                checkpoint_id,
+                error,
+            );
+        }
         TuiCommand::WorkspaceDashboardLoaded {
             request_id,
             generation,

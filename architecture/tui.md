@@ -987,6 +987,72 @@ cancelled, or for another workspace is discarded rather than rendered.
 Switching projects resets selection and expansion, because a path from the
 previous project is meaningless in the next.
 
+### Agent change review (M006-E)
+
+`/review <preview-id>` opens a modal review of a pending LSP change candidate
+and waits. It applies nothing on open. The user accepts with `a` or rejects with
+`Esc`. `src/tui/unified_diff.rs` parses the candidate's patches,
+`src/tui/app/state/change_review.rs` holds the state machine,
+`src/tui/components/change_review.rs` renders, and
+`src/tui/commands/change_review.rs` owns the commands.
+
+**Scope: saved documents only.** This milestone reviews changes destined for
+*saved* files. The dirty-buffer question — whether an apply may merge into a
+buffer with unsaved edits — is deferred to a future ADR, and
+`src/lsp/mutation.rs` is deliberately unchanged. The existing rejection
+(`"{path} has unsaved editor changes; save and regenerate the preview"`) is
+correct as written; the review surface *surfaces* it rather than relaxing it.
+A user who hits it is told to save and regenerate, which is the right answer.
+
+**There is one apply path, and it is structural.**
+`change_review::build_apply_request` is the only function that turns a preview
+id into a `CoreRequest::LspPreviewApply`. Both `/lsp-preview-apply` and the
+review's accept call it, so the legacy command was refactored to route through
+it rather than keeping a private copy. "One apply semantics" therefore cannot
+drift into two — there is no second constructor to drift. The review adds a
+*step*, never a *meaning*.
+
+The testable consequence is that **what the user reviews is what gets applied**:
+`the_reviewed_change_and_the_applied_request_are_the_same_change` stages a real
+candidate in a real `LspTool` registry, resolves the real request, and asserts
+the review's hunks are a parse of that request's own patch text, under the same
+digest, revision, and base hash. If a future change re-derived the displayed
+diff from disk, or opened the review from a different source than the apply,
+the user would be approving something other than what lands — and this fails.
+
+**The daemon keeps the authority.** The frontend decides only preconditions —
+no session, no workspace, no client, no such candidate. Whether an apply is
+*legal* is the daemon's judgement, and its message is recorded **verbatim** in
+the review rather than paraphrased or replaced. The review stays open on a
+refusal so the message remains readable next to the diff it refused. The
+trajectory test quotes the daemon's exact dirty-buffer string, so a change to
+that rejection is a visible diff in the test rather than a silent divergence.
+
+**Stale and spent candidates fail closed.** A candidate whose base no longer
+matches is refused *before* a review is built — showing a diff that no longer
+corresponds to the candidate would invite approving the wrong thing. An
+already-applied candidate is refused by the same builder the legacy path uses,
+so a spent id cannot be applied twice from either path.
+
+**Bounded parsing.** `unified_diff` caps patches (64), patch bytes (512 KiB),
+hunks per patch (256), and lines per hunk (2000), and records which bound
+stopped it so the view can say the diff is partial rather than presenting it as
+complete. Byte cuts land on UTF-8 character boundaries. An empty change
+(`"(no changes)"`) is treated as known-empty, not malformed — a real no-op must
+not read as a parse failure.
+
+**Rendering reuses `DiffViewer`.** The view constructs the existing widget and
+replaces its public `hunks` rather than forking diff rendering, so review and
+the ordinary diff panel cannot disagree about how a change looks.
+
+**The one modal surface in M006.** While open, the review takes over the
+viewport, because accept-versus-reject is a decision that should not be made
+while typing. It claims a strict subset of keys (`a`, `Esc`, `j`/`k`); every
+other key falls through unchanged, so it never swallows composer input. An
+async completion carries the request id and review generation, and a
+completion for a review already rejected or superseded is discarded rather than
+applied.
+
 ### InputMode (`src/tui/input.rs`)
 
 ```rust

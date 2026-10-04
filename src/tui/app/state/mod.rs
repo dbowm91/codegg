@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod async_request;
+pub mod change_review;
 pub mod chat;
 pub mod diagnostics;
 pub mod dialog;

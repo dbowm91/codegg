@@ -419,6 +419,13 @@ pub struct App {
     /// document text, which stays owned by the M005 controller. Hidden by
     /// default so the M006-A surface is unchanged until the user asks for it.
     pub file_tree_state: crate::tui::app::state::file_tree::FileTreeState,
+
+    /// M006-E: a pending agent change awaiting accept or reject.
+    ///
+    /// Closed by `Default`, so the whole TUI surface is unchanged until a user
+    /// opens a review. This records what the user is being asked to approve
+    /// and what the daemon said; it never decides whether an apply is legal.
+    pub change_review_state: crate::tui::app::state::change_review::ChangeReviewState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -841,6 +848,8 @@ impl App {
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
             file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
+            change_review_state: crate::tui::app::state::change_review::ChangeReviewState::default(
+            ),
         }
     }
 
@@ -1333,6 +1342,8 @@ impl App {
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
             file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
+            change_review_state: crate::tui::app::state::change_review::ChangeReviewState::default(
+            ),
         }
     }
 
@@ -2158,6 +2169,14 @@ impl App {
         }
 
         let sidebar_focused = self.ui_state.sidebar_visible && self.sidebar.is_focused();
+        // M006-E: an open change review claims a strict subset of keys, and
+        // only while it is focused. Anything unclaimed falls through, so a
+        // review never silently swallows editor or composer input.
+        if crate::tui::commands::change_review::is_active(self)
+            && crate::tui::commands::change_review::handle_key(self, key)
+        {
+            return;
+        }
         // M005: non-modal Workspace view owns navigation/filter/chat-focus
         // before generic prompt handling. The composer stays editable:
         // only consumed keys return early; Enter-with-text and Tab fall
@@ -5157,6 +5176,16 @@ impl App {
                     self.messages_state.toasts.info("LSP not available");
                 }
             }
+            B::Review => {
+                self.ui_state.command_mode = false;
+                let query = self.dialog_state.command_palette.query.clone();
+                let id = query
+                    .strip_prefix("/review ")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                crate::tui::commands::change_review::open(self, &id);
+            }
             B::LspPreviewApply => {
                 self.ui_state.command_mode = false;
                 let query = self.dialog_state.command_palette.query.clone();
@@ -5180,36 +5209,28 @@ impl App {
                              Detail: {refresh_detail}"
                         ));
                     } else {
-                        let Some(session_id) = self.active_session_id().map(str::to_string) else {
-                            self.messages_state
-                                .toasts
-                                .info("LSP preview apply requires an active session");
-                            return;
-                        };
-                        let Some(workspace_id) = self.active_workspace_id().map(str::to_string)
-                        else {
-                            self.messages_state
-                                .toasts
-                                .info("LSP preview apply requires an active workspace");
-                            return;
-                        };
-                        let Some(request) = lsp_tool.preview_apply_request(
-                            id,
-                            workspace_id,
-                            session_id.clone(),
-                            None,
-                        ) else {
-                            self.messages_state.toasts.info(
-                                "Preview not found or already applied; generate a fresh preview",
-                            );
-                            return;
-                        };
+                        // M006-E: the request is built by the one shared
+                        // helper the review surface also calls, so the two
+                        // paths cannot drift into two apply semantics.
+                        let core_request =
+                            match crate::tui::commands::change_review::build_apply_request(self, id)
+                            {
+                                Ok(request) => request,
+                                Err(refusal) => {
+                                    self.messages_state.toasts.info(refusal.message());
+                                    return;
+                                }
+                            };
                         let Some(core_client) = self.core_client.clone() else {
                             self.messages_state
                                 .toasts
                                 .info("LSP preview apply requires the daemon core client");
                             return;
                         };
+                        // M006-E: the shared builder already resolved the
+                        // session; capture it for the completion so the
+                        // existing handler keeps its session id.
+                        let session_id = self.active_session_id().unwrap_or_default().to_string();
                         self.messages_state
                             .toasts
                             .info("Applying LSP preview through the checked edit service…");
@@ -5222,9 +5243,7 @@ impl App {
                                 let response = core_client
                                     .request(crate::core::new_request(
                                         uuid::Uuid::new_v4().to_string(),
-                                        crate::protocol::core::CoreRequest::LspPreviewApply {
-                                            request,
-                                        },
+                                        core_request,
                                     ))
                                     .await;
                                 let (result, error) = match response {

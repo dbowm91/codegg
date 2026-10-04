@@ -328,7 +328,8 @@ Recommended split, in dependency order:
   navigation actions. Depends on M006-B.
 - **M006-D — File tree and explorer.** Depends on M006-A for open/activate.
 - **M006-E — Agent edit/apply/review.** Depends on M006-A; the dirty-buffer
-  decision belongs here.
+  decision belongs here. Planned and scoped to saved documents only, so the
+  dirty-buffer decision is deferred to a future ADR rather than taken now.
 
 A file explorer is a separable user capability and does not need to gate the
 first editor. Recommend M006-A alone as the next handoff, and record M006-B
@@ -389,5 +390,12 @@ Next actions, in order:
    `workspace_root` that opens files through the existing controller-backed
    path adds no protocol and no ownership decision. Hosted `CI / verify` run
    `37232046785` completed the full 12,205-test sweep.
-6. Raise ADRs for the M006-B delivery/authorization decision and, if chosen, the M006-E
-   dirty-buffer apply decision. Outstanding.
+6. M006-E is planned at
+   `plans/implementation/desktop-frontend-ide-foundation/007-agent-change-review.md`,
+   scoped by explicit user decision to **saved documents only**. That scope
+   removes the ADR requirement: with the dirty-buffer merge left undecided, the
+   existing rejection in `src/lsp/mutation.rs` stays correct and unchanged, and
+   the milestone adds a review step in front of the apply that already exists
+   rather than changing what an apply means. The dirty-buffer apply decision is
+   deferred to a future ADR rather than settled here.
+7. Raise the ADR for the M006-B delivery/authorization decision. Outstanding.
