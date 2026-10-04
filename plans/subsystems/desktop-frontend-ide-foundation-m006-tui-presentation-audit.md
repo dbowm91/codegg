@@ -381,10 +381,13 @@ Next actions, in order:
    the frozen budgets and all assertions intact; four consecutive hosted runs
    then completed the full 12,180-test sweep, and the branch merged green.
    **M006-D and M006-E are unblocked; M006-B is gated only on its own ADR.**
-5. **M006-D is planned** at
-   `plans/implementation/desktop-frontend-ide-foundation/006-project-scoped-file-tree.md`
-   and needs no ADR: a read-only navigator rooted at the active tab's explicit
+5. **M006-D is planned and implemented** at
+   `plans/implementation/desktop-frontend-ide-foundation/006-project-scoped-file-tree.md`,
+   merged as `de29e49e` (PR `#94`) and closed at
+   `plans/closure/desktop-frontend-ide-foundation/006-status.md`. It needed no
+   ADR: a read-only navigator rooted at the active tab's explicit
    `workspace_root` that opens files through the existing controller-backed
-   path adds no protocol and no ownership decision.
+   path adds no protocol and no ownership decision. Hosted `CI / verify` run
+   `37232046785` completed the full 12,205-test sweep.
 6. Raise ADRs for the M006-B delivery/authorization decision and, if chosen, the M006-E
    dirty-buffer apply decision. Outstanding.
