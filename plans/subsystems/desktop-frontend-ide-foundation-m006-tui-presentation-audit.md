@@ -373,11 +373,12 @@ Next actions, in order:
    `37219495080` has all sixteen guard and lint steps green and Desktop E2E
    `37219495249` is green. The milestone's one deviation — two additive
    read-only `codegg-client` accessors, `try_snapshot` and
-   `try_attachment_info` — is approved. It remains conditionally closed only
-   because the hosted `nextest` sweep is red on a **pre-existing** causal
-   tool-advisor 5 ms wall-clock flake, reproduced 4/8 on baseline `main` versus
-   2/8 on this branch and absent from this change set. That flake is filed as
-   its own corrective. **M006-D and M006-E are unblocked; M006-B is gated only
-   on its own ADR.**
+   `try_attachment_info` — is approved. The hosted `nextest` sweep was red only
+   on a **pre-existing** causal tool-advisor 5 ms wall-clock flake, reproduced
+   4/8 on baseline `main` versus 2/8 on this branch and absent from this change
+   set. That flake has since been fixed by its own corrective (causal frontier
+   timing C001, `cdfd6257`), which changed only the measurement method and left
+   the frozen budgets and all assertions intact. **M006-D and M006-E are
+   unblocked; M006-B is gated only on its own ADR.**
 5. Raise ADRs for the M006-B delivery/authorization decision and, if chosen, the M006-E
    dirty-buffer apply decision. Outstanding.

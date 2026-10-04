@@ -348,12 +348,19 @@ deviation is approved.** Second, hosted evidence was required. Hosted CI
 `check_tui_editor_text_authority.py` as its own named step, and Desktop E2E
 `37219495249` is green.
 
-The hosted `nextest` workspace sweep is red on a **pre-existing** causal
+The hosted `nextest` workspace sweep was red on a **pre-existing** causal
 tool-advisor 5 ms wall-clock flake. Two attempts failed in two *different*
 budget tests, the first attempt's failure passed in the second, and a separate
 worktree at baseline `main` reproduces it at 4/8 versus 2/8 on this branch. None
 of `tests/causal_*.rs` or `src/tool_advisor/` is in this change set. That flake
-is filed as its own corrective and is not attributed to M006-A.
+was filed as its own corrective and is now **fixed** by the causal frontier
+timing corrective C001 (`cdfd6257`; closure
+`plans/closure/tool-selection-advisor-causal-frontier-timing-corrective/001-status.md`):
+its three single-shot wall-clock asserts measured the CI runner rather than the
+advisor, so they now use warm best-of-15 sampling — or, for the live-loop site
+that cannot be re-run, a sanity check. Both frozen 5.0 ms budgets and every
+assertion are unchanged, so no advisor behavior, disposition, or frozen
+threshold moved.
 
 Consequently **M006-D and M006-E are unblocked**, and **M006-B is gated only
 on its own ADR**, which was always its real precondition.
