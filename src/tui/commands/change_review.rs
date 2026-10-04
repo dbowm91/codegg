@@ -24,20 +24,22 @@ use crate::tui::unified_diff::parse_review;
 /// about whether the change is correct or permitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyRefusal {
-    NoActiveSession,
-    NoActiveWorkspace,
-    NoCoreClient,
+    SessionUnavailable,
+    WorkspaceUnavailable,
+    CoreClientUnavailable,
     /// No pending candidate with that id, or it was already applied.
-    NoSuchPreview,
+    PreviewUnknown,
 }
 
 impl ApplyRefusal {
     pub fn message(&self) -> &'static str {
         match self {
-            ApplyRefusal::NoActiveSession => "applying this change requires an active session",
-            ApplyRefusal::NoActiveWorkspace => "applying this change requires an active workspace",
-            ApplyRefusal::NoCoreClient => "the daemon core client is unavailable",
-            ApplyRefusal::NoSuchPreview => {
+            ApplyRefusal::SessionUnavailable => "applying this change requires an active session",
+            ApplyRefusal::WorkspaceUnavailable => {
+                "applying this change requires an active workspace"
+            }
+            ApplyRefusal::CoreClientUnavailable => "the daemon core client is unavailable",
+            ApplyRefusal::PreviewUnknown => {
                 "this candidate is unknown or already applied — generate a fresh one"
             }
         }
@@ -54,20 +56,20 @@ pub fn build_apply_request(
     preview_id: &str,
 ) -> Result<crate::protocol::core::CoreRequest, ApplyRefusal> {
     let Some(lsp_tool) = app.lsp_tool.as_ref() else {
-        return Err(ApplyRefusal::NoCoreClient);
+        return Err(ApplyRefusal::CoreClientUnavailable);
     };
     let Some(session_id) = app.active_session_id().map(str::to_string) else {
-        return Err(ApplyRefusal::NoActiveSession);
+        return Err(ApplyRefusal::SessionUnavailable);
     };
     let Some(workspace_id) = app.active_workspace_id().map(str::to_string) else {
-        return Err(ApplyRefusal::NoActiveWorkspace);
+        return Err(ApplyRefusal::WorkspaceUnavailable);
     };
     // `preview_apply_request` is the digest-bound export. It returns `None`
     // for an unknown or already-applied candidate, which is the daemon-side
     // freshness check the review surface relies on.
     let Some(request) = lsp_tool.preview_apply_request(preview_id, workspace_id, session_id, None)
     else {
-        return Err(ApplyRefusal::NoSuchPreview);
+        return Err(ApplyRefusal::PreviewUnknown);
     };
     Ok(crate::protocol::core::CoreRequest::LspPreviewApply { request })
 }
@@ -107,7 +109,7 @@ pub fn open(app: &mut App, preview_id: &str) {
     let Ok(core_request) = build_apply_request(app, id) else {
         app.messages_state
             .toasts
-            .info(ApplyRefusal::NoSuchPreview.message());
+            .info(ApplyRefusal::PreviewUnknown.message());
         return;
     };
     let crate::protocol::core::CoreRequest::LspPreviewApply { request } = core_request else {
@@ -165,7 +167,7 @@ pub fn accept(app: &mut App) {
         app.change_review_state.apply_refusal(
             request_id,
             generation,
-            ApplyRefusal::NoCoreClient.message().to_string(),
+            ApplyRefusal::CoreClientUnavailable.message().to_string(),
         );
         return;
     };
@@ -464,7 +466,7 @@ mod tests {
 
         assert_eq!(
             build_apply_request(&app, &preview_id).unwrap_err(),
-            ApplyRefusal::NoSuchPreview,
+            ApplyRefusal::PreviewUnknown,
             "an already-applied candidate must not produce a second request"
         );
         // A review open over it shows the refusal rather than applying again.
@@ -478,10 +480,10 @@ mod tests {
     #[test]
     fn every_refusal_has_an_actionable_message() {
         for refusal in [
-            ApplyRefusal::NoActiveSession,
-            ApplyRefusal::NoActiveWorkspace,
-            ApplyRefusal::NoCoreClient,
-            ApplyRefusal::NoSuchPreview,
+            ApplyRefusal::SessionUnavailable,
+            ApplyRefusal::WorkspaceUnavailable,
+            ApplyRefusal::CoreClientUnavailable,
+            ApplyRefusal::PreviewUnknown,
         ] {
             let message = refusal.message();
             assert!(!message.is_empty());
@@ -495,7 +497,7 @@ mod tests {
     #[test]
     fn the_stale_candidate_message_names_the_remedy() {
         assert!(
-            ApplyRefusal::NoSuchPreview.message().contains("fresh"),
+            ApplyRefusal::PreviewUnknown.message().contains("fresh"),
             "a user told a candidate is gone should be told what to do next"
         );
     }
@@ -535,7 +537,7 @@ mod tests {
         // A frontend refusal is a precondition; a daemon refusal is a
         // judgement. Conflating them would let the UI imply the change was
         // rejected on its merits when it never reached the daemon.
-        let frontend = ApplyRefusal::NoSuchPreview;
+        let frontend = ApplyRefusal::PreviewUnknown;
         let daemon = "src/lib.rs has unsaved editor changes".to_string();
         assert!(frontend.message().contains("candidate"));
         assert!(daemon.contains("unsaved"));

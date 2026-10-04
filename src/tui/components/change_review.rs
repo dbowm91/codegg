@@ -75,7 +75,10 @@ impl<'a> ChangeReviewView<'a> {
         // toast that has already scrolled away.
         let refusal_rows = match &state.verdict {
             ReviewVerdict::Refused { message } => {
-                let wrapped = message.lines().count().max(1).min(4) as u16 + 1;
+                // Clamp rather than trusting the daemon's line count: a long
+                // refusal must not push the diff off the viewport, and a
+                // zero-line message still needs one readable row.
+                let wrapped = message.lines().count().clamp(1, 4) as u16 + 1;
                 let notice = Rect {
                     x: inner.x,
                     y: inner.y,
