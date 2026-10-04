@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation Post-Closure Corrective C001 — DocumentController Linearization, Scheduler Ownership, and Recovery
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `0dda01f362480f2b25162b0c912522bce827d048`
 

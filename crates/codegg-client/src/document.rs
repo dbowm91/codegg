@@ -13,8 +13,9 @@ use codegg_protocol::document::{
     DocumentSnapshotDto, DocumentTextEditDto, DocumentTextRangeDto, DocumentTransactionDto,
     MAX_DOCUMENT_EDITS, MAX_DOCUMENT_INSERT_BYTES, MAX_DOCUMENT_TEXT_BYTES,
 };
+use std::sync::Mutex;
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use uuid::Uuid;
 
 const MAX_PENDING_TRANSACTIONS: usize = 128;
@@ -43,8 +44,9 @@ impl DocumentTransport for crate::LocalSocketClient {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DocumentState {
+    #[default]
     Closed,
     Opening,
     Synced,
@@ -55,7 +57,6 @@ pub enum DocumentState {
     ReadOnly,
     Disconnected,
     GoneWithLocalDraft,
-    Error,
 }
 
 #[derive(Debug, Error)]
@@ -68,6 +69,10 @@ pub enum DocumentControllerError {
     Edit(#[from] codegg_document::DocumentError),
     #[error("document controller is not attached")]
     NotOpen,
+    #[error("document controller already has an attachment")]
+    AlreadyOpen,
+    #[error("document lifecycle operation is in progress")]
+    LifecycleBusy,
     #[error("document has no writer lease")]
     ReadOnly,
     #[error("pending document queue is full")]
@@ -123,40 +128,122 @@ struct Attachment {
 /// synchronous and immediately updates the rope-backed optimistic snapshot.
 pub struct DocumentController {
     transport: DynamicTransport,
-    attachment: Mutex<Option<Attachment>>,
-    state: Mutex<DocumentState>,
-    operation: Mutex<()>,
+    replica: Mutex<ReplicaState>,
+    operation: AsyncMutex<()>,
     generation: u64,
-    flush_scheduled: AtomicBool,
+    flush_worker_running: AtomicBool,
     network_enabled: AtomicBool,
+}
+
+struct LifecycleGuard<'a> {
+    controller: &'a DocumentController,
+    epoch: u64,
+    restore: DocumentState,
+    finished: bool,
+}
+
+impl LifecycleGuard<'_> {
+    fn finish(mut self, state: DocumentState) {
+        let mut replica = self
+            .controller
+            .replica
+            .lock()
+            .expect("replica mutex poisoned");
+        if replica.lifecycle_epoch == self.epoch {
+            replica.lifecycle = ControllerLifecycle::Idle;
+            replica.state = state;
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for LifecycleGuard<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut replica = self
+            .controller
+            .replica
+            .lock()
+            .expect("replica mutex poisoned");
+        if replica.lifecycle_epoch == self.epoch {
+            replica.lifecycle = ControllerLifecycle::Idle;
+            replica.state = replica.attachment.as_ref().map_or_else(
+                || self.restore.clone(),
+                |attachment| {
+                    if attachment.conflicted {
+                        DocumentState::Conflict
+                    } else if attachment.dirty || !attachment.pending.is_empty() {
+                        DocumentState::DirtyLocal
+                    } else {
+                        self.restore.clone()
+                    }
+                },
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct ReplicaState {
+    attachment: Option<Attachment>,
+    state: DocumentState,
+    lifecycle: ControllerLifecycle,
+    local_edit_seq: u64,
+    lifecycle_epoch: u64,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum ControllerLifecycle {
+    #[default]
+    Idle,
+    Saving,
+    Reloading,
+    Closing,
+    Resyncing,
+    Reconnecting,
+    Opening,
 }
 
 impl DocumentController {
     pub fn new(transport: Arc<dyn DocumentTransport>) -> Self {
         Self {
             transport: DynamicTransport::new(transport),
-            attachment: Mutex::new(None),
-            state: Mutex::new(DocumentState::Closed),
-            operation: Mutex::new(()),
+            replica: Mutex::new(ReplicaState {
+                state: DocumentState::Closed,
+                ..ReplicaState::default()
+            }),
+            operation: AsyncMutex::new(()),
             generation: CONTROLLER_GENERATION.fetch_add(1, Ordering::Relaxed),
-            flush_scheduled: AtomicBool::new(false),
+            flush_worker_running: AtomicBool::new(false),
             network_enabled: AtomicBool::new(true),
         }
     }
     pub async fn state(&self) -> DocumentState {
-        self.state.lock().await.clone()
+        self.replica
+            .lock()
+            .expect("replica mutex poisoned")
+            .state
+            .clone()
     }
     pub async fn attachment_scope(&self) -> Result<(String, String), DocumentControllerError> {
-        let guard = self.attachment.lock().await;
-        let attachment = guard.as_ref().ok_or(DocumentControllerError::NotOpen)?;
+        let guard = self.replica.lock().expect("replica mutex poisoned");
+        let attachment = guard
+            .attachment
+            .as_ref()
+            .ok_or(DocumentControllerError::NotOpen)?;
         Ok((
             attachment.workspace_id.clone(),
             attachment.relative_path.clone(),
         ))
     }
     pub async fn snapshot(&self) -> Result<(DocumentSnapshot, u64), DocumentControllerError> {
-        let a = self.attachment.lock().await;
-        let a = a.as_ref().ok_or(DocumentControllerError::NotOpen)?;
+        let a = self.replica.lock().expect("replica mutex poisoned");
+        let a = a
+            .attachment
+            .as_ref()
+            .ok_or(DocumentControllerError::NotOpen)?;
         Ok((a.buffer.snapshot(), a.daemon_revision))
     }
     pub async fn open(
@@ -167,7 +254,22 @@ impl DocumentController {
         writable: bool,
     ) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
-        *self.state.lock().await = DocumentState::Opening;
+        let open_epoch = {
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            if replica.attachment.is_some() {
+                return Err(DocumentControllerError::AlreadyOpen);
+            }
+            replica.lifecycle = ControllerLifecycle::Opening;
+            replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
+            replica.state = DocumentState::Opening;
+            replica.lifecycle_epoch
+        };
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch: open_epoch,
+            restore: DocumentState::Closed,
+            finished: false,
+        };
         let response = self
             .transport
             .request(CoreRequest::DocumentOpen {
@@ -175,15 +277,24 @@ impl DocumentController {
                 workspace_id: workspace_id.clone(),
                 relative_path: relative_path.clone(),
             })
-            .await
-            .map_err(DocumentControllerError::Transport)?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                self.fail_open();
+                return Err(DocumentControllerError::Transport(error));
+            }
+        };
         let (snapshot, lease) = match response {
             CoreResponse::DocumentSnapshot {
                 snapshot,
                 writer_lease,
                 ..
             } => (snapshot, writer_lease),
-            r => return self.response_error(r),
+            r => {
+                self.fail_open();
+                return self.response_error(r);
+            }
         };
         let lease = if writable {
             match lease {
@@ -195,10 +306,15 @@ impl DocumentController {
                         document_id: snapshot.document_id.clone(),
                     })
                     .await
-                    .map_err(DocumentControllerError::Transport)?
-                {
+                    .map_err(|error| {
+                        self.fail_open();
+                        DocumentControllerError::Transport(error)
+                    })? {
                     CoreResponse::DocumentWriterLease { writer_lease, .. } => Some(writer_lease),
-                    _ => None,
+                    r => {
+                        self.fail_open();
+                        return self.response_error(r);
+                    }
                 },
             }
         } else {
@@ -212,28 +328,42 @@ impl DocumentController {
             DocumentState::Synced
         };
         if snapshot.text.len() > MAX_DOCUMENT_TEXT_BYTES {
+            self.fail_open();
             return Err(DocumentControllerError::Response(
                 "document snapshot exceeds the protocol size limit".into(),
             ));
         }
         let buffer = DocumentBuffer::new(&snapshot.text);
-        *self.attachment.lock().await = Some(Attachment {
-            project_id,
-            workspace_id,
-            relative_path,
-            document_id: snapshot.document_id,
-            writer_lease: lease,
-            daemon_revision: snapshot.revision,
-            buffer,
-            generation: self.generation,
-            pending: VecDeque::new(),
-            pending_bytes: 0,
-            in_flight: None,
-            dirty: snapshot.dirty,
-            conflicted: snapshot.conflicted,
-        });
-        *self.state.lock().await = state;
+        {
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            replica.attachment = Some(Attachment {
+                project_id,
+                workspace_id,
+                relative_path,
+                document_id: snapshot.document_id,
+                writer_lease: lease,
+                daemon_revision: snapshot.revision,
+                buffer,
+                generation: self.generation,
+                pending: VecDeque::new(),
+                pending_bytes: 0,
+                in_flight: None,
+                dirty: snapshot.dirty,
+                conflicted: snapshot.conflicted,
+            });
+            replica.state = state.clone();
+            replica.lifecycle = ControllerLifecycle::Idle;
+            replica.local_edit_seq = 0;
+        }
+        lifecycle.finish(state);
         Ok(())
+    }
+    fn fail_open(&self) {
+        let mut replica = self.replica.lock().expect("replica mutex poisoned");
+        if replica.attachment.is_none() {
+            replica.state = DocumentState::Closed;
+            replica.lifecycle = ControllerLifecycle::Idle;
+        }
     }
     pub fn apply_local(
         self: &Arc<Self>,
@@ -242,11 +372,22 @@ impl DocumentController {
         if transaction.edits.is_empty() {
             return Ok(Uuid::new_v4().to_string());
         }
-        let mut slot = self
-            .attachment
-            .try_lock()
-            .map_err(|_| DocumentControllerError::QueueFull)?;
-        let a = slot.as_mut().ok_or(DocumentControllerError::NotOpen)?;
+        let mut slot = self.replica.lock().expect("replica mutex poisoned");
+        if slot.lifecycle != ControllerLifecycle::Idle
+            && slot.lifecycle != ControllerLifecycle::Saving
+        {
+            return Err(DocumentControllerError::LifecycleBusy);
+        }
+        let lifecycle = slot.lifecycle;
+        let ReplicaState {
+            attachment,
+            state,
+            local_edit_seq,
+            ..
+        } = &mut *slot;
+        let a = attachment
+            .as_mut()
+            .ok_or(DocumentControllerError::NotOpen)?;
         if a.writer_lease.is_none() {
             return Err(DocumentControllerError::ReadOnly);
         }
@@ -277,6 +418,10 @@ impl DocumentController {
             },
         )?;
         let resulting_snapshot = applied.snapshot;
+        *local_edit_seq = local_edit_seq.wrapping_add(1);
+        if lifecycle == ControllerLifecycle::Idle {
+            *state = DocumentState::DirtyLocal;
+        }
         let can_merge = a.pending.back().is_some_and(|last| {
             a.in_flight.as_deref() != Some(last.id.as_str())
                 && last.transaction.edits.len() == 1
@@ -322,34 +467,62 @@ impl DocumentController {
         if !self.network_enabled.load(Ordering::Acquire) {
             return;
         }
-        if self.flush_scheduled.swap(true, Ordering::AcqRel) {
+        if self.flush_worker_running.swap(true, Ordering::AcqRel) {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            self.flush_scheduled.store(false, Ordering::Release);
+            self.flush_worker_running.store(false, Ordering::Release);
             return;
         };
         let controller = Arc::clone(self);
         runtime.spawn(async move {
-            // One event-loop tick lets a burst of synchronous local edits
-            // queue before a single bounded serial flush starts.
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            controller.flush_scheduled.store(false, Ordering::Release);
-            let _ = controller.flush().await;
+            controller.run_flush_worker().await;
         });
+    }
+    async fn run_flush_worker(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let _ = self.flush().await;
+            let replica = self.replica.lock().expect("replica mutex poisoned");
+            let should_continue = self.network_enabled.load(Ordering::Acquire)
+                && replica.lifecycle == ControllerLifecycle::Idle
+                && replica.attachment.as_ref().is_some_and(|a| {
+                    !a.pending.is_empty() && a.writer_lease.is_some() && !a.conflicted
+                });
+            if should_continue {
+                continue;
+            }
+            // Relinquish ownership while holding the same lock apply_local uses.
+            self.flush_worker_running.store(false, Ordering::Release);
+            let should_restart = self.network_enabled.load(Ordering::Acquire)
+                && replica.lifecycle == ControllerLifecycle::Idle
+                && replica.attachment.as_ref().is_some_and(|a| {
+                    !a.pending.is_empty() && a.writer_lease.is_some() && !a.conflicted
+                });
+            drop(replica);
+            if should_restart {
+                self.schedule_flush();
+            }
+            return;
+        }
     }
     pub async fn flush(&self) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
         loop {
             let req = {
-                let mut guard = self.attachment.lock().await;
-                let a = guard.as_mut().ok_or(DocumentControllerError::NotOpen)?;
+                let mut guard = self.replica.lock().expect("replica mutex poisoned");
+                let ReplicaState {
+                    attachment, state, ..
+                } = &mut *guard;
+                let a = attachment
+                    .as_mut()
+                    .ok_or(DocumentControllerError::NotOpen)?;
                 if a.conflicted {
-                    *self.state.lock().await = DocumentState::Conflict;
+                    *state = DocumentState::Conflict;
                     return Err(DocumentControllerError::Conflict);
                 }
                 let Some(p) = a.pending.front() else {
-                    *self.state.lock().await = if a.dirty {
+                    *state = if a.dirty {
                         DocumentState::DirtyLocal
                     } else {
                         DocumentState::Synced
@@ -360,8 +533,8 @@ impl DocumentController {
                     .writer_lease
                     .clone()
                     .ok_or(DocumentControllerError::ReadOnly)?;
-                *self.state.lock().await = DocumentState::Flushing;
                 a.in_flight = Some(p.id.clone());
+                *state = DocumentState::Flushing;
                 (
                     a.project_id.clone(),
                     a.document_id.clone(),
@@ -383,8 +556,11 @@ impl DocumentController {
                     transaction: req.5,
                 })
                 .await;
-            let mut guard = self.attachment.lock().await;
-            let a = guard.as_mut().ok_or(DocumentControllerError::NotOpen)?;
+            let mut guard = self.replica.lock().expect("replica mutex poisoned");
+            let a = guard
+                .attachment
+                .as_mut()
+                .ok_or(DocumentControllerError::NotOpen)?;
             if a.generation != req.6 || self.generation != req.6 || a.document_id != req.1 {
                 return Ok(());
             }
@@ -392,7 +568,7 @@ impl DocumentController {
                 Err(e) => {
                     a.in_flight = None;
                     self.network_enabled.store(false, Ordering::Release);
-                    *self.state.lock().await = DocumentState::Disconnected;
+                    guard.state = DocumentState::Disconnected;
                     return Err(DocumentControllerError::Transport(e));
                 }
                 Ok(CoreResponse::DocumentChanged { revision, .. }) => {
@@ -411,31 +587,55 @@ impl DocumentController {
                 Ok(r) => {
                     a.in_flight = None;
                     self.network_enabled.store(false, Ordering::Release);
-                    *self.state.lock().await = DocumentState::ResyncRequired;
+                    guard.state = DocumentState::ResyncRequired;
                     return self.response_error(r);
                 }
             }
         }
     }
-    pub async fn save(&self) -> Result<(), DocumentControllerError> {
+    pub async fn save(self: &Arc<Self>) -> Result<(), DocumentControllerError> {
         self.flush().await?;
         let _op = self.operation.lock().await;
-        let (project, id, lease, revision) = {
-            let a = self.attachment.lock().await;
-            let a = a.as_ref().ok_or(DocumentControllerError::NotOpen)?;
-            if a.conflicted {
-                return Err(DocumentControllerError::Conflict);
-            }
+        let (project, id, lease, revision, saved_local_seq, epoch, prior_state) = {
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            let (project, id, lease, revision) = {
+                let a = replica
+                    .attachment
+                    .as_ref()
+                    .ok_or(DocumentControllerError::NotOpen)?;
+                if a.conflicted {
+                    return Err(DocumentControllerError::Conflict);
+                }
+                (
+                    a.project_id.clone(),
+                    a.document_id.clone(),
+                    a.writer_lease
+                        .clone()
+                        .ok_or(DocumentControllerError::ReadOnly)?,
+                    a.daemon_revision,
+                )
+            };
+            let prior_state = replica.state.clone();
+            replica.lifecycle = ControllerLifecycle::Saving;
+            replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
+            replica.state = DocumentState::Flushing;
             (
-                a.project_id.clone(),
-                a.document_id.clone(),
-                a.writer_lease
-                    .clone()
-                    .ok_or(DocumentControllerError::ReadOnly)?,
-                a.daemon_revision,
+                project,
+                id,
+                lease,
+                revision,
+                replica.local_edit_seq,
+                replica.lifecycle_epoch,
+                prior_state,
             )
         };
-        match self
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch,
+            restore: prior_state,
+            finished: false,
+        };
+        let response = self
             .transport
             .request(CoreRequest::DocumentSave {
                 project_id: project,
@@ -443,47 +643,104 @@ impl DocumentController {
                 writer_lease: lease,
                 expected_revision: revision,
             })
-            .await
-            .map_err(DocumentControllerError::Transport)?
-        {
-            CoreResponse::DocumentSaved { revision, .. } => {
-                if let Some(a) = self.attachment.lock().await.as_mut() {
-                    a.daemon_revision = revision;
-                    a.dirty = false;
+            .await;
+        match response {
+            Err(error) => {
+                let replica = self.replica.lock().expect("replica mutex poisoned");
+                if replica.lifecycle_epoch == epoch {
+                    self.network_enabled.store(false, Ordering::Release);
                 }
-                *self.state.lock().await = DocumentState::Synced;
+                drop(replica);
+                lifecycle.finish(DocumentState::Disconnected);
+                Err(DocumentControllerError::Transport(error))
+            }
+            Ok(CoreResponse::DocumentSaved { revision, .. }) => {
+                let mut replica = self.replica.lock().expect("replica mutex poisoned");
+                if replica.lifecycle_epoch != epoch {
+                    return Err(DocumentControllerError::LifecycleBusy);
+                }
+                if let Some(a) = replica.attachment.as_mut() {
+                    a.daemon_revision = revision;
+                }
+                if replica.local_edit_seq == saved_local_seq
+                    && replica
+                        .attachment
+                        .as_ref()
+                        .is_some_and(|a| a.pending.is_empty())
+                {
+                    if let Some(a) = replica.attachment.as_mut() {
+                        a.dirty = false;
+                    }
+                    replica.state = DocumentState::Synced;
+                } else {
+                    if let Some(a) = replica.attachment.as_mut() {
+                        a.dirty = true;
+                    }
+                    replica.state = DocumentState::DirtyLocal;
+                }
+                let needs_flush = replica.state == DocumentState::DirtyLocal;
+                let next_state = replica.state.clone();
+                drop(replica);
+                lifecycle.finish(next_state);
+                if needs_flush {
+                    self.schedule_flush();
+                }
                 Ok(())
             }
-            r => {
+            Ok(r) => {
+                let mut replica = self.replica.lock().expect("replica mutex poisoned");
                 if matches!(&r, CoreResponse::Error { code, .. } if code == "document_disk_conflict")
                 {
-                    if let Some(a) = self.attachment.lock().await.as_mut() {
+                    if let Some(a) = replica.attachment.as_mut() {
                         a.conflicted = true;
                     }
-                    *self.state.lock().await = DocumentState::Conflict;
+                    replica.state = DocumentState::Conflict;
+                } else {
+                    replica.state = DocumentState::ResyncRequired;
+                    self.network_enabled.store(false, Ordering::Release);
                 }
+                let next_state = replica.state.clone();
+                drop(replica);
+                lifecycle.finish(next_state);
                 self.response_error(r)
             }
         }
     }
     pub async fn reload_from_disk(&self) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
-        let (project, id, lease, revision) = {
-            let a = self.attachment.lock().await;
-            let a = a.as_ref().ok_or(DocumentControllerError::NotOpen)?;
-            if !a.pending.is_empty() {
-                return Err(DocumentControllerError::ResyncRequired);
-            }
-            (
-                a.project_id.clone(),
-                a.document_id.clone(),
-                a.writer_lease
-                    .clone()
-                    .ok_or(DocumentControllerError::ReadOnly)?,
-                a.daemon_revision,
-            )
+        let (project, id, lease, revision, epoch, prior_state) = {
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            let (project, id, lease, revision) = {
+                let a = replica
+                    .attachment
+                    .as_ref()
+                    .ok_or(DocumentControllerError::NotOpen)?;
+                if !a.pending.is_empty() {
+                    return Err(DocumentControllerError::ResyncRequired);
+                }
+                (
+                    a.project_id.clone(),
+                    a.document_id.clone(),
+                    a.writer_lease
+                        .clone()
+                        .ok_or(DocumentControllerError::ReadOnly)?,
+                    a.daemon_revision,
+                )
+            };
+            let prior_state = replica.state.clone();
+            replica.lifecycle = ControllerLifecycle::Reloading;
+            replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
+            let epoch = replica.lifecycle_epoch;
+            replica.state = DocumentState::Opening;
+            (project, id, lease, revision, epoch, prior_state)
         };
-        match self
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch,
+            restore: prior_state.clone(),
+            finished: false,
+        };
+        let result = self
             .transport
             .request(CoreRequest::DocumentReload {
                 project_id: project.clone(),
@@ -491,35 +748,55 @@ impl DocumentController {
                 writer_lease: lease,
                 expected_revision: revision,
             })
-            .await
-            .map_err(DocumentControllerError::Transport)?
-        {
-            CoreResponse::DocumentReloaded { .. } => {
+            .await;
+        let result = match result {
+            Err(error) => Err(DocumentControllerError::Transport(error)),
+            Ok(CoreResponse::DocumentReloaded { .. }) => {
                 let r = self
                     .transport
                     .request(CoreRequest::DocumentSnapshotGet {
                         project_id: project.clone(),
                         document_id: id.clone(),
                     })
-                    .await
-                    .map_err(DocumentControllerError::Transport)?;
-                if let CoreResponse::DocumentSnapshot { snapshot, .. } = r {
-                    self.install_snapshot(snapshot).await?;
-                    *self.state.lock().await = DocumentState::Synced;
-                    Ok(())
-                } else {
-                    self.response_error(r)
+                    .await;
+                match r {
+                    Err(error) => Err(DocumentControllerError::Transport(error)),
+                    Ok(CoreResponse::DocumentSnapshot { snapshot, .. }) => {
+                        self.install_snapshot(snapshot)?;
+                        Ok(())
+                    }
+                    Ok(response) => self.response_error(response),
                 }
             }
-            r => self.response_error(r),
-        }
+            Ok(response) => self.response_error(response),
+        };
+        lifecycle.finish(if result.is_ok() {
+            DocumentState::Synced
+        } else {
+            prior_state
+        });
+        result
     }
-    pub async fn resync(&self) -> Result<(), DocumentControllerError> {
+    pub async fn resync(self: &Arc<Self>) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
-        let (project, id) = {
-            let a = self.attachment.lock().await;
-            let a = a.as_ref().ok_or(DocumentControllerError::NotOpen)?;
-            (a.project_id.clone(), a.document_id.clone())
+        let (project, id, epoch, prior_state) = {
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            let a = replica
+                .attachment
+                .as_ref()
+                .ok_or(DocumentControllerError::NotOpen)?;
+            let pair = (a.project_id.clone(), a.document_id.clone());
+            let prior_state = replica.state.clone();
+            replica.lifecycle = ControllerLifecycle::Resyncing;
+            replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
+            replica.state = DocumentState::Opening;
+            (pair.0, pair.1, replica.lifecycle_epoch, prior_state)
+        };
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch,
+            restore: prior_state.clone(),
+            finished: false,
         };
         let r = self
             .transport
@@ -527,13 +804,14 @@ impl DocumentController {
                 project_id: project,
                 document_id: id,
             })
-            .await
-            .map_err(DocumentControllerError::Transport)?;
-        match r {
-            CoreResponse::DocumentSnapshot { snapshot, .. } => {
-                self.install_snapshot(snapshot).await?;
-                let a = self.attachment.lock().await;
-                let next = a
+            .await;
+        let result = match r {
+            Err(error) => Err(DocumentControllerError::Transport(error)),
+            Ok(CoreResponse::DocumentSnapshot { snapshot, .. }) => {
+                self.install_snapshot(snapshot)?;
+                let replica = self.replica.lock().expect("replica mutex poisoned");
+                let next = replica
+                    .attachment
                     .as_ref()
                     .map(|a| {
                         if a.conflicted {
@@ -547,38 +825,78 @@ impl DocumentController {
                         }
                     })
                     .unwrap_or(DocumentState::GoneWithLocalDraft);
-                *self.state.lock().await = next;
-                Ok(())
+                Ok(next)
             }
-            CoreResponse::Error { code, message } if code == "document_not_found" => {
-                *self.state.lock().await = DocumentState::GoneWithLocalDraft;
+            Ok(CoreResponse::Error { code, message }) if code == "document_not_found" => {
                 Err(DocumentControllerError::Response(message))
             }
-            r => self.response_error(r),
+            Ok(response) => self.response_error(response),
+        };
+        let next_state = match &result {
+            Ok(next) => next.clone(),
+            Err(DocumentControllerError::Response(_)) => DocumentState::GoneWithLocalDraft,
+            Err(_) => prior_state,
+        };
+        lifecycle.finish(next_state);
+        let recovered = result.is_ok();
+        if recovered {
+            self.network_enabled.store(true, Ordering::Release);
+            self.schedule_flush();
         }
+        result.map(|_| ())
     }
     /// Replace a closed transport and reattach the same scoped document. An
     /// uncertain change is resolved by snapshot comparison or retried with
     /// its original stable change ID; divergent drafts are retained.
     pub async fn reconnect(
-        &self,
+        self: &Arc<Self>,
         transport: Arc<dyn DocumentTransport>,
     ) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
         self.transport.replace(transport).await;
-        self.network_enabled.store(true, Ordering::Release);
-        let (project_id, workspace_id, relative_path, document_id, wants_writer) = {
-            let guard = self.attachment.lock().await;
-            let a = guard.as_ref().ok_or(DocumentControllerError::NotOpen)?;
+        let (
+            project_id,
+            workspace_id,
+            relative_path,
+            document_id,
+            wants_writer,
+            epoch,
+            prior_state,
+        ) = {
+            let mut guard = self.replica.lock().expect("replica mutex poisoned");
+            let prior_state = guard.state.clone();
+            let (project_id, workspace_id, relative_path, document_id, wants_writer) = {
+                let a = guard
+                    .attachment
+                    .as_ref()
+                    .ok_or(DocumentControllerError::NotOpen)?;
+                (
+                    a.project_id.clone(),
+                    a.workspace_id.clone(),
+                    a.relative_path.clone(),
+                    a.document_id.clone(),
+                    a.writer_lease.is_some(),
+                )
+            };
+            guard.lifecycle = ControllerLifecycle::Reconnecting;
+            guard.lifecycle_epoch = guard.lifecycle_epoch.wrapping_add(1);
+            guard.state = DocumentState::Opening;
             (
-                a.project_id.clone(),
-                a.workspace_id.clone(),
-                a.relative_path.clone(),
-                a.document_id.clone(),
-                a.writer_lease.is_some(),
+                project_id,
+                workspace_id,
+                relative_path,
+                document_id,
+                wants_writer,
+                guard.lifecycle_epoch,
+                prior_state,
             )
         };
-        *self.state.lock().await = DocumentState::Opening;
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch,
+            restore: prior_state,
+            finished: false,
+        };
         let response = self
             .transport
             .request(CoreRequest::DocumentOpen {
@@ -586,8 +904,15 @@ impl DocumentController {
                 workspace_id,
                 relative_path,
             })
-            .await
-            .map_err(DocumentControllerError::Transport)?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                self.network_enabled.store(false, Ordering::Release);
+                lifecycle.finish(DocumentState::Disconnected);
+                return Err(DocumentControllerError::Transport(error));
+            }
+        };
         let (snapshot, mut lease) = match response {
             CoreResponse::DocumentSnapshot {
                 snapshot,
@@ -595,41 +920,61 @@ impl DocumentController {
                 ..
             } => (snapshot, writer_lease),
             CoreResponse::Error { code, message } if code == "document_not_found" => {
-                *self.state.lock().await = DocumentState::GoneWithLocalDraft;
+                lifecycle.finish(DocumentState::GoneWithLocalDraft);
                 return Err(DocumentControllerError::Response(message));
             }
-            r => return self.response_error(r),
+            r => {
+                lifecycle.finish(DocumentState::Disconnected);
+                return self.response_error(r);
+            }
         };
         if snapshot.document_id != document_id {
-            *self.state.lock().await = DocumentState::GoneWithLocalDraft;
+            lifecycle.finish(DocumentState::GoneWithLocalDraft);
             return Err(DocumentControllerError::ResyncRequired);
         }
         if wants_writer && lease.is_none() {
-            match self
+            let response = self
                 .transport
                 .request(CoreRequest::DocumentWriterAcquire {
                     project_id,
                     document_id,
                 })
-                .await
-                .map_err(DocumentControllerError::Transport)?
-            {
-                CoreResponse::DocumentWriterLease { writer_lease, .. } => {
+                .await;
+            match response {
+                Err(error) => {
+                    lifecycle.finish(DocumentState::Disconnected);
+                    return Err(DocumentControllerError::Transport(error));
+                }
+                Ok(CoreResponse::DocumentWriterLease { writer_lease, .. }) => {
                     lease = Some(writer_lease);
                 }
-                _ => lease = None,
+                Ok(_) => lease = None,
             }
         }
         {
-            let mut guard = self.attachment.lock().await;
-            let a = guard.as_mut().ok_or(DocumentControllerError::NotOpen)?;
+            let mut guard = self.replica.lock().expect("replica mutex poisoned");
+            let a = guard
+                .attachment
+                .as_mut()
+                .ok_or(DocumentControllerError::NotOpen)?;
             a.writer_lease = lease;
             a.generation = self.generation;
         }
-        self.install_snapshot(snapshot).await?;
+        if let Err(error) = self.install_snapshot(snapshot) {
+            let state = if matches!(error, DocumentControllerError::ResyncRequired) {
+                DocumentState::ResyncRequired
+            } else {
+                DocumentState::Disconnected
+            };
+            lifecycle.finish(state);
+            return Err(error);
+        }
         let state = {
-            let guard = self.attachment.lock().await;
-            let a = guard.as_ref().ok_or(DocumentControllerError::NotOpen)?;
+            let guard = self.replica.lock().expect("replica mutex poisoned");
+            let a = guard
+                .attachment
+                .as_ref()
+                .ok_or(DocumentControllerError::NotOpen)?;
             if a.conflicted {
                 DocumentState::Conflict
             } else if a.writer_lease.is_none() {
@@ -640,9 +985,11 @@ impl DocumentController {
                 DocumentState::DirtyLocal
             }
         };
-        *self.state.lock().await = state.clone();
+        lifecycle.finish(state.clone());
+        self.network_enabled.store(true, Ordering::Release);
         if state == DocumentState::DirtyLocal && wants_writer {
             drop(_op);
+            self.schedule_flush();
             self.flush().await?;
         }
         Ok(())
@@ -651,8 +998,11 @@ impl DocumentController {
     /// revision/status only and must fetch a snapshot when the revision moves.
     pub async fn poll_status(&self) -> Result<(u64, bool, bool, bool), DocumentControllerError> {
         let (project_id, document_id) = {
-            let guard = self.attachment.lock().await;
-            let a = guard.as_ref().ok_or(DocumentControllerError::NotOpen)?;
+            let guard = self.replica.lock().expect("replica mutex poisoned");
+            let a = guard
+                .attachment
+                .as_ref()
+                .ok_or(DocumentControllerError::NotOpen)?;
             (a.project_id.clone(), a.document_id.clone())
         };
         match self
@@ -674,14 +1024,17 @@ impl DocumentController {
             r => self.response_error(r),
         }
     }
-    async fn install_snapshot(
+    fn install_snapshot(
         &self,
         snapshot: DocumentSnapshotDto,
     ) -> Result<(), DocumentControllerError> {
-        let mut g = self.attachment.lock().await;
-        let a = g.as_mut().ok_or(DocumentControllerError::NotOpen)?;
+        let mut g = self.replica.lock().expect("replica mutex poisoned");
+        let a = g
+            .attachment
+            .as_mut()
+            .ok_or(DocumentControllerError::NotOpen)?;
         if snapshot.document_id != a.document_id || snapshot.project_id != a.project_id {
-            *self.state.lock().await = DocumentState::GoneWithLocalDraft;
+            g.state = DocumentState::GoneWithLocalDraft;
             return Err(DocumentControllerError::ResyncRequired);
         }
         if !a.pending.is_empty() {
@@ -708,7 +1061,7 @@ impl DocumentController {
                 // The server still has the exact base snapshot. Retry the
                 // unchanged queue and its stable change IDs after reattach.
             } else {
-                *self.state.lock().await = DocumentState::ResyncRequired;
+                g.state = DocumentState::ResyncRequired;
                 return Err(DocumentControllerError::ResyncRequired);
             }
         }
@@ -727,13 +1080,32 @@ impl DocumentController {
     }
     pub async fn close(&self) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
-        let (project, id) = {
-            let a = self.attachment.lock().await;
-            let a = a.as_ref().ok_or(DocumentControllerError::NotOpen)?;
-            if !a.pending.is_empty() {
-                return Err(DocumentControllerError::ResyncRequired);
-            }
-            (a.project_id.clone(), a.document_id.clone())
+        let (project, id, epoch, prior_state) = {
+            let mut a = self.replica.lock().expect("replica mutex poisoned");
+            let (project, id) = {
+                let attachment = a
+                    .attachment
+                    .as_ref()
+                    .ok_or(DocumentControllerError::NotOpen)?;
+                if !attachment.pending.is_empty() {
+                    return Err(DocumentControllerError::ResyncRequired);
+                }
+                (
+                    attachment.project_id.clone(),
+                    attachment.document_id.clone(),
+                )
+            };
+            let prior_state = a.state.clone();
+            a.lifecycle = ControllerLifecycle::Closing;
+            a.lifecycle_epoch = a.lifecycle_epoch.wrapping_add(1);
+            a.state = DocumentState::Opening;
+            (project, id, a.lifecycle_epoch, prior_state)
+        };
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch,
+            restore: prior_state.clone(),
+            finished: false,
         };
         let r = self
             .transport
@@ -741,13 +1113,25 @@ impl DocumentController {
                 project_id: project,
                 document_id: id,
             })
-            .await
-            .map_err(DocumentControllerError::Transport)?;
+            .await;
+        let r = match r {
+            Ok(response) => response,
+            Err(error) => {
+                lifecycle.finish(prior_state);
+                return Err(DocumentControllerError::Transport(error));
+            }
+        };
         if matches!(r, CoreResponse::Ack) {
-            *self.attachment.lock().await = None;
-            *self.state.lock().await = DocumentState::Closed;
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            if replica.lifecycle_epoch != epoch {
+                return Err(DocumentControllerError::LifecycleBusy);
+            }
+            replica.attachment = None;
+            drop(replica);
+            lifecycle.finish(DocumentState::Closed);
             Ok(())
         } else {
+            lifecycle.finish(prior_state);
             self.response_error(r)
         }
     }
@@ -780,6 +1164,125 @@ mod tests {
     struct FakeTransport {
         responses: AsyncMutex<VecDeque<Result<CoreResponse, String>>>,
         requests: AsyncMutex<Vec<CoreRequest>>,
+    }
+
+    struct SaveGateTransport {
+        save_entered: tokio::sync::Notify,
+        release_save: AsyncMutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        close_entered: tokio::sync::Notify,
+        release_close: AsyncMutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        close_fails: bool,
+        requests: AsyncMutex<Vec<CoreRequest>>,
+        revision: AtomicU64,
+    }
+
+    struct FlushGateTransport {
+        entered: tokio::sync::Notify,
+        release: AsyncMutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        completed: AtomicU64,
+        in_flight: AtomicU64,
+        max_in_flight: AtomicU64,
+        completion_notify: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl DocumentTransport for FlushGateTransport {
+        async fn request(&self, request: CoreRequest) -> Result<CoreResponse, String> {
+            match request {
+                CoreRequest::DocumentOpen { .. } => Ok(CoreResponse::DocumentSnapshot {
+                    snapshot: DocumentSnapshotDto {
+                        document_id: "doc-1".into(),
+                        project_id: "project-1".into(),
+                        workspace_id: "workspace-1".into(),
+                        relative_path: "src/lib.rs".into(),
+                        revision: 0,
+                        text: "".into(),
+                        dirty: false,
+                        conflicted: false,
+                        writer: true,
+                        disk_base_digest: "digest".into(),
+                    },
+                    writer_lease: Some("lease-1".into()),
+                    lsp_degraded: false,
+                }),
+                CoreRequest::DocumentChange { .. } => {
+                    let current = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                    self.max_in_flight.fetch_max(current, Ordering::AcqRel);
+                    if self.completed.load(Ordering::Acquire) == 0 {
+                        self.entered.notify_one();
+                        if let Some(release) = self.release.lock().await.take() {
+                            release.await.map_err(|e| e.to_string())?;
+                        }
+                    }
+                    let revision = self.completed.fetch_add(1, Ordering::AcqRel) + 1;
+                    self.in_flight.fetch_sub(1, Ordering::AcqRel);
+                    self.completion_notify.notify_one();
+                    Ok(CoreResponse::DocumentChanged {
+                        revision,
+                        lsp_degraded: false,
+                    })
+                }
+                _ => Ok(CoreResponse::Ack),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DocumentTransport for SaveGateTransport {
+        async fn request(&self, request: CoreRequest) -> Result<CoreResponse, String> {
+            self.requests.lock().await.push(request.clone());
+            match request {
+                CoreRequest::DocumentOpen { .. } => Ok(CoreResponse::DocumentSnapshot {
+                    snapshot: DocumentSnapshotDto {
+                        document_id: "doc-1".into(),
+                        project_id: "project-1".into(),
+                        workspace_id: "workspace-1".into(),
+                        relative_path: "src/lib.rs".into(),
+                        revision: 0,
+                        text: "a".into(),
+                        dirty: false,
+                        conflicted: false,
+                        writer: true,
+                        disk_base_digest: "digest".into(),
+                    },
+                    writer_lease: Some("lease-1".into()),
+                    lsp_degraded: false,
+                }),
+                CoreRequest::DocumentSave { .. } => {
+                    self.save_entered.notify_one();
+                    if let Some(release) = self.release_save.lock().await.take() {
+                        release.await.map_err(|e| e.to_string())?;
+                    }
+                    Ok(CoreResponse::DocumentSaved {
+                        revision: self.revision.load(Ordering::Acquire),
+                        disk_base_digest: "saved".into(),
+                        lsp_degraded: false,
+                    })
+                }
+                CoreRequest::DocumentChange { .. } => {
+                    let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
+                    Ok(CoreResponse::DocumentChanged {
+                        revision,
+                        lsp_degraded: false,
+                    })
+                }
+                CoreRequest::DocumentClose { .. } => {
+                    self.close_entered.notify_one();
+                    if let Some(release) = self.release_close.lock().await.take() {
+                        release.await.map_err(|e| e.to_string())?;
+                    }
+                    if self.close_fails {
+                        Ok(CoreResponse::Error {
+                            code: "close_failed".into(),
+                            message: "close failed".into(),
+                        })
+                    } else {
+                        Ok(CoreResponse::Ack)
+                    }
+                }
+                _ => Ok(CoreResponse::Ack),
+            }
+        }
     }
 
     #[async_trait]
@@ -1120,5 +1623,232 @@ mod tests {
             controller.snapshot().await.unwrap().0.to_string(),
             "disk draft"
         );
+    }
+
+    #[tokio::test]
+    async fn save_fence_keeps_edits_accepted_while_save_is_in_flight() {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let transport = Arc::new(SaveGateTransport {
+            save_entered: tokio::sync::Notify::new(),
+            release_save: AsyncMutex::new(Some(gate)),
+            close_entered: tokio::sync::Notify::new(),
+            release_close: AsyncMutex::new(None),
+            close_fails: false,
+            requests: AsyncMutex::new(Vec::new()),
+            revision: AtomicU64::new(0),
+        });
+        let controller = Arc::new(DocumentController::new(transport.clone()));
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+            )
+            .await
+            .unwrap();
+        let save_controller = controller.clone();
+        let save = tokio::spawn(async move { save_controller.save().await });
+        transport.save_entered.notified().await;
+        controller
+            .apply_local(TextTransaction::new(vec![codegg_document::TextEdit::new(
+                1..1,
+                "new",
+            )]))
+            .unwrap();
+        release.send(()).unwrap();
+        save.await.unwrap().unwrap();
+        assert_eq!(controller.snapshot().await.unwrap().0.to_string(), "anew");
+        assert!(matches!(
+            controller.state().await,
+            DocumentState::DirtyLocal | DocumentState::Flushing
+        ));
+        controller.flush().await.unwrap();
+        assert_eq!(controller.snapshot().await.unwrap().0.to_string(), "anew");
+    }
+
+    #[tokio::test]
+    async fn repeated_open_is_rejected_without_a_second_remote_open() {
+        let transport = Arc::new(FakeTransport {
+            responses: AsyncMutex::new(VecDeque::from([Ok(CoreResponse::DocumentSnapshot {
+                snapshot: DocumentSnapshotDto {
+                    document_id: "doc-1".into(),
+                    project_id: "project-1".into(),
+                    workspace_id: "workspace-1".into(),
+                    relative_path: "src/lib.rs".into(),
+                    revision: 0,
+                    text: "".into(),
+                    dirty: false,
+                    conflicted: false,
+                    writer: true,
+                    disk_base_digest: "d".into(),
+                },
+                writer_lease: Some("lease".into()),
+                lsp_degraded: false,
+            })])),
+            requests: AsyncMutex::new(Vec::new()),
+        });
+        let controller = Arc::new(DocumentController::new(transport.clone()));
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            controller
+                .open(
+                    "project-1".into(),
+                    "workspace-1".into(),
+                    "other.rs".into(),
+                    true
+                )
+                .await,
+            Err(DocumentControllerError::AlreadyOpen)
+        ));
+        assert_eq!(
+            transport
+                .requests
+                .lock()
+                .await
+                .iter()
+                .filter(|r| matches!(r, CoreRequest::DocumentOpen { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_open_returns_to_closed_state() {
+        let transport = Arc::new(FakeTransport {
+            responses: AsyncMutex::new(VecDeque::from([Err("offline".into())])),
+            requests: AsyncMutex::new(Vec::new()),
+        });
+        let controller = Arc::new(DocumentController::new(transport));
+        assert!(controller
+            .open("p".into(), "w".into(), "f".into(), false)
+            .await
+            .is_err());
+        assert_eq!(controller.state().await, DocumentState::Closed);
+    }
+
+    #[tokio::test]
+    async fn close_fence_rejects_typing_and_failed_close_restores_attachment() {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let transport = Arc::new(SaveGateTransport {
+            save_entered: tokio::sync::Notify::new(),
+            release_save: AsyncMutex::new(None),
+            close_entered: tokio::sync::Notify::new(),
+            release_close: AsyncMutex::new(Some(gate)),
+            close_fails: true,
+            requests: AsyncMutex::new(Vec::new()),
+            revision: AtomicU64::new(0),
+        });
+        let controller = Arc::new(DocumentController::new(transport.clone()));
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+            )
+            .await
+            .unwrap();
+        let close_controller = controller.clone();
+        let close = tokio::spawn(async move { close_controller.close().await });
+        transport.close_entered.notified().await;
+        let edit =
+            controller.apply_local(TextTransaction::new(vec![codegg_document::TextEdit::new(
+                0..0,
+                "x",
+            )]));
+        assert!(matches!(edit, Err(DocumentControllerError::LifecycleBusy)));
+        release.send(()).unwrap();
+        assert!(close.await.unwrap().is_err());
+        assert_eq!(controller.state().await, DocumentState::Synced);
+        assert_eq!(controller.snapshot().await.unwrap().0.to_string(), "a");
+    }
+
+    #[tokio::test]
+    async fn cancelled_close_releases_the_lifecycle_fence() {
+        let (_release, gate) = tokio::sync::oneshot::channel();
+        let transport = Arc::new(SaveGateTransport {
+            save_entered: tokio::sync::Notify::new(),
+            release_save: AsyncMutex::new(None),
+            close_entered: tokio::sync::Notify::new(),
+            release_close: AsyncMutex::new(Some(gate)),
+            close_fails: false,
+            requests: AsyncMutex::new(Vec::new()),
+            revision: AtomicU64::new(0),
+        });
+        let controller = Arc::new(DocumentController::new(transport.clone()));
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+            )
+            .await
+            .unwrap();
+        let close_controller = controller.clone();
+        let close = tokio::spawn(async move { close_controller.close().await });
+        transport.close_entered.notified().await;
+        close.abort();
+        let _ = close.await;
+        assert!(controller
+            .apply_local(TextTransaction::new(vec![codegg_document::TextEdit::new(
+                0..0,
+                "x"
+            )]))
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn blocked_flush_owns_one_worker_through_a_local_edit_burst() {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let transport = Arc::new(FlushGateTransport {
+            entered: tokio::sync::Notify::new(),
+            release: AsyncMutex::new(Some(gate)),
+            completed: AtomicU64::new(0),
+            in_flight: AtomicU64::new(0),
+            max_in_flight: AtomicU64::new(0),
+            completion_notify: tokio::sync::Notify::new(),
+        });
+        let controller = Arc::new(DocumentController::new(transport.clone()));
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+            )
+            .await
+            .unwrap();
+        controller
+            .apply_local(TextTransaction::new(vec![codegg_document::TextEdit::new(
+                0..0,
+                "0",
+            )]))
+            .unwrap();
+        transport.entered.notified().await;
+        for i in 1..=25 {
+            controller
+                .apply_local(TextTransaction::new(vec![codegg_document::TextEdit::new(
+                    0..0,
+                    i.to_string(),
+                )]))
+                .unwrap();
+        }
+        assert!(controller.flush_worker_running.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        while transport.completed.load(Ordering::Acquire) < 26 {
+            transport.completion_notify.notified().await;
+        }
+        assert_eq!(transport.max_in_flight.load(Ordering::Acquire), 1);
+        assert_eq!(controller.snapshot().await.unwrap().0.len_bytes(), 42);
     }
 }
