@@ -410,9 +410,7 @@ mod live_request_preparation_delta {
         ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, ProviderError, TokenUsage,
     };
     use codegg::tool::ToolRegistry;
-    use codegg::tool_advisor::causal_observe::{
-        latest_observe_outcome, CAUSAL_OBSERVE_P95_BUDGET_MS,
-    };
+    use codegg::tool_advisor::causal_observe::latest_observe_outcome;
 
     #[derive(Clone)]
     struct StubProvider;
@@ -522,6 +520,18 @@ mod live_request_preparation_delta {
         assert!(!outcome.surface_fingerprint.is_empty());
         assert!(!outcome.state_fingerprint.is_empty());
         assert!(!outcome.contract_catalog_fingerprint.is_empty());
-        assert!(outcome.evaluation_millis < CAUSAL_OBSERVE_P95_BUDGET_MS);
+        // The live path must record a real measurement. This is deliberately
+        // a sanity check and not a budget gate: it is one cold sample taken
+        // inside a live agent-loop preparation, so asserting the frozen 5 ms
+        // budget against it measures the runner's scheduler rather than this
+        // code, and it failed intermittently for exactly that reason. The
+        // budget itself is enforced distributionally by
+        // `replay_p95_within_budget` above, over 201 warm samples against the
+        // same constant.
+        assert!(
+            outcome.evaluation_millis.is_finite() && outcome.evaluation_millis >= 0.0,
+            "live path must record a real duration, got {}",
+            outcome.evaluation_millis
+        );
     }
 }

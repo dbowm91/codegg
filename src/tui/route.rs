@@ -9,6 +9,16 @@ pub enum Route {
     /// ordinary Session/Task composer stays editable while this route
     /// is active and the sidebar shows project chat for the selection.
     Workspace,
+    /// M006-A: non-modal document editor primary view.
+    ///
+    /// The editor is identified by this route plus the open
+    /// `EditorState` attachment. The ordinary Session/Task composer
+    /// stays editable while this route is active unless the user
+    /// explicitly focuses the editor buffer, mirroring
+    /// [`Route::Workspace`]. The selected project/workspace comes from
+    /// the active tab's explicit execution context and never confers
+    /// authority by itself.
+    Editor,
 }
 
 pub struct RouteManager {

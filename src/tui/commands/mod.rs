@@ -2,6 +2,7 @@ pub(super) mod agents;
 pub(super) mod chat;
 pub(super) mod control;
 pub(super) mod diagnostics;
+pub(super) mod editor;
 pub(super) mod git_sidebar;
 pub(super) mod goals;
 pub(super) mod import;

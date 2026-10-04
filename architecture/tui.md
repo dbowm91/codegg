@@ -508,10 +508,17 @@ pub struct App {
 | `projection_client.rs` | Projection client state |
 | `chat.rs` | Project-scoped chat projection |
 | `execution_context.rs` | Explicit project execution context |
+| `editor.rs` | M006-A editor attachment, status, and notice presentation |
 | `observe.rs` | Read-only session observation |
 | `presence.rs` | Collaborator presence projection |
 
 ### Durable agent-run inspection (M006)
+
+Naming note: this "M006" is the TUI's own durable-agent-run milestone and
+is unrelated to the Desktop Frontend and IDE Foundation roadmap, whose
+M006 was decomposed into M006-A through M006-E. Renaming either is a
+terminology amendment, not a corrective edit; see the M006 TUI
+presentation audit, section 12.
 
 The sidebar consumes the canonical session projection's bounded durable-run,
 worktree, and group summaries. It shows concurrent child status, stable run
@@ -854,8 +861,76 @@ keeps low-level schedule diagnostics.
 pub enum Route {
     Home,
     Session(String),
+    Workspace,  // Team Collaboration M005
+    Editor,     // Desktop Frontend M006-A
 }
 ```
+
+`Workspace` and `Editor` are non-modal primary views: both keep the
+ordinary Session/Task composer editable and the sidebar rendering while
+they are active, and both identify themselves only by this route plus
+their own state record. A route never confers project authority; the
+project and workspace come from the active tab's explicit
+`ProjectExecutionContext`.
+
+### Document editor (M006-A)
+
+The `Route::Editor` primary view renders a buffer from the shared M005
+`DocumentController` optimistic replica. The ownership model is ADR-0011:
+the daemon owns canonical text, the controller owns the local replica, and
+the frontend owns presentation and undo/redo.
+
+**Single-buffer invariant.** The frontend holds no text. Every render reads
+the replica through `DocumentController::try_snapshot()`, whose
+`DocumentSnapshot` is a handle to the controller's own buffer and is dropped
+with the frame. `try_attachment_info()` returns line count, writer lease,
+and conflict flags for chrome that must survive a frame, and carries no
+text. `scripts/check_tui_editor_text_authority.py` fails the build on a
+whole-document field or a filesystem read anywhere in the editor path, and
+passes for a scoped `&DocumentSnapshot` borrow and for the bounded
+`TextTransaction` undo history.
+
+**Presentation record.** `TuiDocumentPresentation` owns cursor byte,
+selection range, viewport line and column, buffer mode, a two-byte pending
+command prefix, and the undo/redo stacks. Undo entries are capped at 256
+entries and 4 MiB across both directions, and retain *both* the forward and
+inverse transactions so moving an entry between stacks is exact.
+
+**Reconciliation clears history.** Open, reload, resync, reconnect, and
+close all clear undo and redo. Save does not: it writes the same local text,
+so undo stays meaningful. A divergent draft is retained by the controller in
+a recovery state; the editor surfaces that state and never auto-reloads,
+auto-replays, or auto-discards.
+
+**Focus model.** `EditorFocus` is `Composer` or `Buffer`. The composer is the
+default, matching `Route::Workspace`, so opening the editor does not disturb
+session composition. `Ctrl+E` focuses the buffer; `Esc` walks back out —
+insert mode, then focus, then the view. Keys the buffer does not claim fall
+through to the composer.
+
+**Hard wrap.** One logical line is exactly one screen row, with horizontal
+scrolling for long lines. This is what makes the line-number gutter, the
+current-line highlight, and cursor arithmetic deterministic. Soft wrap
+changes the line-to-row mapping and is deferred.
+
+**Bounded per-frame work.** Only the visible slice is materialized, bounded
+by viewport height, and each visible line is read with one bounded
+`read_bytes` call. A multi-megabyte file renders exactly like a small one.
+A whole-document `Vec<Line>` is never built, which the static guard also
+enforces.
+
+**Async discipline.** Every controller round trip (open, save, reload,
+resync, close) is spawned with `spawn_scoped_registered_tui_task` and carries
+both a request id and a generation counter. A completion whose generation
+does not match the current attachment is discarded, so a late result can
+never be applied to a later document.
+
+**Project authority.** `/open <workspace-relative path>` resolves the project
+and workspace from the active tab's `ProjectExecutionContext` and refuses
+when they are absent. The command performs only a *lexical* path check — no
+filesystem access, no path resolution; containment, `file.read`
+authorization, and symlink policy remain the daemon's decision in
+`DocumentOpen`.
 
 ### InputMode (`src/tui/input.rs`)
 

@@ -94,6 +94,26 @@ struct PendingChange {
     resulting_snapshot: DocumentSnapshot,
 }
 
+/// Read-only, non-textual projection of the current attachment.
+///
+/// Deliberately carries no document text so a frontend may hold it across
+/// frames for rendering chrome (line count, writer lease, conflict flag)
+/// without keeping a second copy of the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentAttachmentInfo {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub relative_path: String,
+    pub document_id: String,
+    pub revision: u64,
+    pub line_count: usize,
+    pub byte_len: usize,
+    pub is_writer: bool,
+    pub dirty: bool,
+    pub conflicted: bool,
+    pub pending_changes: usize,
+}
+
 struct DynamicTransport(RwLock<Arc<dyn DocumentTransport>>);
 
 impl DynamicTransport {
@@ -239,12 +259,41 @@ impl DocumentController {
         ))
     }
     pub async fn snapshot(&self) -> Result<(DocumentSnapshot, u64), DocumentControllerError> {
-        let a = self.replica.lock().expect("replica mutex poisoned");
-        let a = a
-            .attachment
-            .as_ref()
-            .ok_or(DocumentControllerError::NotOpen)?;
-        Ok((a.buffer.snapshot(), a.daemon_revision))
+        self.try_snapshot().ok_or(DocumentControllerError::NotOpen)
+    }
+    /// Synchronous counterpart of [`DocumentController::snapshot`].
+    ///
+    /// Frontends render on a synchronous event loop and must not retain
+    /// document text between frames, so they need to read the current
+    /// replica without holding a second buffer. This is a read-only view
+    /// of the same `DocumentBuffer` the controller already owns; it does
+    /// not copy text, mutate state, or change any controller semantic.
+    /// Mirrors the synchronous `apply_local` accessor for the same reason.
+    pub fn try_snapshot(&self) -> Option<(DocumentSnapshot, u64)> {
+        let guard = self.replica.lock().expect("replica mutex poisoned");
+        let attachment = guard.attachment.as_ref()?;
+        Some((attachment.buffer.snapshot(), attachment.daemon_revision))
+    }
+    /// Non-textual metadata for the current attachment, for synchronous
+    /// frontend rendering. Returns no document text, so a frontend may keep
+    /// it across frames without violating the single-buffer invariant.
+    pub fn try_attachment_info(&self) -> Option<DocumentAttachmentInfo> {
+        let guard = self.replica.lock().expect("replica mutex poisoned");
+        let a = guard.attachment.as_ref()?;
+        let snapshot = a.buffer.snapshot();
+        Some(DocumentAttachmentInfo {
+            project_id: a.project_id.clone(),
+            workspace_id: a.workspace_id.clone(),
+            relative_path: a.relative_path.clone(),
+            document_id: a.document_id.clone(),
+            revision: a.daemon_revision,
+            line_count: snapshot.len_lines(),
+            byte_len: snapshot.len_bytes(),
+            is_writer: a.writer_lease.is_some(),
+            dirty: a.dirty,
+            conflicted: a.conflicted,
+            pending_changes: a.pending.len(),
+        })
     }
     pub async fn open(
         &self,

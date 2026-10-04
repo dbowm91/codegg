@@ -123,20 +123,35 @@ async fn concurrent_same_owner_activation_coalesces_scope_and_bundle() {
     let daemon = std::sync::Arc::new(CoreDaemon::new(Some(pool().await), None, None));
     let root = tempfile::tempdir().unwrap();
     let (project_id, workspace_id) = seed(&daemon, &root, "contention").await;
+    // Coalescing is a *concurrency* property: the registry only reuses an
+    // existing activation while at least one lease on it is still alive.
+    // `ProjectActivationLease::drop` decrements the activation's handle count
+    // and removes the registry entry when it reaches zero, so a task that
+    // returns without holding its lease lets the next task legitimately mint
+    // a new lease id. Without a barrier this test therefore raced on load: on
+    // a shared runner a task could finish and release before a later task
+    // acquired, and the assertion below failed even though coalescing worked
+    // exactly as designed.
+    //
+    // The barrier holds every lease alive until all eight have been acquired,
+    // which is the condition the assertion actually describes.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let daemon = daemon.clone();
         let project_id = project_id.clone();
         let workspace_id = workspace_id.clone();
+        let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             let activation = daemon
                 .activate_project_workspace(&project_id, &workspace_id, "same-owner")
                 .await
                 .unwrap();
-            (
-                activation.lease.lease_id().to_string(),
-                activation.refresh.coalesced,
-            )
+            let lease_id = activation.lease.lease_id().to_string();
+            let coalesced = activation.refresh.coalesced;
+            // Hold the lease until every task has acquired, then let it drop.
+            barrier.wait().await;
+            (lease_id, coalesced)
         }));
     }
     let mut results = Vec::new();

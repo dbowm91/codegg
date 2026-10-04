@@ -1479,3 +1479,4 @@ mod async_cmd_tests {
     }
 }
 pub mod document_session;
+pub mod editor;

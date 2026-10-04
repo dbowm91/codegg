@@ -300,7 +300,18 @@ Registered implementation line:
 
 ### Milestone 006 — TUI IDE vertical slice
 
-Status: eligible for fresh planning after a TUI presentation audit. Strict M005 closure is recorded at `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`. Complete the fresh presentation audit before writing an M006 implementation handoff; no M006 implementation plan exists.
+Status: audit complete; decomposed into M006-A…M006-E. Audit of record:
+`plans/subsystems/desktop-frontend-ide-foundation-m006-tui-presentation-audit.md`
+(baseline `614e983e`). Strict M005 closure is recorded at
+`plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`.
+
+The audit discharged the presentation-audit gate. M006 as originally written is
+not a single bounded handoff: it combines an editor widget subsystem, a
+layout/route change, a file tree, a new native LSP read protocol surface, an LSP
+delivery decision, and an agent dirty-buffer decision. Per
+`plans/003-planning-process.md` §5 that exceeds milestone sizing, so M006 is
+sequenced below. M006-A is dependency-ready now; M006-B and M006-E carry ADR
+decisions.
 
 Expected TUI-first presentation/product direction:
 
@@ -311,6 +322,56 @@ Expected TUI-first presentation/product direction:
 - existing interactive-process terminal integration;
 - Git/worktree/run/job/agent views from canonical CodeGG state;
 - explicit agent edit/apply/review workflows against saved/dirty documents.
+
+#### M006 decomposition
+
+| Sub-milestone | Scope | Dependency | Ready? |
+|---|---|---|---|
+| M006-A | Editor buffer over the shared `DocumentController`: render, gutter, current line, selection, motion, frontend undo/redo, scroll/wrap, editor route + layout branch, minimal document-open path. No new protocol, no LSP. | M005 strict closed | **implemented** (`1706b50b`, PR `#92`) — `plans/closure/desktop-frontend-ide-foundation/005-status.md`; conditionally closed on a pre-existing causal-advisor flake |
+| M006-B | Native LSP read surface: protocol + daemon handlers + authorization for diagnostics, hover, definition, references, symbols, semantic tokens; delivery-path decision (poll vs new project-scoped event path). | ADR required | blocked on ADR only |
+| M006-C | LSP presentation in the editor: diagnostic markers, semantic/syntax highlighting, navigation actions. | M006-B | blocked |
+| M006-D | File tree and explorer. | M006-A | unblocked; ready for planning |
+| M006-E | Agent edit/apply/review against saved and dirty documents, including the dirty-buffer preview-apply conflict presentation. | M006-A; ADR if apply-into-dirty-buffer is chosen | unblocked by M006-A; ADR still required if apply-into-dirty-buffer is chosen |
+
+M006-A is implemented (`1706b50b`, CI step fix `b993522a`, PR `#92`) and
+conditionally closed. It delivers a non-modal `Route::Editor` primary view over
+the shared `DocumentController`: a presentation model, a viewport-bounded
+render widget, and vi-style motion, editing, frontend undo/redo, and save. It
+adds no protocol surface and no LSP.
+
+Two gates applied. First, it added two read-only accessors
+(`try_snapshot`, `try_attachment_info`) to `codegg-client`, which its plan
+listed as not-to-edit; the alternative was caching document text in the
+frontend, which the plan's own single-buffer invariant forbids. **That
+deviation is approved.** Second, hosted evidence was required. Hosted CI
+`37219495080` has all sixteen guard and lint steps green, including the new
+`check_tui_editor_text_authority.py` as its own named step, and Desktop E2E
+`37219495249` is green.
+
+The hosted `nextest` workspace sweep was red on a **pre-existing** causal
+tool-advisor 5 ms wall-clock flake. Two attempts failed in two *different*
+budget tests, the first attempt's failure passed in the second, and a separate
+worktree at baseline `main` reproduces it at 4/8 versus 2/8 on this branch. None
+of `tests/causal_*.rs` or `src/tool_advisor/` is in this change set. That flake
+was filed as its own corrective and is now **fixed** by the causal frontier
+timing corrective C001 (`cdfd6257`; closure
+`plans/closure/tool-selection-advisor-causal-frontier-timing-corrective/001-status.md`):
+its three single-shot wall-clock asserts measured the CI runner rather than the
+advisor, so they now use warm best-of-15 sampling — or, for the live-loop site
+that cannot be re-run, a sanity check. Both frozen 5.0 ms budgets and every
+assertion are unchanged, so no advisor behavior, disposition, or frozen
+threshold moved.
+
+Consequently **M006-D and M006-E are unblocked**, and **M006-B is gated only
+on its own ADR**, which was always its real precondition.
+
+Two audit findings constrain this sequence. First, the M005 foundation had no
+consumer: `TuiDocumentSession` (`src/tui/document_session.rs`) was never
+constructed in production and `TuiDocumentPresentation` had no consumer, so
+M006-A is the first presentation layer rather than an addition to one. Second,
+no LSP read operation exists in the native protocol — the only LSP variant is
+the `LspPreviewApply` write — so M006-B is a protocol and daemon slice, not
+TUI-local work.
 
 M006 is intentionally TUI-first. Monaco/Tauri graphical IDE work is long-term and should consume the same M005 document foundation later; it is not the next implementation milestone.
 
@@ -403,4 +464,4 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M003 Tauri desktop shell + secure bridge | closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Strict closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; hosted root CI + built-app visible-window E2E green. Historical C001/C002 conditional records remain immutable. Windows qualification remains separately gated by M002 |
 | M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
 | M005 shared document/buffer foundation | closed | `plans/subsystems/editor-document-foundation-roadmap.md` + four original plans + `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md` | M005-A/B/C and current strict M005-D closure are recorded; historical M005-D closure remains immutable. ADR-0011 accepted; TUI-first, GUI editor deferred |
-| M006 TUI IDE vertical slice | eligible for fresh planning | not yet written | Complete a fresh TUI IDE presentation audit before creating an implementation handoff |
+| M006 TUI IDE vertical slice | audit complete; decomposed M006-A…M006-E; M006-A implemented and conditionally closed | M006-A: `plans/implementation/desktop-frontend-ide-foundation/005-editor-buffer-vertical-slice.md`; M006-B…M006-E: not yet written | M006-A: `plans/closure/desktop-frontend-ide-foundation/005-status.md`. Audit of record: `plans/subsystems/desktop-frontend-ide-foundation-m006-tui-presentation-audit.md`. M006-A needed no ADR and is complete for its capability boundary; its two additive read-only `codegg-client` accessors are approved and its hosted guard/lint/E2E evidence is green. It stays conditionally closed on a pre-existing causal-advisor timing flake filed separately, which does not gate M006-D or M006-E. M006-B requires an ADR for the LSP read surface and its delivery/authorization path; M006-E requires an ADR only if apply-into-dirty-buffer is chosen. |

@@ -12,14 +12,14 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 151 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 152 built-in commands
 - `src/config/schema.rs` — `CommandConfig` for config-file commands
 
 ## How It Works
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 151 hardcoded commands (highest priority)
+1. **Built-in commands**: 152 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -160,7 +160,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (142 variants). Adding a new built-in
+built-in executable operation (143 variants). Adding a new built-in
 command requires touching this one typed registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
 `every_builtin_action_is_referenced_by_a_canonical_command` /
@@ -247,12 +247,13 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (151 total)
+### Built-in Commands (152 total)
 
 Representative built-ins:
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
+| `/open` | | M006-A: open one workspace-relative document in the editor primary view (`/open <path>`) |
 | `/connect` | | Add/configure a provider connection (catalog selection + credential form; Eggpool is one optional upstream) |
 | `/connections` | | Inspect/manage/select existing durable connections |
 | `/exit` | `quit`, `q` | Exit the app |
@@ -370,7 +371,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 151**: Guarded by
+- **Built-in count is 152**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -390,7 +391,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-151 count stays in sync with this documentation.
+152 count stays in sync with this documentation.
 
 ## Related Docs
 

@@ -408,6 +408,26 @@ impl App {
                     },
                 ])
             }
+            Route::Editor => {
+                let path = self.editor_state.path.clone().unwrap_or_default();
+                let focus = if self.editor_state.buffer_focused() {
+                    "buffer"
+                } else {
+                    "composer"
+                };
+                Line::from(vec![
+                    Span::styled(
+                        " editor ",
+                        Style::default()
+                            .fg(self.ui_state.theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" {path}  focus:{focus}"),
+                        Style::default().fg(self.ui_state.theme.muted),
+                    ),
+                ])
+            }
         };
         let block = Block::default()
             .borders(Borders::BOTTOM)
@@ -513,6 +533,83 @@ impl App {
             Route::Home => self.render_home(frame, area),
             Route::Session(_) => self.render_session(frame, area),
             Route::Workspace => self.render_workspace_view(frame, area),
+            Route::Editor => self.render_editor_view(frame, area),
+        }
+    }
+
+    /// M006-A: non-modal document editor primary view. Reads the text
+    /// from a scoped borrow of the controller replica and drops it with
+    /// this call, so the frame holds no document buffer. The bottom
+    /// composer and the sidebar are rendered separately and are
+    /// unaffected.
+    fn render_editor_view(&mut self, frame: &mut Frame, area: Rect) {
+        let theme = Arc::clone(&self.ui_state.theme);
+        let shell = |frame: &mut Frame, message: String, style: Style, area: Rect| {
+            let block = Block::default()
+                .title(" Editor (/open <workspace-relative path> · Esc leaves) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new(message).style(style), inner);
+        };
+        let Some(session) = self.editor_state.session.as_ref() else {
+            shell(
+                frame,
+                "No document open — use /open <path>".to_string(),
+                Style::default().fg(theme.muted),
+                area,
+            );
+            return;
+        };
+        let Some(snapshot) = session.try_snapshot() else {
+            shell(
+                frame,
+                self.editor_state.status.label().to_string(),
+                Style::default().fg(theme.warning),
+                area,
+            );
+            return;
+        };
+        let presentation = session.presentation();
+        let cursor = presentation.cursor_byte;
+        let mode = presentation.mode;
+        let focus = presentation.focus;
+        let pending = presentation
+            .pending_command
+            .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
+            .unwrap_or("")
+            .to_string();
+        let path = self
+            .editor_state
+            .path
+            .clone()
+            .unwrap_or_else(|| "(unknown)".to_string());
+        let status = self.editor_state.status;
+        let notice = self
+            .editor_state
+            .notice
+            .as_ref()
+            .map(|notice| notice.message());
+        let writable = self.editor_state.is_writer();
+        let busy = self.editor_state.is_busy();
+        if let Some(session) = self.editor_state.session.as_mut() {
+            crate::tui::components::editor::EditorWidget {
+                path: &path,
+                status: status.label(),
+                notice: notice.as_deref(),
+                mode,
+                focus,
+                pending_command: &pending,
+                cursor_byte: cursor,
+                writable,
+                busy,
+                snapshot: &snapshot,
+                presentation: session.presentation_mut(),
+                theme,
+            }
+            .render(frame, area);
         }
     }
 

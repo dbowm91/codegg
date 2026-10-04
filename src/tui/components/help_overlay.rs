@@ -41,6 +41,7 @@ impl HelpOverlay {
             })
             .collect();
 
+        pairs.extend(editor_bindings());
         pairs.sort_by(|a, b| a.1.cmp(&b.1));
         pairs
     }
@@ -193,5 +194,77 @@ impl HelpOverlay {
             Paragraph::new(footer_text).block(footer_block),
             chunks[2],
         );
+    }
+}
+
+/// M006-A: editor bindings.
+///
+/// The editor claims keys directly rather than through the global binding
+/// table, because its key set depends on the buffer mode and on whether
+/// the buffer owns focus. Publishing the set here keeps every new binding
+/// discoverable in the help overlay instead of only in source.
+fn editor_bindings() -> Vec<(String, String)> {
+    let entries: &[(&str, &str)] = &[
+        ("/", "Open a workspace document in the editor view (/open <path>)"),
+        ("Ctrl+E", "Editor: focus the buffer (Esc returns to the composer)"),
+        ("Esc", "Editor: leave insert mode, then focus, then the view"),
+        ("Ctrl+S", "Editor: save the document through the controller"),
+        ("Ctrl+R", "Editor: resync the replica after a transport failure"),
+        ("Ctrl+R (redo)", "Editor: redo the last undone local edit"),
+        ("R", "Editor: reload from disk, discarding the local draft"),
+        ("h j k l", "Editor: move by character or line"),
+        ("0 $", "Editor: start or end of line"),
+        ("gg G", "Editor: start or end of buffer"),
+        ("w b", "Editor: move by word"),
+        ("PgUp PgDn", "Editor: move by half a page"),
+        ("i a I A", "Editor: enter insert mode at the cursor or line end"),
+        ("o O", "Editor: open a line below or above"),
+        ("x D", "Editor: delete a character or to end of line"),
+        ("dd dw", "Editor: delete a line or a word"),
+        ("u", "Editor: undo the last local edit"),
+    ];
+    entries
+        .iter()
+        .map(|(key, description)| ((*key).to_string(), (*description).to_string()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_editor_binding_is_documented() {
+        let overlay = HelpOverlay::new(Arc::new(Theme::default()));
+        let described: Vec<&str> = overlay
+            .bindings
+            .iter()
+            .map(|(_, description)| description.as_str())
+            .filter(|description| description.starts_with("Editor:"))
+            .collect();
+        assert!(
+            described.len() >= 15,
+            "the editor binding set must be discoverable, got {described:?}"
+        );
+        for required in [
+            "Editor: save the document through the controller",
+            "Editor: undo the last local edit",
+            "Editor: delete a line or a word",
+            "Editor: leave insert mode, then focus, then the view",
+        ] {
+            assert!(
+                described.contains(&required),
+                "missing help text: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_open_command_is_documented() {
+        let overlay = HelpOverlay::new(Arc::new(Theme::default()));
+        assert!(overlay
+            .bindings
+            .iter()
+            .any(|(_, description)| description.contains("/open <path>")));
     }
 }

@@ -408,6 +408,10 @@ pub struct App {
     /// chat draft for the Workspace-selected project. List navigation
     /// works in both. Render performs no I/O.
     pub workspace_focus: crate::tui::app::state::WorkspaceFocus,
+    /// M006-A: document editor state. Owns the document session
+    /// handle for the `Route::Editor` primary view and the presentation
+    /// of controller states and errors. Holds no document text.
+    pub editor_state: crate::tui::app::state::EditorState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -827,6 +831,7 @@ impl App {
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
+            editor_state: crate::tui::app::state::EditorState::default(),
         }
     }
 
@@ -862,6 +867,7 @@ impl App {
             crate::tui::route::Route::Home => "home".to_string(),
             crate::tui::route::Route::Session(id) => format!("session:{}", id),
             crate::tui::route::Route::Workspace => "workspace".to_string(),
+            crate::tui::route::Route::Editor => "editor".to_string(),
         };
 
         let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
@@ -1315,6 +1321,7 @@ impl App {
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
+            editor_state: crate::tui::app::state::EditorState::default(),
         }
     }
 
@@ -2150,6 +2157,17 @@ impl App {
         ) && self.dialog_state.workspace_dashboard.is_some();
         if workspace_active
             && crate::tui::commands::workspace_dashboard::handle_workspace_view_key(self, key)
+        {
+            return;
+        }
+        // M006-A: the editor primary view claims keys only when it owns
+        // them. With the buffer unfocused every unclaimed key falls
+        // through to the ordinary composer, so opening the editor does
+        // not disturb session composition.
+        if matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Editor
+        ) && crate::tui::commands::editor::handle_editor_key(self, key)
         {
             return;
         }
@@ -4251,6 +4269,20 @@ impl App {
             }
             B::Editor => {
                 self.open_external_editor();
+            }
+            B::OpenDocument => {
+                // M006-A: `/open <workspace-relative path>`. With no
+                // argument the composer keeps the key so the user can
+                // type the path after the command.
+                let query = self.dialog_state.command_palette.query.clone();
+                let path = query.trim();
+                if path.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("Usage: /open <workspace-relative path> (e.g. /open src/lib.rs)");
+                } else {
+                    crate::tui::commands::editor::open_editor(self, path);
+                }
             }
             B::Loop => {
                 let query = self.dialog_state.command_palette.query.clone();

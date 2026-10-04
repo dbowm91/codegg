@@ -165,6 +165,9 @@ pub enum BuiltinSlashAction {
     Workspaces,
     Worktree,
     Editor,
+    /// M006-A: open one workspace-relative document in the
+    /// editor primary view.
+    OpenDocument,
     Loop,
     Tasks,
     Task,
@@ -368,6 +371,7 @@ fn classify_domain(name: &str, category: CommandCategory) -> CommandDomain {
         "workspaces",
         "tree",
         "editor",
+        "open",
     ]
     .contains(&first)
     {
@@ -544,6 +548,12 @@ impl CommandRegistry {
                 .with_description("Manage workspaces"),
             Command::new("/tree", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tree)).with_description("Show file tree"),
             Command::new("/editor", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Editor)).with_description("Open editor"),
+            Command::new(
+                "/open",
+                CommandCategory::Session,
+                CommandAction::Builtin(BuiltinSlashAction::OpenDocument),
+            )
+            .with_description("Open a workspace document in the editor view (/open <path>)"),
             Command::new("/keybinds", CommandCategory::System, CommandAction::Dialog(Dialog::Keybind))
                 .with_description("Customize keybindings"),
             Command::new("/context", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Context))
@@ -1087,7 +1097,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 151);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 152);
     }
 
     #[test]
@@ -1184,6 +1194,7 @@ mod tests {
             B::Workspaces,
             B::Worktree,
             B::Editor,
+            B::OpenDocument,
             B::Loop,
             B::Tasks,
             B::Task,

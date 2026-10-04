@@ -75,11 +75,34 @@ placeholders; it owns no text buffer. Headless and TUI-kind native clients use
 the same `document.v1` controller contract. Status polling is metadata-only;
 an observer resnapshots when the daemon revision changes.
 
+M006-A gives that seam a production consumer: the TUI editor primary view
+(`Route::Editor`). The seam is unchanged in shape — one controller, one
+presentation record — but the presentation record now carries cursor, anchor,
+viewport line and column, buffer mode, a bounded command prefix, and a
+depth/byte-capped undo/redo history. It still holds no text. The render path
+reads the replica through two read-only accessors on the controller,
+`try_snapshot` (a `DocumentSnapshot` borrow, dropped with the frame) and
+`try_attachment_info` (line count, writer lease, conflict flag, no text), so a
+frontend can hold the second across frames without holding a second buffer.
+`scripts/check_tui_editor_text_authority.py` enforces this statically; see
+`architecture/tui.md` for the route, focus model, and viewport contract.
+
 M005 limitations: one writer per document; local drafts are process-local and
-not persisted; agent reads remain disk-authoritative; no CRDT/OT or GUI editor
-is included; and LSP preview apply into a dirty buffer remains rejected. A
+not persisted; agent reads remain disk-authoritative; no CRDT/OT is included;
+LSP preview apply into a dirty buffer remains rejected. A
 daemon restart may orphan a local draft, which is never automatically written
 over newly opened disk state.
+
+M006-A does not relax the dirty-buffer rejection. That is M006-E's product
+decision, and it requires an ADR; the existing rejection is correct as
+written.
+
+M006-A also leaves two M006 limitations standing and does not claim them away.
+A GUI editor is still out of scope, and the TUI editor reads no LSP state:
+`document.v1` has no LSP read operation, so diagnostics, completion, and
+navigation are still reachable only from the agent tool path. That gap is
+M006-B and needs an ADR covering the delivery path and project-scoped
+authorization.
 
 ## LSP, save, and external disk changes
 

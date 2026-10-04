@@ -60,6 +60,10 @@ pub enum TuiTaskKind {
     /// inline expansion). Cancelled when `Route::Workspace` closes;
     /// unrelated `Command` tasks must never be affected.
     Workspace,
+    /// M006-A editor document lifecycle round trips (open, save, reload,
+    /// resync, close). Cancelled when `Route::Editor` closes so a late
+    /// completion cannot be applied to a later attachment.
+    Editor,
 }
 
 impl std::fmt::Display for TuiTaskKind {
@@ -76,6 +80,7 @@ impl std::fmt::Display for TuiTaskKind {
             Self::Other => write!(f, "Other"),
             Self::GitStatus => write!(f, "GitStatus"),
             Self::Workspace => write!(f, "Workspace"),
+            Self::Editor => write!(f, "Editor"),
         }
     }
 }
