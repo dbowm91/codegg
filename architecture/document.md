@@ -97,6 +97,14 @@ M006-A does not relax the dirty-buffer rejection. That is M006-E's product
 decision, and it requires an ADR; the existing rejection is correct as
 written.
 
+The M006-D file tree does not relax it either, and does not touch this
+contract at all. The tree is a *navigator*: it enumerates directory entries
+and never reads file bytes, and selecting a file routes through the same
+`DocumentOpen` path as `/open`. A workspace-relative path from the tree
+therefore gets exactly the same containment, `file.read` authorization,
+symlink policy, and dirty-buffer handling as a typed one, because it is
+literally the same code path rather than a parallel implementation.
+
 M006-A also leaves two M006 limitations standing and does not claim them away.
 A GUI editor is still out of scope, and the TUI editor reads no LSP state:
 `document.v1` has no LSP read operation, so diagnostics, completion, and

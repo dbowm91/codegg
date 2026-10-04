@@ -736,9 +736,62 @@ pub(crate) fn focus_editor_composer(state: &mut EditorState) {
 /// Returns `true` when the key was consumed. The composer keeps every key
 /// the editor does not claim, so session composition is unaffected while
 /// the editor is open and unfocused.
+/// M006-D: handle one key while the file tree holds focus.
+///
+/// Returns `true` only for keys the tree owns. Everything else returns
+/// `false` so it falls through to the editor and composer unchanged — the
+/// non-modal contract depends on this being a strict subset.
+fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
+    use crossterm::event::KeyCode;
+    match key.code {
+        // Leaving the tree returns focus to the editor buffer without
+        // changing the route, so the composer stays reachable.
+        KeyCode::Esc => {
+            super::file_tree::set_focus(app, false);
+            true
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            super::file_tree::move_selection(app, 1);
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            super::file_tree::move_selection(app, -1);
+            true
+        }
+        // `h`/`l` mirror vi: collapse or expand, on a directory.
+        KeyCode::Char('h') | KeyCode::Left => {
+            super::file_tree::toggle_selected(app);
+            true
+        }
+        // Enter opens a file, or expands a directory, through the existing
+        // controller-backed open path.
+        KeyCode::Enter => {
+            super::file_tree::activate_selected(app);
+            true
+        }
+        // `r` re-walks the workspace.
+        KeyCode::Char('r') => {
+            super::file_tree::rebuild(app);
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     if !is_editor_view_active(app) {
         return false;
+    }
+    // M006-D: the tree pane claims keys only while it is focused, and only
+    // the ones it owns. Anything else falls through, so a focused tree never
+    // silently swallows composer or editor input.
+    if app.ui_state.tree_focused && handle_file_tree_key(app, key) {
+        return true;
+    }
+    // Ctrl-T toggles the pane from anywhere in the editor, focused or not.
+    if key.code == KeyCode::Char('t') && key.modifiers == KeyModifiers::CONTROL {
+        super::file_tree::toggle_tree(app);
+        return true;
     }
     // With the composer focused, Esc leaves the view. With the buffer
     // focused, Esc is handled by the buffer key handler so the step from

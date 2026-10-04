@@ -932,6 +932,61 @@ filesystem access, no path resolution; containment, `file.read`
 authorization, and symlink policy remain the daemon's decision in
 `DocumentOpen`.
 
+### Project-scoped file tree (M006-D)
+
+`Route::Editor` renders a workspace file tree in a pane to the left of the
+buffer, shown with `Ctrl-T` and hidden by default so the M006-A surface is
+unchanged until the user asks for it. `src/tui/file_tree.rs` holds the walk
+and the node model, `src/tui/app/state/file_tree.rs` the view state, and
+`src/tui/components/file_tree.rs` the widget.
+
+**The tree is a navigator, not a content path.** It enumerates directory
+*entries* and never reads file bytes. Opening an entry calls the existing
+`open_editor` verbatim, so the tree inherits that command's lexical
+validation, its already-open short-circuit, its daemon-authorized
+attachment, and its request/generation discipline rather than duplicating
+any of them. Document text remains owned by the M005 controller, which is
+why `scripts/check_tui_editor_text_authority.py` stays green and
+non-vacuous: that guard's `SCANNED_FILES` list is fixed at the five editor
+modules, and this feature does not widen it.
+
+**Bounded on every axis.** The walk caps depth (12), total entries (4096),
+and per-entry name length, and records which bound stopped it so the pane can
+render a truncation notice instead of presenting a partial tree as complete.
+An unreadable subdirectory is skipped rather than treated as fatal, so a
+permission-denied folder cannot blank the tree. Only the rows that fit the
+pane are materialized, so per-frame cost is a function of the viewport
+rather than of the workspace.
+
+**Symlinks are never followed**, at any depth, including directory
+symlinks. The test is on the raw entry, because `canonicalize` resolves a
+symlink and would then report the target as an ordinary directory. Paths are
+built from validated component names rather than by joining arbitrary
+strings, so a tree-derived path is always workspace-relative and cannot
+contain `..`.
+
+**Authority.** The root is the active tab's explicit
+`ProjectExecutionContext::workspace_root`, resolved at the command boundary
+exactly as `open_editor` resolves it. There is no `current_dir()` read and no
+path-as-identity, so `scripts/check_tui_project_authority.py` holds by
+construction.
+
+**Focus and layout.** The layout split degrades to the full-width editor on a
+narrow terminal rather than producing a degenerate pane. While the tree is
+focused it claims a strict subset of keys — `j`/`k` to move, `h`/`l` to
+collapse or expand, `Enter` to open a file or expand a directory, `r` to
+re-walk, `Esc` to leave the tree — and every other key falls through
+unchanged, so a focused tree never swallows composer or editor input. `Esc`
+returns focus to the editor buffer without changing the route, preserving
+the non-modal composer contract.
+
+**Async discipline.** The walk is blocking directory I/O and runs on a
+scoped `TuiTaskKind::FileTree` task. A completion carries the request id, the
+tree generation, and the root it was issued for; a completion that is stale,
+cancelled, or for another workspace is discarded rather than rendered.
+Switching projects resets selection and expansion, because a path from the
+previous project is meaningless in the next.
+
 ### InputMode (`src/tui/input.rs`)
 
 ```rust

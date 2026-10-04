@@ -64,6 +64,10 @@ pub enum TuiTaskKind {
     /// resync, close). Cancelled when `Route::Editor` closes so a late
     /// completion cannot be applied to a later attachment.
     Editor,
+    /// M006-D project-scoped file-tree walks. Cancelled when `Route::Editor`
+    /// closes and on project switch, so a walk for a workspace the user has
+    /// left can never render against the new one.
+    FileTree,
 }
 
 impl std::fmt::Display for TuiTaskKind {
@@ -81,6 +85,7 @@ impl std::fmt::Display for TuiTaskKind {
             Self::GitStatus => write!(f, "GitStatus"),
             Self::Workspace => write!(f, "Workspace"),
             Self::Editor => write!(f, "Editor"),
+            Self::FileTree => write!(f, "FileTree"),
         }
     }
 }

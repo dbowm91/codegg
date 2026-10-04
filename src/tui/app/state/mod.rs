@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod dialog;
 pub mod editor;
 pub mod execution_context;
+pub mod file_tree;
 pub mod manifest;
 pub mod messages;
 pub mod observe;

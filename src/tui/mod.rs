@@ -1480,3 +1480,4 @@ mod async_cmd_tests {
 }
 pub mod document_session;
 pub mod editor;
+pub mod file_tree;
