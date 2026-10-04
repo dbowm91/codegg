@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation — Post-Closure Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `0dda01f362480f2b25162b0c912522bce827d048`
 
@@ -37,7 +37,7 @@ M005-A through M005-D landed the intended architecture:
 
 A post-merge source audit of `crates/codegg-client/src/document.rs` found a narrow lifecycle/concurrency defect cluster in the optimistic controller. These defects do not invalidate the daemon, protocol, text-core, or LSP ownership model, but they are unsafe to carry into a real keystroke-driven TUI editor.
 
-The historical M005 closure records remain immutable. C001 is the current strict-closure authority for the client-controller portion of M005-D.
+The historical M005 closure records remain immutable. C001's closure record is the current strict-closure authority for the client-controller portion of M005-D.
 
 ## 2. Confirmed findings
 
@@ -111,7 +111,7 @@ Successful recovery restores both public state and network scheduling capability
 
 ### Documentation
 
-Current roadmap/registry state must distinguish historical M005 closure from the active M005-D post-closure corrective, and M006 must remain blocked until C001 closes.
+Current roadmap/registry state distinguishes historical M005 closure from the completed M005-D post-closure corrective. With C001 closed, M006 is eligible for a fresh planning pass after its required TUI presentation audit.
 
 ## 4. Non-goals
 
@@ -131,7 +131,7 @@ Current roadmap/registry state must distinguish historical M005 closure from the
 
 ### C001 — DocumentController linearization, scheduler ownership, and recovery
 
-Status: ready.
+Status: closed; closure evidence: `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`.
 
 Plan:
 
@@ -450,11 +450,11 @@ Do not rewrite any existing M005 closure record.
 Current authority should record:
 
 - M005-A/B/C remain closed without qualification;
-- M005-D has historical closure but current strict disposition is conditional on C001;
-- parent M005 is therefore conditionally closed until C001 closes;
-- M006 is blocked from implementation planning/handoff while C001 is open;
+- M005-D has historical closure and current strict closure evidence at `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`;
+- parent M005 is strictly closed;
+- M006 is eligible for a fresh TUI presentation audit/planning, with no implementation handoff yet;
 - graphical IDE work remains long-term/deferred;
-- after C001 closes, M005 returns to strict closed and M006 becomes eligible for fresh TUI presentation audit/planning.
+- M006 remains ineligible for implementation handoff until its fresh TUI presentation audit is complete.
 
 The historical M005-D closure contains a parent-roadmap link to the M006 anchor rather than M005. Preserve that immutable record; note the correct parent link in the C001 closure/current roadmap instead of rewriting history.
 
@@ -481,4 +481,4 @@ C001 closes only when:
 
 | Corrective | Status | Plan | Blocker |
 |---|---|---|---|
-| C001 DocumentController linearization, scheduler ownership, and recovery | ready | `plans/implementation/editor-document-foundation-post-closure-corrective/001-document-controller-linearization-scheduler-and-recovery.md` | No code dependency blocker. M006 remains blocked until C001 strict-closes the M005-D client foundation. |
+| C001 DocumentController linearization, scheduler ownership, and recovery | closed | `plans/implementation/editor-document-foundation-post-closure-corrective/001-document-controller-linearization-scheduler-and-recovery.md` | Closure: `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`; implementation `1dcbce6d`; hosted CI `37177976742` and Desktop E2E `37177976771` succeeded. M006 is eligible for fresh presentation audit/planning. |

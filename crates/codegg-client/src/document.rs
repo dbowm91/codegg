@@ -1185,6 +1185,28 @@ mod tests {
         completion_notify: tokio::sync::Notify,
     }
 
+    struct RecoveryTransport {
+        replies: AsyncMutex<VecDeque<Result<CoreResponse, String>>>,
+        change_count: AtomicU64,
+        recovered_change: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl DocumentTransport for RecoveryTransport {
+        async fn request(&self, request: CoreRequest) -> Result<CoreResponse, String> {
+            if matches!(request, CoreRequest::DocumentChange { .. })
+                && self.change_count.fetch_add(1, Ordering::AcqRel) + 1 == 2
+            {
+                self.recovered_change.notify_one();
+            }
+            self.replies
+                .lock()
+                .await
+                .pop_front()
+                .expect("scripted reply")
+        }
+    }
+
     #[async_trait]
     impl DocumentTransport for FlushGateTransport {
         async fn request(&self, request: CoreRequest) -> Result<CoreResponse, String> {
@@ -1850,5 +1872,78 @@ mod tests {
         }
         assert_eq!(transport.max_in_flight.load(Ordering::Acquire), 1);
         assert_eq!(controller.snapshot().await.unwrap().0.len_bytes(), 42);
+    }
+
+    #[tokio::test]
+    async fn successful_resync_rearms_pending_network_flush() {
+        let transport = Arc::new(RecoveryTransport {
+            replies: AsyncMutex::new(VecDeque::from([
+                Ok(CoreResponse::DocumentSnapshot {
+                    snapshot: DocumentSnapshotDto {
+                        document_id: "doc-1".into(),
+                        project_id: "project-1".into(),
+                        workspace_id: "workspace-1".into(),
+                        relative_path: "src/lib.rs".into(),
+                        revision: 0,
+                        text: "a".into(),
+                        dirty: false,
+                        conflicted: false,
+                        writer: true,
+                        disk_base_digest: "digest".into(),
+                    },
+                    writer_lease: Some("lease-1".into()),
+                    lsp_degraded: false,
+                }),
+                Ok(CoreResponse::Error {
+                    code: "stale_revision".into(),
+                    message: "refresh required".into(),
+                }),
+                Ok(CoreResponse::DocumentSnapshot {
+                    snapshot: DocumentSnapshotDto {
+                        document_id: "doc-1".into(),
+                        project_id: "project-1".into(),
+                        workspace_id: "workspace-1".into(),
+                        relative_path: "src/lib.rs".into(),
+                        revision: 0,
+                        text: "a".into(),
+                        dirty: false,
+                        conflicted: false,
+                        writer: true,
+                        disk_base_digest: "digest".into(),
+                    },
+                    writer_lease: Some("lease-1".into()),
+                    lsp_degraded: false,
+                }),
+                Ok(CoreResponse::DocumentChanged {
+                    revision: 1,
+                    lsp_degraded: false,
+                }),
+            ])),
+            change_count: AtomicU64::new(0),
+            recovered_change: tokio::sync::Notify::new(),
+        });
+        let controller = Arc::new(DocumentController::new(transport.clone()));
+        controller
+            .open(
+                "project-1".into(),
+                "workspace-1".into(),
+                "src/lib.rs".into(),
+                true,
+            )
+            .await
+            .unwrap();
+        controller
+            .apply_local(TextTransaction::new(vec![codegg_document::TextEdit::new(
+                1..1,
+                "x",
+            )]))
+            .unwrap();
+        assert!(controller.flush().await.is_err());
+        assert_eq!(controller.state().await, DocumentState::ResyncRequired);
+        controller.resync().await.unwrap();
+        transport.recovered_change.notified().await;
+        controller.flush().await.unwrap();
+        assert_eq!(transport.change_count.load(Ordering::Acquire), 2);
+        assert_eq!(controller.snapshot().await.unwrap().0.to_string(), "ax");
     }
 }

@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation Roadmap
 
-Status: conditionally closed. M005-A/B/C remain closed; M005-D has historical closure at `plans/closure/editor-document-foundation/004-status.md`, but current strict closure is controlled by ready post-closure C001 at `plans/subsystems/editor-document-foundation-post-closure-corrective-addendum.md`.
+Status: closed. M005-A/B/C remain closed; M005-D's historical closure at `plans/closure/editor-document-foundation/004-status.md` is preserved, and current strict closure evidence is `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`.
 
 Repository audit baseline: `43cc33f6e740de33878d78a8fa2de959692cf819`
 
@@ -166,7 +166,7 @@ No agent-on-unsaved-buffer semantic change.
 
 ### M005-D — Reusable client replica and TUI-first qualification
 
-Status: historically closed at `plans/closure/editor-document-foundation/004-status.md`; current strict disposition is conditional on ready post-closure C001 at `plans/subsystems/editor-document-foundation-post-closure-corrective-addendum.md`. The corrective owns client-controller save/edit, close/reload, flush-worker, recovery, and repeated-open lifecycle defects discovered after merge.
+Status: closed. Historical evidence remains at `plans/closure/editor-document-foundation/004-status.md`; current strict authority is `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md`. C001 closes the post-merge client-controller save/edit, close/reload, flush-worker, recovery, and repeated-open findings.
 
 Plan:
 
@@ -394,4 +394,4 @@ M005 closes when:
 | M005-A text core and transaction contract | closed | `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` | `plans/closure/editor-document-foundation/001-status.md` |
 | M005-B daemon document service + protocol | closed | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | `plans/closure/editor-document-foundation/002-status.md` |
 | M005-C LSP sync + checked save/external conflict | closed | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | `plans/closure/editor-document-foundation/003-status.md` |
-| M005-D client replica + TUI-first qualification | conditionally closed; post-closure C001 ready | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | Historical closure: `plans/closure/editor-document-foundation/004-status.md`; current corrective: `plans/subsystems/editor-document-foundation-post-closure-corrective-addendum.md` |
+| M005-D client replica + TUI-first qualification | closed | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | Historical closure: `plans/closure/editor-document-foundation/004-status.md`; current strict closure: `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md` |
