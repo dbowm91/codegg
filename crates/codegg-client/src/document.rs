@@ -21,6 +21,10 @@ const MAX_PENDING_TRANSACTIONS: usize = 128;
 const MAX_PENDING_INSERT_BYTES: usize = 4 * 1024 * 1024;
 static CONTROLLER_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+// `async_trait` marks the generated boxed future as must-use; the future type
+// already carries that marker, so the generated attribute trips Clippy's
+// double-must-use lint.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait DocumentTransport: Send + Sync {
     async fn request(&self, request: CoreRequest) -> Result<CoreResponse, String>;
