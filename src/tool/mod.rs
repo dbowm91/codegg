@@ -291,6 +291,8 @@ pub struct ToolRegistryOptions {
     /// Optional pre-built LSP service. When `None`, a default
     /// `Arc<LspService>` is constructed from `LspConfig::default()`.
     pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Daemon-owned editor document authority for dirty-preview rejection.
+    pub document_service: Option<Arc<crate::document_service::DocumentService>>,
     /// Optional turn-local preview registry. When absent, the registry
     /// creates one isolated handle for this tool registry.
     pub lsp_preview_registry: Option<LspPreviewRegistryHandle>,
@@ -1092,6 +1094,7 @@ impl ToolRegistry {
             pool,
             session_id,
             lsp_service: None,
+            document_service: None,
             lsp_preview_registry: None,
             tool_backends: ToolBackendConfig::from_config(config),
             context_artifact_store: None,
@@ -1141,6 +1144,7 @@ impl ToolRegistry {
             pool,
             session_id,
             lsp_service: None,
+            document_service: None,
             lsp_preview_registry: None,
             tool_backends: ToolBackendConfig::default(),
             context_artifact_store: None,

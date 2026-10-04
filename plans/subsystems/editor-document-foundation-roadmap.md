@@ -1,6 +1,6 @@
 # Shared Editor Document Foundation Roadmap
 
-Status: active
+Status: closed. See `plans/closure/editor-document-foundation/004-status.md`.
 
 Repository audit baseline: `43cc33f6e740de33878d78a8fa2de959692cf819`
 
@@ -106,7 +106,7 @@ M005 extends this crate with a document controller/replica rather than implement
 
 ### M005-A — Pure text core and transaction contract
 
-Status: ready.
+Status: closed. See `plans/closure/editor-document-foundation/001-status.md`.
 
 Plan:
 
@@ -126,7 +126,7 @@ No daemon/LSP/TUI work.
 
 ### M005-B — Daemon document service and native protocol
 
-Status: blocked on M005-A.
+Status: closed. See `plans/closure/editor-document-foundation/002-status.md`.
 
 Plan:
 
@@ -147,7 +147,7 @@ No editor widget.
 
 ### M005-C — LSP synchronization, checked save, and external conflict
 
-Status: blocked on M005-B.
+Status: closed. See `plans/closure/editor-document-foundation/003-status.md`.
 
 Plan:
 
@@ -166,7 +166,7 @@ No agent-on-unsaved-buffer semantic change.
 
 ### M005-D — Reusable client replica and TUI-first qualification
 
-Status: blocked on M005-C.
+Status: closed. See `plans/closure/editor-document-foundation/004-status.md`.
 
 Plan:
 
@@ -385,7 +385,7 @@ M005 closes when:
 
 | Milestone | Status | Plan | Hard blocker |
 |---|---|---|---|
-| M005-A text core and transaction contract | ready | `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` | none |
-| M005-B daemon document service + protocol | blocked | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | M005-A |
-| M005-C LSP sync + checked save/external conflict | blocked | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | M005-B |
-| M005-D client replica + TUI-first qualification | blocked | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | M005-C |
+| M005-A text core and transaction contract | closed | `plans/implementation/editor-document-foundation/001-text-core-and-transaction-contract.md` | `plans/closure/editor-document-foundation/001-status.md` |
+| M005-B daemon document service + protocol | closed | `plans/implementation/editor-document-foundation/002-daemon-document-service-and-protocol.md` | `plans/closure/editor-document-foundation/002-status.md` |
+| M005-C LSP sync + checked save/external conflict | closed | `plans/implementation/editor-document-foundation/003-lsp-sync-checked-save-and-external-conflict.md` | `plans/closure/editor-document-foundation/003-status.md` |
+| M005-D client replica + TUI-first qualification | closed | `plans/implementation/editor-document-foundation/004-client-replica-and-tui-first-qualification.md` | `plans/closure/editor-document-foundation/004-status.md` |

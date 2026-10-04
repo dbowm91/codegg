@@ -75,6 +75,8 @@ pub struct CoreDaemon {
     /// cleared on restart. Pool-less daemons serve composing state only
     /// and fail durable operations with `chat_unavailable`.
     pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
+    /// Process-local canonical editor document buffers and connection leases.
+    pub documents: Arc<crate::document_service::DocumentService>,
     /// Project Work Orders M001: daemon-owned project work-order
     /// service. Durable work orders/occurrences/lanes live in the
     /// catalog pool (when present); pool-less daemons fail durable
@@ -415,6 +417,11 @@ impl CoreDaemon {
     /// client registry entry is removed.
     pub fn note_client_disconnected(&self, trusted_client_id: &str) {
         self.presence.remove_client(trusted_client_id);
+        let documents = self.documents.clone();
+        let client_id = trusted_client_id.to_owned();
+        tokio::spawn(async move {
+            documents.detach_client(&client_id).await;
+        });
     }
 
     /// Interactive Process Sessions M002: transport-derived authority for
@@ -509,6 +516,14 @@ impl CoreDaemon {
             CoreRequest::ProjectionSubscribe { .. }
                 | CoreRequest::ProjectionArtifactList { .. }
                 | CoreRequest::ProjectionArtifactRead { .. }
+                | CoreRequest::DocumentOpen { .. }
+                | CoreRequest::DocumentSnapshotGet { .. }
+                | CoreRequest::DocumentStatusGet { .. }
+                | CoreRequest::DocumentWriterAcquire { .. }
+                | CoreRequest::DocumentChange { .. }
+                | CoreRequest::DocumentSave { .. }
+                | CoreRequest::DocumentReload { .. }
+                | CoreRequest::DocumentClose { .. }
         );
         // Collaboration M001: single-project chat reads/writes deny as
         // not-found so unauthorized callers cannot infer project
@@ -902,6 +917,14 @@ impl CoreDaemon {
             CoreRequest::ProjectGet { project_id }
             | CoreRequest::ProjectArchive { project_id }
             | CoreRequest::ProjectRestore { project_id } => Some(project_id),
+            CoreRequest::DocumentOpen { project_id, .. }
+            | CoreRequest::DocumentSnapshotGet { project_id, .. }
+            | CoreRequest::DocumentStatusGet { project_id, .. }
+            | CoreRequest::DocumentWriterAcquire { project_id, .. }
+            | CoreRequest::DocumentChange { project_id, .. }
+            | CoreRequest::DocumentSave { project_id, .. }
+            | CoreRequest::DocumentReload { project_id, .. }
+            | CoreRequest::DocumentClose { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
             CoreRequest::SessionCreate {
@@ -3682,6 +3705,9 @@ impl CoreDaemon {
                     authz_decision,
                 ))
                 .await
+            }
+            super::daemon_family::DaemonRequestFamily::Documents => {
+                Box::pin(self.handle_document_request(payload, trusted_client_id)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

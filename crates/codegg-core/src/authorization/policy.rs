@@ -102,6 +102,25 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
     use codegg_protocol::core::CoreRequest as R;
     match request {
         R::Initialize => OperationDescriptor::new("initialize", ScopeKind::Global, None),
+        R::DocumentCapabilities => {
+            OperationDescriptor::new("document_capabilities", ScopeKind::Global, None)
+        }
+        R::DocumentOpen { .. }
+        | R::DocumentSnapshotGet { .. }
+        | R::DocumentStatusGet { .. }
+        | R::DocumentClose { .. } => OperationDescriptor::new(
+            "document_read",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
+        R::DocumentWriterAcquire { .. }
+        | R::DocumentChange { .. }
+        | R::DocumentSave { .. }
+        | R::DocumentReload { .. } => OperationDescriptor::new(
+            "document_modify",
+            ScopeKind::DirectProject,
+            Some(Capability::FileModify),
+        ),
         R::AssetRefresh { .. } => OperationDescriptor::new(
             "asset_refresh",
             ScopeKind::DirectProject,

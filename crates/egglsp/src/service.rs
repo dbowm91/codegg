@@ -1453,6 +1453,70 @@ impl LspService {
         Ok(())
     }
 
+    /// Synchronize canonical editor text and mark this open document as
+    /// managed. Disk-oriented helpers must preserve this text until close.
+    pub async fn open_file_managed(&self, file_path: &Path, text: &str) -> Result<(), LspError> {
+        self.set_managed_document(file_path, text, true).await
+    }
+
+    /// Synchronize canonical text with its authoritative dirty state.
+    pub async fn set_managed_document(
+        &self,
+        file_path: &Path,
+        text: &str,
+        dirty: bool,
+    ) -> Result<(), LspError> {
+        let (key, _) = self.get_or_create_client(file_path).await?;
+        let client = {
+            let clients = self.clients.read().await;
+            clients
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
+        };
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+        let previous_version = client.opened_files.lock().await.get(uri.as_str()).cloned();
+        let version = previous_version.unwrap_or(0) + 1;
+        let language_id = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if previous_version.is_some() {
+            self.document_registry
+                .change_managed(&key, &uri, version, text.to_string(), dirty)
+                .await;
+        } else {
+            self.document_registry
+                .open_managed(
+                    &key,
+                    uri.clone(),
+                    language_id,
+                    version,
+                    text.to_string(),
+                    dirty,
+                )
+                .await;
+        }
+        self.document_owners
+            .write()
+            .await
+            .insert(uri.to_string(), key.clone());
+        let result = if previous_version.is_some() {
+            client.update_file(&uri, text, version).await
+        } else {
+            client.open_file(&uri, text, version).await
+        };
+        self.document_registry
+            .set_sync_stale(&key, &uri, result.is_err())
+            .await;
+        result?;
+        Ok(())
+    }
+
+    /// Full-text managed update. The document remains editor-managed.
+    pub async fn update_file_managed(&self, file_path: &Path, text: &str) -> Result<(), LspError> {
+        self.set_managed_document(file_path, text, true).await
+    }
+
     pub async fn update_file(&self, file_path: &Path, text: &str) -> Result<(), LspError> {
         let (key, _root) = self.get_or_create_client(file_path).await?;
 
@@ -1982,6 +2046,18 @@ impl LspService {
         Ok(result)
     }
 
+    /// Whether this path is editor-managed and has unsaved synchronized text.
+    pub async fn is_managed_document_dirty(&self, file_path: &Path) -> bool {
+        let Ok(uri) = Url::from_file_path(file_path) else {
+            return false;
+        };
+        let owner = self.document_owners.read().await.get(uri.as_str()).cloned();
+        let Some(owner) = owner else {
+            return false;
+        };
+        self.document_registry.is_managed_dirty(&owner, &uri).await
+    }
+
     pub async fn ensure_file_open_from_disk(
         &self,
         file_path: &Path,
@@ -1992,6 +2068,19 @@ impl LspService {
         })?;
         let uri_str = uri.to_string();
 
+        let is_open = self.is_file_open(&key, &uri_str).await?;
+
+        // Canonical editor text outranks disk for managed documents. In
+        // particular, a hover/completion lookup must not overwrite unsaved
+        // text merely because this legacy helper is disk-oriented.
+        if let Some(managed) = self.document_registry.managed_snapshot(&key, &uri).await {
+            if !is_open || managed.sync_stale {
+                self.set_managed_document(file_path, &managed.text, managed.dirty)
+                    .await?;
+            }
+            return Ok((key, uri_str));
+        }
+
         let text = tokio::fs::read_to_string(file_path).await.map_err(|e| {
             LspError::RequestFailed(format!(
                 "failed to read file {}: {}",
@@ -1999,8 +2088,6 @@ impl LspService {
                 e
             ))
         })?;
-
-        let is_open = self.is_file_open(&key, &uri_str).await?;
 
         if is_open {
             self.update_file(file_path, &text).await?;

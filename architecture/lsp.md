@@ -34,6 +34,21 @@ that re-exports `egglsp::*` and bridges:
 
 The crate uses a client-per-root pattern: `LspService` maintains a `HashMap<String, ClientEntry>` where the key is `"{project_root}:{server_id}"`.
 
+### Managed editor documents
+
+`egglsp` tracks open document source as `Disk` or `Managed`. Managed snapshots
+retain their canonical text and dirty state for restart replay. CodeGG's
+document coordinator records the desired snapshot before sending didOpen or
+didChange, then clears `sync_stale` only after delivery succeeds. If delivery
+fails, the next semantic preparation retries that snapshot. The legacy
+`ensure_file_open_from_disk` path refreshes disk-owned documents only; it leaves
+managed text intact. LSP synchronization errors degrade language intelligence
+without changing canonical editor text.
+Both daemon protocol apply and model-facing checked preview apply receive the
+daemon's `DocumentService`, hold document operation gates before the workspace
+lock, and reject dirty managed buffers, so save/change and preview apply cannot
+interleave their disk checks.
+
 ### Preview runtime ownership and checked apply
 
 The daemon-resolved `Arc<LspService>` is threaded from `TurnRunInput` through

@@ -419,6 +419,7 @@ impl CoreDaemon {
                     event_log: Arc::clone(&self.event_log),
                     turn_id: turn_id.clone(),
                     lsp_service: self.deps.lsp_service.clone(),
+                    document_service: Some(self.documents.clone()),
                     lsp_context_input: None,
                     plugin_service,
                     execution,

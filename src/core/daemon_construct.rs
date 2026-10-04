@@ -405,6 +405,7 @@ impl CoreDaemon {
             collaboration: Arc::new(
                 codegg_core::collaboration::CollaborationService::with_defaults(deps.pool.clone()),
             ),
+            documents: Arc::new(crate::document_service::DocumentService::new()),
             work_orders: Arc::new(codegg_core::work_order::WorkOrderService::with_defaults(
                 deps.pool.clone(),
             )),

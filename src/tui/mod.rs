@@ -1478,3 +1478,4 @@ mod async_cmd_tests {
         assert!(!app.dialog_state.template_create_request.is_loading());
     }
 }
+pub mod document_session;

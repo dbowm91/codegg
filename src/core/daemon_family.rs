@@ -24,6 +24,7 @@
 //! | `team` | `daemon_team.rs::handle_team_request` (pre-router, boxed) | canonical project membership + LocalOwner principal/device-token administration |
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
 //! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
+//! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, snapshots, and changes |
 
 use crate::protocol::core::CoreRequest;
 
@@ -43,12 +44,22 @@ pub enum DaemonRequestFamily {
     Team,
     Interactive,
     WorkOrders,
+    Documents,
 }
 
 impl DaemonRequestFamily {
     /// Route one request to its single owning family.
     pub fn of(request: &CoreRequest) -> Self {
         match request {
+            CoreRequest::DocumentCapabilities
+            | CoreRequest::DocumentOpen { .. }
+            | CoreRequest::DocumentSnapshotGet { .. }
+            | CoreRequest::DocumentStatusGet { .. }
+            | CoreRequest::DocumentWriterAcquire { .. }
+            | CoreRequest::DocumentChange { .. }
+            | CoreRequest::DocumentSave { .. }
+            | CoreRequest::DocumentReload { .. }
+            | CoreRequest::DocumentClose { .. } => Self::Documents,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -288,6 +299,7 @@ impl DaemonRequestFamily {
             Self::Team => "src/core/daemon_team.rs::handle_team_request",
             Self::Interactive => "src/core/daemon.rs::run_interactive_request",
             Self::WorkOrders => "src/core/daemon_work_orders.rs::handle_work_order_request",
+            Self::Documents => "src/core/daemon_documents.rs::handle_document_request",
         }
     }
 }

@@ -203,6 +203,8 @@ Coverage has four distinct categories (M004):
   (`UNINSTRUMENTED_OPERATIONS`): bounded reads/listings plus the
   `interactive_process_*` daemon operations, whose live evidence is the
   interactive `command_execute` hook below rather than a daemon mapping.
+  Document capability/read calls are also bounded content reads; document
+  change/save/reload use the `file_mutate` daemon mapping and exclude text.
 
 Live daemon seam (`src/core/daemon.rs`):
 
