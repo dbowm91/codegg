@@ -364,21 +364,27 @@ Next actions, in order:
    `plans/implementation/desktop-frontend-ide-foundation/005-*.md`.~~ Done —
    `plans/implementation/desktop-frontend-ide-foundation/005-editor-buffer-vertical-slice.md`
    is written and was registered as dependency-ready. M006-A needs no ADR.
-4. **M006-A has since been implemented** (`1706b50b`, CI step fix `b993522a`,
-   PR `#92`) and is conditionally closed at
-   `plans/closure/desktop-frontend-ide-foundation/005-status.md`. The static
+4. **M006-A has since been implemented** (`1706b50b`, CI step fix `b993522a`)
+   and **closed** at `plans/closure/desktop-frontend-ide-foundation/005-status.md`;
+   it merged as `94f38421` through PR `#92`. The static
    guard the plan required, `scripts/check_tui_editor_text_authority.py`, is
    landed, registered in `verify.sh quick` and CI as its own named step, and was
    demonstrated to fail on each violation class it claims to catch. Hosted CI
-   `37219495080` has all sixteen guard and lint steps green and Desktop E2E
-   `37219495249` is green. The milestone's one deviation — two additive
+   `37219495080` had all sixteen guard and lint steps green and Desktop E2E
+   `37219495249` green. The milestone's one deviation — two additive
    read-only `codegg-client` accessors, `try_snapshot` and
    `try_attachment_info` — is approved. The hosted `nextest` sweep was red only
    on a **pre-existing** causal tool-advisor 5 ms wall-clock flake, reproduced
    4/8 on baseline `main` versus 2/8 on this branch and absent from this change
    set. That flake has since been fixed by its own corrective (causal frontier
    timing C001, `cdfd6257`), which changed only the measurement method and left
-   the frozen budgets and all assertions intact. **M006-D and M006-E are
-   unblocked; M006-B is gated only on its own ADR.**
-5. Raise ADRs for the M006-B delivery/authorization decision and, if chosen, the M006-E
+   the frozen budgets and all assertions intact; four consecutive hosted runs
+   then completed the full 12,180-test sweep, and the branch merged green.
+   **M006-D and M006-E are unblocked; M006-B is gated only on its own ADR.**
+5. **M006-D is planned** at
+   `plans/implementation/desktop-frontend-ide-foundation/006-project-scoped-file-tree.md`
+   and needs no ADR: a read-only navigator rooted at the active tab's explicit
+   `workspace_root` that opens files through the existing controller-backed
+   path adds no protocol and no ownership decision.
+6. Raise ADRs for the M006-B delivery/authorization decision and, if chosen, the M006-E
    dirty-buffer apply decision. Outstanding.
