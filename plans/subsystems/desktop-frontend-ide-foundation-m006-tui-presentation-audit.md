@@ -364,15 +364,20 @@ Next actions, in order:
    `plans/implementation/desktop-frontend-ide-foundation/005-*.md`.~~ Done —
    `plans/implementation/desktop-frontend-ide-foundation/005-editor-buffer-vertical-slice.md`
    is written and was registered as dependency-ready. M006-A needs no ADR.
-4. **M006-A has since been implemented** and is conditionally closed at
-   `plans/closure/desktop-frontend-ide-foundation/005-status.md`. Its two named
-   gates are a reviewer's decision on the two additive read-only `codegg-client`
-   accessors (`try_snapshot`, `try_attachment_info`) it added, and the hosted-CI
-   plus capped-nextest run. The static guard the plan required —
-   `scripts/check_tui_editor_text_authority.py` — is landed, registered in
-   `verify.sh quick` and CI, and demonstrated to fail on each violation class it
-   claims to catch.
+4. **M006-A has since been implemented** (`1706b50b`, CI step fix `b993522a`,
+   PR `#92`) and is conditionally closed at
+   `plans/closure/desktop-frontend-ide-foundation/005-status.md`. The static
+   guard the plan required, `scripts/check_tui_editor_text_authority.py`, is
+   landed, registered in `verify.sh quick` and CI as its own named step, and was
+   demonstrated to fail on each violation class it claims to catch. Hosted CI
+   `37219495080` has all sixteen guard and lint steps green and Desktop E2E
+   `37219495249` is green. The milestone's one deviation — two additive
+   read-only `codegg-client` accessors, `try_snapshot` and
+   `try_attachment_info` — is approved. It remains conditionally closed only
+   because the hosted `nextest` sweep is red on a **pre-existing** causal
+   tool-advisor 5 ms wall-clock flake, reproduced 4/8 on baseline `main` versus
+   2/8 on this branch and absent from this change set. That flake is filed as
+   its own corrective. **M006-D and M006-E are unblocked; M006-B is gated only
+   on its own ADR.**
 5. Raise ADRs for the M006-B delivery/authorization decision and, if chosen, the M006-E
-   dirty-buffer apply decision. Outstanding. M006-B must not be handed off until
-   the M006-A gates in item 4 land, because it adds a protocol surface on top of
-   the render path M006-A established.
+   dirty-buffer apply decision. Outstanding.

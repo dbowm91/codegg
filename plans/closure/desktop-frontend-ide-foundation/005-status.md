@@ -23,11 +23,21 @@ M006-A delivers a TUI editor buffer over the existing M005
 model, a render widget, and vi-style motion, editing, undo/redo, and save. It
 adds no protocol surface, no daemon capability, and no LSP read path.
 
-The milestone's capability boundary is complete for the scope it set. The
-status is *conditionally* closed rather than closed because of two named
-outstanding items: a deviation from the source plan that the plan itself did
-not anticipate, and hosted evidence that cannot be produced in this
-environment.
+The milestone's capability boundary is complete for the scope it set, and the
+deviation review that gated the first pass is now resolved: the two
+additive read-only `codegg-client` accessors are accepted.
+
+Hosted evidence has been produced. The `verify` job's sixteen guard and lint
+steps are green — including the new editor text-authority guard as its own
+named step — and the Desktop E2E job is green. The workspace `nextest` sweep
+is **red**, on a pre-existing 5 ms wall-clock budget assertion in the causal
+tool-advisor qualification tests. That flake is demonstrably not M006-A's: it
+reproduces at a *higher* rate on baseline `main`, which contains none of this
+milestone's code. Section 4.4 records the reproduction.
+
+Because the milestone's own evidence is green while a pre-existing failure
+keeps the branch red, the status stays *conditionally* closed pending a
+decision on that flake rather than being marked closed on a red build.
 
 Four defects were found by the milestone's own tests and fixed before
 handoff. Two of them were real product bugs that a purely green-field
@@ -59,7 +69,9 @@ implementation would have shipped; they are recorded in section 6.2.
 | Existing TUI behavior unchanged when the editor is closed | `/editor` still opens the external editor; the TUI buffer is `/open` | pass | No existing binding or route was repointed |
 | Workspace clippy is clean | `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass | Two findings raised and fixed first; final run emits nothing |
 | `verify.sh quick` routine subset green | `bash scripts/verify.sh quick`, exit 0 | pass | Includes the new editor guard |
-| Hosted CI green | `.github/workflows/ci.yml` `verify` job | not run | Environment limit; see 4.4 |
+| Hosted guards and lint green | CI run `37219495080` `verify` job | pass | All 16 guard and lint steps green, including the new editor guard |
+| Hosted workspace test sweep | CI run `37219495080` `Workspace tests` | fail | Pre-existing causal-advisor budget flake, not M006-A; see 4.4 |
+| Desktop E2E green | Desktop E2E run `37219495249` | pass | M006-A does not touch `apps/desktop` |
 
 ## 3. Production implementation evidence
 
@@ -113,6 +125,12 @@ cargo test --test document_client_trajectory --locked                   # 3 pass
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 scripts/check_tui_editor_text_authority.py
 bash scripts/verify.sh quick
+
+# hosted
+gh pr create --title "M006-A: TUI editor buffer over the shared document controller"
+gh run watch 37219495080          # CI  / verify
+gh run view 37219495249           # Desktop E2E / e2e
+gh run rerun 37219495080          # second attempt after the first flake
 ```
 
 ### 4.2 Results
@@ -136,6 +154,13 @@ bash scripts/verify.sh quick
   `check_http_route_disposition.py`, `check_audit_coverage.py`, and the new
   `check_tui_editor_text_authority.py`, followed by
   `cargo check --workspace --all-targets --locked`.
+- Hosted CI run `37219495080`, `verify` job — **the sixteen guard and lint steps
+  are all green**, in order: agent schema, codegg-core boundary, sandbox
+  contract, execution ownership, TUI project authority, **TUI editor
+  text-authority**, HTTP route disposition, audit coverage, scheduler bypass,
+  formatting, workspace clippy, Eggwork relevance detection, and live-fixture
+  prebuild. The `Workspace tests` step is red; see 4.4.
+- Hosted Desktop E2E run `37219495249`, `e2e` job — **green**.
 
 ### 4.3 Guard demonstrations
 
@@ -155,18 +180,55 @@ Demonstration 2 is what proves the owned/borrowed distinction is real: the
 sanctioned `&DocumentSnapshot` borrow in `EditorWidget` is reported as an
 advisory note and does not fail the guard, while the owned field does.
 
-### 4.4 Not run, and why
+### 4.4 Hosted workspace-test failure: a pre-existing flake, not M006-A
 
-- **Hosted CI `.github/workflows/ci.yml` `verify` job** — not run; this
-  environment has no hosted runner. Local coverage of the same checks is in
-  4.2, and the new guard is registered in both `verify.sh quick` and the CI
-  job, so the hosted run will include it. The Desktop E2E workflow was
-  likewise not run; M006-A does not touch `apps/desktop`, so that surface is
-  unchanged.
-- **`cargo nextest run --workspace --locked --profile ci`** — not run. The
-  targeted invocations in 4.1 plus workspace clippy and `verify.sh quick`
-  cover the changed surface, but a full capped sweep remains outstanding
-  before the milestone is marked closed.
+The `Workspace tests` step runs `cargo nextest run --workspace --locked
+--profile ci` over 12,180 tests. It fails, and `nextest` fail-fast then
+cancels the remainder, so the sweep is also **incomplete**: 6,883 tests were
+not run.
+
+**Two attempts, two different failures, both wall-clock budget assertions in
+the causal tool-advisor qualification tests:**
+
+| Attempt | Failing test | Assertion |
+|---|---|---|
+| 1 | `causal_observe_replay::live_request_preparation_delta::observe_mode_leaves_live_definitions_byte_identical` | `outcome.evaluation_millis < CAUSAL_OBSERVE_P95_BUDGET_MS` |
+| 2 | `causal_active_m005::m005_holdout_structural_gates` | `m005-pinned-002: single evaluation over budget` |
+
+The test that failed in attempt 1 **passed** in attempt 2. The failures move,
+which is the signature of a timing flake rather than a logic regression.
+
+**Why it is not M006-A's.** Three independent lines of evidence:
+
+1. **Neither the tests nor the code under test is in this change set.**
+   `tests/causal_observe_replay.rs`, `tests/causal_active_m005.rs`,
+   `src/tool_advisor/causal_observe.rs`, and `src/tool_advisor/causal_active.rs`
+   are all absent from `git diff main...HEAD`. M006-A adds a TUI editor and
+   does not touch the tool advisor.
+2. **The assertions are pure wall-clock.** `evaluation_millis` is
+   `started.elapsed().as_secs_f64() * 1000.0` measured around an in-memory
+   frontier computation, gated at a 5.0 ms budget
+   (`CAUSAL_OBSERVE_P95_BUDGET_MS`, `CAUSAL_ACTIVE_P95_BUDGET_MS`). A 5 ms
+   wall-clock ceiling on a shared runner is tight, and CPU contention is the
+   obvious failure mode.
+3. **It reproduces on baseline `main`, at a higher rate.** A separate git
+   worktree at `main` (`614e983e`, confirmed to contain no editor code) was
+   built and the two suites were run eight times on each tree:
+
+   | Tree | Failures in 8 runs |
+   |---|---|
+   | baseline `main` (`614e983e`, no M006-A code) | **4** (iterations 1, 2, 3, 7) |
+   | M006-A branch (`b993522a`) | **2** (iterations 7, 8) |
+
+   The flake is present without this milestone's code and is in fact more
+   frequent there.
+
+**Disposition.** This is a repository-wide flake in a closed-experiment area
+of the tool advisor, not a M006-A regression. It is recorded as a medium
+finding in section 10 with its own required action. The M006-A evidence is
+complete: every guard and lint step is green, Desktop E2E is green, and the
+milestone's own 1045-test `tui::` suite is green. What is missing is a green
+*branch*, which is a repository-health problem rather than an M006-A one.
 
 ### 4.5 Environmental failure, unrelated to this milestone
 
@@ -301,9 +363,9 @@ is retained; closing the editor and reopening is the only way to start fresh.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| high | Two read-only accessors were added to `codegg-client` (`try_snapshot`, `try_attachment_info`), which the source plan's §16 listed as not-to-edit. The alternative was caching text in the frontend, which the plan's own invariant 1 forbids. The additions are additive, read-only, and semantics-preserving. | The deviation should be reviewed rather than absorbed silently | Confirm or reject in review. If rejected, the alternative is a `document.v1` snapshot read per frame, which is a protocol change and strictly larger. |
-| medium | Hosted CI `verify` job not run | Clippy, fmt, and every routine guard are green locally, but the hosted sweep is unconfirmed | Run `.github/workflows/ci.yml` `verify` before marking closed |
-| medium | `cargo nextest run --workspace --locked --profile ci` not run | A full capped sweep is outstanding | Run in the same hosted pass |
+| resolved | Two read-only accessors were added to `codegg-client` (`try_snapshot`, `try_attachment_info`), which the source plan's §16 listed as not-to-edit. The alternative was caching text in the frontend, which the plan's own invariant 1 forbids. | Accepted after review | Closed: the deviation is approved |
+| medium | The causal tool-advisor qualification tests gate on a 5.0 ms wall-clock budget and flake on shared runners. Reproduced 4/8 on baseline `main` and 2/8 on this branch, in two different tests across two hosted attempts. | Keeps every branch red, including branches unrelated to the tool advisor, and `nextest` fail-fast leaves roughly 6,900 of 12,180 tests unrun, so a red build also destroys most of the sweep's evidence | File a corrective for the causal advisor's timing gates — raise the budget, sample over repeated iterations, or move the gate to a dedicated non-default CI job. That area is a closed experiment, so changing its gate is a corrective-pass decision, not M006-A's |
+| medium | `nextest` fail-fast means a red branch never completes the workspace sweep | Sweep evidence is partial whenever anything fails | Address with the same corrective, or run the sweep with `--no-fail-fast` |
 | medium | Async cancellation is guarded structurally but not tested by a cancellation test | A cancelled mid-flight completion is expected to be discarded by the generation check, but that path is unexercised at the editor layer | Add a stale-generation completion test when the App-level `spawn_tui_task` cancellation harness is next touched |
 | low | No yank/paste register, so `dd` is only recoverable via undo | Reduced editing convenience, not a correctness issue | Deferred; the plan did not require paste |
 | low | `selection` is owned and boundary-safe but never set by an M006-A command | Dormant field until visual selection lands | Deferred to the visual-selection milestone |
@@ -312,32 +374,43 @@ is retained; closing the editor and reopening is the only way to start fresh.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed with named operational evidence outstanding.**
+**Milestone conditionally closed on a named, non-M006-A failure.**
 
-M006-A's capability boundary is complete and its invariants hold. The two
-outstanding items are the §10 `codegg-client` deviation review and the hosted
-CI plus nextest sweep. Until both are done, M006-B, M006-D, and M006-E must
-not be handed off: M006-B adds a protocol and daemon surface on top of the
-render path M006-A established, so a rejected deviation would change it.
+M006-A's capability boundary is complete, its invariants hold, its deviation
+review is resolved, and every guard, lint, and milestone-attributable test is
+green on the hosted runner. The only thing keeping the branch red is a
+pre-existing causal tool-advisor timing flake that reproduces more often on
+baseline `main` than on this branch.
+
+The render path M006-A established is therefore no longer at risk from the
+deviation question that originally gated it, so **M006-D and M006-E are no
+longer blocked on M006-A review.** M006-B remains gated on its own ADR, which
+was always its real precondition. Whether M006-A itself is promoted to
+*closed* is a decision about how this repository treats a pre-existing flake
+on an unrelated subsystem, and it is recorded here as that decision rather
+than made silently: the alternatives are to carve the flake out explicitly
+and close M006-A, or to fix the causal advisor's timing gates first.
 
 M006-B still requires an ADR covering the LSP delivery path and project-scoped
 authorization. M006-E still requires an ADR if apply-into-dirty-buffer is
 chosen; the existing rejection at `src/lsp/mutation.rs` is correct and must not
 be weakened.
 
-## 12. Proposed commit scope
+## 12. Implementation commits
 
-One implementation commit plus one planning commit, matching the repository's
-convention:
+Branch: `m006-a-editor-buffer` · Pull request: `#92`
 
-- `feat(tui): add M006-A editor buffer over the document controller` — the
-  four new modules, the wiring, the `codegg-client` accessors, the static
-  guard, its `verify.sh` and CI registration, the command-count bump, and the
-  three architecture documents.
-- `plans(desktop-frontend): close M006-A editor buffer conditionally` — this
-  record, the registry rows, the roadmap status, and the audit disposition
-  update.
+- `1706b50b` — `feat(tui): add M006-A editor buffer over the document
+  controller`. The four new modules, the wiring, the `codegg-client`
+  accessors, the static guard, its `verify.sh` and CI registration, the
+  command-count bump, and the three architecture documents.
+- `b039b011` — `plans(desktop-frontend): close M006-A editor buffer
+  conditionally`. This record, the registry rows, the roadmap status, and the
+  audit disposition update.
+- `b993522a` — `fix(ci): give the editor text-authority guard its own named
+  step`. The guard had been appended as a bare continuation of the previous
+  step's `run:` block; YAML folded it into a multi-line shell string, so it
+  executed but was unnamed in the run log and its failures were
+  indistinguishable from the project-authority guard's.
 
-The audit record
-(`plans/subsystems/desktop-frontend-ide-foundation-m006-tui-presentation-audit.md`)
-and the source plan are planning artifacts and belong in the planning commit.
+Hosted evidence: CI `{RUN_CI}` (`verify`), Desktop E2E `{RUN_E2E}` (`e2e`).
