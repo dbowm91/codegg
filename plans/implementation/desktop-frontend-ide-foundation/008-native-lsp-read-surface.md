@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 008 — Native LSP Read Surface
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `f7c8948a`
 
