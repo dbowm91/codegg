@@ -236,21 +236,17 @@ impl AgentLoop {
             .map(|p| Arc::new(crate::session::UsageStore::new(p)));
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
-        let tool_advisor_mode = crate::tool_advisor::AdvisorMode::parse(
-            config
-                .tool_advisor
-                .as_ref()
-                .and_then(|advisor| advisor.mode.as_deref()),
-        );
-        let (tool_advisor, advisor_status) =
-            crate::tool_advisor::advisor_from_config(config.tool_advisor.as_ref());
+        let tool_advisor_mode = tool_registry.advisor_mode();
+        let decision_backend = tool_registry.decision_backend().clone();
+        let decision_engine = tool_registry.decision_engine();
         tracing::debug!(
             mode = ?tool_advisor_mode,
-            state = ?advisor_status.state,
-            model_version = ?advisor_status.model_version,
-            "tool advisor turn projection configuration"
+            backend = %decision_backend.backend,
+            backend_state = ?decision_backend.state,
+            capabilities = ?decision_backend.capabilities,
+            detail = %decision_backend.detail,
+            "tool advisor decision engine snapshot"
         );
-        let tool_advisor: Arc<dyn crate::tool_advisor::ToolAdvisor> = Arc::from(tool_advisor);
         let tool_advisor_threshold = config
             .tool_advisor
             .as_ref()
@@ -359,7 +355,7 @@ impl AgentLoop {
                 prompt_compiler_fingerprint: None,
                 base_request_tools: Vec::new(),
                 context_policy_runtime: ContextPolicyRuntimeState::default(),
-                tool_advisor,
+                decision_engine,
                 tool_advisor_mode,
                 tool_advisor_threshold,
                 tool_advisor_max_promotions,

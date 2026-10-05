@@ -442,6 +442,11 @@ enum Commands {
 
 #[derive(Subcommand, Clone, Debug)]
 enum ToolAdvisorCommand {
+    /// Show the effective advisor policy and decision backend without inference.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Evaluate the keyword/BM25 discovery baseline over a JSONL corpus.
     Bench {
         /// Optional JSONL dataset; defaults to the reviewed repository corpus.
@@ -1790,6 +1795,55 @@ async fn cmd_upgrade() -> Result<(), AppError> {
 
 async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> {
     match command {
+        ToolAdvisorCommand::Status { json } => {
+            let config = Config::load_or_default();
+            let (engine, resolution) = codegg::tool_advisor::decision_engine_from_config(
+                config.tool_advisor.as_ref(),
+                config.decision_engine.as_ref(),
+            );
+            let mode = config
+                .tool_advisor
+                .as_ref()
+                .map(|advisor| codegg::tool_advisor::AdvisorMode::parse(advisor.mode.as_deref()))
+                .unwrap_or(codegg::tool_advisor::AdvisorMode::Off);
+            let status = serde_json::json!({
+                "policy_mode": format!("{mode:?}").to_lowercase(),
+                "backend": resolution.backend,
+                "state": format!("{:?}", resolution.state),
+                "capabilities": {
+                    "rank": resolution.capabilities.rank,
+                    "choice": resolution.capabilities.choice,
+                    "max_candidates": resolution.capabilities.max_candidates,
+                },
+                "detail": resolution.detail,
+                "promotion_qualified": resolution.promotion_qualified,
+                "engine_state": format!("{:?}", engine.state()),
+            });
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&status)
+                        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+                );
+            } else {
+                println!(
+                    "advisor policy: {}",
+                    status["policy_mode"].as_str().unwrap_or("unknown")
+                );
+                println!(
+                    "decision backend: {} ({})",
+                    resolution.backend,
+                    status["state"].as_str().unwrap_or("unknown")
+                );
+                println!(
+                    "Rank: {}; Choice: {}; max candidates: {}",
+                    resolution.capabilities.rank,
+                    resolution.capabilities.choice,
+                    resolution.capabilities.max_candidates
+                );
+                println!("{}", resolution.detail);
+            }
+        }
         ToolAdvisorCommand::Bench {
             dataset,
             bm25,

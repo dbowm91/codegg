@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 005 — Tool-Advisor DecisionEngine Migration
 
-Status: active
+Status: implemented
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 

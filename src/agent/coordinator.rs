@@ -79,7 +79,7 @@ pub(super) struct AgentLoopServices {
     pub(super) prompt_compiler_fingerprint: Option<String>,
     pub(super) base_request_tools: Vec<ToolDefinition>,
     pub(super) context_policy_runtime: ContextPolicyRuntimeState,
-    pub(super) tool_advisor: Arc<dyn crate::tool_advisor::ToolAdvisor>,
+    pub(super) decision_engine: Arc<dyn codegg_core::decision::DecisionEngine>,
     pub(super) tool_advisor_mode: crate::tool_advisor::AdvisorMode,
     pub(super) tool_advisor_threshold: f64,
     pub(super) tool_advisor_max_promotions: usize,

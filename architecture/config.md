@@ -78,6 +78,14 @@ resolves credentials through the existing provider `AuthResolver`. The engine
 does not perform model discovery unless an operator explicitly calls its
 discovery method.
 
+Learned tool-advisor inference is opt-in separately through
+`tool_advisor.enabled` and its policy `mode`. Set
+`tool_advisor.runtime_backend = "sdm_local_v1"` with a pinned local artifact to
+use SDM Rank. Selecting `system_one` through `decision_engine` does not emulate
+Rank; the current System One profile reports Rank unsupported and tool advice
+falls back deterministically. The effective policy/backend split is available
+from `codegg tool-advisor status`.
+
 Example remote configuration:
 
 ```jsonc

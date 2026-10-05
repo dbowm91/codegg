@@ -61,6 +61,17 @@ fn contextual_tool_names(
     tools
 }
 
+struct PreturnDecisionConfig<'a> {
+    engine: &'a std::sync::Arc<dyn codegg_core::decision::DecisionEngine>,
+    timeout: std::time::Duration,
+    mode: crate::tool_advisor::AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+    schema_budget: usize,
+    max_candidates: usize,
+}
+
+#[cfg(test)]
 struct PreturnDisclosureConfig<'a> {
     advisor: &'a dyn crate::tool_advisor::ToolAdvisor,
     mode: crate::tool_advisor::AdvisorMode,
@@ -73,6 +84,102 @@ struct PreturnDisclosureConfig<'a> {
 /// Project proactive disclosure over the final resolved surface. The return
 /// value is canonical-name-only; the caller revalidates it against each wire
 /// definition immediately before provider palette construction.
+async fn project_preturn_decision(
+    surface: &crate::agent::tool_surface::ResolvedToolSurface,
+    deferred: &[crate::provider::ToolDefinition],
+    context: &str,
+    config: PreturnDecisionConfig<'_>,
+) -> std::collections::BTreeSet<String> {
+    if matches!(
+        config.mode,
+        crate::tool_advisor::AdvisorMode::Off | crate::tool_advisor::AdvisorMode::Rerank
+    ) || context.is_empty()
+        || (config.mode == crate::tool_advisor::AdvisorMode::Promote && config.max_promotions == 0)
+    {
+        return std::collections::BTreeSet::new();
+    }
+    if !matches!(
+        config.engine.state(),
+        codegg_core::decision::BackendState::Ready
+    ) || !config.engine.capabilities().rank
+    {
+        tracing::debug!(
+            scope = "preturn_disclosure",
+            backend_state = ?config.engine.state(),
+            "decision backend cannot rank; palette unchanged"
+        );
+        return std::collections::BTreeSet::new();
+    }
+    let deferred_names: std::collections::BTreeSet<String> = deferred
+        .iter()
+        .map(|definition| definition.name.clone())
+        .collect();
+    let eligible = crate::tool_advisor::candidates_from_deferred_surface(surface, &deferred_names);
+    let backend_limit = config.engine.capabilities().max_candidates.max(1);
+    let (candidates, preselection) = crate::tool_advisor::preselect_candidates(
+        eligible,
+        context,
+        config
+            .max_candidates
+            .min(crate::tool_advisor::MAX_CANDIDATES)
+            .min(backend_limit),
+    );
+    tracing::debug!(
+        scope = "preturn_disclosure",
+        eligible_deferred = preselection.eligible_deferred,
+        shortlisted = preselection.shortlisted,
+        truncated = preselection.truncated,
+        preselect_millis = preselection.elapsed_millis,
+        "projected deferred-first decision shortlist"
+    );
+    if candidates.is_empty() {
+        return std::collections::BTreeSet::new();
+    }
+    let input = crate::tool_advisor::ToolAdvisorInput {
+        case_id: "preturn-disclosure".into(),
+        context: context.into(),
+        candidates,
+        surface_fingerprint: surface.fingerprint.clone(),
+    };
+    use futures_util::FutureExt;
+    let result =
+        std::panic::AssertUnwindSafe(crate::tool_advisor::decision_adapter::rank_with_engine(
+            config.engine,
+            &input,
+            config.timeout,
+        ))
+        .catch_unwind()
+        .await;
+    let result = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) | Err(_) => {
+            tracing::debug!(
+                scope = "preturn_disclosure",
+                "decision scoring failed; palette unchanged"
+            );
+            return std::collections::BTreeSet::new();
+        }
+    };
+    tracing::debug!(
+        scope = "preturn_disclosure",
+        backend = %result.provenance.backend,
+        model = ?result.provenance.model,
+        runtime_version = ?result.provenance.runtime_version,
+        latency_micros = result.provenance.latency_micros,
+        "decision backend returned advisor observation"
+    );
+    apply_preturn_prediction(
+        surface,
+        deferred,
+        &result.prediction,
+        config.mode,
+        config.threshold,
+        config.max_promotions,
+        config.schema_budget,
+    )
+}
+
+#[cfg(test)]
 fn project_preturn_promotions(
     surface: &crate::agent::tool_surface::ResolvedToolSurface,
     deferred: &[crate::provider::ToolDefinition],
@@ -146,6 +253,38 @@ fn project_preturn_promotions(
         );
         return std::collections::BTreeSet::new();
     }
+    apply_preturn_prediction(
+        surface,
+        deferred,
+        &prediction,
+        config.mode,
+        config.threshold,
+        config.max_promotions,
+        config.schema_budget,
+    )
+}
+
+fn apply_preturn_prediction(
+    surface: &crate::agent::tool_surface::ResolvedToolSurface,
+    deferred: &[crate::provider::ToolDefinition],
+    prediction: &crate::tool_advisor::ToolAdvisorPrediction,
+    mode: crate::tool_advisor::AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+    schema_budget: usize,
+) -> std::collections::BTreeSet<String> {
+    if prediction.abstain_probability.unwrap_or(0.0) >= 0.5 {
+        tracing::debug!(scope = "preturn_disclosure", "advisor abstained");
+        return std::collections::BTreeSet::new();
+    }
+    if mode == crate::tool_advisor::AdvisorMode::Observe {
+        tracing::debug!(
+            scope = "preturn_disclosure",
+            predictions = prediction.ranked.len(),
+            "recorded pre-turn advisor observation"
+        );
+        return std::collections::BTreeSet::new();
+    }
     let scores: std::collections::BTreeMap<_, _> = prediction
         .ranked
         .iter()
@@ -170,7 +309,7 @@ fn project_preturn_promotions(
             scores
                 .get(canonical)
                 .copied()
-                .filter(|score| *score >= config.threshold)
+                .filter(|score| *score >= threshold)
                 .map(|score| (canonical.to_string(), score, definition))
         })
         .collect::<Vec<_>>();
@@ -185,12 +324,12 @@ fn project_preturn_promotions(
         let definition_bytes = serde_json::to_vec(definition)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
-        if bytes.saturating_add(definition_bytes) > config.schema_budget {
+        if bytes.saturating_add(definition_bytes) > schema_budget {
             continue;
         }
         bytes = bytes.saturating_add(definition_bytes);
         selected.insert(canonical);
-        if selected.len() >= config.max_promotions {
+        if selected.len() >= max_promotions {
             break;
         }
     }
@@ -979,12 +1118,22 @@ impl AgentLoop {
             .cloned()
             .collect();
         let advisor_context = self.current_advisor_context_v2().await;
-        let mut promoted_names = project_preturn_promotions(
+        let decision_timeout = std::time::Duration::from_millis(
+            self.services
+                .config
+                .tool_advisor
+                .as_ref()
+                .and_then(|advisor| advisor.timeout_ms)
+                .unwrap_or(25)
+                .clamp(1, 1_000),
+        );
+        let mut promoted_names = project_preturn_decision(
             &surface,
             &candidate_deferred,
             &advisor_context,
-            PreturnDisclosureConfig {
-                advisor: self.services.tool_advisor.as_ref(),
+            PreturnDecisionConfig {
+                engine: &self.services.decision_engine,
+                timeout: decision_timeout,
                 mode: self.services.tool_advisor_mode,
                 threshold: self.services.tool_advisor_threshold,
                 max_promotions: self.services.tool_advisor_max_promotions,
@@ -997,7 +1146,8 @@ impl AgentLoop {
                     .and_then(|advisor| advisor.max_candidates)
                     .unwrap_or(16),
             },
-        );
+        )
+        .await;
 
         // M005 bounded active causal disclosure (opt-in): union at most two
         // causally admissible deferred tools, within a 16 KiB promoted
@@ -1216,6 +1366,7 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::config::schema::{Config, ResearchAutoTriggerConfig, ResearchConfig};
+    use std::sync::Arc;
 
     fn config_with_trigger(enabled: bool, min_confidence: f32) -> Config {
         Config {
@@ -1447,6 +1598,145 @@ mod tests {
             schema_budget: 16 * 1024,
             max_candidates,
         }
+    }
+
+    struct FixedDecisionEngine {
+        target: String,
+        calls: std::sync::atomic::AtomicUsize,
+        rank: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl codegg_core::decision::DecisionEngine for FixedDecisionEngine {
+        fn state(&self) -> codegg_core::decision::BackendState {
+            codegg_core::decision::BackendState::Ready
+        }
+
+        fn capabilities(&self) -> codegg_core::decision::BackendCapabilities {
+            codegg_core::decision::BackendCapabilities {
+                binary: false,
+                choice: false,
+                score: false,
+                rank: self.rank,
+                max_options: 0,
+                max_candidates: 16,
+            }
+        }
+
+        async fn decide(
+            &self,
+            request: codegg_core::decision::DecisionRequest,
+            _deadline: std::time::Instant,
+        ) -> Result<codegg_core::decision::DecisionResponse, codegg_core::decision::DecisionError>
+        {
+            use codegg_core::decision::{
+                DecisionAnswer, DecisionCandidate, DecisionProvenance, DecisionResponse,
+                DecisionSpec, DecisionStatus, RankedDecisionCandidate,
+            };
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let DecisionSpec::Rank { candidates, .. } = request.spec else {
+                panic!("expected Rank request")
+            };
+            let candidates = candidates
+                .into_iter()
+                .map(|candidate: DecisionCandidate| RankedDecisionCandidate {
+                    relevance: if candidate.id == self.target {
+                        0.95
+                    } else {
+                        0.05
+                    },
+                    ranking_score: if candidate.id == self.target {
+                        2.0
+                    } else {
+                        0.1
+                    },
+                    candidate_id: candidate.id,
+                })
+                .collect();
+            Ok(DecisionResponse {
+                request_id: request.request_id,
+                schema_version: request.schema_version,
+                status: DecisionStatus::Answered,
+                answer: Some(DecisionAnswer::Rank { candidates }),
+                provenance: DecisionProvenance {
+                    backend: "request-preparation-test".into(),
+                    model: None,
+                    runtime_version: Some("test".into()),
+                    latency_micros: 0,
+                },
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn request_preparation_uses_decision_rank_and_preserves_authority() {
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            vec![
+                tool_definition("lsp_definition", "Find a symbol definition", true),
+                tool_definition("secret_admin", "Delete every workspace", true),
+            ],
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::from(["secret_admin".into()]),
+            false,
+            true,
+            None,
+        )
+        .expect("resolved surface");
+        let deferred = deferred_from_surface(&surface);
+        let engine = Arc::new(FixedDecisionEngine {
+            target: "lsp_definition".into(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            rank: true,
+        });
+        let engine_trait: Arc<dyn codegg_core::decision::DecisionEngine> = engine.clone();
+        let promoted = project_preturn_decision(
+            &surface,
+            &deferred,
+            "find the definition of a symbol",
+            PreturnDecisionConfig {
+                engine: &engine_trait,
+                timeout: std::time::Duration::from_millis(25),
+                mode: crate::tool_advisor::AdvisorMode::Promote,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 16 * 1024,
+                max_candidates: 16,
+            },
+        )
+        .await;
+        assert_eq!(
+            promoted,
+            std::collections::BTreeSet::from(["lsp_definition".into()])
+        );
+        assert_eq!(engine.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        let unsupported = Arc::new(FixedDecisionEngine {
+            target: "lsp_definition".into(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            rank: false,
+        });
+        let unsupported_trait: Arc<dyn codegg_core::decision::DecisionEngine> = unsupported.clone();
+        let none = project_preturn_decision(
+            &surface,
+            &deferred,
+            "find the definition of a symbol",
+            PreturnDecisionConfig {
+                engine: &unsupported_trait,
+                timeout: std::time::Duration::from_millis(25),
+                mode: crate::tool_advisor::AdvisorMode::Promote,
+                threshold: 0.5,
+                max_promotions: 2,
+                schema_budget: 16 * 1024,
+                max_candidates: 16,
+            },
+        )
+        .await;
+        assert!(none.is_empty());
+        assert_eq!(
+            unsupported.calls.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]

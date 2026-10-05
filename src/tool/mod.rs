@@ -79,6 +79,7 @@ pub mod work_plan;
 pub mod write;
 
 use async_trait::async_trait;
+use codegg_core::decision::DecisionEngine as _;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -254,6 +255,9 @@ pub struct ToolRegistry {
     sandbox_profile: codegg_core::approval::SandboxProfile,
     lsp_preview_registry: Option<LspPreviewRegistryHandle>,
     lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    decision_engine: Arc<dyn codegg_core::decision::DecisionEngine>,
+    decision_backend: crate::tool_advisor::DecisionBackendResolution,
+    advisor_mode: crate::tool_advisor::AdvisorMode,
 }
 
 impl Default for ToolRegistry {
@@ -273,6 +277,9 @@ pub struct ToolRegistryOptions {
     /// Optional local advisor configuration. `None` keeps tool discovery
     /// behaviorally identical to the default-off path.
     pub tool_advisor: Option<codegg_config::schema::ToolAdvisorConfig>,
+    /// Optional backend config resolved with the advisor policy as one
+    /// immutable per-turn DecisionEngine snapshot.
+    pub decision_engine: Option<codegg_config::schema::DecisionEngineConfig>,
     /// Optional shared todo state. When `None`, a `TodoWriteTool` with
     /// default in-memory state and the explicit-todo policy is registered
     /// (no session persistence).
@@ -382,6 +389,15 @@ impl ToolRegistry {
             sandbox_profile: codegg_core::approval::SandboxProfile::WorkspaceWrite,
             lsp_preview_registry: None,
             lsp_service: None,
+            decision_engine: Arc::new(codegg_core::decision::NoopDecisionEngine),
+            decision_backend: crate::tool_advisor::DecisionBackendResolution {
+                backend: "noop".into(),
+                detail: "tool advisor is disabled".into(),
+                state: codegg_core::decision::BackendState::Off,
+                capabilities: codegg_core::decision::NoopDecisionEngine.capabilities(),
+                promotion_qualified: false,
+            },
+            advisor_mode: crate::tool_advisor::AdvisorMode::Off,
         }
     }
 
@@ -392,6 +408,34 @@ impl ToolRegistry {
     pub fn with_options(options: ToolRegistryOptions) -> Self {
         let mut registry = Self::new();
         let workspace_root = options.workspace_root.clone();
+        let (decision_engine, decision_backend) = crate::tool_advisor::decision_engine_from_config(
+            options.tool_advisor.as_ref(),
+            options.decision_engine.as_ref(),
+        );
+        registry.decision_engine = Arc::clone(&decision_engine);
+        registry.decision_backend = decision_backend.clone();
+        let configured_mode = options
+            .tool_advisor
+            .as_ref()
+            .map(|config| crate::tool_advisor::AdvisorMode::parse(config.mode.as_deref()))
+            .unwrap_or(crate::tool_advisor::AdvisorMode::Off);
+        registry.advisor_mode = if !options
+            .tool_advisor
+            .as_ref()
+            .is_some_and(|config| config.enabled.unwrap_or(false))
+        {
+            crate::tool_advisor::AdvisorMode::Off
+        } else if configured_mode == crate::tool_advisor::AdvisorMode::Promote
+            && !decision_backend.promotion_qualified
+        {
+            tracing::warn!(
+                backend = %decision_backend.backend,
+                "advisor promotion requested but backend/artifact is not qualified; using observe"
+            );
+            crate::tool_advisor::AdvisorMode::Observe
+        } else {
+            configured_mode
+        };
         // Explicit runtime-owned search/MCP services (M005). Every
         // search/evidence wrapper below receives a clone of this
         // context; none consults the deprecated process-global slots.
@@ -910,16 +954,22 @@ impl ToolRegistry {
         let mut search_tool =
             crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
         if let Some(config) = options.tool_advisor.as_ref() {
-            let mode = crate::tool_advisor::AdvisorMode::parse(config.mode.as_deref());
-            let (advisor, status) = crate::tool_advisor::advisor_from_config(Some(config));
+            let mode = registry.advisor_mode;
+            let timeout =
+                std::time::Duration::from_millis(config.timeout_ms.unwrap_or(25).clamp(1, 1_000));
             tracing::info!(
-                state = ?status.state,
+                backend = %decision_backend.backend,
+                backend_state = ?decision_backend.state,
+                capabilities = ?decision_backend.capabilities,
+                detail = %decision_backend.detail,
                 mode = ?mode,
-                model_version = ?status.model_version,
-                "tool advisor discovery configuration"
+                "tool advisor decision backend configuration"
             );
-            search_tool.set_advisor(Arc::from(advisor), mode);
-            search_tool.set_advisor_policy(0.5, 2);
+            search_tool.set_decision_engine(Arc::clone(&decision_engine), mode, timeout);
+            search_tool.set_advisor_policy(
+                config.disclosure_threshold.unwrap_or(0.5),
+                config.max_promotions.unwrap_or(2),
+            );
         }
         registry.register(search_tool);
 
@@ -947,6 +997,18 @@ impl ToolRegistry {
         registry
     }
 
+    pub fn decision_engine(&self) -> Arc<dyn codegg_core::decision::DecisionEngine> {
+        Arc::clone(&self.decision_engine)
+    }
+
+    pub fn decision_backend(&self) -> &crate::tool_advisor::DecisionBackendResolution {
+        &self.decision_backend
+    }
+
+    pub fn advisor_mode(&self) -> crate::tool_advisor::AdvisorMode {
+        self.advisor_mode
+    }
+
     pub fn with_defaults() -> Self {
         Self::with_options(ToolRegistryOptions::default())
     }
@@ -959,6 +1021,8 @@ impl ToolRegistry {
         let tool_backends = ToolBackendConfig::from_config(config);
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
+            tool_advisor: config.tool_advisor.clone(),
+            decision_engine: config.decision_engine.clone(),
             tool_backends,
             lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
             evidence_config: integrated.evidence,
@@ -987,6 +1051,8 @@ impl ToolRegistry {
         let tool_backends = ToolBackendConfig::from_config(config);
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
+            tool_advisor: config.tool_advisor.clone(),
+            decision_engine: config.decision_engine.clone(),
             tool_backends,
             lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
             evidence_config: integrated.evidence,
@@ -1089,6 +1155,7 @@ impl ToolRegistry {
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
             tool_advisor: config.tool_advisor.clone(),
+            decision_engine: config.decision_engine.clone(),
             todo_state: Some(todo_state),
             todo_policy: Some(policy),
             pool,
@@ -1139,6 +1206,7 @@ impl ToolRegistry {
     ) -> Self {
         Self::with_options(ToolRegistryOptions {
             tool_advisor: None,
+            decision_engine: None,
             todo_state: Some(todo_state),
             todo_policy: Some(policy),
             pool,
@@ -1761,6 +1829,25 @@ mod backend_report_tests {
 #[cfg(test)]
 mod compatibility_surface_tests {
     use super::*;
+
+    #[test]
+    fn unqualified_decision_backend_cannot_enable_promotion() {
+        let advisor = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("promote".into()),
+            runtime_backend: Some("sdm_local_v1".into()),
+            ..Default::default()
+        };
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            tool_advisor: Some(advisor),
+            ..ToolRegistryOptions::default()
+        });
+        assert_eq!(
+            registry.advisor_mode(),
+            crate::tool_advisor::AdvisorMode::Observe
+        );
+        assert!(!registry.decision_backend().promotion_qualified);
+    }
 
     #[test]
     fn default_registry_serves_canonical_todo_write_without_legacy_duplicate() {

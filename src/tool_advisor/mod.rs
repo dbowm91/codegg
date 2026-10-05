@@ -312,6 +312,155 @@ pub struct AdvisorRuntimeStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct DecisionBackendResolution {
+    pub backend: String,
+    pub detail: String,
+    pub state: codegg_core::decision::BackendState,
+    pub capabilities: codegg_core::decision::BackendCapabilities,
+    /// Learned promotion is disabled until CodeGG records explicit
+    /// qualification for this backend and artifact identity.
+    pub promotion_qualified: bool,
+}
+
+/// Resolve one immutable decision backend for the learned tool-advisor path.
+/// Legacy architecture-specific runtime config is intentionally not selected
+/// by production callers; it remains available to historical tooling/tests.
+pub fn decision_engine_from_config(
+    advisor: Option<&codegg_config::schema::ToolAdvisorConfig>,
+    decision: Option<&codegg_config::schema::DecisionEngineConfig>,
+) -> (
+    Arc<dyn codegg_core::decision::DecisionEngine>,
+    DecisionBackendResolution,
+) {
+    use codegg_core::decision::{BackendState, DecisionEngine, NoopDecisionEngine};
+
+    let off = || {
+        let engine: Arc<dyn DecisionEngine> = Arc::new(NoopDecisionEngine);
+        let resolution = DecisionBackendResolution {
+            backend: "noop".into(),
+            detail: "tool advisor is disabled".into(),
+            state: engine.state(),
+            capabilities: engine.capabilities(),
+            promotion_qualified: false,
+        };
+        (engine, resolution)
+    };
+    let Some(advisor) = advisor.filter(|config| {
+        config.enabled.unwrap_or(false)
+            && AdvisorMode::parse(config.mode.as_deref()) != AdvisorMode::Off
+    }) else {
+        return off();
+    };
+
+    let selected = advisor.runtime_backend.as_deref().or_else(|| {
+        decision
+            .filter(|config| config.enabled)
+            .map(|_| "system_one")
+    });
+    match selected {
+        Some("sdm_local_v1") => {
+            #[cfg(feature = "tool-advisor-sdm-runtime")]
+            {
+                let Some(path) = advisor.model_path.as_deref().map(Path::new) else {
+                    let (engine, mut resolution) = off();
+                    resolution.detail = "SDM backend has no artifact path".into();
+                    resolution.state = BackendState::Unavailable(resolution.detail.clone());
+                    return (engine, resolution);
+                };
+                match crate::decision_sdm::SdmDecisionEngine::load(
+                    path,
+                    advisor.expected_artifact_sha256.as_deref(),
+                ) {
+                    Ok(engine) => {
+                        let engine: Arc<dyn DecisionEngine> = Arc::new(engine);
+                        let resolution = DecisionBackendResolution {
+                            backend: "sdm_local_v1".into(),
+                            detail: "pinned SDM Rank runtime loaded; artifact remains unqualified"
+                                .into(),
+                            state: engine.state(),
+                            capabilities: engine.capabilities(),
+                            promotion_qualified: false,
+                        };
+                        (engine, resolution)
+                    }
+                    Err(error) => {
+                        let (engine, mut resolution) = off();
+                        resolution.backend = "sdm_local_v1".into();
+                        resolution.detail = format!("SDM artifact rejected: {error}");
+                        resolution.state = BackendState::Unavailable(resolution.detail.clone());
+                        (engine, resolution)
+                    }
+                }
+            }
+            #[cfg(not(feature = "tool-advisor-sdm-runtime"))]
+            {
+                let (engine, mut resolution) = off();
+                resolution.backend = "sdm_local_v1".into();
+                resolution.detail = "SDM runtime requires tool-advisor-sdm-runtime feature".into();
+                resolution.state = BackendState::Unsupported(resolution.detail.clone());
+                (engine, resolution)
+            }
+        }
+        Some("system_one") => {
+            let Some(config) = decision.filter(|config| config.enabled) else {
+                let (engine, mut resolution) = off();
+                resolution.backend = "system_one".into();
+                resolution.detail = "System One backend is not enabled".into();
+                resolution.state = BackendState::Off;
+                return (engine, resolution);
+            };
+            let credential_store = codegg_providers::CredentialStore::at_default_location()
+                .ok()
+                .map(Arc::new);
+            match crate::decision::engine_from_config(Some(config), credential_store) {
+                Ok(engine) => {
+                    let engine: Arc<dyn DecisionEngine> = Arc::from(engine);
+                    let state = engine.state();
+                    let capabilities = engine.capabilities();
+                    let detail = if capabilities.rank {
+                        "System One Rank capability available".into()
+                    } else {
+                        "System One does not support Rank; deterministic advisor fallback".into()
+                    };
+                    (
+                        engine,
+                        DecisionBackendResolution {
+                            backend: "system_one".into(),
+                            detail,
+                            state,
+                            capabilities,
+                            promotion_qualified: false,
+                        },
+                    )
+                }
+                Err(error) => {
+                    let (engine, mut resolution) = off();
+                    resolution.backend = "system_one".into();
+                    resolution.detail = format!("System One configuration rejected: {error}");
+                    resolution.state = BackendState::Unsupported(resolution.detail.clone());
+                    (engine, resolution)
+                }
+            }
+        }
+        None => {
+            let (engine, mut resolution) = off();
+            resolution.backend = "legacy".into();
+            resolution.detail =
+                "legacy learned runtimes are retired from production routing".into();
+            resolution.state = BackendState::Unsupported(resolution.detail.clone());
+            (engine, resolution)
+        }
+        Some(_) => {
+            let (engine, mut resolution) = off();
+            resolution.backend = "unknown".into();
+            resolution.detail = "unsupported decision backend selection".into();
+            resolution.state = BackendState::Unsupported(resolution.detail.clone());
+            (engine, resolution)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ToolAdvisorInput {
     pub case_id: String,
     pub context: String,
@@ -550,6 +699,41 @@ pub fn project_discovery(
             }
         }
     };
+    project_discovery_from_prediction(
+        current,
+        deferred_allowed,
+        mode,
+        threshold,
+        max_promotions,
+        Some(prediction),
+        false,
+    )
+}
+
+/// Apply a validated generic Rank projection through the same CodeGG-owned
+/// rerank/promotion policy used by historical advisor fixtures.
+pub fn project_discovery_from_prediction(
+    current: &[ToolMetadata],
+    deferred_allowed: &[ToolMetadata],
+    mode: AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+    prediction: Option<ToolAdvisorPrediction>,
+    fallback: bool,
+) -> AdvisorProjection {
+    let unchanged = || AdvisorProjection {
+        ordered: current.to_vec(),
+        prediction: None,
+        promoted: Vec::new(),
+        abstained: false,
+        fallback,
+    };
+    if mode == AdvisorMode::Off {
+        return unchanged();
+    }
+    let Some(prediction) = prediction else {
+        return unchanged();
+    };
     let abstained = prediction.abstain_probability.unwrap_or(0.0) >= 0.5;
     if mode == AdvisorMode::Observe || prediction.ranked.is_empty() || abstained {
         return AdvisorProjection {
@@ -557,7 +741,7 @@ pub fn project_discovery(
             prediction: Some(prediction),
             promoted: Vec::new(),
             abstained,
-            fallback: false,
+            fallback,
         };
     }
 
@@ -616,7 +800,7 @@ pub fn project_discovery(
         prediction: Some(prediction),
         promoted,
         abstained,
-        fallback: false,
+        fallback,
     }
 }
 
@@ -811,6 +995,7 @@ pub fn write_artifact_atomic(path: &Path, artifact: &ToolAdvisorArtifact) -> Res
     Ok(())
 }
 
+#[cfg(test)]
 pub fn advisor_from_config(
     config: Option<&codegg_config::schema::ToolAdvisorConfig>,
 ) -> (Box<dyn ToolAdvisor>, AdvisorRuntimeStatus) {
@@ -3155,5 +3340,29 @@ mod tests {
             vec!["first", "second"]
         );
         assert!(projection.abstained);
+    }
+
+    #[test]
+    fn decision_backend_resolution_keeps_policy_off_and_legacy_safe() {
+        let disabled = codegg_config::schema::ToolAdvisorConfig::default();
+        let (_, disabled_status) = decision_engine_from_config(Some(&disabled), None);
+        assert_eq!(disabled_status.backend, "noop");
+        assert_eq!(
+            disabled_status.state,
+            codegg_core::decision::BackendState::Off
+        );
+
+        let legacy = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("observe".into()),
+            runtime_backend: Some("legacy_encoder_v1".into()),
+            ..Default::default()
+        };
+        let (_, legacy_status) = decision_engine_from_config(Some(&legacy), None);
+        assert_eq!(legacy_status.backend, "unknown");
+        assert!(matches!(
+            legacy_status.state,
+            codegg_core::decision::BackendState::Unsupported(_)
+        ));
     }
 }

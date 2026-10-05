@@ -86,10 +86,22 @@ keyed by question ID. Model discovery is a direct `/v1/models` call only when
 
 `src/tool_advisor/decision_adapter.rs` projects only a caller-supplied set of
 entries already present on `ResolvedToolSurface`. It does not query a registry
-or carry permission/broker references. The adapter and frozen
-`assets/decision-runtime/compatibility-v1.jsonl` fixtures are additive
-compatibility evidence; current live disclosure and model-specific runtime
-ownership remain unchanged until later milestones close.
+or carry permission/broker references. Agent pre-turn disclosure and on-demand
+tool search share the resolved `DecisionEngine` snapshot and this generic Rank
+adapter. CodeGG shortlists candidates and retains all policy and actuation
+authority. A backend without Rank support, or one that fails validation, leaves
+the deterministic result in place. The frozen
+`assets/decision-runtime/compatibility-v1.jsonl` fixtures remain compatibility
+evidence, not qualification evidence.
+
+`codegg tool-advisor status [--json]` reports advisor policy mode separately
+from backend identity, state, capabilities, and a bounded diagnostic. It does
+not send an inference request. Capture/telemetry consent remains independent
+from runtime backend selection. The generic learned path does not activate
+historical model-specific artifacts or change negative promotion qualification.
+Until a backend and artifact have an explicit CodeGG qualification record, a
+configured `promote` policy is resolved to `observe` and status reports
+`promotion_qualified: false`.
 
 Generic semantic primitives, local artifact execution, generic training/evaluation,
 and artifact-format ownership now live in the external MIT repository
@@ -97,10 +109,11 @@ and artifact-format ownership now live in the external MIT repository
 `8139b064bdcf3212e8f6fd912e801a479b55751c`. Its `sdm-runtime` does not depend on
 `sdm-training`. The compatibility runner is
 `scripts/check_sdm_compatibility.sh <checkout> <full-revision>`; it refuses a checkout
-whose HEAD differs from the requested immutable revision. M002 is closed, but CodeGG
-still uses its existing production advisor/runtime. M003 owns local backend adoption.
-The shipped compatibility artifact is a training/runtime smoke baseline, not a
-qualified or production-promoted model.
+whose HEAD differs from the requested immutable revision. M002 extracted the generic
+training/runtime ownership; M003 adopted the optional local backend, and M005 routes
+live learned tool-advisor decisions through `DecisionEngine`. The shipped compatibility
+artifact is a training/runtime smoke baseline, not a qualified or production-promoted
+model.
 
 The SDM local runtime is opt-in at build and config time. Builds that expose it use
 `--features tool-advisor-sdm-runtime`; this feature imports `sdm-core`/`sdm-runtime`
