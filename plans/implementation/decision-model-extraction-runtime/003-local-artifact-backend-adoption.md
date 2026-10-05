@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 003 — Local Artifact Backend Adoption
 
-Status: closing
+Status: implemented
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
