@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 004 — System One Backend
 
-Status: active
+Status: closing
 
 Repository baseline: `2d0410b`
 
@@ -227,13 +227,13 @@ The System One adapter version should be observable separately from the remote m
 
 ## 11. Required verification commands
 
-Use the actual fake-server test target and feature names implemented. At minimum:
+Use the actual fake-server test target and feature names implemented. At minimum (omit `--all-features`: repository guidance prohibits broad workspace feature sweeps because that enables installed real-server tests):
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --locked -p codegg --lib decision
-cargo test --locked -p codegg --test <system-one-fake-server-target>
+cargo test --locked -p codegg --lib decision -- --nocapture  # unit target hosts the local fake server
 scripts/verify.sh quick
 git diff --check
 ```
