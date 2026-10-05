@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Roadmap
 
-Status: active
+Status: closing
 
 Repository audit baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
@@ -165,7 +165,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md`
 
-Status: active.
+Status: closing; implementation landed and M001 closure evidence is under review.
 
 Objective: introduce the application-level decision semantics, backend trait/state, capability negotiation, bounded request/response types, and frozen compatibility fixtures without changing live tool disclosure.
 
@@ -295,7 +295,7 @@ The workstream requires:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | active | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | — | — |
+| M001 | closing | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | `plans/closure/decision-model-extraction-runtime/001-status.md` | Verify root adapter suite execution on this host or record the environment-specific evidence gap |
 | M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | M001 closure and maintainer-approved external repository access |
 | M003 | blocked | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Positive M002 closure |
 | M004 | blocked | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | M001 closure |
