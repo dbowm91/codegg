@@ -921,6 +921,7 @@ mod tests {
         for body in [
             "{",
             r#"{"model":"nimble","answers":{"codegg_decision_v1":{"type":"choice","choice":"not-requested"}}}"#,
+            r#"{"model":"nimble","answers":{"codegg_decision_v1":{"type":"noul","noul":0.5}}}"#,
             r#"{"model":"nimble","answers":{"codegg_decision_v1":{"type":"choice","choice":"support","probabilities":{"support":2.0}}}}"#,
         ] {
             let (base, server) = fixture(200, body).await;
@@ -932,6 +933,16 @@ mod tests {
             assert!(matches!(result.status, DecisionStatus::Unavailable { .. }));
             let _ = server.await.expect("server completion");
         }
+        let oversized =
+            Box::leak(format!("{{\"padding\":\"{}\"}}", "x".repeat(MAX_BODY + 1)).into_boxed_str());
+        let (base, server) = fixture(200, oversized).await;
+        let engine = SystemOneEngine::new(config(base, true));
+        let result = engine
+            .decide(choice_request(), Instant::now() + Duration::from_secs(3))
+            .await
+            .expect("bounded oversized response");
+        assert!(matches!(result.status, DecisionStatus::Unavailable { .. }));
+        let _ = server.await.expect("oversized server completion");
     }
 
     #[tokio::test]
