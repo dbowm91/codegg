@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Roadmap
 
-Status: closing
+Status: active
 
 Repository audit baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
@@ -150,10 +150,10 @@ M006 legacy model/training retirement + closure
 
 Dependencies:
 
-- M001: ready now.
-- M002: hard dependency on M001; operational dependency on creation/access to the external repository. It is planned here because CodeGG is the source repository and owns the extraction/compatibility requirements.
+- M001: closed.
+- M002: hard dependency on M001 (closed); operational dependency remains creation/access to the external repository. It is planned here because CodeGG is the source repository and owns the extraction/compatibility requirements.
 - M003: hard dependency on positive M002 runtime/artifact compatibility evidence.
-- M004: hard dependency on M001 only; may proceed in parallel with M002/M003 because it is a separate backend.
+- M004: hard dependency on M001 only (closed); may proceed in parallel with M002/M003 because it is a separate backend.
 - M005: hard dependencies on M003 and M004 contract stability; M004 need not be the selected backend, but the backend-neutral interface must have at least two independently implemented paths before migration is considered proven.
 - M006: hard dependency on M005 closure and explicit inventory showing no remaining production caller of generic training/model-specific code.
 
@@ -165,7 +165,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md`
 
-Status: closing; implementation landed and M001 closure evidence is under review.
+Status: closed; see `plans/closure/decision-model-extraction-runtime/001-status.md`.
 
 Objective: introduce the application-level decision semantics, backend trait/state, capability negotiation, bounded request/response types, and frozen compatibility fixtures without changing live tool disclosure.
 
@@ -177,7 +177,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md`
 
-Status: blocked on M001 plus external repository creation/access.
+Status: blocked on maintainer-approved external repository creation/access and explicit destination license/release policy; M001 is closed.
 
 Objective: move generic training/evaluation/model-runtime ownership out of CodeGG and prove a versioned local-runtime artifact against CodeGG's frozen compatibility fixtures.
 
@@ -201,7 +201,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md`
 
-Status: blocked on M001.
+Status: ready; M001 is closed.
 
 Objective: add an explicit optional backend for compatible `/v1/systemone` services with exact semantic mapping, capability/profile validation, bounded deadlines, privacy controls, and deterministic fallback.
 
@@ -295,10 +295,10 @@ The workstream requires:
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | closing | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | `plans/closure/decision-model-extraction-runtime/001-status.md` | Verify root adapter suite execution on this host or record the environment-specific evidence gap |
-| M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | M001 closure and maintainer-approved external repository access |
+| M001 | closed | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | `plans/closure/decision-model-extraction-runtime/001-status.md` | — |
+| M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | Maintainer-approved external repository and license/release policy |
 | M003 | blocked | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Positive M002 closure |
-| M004 | blocked | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | M001 closure |
+| M004 | ready | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | — |
 | M005 | blocked | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | — | M003 and stable M004 semantics |
 | M006 | blocked | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 closure and source/dependency inventory |
 

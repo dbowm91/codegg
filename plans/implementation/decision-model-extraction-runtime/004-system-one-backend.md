@@ -1,8 +1,8 @@
 # Decision-Model Extraction and Runtime Milestone 004 — System One Backend
 
-Status: blocked
+Status: ready
 
-Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
+Repository baseline: `2d0410b`
 
 Source roadmap:
 
