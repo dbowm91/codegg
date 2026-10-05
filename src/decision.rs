@@ -273,6 +273,15 @@ fn validate_target(config: &SystemOneConfig) -> Result<(String, Vec<SocketAddr>)
     {
         return Err("decision endpoint URL contains disallowed components".into());
     }
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("unsupported decision endpoint scheme".into());
+    }
+    if config.profile == SystemOneProfile::Reference && url.scheme() != "https" {
+        return Err("reference profile requires HTTPS".into());
+    }
+    if config.profile == SystemOneProfile::Ollama && url.scheme() != "http" {
+        return Err("Ollama profile requires local loopback HTTP".into());
+    }
     let host = url
         .host_str()
         .ok_or("decision endpoint URL has no host")?
@@ -289,19 +298,13 @@ fn validate_target(config: &SystemOneConfig) -> Result<(String, Vec<SocketAddr>)
     }
     let loopback_host = host == "localhost" || addresses.iter().all(|a| a.ip().is_loopback());
     match config.profile {
-        SystemOneProfile::Reference if url.scheme() != "https" => {
-            return Err("reference profile requires HTTPS".into())
-        }
-        SystemOneProfile::Ollama if url.scheme() != "http" || !loopback_host => {
+        SystemOneProfile::Ollama if !loopback_host => {
             return Err("Ollama profile requires local loopback HTTP".into())
         }
         _ => {}
     }
     if url.scheme() == "http" && (!loopback_host || config.credential.is_some()) {
         return Err("plain HTTP is limited to unauthenticated loopback endpoints".into());
-    }
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return Err("unsupported decision endpoint scheme".into());
     }
     if config.profile == SystemOneProfile::Reference
         && addresses
@@ -667,6 +670,14 @@ mod tests {
         status: u16,
         response: &'static str,
     ) -> (String, tokio::task::JoinHandle<String>) {
+        fixture_with_location(status, None, response).await
+    }
+
+    async fn fixture_with_location(
+        status: u16,
+        location: Option<String>,
+        response: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fake server");
@@ -700,7 +711,10 @@ mod tests {
             }
             let text = String::from_utf8_lossy(&request).into_owned();
             let payload = response.as_bytes();
-            let header = format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len());
+            let location_header = location
+                .map(|value| format!("Location: {value}\r\n"))
+                .unwrap_or_default();
+            let header = format!("HTTP/1.1 {status} Test\r\n{location_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len());
             socket
                 .write_all(header.as_bytes())
                 .await
@@ -882,6 +896,28 @@ mod tests {
             );
             let _ = server.await.expect("server completion");
         }
+        let destination = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind redirect destination");
+        let destination_url = format!(
+            "http://{}/redirected",
+            destination.local_addr().expect("redirect target")
+        );
+        let forwarded = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_millis(150), destination.accept())
+                .await
+                .is_ok()
+        });
+        let (base, server) = fixture_with_location(302, Some(destination_url), "").await;
+        let engine = SystemOneEngine::new(config(base, true));
+        let result = engine
+            .decide(choice_request(), Instant::now() + Duration::from_secs(3))
+            .await
+            .expect("redirect fallback");
+        assert!(matches!(result.status, DecisionStatus::Unavailable { .. }));
+        let _ = server.await.expect("redirect source completion");
+        assert!(!forwarded.await.expect("redirect spy completion"));
+
         for body in [
             "{",
             r#"{"model":"nimble","answers":{"codegg_decision_v1":{"type":"choice","choice":"not-requested"}}}"#,
