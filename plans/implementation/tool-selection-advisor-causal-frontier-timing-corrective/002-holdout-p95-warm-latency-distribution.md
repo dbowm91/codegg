@@ -1,9 +1,8 @@
 # Tool-Selection Advisor Causal Frontier Timing Corrective Milestone 002 — Holdout p95 Over Warm Scenario Minima
 
-Status: planned
+Status: implemented
 
-Repository baseline: `f7c8948a` (`main`; M006-B branch `m006-b-read-surface` at
-`d49501ea` carried the triggering failure and is blocked by it)
+Repository baseline: `f7c8948a` (`main`; baseline reproduced under load). Implementation `0d50e4cd`, plan `9d298ab0`, PR `#100`, hosted run `37311215175` green
 
 Source corrective addendum:
 
