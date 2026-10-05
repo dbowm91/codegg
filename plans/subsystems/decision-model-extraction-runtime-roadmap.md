@@ -201,7 +201,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md`
 
-Status: closing; M001 is closed.
+Status: closed; M001 is closed. Closure: `plans/closure/decision-model-extraction-runtime/004-status.md`.
 
 Objective: add an explicit optional backend for compatible `/v1/systemone` services with exact semantic mapping, capability/profile validation, bounded deadlines, privacy controls, and deterministic fallback.
 
@@ -213,7 +213,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md`
 
-Status: blocked on M003 and M004 contract stability.
+Status: blocked on M003 positive closure; M004 contract stability is established by its closure.
 
 Objective: make learned tool advice consume `DecisionEngine` instead of model-specific CodeGG runtime types, while retaining CodeGG-owned candidate filtering, BM25 fallback, disclosure budgets, telemetry/capture policy, and causal-frontier behavior.
 
@@ -298,8 +298,8 @@ The workstream requires:
 | M001 | closed | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | `plans/closure/decision-model-extraction-runtime/001-status.md` | — |
 | M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | Maintainer-approved external repository and license/release policy |
 | M003 | blocked | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Positive M002 closure |
-| M004 | closing | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | — |
-| M005 | blocked | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | — | M003 and stable M004 semantics |
+| M004 | closed | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | `plans/closure/decision-model-extraction-runtime/004-status.md` | — |
+| M005 | blocked | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | — | Positive M003 closure; M004 is closed and stable |
 | M006 | blocked | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 closure and source/dependency inventory |
 
 ## 13. Completion definition

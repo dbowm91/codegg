@@ -18,7 +18,7 @@ Primary class: capability
 Hard dependencies:
 
 - M003 closed positively;
-- M004 interface/contract stable and closed or conditionally closed with no unresolved semantic/security defect affecting `DecisionEngine`.
+- M004 interface/contract stable and closed or conditionally closed with no unresolved semantic/security defect affecting `DecisionEngine` (satisfied by `plans/closure/decision-model-extraction-runtime/004-status.md`).
 
 ## 1. Objective
 

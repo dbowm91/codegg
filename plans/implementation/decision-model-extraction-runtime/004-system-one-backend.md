@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 004 — System One Backend
 
-Status: closing
+Status: closed
 
 Repository baseline: `2d0410b`
 
@@ -270,6 +270,8 @@ Stop and write a corrective/new ADR if:
 - the backend needs to auto-start or auto-install a service/model;
 - response data can inject executable candidates;
 - protocol differences cannot be bounded by explicit profiles.
+
+Closure record: `plans/closure/decision-model-extraction-runtime/004-status.md`.
 
 ## 15. Closure evidence required
 
