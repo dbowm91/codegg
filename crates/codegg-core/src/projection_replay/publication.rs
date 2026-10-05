@@ -7,6 +7,34 @@ pub fn projection_events_from_core(
 ) -> Vec<(ProjectionStreamKind, ProjectionEnvelope)> {
     let mut result = Vec::new();
 
+    // M006-B: LSP diagnostics are project-scoped and are emitted on the
+    // `Project` stream only — never the session one. Handled before the
+    // session-keyed match below so it cannot be swept along with it.
+    if let CoreEvent::LspDiagnosticsUpdated {
+        project_id, file, ..
+    } = &envelope.payload
+    {
+        let event = ProjectionEvent::LspDiagnosticsUpdated {
+            file: codegg_protocol::lsp::LspDiagnosticsProjectionDto {
+                project_id: project_id.clone(),
+                file: file.clone(),
+            },
+        };
+        result.push((
+            ProjectionStreamKind::Project,
+            ProjectionEnvelope {
+                protocol_version: 1,
+                event_seq: envelope.event_seq,
+                timestamp_ms: envelope.timestamp_ms,
+                session_id: None,
+                turn_id: None,
+                scope: codegg_protocol::projection::event::ProjectionStreamScope::Project,
+                payload: event,
+            },
+        ));
+        return result;
+    }
+
     let base = match &envelope.payload {
         CoreEvent::TurnStarted {
             session_id,
@@ -535,6 +563,14 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone().unwrap_or_default(), None, event))
         }
+        // M006-B: project-scoped, and routed on the **Project** stream only.
+        //
+        // Every other arm above is session-keyed and pushed to both streams.
+        // Diagnostics must not be: the session reducer has no place for
+        // project file state, and the payload carries source content that
+        // belongs to the project's own authorization, not a session's. The
+        // projection envelope is built in the early return above.
+        CoreEvent::LspDiagnosticsUpdated { .. } => None,
         _ => None,
     };
 

@@ -1442,6 +1442,18 @@ pub enum CoreResponse {
     LspPreviewApplyResult {
         result: crate::lsp::LspPreviewApplyResultDto,
     },
+    /// M006-B: result of one bounded LSP read (`via_session`, `file.read`).
+    /// `status` is authoritative and must be checked before `payload`; a
+    /// `NotReady` result never carries one.
+    LspReadResult {
+        result: crate::lsp::LspReadResultDto,
+    },
+    /// M006-B: the authoritative current diagnostics of a project
+    /// (`direct_project`, `file.read`). This is the resync authority that the
+    /// project-scoped push stream is reconciled against.
+    LspDiagnosticsGetResult {
+        result: crate::lsp::LspDiagnosticsResultDto,
+    },
     // ── Identity/Audit M004: Append-Only Audit Foundation ───────────────
     /// Bounded structural audit page ordered by coordinator sequence.
     AuditPage {
@@ -2486,6 +2498,34 @@ pub enum CoreRequest {
     LspPreviewApply {
         request: crate::lsp::LspPreviewApplyRequestDto,
     },
+    /// M006-B: one bounded LSP read — hover, definition, references, document
+    /// symbols, workspace symbols, or semantic tokens
+    /// (`via_session` + `file.read`).
+    ///
+    /// Warm-only by contract (ADR-0012 §3): a read against a server the
+    /// daemon has not started returns `NotReady` and never launches one.
+    LspReadGet {
+        request: crate::lsp::LspReadRequestDto,
+    },
+    /// M006-B: fetch the authoritative current diagnostics for a project
+    /// (`direct_project` + `file.read`).
+    ///
+    /// The push stream is a latency optimization; this is the correctness
+    /// authority a client reconciles against after a detected sequence gap,
+    /// a reconnect, or a resync requirement.
+    LspDiagnosticsGet {
+        request: crate::lsp::LspDiagnosticsGetRequestDto,
+    },
+    /// M006-B: subscribe to a project's LSP diagnostics stream
+    /// (`direct_project` + `file.read`).
+    ///
+    /// A dedicated request because the generic `ProjectionSubscribe` is gated
+    /// at `Opaque + project.observe`, which cannot express the `file.read`
+    /// ADR-0012 requires for content-bearing reads. Responds with
+    /// `ProjectionSubscribed`, reusing the same subscription owner.
+    LspDiagnosticsSubscribe {
+        request: crate::lsp::LspDiagnosticsSubscribeRequestDto,
+    },
     /// M004: bounded structural audit query (project-scoped, `audit.read`).
     /// Unknown action/principal filters degrade to empty pages, never to
     /// an error that leaks existence.
@@ -3274,6 +3314,20 @@ pub enum CoreEvent {
     WorktreeUpserted {
         session_id: String,
         worktree: crate::projection::dto::WorktreeSummaryProjection,
+    },
+    /// M006-B: a project's diagnostics for one file changed.
+    ///
+    /// Carries the **complete** current set for that file, never a delta, plus
+    /// the monotonic `sequence` a client compares against the authoritative
+    /// `LspDiagnosticsGet` to detect a missed envelope.
+    ///
+    /// `session_id` is carried because `EventLog` scopes envelopes by
+    /// session; the payload itself is project-scoped and must be routed on
+    /// the `Project` stream, never the session one.
+    LspDiagnosticsUpdated {
+        session_id: String,
+        project_id: String,
+        file: crate::lsp::LspFileDiagnosticsDto,
     },
     AgentRunGroupUpserted {
         session_id: String,

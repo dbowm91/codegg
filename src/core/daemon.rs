@@ -21,6 +21,13 @@ pub struct CoreDaemon {
     pub pool: Option<sqlx::SqlitePool>,
     pub deps: CoreRuntimeDeps,
     pub event_log: Arc<super::event_log::EventLog>,
+    /// M006-B: digest-keyed per-project diagnostics tracking.
+    ///
+    /// Shared by the publisher and by the `LspDiagnosticsGet` resync
+    /// authority, so a client reconciles against the same view it was
+    /// streamed. `parking_lot` because tracking is a short in-memory
+    /// critical section, never held across an await.
+    pub lsp_diagnostics: Arc<parking_lot::Mutex<super::lsp_diagnostics_store::LspDiagnosticsStore>>,
     pub sessions: Arc<crate::core::session_runtime::SessionRuntimeRegistry>,
     pub clients: Arc<super::client_registry::ClientRegistry>,
     pub notification_router: Arc<super::notification::NotificationRouter>,
@@ -937,6 +944,10 @@ impl CoreDaemon {
             } => Some(project_id),
             CoreRequest::ProjectionArtifactRead { project_id, .. }
             | CoreRequest::ProjectionArtifactList { project_id } => Some(project_id),
+            // M006-B: the gated LSP diagnostics subscription resolves its
+            // project directly, exactly as the generic project-scoped
+            // operations above do.
+            CoreRequest::LspDiagnosticsSubscribe { request } => Some(request.project_id.as_str()),
             CoreRequest::AssetRefresh { request } => Some(request.scope.project_id.as_str()),
             CoreRequest::AssetRefreshStatus { scope } => Some(scope.project_id.as_str()),
             CoreRequest::GoalSet { project_id, .. }
@@ -3708,6 +3719,11 @@ impl CoreDaemon {
             }
             super::daemon_family::DaemonRequestFamily::Documents => {
                 Box::pin(self.handle_document_request(payload, trusted_client_id)).await
+            }
+            // M006-B: LSP read authority only. `LspPreviewApply` is routed to
+            // `Goals` above and is not reachable here.
+            super::daemon_family::DaemonRequestFamily::Lsp => {
+                Box::pin(self.handle_lsp_request(payload, trusted_client_id)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

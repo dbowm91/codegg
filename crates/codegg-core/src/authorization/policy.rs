@@ -752,6 +752,34 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::FileModify),
         ),
+        // M006-B (ADR-0012 §4). Both read operations are gated at
+        // `FileRead`, deliberately mirroring `lsp_preview_apply`'s
+        // `ViaSession` scope rather than the generic projection stream's
+        // `Opaque` + `ProjectObserve`.
+        //
+        // `ProjectObserve` is the correct gate for lifecycle projections
+        // because they carry workflow state. LSP reads and diagnostics carry
+        // source content — messages, code, and snippets — so the weaker
+        // observability capability would understate what is disclosed.
+        R::LspReadGet { .. } => OperationDescriptor::new(
+            "lsp_read_get",
+            ScopeKind::ViaSession,
+            Some(Capability::FileRead),
+        ),
+        R::LspDiagnosticsGet { .. } => OperationDescriptor::new(
+            "lsp_diagnostics_get",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
+        // M006-B: the diagnostics *stream* needs `file.read`, not the
+        // `project.observe` the generic `ProjectionSubscribe` uses. See ADR-0012
+        // §4 — diagnostics carry source content, and `project.observe` would
+        // understate what the subscription discloses.
+        R::LspDiagnosticsSubscribe { .. } => OperationDescriptor::new(
+            "lsp_diagnostics_subscribe",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
         R::AuditQuery { .. } => OperationDescriptor::new(
             "audit_query",
             ScopeKind::DirectProject,
@@ -1724,6 +1752,15 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::LspPreviewApply {
             request: dummy_lsp_preview_apply(),
         },
+        R::LspReadGet {
+            request: dummy_lsp_read_get(),
+        },
+        R::LspDiagnosticsGet {
+            request: dummy_lsp_diagnostics_get(),
+        },
+        R::LspDiagnosticsSubscribe {
+            request: dummy_lsp_diagnostics_subscribe(),
+        },
         R::AuditQuery {
             query: codegg_protocol::core::AuditQueryRequestDto {
                 project_id: String::new(),
@@ -2255,5 +2292,31 @@ fn dummy_lsp_preview_apply() -> codegg_protocol::lsp::LspPreviewApplyRequestDto 
         session_id: String::new(),
         turn_id: None,
         patches: Vec::new(),
+    }
+}
+
+fn dummy_lsp_read_get() -> codegg_protocol::lsp::LspReadRequestDto {
+    codegg_protocol::lsp::LspReadRequestDto {
+        operation: codegg_protocol::lsp::LspReadOperation::Hover,
+        session_id: String::new(),
+        path: String::new(),
+        line: None,
+        column: None,
+        query: None,
+    }
+}
+
+fn dummy_lsp_diagnostics_subscribe() -> codegg_protocol::lsp::LspDiagnosticsSubscribeRequestDto {
+    codegg_protocol::lsp::LspDiagnosticsSubscribeRequestDto {
+        project_id: String::new(),
+        cursor: None,
+        projection_version: 1,
+    }
+}
+
+fn dummy_lsp_diagnostics_get() -> codegg_protocol::lsp::LspDiagnosticsGetRequestDto {
+    codegg_protocol::lsp::LspDiagnosticsGetRequestDto {
+        project_id: String::new(),
+        session_id: String::new(),
     }
 }

@@ -384,7 +384,11 @@ impl HeadlessProjectionConsumer {
                             stream_id: descriptor.stream_id.clone(),
                             event_seq: match snapshot {
                                 ProjectionSnapshotBundle::One { snapshot } => snapshot.event_seq,
-                                ProjectionSnapshotBundle::BoundedSessionList { .. } => 0,
+                                // A diagnostics bundle carries no session
+                                // snapshot, so it yields no session cursor —
+                                // the same honest `0` as a session list.
+                                ProjectionSnapshotBundle::BoundedSessionList { .. }
+                                | ProjectionSnapshotBundle::LspDiagnostics { .. } => 0,
                             },
                             projection_version: descriptor.projection_version,
                         },
@@ -704,7 +708,10 @@ impl HeadlessProjectionConsumer {
     ) -> Result<Box<SessionProjectionSnapshot>, HeadlessConsumerError> {
         match bundle {
             ProjectionSnapshotBundle::One { snapshot } => Ok(snapshot),
-            ProjectionSnapshotBundle::BoundedSessionList { .. } => {
+            // A headless session consumer cannot fold in a project-scoped
+            // diagnostics bundle; rejecting it is correct, not a limitation.
+            ProjectionSnapshotBundle::BoundedSessionList { .. }
+            | ProjectionSnapshotBundle::LspDiagnostics { .. } => {
                 Err(HeadlessConsumerError::InvalidSnapshotBundle)
             }
         }

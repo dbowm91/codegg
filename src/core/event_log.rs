@@ -33,6 +33,14 @@ pub fn event_matches_filter(filter: &EventFilter, event: &EventEnvelope<CoreEven
 /// Events that are persisted to SQLite for recovery after restart.
 /// High-value events: turn lifecycle, tool lifecycle, permissions, questions,
 /// subagent lifecycle, errors. Deltas and snapshots are excluded.
+///
+/// M006-B decision: `LspDiagnosticsUpdated` is deliberately **absent**, so
+/// diagnostics are not persisted. It is a per-file replace-set that the
+/// authoritative `LspDiagnosticsGet` can always re-derive, and ADR-0008's
+/// ruling that preview and diagnostic state stay bounded and non-durable
+/// applies. The cost is that after a daemon restart a client has no sequence
+/// history and must re-pull — which is exactly why the pull, not the stream,
+/// is the correctness authority.
 fn should_persist(event: &CoreEvent) -> bool {
     matches!(
         event,

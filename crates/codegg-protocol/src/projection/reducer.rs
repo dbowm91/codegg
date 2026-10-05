@@ -598,6 +598,18 @@ impl ProjectionReducer {
                     )
                 }
             }
+            // M006-B: LSP diagnostics are published on the **project** stream.
+            // This reducer folds the *session* snapshot, so applying them here
+            // would put project state into a session view. Recording a
+            // diagnostic and returning `Reconciled` says "seen, deliberately
+            // not applied" rather than silently dropping it, so a future
+            // misrouting is visible instead of looking like a working feature.
+            ProjectionEvent::LspDiagnosticsUpdated { .. } => self.record_diagnostic(
+                snapshot,
+                input,
+                "project_scoped_event_on_session_stream",
+                "LspDiagnosticsUpdated belongs to the project projection stream",
+            ),
             ProjectionEvent::QuestionPending { question } => {
                 let Some(turn) = snapshot.active_turn.as_mut() else {
                     return self.record_diagnostic(

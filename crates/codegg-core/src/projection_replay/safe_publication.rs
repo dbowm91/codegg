@@ -45,6 +45,19 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::SessionUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRegistered { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRestored { .. } => SafePublicationClass::Safe,
+        // M006-B: diagnostics carry source messages, code, and snippets, so
+        // publishing them `Safe` is only correct because they are gated at
+        // `file.read` rather than the generic projection stream's
+        // `Opaque + project.observe`. That gate lives on
+        // `CoreRequest::LspDiagnosticsSubscribe`, which is a dedicated
+        // request precisely because the generic subscribe cannot express a
+        // `file.read` requirement.
+        //
+        // If that subscribe variant were ever removed or re-pointed at the
+        // generic gate, this class would become a disclosure regression. The
+        // coupling is deliberate and worth stating rather than leaving as a
+        // coincidence.
+        CoreEvent::LspDiagnosticsUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::TurnReasoningDelta { .. } => SafePublicationClass::Internal,
         CoreEvent::ConnectionRotated { .. } => SafePublicationClass::Sensitive,
         CoreEvent::ConnectionStateChanged { .. } => SafePublicationClass::Sensitive,
