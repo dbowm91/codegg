@@ -91,6 +91,17 @@ or carry permission/broker references. The adapter and frozen
 compatibility evidence; current live disclosure and model-specific runtime
 ownership remain unchanged until later milestones close.
 
+Generic semantic primitives, local artifact execution, generic training/evaluation,
+and artifact-format ownership now live in the external MIT repository
+[`dbowm91/sdm`](https://github.com/dbowm91/sdm), initially pinned at immutable commit
+`33a7f4a0a404755a5a61f01731eb7bdfdd81d4dd`. Its `sdm-runtime` does not depend on
+`sdm-training`. The compatibility runner is
+`scripts/check_sdm_compatibility.sh <checkout> <full-revision>`; it refuses a checkout
+whose HEAD differs from the requested immutable revision. M002 is closed, but CodeGG
+still uses its existing production advisor/runtime. M003 owns local backend adoption.
+The shipped compatibility artifact is a training/runtime smoke baseline, not a
+qualified or production-promoted model.
+
 ## Optional runtime (linear baseline and contextual corrective)
 
 The runtime is an in-process `hashed-linear-v1` Rust scorer with a versioned

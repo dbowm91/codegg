@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 002 — External Training/Runtime Extraction
 
-Status: blocked
+Status: implemented
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
@@ -29,17 +29,13 @@ Extract generic decision-model training, evaluation, artifact, and reusable loca
 
 This is a cross-repository migration milestone. CodeGG remains the source of historical evidence and the downstream compatibility consumer; the external repository becomes the owner of generic learned-model implementation.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
-The exact external repository does not yet exist in CodeGG planning and ADR-0013 deliberately does not invent its permanent name.
-
-Implementation may begin only after:
-
-- M001 freezes the application contract/fixtures;
-- maintainers provide or create the destination repository;
-- destination license/release policy is explicit.
-
-No model code should be deleted from CodeGG while the destination is unspecified.
+M001 has frozen the application contract and fixtures. The user supplied and created
+the destination `https://github.com/dbowm91/sdm`; the destination declares MIT licensing
+with preserved CodeGG attribution, private initial visibility, and immutable full Git
+commit SHA consumption after CI and fixture qualification. No production migration or
+CodeGG model-code deletion is part of M002.
 
 ## 3. Extraction classification
 

@@ -1,5 +1,12 @@
 # Tool-advisor contextual runtime framework spike
 
+> Historical implementation note (M002 extraction, 2026-10-05): this document records
+> the CodeGG-local research comparison and its evidence. Generic training/runtime
+> ownership has moved to [`dbowm91/sdm`](https://github.com/dbowm91/sdm); the old source,
+> artifacts, and experiment results remain in CodeGG as immutable historical evidence
+> until M006 retires obsolete implementation. This document does not define the SDM
+> runtime contract or promote any model.
+
 This document records two distinct decisions. The historical M002 decision
 selected the repository-local hashed contextual scorer for the bounded
 corrective. C004 later demoted `contextual-embedding-v2` to a research/observe

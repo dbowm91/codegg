@@ -177,7 +177,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md`
 
-Status: blocked on maintainer-approved external repository creation/access and explicit destination license/release policy; M001 is closed.
+Status: closed; see `plans/closure/decision-model-extraction-runtime/002-status.md`.
 
 Objective: move generic training/evaluation/model-runtime ownership out of CodeGG and prove a versioned local-runtime artifact against CodeGG's frozen compatibility fixtures.
 
@@ -189,7 +189,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md`
 
-Status: blocked on positive M002.
+Status: ready; M002 produced an independently buildable Rank runtime/artifact at pinned revision `33a7f4a0a404755a5a61f01731eb7bdfdd81d4dd` and passed the M001 contract fixture checker. No production cutover has occurred.
 
 Objective: replace CodeGG's architecture-specific learned inference owner with the reusable local runtime backend while preserving `off`, observe-only parity, fallback, artifact validation, and resource bounds.
 
