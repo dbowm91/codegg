@@ -201,7 +201,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md`
 
-Status: ready; M001 is closed.
+Status: active; M001 is closed.
 
 Objective: add an explicit optional backend for compatible `/v1/systemone` services with exact semantic mapping, capability/profile validation, bounded deadlines, privacy controls, and deterministic fallback.
 
@@ -298,7 +298,7 @@ The workstream requires:
 | M001 | closed | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | `plans/closure/decision-model-extraction-runtime/001-status.md` | — |
 | M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | Maintainer-approved external repository and license/release policy |
 | M003 | blocked | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Positive M002 closure |
-| M004 | ready | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | — |
+| M004 | active | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | — |
 | M005 | blocked | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | — | M003 and stable M004 semantics |
 | M006 | blocked | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 closure and source/dependency inventory |
 

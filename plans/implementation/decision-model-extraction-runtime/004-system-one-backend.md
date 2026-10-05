@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 004 — System One Backend
 
-Status: ready
+Status: active
 
 Repository baseline: `2d0410b`
 
