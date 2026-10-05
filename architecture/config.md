@@ -67,9 +67,37 @@ Different strategies per field type:
   `context_policy`, `daemon`, `scheduler`, `tool_deferral`,
   `security`, `research`, `theme`, `tool_backends`,
   `human_shell`, `shell`, `deterministic_tools`, `preflight`,
-  `command_intent`, `orchestration`
+  `command_intent`, `orchestration`, `decision_engine`
 
 ### ProviderConfig Merge (`schema.rs:827`)
+
+`decision_engine` is a simple optional override. Its schema defaults to
+disabled, uses `reference` or `ollama` as an explicit compatibility profile,
+and carries only a `codegg_config::schema::AuthConfig` reference; runtime code
+resolves credentials through the existing provider `AuthResolver`. The engine
+does not perform model discovery unless an operator explicitly calls its
+discovery method.
+
+Example remote configuration:
+
+```jsonc
+{
+  "decision_engine": {
+    "enabled": true,
+    "backend": "system_one",
+    "profile": "reference",
+    "base_url": "https://system-one.dev/v1",
+    "model": "jev-latest",
+    "timeout_ms": 2000,
+    "discover_models": false,
+    "auth": { "type": "api_key", "env": "SYSTEM_ONE_API_KEY" }
+  }
+}
+```
+
+For local Ollama, set `profile` to `ollama`, `base_url` to its loopback
+`/v1` endpoint, and `model` to an installed System One model. The adapter
+never starts Ollama or installs models.
 
 Field-by-field: non-None fields from override replace base. Unlike
 HashMap fields (key replacement), `ProviderConfig::merge()` merges

@@ -204,6 +204,7 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             context_packer,
             context_policy,
             tool_advisor,
+            decision_engine,
             orchestration
         );
         if let Some(model_routers) = &config.model_routers {

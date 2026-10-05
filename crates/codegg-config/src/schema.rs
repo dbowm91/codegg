@@ -273,6 +273,8 @@ pub struct Config {
     pub tool_deferral: Option<ToolDeferralConfig>,
     /// Optional local tool-selection advisor. Disabled unless explicitly enabled.
     pub tool_advisor: Option<ToolAdvisorConfig>,
+    /// Optional System One decision backend. No network use unless enabled.
+    pub decision_engine: Option<DecisionEngineConfig>,
     pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
     pub research: Option<ResearchConfig>,
@@ -304,6 +306,34 @@ pub struct Config {
     /// Named Eggwork nodes for fixed-target remote execution. Absent by
     /// default; Eggwork-targeted jobs require an entry here.
     pub eggwork: Option<EggworkConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DecisionEngineConfig {
+    pub enabled: bool,
+    pub backend: String,
+    pub profile: String,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub auth: Option<AuthConfig>,
+    pub timeout_ms: u64,
+    pub discover_models: bool,
+}
+
+impl Default for DecisionEngineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: "system_one".into(),
+            profile: "reference".into(),
+            base_url: None,
+            model: None,
+            auth: None,
+            timeout_ms: 2_000,
+            discover_models: false,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

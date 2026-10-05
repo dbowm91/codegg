@@ -164,6 +164,7 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
 | Tool | Built-in tools (53 registration statements in `with_options`; ~31 core always registered, remainder gated by todo policy / evidence backend / LSP-security backend / eggsact / context-read config), `Tool` trait, `ToolCatalog` + `tool_search` on-demand discovery, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `catalog.rs`, `tool_search.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Decision Engine | Optional System One-compatible `DecisionEngine` backend, explicit opt-in and bounded fallback | `decision.rs`, `codegg-core/src/decision.rs` | [tool-advisor.md](tool-advisor.md) |
 | Agent Tool Surface | Model-facing tool definitions, categories, and gating rules consumed by request preparation | `agent/tool_surface.rs` | [agent-tool-surface.md](agent-tool-surface.md) |
 | Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
 | Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |

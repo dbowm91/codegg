@@ -58,6 +58,30 @@ a cancellable `DecisionEngine` interface with a caller-supplied deadline. Its
 validation and canonical fingerprinting have no model, transport, or training
 dependency. `NoopDecisionEngine` represents the ordinary off configuration.
 
+The opt-in `src/decision.rs` adapter implements Binary (`noul`), Choice, and
+integer-range Score over one question per request. Its reference and Ollama
+profiles share the bounded `/v1/systemone` subset; Rank stays explicitly
+unsupported. Score requires integral endpoints no more than nine levels apart.
+Answers must use the generated question ID and requested option IDs. Remote
+confidence is validated as a bounded diagnostic but is not promoted to
+CodeGG confidence. The adapter uses Eggfetch with redirects off, 64 KiB
+response bounds, pinned resolved addresses, and the caller deadline.
+Reference endpoints require HTTPS and public addresses; Ollama permits only
+loopback HTTP without credentials. Auth is resolved through CodeGG's existing
+`AuthResolver`; unsupported auth modes fail closed.
+
+`decision_engine.enabled` defaults to `false`; an off engine performs no DNS
+lookup or request. Model discovery is an explicit operator call and does not
+run in the background. The backend sends only bounded M001 state and question
+payload; it never receives tool authority. HTTP, timeout, schema, and protocol
+failures return `Unavailable` for deterministic host fallback.
+
+The wire subset follows the [System One API reference](https://docs.system-one.dev/en/docs/api)
+and the [Ollama System One endpoint](https://docs.ollama.com/api/systemone):
+named questions with `choice`, `score`, or `noul`, a shared state, and answers
+keyed by question ID. Model discovery is a direct `/v1/models` call only when
+`discover_models` is enabled and an operator invokes `discover_models()`.
+
 `src/tool_advisor/decision_adapter.rs` projects only a caller-supplied set of
 entries already present on `ResolvedToolSurface`. It does not query a registry
 or carry permission/broker references. The adapter and frozen
