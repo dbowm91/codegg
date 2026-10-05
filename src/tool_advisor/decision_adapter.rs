@@ -244,6 +244,7 @@ mod tests {
         let denied = BTreeSet::from(["secret".to_string()]);
         let surface = ResolvedToolSurface::resolve(
             [
+                definition("glob"),
                 definition("read"),
                 definition("secret"),
                 definition("mcp__server__synthetic"),
@@ -256,6 +257,7 @@ mod tests {
         )
         .unwrap();
         let requested = BTreeSet::from([
+            "glob".to_string(),
             "read".to_string(),
             "secret".to_string(),
             "outside_surface".to_string(),
@@ -272,7 +274,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            BTreeSet::from(["read".into(), "mcp__server__synthetic".into()])
+            BTreeSet::from(["glob".into(), "mcp__server__synthetic".into()])
         );
     }
 }
