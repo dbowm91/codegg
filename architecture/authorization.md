@@ -79,6 +79,18 @@ in-memory daemons without a pool decide under the same broad policy.
   follow-up work, not a semantic gap: the fail-closed default is the
   required behavior.
 
+**M006-B diverges from the generic projection gate, deliberately.** The
+`ProjectionSubscribe` operation is `Opaque + project.observe`, which is
+correct for lifecycle projections carrying workflow state. LSP reads and
+diagnostics are gated at `file.read` instead (`lsp_read_get`,
+`lsp_diagnostics_get`), because diagnostics carry source messages, code, and
+snippets, and `project.observe` would understate what is disclosed. For the
+same reason `CoreEvent::LspDiagnosticsUpdated` is classified
+`SafePublicationClass::ClientLocal`, which the durable publish path refuses
+outright: the current stream's subscribe gate cannot express the `file.read`
+requirement, so the event is not published over it and the pull
+(`lsp_diagnostics_get`) is the complete surface until a stream gate can.
+
 ## Attribution
 
 `OriginAttribution` is built from the bound principal plus the captured
@@ -384,6 +396,8 @@ gates (firing is not a Core operation):
 | `job_submit` | via_session | `job.submit` |
 | `job_wait` | via_job | `session.read` |
 | `lsp_preview_apply` | via_session | `file.modify` |
+| `lsp_read_get` | via_session | `file.read` |
+| `lsp_diagnostics_get` | direct_project | `file.read` |
 | `managed_worktree_archive` | opaque | `worktree.remove` |
 | `managed_worktree_cleanup` | opaque | `worktree.remove` |
 | `managed_worktree_get` | opaque | `git.read` |

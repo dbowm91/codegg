@@ -34,7 +34,7 @@ use codegg_protocol::lsp::{
 use crate::core::daemon::CoreDaemon;
 use crate::error::AppError;
 use crate::lsp::service::LspService;
-use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 
 /// Why an LSP read could not be served.
 ///
@@ -243,7 +243,7 @@ impl CoreDaemon {
                 match operations.find_references(target, line, column).await {
                     Ok(found) => {
                         let (locations, truncated) =
-                            cap_locations(found.iter().map(|location| location_to_dto(location)));
+                            cap_locations(found.iter().map(location_to_dto));
                         LspReadPayloadDto::Locations {
                             locations,
                             truncated,
@@ -461,4 +461,169 @@ fn symbol_kind_number(kind: crate::lsp::lsp_types::SymbolKind) -> u32 {
         .and_then(|value| value.as_u64())
         .and_then(|number| u32::try_from(number).ok())
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Publication
+// ---------------------------------------------------------------------------
+
+/// How often the daemon re-reads diagnostics looking for a change.
+///
+/// Deliberately not tight. The underlying data is push-based — the language
+/// server sends `textDocument/publishDiagnostics` and egglsp caches it — so
+/// this only has to notice a change that already happened. Polling faster
+/// would burn wakeups to shorten a delay an editor does not notice.
+pub const DIAGNOSTICS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Read every warm client's diagnostics and publish the ones that changed.
+///
+/// Returns how many envelopes were published, so a caller — and a test — can
+/// tell "nothing changed" from "the publisher did not run".
+///
+/// Two properties are load-bearing:
+///
+/// - It walks `client_keys()`, which lists **existing** clients only. Nothing
+///   here can start a language server, matching the warm-only rule the read
+///   path enforces.
+/// - It publishes only on a digest change. An unchanged file produces no
+///   envelope, which is what keeps a high-churn project from turning the
+///   stream into a busy loop.
+pub async fn publish_changed_diagnostics(
+    daemon: &CoreDaemon,
+    project_id: &str,
+    session_id: &str,
+) -> usize {
+    use crate::core::lsp_diagnostics_store::DiagnosticsChange;
+
+    let Some(service) = daemon.deps.lsp_service.clone() else {
+        return 0;
+    };
+
+    let mut published = 0usize;
+    for key in service.client_keys().await {
+        let Ok(per_file) = service.get_all_diagnostics_for_key(&key).await else {
+            continue;
+        };
+        for (uri, diagnostics) in per_file {
+            let Some(relative) = diagnostics_relative_path(&uri) else {
+                continue;
+            };
+            let mapped = map_diagnostics(&diagnostics);
+            let payload = codegg_protocol::lsp::LspFileDiagnosticsDto {
+                path: relative.clone(),
+                // Both filled in by the tracker, which owns the digest and the
+                // sequence. They are not caller's to get wrong.
+                sequence: 0,
+                digest: String::new(),
+                truncated: diagnostics.len() > codegg_protocol::lsp::MAX_LSP_DIAGNOSTICS_PER_FILE,
+                diagnostics: mapped,
+                post_restart: false,
+            };
+
+            let change = {
+                let mut store = daemon.lsp_diagnostics.lock();
+                store.tracker_mut(project_id).observe(&relative, payload)
+            };
+            let Some(change) = change else {
+                // The tracked-file cap refused this file. That is reported
+                // through the resync payload's `truncated` flag rather than
+                // dropped silently.
+                continue;
+            };
+            if matches!(change, DiagnosticsChange::Unchanged) {
+                continue;
+            }
+
+            let recorded = {
+                let mut store = daemon.lsp_diagnostics.lock();
+                store.tracker_mut(project_id).file(&relative).cloned()
+            };
+            let Some(recorded) = recorded else {
+                continue;
+            };
+            // `publish` is async and must be awaited: dropping the future
+            // would compile (with a warning) and silently publish nothing,
+            // which would look exactly like "the language server stopped
+            // reporting diagnostics".
+            daemon
+                .event_log
+                .publish(
+                    Some(session_id.to_string()),
+                    None,
+                    CoreEvent::LspDiagnosticsUpdated {
+                        session_id: session_id.to_string(),
+                        project_id: project_id.to_string(),
+                        file: recorded,
+                    },
+                )
+                .await;
+            published += 1;
+        }
+    }
+    published
+}
+
+/// The file name a diagnostic URI belongs to.
+///
+/// Diagnostics are keyed by URI, but the protocol reports workspace-relative
+/// paths so a client can join them to its own file list. A URI that will not
+/// convert is skipped rather than reported under a fabricated path, because a
+/// wrong-but-present path is worse for a client than an absent one.
+fn diagnostics_relative_path(uri: &str) -> Option<String> {
+    url::Url::parse(uri)
+        .ok()
+        .and_then(|parsed| parsed.to_file_path().ok())
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.is_empty())
+}
+
+fn map_diagnostics(
+    diagnostics: &[crate::lsp::lsp_types::Diagnostic],
+) -> Vec<codegg_protocol::lsp::LspDiagnosticDto> {
+    use crate::lsp::lsp_types::DiagnosticTag;
+
+    diagnostics
+        .iter()
+        .take(codegg_protocol::lsp::MAX_LSP_DIAGNOSTICS_PER_FILE)
+        .map(|entry| {
+            // Severity and tag are newtypes over their wire numbers; read the
+            // server's own value rather than matching a table this protocol
+            // does not define.
+            let severity = entry
+                .severity
+                .and_then(|value| serde_json::to_value(value).ok())
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as u32;
+            let tag = entry
+                .tags
+                .as_ref()
+                .and_then(|tags| tags.first().cloned())
+                .map(|value| match value {
+                    DiagnosticTag::UNNECESSARY => 1u32,
+                    DiagnosticTag::DEPRECATED => 2u32,
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            codegg_protocol::lsp::LspDiagnosticDto {
+                range: codegg_protocol::lsp::LspRangeDto {
+                    path: String::new(),
+                    start_line: entry.range.start.line,
+                    start_column: entry.range.start.character,
+                    end_line: entry.range.end.line,
+                    end_column: entry.range.end.character,
+                },
+                severity,
+                tag,
+                code: entry.code.as_ref().map(|value| match value {
+                    crate::lsp::lsp_types::NumberOrString::Number(number) => number.to_string(),
+                    crate::lsp::lsp_types::NumberOrString::String(text) => text.clone(),
+                }),
+                message: entry.message.clone(),
+                source: entry.source.clone(),
+            }
+        })
+        .collect()
 }

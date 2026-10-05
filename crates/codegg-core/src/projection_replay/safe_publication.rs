@@ -45,6 +45,18 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::SessionUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRegistered { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRestored { .. } => SafePublicationClass::Safe,
+        // M006-B: LSP diagnostics carry source messages, code, and snippets,
+        // so `Safe` would publish file content through a stream whose
+        // subscribe gate is `Opaque + project.observe` — weaker than the
+        // `file.read` ADR-0012 §4 requires for content-bearing reads.
+        //
+        // `ClientLocal` is the fail-closed class: the durable publish path
+        // refuses it outright (`PublishOutcome::Denied`,
+        // `projection_replay/service.rs`), so no principal receives
+        // diagnostics over the current stream regardless of capabilities.
+        // The pull (`LspDiagnosticsGet`, gated at `file.read`) is the
+        // complete surface until a stream gate can express the requirement.
+        CoreEvent::LspDiagnosticsUpdated { .. } => SafePublicationClass::ClientLocal,
         CoreEvent::TurnReasoningDelta { .. } => SafePublicationClass::Internal,
         CoreEvent::ConnectionRotated { .. } => SafePublicationClass::Sensitive,
         CoreEvent::ConnectionStateChanged { .. } => SafePublicationClass::Sensitive,

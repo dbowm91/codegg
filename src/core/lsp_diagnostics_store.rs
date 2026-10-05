@@ -71,6 +71,10 @@ impl DiagnosticsTracker {
         self.files.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
     /// Record what a tick observed for `path` and report whether to publish.
     ///
     /// Returns `None` when the file cannot be tracked because the cap is
@@ -163,9 +167,7 @@ impl LspDiagnosticsStore {
 
     /// The tracker for a project, creating it on first use.
     pub fn tracker_mut(&mut self, project_id: &str) -> &mut DiagnosticsTracker {
-        self.projects
-            .entry(project_id.to_string())
-            .or_insert_with(DiagnosticsTracker::new)
+        self.projects.entry(project_id.to_string()).or_default()
     }
 
     /// The authoritative recorded set for a project.
@@ -347,14 +349,14 @@ mod tests {
             "server emission order is not meaningful"
         );
         assert_ne!(
-            diagnostics_digest(&[one.clone()]),
-            diagnostics_digest(&[two.clone()]),
+            diagnostics_digest(std::slice::from_ref(&one)),
+            diagnostics_digest(std::slice::from_ref(&two)),
             "a changed message must change the digest"
         );
         let mut widened = one.clone();
         widened.range.end_line = 99;
         assert_ne!(
-            diagnostics_digest(&[one.clone()]),
+            diagnostics_digest(std::slice::from_ref(&one)),
             diagnostics_digest(&[widened]),
             "a changed extent must change the digest"
         );

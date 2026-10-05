@@ -3305,6 +3305,20 @@ pub enum CoreEvent {
         session_id: String,
         worktree: crate::projection::dto::WorktreeSummaryProjection,
     },
+    /// M006-B: a project's diagnostics for one file changed.
+    ///
+    /// Carries the **complete** current set for that file, never a delta, plus
+    /// the monotonic `sequence` a client compares against the authoritative
+    /// `LspDiagnosticsGet` to detect a missed envelope.
+    ///
+    /// `session_id` is carried because `EventLog` scopes envelopes by
+    /// session; the payload itself is project-scoped and must be routed on
+    /// the `Project` stream, never the session one.
+    LspDiagnosticsUpdated {
+        session_id: String,
+        project_id: String,
+        file: crate::lsp::LspFileDiagnosticsDto,
+    },
     AgentRunGroupUpserted {
         session_id: String,
         group: crate::projection::dto::AgentRunGroupSummaryProjection,

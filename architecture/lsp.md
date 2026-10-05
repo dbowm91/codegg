@@ -853,6 +853,91 @@ impl DiagnosticsCollector {
 }
 ```
 
+### Native read surface (M006-B, ADR-0012)
+
+The native protocol gained an LSP **read** surface. Before this, the only LSP
+variant was `LspPreviewApply`, a write. The constraint that forced it is
+structural, not incidental: `src/main.rs:3323` builds the frontend's
+`LspTool` only under `if !is_socket_mode`, so a daemon-connected client had
+**no LSP at all**.
+
+#### Two request variants, not seven
+
+`CoreRequest::LspReadGet` covers hover, definition, references, document
+symbols, workspace symbols, and semantic tokens through an
+`LspReadOperation` enum. All six share one authority (`file.read` via
+session), one handler, and one cost profile, so six variants would mean six
+arms of identical policy and six chances to drift.
+
+`CoreRequest::LspDiagnosticsGet` stays separate because its scope genuinely
+differs: `direct_project`, matching the project stream it backs.
+
+#### Warm-only reads
+
+A read calls `find_existing_client_for_root_hint`, which resolves an existing
+client or errors and **never falls through to a create path**. A cold read
+returns `LspReadStatus::NotReady`, which carries no payload — so a caller
+cannot render a warming workspace as clean code by accident. This is
+structural rather than a check someone has to remember.
+
+Denial is *not* `NotReady`. A precondition failure is an `CoreResponse::Error`
+with a non-enumerable message; `NotReady` means "no warm server". Conflating
+them would tell a caller that a forbidden request was merely early.
+`OutsideWorkspace` and `SessionNotFound` deliberately share one message *and*
+one code so neither becomes an existence oracle.
+
+#### Daemon-owned root, shared containment
+
+The workspace root comes from the daemon's session row, never from the
+request, so a client cannot name a root it does not own. Targets resolve
+through `crate::tool::util::validate_target_path` — the identical primitive
+`src/lsp/mutation.rs` uses to apply a preview, so a file that cannot be
+written also cannot be read.
+
+#### Diagnostics: publish on change, pull for correctness
+
+`DiagnosticsTracker` holds, per file, the digest of the last published set and
+a monotonic sequence. It **computes** the digest rather than trusting a
+caller's: "publish only on change" is the correctness property the whole
+resync contract rests on, so it must be a property of the store. A caller
+passing a stale digest would either flood the stream or silently stall
+diagnostics, and both failures look like "LSP is flaky" rather than like a
+bug.
+
+The digest deliberately excludes `age_ms`. That field is elapsed time since
+the server last spoke, so two reads of an unchanged file would produce
+different digests and the publisher would republish forever. Emission order
+is normalized away too, because the server's order is not meaningful.
+
+`DiagnosticsReconciler` (in `codegg-client`) encodes the client half: a
+replayed or reordered envelope is refused rather than moving the client
+backwards, and a client with no baseline — the post-restart state, since
+diagnostics are not persisted — is told to pull rather than to trust what it
+has.
+
+#### Two traps recorded, because both fail silently
+
+1. `DiagnosticsCollector::get_diagnostics_for_file`
+   (`crates/egglsp/src/diagnostics.rs:205`) **debounces** and returns an
+   *empty* set with `diagnostics_may_still_be_warming: false` when called too
+   soon. Using it as the resync authority would erase a client's diagnostics
+   on every reconciliation. The correct accessor is
+   `get_diagnostic_snapshot_for_file` (`:286`).
+2. `MAX_CONNECTION_DIAGNOSTICS = 32`
+   (`src/core/transport/projection.rs:24`) is **not** LSP infrastructure. It
+   is a connection-local `VecDeque<String>` of lifecycle diagnostic strings.
+   The name coincidence must not be reused or cited as precedent.
+
+#### Publication is fail-closed for now
+
+`CoreEvent::LspDiagnosticsUpdated` is classified
+`SafePublicationClass::ClientLocal`, which the durable publish path refuses
+outright. The generic `ProjectionSubscribe` gate is `Opaque + project.observe`,
+which cannot express the `file.read` requirement ADR-0012 §4 sets for
+content-bearing reads — so publishing over it would disclose source text to a
+principal that should not have it. The pull is the complete surface until a
+stream gate can express the requirement. See `architecture/authorization.md`.
+
 ### download.rs - Binary Download
 
 ```rust
