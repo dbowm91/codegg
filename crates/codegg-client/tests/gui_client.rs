@@ -11,6 +11,12 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
+fn socket_path(prefix: &str) -> std::path::PathBuf {
+    // Keep the full path below macOS's small sockaddr_un limit even when the
+    // repository and system temp directory are both deeply nested.
+    std::path::Path::new("/tmp").join(format!("{prefix}-{}.sock", uuid::Uuid::new_v4()))
+}
+
 fn gui_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         visual_notifications: false,
@@ -49,7 +55,7 @@ fn server_capabilities() -> ServerCapabilities {
 
 #[tokio::test]
 async fn gui_consumer_uses_native_client_without_root_or_tui_imports() {
-    let socket = std::env::temp_dir().join(format!("codegg-client-{}.sock", uuid::Uuid::new_v4()));
+    let socket = socket_path("codegg-client");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept GUI");
@@ -158,8 +164,7 @@ async fn gui_consumer_uses_native_client_without_root_or_tui_imports() {
 
 #[tokio::test]
 async fn reconnect_negotiates_a_fresh_client_identity() {
-    let socket =
-        std::env::temp_dir().join(format!("codegg-reconnect-{}.sock", uuid::Uuid::new_v4()));
+    let socket = socket_path("codegg-reconnect");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
     let server = tokio::spawn(async move {
         let mut writers = Vec::new();
@@ -213,8 +218,7 @@ async fn reconnect_negotiates_a_fresh_client_identity() {
 
 #[tokio::test]
 async fn peer_death_releases_pending_request_with_error() {
-    let socket =
-        std::env::temp_dir().join(format!("codegg-peer-death-{}.sock", uuid::Uuid::new_v4()));
+    let socket = socket_path("codegg-peer-death");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept client");
@@ -274,7 +278,7 @@ async fn peer_death_releases_pending_request_with_error() {
 
 #[tokio::test]
 async fn cancelling_request_releases_its_id_for_retry() {
-    let socket = std::env::temp_dir().join(format!("codegg-cancel-{}.sock", uuid::Uuid::new_v4()));
+    let socket = socket_path("codegg-cancel");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
     let (first_request_tx, first_request_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -380,10 +384,7 @@ async fn cancelling_request_releases_its_id_for_retry() {
 
 #[tokio::test]
 async fn protocol_version_mismatch_fails_the_handshake() {
-    let socket = std::env::temp_dir().join(format!(
-        "codegg-version-mismatch-{}.sock",
-        uuid::Uuid::new_v4()
-    ));
+    let socket = socket_path("codegg-version-mismatch");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept client");
@@ -419,7 +420,7 @@ async fn protocol_version_mismatch_fails_the_handshake() {
 
 #[tokio::test]
 async fn gui_disconnect_does_not_close_a_concurrent_tui_client() {
-    let socket = std::env::temp_dir().join(format!("codegg-pair-{}.sock", uuid::Uuid::new_v4()));
+    let socket = socket_path("codegg-pair");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
     let server = tokio::spawn(async move {
         let mut connections = Vec::new();
@@ -521,7 +522,7 @@ async fn gui_disconnect_does_not_close_a_concurrent_tui_client() {
 
 #[tokio::test]
 async fn connect_or_start_reuses_only_a_verified_existing_daemon() {
-    let root = std::env::temp_dir().join(format!("codegg-connect-{}", uuid::Uuid::new_v4()));
+    let root = socket_path("codegg-connect");
     std::fs::create_dir_all(&root).expect("create fixture directory");
     let socket = root.join("core.sock");
     let listener = UnixListener::bind(&socket).expect("bind fake daemon");
@@ -597,7 +598,7 @@ async fn connect_or_start_reuses_only_a_verified_existing_daemon() {
 
 #[tokio::test]
 async fn unresponsive_endpoint_does_not_consume_the_daemon_startup_budget() {
-    let root = std::env::temp_dir().join(format!("codegg-stale-{}", uuid::Uuid::new_v4()));
+    let root = socket_path("codegg-stale");
     std::fs::create_dir_all(&root).expect("create fixture directory");
     let socket = root.join("core.sock");
     let listener = UnixListener::bind(&socket).expect("bind stale endpoint");
@@ -640,7 +641,7 @@ async fn unresponsive_endpoint_does_not_consume_the_daemon_startup_budget() {
 async fn child_exit_before_readiness_returns_a_typed_startup_error() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = std::env::temp_dir().join(format!("codegg-bad-child-{}", uuid::Uuid::new_v4()));
+    let root = socket_path("codegg-bad-child");
     std::fs::create_dir_all(&root).expect("create fixture directory");
     let socket = root.join("core.sock");
     let executable = root.join("daemon-child");

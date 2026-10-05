@@ -2289,7 +2289,11 @@ pub struct ToolDeferralConfig {
 pub struct ToolAdvisorConfig {
     pub enabled: Option<bool>,
     pub mode: Option<String>,
+    /// Explicit artifact/runtime selector. `sdm_local_v1` never guesses format.
+    pub runtime_backend: Option<String>,
     pub model_path: Option<String>,
+    /// Optional exact digest required before the artifact is accepted.
+    pub expected_artifact_sha256: Option<String>,
     pub max_candidates: Option<usize>,
     pub timeout_ms: Option<u64>,
     /// Minimum advisor score for pre-turn experimental disclosure.
@@ -2309,7 +2313,9 @@ impl Default for ToolAdvisorConfig {
         Self {
             enabled: Some(false),
             mode: Some("off".to_string()),
+            runtime_backend: None,
             model_path: None,
+            expected_artifact_sha256: None,
             max_candidates: Some(16),
             timeout_ms: Some(25),
             disclosure_threshold: Some(0.5),

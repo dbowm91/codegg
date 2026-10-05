@@ -223,6 +223,17 @@ async fn wait_for_terminal(
     }
 }
 
+async fn wait_for_executor_start(started: &AtomicBool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !started.load(Ordering::SeqCst) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "executor did not start"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Custom executors for cancellation testing
 // ═══════════════════════════════════════════════════════════════════════════
@@ -232,6 +243,7 @@ async fn wait_for_terminal(
 struct SleepExecutor {
     sleep_ms: u64,
     cancel_observed: Arc<AtomicBool>,
+    started: Option<Arc<AtomicBool>>,
 }
 
 #[async_trait::async_trait]
@@ -246,6 +258,9 @@ impl codegg::scheduler::JobExecutor for SleepExecutor {
         )
     }
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        if let Some(started) = &self.started {
+            started.store(true, Ordering::SeqCst);
+        }
         let started = std::time::Instant::now();
         let sleep_ms = self.sleep_ms;
         let token = ctx.cancellation.clone();
@@ -307,6 +322,7 @@ struct CancellationObservingExecutor {
     token_cancelled_at_entry: Arc<AtomicBool>,
     token_cancelled_during: Arc<AtomicBool>,
     sleep_ms: u64,
+    started: Option<Arc<AtomicBool>>,
 }
 
 #[async_trait::async_trait]
@@ -321,6 +337,9 @@ impl codegg::scheduler::JobExecutor for CancellationObservingExecutor {
         )
     }
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        if let Some(started) = &self.started {
+            started.store(true, Ordering::SeqCst);
+        }
         let token = ctx.cancellation.clone();
         self.token_cancelled_at_entry
             .store(token.is_cancelled(), Ordering::SeqCst);
@@ -357,6 +376,7 @@ impl codegg::scheduler::JobExecutor for CancellationObservingExecutor {
 struct FakeSubagentExecutor {
     sleep_ms: u64,
     cancel_observed: Arc<AtomicBool>,
+    started: Option<Arc<AtomicBool>>,
 }
 
 #[async_trait::async_trait]
@@ -368,6 +388,9 @@ impl codegg::scheduler::JobExecutor for FakeSubagentExecutor {
         matches!(kind, JobKind::Subagent)
     }
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        if let Some(started) = &self.started {
+            started.store(true, Ordering::SeqCst);
+        }
         let started = std::time::Instant::now();
         let token = ctx.cancellation.clone();
         tokio::select! {
@@ -399,9 +422,11 @@ impl codegg::scheduler::JobExecutor for FakeSubagentExecutor {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_running_job_terminates_process_and_releases_permit() {
     let cancel_observed = Arc::new(AtomicBool::new(false));
+    let executor_started = Arc::new(AtomicBool::new(false));
     let executor: Arc<dyn codegg::scheduler::JobExecutor> = Arc::new(SleepExecutor {
         sleep_ms: 10_000,
         cancel_observed: cancel_observed.clone(),
+        started: Some(executor_started.clone()),
     });
     let (scheduler, submission, store, ws_id, _root) =
         setup_with_executor(ExecutorKind::ManagedArgv, executor, 4).await;
@@ -421,6 +446,7 @@ async fn cancel_running_job_terminates_process_and_releases_permit() {
     // Wait for the scheduler to admit and dispatch.
     let job = wait_for_state(&store, &job_id, JobState::Running, Duration::from_secs(3)).await;
     assert_eq!(job.state, JobState::Running);
+    wait_for_executor_start(&executor_started).await;
 
     // Request cancellation.
     let cancel_result = scheduler
@@ -460,6 +486,7 @@ async fn cancel_before_admission_terminates_job() {
     let executor: Arc<dyn codegg::scheduler::JobExecutor> = Arc::new(SleepExecutor {
         sleep_ms: 10_000,
         cancel_observed: Arc::new(AtomicBool::new(false)),
+        started: None,
     });
     let (scheduler, submission, store, ws_id, _root) =
         setup_with_executor(ExecutorKind::ManagedArgv, executor, 1).await;
@@ -599,6 +626,7 @@ async fn timeout_racing_cancellation_first_writer_wins() {
     let executor: Arc<dyn codegg::scheduler::JobExecutor> = Arc::new(SleepExecutor {
         sleep_ms: 200,
         cancel_observed: Arc::new(AtomicBool::new(false)),
+        started: None,
     });
     let (scheduler, submission, store, ws_id, _root) =
         setup_with_executor(ExecutorKind::ManagedArgv, executor, 4).await;
@@ -640,9 +668,11 @@ async fn timeout_racing_cancellation_first_writer_wins() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_subagent_interrupts_attempt() {
     let cancel_observed = Arc::new(AtomicBool::new(false));
+    let executor_started = Arc::new(AtomicBool::new(false));
     let executor: Arc<dyn codegg::scheduler::JobExecutor> = Arc::new(FakeSubagentExecutor {
         sleep_ms: 5_000,
         cancel_observed: cancel_observed.clone(),
+        started: Some(executor_started.clone()),
     });
     let (scheduler, submission, store, ws_id, _root) =
         setup_with_executor(ExecutorKind::Subagent, executor, 4).await;
@@ -659,6 +689,7 @@ async fn cancel_subagent_interrupts_attempt() {
     // Wait for the scheduler to admit and dispatch.
     let job = wait_for_state(&store, &job_id, JobState::Running, Duration::from_secs(3)).await;
     assert_eq!(job.state, JobState::Running);
+    wait_for_executor_start(&executor_started).await;
 
     // Cancel.
     let cancel_result = scheduler
@@ -694,6 +725,7 @@ async fn cancel_queued_job_blocked_by_slots() {
     let executor: Arc<dyn codegg::scheduler::JobExecutor> = Arc::new(SleepExecutor {
         sleep_ms: 10_000,
         cancel_observed: Arc::new(AtomicBool::new(false)),
+        started: None,
     });
     let (scheduler, submission, store, ws_id, _root) =
         setup_with_executor(ExecutorKind::ManagedArgv, executor, 1).await;
@@ -756,11 +788,13 @@ async fn cancel_queued_job_blocked_by_slots() {
 async fn cancellation_token_propagated_to_executor() {
     let token_at_entry = Arc::new(AtomicBool::new(false));
     let token_during = Arc::new(AtomicBool::new(false));
+    let executor_started = Arc::new(AtomicBool::new(false));
     let executor: Arc<dyn codegg::scheduler::JobExecutor> =
         Arc::new(CancellationObservingExecutor {
             token_cancelled_at_entry: token_at_entry.clone(),
             token_cancelled_during: token_during.clone(),
             sleep_ms: 5_000,
+            started: Some(executor_started.clone()),
         });
     let (scheduler, submission, store, ws_id, _root) =
         setup_with_executor(ExecutorKind::ManagedArgv, executor, 4).await;
@@ -780,6 +814,7 @@ async fn cancellation_token_propagated_to_executor() {
     // Wait for admitted and running.
     let job = wait_for_state(&store, &job_id, JobState::Running, Duration::from_secs(3)).await;
     assert_eq!(job.state, JobState::Running);
+    wait_for_executor_start(&executor_started).await;
 
     // Token should NOT be cancelled at entry.
     assert!(

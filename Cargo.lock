@@ -942,6 +942,8 @@ dependencies = [
  "rcgen",
  "regex",
  "rustls",
+ "sdm-core",
+ "sdm-runtime",
  "semver",
  "serde",
  "serde_json",
@@ -5267,6 +5269,30 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sdm-core"
+version = "0.1.0"
+source = "git+https://github.com/dbowm91/sdm.git?rev=8139b064bdcf3212e8f6fd912e801a479b55751c#8139b064bdcf3212e8f6fd912e801a479b55751c"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sdm-runtime"
+version = "0.1.0"
+source = "git+https://github.com/dbowm91/sdm.git?rev=8139b064bdcf3212e8f6fd912e801a479b55751c#8139b064bdcf3212e8f6fd912e801a479b55751c"
+dependencies = [
+ "sdm-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "semver"

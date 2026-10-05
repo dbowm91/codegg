@@ -189,7 +189,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md`
 
-Status: ready; M002 produced an independently buildable Rank runtime/artifact at pinned revision `33a7f4a0a404755a5a61f01731eb7bdfdd81d4dd` and passed the M001 contract fixture checker. No production cutover has occurred.
+Status: active; M002 produced an independently buildable Rank runtime/artifact and M003 pins SDM revision `8139b064bdcf3212e8f6fd912e801a479b55751c`. The M001 contract fixture checker passes. Production remains default-off and the shipped baseline remains unqualified.
 
 Objective: replace CodeGG's architecture-specific learned inference owner with the reusable local runtime backend while preserving `off`, observe-only parity, fallback, artifact validation, and resource bounds.
 
@@ -296,8 +296,8 @@ The workstream requires:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | `plans/closure/decision-model-extraction-runtime/001-status.md` | — |
-| M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | Maintainer-approved external repository and license/release policy |
-| M003 | blocked | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Positive M002 closure |
+| M002 | closed | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | `plans/closure/decision-model-extraction-runtime/002-status.md` | — |
+| M003 | closing | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Final verification and closure review |
 | M004 | closed | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | `plans/closure/decision-model-extraction-runtime/004-status.md` | — |
 | M005 | blocked | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | — | Positive M003 closure; M004 is closed and stable |
 | M006 | blocked | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 closure and source/dependency inventory |

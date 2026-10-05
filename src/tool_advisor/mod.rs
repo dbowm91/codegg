@@ -50,6 +50,8 @@ pub mod retrieval_projection;
 pub mod retrieval_relevance;
 pub mod retrieval_signal;
 pub mod retrieval_signal_v2;
+#[cfg(feature = "tool-advisor-sdm-runtime")]
+mod sdm_runtime_adapter;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
 pub mod sequence_encoder;
 #[cfg(feature = "tool-advisor-encoder-training")]
@@ -866,6 +868,51 @@ pub fn advisor_from_config(
             },
         );
     };
+    if let Some(backend) = config.runtime_backend.as_deref() {
+        if backend != "sdm_local_v1" {
+            return (
+                Box::new(NoopAdvisor),
+                AdvisorRuntimeStatus {
+                    state: AdvisorRuntimeState::Incompatible,
+                    detail: "unsupported explicit advisor runtime backend".into(),
+                    model_version: None,
+                },
+            );
+        }
+        #[cfg(feature = "tool-advisor-sdm-runtime")]
+        {
+            let expected = config.expected_artifact_sha256.as_deref();
+            return match crate::decision_sdm::SdmDecisionEngine::load(path, expected) {
+                Ok(engine) => {
+                    let digest = engine.digest().to_string();
+                    let timeout = std::time::Duration::from_millis(
+                        config.timeout_ms.unwrap_or(25).clamp(1, 1000),
+                    );
+                    (Box::new(sdm_runtime_adapter::SdmToolAdvisor::new(std::sync::Arc::new(engine),timeout)),
+                     AdvisorRuntimeStatus { state: AdvisorRuntimeState::Ready,
+                        detail: "SDM local Rank runtime loaded; model qualification remains external".into(), model_version: Some(digest) })
+                }
+                Err(error) => (
+                    Box::new(NoopAdvisor),
+                    AdvisorRuntimeStatus {
+                        state: AdvisorRuntimeState::Degraded,
+                        detail: format!("SDM local artifact fallback: {error}"),
+                        model_version: None,
+                    },
+                ),
+            };
+        }
+        #[cfg(not(feature = "tool-advisor-sdm-runtime"))]
+        return (
+            Box::new(NoopAdvisor),
+            AdvisorRuntimeStatus {
+                state: AdvisorRuntimeState::Incompatible,
+                detail: "SDM local runtime requires the tool-advisor-sdm-runtime build feature"
+                    .into(),
+                model_version: None,
+            },
+        );
+    }
     #[cfg(feature = "tool-advisor")]
     if let Ok(artifact) = contextual::load(path) {
         match contextual::ContextualAdvisor::new(artifact) {
@@ -2757,6 +2804,46 @@ mod tests {
         };
         let (_, status) = advisor_from_config(Some(&config));
         assert_eq!(status.state, AdvisorRuntimeState::NotInstalled);
+    }
+
+    #[cfg(feature = "tool-advisor-sdm-runtime")]
+    #[test]
+    fn corrupt_sdm_artifact_degrades_to_noop_before_agent_scoring() {
+        let directory = tempfile::tempdir().expect("temporary artifact directory");
+        let path = directory.path().join("corrupt.json");
+        std::fs::write(&path, b"not-json").expect("write corrupt artifact");
+        let config = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("observe".into()),
+            runtime_backend: Some("sdm_local_v1".into()),
+            model_path: Some(path.display().to_string()),
+            ..Default::default()
+        };
+        let (advisor, status) = advisor_from_config(Some(&config));
+        assert_eq!(status.state, AdvisorRuntimeState::Degraded);
+        let output = advisor
+            .score(&ToolAdvisorInput {
+                case_id: "fallback".into(),
+                context: "read".into(),
+                surface_fingerprint: "surface".into(),
+                candidates: Vec::new(),
+            })
+            .expect("Noop fallback");
+        assert_eq!(output.mode, "off");
+    }
+
+    #[cfg(not(feature = "tool-advisor-sdm-runtime"))]
+    #[test]
+    fn explicit_sdm_config_without_build_feature_degrades_to_noop() {
+        let config = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("observe".into()),
+            runtime_backend: Some("sdm_local_v1".into()),
+            model_path: Some("local.json".into()),
+            ..Default::default()
+        };
+        let (_, status) = advisor_from_config(Some(&config));
+        assert_eq!(status.state, AdvisorRuntimeState::Incompatible);
     }
 
     struct FixedAdvisor {

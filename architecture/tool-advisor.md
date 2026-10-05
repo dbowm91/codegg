@@ -94,13 +94,36 @@ ownership remain unchanged until later milestones close.
 Generic semantic primitives, local artifact execution, generic training/evaluation,
 and artifact-format ownership now live in the external MIT repository
 [`dbowm91/sdm`](https://github.com/dbowm91/sdm), initially pinned at immutable commit
-`33a7f4a0a404755a5a61f01731eb7bdfdd81d4dd`. Its `sdm-runtime` does not depend on
+`8139b064bdcf3212e8f6fd912e801a479b55751c`. Its `sdm-runtime` does not depend on
 `sdm-training`. The compatibility runner is
 `scripts/check_sdm_compatibility.sh <checkout> <full-revision>`; it refuses a checkout
 whose HEAD differs from the requested immutable revision. M002 is closed, but CodeGG
 still uses its existing production advisor/runtime. M003 owns local backend adoption.
 The shipped compatibility artifact is a training/runtime smoke baseline, not a
 qualified or production-promoted model.
+
+The SDM local runtime is opt-in at build and config time. Builds that expose it use
+`--features tool-advisor-sdm-runtime`; this feature imports `sdm-core`/`sdm-runtime`
+from one immutable SDM revision and no SDM training dependencies. The CodeGG setting
+names the backend explicitly; an old artifact path is never reinterpreted by filename:
+
+```toml
+[tool_advisor]
+enabled = true
+mode = "observe"
+runtime_backend = "sdm_local_v1"
+model_path = "/absolute/path/to/compatibility-rank-v1.json"
+expected_artifact_sha256 = "sha256:b9484ce8b8afe2b345693e084468c89a628462e86faf1e9683c28ee53de6597e"
+```
+
+Load validates the bounded local bytes, artifact/calibration hashes, and optional exact
+artifact identity before the engine reports Ready. Missing, corrupt, incompatible, or
+unsupported artifacts resolve to the existing Noop/deterministic fallback. Each process
+keeps one immutable loaded snapshot; replacing a file affects only a later process load.
+Observe mode scores without changing the model-facing result. The artifact remains an
+unqualified compatibility baseline, so it is not promoted as a learned capability.
+Resource measurements at 16/64/128/256 candidates and comparison context are in
+`dbowm91/sdm/docs/benchmark-baseline.md`.
 
 ## Optional runtime (linear baseline and contextual corrective)
 

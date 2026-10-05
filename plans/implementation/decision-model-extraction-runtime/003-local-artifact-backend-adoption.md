@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 003 — Local Artifact Backend Adoption
 
-Status: blocked
+Status: closing
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
@@ -17,7 +17,7 @@ Primary class: infrastructure
 
 Hard dependencies:
 
-- M002 positive closure with a pinned external runtime/artifact revision.
+- M002 positive closure is satisfied. SDM runtime/artifact revision `8139b064bdcf3212e8f6fd912e801a479b55751c` is pinned; the M001 fixture compatibility checker passes.
 
 ## 1. Objective
 
