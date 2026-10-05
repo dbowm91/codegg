@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 006 — Legacy Training/Runtime Retirement
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
@@ -17,7 +17,7 @@ Primary class: polish
 
 Hard dependency:
 
-- M005 closed.
+- M005 closed; closure record includes the fresh source/dependency reachability inventory and M001 fixture compatibility evidence.
 
 ## 1. Objective
 
