@@ -21,6 +21,27 @@ const MAX_BODY: usize = 64 * 1024;
 const MAX_TIMEOUT_MS: u64 = 30_000;
 const QUESTION_ID: &str = "codegg_decision_v1";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateFieldDiagnostic {
+    pub field_name: String,
+    pub value_bytes: usize,
+}
+
+/// Return payload shape for diagnostics without ever exposing field values.
+pub fn privacy_diagnostic(
+    request: &DecisionRequest,
+) -> Result<Vec<StateFieldDiagnostic>, DecisionError> {
+    request.validate()?;
+    Ok(request
+        .state
+        .iter()
+        .map(|field| StateFieldDiagnostic {
+            field_name: field.key.clone(),
+            value_bytes: field.value.len(),
+        })
+        .collect())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemOneProfile {
     Reference,
@@ -836,6 +857,18 @@ mod tests {
 
     #[tokio::test]
     async fn http_and_protocol_failures_become_unavailable() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind refused endpoint");
+        let address = listener.local_addr().expect("refused address");
+        drop(listener);
+        let engine = SystemOneEngine::new(config(format!("http://{address}/v1"), true));
+        let result = engine
+            .decide(choice_request(), Instant::now() + Duration::from_secs(3))
+            .await
+            .expect("connection fallback");
+        assert!(matches!(result.status, DecisionStatus::Unavailable { .. }));
+
         for status in [401, 403, 404, 422, 429, 500, 503] {
             let (base, server) = fixture(status, r#"{"error":"redacted"}"#).await;
             let engine = SystemOneEngine::new(config(base, true));
@@ -894,5 +927,19 @@ mod tests {
         );
         let request = server.await.expect("discovery request");
         assert!(request.starts_with("GET /v1/models "));
+    }
+
+    #[test]
+    fn privacy_diagnostics_include_only_field_names_and_sizes() {
+        let mut request = choice_request();
+        request.state[0].value = "private-content-sentinel".into();
+        let diagnostic = privacy_diagnostic(&request).expect("diagnostic");
+        let rendered = format!("{diagnostic:?}");
+        assert!(rendered.contains("kind"));
+        assert!(rendered.contains("value_bytes"));
+        assert!(!rendered.contains("private-content-sentinel"));
+
+        let credential = codegg_providers::Credential::api_key("private-credential-sentinel");
+        assert!(!format!("{credential:?}").contains("private-credential-sentinel"));
     }
 }

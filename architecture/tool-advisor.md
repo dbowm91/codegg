@@ -75,6 +75,8 @@ lookup or request. Model discovery is an explicit operator call and does not
 run in the background. The backend sends only bounded M001 state and question
 payload; it never receives tool authority. HTTP, timeout, schema, and protocol
 failures return `Unavailable` for deterministic host fallback.
+`privacy_diagnostic()` reports only validated field names and value byte
+counts; it does not emit logs or include state values.
 
 The wire subset follows the [System One API reference](https://docs.system-one.dev/en/docs/api)
 and the [Ollama System One endpoint](https://docs.ollama.com/api/systemone):
