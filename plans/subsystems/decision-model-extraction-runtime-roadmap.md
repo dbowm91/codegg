@@ -213,7 +213,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md`
 
-Status: ready; M003 is positively closed and M004 contract stability is established by its closure.
+Status: active; M003 is positively closed and M004 contract stability is established by its closure.
 
 Objective: make learned tool advice consume `DecisionEngine` instead of model-specific CodeGG runtime types, while retaining CodeGG-owned candidate filtering, BM25 fallback, disclosure budgets, telemetry/capture policy, and causal-frontier behavior.
 
