@@ -1,8 +1,13 @@
 # ADR-0012: Native LSP Read Surface — Split Delivery, Warm-Only Reads, and File-Read Authorization
 
-Status: proposed
+Status: accepted
 
 Date: 2026-10-05
+
+Accepted: 2026-10-05, by the project maintainers, after the two contested
+decisions (delivery split and warm-read policy) were taken explicitly rather
+than by default. The rejected alternatives and the objection to push delivery
+are preserved in *Considered options*.
 
 Decision owners: project maintainers
 
