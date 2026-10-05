@@ -300,7 +300,7 @@ The workstream requires:
 | M003 | closed | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | `plans/closure/decision-model-extraction-runtime/003-status.md` | — |
 | M004 | closed | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | `plans/closure/decision-model-extraction-runtime/004-status.md` | — |
 | M005 | closed | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | `plans/closure/decision-model-extraction-runtime/005-status.md` | Both live learned-ranking paths use `DecisionEngine`; authority/fallback and promotion gates remain CodeGG-owned. |
-| M006 | ready | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 is closed; fresh source/dependency inventory is recorded in the M005 closure. |
+| M006 | active | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 is closed; fresh source/dependency inventory is recorded in the M005 closure. |
 
 ## 13. Completion definition
 
