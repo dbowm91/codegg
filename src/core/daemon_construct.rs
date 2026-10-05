@@ -411,6 +411,9 @@ impl CoreDaemon {
             )),
             deps,
             event_log,
+            lsp_diagnostics: Arc::new(parking_lot::Mutex::new(
+                super::lsp_diagnostics_store::LspDiagnosticsStore::new(),
+            )),
             sessions: Arc::new(crate::core::session_runtime::SessionRuntimeRegistry::new()),
             clients: Arc::new(super::client_registry::ClientRegistry::new()),
             notification_router,

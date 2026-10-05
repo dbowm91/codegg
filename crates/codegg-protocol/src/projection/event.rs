@@ -163,6 +163,17 @@ pub enum ProjectionEvent {
     },
     /// An interactive question was registered.
     QuestionPending { question: QuestionProjection },
+    /// M006-B: a project's diagnostics for one file changed, on the
+    /// `Project` projection stream.
+    ///
+    /// The payload is the **complete** current set for that file, never a
+    /// delta, and it carries the same `sequence` and `digest` the
+    /// authoritative `LspDiagnosticsGet` returns. That is what makes a
+    /// dropped envelope recoverable: a client that sees a `sequence` gap
+    /// re-pulls rather than rendering a partial set.
+    LspDiagnosticsUpdated {
+        file: crate::lsp::LspDiagnosticsProjectionDto,
+    },
     /// An interactive question was resolved.
     QuestionResolved {
         question_id: String,

@@ -690,6 +690,13 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "job_get",
     "job_list",
     "job_wait",
+    // M006-B (ADR-0012): authorized LSP reads of project file content. Same
+    // shape as `document_read` above — a capability-gated read that discloses
+    // content the principal may already read, and discloses no mutation, so
+    // per-call audit would be noise. Denial *is* audited upstream by
+    // `authorize_request`.
+    "lsp_read_get",
+    "lsp_diagnostics_get",
     "managed_worktree_get",
     "managed_worktree_list",
     "memory_forget",

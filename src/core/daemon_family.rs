@@ -25,6 +25,7 @@
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
 //! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
 //! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, snapshots, and changes |
+//! | `lsp` | `daemon_lsp.rs::handle_lsp_request` | M006-B: bounded LSP reads and the authoritative diagnostics pull over the daemon-owned `LspService` |
 
 use crate::protocol::core::CoreRequest;
 
@@ -45,6 +46,9 @@ pub enum DaemonRequestFamily {
     Interactive,
     WorkOrders,
     Documents,
+    /// M006-B. Read authority only: `LspPreviewApply` stays in `Goals` so the
+    /// ADR-0008 write path keeps its existing owner and is not disturbed.
+    Lsp,
 }
 
 impl DaemonRequestFamily {
@@ -60,6 +64,10 @@ impl DaemonRequestFamily {
             | CoreRequest::DocumentSave { .. }
             | CoreRequest::DocumentReload { .. }
             | CoreRequest::DocumentClose { .. } => Self::Documents,
+            // M006-B: LSP reads. The write-side `LspPreviewApply` deliberately
+            // stays routed to `Goals` above; splitting read from write authority
+            // keeps ADR-0008's mutation path independently readable.
+            CoreRequest::LspReadGet { .. } | CoreRequest::LspDiagnosticsGet { .. } => Self::Lsp,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,
@@ -300,6 +308,7 @@ impl DaemonRequestFamily {
             Self::Interactive => "src/core/daemon.rs::run_interactive_request",
             Self::WorkOrders => "src/core/daemon_work_orders.rs::handle_work_order_request",
             Self::Documents => "src/core/daemon_documents.rs::handle_document_request",
+            Self::Lsp => "src/core/daemon_lsp.rs::handle_lsp_request",
         }
     }
 }

@@ -10,6 +10,7 @@ mod connect;
 mod document;
 mod driver;
 mod local;
+mod lsp;
 mod paths;
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -32,6 +33,9 @@ pub use driver::{
     StoppedDriver,
 };
 pub use local::{ClientEvent, LocalSocketClient};
+pub use lsp::{
+    operation_label, DiagnosticsReconciler, LspReadClient, LspReadClientError, ReconcileDecision,
+};
 pub use paths::{LocalDaemonPaths, LocalEndpoint};
 #[cfg(windows)]
 #[doc(hidden)]

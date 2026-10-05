@@ -1442,6 +1442,18 @@ pub enum CoreResponse {
     LspPreviewApplyResult {
         result: crate::lsp::LspPreviewApplyResultDto,
     },
+    /// M006-B: result of one bounded LSP read (`via_session`, `file.read`).
+    /// `status` is authoritative and must be checked before `payload`; a
+    /// `NotReady` result never carries one.
+    LspReadResult {
+        result: crate::lsp::LspReadResultDto,
+    },
+    /// M006-B: the authoritative current diagnostics of a project
+    /// (`direct_project`, `file.read`). This is the resync authority that the
+    /// project-scoped push stream is reconciled against.
+    LspDiagnosticsGetResult {
+        result: crate::lsp::LspDiagnosticsResultDto,
+    },
     // ── Identity/Audit M004: Append-Only Audit Foundation ───────────────
     /// Bounded structural audit page ordered by coordinator sequence.
     AuditPage {
@@ -2485,6 +2497,24 @@ pub enum CoreRequest {
     /// history and workspace synchronization boundary.
     LspPreviewApply {
         request: crate::lsp::LspPreviewApplyRequestDto,
+    },
+    /// M006-B: one bounded LSP read — hover, definition, references, document
+    /// symbols, workspace symbols, or semantic tokens
+    /// (`via_session` + `file.read`).
+    ///
+    /// Warm-only by contract (ADR-0012 §3): a read against a server the
+    /// daemon has not started returns `NotReady` and never launches one.
+    LspReadGet {
+        request: crate::lsp::LspReadRequestDto,
+    },
+    /// M006-B: fetch the authoritative current diagnostics for a project
+    /// (`direct_project` + `file.read`).
+    ///
+    /// The push stream is a latency optimization; this is the correctness
+    /// authority a client reconciles against after a detected sequence gap,
+    /// a reconnect, or a resync requirement.
+    LspDiagnosticsGet {
+        request: crate::lsp::LspDiagnosticsGetRequestDto,
     },
     /// M004: bounded structural audit query (project-scoped, `audit.read`).
     /// Unknown action/principal filters degrade to empty pages, never to
