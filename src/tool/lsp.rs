@@ -745,6 +745,23 @@ impl LspTool {
             .register(artifact, file_edits, original_hashes, provenance)
     }
 
+    /// Test-only: stage a pending candidate so a TUI test can exercise the
+    /// real `preview_apply_request` export instead of a hand-built DTO.
+    ///
+    /// `#[cfg(test)]` keeps this out of every downstream build — it is not a
+    /// second way for production code to populate the registry, only a way for
+    /// in-crate tests to reach the private registrar.
+    #[cfg(test)]
+    pub fn register_preview_artifact_for_test(
+        &self,
+        artifact: egglsp::context::LspPreviewArtifact,
+        file_edits: Vec<String>,
+        original_hashes: std::collections::HashMap<String, String>,
+        provenance: String,
+    ) -> String {
+        self.register_preview_artifact(artifact, file_edits, original_hashes, provenance)
+    }
+
     /// Render the full preview list for TUI display.
     pub fn preview_list_text(&self) -> String {
         egglsp::tui_summary::render_preview_list(&self.preview_registry())

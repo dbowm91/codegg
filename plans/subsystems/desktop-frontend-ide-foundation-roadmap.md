@@ -310,8 +310,9 @@ not a single bounded handoff: it combines an editor widget subsystem, a
 layout/route change, a file tree, a new native LSP read protocol surface, an LSP
 delivery decision, and an agent dirty-buffer decision. Per
 `plans/003-planning-process.md` §5 that exceeds milestone sizing, so M006 is
-sequenced below. M006-A is dependency-ready now; M006-B and M006-E carry ADR
-decisions.
+sequenced below. M006-A is dependency-ready now; M006-B carries an ADR
+decision. M006-E was subsequently scoped to saved documents only, which
+removed its ADR requirement and deferred the dirty-buffer half.
 
 Expected TUI-first presentation/product direction:
 
@@ -331,7 +332,7 @@ Expected TUI-first presentation/product direction:
 | M006-B | Native LSP read surface: protocol + daemon handlers + authorization for diagnostics, hover, definition, references, symbols, semantic tokens; delivery-path decision (poll vs new project-scoped event path). | ADR required | blocked on ADR only |
 | M006-C | LSP presentation in the editor: diagnostic markers, semantic/syntax highlighting, navigation actions. | M006-B | blocked |
 | M006-D | File tree and explorer. | M006-A | **implemented and closed** (`de29e49e`, PR `#94`) — `plans/closure/desktop-frontend-ide-foundation/006-status.md`; no ADR required |
-| M006-E | Agent edit/apply/review against saved and dirty documents, including the dirty-buffer preview-apply conflict presentation. | M006-A; ADR if apply-into-dirty-buffer is chosen | unblocked by M006-A; ADR still required if apply-into-dirty-buffer is chosen |
+| M006-E | Agent change review against **saved** documents: show a pending LSP candidate and wait for accept or reject before the existing apply runs. | M006-A | **planned** — `plans/implementation/desktop-frontend-ide-foundation/007-agent-change-review.md`. Scoped to saved documents only, so **no ADR**; the apply-into-dirty-buffer half is deferred to a future ADR |
 
 M006-A is implemented (`1706b50b`, CI step fix `b993522a`) and **closed**;
 it merged as `94f38421` through PR `#92`. It delivers a non-modal
@@ -364,7 +365,11 @@ assertion are unchanged, so no advisor behavior, disposition, or frozen
 threshold moved.
 
 Consequently **M006-D and M006-E are unblocked**, and **M006-B is gated only
-on its own ADR**, which was always its real precondition.
+on its own ADR**, which was always its real precondition. M006-E later proved
+not to carry an ADR at all: scoping it to saved documents leaves the existing
+dirty-buffer rejection correct and unchanged, so the milestone adds a review
+step in front of the apply that already exists rather than changing what an
+apply means.
 
 Two audit findings constrain this sequence. First, the M005 foundation had no
 consumer: `TuiDocumentSession` (`src/tui/document_session.rs`) was never
@@ -465,4 +470,4 @@ That closure makes the later document-buffer/IDE work dependency-ready. It does 
 | M003 Tauri desktop shell + secure bridge | closed | `plans/implementation/desktop-frontend-ide-foundation/003-tauri-desktop-shell-and-bridge.md` | Strict closure: `plans/closure/desktop-frontend-ide-foundation-corrective/003-status.md`; hosted root CI + built-app visible-window E2E green. Historical C001/C002 conditional records remain immutable. Windows qualification remains separately gated by M002 |
 | M004 desktop session/control-plane slice | closed | `plans/implementation/desktop-frontend-ide-foundation/004-desktop-session-control-plane-vertical-slice.md` | Historical closure plus strict corrective: `plans/closure/desktop-frontend-ide-foundation/004-status.md`; `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md` |
 | M005 shared document/buffer foundation | closed | `plans/subsystems/editor-document-foundation-roadmap.md` + four original plans + `plans/closure/editor-document-foundation-post-closure-corrective/001-status.md` | M005-A/B/C and current strict M005-D closure are recorded; historical M005-D closure remains immutable. ADR-0011 accepted; TUI-first, GUI editor deferred |
-| M006 TUI IDE vertical slice | audit complete; decomposed M006-A…M006-E; M006-A and M006-D merged and closed; M006-E ready to scope | M006-A: `plans/implementation/desktop-frontend-ide-foundation/005-editor-buffer-vertical-slice.md`; M006-D: `plans/implementation/desktop-frontend-ide-foundation/006-project-scoped-file-tree.md`; M006-B/C/E: not yet written | M006-A: `plans/closure/desktop-frontend-ide-foundation/005-status.md` (merged `94f38421`). M006-A merged as `94f38421` (PR `#92`) and is **closed**, not conditionally closed: the pre-existing causal-advisor timing flake that had held it open is fixed by its own corrective (`cdfd6257`), and four consecutive hosted runs completed the full 12,180-test sweep. Its two additive read-only `codegg-client` accessors are approved. **M006-D is closed** at `plans/closure/desktop-frontend-ide-foundation/006-status.md` (`de29e49e`, PR `#94`): a read-only project-scoped navigator rooted at the active tab's explicit `workspace_root` that opens files through the existing controller-backed path, so it adds no protocol and no authority decision and needed no ADR. **M006-E is ready to scope** and needs an ADR only if apply-into-dirty-buffer is chosen; the existing dirty-buffer rejection in `src/lsp/mutation.rs` is correct and must not be weakened. M006-B requires an ADR for the LSP read surface and its delivery/authorization path; M006-C depends on M006-B. |
+| M006 TUI IDE vertical slice | audit complete; decomposed M006-A…M006-E; M006-A and M006-D merged and closed; M006-E planned | M006-A: `plans/implementation/desktop-frontend-ide-foundation/005-editor-buffer-vertical-slice.md`; M006-D: `plans/implementation/desktop-frontend-ide-foundation/006-project-scoped-file-tree.md`; M006-E: `plans/implementation/desktop-frontend-ide-foundation/007-agent-change-review.md`; M006-B/C: not yet written | M006-A: `plans/closure/desktop-frontend-ide-foundation/005-status.md` (merged `94f38421`). M006-A merged as `94f38421` (PR `#92`) and is **closed**, not conditionally closed: the pre-existing causal-advisor timing flake that had held it open is fixed by its own corrective (`cdfd6257`), and four consecutive hosted runs completed the full 12,180-test sweep. Its two additive read-only `codegg-client` accessors are approved. **M006-D is closed** at `plans/closure/desktop-frontend-ide-foundation/006-status.md` (`de29e49e`, PR `#94`): a read-only project-scoped navigator rooted at the active tab's explicit `workspace_root` that opens files through the existing controller-backed path, so it adds no protocol and no authority decision and needed no ADR. **M006-E is planned** at `plans/implementation/desktop-frontend-ide-foundation/007-agent-change-review.md`, scoped by explicit decision to saved documents only, so it needs no ADR; a review step is added in front of the existing apply rather than a second apply, and the dirty-buffer rejection in `src/lsp/mutation.rs` is left correct and unchanged with the merge-into-dirty-buffer question deferred to a future ADR. M006-B requires an ADR for the LSP read surface and its delivery/authorization path; M006-C depends on M006-B. |

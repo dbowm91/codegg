@@ -529,6 +529,18 @@ impl App {
     }
 
     fn render_viewport(&mut self, frame: &mut Frame, area: Rect) {
+        // M006-E: an open review takes over the viewport. It is a modal
+        // decision surface — the user must accept or reject — so it is the one
+        // place M006 does not stay non-modal, and it is reachable only via an
+        // explicit `/review`.
+        if self.change_review_state.is_open() {
+            crate::tui::components::change_review::ChangeReviewView::new(
+                &self.change_review_state,
+                Arc::clone(&self.ui_state.theme),
+            )
+            .render(frame, area);
+            return;
+        }
         match self.ui_state.routes.current() {
             Route::Home => self.render_home(frame, area),
             Route::Session(_) => self.render_session(frame, area),

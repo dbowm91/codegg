@@ -53,6 +53,7 @@
 //! - Selection/cursor state managed internally
 //! - Theme passed via `set_theme()` or constructor
 
+pub mod change_review;
 pub mod completion_overlay;
 pub mod component;
 pub mod dialogs;

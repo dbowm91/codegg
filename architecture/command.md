@@ -12,14 +12,14 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 152 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 153 built-in commands
 - `src/config/schema.rs` — `CommandConfig` for config-file commands
 
 ## How It Works
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 152 hardcoded commands (highest priority)
+1. **Built-in commands**: 153 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -247,7 +247,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (152 total)
+### Built-in Commands (153 total)
 
 Representative built-ins:
 
@@ -310,6 +310,7 @@ Representative built-ins:
 | `/issue` | `bugs`, `features` | GitHub issues |
 | `/lsp-servers` | `/lsp-detail` | List active LSP servers |
 | `/lsp-preview` | `/preview-show` | Show LSP preview detail |
+| `/review` | | M006-E: review a pending agent change before applying it (`<preview-id>`); `[a]pply or `Esc` to reject |
 | `/tool-backends` | `/tools`, `/backends` | Show resolved tool backends |
 | `/security-review` | | Security review of changed files |
 | `/shell-list` | | List recent shell commands |
@@ -371,7 +372,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 152**: Guarded by
+- **Built-in count is 153**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -391,7 +392,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-152 count stays in sync with this documentation.
+153 count stays in sync with this documentation.
 
 ## Related Docs
 

@@ -197,6 +197,9 @@ pub enum BuiltinSlashAction {
     LspPreviewClear,
     LspPreviewRefresh,
     LspPreviewApply,
+    /// M006-E: open a review of a pending agent change. Applies nothing
+    /// until the user accepts it.
+    Review,
     LspServers,
     LspCapabilities,
     LspErrors,
@@ -663,6 +666,8 @@ impl CommandRegistry {
             Command::new("/lsp-preview-apply", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviewApply))
                 .with_aliases(&["/preview-apply"])
                 .with_description("Apply LSP preview patches to disk with hash revalidation (args: <id>)"),
+            Command::new("/review", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Review))
+                .with_description("Review a pending agent change before applying it (args: <preview-id>)"),
             Command::new("/lsp-servers", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspServers))
                 .with_aliases(&["/lsp-detail"])
                 .with_description("List active LSP servers with status, root, generation"),
@@ -1097,7 +1102,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 152);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 153);
     }
 
     #[test]
@@ -1224,6 +1229,7 @@ mod tests {
             B::LspPreviewClear,
             B::LspPreviewRefresh,
             B::LspPreviewApply,
+            B::Review,
             B::LspServers,
             B::LspCapabilities,
             B::LspErrors,

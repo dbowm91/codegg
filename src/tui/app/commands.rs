@@ -94,6 +94,17 @@ pub enum TuiCommand {
         root: std::path::PathBuf,
         listing: crate::tui::file_tree::TreeListing,
     },
+    /// Completion of an M006-E change-review accept. Carries the request id
+    /// and review generation so a completion for a rejected or superseded
+    /// review is discarded. `error` carries the daemon's own refusal text
+    /// verbatim, including the unsaved-changes instruction.
+    ChangeReviewAccepted {
+        request_id: u64,
+        generation: u64,
+        written_files: Vec<String>,
+        checkpoint_id: String,
+        error: Option<String>,
+    },
     /// Completion of an async project catalog refresh
     /// (`Multi-Project TUI milestone 1`). Carries the request id so
     /// stale completions (after a new refresh has begun) are dropped
