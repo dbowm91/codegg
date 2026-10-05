@@ -35,6 +35,7 @@ pub mod causal_observe;
 pub mod context_v2;
 #[cfg(feature = "tool-advisor")]
 pub mod contextual;
+pub mod decision_adapter;
 #[cfg(feature = "tool-advisor-encoder-experiment")]
 pub mod late_interaction;
 #[cfg(feature = "tool-advisor-encoder-training")]

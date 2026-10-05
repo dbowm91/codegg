@@ -165,7 +165,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md`
 
-Status: ready.
+Status: active.
 
 Objective: introduce the application-level decision semantics, backend trait/state, capability negotiation, bounded request/response types, and frozen compatibility fixtures without changing live tool disclosure.
 
@@ -291,7 +291,18 @@ The workstream requires:
 - Moving too little would leave the same architecture coupling under a new crate name. M006 requires dependency/source proof.
 - Cross-repository development can create version skew. Compatibility fixtures and versioned manifests are the release gate.
 
-## 12. Completion definition
+## 12. Milestone status
+
+| Milestone | Status | Implementation plan | Closure record | Blockers |
+|---|---|---|---|---|
+| M001 | active | `plans/implementation/decision-model-extraction-runtime/001-decision-contract-and-codegg-adapter.md` | — | — |
+| M002 | blocked | `plans/implementation/decision-model-extraction-runtime/002-external-training-runtime-extraction.md` | — | M001 closure and maintainer-approved external repository access |
+| M003 | blocked | `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md` | — | Positive M002 closure |
+| M004 | blocked | `plans/implementation/decision-model-extraction-runtime/004-system-one-backend.md` | — | M001 closure |
+| M005 | blocked | `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md` | — | M003 and stable M004 semantics |
+| M006 | blocked | `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md` | — | M005 closure and source/dependency inventory |
+
+## 13. Completion definition
 
 This roadmap closes only when:
 

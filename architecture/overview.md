@@ -269,7 +269,7 @@ Codegg follows a **library-first, MCP-second** tool architecture. Durable tool d
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
-| `codegg-core` | Domain types: agent convergence, bus, error, goal, identity, jobs, memory, migration, model_profile, project_catalog/discovery/storage, projection_replay, provider_connections, repository_lineage, resilience, run_store, session, snapshot, storage, task_state, tool_program, workspace, workspace_services, worktree | `lib.rs`, `agent_convergence.rs`, `bus/`, `jobs/`, `session/`, `storage/` |
+| `codegg-core` | Domain types: agent convergence, bus, decision semantics, error, goal, identity, jobs, memory, migration, model_profile, project_catalog/discovery/storage, projection_replay, provider_connections, repository_lineage, resilience, run_store, session, snapshot, storage, task_state, tool_program, workspace, workspace_services, worktree | `lib.rs`, `decision.rs`, `agent_convergence.rs`, `bus/`, `jobs/`, `session/`, `storage/` |
 | `codegg-config` | Configuration schema, paths, loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` |
 | `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, runtime assets DTOs | `core.rs`, `tui.rs` |
 | `codegg-client` | Frontend identity and bounded native client error contracts | `lib.rs` |

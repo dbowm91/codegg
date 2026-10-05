@@ -48,6 +48,23 @@ tested in tags, avoid private repository content, and run the fixture validator
 and benchmark tests. Future advisor runtime and training work must consume
 these contracts rather than define incompatible parallel labels.
 
+## Backend-neutral decision contract (M001)
+
+`codegg_core::decision` defines the bounded v1 application decision contract:
+Binary, exclusive Choice, ordinal Score, and multi-relevance Rank requests;
+bounded state and candidate identities; explicit Answered, Abstained,
+Unsupported, and Unavailable outcomes; backend capability/state reporting; and
+a cancellable `DecisionEngine` interface with a caller-supplied deadline. Its
+validation and canonical fingerprinting have no model, transport, or training
+dependency. `NoopDecisionEngine` represents the ordinary off configuration.
+
+`src/tool_advisor/decision_adapter.rs` projects only a caller-supplied set of
+entries already present on `ResolvedToolSurface`. It does not query a registry
+or carry permission/broker references. The adapter and frozen
+`assets/decision-runtime/compatibility-v1.jsonl` fixtures are additive
+compatibility evidence; current live disclosure and model-specific runtime
+ownership remain unchanged until later milestones close.
+
 ## Optional runtime (linear baseline and contextual corrective)
 
 The runtime is an in-process `hashed-linear-v1` Rust scorer with a versioned

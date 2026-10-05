@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 001 — Decision Contract and CodeGG Adapter
 
-Status: active
+Status: implemented
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
