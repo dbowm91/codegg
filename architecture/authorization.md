@@ -83,13 +83,17 @@ in-memory daemons without a pool decide under the same broad policy.
 `ProjectionSubscribe` operation is `Opaque + project.observe`, which is
 correct for lifecycle projections carrying workflow state. LSP reads and
 diagnostics are gated at `file.read` instead (`lsp_read_get`,
-`lsp_diagnostics_get`), because diagnostics carry source messages, code, and
-snippets, and `project.observe` would understate what is disclosed. For the
-same reason `CoreEvent::LspDiagnosticsUpdated` is classified
-`SafePublicationClass::ClientLocal`, which the durable publish path refuses
-outright: the current stream's subscribe gate cannot express the `file.read`
-requirement, so the event is not published over it and the pull
-(`lsp_diagnostics_get`) is the complete surface until a stream gate can.
+`lsp_diagnostics_get`, `lsp_diagnostics_subscribe`), because diagnostics carry
+source messages, code, and snippets, and `project.observe` would understate
+what is disclosed.
+
+The diagnostics **stream** is therefore its own request,
+`LspDiagnosticsSubscribe`, rather than a flag on `ProjectionSubscribe`. That is
+what makes the `file.read` requirement expressible at all: the gate lives in
+`operation_descriptor`, so the `authorize_request` preamble enforces it before
+the handler runs, and the handler carries no authorization logic of its own to
+forget. A test asserts the capability directly, so folding diagnostics back
+into the generic subscribe fails rather than silently regressing the gate.
 
 ## Attribution
 
@@ -398,6 +402,7 @@ gates (firing is not a Core operation):
 | `lsp_preview_apply` | via_session | `file.modify` |
 | `lsp_read_get` | via_session | `file.read` |
 | `lsp_diagnostics_get` | direct_project | `file.read` |
+| `lsp_diagnostics_subscribe` | direct_project | `file.read` |
 | `managed_worktree_archive` | opaque | `worktree.remove` |
 | `managed_worktree_cleanup` | opaque | `worktree.remove` |
 | `managed_worktree_get` | opaque | `git.read` |

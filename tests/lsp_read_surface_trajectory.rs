@@ -279,3 +279,91 @@ fn the_streamed_and_authoritative_payloads_are_the_same_type() {
     };
     assert_eq!(projection.file, recorded);
 }
+
+// ---------------------------------------------------------------------------
+// 5. The stream gate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_diagnostics_subscription_is_its_own_gated_request() {
+    // ADR-0012 §4 requires `file.read` for content-bearing reads. The generic
+    // `ProjectionSubscribe` is `Opaque + project.observe` and cannot express
+    // that, so the diagnostics stream is a *separate* request rather than a
+    // flag on the generic one. This asserts the split exists: if someone later
+    // folds diagnostics back into `ProjectionSubscribe`, the gate regresses to
+    // `project.observe` and this no longer describes the protocol.
+    use codegg_protocol::core::CoreRequest;
+
+    let request = CoreRequest::LspDiagnosticsSubscribe {
+        request: codegg_protocol::lsp::LspDiagnosticsSubscribeRequestDto {
+            project_id: "project-1".to_string(),
+            cursor: None,
+            projection_version: 1,
+        },
+    };
+    let descriptor = codegg_core::authorization::operation_descriptor(&request);
+    assert_eq!(descriptor.operation, "lsp_diagnostics_subscribe");
+    assert_eq!(
+        descriptor.capability.map(|cap| cap.as_str()),
+        Some("file.read"),
+        "the diagnostics stream must be gated at file.read, not project.observe"
+    );
+    assert_eq!(
+        descriptor.scope_kind,
+        codegg_core::authorization::ScopeKind::DirectProject
+    );
+}
+
+#[test]
+fn the_point_reads_are_gated_at_file_read_too() {
+    use codegg_protocol::core::CoreRequest;
+    for request in [
+        CoreRequest::LspReadGet {
+            request: codegg_protocol::lsp::LspReadRequestDto {
+                operation: LspReadOperation::Hover,
+                session_id: "session-1".to_string(),
+                path: "src/lib.rs".to_string(),
+                line: Some(1),
+                column: Some(1),
+                query: None,
+            },
+        },
+        CoreRequest::LspDiagnosticsGet {
+            request: codegg_protocol::lsp::LspDiagnosticsGetRequestDto {
+                project_id: "project-1".to_string(),
+                session_id: "session-1".to_string(),
+            },
+        },
+    ] {
+        let descriptor = codegg_core::authorization::operation_descriptor(&request);
+        assert_eq!(
+            descriptor.capability.map(|cap| cap.as_str()),
+            Some("file.read"),
+            "{} must be gated at file.read",
+            descriptor.operation
+        );
+        assert_ne!(
+            descriptor.capability.map(|cap| cap.as_str()),
+            Some("project.observe"),
+            "project.observe would understate what these disclose"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_subscription_is_rejected() {
+    use codegg_protocol::lsp::LspDiagnosticsSubscribeRequestDto;
+    for project_id in ["", "projects/../etc", "a/b"] {
+        let request = LspDiagnosticsSubscribeRequestDto {
+            project_id: project_id.to_string(),
+            cursor: None,
+            projection_version: 1,
+        };
+        assert_eq!(
+            request.validate(),
+            Err(LspReadInvalid::InvalidPath),
+            "a subscription for {project_id:?} must be rejected before any \
+             subscription state is created"
+        );
+    }
+}

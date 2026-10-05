@@ -67,7 +67,9 @@ impl DaemonRequestFamily {
             // M006-B: LSP reads. The write-side `LspPreviewApply` deliberately
             // stays routed to `Goals` above; splitting read from write authority
             // keeps ADR-0008's mutation path independently readable.
-            CoreRequest::LspReadGet { .. } | CoreRequest::LspDiagnosticsGet { .. } => Self::Lsp,
+            CoreRequest::LspReadGet { .. }
+            | CoreRequest::LspDiagnosticsGet { .. }
+            | CoreRequest::LspDiagnosticsSubscribe { .. } => Self::Lsp,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,

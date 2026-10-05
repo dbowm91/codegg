@@ -2516,6 +2516,16 @@ pub enum CoreRequest {
     LspDiagnosticsGet {
         request: crate::lsp::LspDiagnosticsGetRequestDto,
     },
+    /// M006-B: subscribe to a project's LSP diagnostics stream
+    /// (`direct_project` + `file.read`).
+    ///
+    /// A dedicated request because the generic `ProjectionSubscribe` is gated
+    /// at `Opaque + project.observe`, which cannot express the `file.read`
+    /// ADR-0012 requires for content-bearing reads. Responds with
+    /// `ProjectionSubscribed`, reusing the same subscription owner.
+    LspDiagnosticsSubscribe {
+        request: crate::lsp::LspDiagnosticsSubscribeRequestDto,
+    },
     /// M004: bounded structural audit query (project-scoped, `audit.read`).
     /// Unknown action/principal filters degrade to empty pages, never to
     /// an error that leaks existence.

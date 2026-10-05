@@ -146,6 +146,20 @@ pub enum ProjectionSnapshotBundle {
         #[serde(default)]
         truncated: bool,
     },
+    /// M006-B: the authoritative diagnostics a gated subscription starts
+    /// from.
+    ///
+    /// A diagnostics subscriber has no session snapshot, so this variant
+    /// carries the project-scoped content instead. Shipping the
+    /// authoritative set with the subscription means a client begins from the
+    /// resync authority rather than from an empty view it would have to
+    /// discover by polling.
+    LspDiagnostics {
+        project_id: String,
+        files: Vec<crate::lsp::LspFileDiagnosticsDto>,
+        #[serde(default)]
+        truncated: bool,
+    },
 }
 
 impl ProjectionSnapshotBundle {
@@ -153,6 +167,7 @@ impl ProjectionSnapshotBundle {
         match self {
             ProjectionSnapshotBundle::One { .. } => false,
             ProjectionSnapshotBundle::BoundedSessionList { truncated, .. } => *truncated,
+            ProjectionSnapshotBundle::LspDiagnostics { truncated, .. } => *truncated,
         }
     }
 }

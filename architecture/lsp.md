@@ -928,15 +928,33 @@ has.
    is a connection-local `VecDeque<String>` of lifecycle diagnostic strings.
    The name coincidence must not be reused or cited as precedent.
 
-#### Publication is fail-closed for now
+#### Publication is gated, not borrowed
 
-`CoreEvent::LspDiagnosticsUpdated` is classified
-`SafePublicationClass::ClientLocal`, which the durable publish path refuses
-outright. The generic `ProjectionSubscribe` gate is `Opaque + project.observe`,
-which cannot express the `file.read` requirement ADR-0012 §4 sets for
-content-bearing reads — so publishing over it would disclose source text to a
-principal that should not have it. The pull is the complete surface until a
-stream gate can express the requirement. See `architecture/authorization.md`.
+`CoreRequest::LspDiagnosticsSubscribe` is a **dedicated** subscription request,
+gated at `direct_project + file.read`, rather than a flag on the generic
+`ProjectionSubscribe`. The generic subscribe is `Opaque + project.observe` and
+cannot express a `file.read` requirement, so reusing it would disclose source
+messages, code, and snippets to a principal that may only observe.
+
+The gate lives in `operation_descriptor`, so the `authorize_request` preamble
+enforces it before the handler runs — the subscribe handler adds no
+authorization logic of its own and cannot forget the check. A test asserts the
+capability directly, so folding diagnostics back into `ProjectionSubscribe`
+fails rather than silently regressing the gate.
+
+The subscription response carries the authoritative set in a new
+`ProjectionSnapshotBundle::LspDiagnostics`, so a subscriber starts from the
+resync authority rather than from an empty view it would have to discover by
+polling. Session-scoped consumers reject or ignore that variant, exactly as
+they do `BoundedSessionList`: a project-scoped bundle is not something a
+session reducer can fold in, and saying so is better than dropping it.
+
+`should_persist` excludes `LspDiagnosticsUpdated`, so diagnostics are not
+persisted: they are a replace-set the pull can always re-derive, and ADR-0008's
+ruling that preview and diagnostic state stay bounded and non-durable applies.
+The cost is that after a daemon restart a client has no sequence history and
+must re-pull — which is exactly why the pull, not the stream, is the
+correctness authority.
 
 ### download.rs - Binary Download
 

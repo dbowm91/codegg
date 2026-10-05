@@ -45,18 +45,19 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::SessionUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRegistered { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRestored { .. } => SafePublicationClass::Safe,
-        // M006-B: LSP diagnostics carry source messages, code, and snippets,
-        // so `Safe` would publish file content through a stream whose
-        // subscribe gate is `Opaque + project.observe` — weaker than the
-        // `file.read` ADR-0012 §4 requires for content-bearing reads.
+        // M006-B: diagnostics carry source messages, code, and snippets, so
+        // publishing them `Safe` is only correct because they are gated at
+        // `file.read` rather than the generic projection stream's
+        // `Opaque + project.observe`. That gate lives on
+        // `CoreRequest::LspDiagnosticsSubscribe`, which is a dedicated
+        // request precisely because the generic subscribe cannot express a
+        // `file.read` requirement.
         //
-        // `ClientLocal` is the fail-closed class: the durable publish path
-        // refuses it outright (`PublishOutcome::Denied`,
-        // `projection_replay/service.rs`), so no principal receives
-        // diagnostics over the current stream regardless of capabilities.
-        // The pull (`LspDiagnosticsGet`, gated at `file.read`) is the
-        // complete surface until a stream gate can express the requirement.
-        CoreEvent::LspDiagnosticsUpdated { .. } => SafePublicationClass::ClientLocal,
+        // If that subscribe variant were ever removed or re-pointed at the
+        // generic gate, this class would become a disclosure regression. The
+        // coupling is deliberate and worth stating rather than leaving as a
+        // coincidence.
+        CoreEvent::LspDiagnosticsUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::TurnReasoningDelta { .. } => SafePublicationClass::Internal,
         CoreEvent::ConnectionRotated { .. } => SafePublicationClass::Sensitive,
         CoreEvent::ConnectionStateChanged { .. } => SafePublicationClass::Sensitive,

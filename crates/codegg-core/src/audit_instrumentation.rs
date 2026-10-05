@@ -697,6 +697,7 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     // `authorize_request`.
     "lsp_read_get",
     "lsp_diagnostics_get",
+    "lsp_diagnostics_subscribe",
     "managed_worktree_get",
     "managed_worktree_list",
     "memory_forget",

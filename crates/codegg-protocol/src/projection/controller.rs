@@ -491,6 +491,15 @@ impl ProjectionClientController {
                 ProjectionSnapshotBundle::One { snapshot } => {
                     current = *snapshot;
                 }
+                // Diagnostics are project-scoped; this controller folds a
+                // session snapshot, so the bundle is reported and ignored
+                // rather than silently dropped.
+                ProjectionSnapshotBundle::LspDiagnostics { .. } => {
+                    self.push_diagnostic(
+                        "lsp_diagnostics_bundle_ignored",
+                        "LspDiagnostics ignored in install_replay",
+                    );
+                }
                 ProjectionSnapshotBundle::BoundedSessionList { .. } => {
                     self.push_diagnostic(
                         "replay_list_bundle_ignored",

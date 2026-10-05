@@ -944,6 +944,10 @@ impl CoreDaemon {
             } => Some(project_id),
             CoreRequest::ProjectionArtifactRead { project_id, .. }
             | CoreRequest::ProjectionArtifactList { project_id } => Some(project_id),
+            // M006-B: the gated LSP diagnostics subscription resolves its
+            // project directly, exactly as the generic project-scoped
+            // operations above do.
+            CoreRequest::LspDiagnosticsSubscribe { request } => Some(request.project_id.as_str()),
             CoreRequest::AssetRefresh { request } => Some(request.scope.project_id.as_str()),
             CoreRequest::AssetRefreshStatus { scope } => Some(scope.project_id.as_str()),
             CoreRequest::GoalSet { project_id, .. }
@@ -3719,7 +3723,7 @@ impl CoreDaemon {
             // M006-B: LSP read authority only. `LspPreviewApply` is routed to
             // `Goals` above and is not reachable here.
             super::daemon_family::DaemonRequestFamily::Lsp => {
-                Box::pin(self.handle_lsp_request(payload)).await
+                Box::pin(self.handle_lsp_request(payload, trusted_client_id)).await
             }
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team

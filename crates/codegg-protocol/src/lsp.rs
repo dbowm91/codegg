@@ -340,6 +340,45 @@ pub struct LspDiagnosticsResultDto {
     pub truncated: bool,
 }
 
+/// Authorized request to subscribe to a project's LSP diagnostics stream.
+///
+/// This exists as its own request rather than a flag on `ProjectionSubscribe`
+/// because the generic subscribe is gated at `Opaque + project.observe`, which
+/// cannot express the `file.read` that ADR-0012 §4 requires for
+/// content-bearing reads. Diagnostics carry source messages, code, and
+/// snippets, so reusing the generic gate would disclose them to a principal
+/// that may only observe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspDiagnosticsSubscribeRequestDto {
+    pub project_id: String,
+    /// Replay cursor, when resuming a subscription that was resync-required.
+    #[serde(default)]
+    pub cursor: Option<crate::projection::replay::ProjectionCursor>,
+    #[serde(default = "default_lsp_projection_version")]
+    pub projection_version: u32,
+}
+
+fn default_lsp_projection_version() -> u32 {
+    1
+}
+
+impl LspDiagnosticsSubscribeRequestDto {
+    /// Validate before any subscription state is created.
+    ///
+    /// An unparseable project locator is rejected here rather than deeper in
+    /// the projection service, so a malformed request cannot create a
+    /// subscription that later resolves to an unexpected project.
+    pub fn validate(&self) -> Result<(), LspReadInvalid> {
+        if self.project_id.is_empty() {
+            return Err(LspReadInvalid::InvalidPath);
+        }
+        if self.project_id.contains('/') || self.project_id.contains('\\') {
+            return Err(LspReadInvalid::InvalidPath);
+        }
+        Ok(())
+    }
+}
+
 /// The pushed form of a diagnostics change.
 ///
 /// Byte-for-byte the same content as the authoritative

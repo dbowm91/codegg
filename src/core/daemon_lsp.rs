@@ -84,6 +84,7 @@ impl CoreDaemon {
     pub(crate) async fn handle_lsp_request(
         &self,
         request: CoreRequest,
+        trusted_client_id: &str,
     ) -> Result<CoreResponse, AppError> {
         match request {
             CoreRequest::LspReadGet { request } => match self.lsp_read_get(request).await {
@@ -96,6 +97,10 @@ impl CoreDaemon {
             CoreRequest::LspDiagnosticsGet { request } => {
                 let result = self.lsp_diagnostics_get(request).await;
                 Ok(CoreResponse::LspDiagnosticsGetResult { result })
+            }
+            CoreRequest::LspDiagnosticsSubscribe { request } => {
+                self.lsp_diagnostics_subscribe(request, trusted_client_id)
+                    .await
             }
             other => Ok(CoreResponse::Error {
                 code: "unsupported_lsp_request".into(),
@@ -626,4 +631,118 @@ fn map_diagnostics(
             }
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Gated subscription
+// ---------------------------------------------------------------------------
+
+impl CoreDaemon {
+    /// Subscribe to a project's LSP diagnostics stream.
+    ///
+    /// The gate is `direct_project + file.read`, enforced by the same
+    /// `authorize_request` preamble every other request gets — so this
+    /// handler adds no authorization logic of its own. The gate lives in
+    /// `operation_descriptor` precisely so that it cannot be forgotten here.
+    ///
+    /// This is a dedicated request rather than a flag on `ProjectionSubscribe`
+    /// because the generic subscribe is `Opaque + project.observe`, which
+    /// cannot express `file.read`. Reusing it would disclose source messages,
+    /// code, and snippets to a principal that may only observe.
+    pub(crate) async fn lsp_diagnostics_subscribe(
+        &self,
+        request: codegg_protocol::lsp::LspDiagnosticsSubscribeRequestDto,
+        trusted_client_id: &str,
+    ) -> Result<CoreResponse, AppError> {
+        use codegg_protocol::projection::replay::{
+            ProjectionCursor, ProjectionSnapshotBundle, ProjectionSubscriptionRequest,
+        };
+
+        let Some(ref seam) = self.projection_seam else {
+            return Ok(CoreResponse::Error {
+                code: "projection_unavailable".into(),
+                message: "projection replay requires a SQLite-backed daemon".into(),
+            });
+        };
+        if request.validate().is_err() {
+            return Ok(CoreResponse::Error {
+                code: "invalid_lsp_diagnostics_subscribe".into(),
+                message: "the subscription request is not valid".into(),
+            });
+        }
+
+        let subscription = ProjectionSubscriptionRequest {
+            scope: codegg_protocol::projection::replay::ProjectionStreamKind::Project,
+            scope_id: request.project_id.clone(),
+            cursor: request.cursor,
+            projection_version: request.projection_version,
+        };
+        let service = seam.service();
+        let sub_id = match service
+            .subscribe_project(&request.project_id, trusted_client_id, &subscription)
+            .await
+        {
+            Ok(sub_id) => sub_id,
+            Err(error) => {
+                return Ok(CoreResponse::Error {
+                    code: "lsp_diagnostics_subscribe_failed".into(),
+                    message: error.to_string(),
+                })
+            }
+        };
+
+        let descriptor = match service
+            .store()
+            .get_or_create_project_stream(&request.project_id)
+            .await
+        {
+            Ok((descriptor, _)) => descriptor,
+            Err(error) => {
+                // Never leave a subscription behind because the descriptor
+                // could not be read; the same joined teardown the generic
+                // path uses.
+                if let Err(unsubscribe_error) = service.unsubscribe(&sub_id).await {
+                    tracing::warn!(
+                        error = %unsubscribe_error,
+                        subscription_id = %sub_id.0,
+                        "failed to clean up an LSP diagnostics subscription"
+                    );
+                }
+                return Ok(CoreResponse::Error {
+                    code: "projection_descriptor_missing".into(),
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        // The authoritative set travels with the subscription so a client
+        // starts from the resync authority rather than from an empty view it
+        // would then have to discover by polling.
+        let snapshot = ProjectionSnapshotBundle::LspDiagnostics {
+            project_id: request.project_id.clone(),
+            files: self
+                .lsp_diagnostics
+                .lock()
+                .files_for(&request.project_id)
+                .unwrap_or_default(),
+            truncated: self
+                .lsp_diagnostics
+                .lock()
+                .tracker_saturated(&request.project_id),
+        };
+        let cursor = ProjectionCursor {
+            stream_id: descriptor.stream_id.clone(),
+            event_seq: descriptor.high_water_seq,
+            projection_version: descriptor.projection_version,
+        };
+        // Read the floor before `descriptor` moves into the response.
+        let retention_floor_seq = descriptor.retention_floor_seq;
+        Ok(CoreResponse::ProjectionSubscribed {
+            subscription_id: sub_id,
+            descriptor,
+            snapshot,
+            cursor,
+            retention_floor_seq,
+        })
+    }
 }
