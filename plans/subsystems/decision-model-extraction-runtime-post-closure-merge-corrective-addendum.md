@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime — Post-Closure Merge Qualification Corrective Addendum
 
-Status: active; C001 active
+Status: closed; C001 closed — merge recommended
 
 Repository baseline reviewed: `291a361d402c7062a713278e8e5ef3a840cee884`
 
@@ -53,7 +53,7 @@ The historical M001-M006 closure records remain valid and MUST NOT be rewritten.
 
 ### C001 — Final hosted CI and merge qualification
 
-Status: active.
+Status: closed — merge recommended. Closure: `plans/closure/decision-model-extraction-runtime-post-closure-merge-corrective/001-status.md`.
 
 Implementation plan:
 
@@ -233,4 +233,8 @@ C001 closure authorizes merge. It does not itself claim that the merge has occur
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 Final hosted CI and merge qualification | active | `plans/implementation/decision-model-extraction-runtime-post-closure-merge-corrective/001-final-hosted-ci-and-merge-qualification.md` | pending | None; M001-M006 are closed. |
+| C001 Final hosted CI and merge qualification | closed — merge recommended | `plans/implementation/decision-model-extraction-runtime-post-closure-merge-corrective/001-final-hosted-ci-and-merge-qualification.md` | `plans/closure/decision-model-extraction-runtime-post-closure-merge-corrective/001-status.md` | None. |
+
+## 14. C001 outcome
+
+C001 closed against `main` base `13a57c251f1fb0816d723f750048bed385de7e09`. PR #104 is open at qualified implementation head `9bfc07a0b87482b6a145de9965cf421f0c6e2b07`. Hosted `CI / verify` run `37419090787` passed; Desktop E2E run `37419090740` passed on attempt 2 after a same-SHA transient diagnostic-watcher timeout. The SDM pin and compatibility contract passed, including 12 fixtures and 11 runtime executions. Closure evidence and the explicit merge recommendation are recorded at `plans/closure/decision-model-extraction-runtime-post-closure-merge-corrective/001-status.md`.
