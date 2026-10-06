@@ -501,13 +501,13 @@ directory, and contains a supported plugin manifest (`manifest.toml`,
 `plugin.json`, or `.claude-plugin/plugin.json`). The path is canonicalized before
 any filesystem operation.
 
-> **The bundled WASM examples are not installable as shipped.**
-> `examples/plugins/wasm-command-table/`, `wasm-hook-message-transform/`, and
-> `wasm-status-widget/` each ship `plugin.toml`, which is not one of the
-> manifest names accepted above, and neither the installer nor the loader
-> (`src/plugin/loader.rs` reads `manifest.toml`) recognizes it. `/plugin-install`
-> against one of them fails with `supported plugin manifest not found`. Rename
-> `plugin.toml` to `manifest.toml` in the source directory before installing.
+> **A plugin directory must name its manifest `manifest.toml`, `plugin.json`,
+> or `.claude-plugin/plugin.json`.** Nothing else is recognized — in
+> particular `plugin.toml` is not accepted by either the installer
+> (`src/plugin/install.rs`) or the loader (`src/plugin/loader.rs`), and
+> `/plugin-install` against a directory that has only a `plugin.toml` fails
+> with `supported plugin manifest not found`. The bundled examples in
+> `examples/plugins/` all ship `manifest.toml`, so they install as-is.
 
 Archive members and copy-relative paths remain strictly validated
 (`validate_relative_install_path`) — they still reject `..`, `RootDir`,

@@ -66,9 +66,8 @@ codegg import out.json          # import a session from JSON
 
 These commands operate on the **project-local** store at
 `<project>/.codegg/sessions.db`, resolved from the current working directory.
-That database is created and migrated by the TUI, daemon, and server paths on
-first run in a project, so run CodeGG in the project once before relying on
-these commands against a brand-new checkout.
+The database is created and migrated on first use — by the TUI, the daemon,
+the server, or any of these commands — so they work in a brand-new checkout.
 
 Note that this project-local store is distinct from the user-scoped daemon
 catalog. Sessions listed here are the ones recorded for this project directory.

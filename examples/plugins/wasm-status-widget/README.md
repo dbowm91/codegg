@@ -9,7 +9,7 @@ A WASM plugin that registers a left-side panel and a right-side status widget.
 
 ## Panel IDs
 
-Panel IDs are auto-namespaced by plugin ID. The `id` in `plugin.toml` is the contribution ID within this plugin's namespace.
+Panel IDs are auto-namespaced by plugin ID. The `id` in `manifest.toml` is the contribution ID within this plugin's namespace.
 
 ## Build
 

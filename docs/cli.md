@@ -78,9 +78,9 @@ codegg import session.json         # import a session
 ```
 
 These commands read and write the project-local store at
-`<project>/.codegg/sessions.db`. That database is created and migrated when
-the TUI or the daemon first runs in the project; in a project that has never
-been opened, the store is not yet populated.
+`<project>/.codegg/sessions.db`. The database is created and migrated on
+first use — by the TUI, the daemon, or any of these commands — so they work
+in a project that has never been opened.
 
 Sessions created by the TUI are persistent by default and can be resumed
 across restarts.

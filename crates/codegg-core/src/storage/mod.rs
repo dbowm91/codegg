@@ -13,7 +13,9 @@
 //! 2. **Workspace-local legacy project store** -- a project-rooted
 //!    `<workspace>/.codegg/sessions.db` retained for backward compat
 //!    with existing sessions. Initialized via
-//!    [`init_legacy_project_store`].
+//!    [`init_migrated_legacy_project_store`]; the un-migrated
+//!    [`init_legacy_project_store`] is reserved for the legacy import
+//!    tooling, which must be able to inspect a file before trusting it.
 //!
 //! The legacy [`init`] entry point remains as a deprecated wrapper so
 //! callers that have not yet been migrated continue to work.
@@ -141,6 +143,30 @@ pub async fn init_migrated_daemon_catalog(paths: &DaemonPaths) -> Result<SqliteP
 /// daemons use [`init_daemon_catalog`] instead.
 pub async fn init_legacy_project_store(project_root: &Path) -> Result<SqlitePool, StorageError> {
     let db_path = project_root.join(".codegg").join("sessions.db");
+    init_pool_at(&db_path).await
+}
+
+/// Initialize the legacy project store **and apply all migrations**, so the
+/// returned pool is immediately usable by `SessionStore` / `MessageStore`.
+///
+/// [`init_legacy_project_store`] deliberately does not migrate: the legacy
+/// import tooling opens the same path to decide whether a file is a real
+/// legacy session database, and migrating first would make that probe
+/// self-fulfilling. Every *consumer* of the project store — the CLI session
+/// commands, the in-process core, and the standalone server — wants the
+/// schema, not the probe, and must use this entry point instead.
+///
+/// Migration uses a single-connection pool because the schema migrator runs
+/// its statements inside an explicit transaction; the migrated pool is closed
+/// before the normal runtime pool is opened, mirroring
+/// [`init_migrated_daemon_catalog`].
+pub async fn init_migrated_legacy_project_store(
+    project_root: &Path,
+) -> Result<SqlitePool, StorageError> {
+    let db_path = project_root.join(".codegg").join("sessions.db");
+    let migration_pool = init_pool_at_for_migration(&db_path).await?;
+    crate::session::schema::migrate(&migration_pool).await?;
+    migration_pool.close().await;
     init_pool_at(&db_path).await
 }
 
@@ -327,5 +353,39 @@ mod tests {
             expected
         );
         let _: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&pool).await.unwrap();
+    }
+
+    /// Regression: consumers used to get an un-migrated pool and then fail
+    /// every session query with `no such table: session`. The migrated
+    /// initializer must leave a schema the session stores can query.
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_migrated_legacy_project_store_creates_session_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_migrated_legacy_project_store(tmp.path())
+            .await
+            .unwrap();
+
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM session")
+            .fetch_one(&pool)
+            .await
+            .expect("session table must exist after the migrated initializer");
+        assert_eq!(count.0, 0);
+    }
+
+    /// The un-migrated initializer must stay un-migrated: the legacy import
+    /// tooling uses it to decide whether a file is a real legacy database.
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_legacy_project_store_does_not_migrate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = init_legacy_project_store(tmp.path()).await.unwrap();
+
+        let err = sqlx::query_as::<_, (i64,)>("SELECT count(*) FROM session")
+            .fetch_one(&pool)
+            .await
+            .expect_err("legacy initializer must leave the schema unmigrated");
+        assert!(
+            format!("{err}").contains("session"),
+            "unexpected error: {err}"
+        );
     }
 }

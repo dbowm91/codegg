@@ -149,7 +149,7 @@ rustup target add wasm32-unknown-unknown
 
 ## Manifest reference
 
-Both `command/*.md` (project-local commands) and `plugin.toml` (installed
+Both `command/*.md` (project-local commands) and `manifest.toml` (installed
 plugins) are supported. The project-local command frontmatter uses YAML
 fields:
 
@@ -166,5 +166,5 @@ fields:
 | `env` | string[] | `[]` | `KEY=VALUE` environment variables |
 | `output` | string[] | `[]` | Output surfaces (`chat`, `toast`, `dialog`, `panel`, `status`) |
 
-The installed-plugin `plugin.toml` uses the canonical `PluginManifest`
+The installed-plugin `manifest.toml` uses the canonical `PluginManifest`
 schema documented in `architecture/plugin.md`.

@@ -1534,7 +1534,7 @@ async fn cmd_sessions(archived: bool) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
     let store = SessionStore::new(pool);
 
     let sessions = if archived {
@@ -1575,7 +1575,7 @@ async fn cmd_session_view(id: &str) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
     let store = SessionStore::new(pool);
 
     let session = store
@@ -1637,7 +1637,7 @@ async fn cmd_export(id: &str, output: Option<&str>) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
     let session_store = SessionStore::new(pool.clone());
     let message_store = codegg::session::MessageStore::new(pool);
 
@@ -1679,7 +1679,7 @@ async fn cmd_import(file: &str) -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
+    let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
     let session_store = SessionStore::new(pool.clone());
     let message_store = codegg::session::MessageStore::new(pool);
 
@@ -2621,7 +2621,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         if is_socket_mode {
             (None, None, None, None, None, Vec::new(), Vec::new(), None)
         } else {
-            let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
+            let pool = storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await?;
             let session_store = Arc::new(SessionStore::new(pool.clone()));
             let message_store = Arc::new(MessageStore::new(pool.clone()));
             let user_prefs = storage::UserPreferences::new(pool.clone());
@@ -3577,7 +3577,7 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let pool = match storage::init_legacy_project_store(Path::new(&project_dir)).await {
+    let pool = match storage::init_migrated_legacy_project_store(Path::new(&project_dir)).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!("Failed to initialize storage for daemon: {}", e);

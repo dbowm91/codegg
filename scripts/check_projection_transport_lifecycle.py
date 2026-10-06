@@ -21,12 +21,29 @@ from pathlib import Path
 import re
 import sys
 
+# A `mod` declaration gated by any cfg predicate that mentions `test`.
+_TEST_MOD_GATE = re.compile(r"^[ \t]*#\[cfg\([^\]]*\btest\b[^\]]*\)\][ \t]*$", re.MULTILINE)
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def _read(path: Path) -> str:
     return path.read_text() if path.exists() else ""
+
+
+def _strip_test_modules(source: str) -> str:
+    """Return everything before the first test-gated `mod` declaration.
+
+    Modules gate their tests with any cfg predicate that mentions `test`,
+    not only the bare `#[cfg(test)]` — for example
+    `#[cfg(all(test, unix))]` for a Unix-only test module. Splitting on the
+    literal `#[cfg(test)]` alone silently returns the whole file when a
+    module uses a compound predicate, so test-only call sites get scanned as
+    production and trip guards that are correctly satisfied in real code.
+    """
+    first = _TEST_MOD_GATE.search(source)
+    return source[: first.start()] if first else source
 
 
 def main() -> int:
@@ -37,7 +54,7 @@ def main() -> int:
     real_tests = _read(ROOT / "tests/projection_transport_real.rs")
     closure_008 = _read(ROOT / "plans/closure/session-projections/008-status.md")
     closure_009 = _read(ROOT / "plans/closure/session-projections/009-status.md")
-    unix_production = unix.split("#[cfg(test)]", 1)[0]
+    unix_production = _strip_test_modules(unix)
 
     # ── M008: Unix transport ownership ──────────────────────────────────
     required_unix = (
