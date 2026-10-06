@@ -2869,9 +2869,47 @@ async fn handle_projection_capabilities(
     Ok(())
 }
 
-/// Handle `ProjectionSubscribe` from a remote TUI client. The server
-/// forwards the request to the daemon and pipes the initial snapshot
-/// plus any live projection envelopes back over the WebSocket.
+/// Fold a snapshot bundle into the single session snapshot a session-scoped
+/// WebSocket subscriber may observe.
+///
+/// A project-scoped diagnostics bundle is not a session snapshot. This surface
+/// is a session subscription, so the correct answer is the empty session
+/// snapshot — the same answer the `BoundedSessionList` arm gives when it holds
+/// no sessions, and the same rule the headless consumer states when it refuses
+/// to fold this bundle in (`ProjectionConsumer::single_snapshot`). Diagnostics
+/// carry source content and are gated at `file.read`, so adopting them here
+/// would be a disclosure, not a convenience.
+///
+/// The `LspDiagnostics` arm should be unreachable in practice: the daemon builds
+/// that bundle only in the `LspDiagnosticsSubscribe` response and routes the
+/// event to `ProjectionStreamKind::Project` only. It is handled explicitly
+/// rather than with a catch-all so the rule is enforced rather than assumed.
+fn fold_session_snapshot_bundle(
+    bundle: crate::protocol::projection::replay::ProjectionSnapshotBundle,
+    descriptor: &crate::protocol::projection::replay::ProjectionStreamDescriptor,
+) -> crate::protocol::projection::snapshot::SessionProjectionSnapshot {
+    use crate::protocol::projection::replay::ProjectionSnapshotBundle;
+    use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
+
+    let empty = || {
+        SessionProjectionSnapshot::empty(
+            descriptor.session_id.as_deref().unwrap_or(""),
+            &descriptor.project_id,
+            descriptor.workspace_id.as_deref().unwrap_or(""),
+        )
+    };
+    match bundle {
+        ProjectionSnapshotBundle::One { snapshot } => *snapshot,
+        ProjectionSnapshotBundle::BoundedSessionList { sessions, .. } => {
+            sessions.into_iter().next().unwrap_or_else(empty)
+        }
+        ProjectionSnapshotBundle::LspDiagnostics { .. } => empty(),
+    }
+}
+
+/// Handle a projection subscribe request over the WebSocket: register the
+/// subscription, send the opening snapshot, and stream any live projection
+/// envelopes back over the WebSocket.
 async fn handle_projection_subscribe(
     request: crate::protocol::projection::replay::ProjectionSubscriptionRequest,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
@@ -2881,9 +2919,6 @@ async fn handle_projection_subscribe(
     cancellation: &CancellationToken,
     observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
-    use crate::protocol::projection::replay::ProjectionSnapshotBundle;
-    use crate::protocol::projection::snapshot::SessionProjectionSnapshot;
-
     if !require_projection_primary(state, bus_tx).await {
         return Ok(());
     }
@@ -2981,18 +3016,7 @@ async fn handle_projection_subscribe(
                 .await;
                 return Err(error);
             }
-            let snapshot = match snapshot {
-                ProjectionSnapshotBundle::One { snapshot } => *snapshot,
-                ProjectionSnapshotBundle::BoundedSessionList { sessions, .. } => {
-                    sessions.into_iter().next().unwrap_or_else(|| {
-                        SessionProjectionSnapshot::empty(
-                            descriptor.session_id.as_deref().unwrap_or(""),
-                            &descriptor.project_id,
-                            descriptor.workspace_id.as_deref().unwrap_or(""),
-                        )
-                    })
-                }
-            };
+            let snapshot = fold_session_snapshot_bundle(snapshot, &descriptor);
             let msg = TuiMessage::ProjectionSnapshot {
                 subscription_id: subscription_id.clone(),
                 descriptor,
@@ -5269,5 +5293,85 @@ mod tests {
         .await
         .expect("projection suppression should not fail the writer");
         assert!(sink.messages.is_empty());
+    }
+
+    // ─── Session-scoped folds must never adopt project-scoped diagnostics ───
+
+    fn session_descriptor() -> crate::protocol::projection::replay::ProjectionStreamDescriptor {
+        use crate::protocol::projection::replay::{
+            ProjectionStreamDescriptor, ProjectionStreamId, ProjectionStreamKind,
+        };
+        ProjectionStreamDescriptor {
+            stream_id: ProjectionStreamId::new("stream-1").expect("valid stream id"),
+            kind: ProjectionStreamKind::Session,
+            project_id: "project-1".to_string(),
+            workspace_id: Some("workspace-1".to_string()),
+            session_id: Some("session-1".to_string()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        }
+    }
+
+    #[test]
+    fn a_session_subscription_never_adopts_project_scoped_diagnostics() {
+        use crate::protocol::projection::replay::ProjectionSnapshotBundle;
+
+        let bundle = ProjectionSnapshotBundle::LspDiagnostics {
+            project_id: "project-1".to_string(),
+            files: vec![crate::protocol::lsp::LspFileDiagnosticsDto {
+                path: "src/secret.rs".to_string(),
+                sequence: 7,
+                digest: "deadbeef".to_string(),
+                diagnostics: vec![crate::protocol::lsp::LspDiagnosticDto {
+                    range: crate::protocol::lsp::LspRangeDto {
+                        path: "src/secret.rs".to_string(),
+                        start_line: 0,
+                        start_column: 0,
+                        end_line: 0,
+                        end_column: 4,
+                    },
+                    severity: 1,
+                    tag: 0,
+                    code: None,
+                    message: "top secret constant".to_string(),
+                    source: Some("clippy".to_string()),
+                }],
+                post_restart: false,
+                truncated: false,
+            }],
+            truncated: false,
+        };
+
+        let folded = super::fold_session_snapshot_bundle(bundle, &session_descriptor());
+
+        // The strong, falsifiable claim: a project-scoped bundle folds to
+        // exactly what an empty session-scoped bundle folds to for the same
+        // descriptor. If this arm ever synthesized or adopted anything, the two
+        // values would diverge.
+        let empty_session_fold = super::fold_session_snapshot_bundle(
+            ProjectionSnapshotBundle::BoundedSessionList {
+                sessions: Vec::new(),
+                truncated: false,
+            },
+            &session_descriptor(),
+        );
+        assert_eq!(
+            folded, empty_session_fold,
+            "a project-scoped diagnostics bundle must fold to the same empty session \
+             snapshot as an empty session list"
+        );
+
+        // And the concrete shape, so a regression is legible rather than just
+        // a mismatch against another fold.
+        assert_eq!(folded.event_seq, 0, "not the empty session snapshot");
+        assert_eq!(folded.primary_session_id, "session-1");
+        assert_eq!(folded.project_id, "project-1");
+        let rendered = format!("{folded:?}");
+        assert!(
+            !rendered.contains("top secret constant"),
+            "diagnostic content leaked into a session snapshot: {rendered}"
+        );
     }
 }
