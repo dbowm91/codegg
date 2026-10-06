@@ -13,8 +13,8 @@ transport.
 
 | Artifact | Path |
 |----------|------|
-| Detection + diff | `src/ide/mod.rs` (473 lines) |
-| MCP server | `src/mcp/ide_server.rs` (424 lines) |
+| Detection + diff | `src/ide/mod.rs` (471 lines) |
+| MCP server | `src/mcp/ide_server.rs` (438 lines) |
 
 ## How It Works
 
@@ -44,20 +44,20 @@ Three public functions check environment variables:
 3. Dispatches to `open_diff_vscode()`, `open_diff_jetbrains()`, or
    `open_diff_generic()` based on detection.
 
-**VS Code** (`open_diff_vscode`, line 134):
+**VS Code** (`open_diff_vscode`, line 132):
 - Writes content to temp files with `codegg_original_`/`codegg_modified_`
   prefixes.
 - Flushes and drops file handles before invoking `code --diff`.
 - Uses `run_command_with_timeout()` with a 30-second deadline.
 
-**JetBrains** (`open_diff_jetbrains`, line 188):
+**JetBrains** (`open_diff_jetbrains`, line 186):
 - Same temp file pattern.
 - Tool resolution: `$JETBRAINS_TOOL` env var → `/opt/intellij/bin/idea.sh`
   → `/usr/local/bin/idea` → Windows `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
   → `idea` in PATH.
 - Invokes `<tool> diff <original> <modified>`.
 
-**Generic fallback** (`open_diff_generic`, line 270):
+**Generic fallback** (`open_diff_generic`, line 268):
 - Searches PATH for `code`, `code.exe`, `code.cmd`, `idea`, `idea.bat`,
   `idea.cmd`.
 - Tries VS Code first; if that fails, tries IntelliJ.
@@ -152,7 +152,7 @@ Opens the native IDE diff viewer. Schema:
 
 Both `original` and `modified` are required.
 
-**`parse_file_reference()`** (line 372):
+**`parse_file_reference()`** (line 388):
 Parses the `@file#L1-L99` syntax:
 - `path@file#start-end` → path + line range
 - `path@file` → path only
@@ -218,7 +218,7 @@ cargo test -p codegg --lib ide           # IDE detection and diff tests
 cargo test -p codegg --lib mcp::ide_server  # MCP server tests (if any)
 ```
 
-Inline tests (`src/ide/mod.rs:444-473`):
+Inline tests (`src/ide/mod.rs:442-471`):
 - `test_vscode_detection` — verifies `is_vscode()` returns false in test env
 - `test_jetbrains_detection` — verifies `is_jetbrains()` returns false
 - `test_no_changes` — unified diff with identical input
@@ -229,3 +229,21 @@ Inline tests (`src/ide/mod.rs:444-473`):
 - [mcp.md](mcp.md) — MCP client/server system
 - [tui.md](tui.md) — TUI that may display diffs
 - [tool.md](tool.md) — Tool registry including IDE tools
+
+## Source verification
+
+Verified 2026-10-06 against `src/ide/mod.rs` (471 lines) and
+`src/mcp/ide_server.rs` (438 lines): `IDE_COMMAND_TIMEOUT` 30s
+(`ide/mod.rs:8`), `run_command_with_timeout` (`:10`), `TempFilesGuard`
+(`:42`), `register_panic_cleanup` (`:66`), `is_vscode` (`:81`),
+`is_jetbrains` (`:87`), `is_ide` (`:94`), `open_diff` (`:98`),
+`open_diff_vscode` (`:132`), `open_diff_jetbrains` (`:186`),
+`open_diff_generic` (`:268`), `generate_unified_diff` (`:390`),
+`generate_side_by_side` (`:418`), inline tests (`:442-471`);
+`IdeServer` (`ide_server.rs:50`), `run_stdio` (`:79`),
+`clone_for_connection` (`:123`), `handle_connection` (`:133`),
+`shutdown` (`:316`), `open_diff_handler` (`:361`),
+`parse_file_reference` (`:388`). Confirmed `run_socket` has no
+implementation (the caveat stands). The prior `parse_file_reference`
+line 372 in prose contradicted the correct 388 in the table below;
+both now read 388.

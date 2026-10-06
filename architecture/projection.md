@@ -33,7 +33,7 @@ journal event as a provider turn or tool invocation.
 | `crates/codegg-protocol/src/projection/caps.rs` | Version/capability negotiation |
 | `crates/codegg-protocol/src/projection/limits.rs` | Payload and collection bounds |
 | `crates/codegg-protocol/src/projection/dto.rs` | Bounded projection DTOs |
-| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (46 variants) |
+| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (47 variants) |
 | `crates/codegg-protocol/src/projection/snapshot.rs` | `SessionProjectionSnapshot` |
 | `crates/codegg-protocol/src/projection/reducer.rs` | Deterministic canonical reducer |
 | `crates/codegg-protocol/src/projection/adapters.rs` | Bridges `CoreResponse`/`CoreEvent` into projection |
@@ -83,6 +83,7 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_AGENT_RUNS` | 64 |
 | `MAX_PROJECTION_WORKTREES` | 32 |
 | `MAX_PROJECTION_RUN_GROUPS` | 32 |
+| `MAX_PROJECTION_CONVERGENCES` | 32 |
 | `MAX_PROJECTION_DIAGNOSTICS` | 32 |
 | `MAX_PROJECTION_DIFF_LINES` | 64 |
 | `MAX_PROJECTION_STRING_BYTES` | 4,096 |
@@ -148,7 +149,7 @@ Lifecycle invariants:
 snapshot helpers (`upsert_secondary`, `push_recent_turn`). External
 implementations MUST go through these helpers.
 
-### ProjectionEvent (46 variants)
+### ProjectionEvent (47 variants)
 
 | Family | Variants |
 |--------|----------|
@@ -157,10 +158,11 @@ implementations MUST go through these helpers.
 | Message | `MessageAppended`, `ReasoningAppended` |
 | Tool | `ToolStarted`, `ToolCompleted`, `ToolFailed` |
 | Permission | `PermissionPending`, `PermissionResolved` |
-| Question | `QuestionPending`, `QuestionResolved` |
+| Question | `QuestionPending`, `QuestionResolved`, `LspDiagnosticsUpdated` |
 | Subagent | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
 | Durable agent run | `AgentRunUpserted`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated` |
 | Worktree/group | `WorktreeUpserted`, `AgentRunGroupUpserted` |
+| Convergence | `ConvergenceUpserted` |
 | File | `FileChanged` |
 | Run | `RunStarted`, `RunProgress`, `RunArtifactCreated`, `RunCompleted`, `RunDenied` |
 | Job | `JobUpserted`, `JobRemoved` |
@@ -271,8 +273,10 @@ Older snapshots deserialize with the fields absent. These fields describe
 ownership only; they do not grant control authority, which remains enforced by
 the durable group/control services.
 
-Member-terminal reconciliation publishes an AgentRunGroupUpdated event for
-the authoritative recomputed summary, including terminal summaries reached
+Member-terminal reconciliation publishes an `AgentRunGroupUpdated`
+`AppEvent` (`crates/codegg-core/src/bus/events.rs:365`), which the
+adapter projects as `AgentRunGroupUpserted`, for the authoritative
+recomputed summary, including terminal summaries reached
 without a later status_group request. The event's session routing comes from
 the persisted turn owner or the owner run's originating task. Terminal live
 follow-up delivery is separately claim-gated by durable group notification
@@ -316,19 +320,19 @@ second projection protocol.
 | `ProjectionReducer` | `reducer.rs:236` | Canonical pure reducer |
 | `ReducerEventInput` | `reducer.rs:143` | Lightweight reducer input |
 | `ApplyOutcome` | `reducer.rs:112` | Reducer application result |
-| `ProjectionEvent` | `event.rs:128` | 46-variant event enum |
+| `ProjectionEvent` | `event.rs:128` | 47-variant event enum |
 | `ProjectionEnvelope` | `event.rs:54` | Event envelope with metadata |
-| `ProjectionStreamScope` | `event.rs:38` | Session/Project/Workspace/Daemon |
+| `ProjectionStreamScope` | `event.rs:40` | Session/Project/Workspace/Daemon |
 | `ProjectionClientController` | `controller.rs:219` | Frontend state machine |
 | `HeadlessProjectionConsumer` | `consumer.rs` | Non-TUI snapshot/replay/resume/artifact consumer |
 | `ProjectionMode` | `controller.rs:83` | ProjectionPrimary/RawCompat/Unsupported |
 | `ProjectionStreamId` | `replay.rs:41` | Opaque stream identifier |
-| `ProjectionCursor` | `replay.rs:106` | Client cursor for resume |
-| `ProjectionReplayBatch` | `replay.rs:161` | Replay event batch |
+| `ProjectionCursor` | `replay.rs:107` | Client cursor for resume |
+| `ProjectionReplayBatch` | `replay.rs:177` | Replay event batch |
 | `ToolProgramSummary` | `dto.rs:822` | Background tool program state |
 | `ToolProgramDetail` | `dto.rs:947` | Full tool program inspection |
 | `ToolProgramCallPage` | `dto.rs:918` | Paginated call history |
-| `VisibilityClass` | `dto.rs:26` | Public/ClientLocal/Internal/Sensitive |
+| `VisibilityClass` | `dto.rs:27` | Public/ClientLocal/Internal/Sensitive |
 
 ## Configuration Surface
 
@@ -405,3 +409,23 @@ python3 scripts/check_websocket_bounds.py
 - `architecture/tui.md` — local TUI
 - `architecture/acp.md` — ACP adapter
 - `architecture/bus.md` — event bus
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-protocol/src/projection/`.
+Corrected the `ProjectionEvent` variant count 46 → 47 and added the two
+missing variants: `LspDiagnosticsUpdated` (listed under Question; the
+reducer turns it into a diagnostic because it belongs to the project
+projection stream) and `ConvergenceUpserted` (new Convergence family
+row). Added the missing `MAX_PROJECTION_CONVERGENCES` = 32 row to the
+limits table. Corrected `file.rs:line` refs: `ProjectionStreamScope`
+`event.rs:38` → `:40`, `ProjectionCursor` `replay.rs:106` → `:107`,
+`ProjectionReplayBatch` `replay.rs:161` → `:177`, `VisibilityClass`
+`dto.rs:26` → `:27`. Clarified that `AgentRunGroupUpdated` is a bus
+`AppEvent` (`crates/codegg-core/src/bus/events.rs:365`) that the adapter
+projects as `AgentRunGroupUpserted`. Verified accurate: every other
+limit value, the three replay caps (512 events / 1 MiB / 64 KiB), the
+three controller caps, `PROJECTION_PROTOCOL_VERSION` /
+`PROJECTION_PROTOCOL_VERSION_MIN` = 1, `PROJECTION_CAPABILITY`, the six
+`ApplyOutcome` variants, the four `ProjectionStreamScope` variants, and
+`REMOTE_TUI_PROTOCOL_VERSION` = 5.

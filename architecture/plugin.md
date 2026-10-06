@@ -66,14 +66,18 @@ results.
 
 ### Capability-Based Registry
 
-`PluginRegistry` (`registry.rs:144`) indexes five capability types
+`PluginRegistry` (`registry.rs:173`) indexes six capability types
 extracted from manifests at registration time:
 
 - **Commands** — slash-command names + aliases (global uniqueness enforced)
+- **Tools** — model-facing tool names contributed by the plugin
 - **Hooks** — `HookType` + priority (sorted ascending)
 - **Panels** — auto-namespaced with `{plugin_id}:{raw_id}`
 - **Status widgets** — auto-namespaced similarly
 - **Event subscriptions** — pattern-matched by event type
+
+The six match `PluginCapability` (`manifest.rs:79`) exactly: `Command`,
+`Tool`, `Hook`, `Panel`, `StatusWidget`, `EventSubscription`.
 
 All queries filter against an `enabled_plugin_ids()` snapshot acquired
 under a single read guard, eliminating lock-contention false negatives.
@@ -109,13 +113,15 @@ Caller (AgentLoop, LifecycleHooks, etc.)
       -> Final HookResult with accumulated effects
 ```
 
-**Outer timeout** (service.rs:31): 5 seconds, configurable via
-`with_hook_timeout()`. **Inner timeout** for WASM: 30 seconds
-(`WASM_HOOK_TIMEOUT` in loader.rs).
+**Outer timeout** (`service.rs:41`, `hook_timeout`): 5 seconds, configurable
+via `with_hook_timeout()`. **Inner timeout** for WASM: 30 seconds, set
+inline at `loader.rs:151` as `RuntimeLimits { timeout_ms: 30_000 }` (and
+`Some(30_000)` in the `WasmRuntimeSpec` at `loader.rs:142`). There is no
+`WASM_HOOK_TIMEOUT` constant.
 
 ### Policy System
 
-`PluginPolicy` (`policy.rs:222`) is a composite of five sub-policies,
+`PluginPolicy` (`policy.rs:223`) is a composite of five sub-policies,
 all defaulting to conservative:
 
 | Sub-Policy | Default | Controls |
@@ -130,7 +136,7 @@ all defaulting to conservative:
 
 ### Management UX
 
-`PluginManager` (`management.rs:256`) wraps `PluginService` and provides:
+`PluginManager` (`management.rs:275`) wraps `PluginService` and provides:
 
 | Method | Description |
 |--------|-------------|
@@ -144,7 +150,7 @@ all defaulting to conservative:
 | `uninstall(selector)` | Validate + unregister + rm |
 | `doctor(selector)` | Read-only diagnostic checks |
 
-**Selector resolution** (registry.rs:281): exact id → exact name →
+**Selector resolution** (registry.rs:324): exact id → exact name →
 unique prefix on id → unique prefix on name → error on ambiguous/none.
 
 ## Key Types & APIs
@@ -332,3 +338,22 @@ PYTHONPATH=examples/plugins/sdk-python \
 - [provider.md](provider.md) — provider middleware hooks
 - `crates/codegg-protocol/src/plugin.rs` — wire types
 - `crates/codegg-protocol/src/ui.rs` — UI node and effect types
+
+## Source Verification
+
+Verified 2026-10-06 against `src/plugin/` (22 modules).
+- Corrected the capability count **five → six** and added the missing
+  **Tools** bullet. `PluginCapability` (`manifest.rs:79`) has exactly 6
+  variants — `Command`, `Tool`, `Hook`, `Panel`, `StatusWidget`,
+  `EventSubscription` — so the previous list was missing `Tool` outright.
+- Corrected 4 stale line refs: `PluginRegistry` `registry.rs:144`→`:173`,
+  `PluginPolicy` `policy.rs:222`→`:223`, `PluginManager`
+  `management.rs:256`→`:275`, selector resolution `registry.rs:281`→`:324`.
+- Corrected the hook-timeout refs. The 5s outer timeout is
+  `service.rs:41` (`hook_timeout`), not `service.rs:31` (a struct field).
+  There is **no `WASM_HOOK_TIMEOUT` constant**; the 30s inner WASM timeout is
+  set inline at `loader.rs:151` (`RuntimeLimits { timeout_ms: 30_000 }`) and
+  `loader.rs:142` (`Some(30_000)` in the `WasmRuntimeSpec`).
+- Confirmed correct as written: `PluginPolicy` really is a composite of five
+  sub-policies (`policy.rs:224`-`:228`: `lifecycle`, `ui`, `permissions`,
+  `install`, `runtime`).

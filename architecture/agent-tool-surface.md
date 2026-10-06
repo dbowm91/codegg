@@ -57,12 +57,13 @@ ToolRegistry::list()
 
 ### Capability System
 
-13 capability kinds model the execution authorities a tool grants:
+15 capability kinds model the execution authorities a tool grants:
 
 ```
 FilesystemRead, FilesystemWrite, ShellReadonly, ShellMutating,
 GitRead, GitWrite, NetworkResearch, Delegate, ManageTodos,
-ManageGoals, ManageWorkOrders, Terminal, Image
+ManageGoals, ManageWorkOrders, Terminal, Image, MemoryRead,
+PluginExecute
 ```
 
 Each tool maps to one or more capabilities:
@@ -77,6 +78,8 @@ Each tool maps to one or more capabilities:
 - `todowrite`/`todoread` → `ManageTodos`
 - Goal/WorkPlan state tools → `ManageGoals`
 - `work_order` → `ManageWorkOrders` (not filesystem write)
+- `memory_search`/`memory_get` → `MemoryRead`
+- plugin-executing tools → `PluginExecute`
 
 ### Parent Ceiling
 
@@ -89,10 +92,11 @@ subagents from gaining capabilities the parent does not have.
 
 Plan-mode surface is owned by `src/tool/disclosure.rs::PLAN_ALLOWED`
 (single source consumed by both `filter_tools_for_model` and the resolved
-surface). When plan mode is active, only these tools are allowed:
-`read`, `glob`, `grep`, `list`, `codesearch`, `repo_search`, `webfetch`,
-`lsp`, `skill`, `todoread`, `todowrite`, `bash`, `plan_enter`,
-`plan_exit`, `tool_search`.
+surface). When plan mode is active, only these 18 tools are allowed
+(`PLAN_ALLOWED`, `src/tool/disclosure.rs:262-280`): `read`, `glob`, `grep`,
+`list`, `codesearch`, `repo_search`, `webfetch`, `lsp`, `skill`, `todoread`,
+`todowrite`, `bash`, `plan_enter`, `plan_exit`, `tool_search`,
+`mcp_resource_search`, `mcp_resource_read`.
 
 All other tools are omitted with `ToolOmissionReason::PlanMode`.
 
@@ -179,7 +183,7 @@ surface is resolved, before provider dispatch.
 
 ## Key Types & APIs
 
-### ResolvedToolSurface (`src/agent/tool_surface.rs:131`)
+### ResolvedToolSurface (`src/agent/tool_surface.rs:147`)
 
 ```rust
 pub struct ResolvedToolSurface {
@@ -192,7 +196,7 @@ pub struct ResolvedToolSurface {
 }
 ```
 
-### ResolvedTool (`src/agent/tool_surface.rs:120`)
+### ResolvedTool (`src/agent/tool_surface.rs:136`)
 
 ```rust
 pub struct ResolvedTool {
@@ -212,17 +216,18 @@ pub struct ResolvedTool {
 pub enum Capability {
     FilesystemRead, FilesystemWrite, ShellReadonly, ShellMutating,
     GitRead, GitWrite, NetworkResearch, Delegate, ManageTodos,
-    ManageGoals, Terminal, Image,
+    ManageGoals, ManageWorkOrders, Terminal, Image, MemoryRead,
+    PluginExecute,
 }
 ```
 
-### AgentCapabilitySet (`src/agent/tool_surface.rs:32`)
+### AgentCapabilitySet (`src/agent/tool_surface.rs:36`)
 
 Typed authority summary with `allows(cap)`, `intersect(ceiling)`,
 `capabilities()` methods. Independent of agent names and roles — labels
 select prompts, never execution authority.
 
-### ToolOmission (`src/agent/tool_surface.rs:114`)
+### ToolOmission (`src/agent/tool_surface.rs:130`, reason enum `:120`)
 
 ```rust
 pub struct ToolOmission {
@@ -240,7 +245,7 @@ pub enum ToolOmissionReason {
 }
 ```
 
-### SurfaceError (`src/agent/tool_surface.rs:141`)
+### SurfaceError (`src/agent/tool_surface.rs:157`)
 
 ```rust
 pub enum SurfaceError {
@@ -254,13 +259,13 @@ pub enum SurfaceError {
 
 | Function | Location | Description |
 |----------|----------|-------------|
-| `from_registry()` | `tool_surface.rs:151` | Resolve from ToolRegistry |
-| `from_registry_with_aliases()` | `tool_surface.rs:168` | Resolve with provider aliases |
-| `resolve()` | `tool_surface.rs:207` | Resolve from policy-filtered definitions |
-| `resolve_with_aliases()` | `tool_surface.rs:228` | Full resolution with aliases |
-| `definitions()` | `tool_surface.rs:335` | Extract ToolDefinition list |
-| `reduce()` | `tool_surface.rs:342` | Context palette reduction |
-| `canonical_name_for_wire()` | `tool_surface.rs:360` | Wire→canonical lookup |
+| `from_registry()` | `tool_surface.rs:166` | Resolve from ToolRegistry |
+| `from_registry_with_aliases()` | `tool_surface.rs:183` | Resolve with provider aliases |
+| `resolve()` | `tool_surface.rs:228` | Resolve from policy-filtered definitions |
+| `resolve_with_aliases()` | `tool_surface.rs:250` | Full resolution with aliases |
+| `definitions()` | `tool_surface.rs:385` | Extract ToolDefinition list |
+| `reduce()` | `tool_surface.rs:392` | Context palette reduction |
+| `canonical_name_for_wire()` | `tool_surface.rs:410` | Wire→canonical lookup |
 
 ## Configuration Surface
 
@@ -316,3 +321,20 @@ failure, abstention, and budget overflow preserve the existing palette.
 - [model-adapters.md](model-adapters.md) — adapter tool aliases
 - [permission.md](permission.md) — permission system
 - [tool.md](tool.md) — ToolRegistry, Tool trait
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: capability count 13 → 15
+(`MemoryRead` and `PluginExecute` were missing from the prose list, and
+`ManageWorkOrders` was missing from the enum code block — the enum block now
+matches the source verbatim); plan-mode allowlist 15 → 18 names
+(`mcp_resource_search`/`mcp_resource_read` were missing). Line refs:
+`ResolvedToolSurface` `:131` → `:147`, `ResolvedTool` `:120` → `:136`,
+`AgentCapabilitySet` `:32` → `:36`, `ToolOmission` `:114` → `:130`
+(reason enum `:120`), `SurfaceError` `:141` → `:157`, and all seven Key
+Functions rows (`:151/168/207/228/335/342/360` →
+`:166/183/228/250/385/392/410`). Verified accurate: `ResolvedToolSurface`
+6 fields, `ResolvedTool` 7 fields, `ToolOmission` 2 fields,
+6 `ToolOmissionReason` variants, 3 `SurfaceError` variants, 15
+`AgentCapabilitySet` bool fields, `PLAN_ALLOWED` ordering, and the
+four disclosure states with `ProfileSpecific`.

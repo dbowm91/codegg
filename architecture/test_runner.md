@@ -61,11 +61,12 @@ through the scheduler.
 
 All production model-facing test execution flows through the scheduler:
 
-- `TestJobExecutor` (`src/scheduler/executors.rs:68`) implements `JobExecutor` for `JobKind::Test`.
+- `TestJobExecutor` (`src/scheduler/executors.rs:68`, `impl JobExecutor` at `:83`)
+  implements `JobExecutor` for `JobKind::Test`.
   It constructs a `TestScope::BashDispatch(argv)` from the job payload and delegates to
   `resolve_and_run_test()`.
 - `src/tool/test.rs` submits jobs via `JobSubmissionService` and waits for completion.
-- `src/tool/bash.rs` submits planner-validated `TestScope::BashDispatch` jobs.
+- `src/tool/bash/process.rs` submits planner-validated `TestScope::BashDispatch` jobs.
 - `src/tui/commands/test.rs` submits through `CoreRequest::JobSubmit` and waits.
 - The scheduler owns admission and attempt lifecycle; TestRunner remains the domain
   authority for framework discovery, stall handling, reports, artifacts, and RunStore
@@ -73,7 +74,7 @@ All production model-facing test execution flows through the scheduler:
 
 ## Key Types & APIs
 
-### FailureClass (`types.rs:44-59`)
+### FailureClass (`types.rs:45-59`)
 
 13 variants: `Passed`, `RustTestFailure`, `RustPanic`, `RustCompileError`,
 `RustDoctestFailure`, `PytestFailure`, `PytestError`, `PytestCollectionError`,
@@ -112,20 +113,23 @@ The test-runner safety validator does NOT re-run for BashDispatch.
 
 `WallClock | NoOutput | NoProgress`
 
-### TestRunRequest (`types.rs:121-128`)
+### TestRunRequest (`types.rs:121-139`)
 
 ```rust
 pub struct TestRunRequest {
     pub scope: TestScope,
     pub workdir: PathBuf,
+    pub execution_cwd: Option<PathBuf>,
     pub timeout_secs: Option<u64>,
     pub stall_timeout_secs: Option<u64>,
     pub max_report_bytes: Option<usize>,
     pub session_id: Option<String>,
+    pub parent_run_id: Option<AgentRunId>,
+    pub cancellation: Option<CancellationToken>,
 }
 ```
 
-### ResolvedTestCommand (`types.rs:131-136`)
+### ResolvedTestCommand (`types.rs:142-147`)
 
 ```rust
 pub struct ResolvedTestCommand {
@@ -136,7 +140,7 @@ pub struct ResolvedTestCommand {
 }
 ```
 
-### TestFailure (`types.rs:138-146`)
+### TestFailure (`types.rs:150-157`)
 
 ```rust
 pub struct TestFailure {
@@ -148,7 +152,7 @@ pub struct TestFailure {
 }
 ```
 
-### TestTimeout (`types.rs:148-153`)
+### TestTimeout (`types.rs:160-164`)
 
 ```rust
 pub struct TestTimeout {
@@ -158,7 +162,7 @@ pub struct TestTimeout {
 }
 ```
 
-### TestReport (`types.rs:156-173`)
+### TestReport (`types.rs:167-184`)
 
 ```rust
 pub struct TestReport {
@@ -179,7 +183,7 @@ pub struct TestReport {
 }
 ```
 
-### TestEventSink trait (`types.rs:204-208`)
+### TestEventSink trait (`types.rs:217-221`)
 
 ```rust
 pub trait TestEventSink: Send + Sync {
@@ -191,7 +195,7 @@ pub trait TestEventSink: Send + Sync {
 
 Snapshot types carry `session_id`, `job_id`, and event-specific fields.
 
-### DelegatedTestRun (`runner.rs:356-368`)
+### DelegatedTestRun (`runner.rs:356-359`)
 
 Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some`
 when the canonical TestRunner successfully began a `RunKind::Test` record; `None`
@@ -199,7 +203,7 @@ when no record could be begun or no `RunStore` was provided. This is the
 **record-ownership contract**: callers suppress duplicate persistence only when
 `run_id` is present.
 
-### TestResolveError (`resolve.rs:11-34`)
+### TestResolveError (`resolve.rs:12-34`)
 
 ```rust
 pub enum TestResolveError {
@@ -215,7 +219,7 @@ pub enum TestResolveError {
 }
 ```
 
-### TestRunError (`runner.rs:30-58`)
+### TestRunError (`runner.rs:31-61`)
 
 ```rust
 pub enum TestRunError {
@@ -231,7 +235,7 @@ pub enum TestRunError {
 }
 ```
 
-### TestParseState (`parse.rs:20-30`)
+### TestParseState (`parse.rs:21-30`)
 
 ```rust
 pub struct TestParseState {
@@ -301,7 +305,7 @@ pub fn compute_test_delta(current: &TestReport, previous: &TestReport) -> TestDe
 | `MAX_TIMEOUT_EXCERPT_BYTES` | 2000 | Truncation limit for timeout last_output |
 | `DEFAULT_MAX_REPORT_BYTES` | 20,000 | Total report body cap |
 
-### Index constants (`index.rs:13-17`)
+### Index constants (`index.rs:14-18`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -331,8 +335,8 @@ argv-token-bounded prefix matching (so `pytestevil` does NOT match `pytest`).
 ### Process-group cleanup (Unix only)
 
 On Unix, the child is placed in its own session/process group via `setsid()`
-in `pre_exec` (`runner.rs:290-297`). Timeout kills target the entire process
-tree using `libc::kill(-pgid, SIGKILL)` (`runner.rs:478-486`).
+in `pre_exec` (`runner.rs:386-391`). Timeout kills target the entire process
+tree using `libc::kill(-pgid, SIGKILL)` (`runner.rs:591-608`).
 
 **Non-Unix fallback**: `spawn_child` skips `setsid()`, and `kill_child` falls
 back to `child.kill().await`, which only kills the direct child. Grandchildren
@@ -344,8 +348,8 @@ The legacy `.codegg/test-runs/index.json` is retained for backward compatibility
 RunStore is the authoritative persistence layer. The legacy index is deprecated
 and will be removed once `PreviousFailures` reads from RunStore directly.
 
-Writing is serialized via `OnceLock<tokio::sync::Mutex<()>>` (`index.rs:112`).
-Atomic writes use `.tmp` + rename (`index.rs:149-160`).
+Writing is serialized via `OnceLock<tokio::sync::Mutex<()>>` (`index.rs:113`).
+Atomic writes use a per-process `.tmp` + rename (`index.rs:194-199`).
 
 ### Stale completion protection
 
@@ -363,7 +367,7 @@ record. Callers check `run_id` to suppress duplicate persistence. The runner cal
 
 ### Validation re-run
 
-The resolver (`resolve_validated_custom_command` at `resolve.rs:229-237`) re-runs
+The resolver (`resolve_validated_custom_command` at `resolve.rs:232`) re-runs
 the strict validator as defense-in-depth. Empty input is mapped to the legacy
 `EmptyCustomCommand` variant so existing callers keep working.
 
@@ -378,13 +382,13 @@ cargo test -p codegg --lib test_runner
 Submodule targeting:
 
 ```bash
-cargo test -p codegg --lib test_runner::custom    # 30+ tests
-cargo test -p codegg --lib test_runner::parse      # 22 tests
-cargo test -p codegg --lib test_runner::report     # 10 tests
-cargo test -p codegg --lib test_runner::runner     # 13+ tests
-cargo test -p codegg --lib test_runner::index      # 18 tests
-cargo test -p codegg --lib test_runner::projection # 11 tests
-cargo test -p codegg --lib test_runner::resolve    # 11 tests
+cargo test -p codegg --lib test_runner::custom    # 29 tests
+cargo test -p codegg --lib test_runner::parse      # 25 tests
+cargo test -p codegg --lib test_runner::report     # 12 tests
+cargo test -p codegg --lib test_runner::runner     # 8 tests
+cargo test -p codegg --lib test_runner::index      # 17 tests
+cargo test -p codegg --lib test_runner::projection # 21 tests
+cargo test -p codegg --lib test_runner::resolve    # 15 tests
 ```
 
 Integration test suites:
@@ -400,3 +404,28 @@ cargo test -p codegg --lib core::tests::test_run
 - `architecture/scheduler.md` — scheduler admission and attempt lifecycle
 - `architecture/human_shell.md` — projection pipeline
 - `architecture/tool_programs.md` — tool program execution (separate subsystem)
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `TestRunRequest` 6 → 9 fields
+(added `execution_cwd`, `parent_run_id`, `cancellation`). Line refs (the prior
+"off by 96-117 lines" estimate was far too large — real drift was +11 to +13 on
+the later `types.rs` structs): `FailureClass` `44-59` → `45-59`,
+`TestRunRequest` `121-128` → `121-139`, `ResolvedTestCommand` `131-136` →
+`142-147`, `TestFailure` `138-146` → `150-157`, `TestTimeout` `148-153` →
+`160-164`, `TestReport` `156-173` → `167-184`, `TestEventSink` `204-208` →
+`217-221`, `TestResolveError` `resolve.rs:11-34` → `12-34`, `TestRunError`
+`runner.rs:30-58` → `31-61`, `TestParseState` `parse.rs:20-30` → `21-30`,
+`DelegatedTestRun` `runner.rs:356-368` → `356-359`, index constants
+`index.rs:13-17` → `14-18`, `setsid` `runner.rs:290-297` → `386-391`,
+`libc::kill` `runner.rs:478-486` → `591-608`, index lock `index.rs:112` →
+`113`, atomic write `index.rs:149-160` → `194-199`,
+`resolve_validated_custom_command` `resolve.rs:229-237` → `232`; per-module
+test counts replaced with measured values (custom 29, parse 25, report 12,
+runner 8, index 17, projection 21, resolve 15); the BashDispatch submitter is
+`src/tool/bash/process.rs`, not `src/tool/bash.rs`. Verified accurate: 10
+files, 13 `FailureClass` variants, the four enums at `types.rs:5/22/29/38`,
+`ResolvedTestCommand` 4 fields, `TestFailure` 5, `TestTimeout` 3, `TestReport`
+14, `TestParseState` 8, `TestScope` 8 variants, 12-entry allowlist, runner
+constants (`runner.rs:24-28`), formatter constants, index constant values,
+`TestJobExecutor` (`src/scheduler/executors.rs:68`/`83`).

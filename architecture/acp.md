@@ -103,9 +103,9 @@ The `run()` function (line 79) ensures on exit that:
 
 | Type / Function | Location | Purpose |
 |----------------|----------|---------|
-| `RpcRequest` | `src/acp.rs:27` | Deserialized JSON-RPC frame |
-| `ActivePrompt` | `src/acp.rs:38` | Tracks the in-flight prompt: request ID, session, event floor, turn binding, cancel state |
-| `SessionBinding` | `src/acp.rs:74` | Maps session ID to subscription ID and optional root path |
+| `RpcRequest` | `src/acp.rs:26` | Deserialized JSON-RPC frame |
+| `ActivePrompt` | `src/acp.rs:37` | Tracks the in-flight prompt: request ID, session, event floor, turn binding, cancel state |
+| `SessionBinding` | `src/acp.rs:73` | Maps session ID to subscription ID and optional root path |
 | `run()` | `src/acp.rs:78` | Main async entry point; runs the select loop |
 | `ensure_client()` | `src/acp.rs:301` | Lazy daemon connection via `connect_or_start_daemon()` |
 | `absolute_cwd()` | `src/acp.rs:317` | Validates and canonicalizes the `cwd` parameter |
@@ -121,8 +121,8 @@ The `run()` function (line 79) ensures on exit that:
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `ACP_PROTOCOL_VERSION` | `1` | `src/acp.rs:23` |
-| `MAX_FRAME_BYTES` | `1 MiB` | `src/acp.rs:24` |
+| `ACP_PROTOCOL_VERSION` | `1` | `src/acp.rs:22` |
+| `MAX_FRAME_BYTES` | `1 MiB` | `src/acp.rs:23` |
 
 The adapter reads `Config::load()` for agent resolution (line 359). No
 ACP-specific config keys exist. The `model` parameter in `session/prompt`
@@ -155,7 +155,7 @@ cargo test -p codegg --lib acp        # unit tests for ActivePrompt, helpers
 cargo test -p codegg --lib acp::tests  # lifecycle, cancellation, terminal detection
 ```
 
-Test coverage (inline, `src/acp.rs:598-736`):
+Test coverage (inline, `src/acp.rs:599-736`):
 - `lifecycle_rejects_pre_submission_and_neighbor_events` — event floor and
   session filtering
 - `lifecycle_binds_one_turn_and_rejects_stale_terminal_events` — turn
@@ -171,3 +171,16 @@ Test coverage (inline, `src/acp.rs:598-736`):
 - [core.md](core.md) — `CoreClient`, `SocketCoreClient`, daemon lifecycle
 - [server.md](server.md) — HTTP/WebSocket transport (separate from ACP)
 - [protocol.md](protocol.md) — `CoreRequest`, `CoreResponse`, `CoreEvent`
+
+## Source verification
+
+Verified 2026-10-06 against `src/acp.rs`. Corrected six off-by-one
+`file.rs:line` refs: `RpcRequest` `:27` → `:26`, `ActivePrompt` `:38` →
+`:37`, `SessionBinding` `:74` → `:73`, `ACP_PROTOCOL_VERSION` `:23` →
+`:22`, `MAX_FRAME_BYTES` `:24` → `:23`, and the inline test range
+`:598-736` → `:599-736`. Verified accurate: the 12 method refs
+(`run` `:78`, `cancel_if_ready` `:281`, `ensure_client` `:301`,
+`absolute_cwd` `:317`, `prompt_text` `:343`, `native_agents` `:368`,
+`subscribe` `:384`, `replay_snapshot` `:425`, `handle_event` `:467`,
+`event_is_terminal` `:502`), the 736-line file length,
+`ACP_PROTOCOL_VERSION` = 1, and `MAX_FRAME_BYTES` = 1 MiB.

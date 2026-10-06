@@ -21,7 +21,7 @@ and a promotion model that keeps ephemeral commands out of model context.
 | `projection_bridge.rs` | `ShellCommandRunBridge` — sidecar mirror of `ShellEvent`s into `CommandOutputStore` |
 | `projector.rs` | Phase 2+: `CommandOutputProjector` trait, `RawProjector`/`TruncatedProjector`/`ErrorRetentionProjector`, `ProjectionSelector`, native projectors (Phase 3), Phase 9 contract types, Phase 10 context metadata, `apply_redaction_hook`, `config_command_projection` |
 | `rtk.rs` | Phase 5–6: `RtkDiscovery`, `RtkAvailability`, `RtkCapabilities`, `RtkProjector`, `classify_command()`, eligibility classification, wrapper grammar parsing |
-| `redactor.rs` | Phase 8: `Redactor`, `RedactRule` trait, six built-in rules, `RedactedOutput` |
+| `redactor.rs` | Phase 8: `Redactor`, `RedactRule` trait, seven built-in rules, `RedactedOutput` |
 | `mod.rs` | Re-exports, `sanitize_ansi()` |
 
 ## How It Works
@@ -64,9 +64,9 @@ Each projector implements `CommandOutputProjector::supports()` returning
 picks the first non-`Unsupported`.
 
 Redaction is applied inside `ProjectionSelector::project()` via
-`apply_redaction_hook()` — six deterministic `RedactRule`
+`apply_redaction_hook()` — seven deterministic `RedactRule`
 implementations: `AuthorizationRule`, `EnvSecretRule`, `PemBlockRule`,
-`CloudCredentialRule`, `EmbeddedCredentialUrlRule`,
+`CloudCredentialRule`, `ProviderTokenRule`, `EmbeddedCredentialUrlRule`,
 `SessionMaterialRule`. Cannot be bypassed by projectors.
 
 Phase 9 adds `ProjectionId`, `ArtifactSpanRef`, `RedactionRecord`,
@@ -113,7 +113,7 @@ pub enum PromptSubmissionKind { Chat(String), Slash(String), HumanShell { comman
 `!cmd` → `promote_after=false`, `\!cmd` → `Chat("!cmd")`, `/cmd` →
 `Slash`, empty/`!`/`!!` → `Chat`.
 
-### ShellRuntime (`runtime.rs:10`)
+### ShellRuntime (`runtime.rs:9`)
 
 Builds a typed `$SHELL -lc` request and sends events over
 `mpsc::Sender<ShellEvent>`. Generic timeout, cancellation, process-group,
@@ -122,11 +122,14 @@ Plugin service integration remains available via `with_plugin_service()` for
 shell environment lifecycle hooks. See
 `architecture/process-tool-execution-ownership.md`.
 
-### ShellOutputStore (`store.rs:93`)
+### ShellOutputStore (`store.rs:96`)
 
-Bounded `VecDeque<ShellOutputEntry>`. Defaults: 100 entries, 1 MB/cmd
-(head 256KB + tail 256KB), 8 MB total. Evicts oldest by count then
-bytes. `ShellOutputEntry` includes `promoted: bool` and
+Bounded `VecDeque<ShellOutputEntry>`. Defaults: 100 entries, 1 MB per-command
+byte budget (`max_bytes_per_command`), 8 MB total (`max_total_bytes`).
+Retained output per stream is bounded separately by `BoundedOutput`:
+`HEAD_CAP` 256 KiB + `TAIL_CAP` 256 KiB = **512 KiB retained** per stream,
+with `omitted_bytes` tracking what the tail dropped. Evicts oldest by
+count then bytes. `ShellOutputEntry` includes `promoted: bool` and
 `promote_after: bool` (set from `capture_policy`).
 
 ### CommandOutputStore (`projection.rs:391`)
@@ -136,7 +139,7 @@ eviction. Handles: `cmd://<id>/stdout`, `cmd://<id>/stderr`. Supports
 `expand()`, `expand_stream()`, `parse_handle()`,
 `parse_handle_with_range()`.
 
-### ProjectionSelector (`projector.rs:2996`)
+### ProjectionSelector (`projector.rs:2991`)
 
 `with_defaults()` — conservative chain without RTK.
 `with_rtk(config)` — adds RTK projector.
@@ -144,11 +147,12 @@ eviction. Handles: `cmd://<id>/stdout`, `cmd://<id>/stderr`. Supports
 `project(request, store)` — selects projector, applies redaction hook,
 returns `ProjectionResult`.
 
-### Redactor (`redactor.rs:358`)
+### Redactor (`redactor.rs:386`)
 
-Six rules: `AuthorizationRule` (bearer/basic/api-key),
+Seven rules: `AuthorizationRule` (bearer/basic/api-key),
 `EnvSecretRule` (UPPERCASE var assignments with sensitive keywords),
 `PemBlockRule` (private key blocks), `CloudCredentialRule` (AWS/GCP/Azure),
+`ProviderTokenRule` (provider-issued token shapes),
 `EmbeddedCredentialUrlRule` (user:pass@host URLs),
 `SessionMaterialRule` (cookies, session IDs, CSRF tokens).
 Replacement markers: `[REDACTED:<rule-class>]`.
@@ -218,7 +222,7 @@ cargo test -p codegg --lib shell::runtime        # spawn, timeout, stderr
 cargo test -p codegg --lib shell::store          # bounded output, eviction
 cargo test -p codegg --lib shell::policy         # block/warn patterns
 cargo test -p codegg --lib shell::digest         # failure extraction
-cargo test -p codegg --lib shell::redactor       # six rules, false positives
+cargo test -p codegg --lib shell::redactor       # seven rules, false positives
 cargo test -p codegg --lib shell::rtk            # discovery, eligibility, wrapper grammar
 cargo test -p codegg --lib shell::projector      # selector, native projectors, redaction hook
 cargo test --test shell_projection_harness       # 11 invariant tests over fixture corpus
@@ -232,6 +236,22 @@ CODEGG_RTK_INTEGRATION=1 cargo test -p codegg --lib shell::rtk -- rtk_integratio
 - [human-shell/SKILL.md](../.opencode/skills/human-shell/SKILL.md)
 - [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md)
 
+## Source verification
+
+Verified 2026-10-06 against `src/shell/` (11 files, as tabulated):
+`ShellRuntime` (`runtime.rs:9`), `ShellOutputStore` (`store.rs:96`),
+`CommandOutputStore` (`projection.rs:391`), `ProjectionSelector`
+(`projector.rs:2991`), `Redactor` (`redactor.rs:386`); the seven
+`RedactRule` impls (`redactor.rs:56-253`, including `ProviderTokenRule`
+at 205); `HEAD_CAP`/`TAIL_CAP` = 256 KiB each (`store.rs:10-11`);
+`COMMAND_OUTPUT_MAX_RETAINED_BYTES` 64 MiB, `..._SINGLE_STREAM_BYTES`
+32 MiB, `..._HISTORY_ENTRIES` 100 (`projection.rs:369-375`);
+`RtkProjector::MAX_STDERR_WARNING_BYTES = 512` (`rtk.rs:610`); and
+`HumanShellConfig` defaults 100 / 1,000,000 / 8,000,000 / 300s
+(`crates/codegg-config/src/schema.rs:2914-2955`). The prior "1 MB/cmd
+(head 256KB + tail 256KB)" wording was arithmetically wrong — head plus
+tail is 512 KiB, distinct from the 1 MB per-command eviction budget.
+
 ## Archived Phase Status
 
 | Phase | Status | Summary |
@@ -243,6 +263,6 @@ CODEGG_RTK_INTEGRATION=1 cargo test -p codegg --lib shell::rtk -- rtk_integratio
 | 5 | Landed | RTK discovery, eligibility, capabilities |
 | 6 | Landed | Real RTK invocation: `PostProcess`/`Wrapper` modes |
 | 7 | Landed | Expansion API, `/shell-expand`, TUI detail panel |
-| 8 | Landed | Redaction pipeline with six `RedactRule` implementations |
+| 8 | Landed | Redaction pipeline with seven `RedactRule` implementations |
 | 9 | Landed | `ProjectionId`, `ArtifactSpanRef`, `RedactionRecord`, promotion policy |
 | 10 | Landed | `ProjectionContextMetadata`, `ModelTier`, `ContextAwareBudget` |

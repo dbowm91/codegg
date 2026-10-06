@@ -173,23 +173,23 @@ before delegating to `ProjectCatalog::register_local_project`.
 | Type | File:line | Purpose |
 |------|-----------|---------|
 | `ProjectCatalog` | `project_catalog.rs:432` | Service struct |
-| `ProjectCatalogRecord` | `project_catalog.rs:291` | Extended project row |
-| `Locator` | `project_catalog.rs:67` | Typed reference enum (Local/Ssh/LinkedNode) |
-| `CatalogLocatorRecord` | `project_catalog.rs:89` | Stored locator row |
+| `ProjectCatalogRecord` | `project_catalog.rs:292` | Extended project row |
+| `Locator` | `project_catalog.rs:69` | Typed reference enum (Local/Ssh/LinkedNode) |
+| `CatalogLocatorRecord` | `project_catalog.rs:90` | Stored locator row |
 | `HealthStatus` | `project_catalog.rs:238` | Operator-set health enum |
 | `ProjectHealthRecord` | `project_catalog.rs:276` | Per-project health row |
-| `WorkspaceSummary` | `project_catalog.rs:317` | Compact workspace ref |
-| `LifecycleCounts` | `project_catalog.rs:329` | Active/archived/total |
-| `HydrationReport` | `project_catalog.rs:342` | Restart hydration output |
-| `LegacyAssociationReport` | `project_catalog.rs:355` | Legacy association output |
-| `RegisterLocalProject` | `project_catalog.rs:377` | Registration input |
+| `WorkspaceSummary` | `project_catalog.rs:318` | Compact workspace ref |
+| `LifecycleCounts` | `project_catalog.rs:330` | Active/archived/total |
+| `HydrationReport` | `project_catalog.rs:343` | Restart hydration output |
+| `LegacyAssociationReport` | `project_catalog.rs:356` | Legacy association output |
+| `RegisterLocalProject` | `project_catalog.rs:378` | Registration input |
 | `CatalogError` | `project_catalog.rs:406` | Error enum (Database/NotFound/InvalidValue/Conflict/AlreadyExists) |
 | `Scanner` | `project_discovery.rs:406` | Reusable bounded scanner |
-| `DiscoveryRoot` | `project_discovery.rs:99` | Explicit local root config |
-| `ScanLimits` | `project_discovery.rs:144` | Finite work limits |
-| `DiscoveryCandidate` | `project_discovery.rs:231` | One metadata-only candidate |
-| `ReconciliationOutcome` | `project_discovery.rs:348` | Pure reconciliation decision |
-| `DiscoveryCoordinator` | `project_discovery_service.rs:191` | Daemon coordinator |
+| `DiscoveryRoot` | `project_discovery.rs:100` | Explicit local root config |
+| `ScanLimits` | `project_discovery.rs:145` | Finite work limits |
+| `DiscoveryCandidate` | `project_discovery.rs:232` | One metadata-only candidate |
+| `ReconciliationOutcome` | `project_discovery.rs:350` | Pure reconciliation decision |
+| `DiscoveryCoordinator` | `project_discovery_service.rs:194` | Daemon coordinator |
 
 ## Configuration Surface
 
@@ -276,3 +276,25 @@ Idempotent re-runs accept `duplicate column name` errors for
 - `architecture/identity.md` — Typed identity foundation
 - `architecture/workspace.md` — Workspace registry
 - `architecture/storage.md` — SQLite storage layer
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/project_catalog.rs`,
+`crates/codegg-core/src/project_discovery.rs`,
+`crates/codegg-core/src/project_discovery_service.rs`, and
+`crates/codegg-core/src/session/schema.rs`. Corrected eleven stale
+`file.rs:line` refs in the Key Types table: `Locator` `:67` → `:69`,
+`CatalogLocatorRecord` `:89` → `:90`, `ProjectCatalogRecord` `:291` →
+`:292`, `WorkspaceSummary` `:317` → `:318`, `LifecycleCounts` `:329` →
+`:330`, `HydrationReport` `:342` → `:343`, `LegacyAssociationReport`
+`:355` → `:356`, `RegisterLocalProject` `:377` → `:378`,
+`DiscoveryRoot` `project_discovery.rs:99` → `:100`, `ScanLimits` `:144`
+→ `:145`, `DiscoveryCandidate` `:231` → `:232`,
+`ReconciliationOutcome` `:348` → `:350`, and `DiscoveryCoordinator`
+`project_discovery_service.rs:191` → `:194`. Verified accurate: the five
+`CatalogError` variants (Database/NotFound/InvalidValue/Conflict/
+AlreadyExists), the v28 tables (`project_locator`, `project_health`,
+`legacy_catalog_association_marker`), the v29 tables (`discovery_root`,
+`discovery_scan`, `discovery_observation`), the five added
+`logical_project` columns, and the `ProjectCatalog` / `HealthStatus` /
+`ProjectHealthRecord` / `Scanner` refs.

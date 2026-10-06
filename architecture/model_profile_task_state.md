@@ -131,18 +131,19 @@ The full adapter result, beyond just the profile:
 
 ### ResolvedModelProfile (`types.rs`)
 
-~18 fields controlling model behavior:
+20 fields controlling model behavior:
 
 | Field | Purpose |
 |-------|---------|
 | `model` | Model identifier string |
-| `prompt_profile` | `FrontierReasoning`, `FrontierExecutor`, `FastExecutor`, `LongContextPlanner`, `LocalStrict`, `Default` |
+| `prompt_profile` | One of the 9 `PromptProfileKind` variants (see below) |
 | `family` | Model family string (openai, anthropic, google, etc.) |
 | `context_window` | Max context tokens (32K–512K) |
 | `max_output_tokens` | Max output tokens (4K–16K) |
 | `tool_call_reliability` | `High` / `Medium` — affects retry behavior |
 | `instruction_adherence` | `High` / `Medium` — affects prompt complexity |
 | `patch_reliability` | `High` / `Medium` — affects patch auto-apply |
+| `orchestration_tier` | `SoloPreferred` / `DelegationCapable` / `ConvergenceCapable` — coarse capability policy for orchestration; defaults to `SoloPreferred` and unknown/absent values never imply automatic convergence |
 | `supports_late_system_messages` | Whether model handles system messages after user messages |
 | `prefers_user_control_messages` | Whether model works better with user-role control messages |
 | `prefers_small_patches` | Whether to break large edits into smaller patches |
@@ -157,14 +158,29 @@ The full adapter result, beyond just the profile:
 
 ### Prompt Profiles
 
-| Profile | Context Window | Output Tokens | Tool Reliability | Parallel Tools |
-|---------|---------------|---------------|------------------|----------------|
-| `FrontierReasoning` | 128K | 16K | High | 10 |
-| `FrontierExecutor` | 128K | 16K | High | 10 |
-| `LongContextPlanner` | 512K | 16K | High | 8 |
-| `FastExecutor` | 128K | 8K | Medium | 2 |
-| `LocalStrict` | 32K | 4K | Medium | 1 |
-| `Default` | 128K | 8K | Medium | 1 |
+`PromptProfileKind` (`crates/codegg-config/src/schema.rs:77`) has 9 variants:
+`FrontierReasoning`, `FrontierExecutor`, `FastExecutor`, `LocalStrict`,
+`ToolFragile`, `LongContextPlanner`, `Reviewer`, `Summarizer`, `Default`.
+Only six are referenced by the built-in adapter TOMLs
+(`frontier_reasoning`, `long_context_planner`, `local_strict`,
+`fast_executor`, `default`); `ToolFragile`, `Reviewer`, and `Summarizer` are
+config-selectable.
+
+Per-profile turn policy defaults live in `src/agent/policy.rs` and group
+profiles explicitly rather than per adapter:
+
+| Profile | `default_context_window` | `default_threshold` | `default_reserved` |
+|---------|-------------------------|--------------------|--------------------|
+| `FrontierReasoning` / `FrontierExecutor` | 128,000 | 0.85 | 12,000 |
+| `LongContextPlanner` | 512,000 | 0.70 | 16,000 |
+| `FastExecutor` / `ToolFragile` | 128,000 | 0.70 | 8,000 |
+| `LocalStrict` | 32,000 | 0.65 | 4,000 |
+| `Reviewer` | 128,000 | 0.80 | 10,000 |
+| `Summarizer` | 64,000 | 0.75 | 4,000 |
+| `Default` | 128,000 | 0.85 | 10,000 |
+
+Reliability tiers and `max_parallel_tools` are per-adapter TOML values
+(`[profile]` / `[tools]` sections), not per-profile defaults.
 
 ### Policy (`policy.rs`)
 
@@ -245,9 +261,9 @@ Controlled by `TaskStatePolicy.mode` (re-exported from
 | `ExplicitTodo` | Full bullet list with status | Yes | 10 |
 | `GuidedCurrentTask` | "Current task: X. Do this task only." | No | 4 |
 
-### TaskStatePolicy (`types.rs`)
+### TaskStatePolicy (`crates/codegg-core/src/model_profile/types.rs:40`)
 
-Controls injection frequency, permissions, and constraints:
+Controls injection frequency, permissions, and constraints (12 fields):
 
 ```rust
 pub struct TaskStatePolicy {
@@ -288,7 +304,10 @@ pub struct TaskStatePolicy {
   `max_total_items = 0`, `inject_after_tool_calls = None`
 - `GuidedCurrentTask` forces: `allow_model_todo_write = false`,
   `max_total_items = min(4, configured)`
-- `max_total_items` capped at 12
+- There is no global `max_total_items` cap in `TaskStatePolicy`: `apply_config`
+  takes the configured value verbatim. The `clamp(1, 12)` bound lives in the
+  WorkPlan projection (`crates/codegg-core/src/work_plan/todo_projection.rs:127`),
+  which truncates actionable items before writing them into TodoState.
 
 ### State Transitions
 
@@ -417,3 +436,26 @@ with a bounded reason instead of a provider-specific history model.
 - `architecture/native_crates.md` — library-first tool architecture
 - `architecture/work_plan.md` — durable plan foundation
 - `architecture/goal.md` — Goal-bound plan ownership
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `ResolvedModelProfile` "~18
+fields" → 20, with the missing `orchestration_tier` row added (drift claim
+confirmed); `prompt_profile` variant list and the Prompt Profiles table
+replaced — `PromptProfileKind` has 9 variants (`ToolFragile`, `Reviewer`,
+`Summarizer` were missing) and the old per-profile numeric table was not
+traceable to any single code table, so it now cites the verified
+`default_context_window`/`default_threshold`/`default_reserved` mappings in
+`src/agent/policy.rs`; the `max_total_items` "capped at 12" validation rule is
+not a `TaskStatePolicy` rule — the `clamp(1, 12)` is in the WorkPlan projection
+(`work_plan/todo_projection.rs:127`); `TaskStatePolicy` section now cites its
+real home (`model_profile/types.rs:40`, 12 fields). Verified accurate: 7
+adapter TOMLs and all 7 adapter IDs/priorities
+(`crates/codegg-core/assets/model-adapters/`), `build.rs` embedding
+(`BUILTIN_ADAPTER_SOURCES`, `crates/codegg-core/build.rs:156/171`),
+`ResolvedModelAdapter` 18 fields (`adapter.rs:187`), `TodoState` 4 fields,
+`TodoItem` 5 fields, `TodoStatus` 5 variants, `TodoPriority` 3 variants,
+4 `TodoMode` variants with the documented max-items table, `GuidedCurrentTask`
+`min(4)` narrowing (`model_profile/types.rs:177-179`),
+`OrchestrationTier` (`SoloPreferred`/`DelegationCapable`/`ConvergenceCapable`,
+default `SoloPreferred`), and `crates/codegg-core/src/work_plan/` existence.

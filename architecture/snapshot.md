@@ -24,10 +24,12 @@ unscoped global event stream.
 
 - **Core types & manager**: `crates/codegg-core/src/snapshot/mod.rs`
 - **Checkpoint types & manager**: `crates/codegg-core/src/snapshot/checkpoint.rs`
+- **Checked undo/reapply**: `crates/codegg-core/src/snapshot/checked_restore.rs`
 - **Affected-path extraction**: `crates/codegg-core/src/snapshot/affected_paths.rs`
 - **Diff computation**: `crates/codegg-core/src/snapshot/diff.rs`
 - **DB schema**: `crates/codegg-core/src/session/schema.rs`
-  (migration v13 for `snapshot`, v46 for `edit_checkpoint`)
+  (migration v13 for `snapshot`, v46 for `edit_checkpoint` and
+  `edit_restore_operation`)
 - **Python script snapshots**: `src/python_script/snapshot.rs`
   (separate, metadata-only)
 
@@ -96,7 +98,7 @@ rejects symlinks and canonicalizes paths.
 
 ## Key Types & APIs
 
-### SnapshotOptions (`crates/codegg-core/src/snapshot/mod.rs:9`)
+### SnapshotOptions (`crates/codegg-core/src/snapshot/mod.rs:13`)
 
 ```rust
 pub struct SnapshotOptions {
@@ -106,9 +108,10 @@ pub struct SnapshotOptions {
 }
 ```
 
+Defaults come from `impl Default for SnapshotOptions` (`mod.rs:19`).
 Zero values are clamped to 1 with a warning.
 
-### FileSnapshot (`:26`)
+### FileSnapshot (`:30`)
 
 ```rust
 pub struct FileSnapshot {
@@ -119,7 +122,7 @@ pub struct FileSnapshot {
 }
 ```
 
-### Snapshot (`:34`)
+### Snapshot (`:38`)
 
 ```rust
 pub struct Snapshot {
@@ -131,7 +134,7 @@ pub struct Snapshot {
 }
 ```
 
-### SnapshotView (`:43`)
+### SnapshotView (`:47`)
 
 ```rust
 pub struct SnapshotView {
@@ -147,17 +150,20 @@ pub struct SnapshotView {
 
 | Method | Line | Description |
 |--------|------|-------------|
-| `new(pool, root)` | :59 | Default options |
-| `new_with_options(pool, root, opts)` | :67 | Custom options |
-| `capture(session_id, label)` | :92 | Full project capture |
-| `capture_incremental(sid, label, changes)` | :129 | Incremental capture (legacy) |
-| `get(id)` | :194 | Fetch by ID |
-| `list_for_session(sid)` | :218 | List all for session |
-| `latest(sid)` | :241 | Latest for session |
-| `restore(snapshot)` | :280 | Restore to project root |
-| `restore_to_path(snapshot, target)` | :337 | Restore to custom path |
-| `delete_snapshot(id)` | :392 | Delete by ID |
-| `delete_all_for_session(sid)` | :401 | Delete all for session |
+| `new(pool, root)` | :62 | Default options |
+| `new_with_options(pool, root, opts)` | :70 | Custom options |
+| `capture(session_id, label)` | :95 | Full project capture |
+| `capture_incremental(sid, label, changes)` | :132 | Incremental capture (legacy) |
+| `get(id)` | :197 | Fetch by ID |
+| `list_for_session(sid)` | :221 | List all for session |
+| `latest(sid)` | :244 | Latest for session |
+| `restore(snapshot)` | :283 | Restore to project root |
+| `restore_to_path(snapshot, target)` | :323 | Restore to custom path |
+| `delete_snapshot(id)` | :363 | Delete by ID |
+| `delete_all_for_session(sid)` | :372 | Delete all for session |
+
+See `mod.rs` for the full listing; these are all public `SnapshotManager`
+methods today.
 
 ### EditCheckpoint (`checkpoint.rs`)
 
@@ -196,6 +202,13 @@ limits are enforced.
 | `persist_checkpoint(cp)` | Validate and insert `edit_checkpoint` row (rejects unsafe/oversized, enforces total bytes) |
 | `get(id)` / `list_for_session` / `list_for_workspace` / `latest_for_session` | Durable retrieval; survives daemon restart |
 
+See `checkpoint.rs` for the full listing. The manager also exposes
+`project_root`/`pool` accessors, `capture_file_states_sync`, the summary
+queries (`summaries_for_session`, `latest_for_workspace`), and the M012
+checked-restore family (`checked_restore`, `checked_undo`,
+`checked_reapply`, `undo_latest_for_session`,
+`latest_successful_undo_for_session`) at `checkpoint.rs:653-808`.
+
 ### Affected-Path Extraction (`affected_paths.rs`)
 
 Centralized derivation of the complete affected path set from accepted
@@ -211,11 +224,13 @@ structured tool arguments:
 - `apply_patch move`: both source and destination (including destination pre-state)
 
 `extract_affected_paths(tool, input)` returns the raw paths for a
-single tool call; `extract_batch_affected_paths` aggregates a batch;
-`normalize_and_dedup` enforces safe relative containment, deduplicates,
-and rejects `..`/absolute escapes. Malformed move/create/delete
-arguments return `AffectedPathError` and mark the batch non-restorable
-rather than producing an incomplete checkpoint.
+single tool call; `extract_batch_affected_paths` (and
+`extract_batch_affected_paths_with_read_only`, `affected_paths.rs:147`)
+aggregates a batch; `normalize_and_dedup` (`:183`) enforces safe relative
+containment, deduplicates, and rejects `..`/absolute escapes. Overlap is
+detected by `has_overlapping_paths` (`:267`) and `batches_overlap` (`:272`).
+Malformed move/create/delete arguments return `AffectedPathError` and mark
+the batch non-restorable rather than producing an incomplete checkpoint.
 
 `is_restorable_tool(name)` is the central eligibility predicate;
 checkpoint eligibility derives from it so new native mutators cannot
@@ -232,7 +247,7 @@ pub enum DiffKind { Context, Added, Removed }
 
 Functions:
 - `diff_files(old, new, path)` (:29) — structured diff
-- `format_unified_diff(old, new, old_path, new_path)` (:130) — unified format
+- `format_unified_diff(old, new, old_path, new_path)` (:128) — unified format
 
 Uses the `similar` crate for text diffing.
 
@@ -263,9 +278,11 @@ CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_workspace ON edit_checkpoint(work
 CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_session ON edit_checkpoint(session_id, created_at DESC);
 ```
 
-Defined in migrations v13 and v46 (`session/schema.rs`). Both tables
-coexist; `edit_checkpoint` reuses the same file-state serialization
-and size limits as `snapshot` but adds explicit
+Defined in migrations v13 and v46 (`session/schema.rs`). `snapshot` is created
+in `migrate_v13` (`schema.rs:831`); v46 (`schema.rs:2796`) creates
+`edit_restore_operation` and `edit_checkpoint`. Both tables coexist;
+`edit_checkpoint` reuses the same file-state serialization and size limits as
+`snapshot` but adds explicit
 `workspace_id`/`turn_id`/`batch_seq` provenance. Legacy `snapshot`
 records remain readable after the v46 migration.
 
@@ -273,9 +290,9 @@ records remain readable after the v46 migration.
 
 ### Path Traversal Prevention
 
-- `is_safe_relative_path()` rejects `..`, root dir, Windows
+- `is_safe_relative_path()` (`mod.rs:541`) rejects `..`, root dir, Windows
   prefixes, and empty paths.
-- `ensure_contained_parent()` validates parent directories
+- `ensure_contained_parent()` (`mod.rs:561`) validates parent directories
   after `mkdir` but before writing, rejecting symlinks and checking
   canonical containment. This shrinks the TOCTOU window.
 - `capture_incremental()` and `capture_states()` reject absolute paths
@@ -437,3 +454,37 @@ per-workspace lock. TUI slash commands `/edit-undo`, `/edit-reapply`,
 
 - [agent.md](agent.md) — integration with agent loop and ToolBatchExecutor
 - [tool.md](tool.md) — file-modifying tools and mutation surface
+
+## Source verification
+
+Verified 2026-10-06 against all 5 files in
+`crates/codegg-core/src/snapshot/` (`mod.rs`, `checkpoint.rs`,
+`checked_restore.rs`, `affected_paths.rs`, `diff.rs`) and
+`crates/codegg-core/src/session/schema.rs`. Corrected 15 stale refs, in two
+directions: `SnapshotOptions` `:9` → `:13`, `FileSnapshot` `:26` → `:30`,
+`Snapshot` `:34` → `:38`, `SnapshotView` `:43` → `:47`; the whole
+`SnapshotManager` method table shifted (`new` `:59` → `:62`,
+`new_with_options` `:67` → `:70`, `capture` `:92` → `:95`,
+`capture_incremental` `:129` → `:132`, `get` `:194` → `:197`,
+`list_for_session` `:218` → `:221`, `latest` `:241` → `:244`,
+`restore` `:280` → `:283`) and three of them were stale in the *other*
+direction — `restore_to_path` `:337` → `:323`, `delete_snapshot`
+`:392` → `:363`, `delete_all_for_session` `:401` → `:372`;
+`format_unified_diff` `diff.rs:130` → `:128`.
+Added the previously undocumented `checked_restore.rs` module to "Where It
+Lives", full-listing notes plus the missing `EditCheckpointManager` members
+(`capture_file_states_sync`, `summaries_for_session`,
+`latest_for_workspace`, `project_root`/`pool`, and the M012
+`checked_restore`/`checked_undo`/`checked_reapply`/`undo_latest_for_session`/
+`latest_successful_undo_for_session` family at `checkpoint.rs:653-808`), the
+missing affected-path helpers (`extract_batch_affected_paths_with_read_only`
+`:147`, `has_overlapping_paths` `:267`, `batches_overlap` `:272`), and
+source refs for `Default for SnapshotOptions` (`:19`),
+`is_safe_relative_path` (`:541`), `ensure_contained_parent` (`:561`), and
+the v13/v46 migration functions (`schema.rs:831`, `:2796` — v46 creates both
+`edit_restore_operation` and `edit_checkpoint`).
+Confirmed correct as written: `SnapshotManager` (`:55`), `diff_files`
+(`diff.rs:29`), the exact field lists for `SnapshotOptions` (3),
+`FileSnapshot` (4), `Snapshot` (5), `SnapshotView` (5), `FileState`,
+`EditFileState` (4), `EditCheckpoint` (8), and the four `diff.rs` types, plus
+the documented SQL DDL for both tables and all three indexes.

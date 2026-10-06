@@ -11,10 +11,10 @@ through the daemon's `NotificationRouter` / `AudioArbiter`.
 ## Where It Lives
 
 - `src/tts/mod.rs` — engine implementation
-- `src/tui/app/state/ui.rs:82, 84, 93` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
-- `src/tui/app/mod.rs:7583-7640` — TUI integration (`toggle_tts`, `stop_tts`, daemon routing)
-- `src/tui/runtime/app_events.rs:313-325` — auto-stop on agent finished
-- `src/tui/command.rs:176-178` — `/tts` slash command registration
+- `src/tui/app/state/ui.rs:88, 90, 99` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
+- `src/tui/app/mod.rs:8043, 8100` — TUI integration (`toggle_tts`, `stop_tts`); daemon routing flag set at `:861`
+- `src/tui/runtime/app_events.rs:333-345` — auto-stop on agent finished
+- `src/tui/command.rs:573` — `/tts` slash command registration
 
 ## How It Works
 
@@ -27,7 +27,7 @@ for completion. `stop()` uses `pkill say` to terminate the child process.
 ### Remote-Core Mode
 
 When `AppMode::RemoteCore` is active, `tts_via_daemon` is set to `true`
-(`src/tui/app/mod.rs:801`). Toggle and stop operations route through
+(`src/tui/app/mod.rs:861`). Toggle and stop operations route through
 `CoreClient` using `CoreRequest::NotificationSpeak` instead of local
 `say` invocation. The daemon's `AudioArbiter` handles playback.
 
@@ -35,11 +35,11 @@ When `AppMode::RemoteCore` is active, `tts_via_daemon` is set to `true`
 
 On `AgentFinished`, the TUI checks if TTS is speaking and (in embedded
 mode only) calls `tts.stop()` to prevent leftover speech
-(`src/tui/runtime/app_events.rs:313-325`).
+(`src/tui/runtime/app_events.rs:333-345`).
 
 ## Key Types & APIs
 
-### Tts (`src/tts/mod.rs:22`)
+### Tts (`src/tts/mod.rs:26`)
 
 ```rust
 pub struct Tts {
@@ -59,7 +59,7 @@ Methods:
 
 `Clone` is implemented: clones the atomic flag value (not the process).
 
-### TtsEngine Trait (`src/tts/mod.rs:16`)
+### TtsEngine Trait (`src/tts/mod.rs:20`)
 
 ```rust
 #[async_trait]
@@ -72,7 +72,7 @@ pub trait TtsEngine: Send + Sync {
 
 `Tts` implements `TtsEngine` (delegates to inherent methods).
 
-### TtsProvider (`src/tts/mod.rs:9`)
+### TtsProvider (`src/tts/mod.rs:10`)
 
 ```rust
 pub enum TtsProvider { None }
@@ -96,12 +96,12 @@ configuration options. State is managed in-memory:
   spawned by CodeGG.
 - **Speaking flag reset on spawn failure**: if `tokio::process::Command`
   fails to spawn, the flag is cleared in the error path
-  (`src/tts/mod.rs:73-78`).
+  (`src/tts/mod.rs:69-72`).
 - **No daemon TTS when embedded**: `tts_via_daemon` is `false` in embedded
   mode; the TUI always speaks locally.
 - **Auto-stop skips remote mode**: the `AgentFinished` handler only calls
   local `tts.stop()` when NOT in `RemoteCore` mode
-  (`src/tui/runtime/app_events.rs:316-318`).
+  (`src/tui/runtime/app_events.rs:335-339`).
 
 ## Keybindings
 
@@ -116,3 +116,18 @@ Slash command: `/tts` (alias `/voice`).
 
 - [tui.md](tui.md) — TUI integration details
 - [server.md](server.md) — daemon `NotificationRouter` for remote TTS
+
+## Source verification
+
+Verified 2026-10-06 against `src/tts/mod.rs` (single 125-line module):
+`TtsProvider` (`:10`, only variant `None`), `TtsEngine` (`:20`),
+`Tts` (`:26`) with `speaking: AtomicBool` and no `Mutex`, the spawn-error
+flag reset (`:69-72`), `pkill say` in `stop()` (`:85-94`), and the
+`UiState` fields (`src/tui/app/state/ui.rs:88, 90, 99`), `toggle_tts`/
+`stop_tts` (`src/tui/app/mod.rs:8043, 8100`), the `tts_via_daemon = true`
+assignment (`src/tui/app/mod.rs:861`), the `AgentFinished` auto-stop with
+its embedded-mode-only guard (`src/tui/runtime/app_events.rs:333-345`),
+`/tts` registration (`src/tui/command.rs:573`), and the default bindings
+`Ctrl+y` → `ToggleTts` / `Ctrl+Shift+Y` → `StopTts`
+(`src/tui/input.rs:552-562`). The `pkill say` caveat is retained: it
+terminates every `say` process on the host, not just CodeGG's child.

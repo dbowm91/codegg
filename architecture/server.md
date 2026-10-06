@@ -16,6 +16,8 @@ under `server`.
 | `src/server/state.rs` | `ServerState`, `WsRateLimiter` |
 | `src/server/rpc.rs` | JSON-RPC 2.0 request/response types |
 | `src/server/scope.rs` | Scope resolution for project context |
+| `src/server/authz.rs` | HTTP authorization convergence onto the canonical service |
+| `src/server/perm_ids.rs` | Bounded pending permission/question ID access |
 | `src/server/mdns.rs` | mDNS service discovery |
 | `src/server/middleware/auth.rs` | Token auth middleware |
 | `src/server/routes/` | REST route handlers (13 modules) |
@@ -179,8 +181,11 @@ with `#[serde(tag = "type")]` JSON serialization.
 `RenderFrame` is unsupported — returns `Error` with code
 `unsupported_render_frame`.
 
-**Inbound size limits**: 4 MiB message, 4 MiB frame (`ws.rs:36-37`).
-**Outbound queue**: 256-entry bounded channel (`WS_OUTBOUND_QUEUE_CAPACITY`).
+**Inbound size limits**: 4 MiB message, 4 MiB frame
+(`WS_MAX_MESSAGE_SIZE` / `WS_MAX_FRAME_SIZE`, `ws.rs:35-36`).
+**Outbound queue**: 256-entry bounded channel
+(`WS_OUTBOUND_QUEUE_CAPACITY`, `ws.rs:28`; the inbound request queue is a
+separate 32 entries at `ws.rs:29`).
 
 #### `/ws` — Deprecated JSON-RPC
 
@@ -221,7 +226,10 @@ retention floor, forwarder task, and cancellation token.
 - **Critical writer path**: One-shot receipt + 500ms timeout per
   projection snapshot/replay/resync/ack/unsubscribe.
 - **Caps**: 32 projection subscriptions, 8 artifact reads, 32
-  diagnostics per connection.
+  diagnostics per connection
+  (`MAX_CONNECTION_PROJECTION_SUBSCRIPTIONS` /
+  `MAX_CONNECTION_ARTIFACT_READS` / `MAX_CONNECTION_DIAGNOSTICS`,
+  `src/core/transport/projection.rs:22-24`).
 
 ### ServerState
 
@@ -429,3 +437,21 @@ python3 scripts/check_projection_transport_lifecycle.py
 - [work_orders.md](work_orders.md) — external task-trigger lifecycle (M005)
 - [authorization.md](authorization.md) — trigger management capability mapping
 - `architecture/server.md` — implementation guide
+
+## Source verification
+
+Verified 2026-10-06 against `src/server/` and
+`crates/codegg-protocol/src/frames.rs`. Corrected the inbound WebSocket
+size-limit ref `ws.rs:36-37` → `:35-36` (the two constants are at `:35`
+and `:36`), and anchored the outbound/inbound queue caps to
+`WS_OUTBOUND_QUEUE_CAPACITY` (`ws.rs:28`, 256) and the previously
+unlisted `TUI_REQUEST_QUEUE_CAPACITY` (`ws.rs:29`, 32). Added the two
+undocumented server modules `src/server/authz.rs` and
+`src/server/perm_ids.rs` to the Where It Lives table, and anchored the
+per-connection projection transport caps to their real declarations in
+`src/core/transport/projection.rs:22-24`. Verified accurate: 13
+`src/server/routes/` modules, `run_server` at `http.rs:182`,
+`ServerState` at `state.rs:106` with its 9 listed fields, both rate
+limiters at 100 req/60s with a 10,000-key cap
+(`MAX_RATE_LIMITER_KEYS` / `MAX_WS_RATE_LIMITER_KEYS`), the CORS default
+origins, and the `ServerRuntimeError` variants/status mapping.

@@ -208,7 +208,7 @@ pub enum GoalRuntimeOutcome {
 }
 ```
 
-### ContinuationDecision (`runtime.rs:146`)
+### ContinuationDecision (`runtime.rs:147`)
 
 ```rust
 pub struct ContinuationDecision {
@@ -262,7 +262,7 @@ may update one actionable item's `next_action` through CAS
 otherwise it returns bounded feedback without mutating the plan. See
 `architecture/work_plan.md`.
 
-### GoalStore (`crates/codegg-core/src/goal/store.rs:56`)
+### GoalStore (`crates/codegg-core/src/goal/store.rs:57`)
 
 SQLite-backed. Key methods:
 
@@ -272,15 +272,17 @@ SQLite-backed. Key methods:
 | `active_for_session(session_id)` | :212 | Fetch active/awaiting/budget-limited goal |
 | `get(id)` | :225 | Fetch by ID |
 | `update_status(id, status)` | :234 | Transition non-certification status |
-| `complete_if_active(id, revision)` | — | Atomic host-accepted terminal transition |
-| `clear_active_for_session(sid)` | :261 | Cancel all active goals for session |
+| `complete_if_active(id, revision)` | :263 | Atomic host-accepted terminal transition |
+| `update_status_if_revision(...)` | :289 | Revision-CAS status transition (`AwaitingUser` escalation) |
+| `clear_active_for_session(sid)` | :316 | Cancel all active goals for session |
 | `update_progress(id, update)` | :333 | Advance phase/next-action/open_questions |
+| `update_progress_if_revision(...)` | :345 | Revision-CAS progress advance |
 | `increment_usage(...)` | :451 | Atomic usage advance + budget check |
 | `enforce_budget(id)` | :514 | Check budget without advancing |
 | `set_budget(id, budget)` | :530 | Replace budget, revive if BudgetLimited |
 | `latest_paused_for_session(sid)` | :560 | Fetch latest paused goal |
 
-### GoalUsageUpdate (`store.rs:11`)
+### GoalUsageUpdate (`store.rs:12`)
 
 Returned by `increment_usage()`:
 
@@ -297,9 +299,9 @@ pub struct GoalUsageUpdate {
 
 | Tool | Struct | Description |
 |------|--------|-------------|
-| `goal_get` | `GoalGetTool` (:9) | Get current active goal |
-| `goal_update_progress` | `GoalUpdateProgressTool` (:72) | Update progress |
-| `goal_request_completion` | `GoalRequestCompletionTool` (:188) | Request completion with evidence |
+| `goal_get` | `GoalGetTool` (:10) | Get current active goal |
+| `goal_update_progress` | `GoalUpdateProgressTool` (:80) | Update progress |
+| `goal_request_completion` | `GoalRequestCompletionTool` (:204) | Request completion with evidence |
 
 **Note**: There is no `goal_set` tool. Goals are created via TUI
 `/goal set` commands which call `GoalStore::create_active()` directly.
@@ -418,3 +420,31 @@ cargo test -p codegg-core -- goal
 
 - [agent.md](agent.md) — AgentLoop integration
 - `src/tool/goal.rs` — model-facing tool implementations
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/goal/` (8 files:
+`mod.rs`, `model.rs`, `store.rs`, `runtime.rs`, `progress.rs`, `render.rs`,
+`checkpoint.rs`, `verification.rs`) and `src/tool/goal.rs`. Corrected 8 stale
+refs: `GoalStore` `:56` → `:57`, `GoalUsageUpdate` `:11` → `:12`,
+`ContinuationDecision` `runtime.rs:146` → `:147`, `clear_active_for_session`
+`:261` → `:316`, and the three `src/tool/goal.rs` struct refs
+(`GoalGetTool` `:9` → `:10`, `GoalUpdateProgressTool` `:72` → `:80`,
+`GoalRequestCompletionTool` `:188` → `:204`). Filled the previously line-less
+`complete_if_active` with `:263` and added the two undocumented
+revision-CAS methods `update_status_if_revision` (`:289`) and
+`update_progress_if_revision` (`:345`).
+Confirmed correct as written: the 20-field `Goal` struct list (exact match
+against `model.rs:52`), `GoalStatus` (`:8`, 7 variants), `is_terminal`
+(`:115`, includes `BudgetLimited`), `is_active` (`:126`), `GoalBudget`
+(`:19`, 4 axes), `GoalUsage` (`:35`, 5 fields), `GoalProgressUpdate` (`:82`),
+`CompletionRequest` (`:92`), `GoalRuntimeOutcome` (`runtime.rs:55`, 3
+variants), `create_checkpoint_file` (`checkpoint.rs:9`), all three
+`render.rs` helpers, `MAX_CONSECUTIVE_NOPROGRESS_BEFORE_AWAITING_USER = 3`
+(`progress.rs:45`), `MAX_CONTINUATIONS = 32`
+(`src/agent/turn_completion.rs:183`), and the schema claim (goal table in
+`migrate_v16` at `schema.rs:894`; `goal.revision` in `migrate_v45` at
+`schema.rs:2184`).
+Refuted the prior review's "8 of 12 `GoalStore` line refs are stale by 3-90
+lines" claim: 10 of the 12 were accurate, and the single stale one
+(`clear_active_for_session`) was off by 55 lines, not up to 90.

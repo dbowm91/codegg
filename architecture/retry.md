@@ -109,3 +109,29 @@ M001+M002 contract holds under injected faults.
 No semantic rollback of arbitrary shell, no distributed transactions, no
 invented API idempotency, no scheduler-attempt ownership change, no
 approval/sandbox or provider-failover change.
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-providers/src/retry.rs`,
+`src/tool/{retry,broker,contract}.rs`, `src/scheduler/submission.rs`,
+`src/agent/{provider_turn,loop,follow_up}.rs`, and
+`tests/reliability_qualification_m008.rs`. No corrections were required —
+every enum listing, constant, and function path in this doc matches source.
+Confirmed explicitly: `MAX_CHAIN_ATTEMPTS = 8` (`retry.rs:17`),
+`MAX_CHAIN_DURATION = 300s` (`:20`), `MAX_UNCERTAIN_DETAIL_CHARS = 500`
+(`:24`), `RetryContext`'s 5 fields (`:55`; this doc lists 4 and omits the
+internal `created_at`), `single_attempt()`/`for_provider_turn()` = 3/120s/
+`for_operation()` = 6/180s (`:81,:87,:93`), the exact `AckState` (4),
+`UnifiedRetryDisposition` (5), `UncertainSideEffect` (5 fields), and
+`ReconciliationOutcome` (3) variant listings, `derive_child` (`:143`),
+`consume_one` (`:132`), `RetryContextDto` (`:190`); `decide_tool_retry`
+(`src/tool/retry.rs:61`), `ack_for_dispatch_phase` (`:38`),
+`reconcile_git_operation` (`:259`), `reconcile_idempotent_api` (`:303`),
+`validate_retry_contract` (`:342`); `ToolBroker::execute` (`broker.rs:693`)
+and `execute_with_retry` (`:715`); `ProgrammaticOutcome::UncertainSideEffect`
+(`broker.rs:435`, mapped from `ToolTerminalStatus::UncertainSideEffect`);
+`receive`/`receive_with_retry_context` (`provider_turn.rs:48,55`);
+`JobSubmissionService::submit` (`submission.rs:155`) and
+`reconcile_by_key` (`:342`); the one `for_operation()` chain per turn
+(`loop.rs:1325`, `follow_up.rs:108`); and
+`tests/reliability_qualification_m008.rs`.

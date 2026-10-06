@@ -46,7 +46,7 @@ locking for cross-process safety. Auto-save is enabled by default.
 
 Project namespaces use domain-separated full SHA-256 digest (not
 truncated). The domain separator is
-`b"codegg-memory-namespace-v1\0"` (`:15`). Legacy MD5-derived
+`b"codegg-memory-namespace-v1\0"` (`:17`). Legacy MD5-derived
 namespaces are migrated idempotently via
 `migrate_project_namespace()`.
 
@@ -69,7 +69,7 @@ at session start.
 
 ## Key Types & APIs
 
-### Memory (`crates/codegg-core/src/memory/mod.rs:34`)
+### Memory (`crates/codegg-core/src/memory/mod.rs:49`)
 
 ```rust
 pub struct Memory {
@@ -86,7 +86,7 @@ pub struct Memory {
 }
 ```
 
-### MemoryStore (`:72`)
+### MemoryStore (`:84`)
 
 ```rust
 pub struct MemoryStore {
@@ -100,17 +100,24 @@ Key methods:
 
 | Method | Line | Description |
 |--------|------|-------------|
-| `new()` | :101 | Create with auto_save=true |
-| `with_auto_save(bool)` | :105 | Create with configurable auto_save |
-| `add(Memory)` | :182 | Insert, auto-saves if enabled |
-| `get(id)` | :198 | Retrieve by ID, increments access_count |
-| `list(namespace)` | :208 | List all memories in a namespace |
-| `search(query)` | :261 | Case-insensitive content search |
-| `delete(id)` | :271 | Remove by ID, auto-saves if enabled |
-| `save()` | :388 | Persist to disk with flock |
-| `migrate_project_namespace(identity)` | :222 | Migrate legacy MD5 namespace |
-| `consolidate_session(messages, identity)` | :281 | Extract patterns from session |
-| `get_memory_summary(ns, max)` | :357 | Markdown summary for prompt injection |
+| `new()` | :157 | Create with auto_save=true |
+| `with_auto_save(bool)` | :161 | Create with configurable auto_save |
+| `set_auto_save(bool)` | :182 | Toggle auto_save at runtime |
+| `add(Memory)` | :238 | Insert, auto-saves if enabled |
+| `get(id)` | :254 | Retrieve by ID, increments access_count |
+| `list(namespace)` | :264 | List all memories in a namespace |
+| `search(query)` | :317 | Case-insensitive content search |
+| `search_scoped(...)` | :329 | Host-scope-limited search (`MemoryReadScope`) |
+| `get_scoped(...)` | :373 | Host-scope-limited fetch by ID |
+| `delete(id)` | :394 | Remove by ID, auto-saves if enabled |
+| `save()` | :511 | Persist to disk with flock |
+| `migrate_project_namespace(identity)` | :278 | Migrate legacy MD5 namespace |
+| `consolidate_session(messages, identity)` | :404 | Extract patterns from session |
+| `get_memory_summary(ns, max)` | :480 | Markdown summary for prompt injection |
+
+`MemoryReadScope` (`:101`) and `MemoryScopeKind` (`:94`) are the host-derived
+namespace scope the model may select from; the model can never supply a
+namespace or path itself.
 
 ### PatternDetector (`patterns.rs:76`)
 
@@ -143,7 +150,7 @@ to convert to a `Memory`.
 | Architecture (barrel file, etc.) | 4–6 |
 | Tool preference (mock, linter) | 4–5 |
 
-Final score = average base + (frequency - 1) * 2.0.
+Final score = base score + (frequency - 1) * 2.0.
 Only memories with score >= 8.0 are stored.
 
 **Negation scoring**: The negation_modifier (-3.0) is **added** to the
@@ -299,3 +306,33 @@ cargo test -p codegg-core -- memory
 
 - [agent.md](agent.md) — memory injection into system prompt
 - [config.md](config.md) — experimental config options
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/memory/{mod,patterns,habit}.rs`,
+`src/skills/promotion.rs`, `src/skills/parser.rs`, and `src/tool/skill_proposal.rs`.
+Corrected 14 stale `memory/mod.rs` refs: `Memory` `:34` → `:49`, `MemoryStore`
+`:72` → `:84`, namespace domain separator `:15` → `:17`, and the full
+method table (`new` `:101` → `:157`, `with_auto_save` `:105` → `:161`,
+`add` `:182` → `:238`, `get` `:198` → `:254`, `list` `:208` → `:264`,
+`search` `:261` → `:317`, `delete` `:271` → `:394`, `save` `:388` → `:511`,
+`migrate_project_namespace` `:222` → `:278`, `consolidate_session`
+`:281` → `:404`, `get_memory_summary` `:357` → `:480`). Added the
+undocumented `set_auto_save` (`:182`), `search_scoped` (`:329`), and
+`get_scoped` (`:373`) methods, plus the `MemoryReadScope` (`:101`) /
+`MemoryScopeKind` (`:94`) host-derived scope types. Fixed the scoring
+formula wording from "average base" to "base score" — `patterns.rs:278`
+computes `final_score = base_score + frequency_bonus`.
+Confirmed correct as written: `PatternDetector` (`patterns.rs:76`) and
+`ScoredMemory` (`:306`), the 6-variant `PatternType` list (`:54`), the
+10-field `Memory` struct list, the 8-pattern base-score table
+(`patterns.rs:96-137`, negation_modifier `-3.0`), `score / 20.0` importance
+clamp (`:328`), the `.take(20)` + `score < 8.0` filters
+(`mod.rs:440,441`), `is_safe_namespace` (`mod.rs:134`), `Memory::new`
+importance default `0.5`, and the habit bounds
+(`MAX_WORKFLOW_ACTIONS = 32`, `MAX_CANDIDATES = 128`,
+`MAX_RETAINED_SESSIONS = 64`, `DEFAULT_READY_OCCURRENCES = 3`,
+`MIN_READY_SESSIONS = 2`). M002/M003 milestones confirmed real:
+`validate_portable_document` (`src/skills/parser.rs:171`), `PublishedSkillRef`
+(`src/skills/promotion.rs:141`), `REQUEST_TTL_MS = 15 * 60 * 1000`
+(`promotion.rs:26`), and `src/tool/skill_proposal.rs`.

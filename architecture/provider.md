@@ -46,10 +46,10 @@ in `src/lib.rs`.
 
 Two entry points exist:
 
-**`register_builtin(registry)`** (`provider_core.rs:443`) — registers 15
+**`register_builtin(registry)`** (`provider_core.rs:498`) — registers 15
 providers, each gated on its environment variable. No config dependency.
 
-**`register_builtin_with_config(registry, config)`** (`provider_core.rs:844`)
+**`register_builtin_with_config(registry, config)`** (`provider_core.rs:890`)
 — the primary production path. Registers 17 providers by checking config
 first, then falling back to env vars per-provider. Uses three helper
 functions with a single credential resolution path, each wired to an
@@ -91,7 +91,7 @@ matching providers are skipped.
 ### Credential Resolution
 
 `resolve_provider_credential(provider_id, cfg, env_var, store)`
-(`provider_core.rs:579`) is the single resolution path. It builds a
+(`provider_core.rs:625`) is the single resolution path. It builds a
 `ResolverContext` with `capability = credential_capability_for(provider_id)`
 and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 `ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
@@ -204,7 +204,7 @@ the provider-connection selection subsystem.
 
 ## Key Types & APIs
 
-### Provider Trait (`provider_core.rs:51`)
+### Provider Trait (`provider_core.rs:89`, `#[async_trait]` at `:84`)
 
 ```rust
 #[async_trait]
@@ -220,14 +220,39 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-### ProviderCapabilities (`provider_core.rs:96`)
+### ProviderCapabilities (`provider_core.rs:133`)
 
 Per-provider capability flags for tool deferral, request limits, and hosted
-programmatic tool calling. `for_provider(id)` returns capabilities for
-anthropic (defer loading, tool references) and openai (full Responses API,
-hosted programs, nested calls). Others default to no special capabilities.
+programmatic tool calling. Full field set (14 fields):
 
-### ChatRequest (`provider_core.rs:183`)
+```rust
+pub struct ProviderCapabilities {
+    pub supports_defer_loading: bool,
+    pub supports_tool_references: bool,
+    pub max_tools_per_request: Option<usize>,
+    pub supports_responses_api: bool,
+    pub supports_hosted_programs: bool,
+    pub supports_client_owned_nested_calls: bool,
+    pub supports_hosted_continuation: bool,
+    pub hosted_languages: Vec<String>,
+    pub max_response_items: Option<usize>,
+    pub max_nested_calls: Option<usize>,
+    pub requires_fingerprint: bool,
+    pub supports_output_schema: bool,
+    pub max_result_size: Option<usize>,
+    pub max_tool_calls_per_program: Option<usize>,
+}
+```
+
+Helper predicates: `can_host_programs()` (responses API **and** hosted
+programs) and `full_hosted_support()` (adds client-owned nested calls and
+continuation).
+
+`for_provider(id)` returns capabilities for anthropic (defer loading, tool
+references) and openai (full Responses API, hosted programs, nested calls).
+Others default to no special capabilities.
+
+### ChatRequest (`provider_core.rs:238`)
 
 ```rust
 pub struct ChatRequest {
@@ -251,8 +276,15 @@ runtime's canonical session identity:
 ```rust
 pub struct ProviderRequestContext {
     pub session_id: Option<Arc<str>>,
+    pub wire_policy: Option<Arc<ProviderWirePolicy>>,
 }
 ```
+
+`ProviderWirePolicy` (`provider_core.rs:223`) is the immutable model-adapter
+projection carried alongside the session identity: `tool_aliases`,
+`argument_aliases`, `allow_private_reasoning_round_trip`,
+`include_reasoning_content`, `enable_thinking`, `tool_choice`, and
+`max_parallel_tools`.
 
 It is not model input and is never serialized into the request body. The turn
 runtime validates and attaches the existing CodeGG session identity; retries,
@@ -266,22 +298,22 @@ run-scoped value, and standalone operations create one invocation-scoped
 value at their boundary. Providers consume this context but never generate
 or persist it.
 
-### Message (`provider_core.rs:199`)
+### Message (`provider_core.rs:254`)
 
 Tagged enum (`#[serde(tag = "role")]`): `System`, `User` (Vec<ContentPart>),
 `Assistant` (Vec<ContentPart> + tool_calls), `Tool` (tool_call_id + content).
 
-### ContentPart (`provider_core.rs:262`)
+### ContentPart (`provider_core.rs:319`)
 
 Untagged enum: `Text { text }`, `Image { image_url }`, `Reasoning { text, visibility }`.
 `Reasoning` is `#[serde(skip)]` — never serialized on the wire. Max 256KB.
 
-### ChatEvent (`provider_core.rs:311`)
+### ChatEvent (`provider_core.rs:366`)
 
 Streaming response events: `TextDelta`, `ReasoningDelta`, `ToolCall`,
 `ToolResult`, `Finish { stop_reason, usage }`, `Error`.
 
-### ToolDefinition (`provider_core.rs:353`)
+### ToolDefinition (`provider_core.rs:408`)
 
 ```rust
 pub struct ToolDefinition {
@@ -295,7 +327,7 @@ pub struct ToolDefinition {
 Methods: `to_openai()`, `to_anthropic()` — convert to provider-specific
 wire format. Both handle `defer_loading`.
 
-### ModelInfo (`provider_core.rs:401`)
+### ModelInfo (`provider_core.rs:456`)
 
 ```rust
 pub struct ModelInfo {
@@ -310,7 +342,7 @@ pub struct ModelInfo {
 }
 ```
 
-### ProviderRegistry (`provider_core.rs:412`)
+### ProviderRegistry (`provider_core.rs:467`)
 
 ```rust
 pub struct ProviderRegistry {
@@ -319,13 +351,20 @@ pub struct ProviderRegistry {
 // new(), register(), get(), list()
 ```
 
-### ProviderCapabilities::for_provider (`provider_core.rs:131`)
+### ProviderCapabilities::for_provider (`provider_core.rs:168`)
 
-Returns provider-specific capabilities. Anthropic: defer loading +
-tool references. OpenAI: full Responses API + hosted programs +
-nested calls + 128 tools/request + python hosted language.
+Returns provider-specific capabilities. Anthropic: `supports_defer_loading`,
+`supports_tool_references`, `max_tools_per_request: None`. OpenAI: defer
+loading + tool references, `max_tools_per_request: Some(128)`,
+`supports_responses_api`, `supports_hosted_programs`,
+`supports_client_owned_nested_calls`, `supports_hosted_continuation`,
+`hosted_languages: ["python"]`, `max_response_items: Some(100)`,
+`max_nested_calls: Some(50)`, `requires_fingerprint: false`,
+`supports_output_schema: true`, `max_result_size: Some(1024 * 1024)` (1 MB),
+`max_tool_calls_per_program: Some(50)`. Any other id returns
+`Self::default()` (all flags false, all limits `None`).
 
-### EventStream (`provider_core.rs:35`)
+### EventStream (`provider_core.rs:68`)
 
 ```rust
 pub type EventStream = Pin<Box<dyn Stream<Item =
@@ -635,3 +674,22 @@ cargo test -p codegg-providers -- fallback   # fallback provider tests
 - `architecture/config.md` — provider config schema and merging
 - `architecture/auth.md` — auth security policy
 - `architecture/resilience.md` — circuit breaker pattern details
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/codegg-providers/src/provider_core.rs`.
+- Corrected 13 stale `provider_core.rs:line` refs (trait `51`→`89`,
+  capabilities `96`→`133`, `for_provider` `131`→`168`, `ChatRequest`
+  `183`→`238`, `Message` `199`→`254`, `ContentPart` `262`→`319`, `ChatEvent`
+  `311`→`366`, `ToolDefinition` `353`→`408`, `ModelInfo` `401`→`456`,
+  `ProviderRegistry` `412`→`467`, `EventStream` `35`→`68`,
+  `register_builtin` `443`→`498`, `register_builtin_with_config` `844`→`890`,
+  `resolve_provider_credential` `579`→`625`). `#[async_trait]` is at `:84`.
+- Documented the full 14-field `ProviderCapabilities` set and the exact
+  `for_provider` anthropic/openai values (128 tools, 100 items, 50 nested
+  calls, 1 MiB result, 50 calls/program).
+- Added the previously undocumented `ProviderRequestContext.wire_policy`
+  field and the 7-field `ProviderWirePolicy` struct (`:223`).
+- Confirmed correct as written: 15 env-var providers in `register_builtin`
+  (`:498`) and 17 in `register_builtin_with_config` (`:890`), matching the
+  17-entry `builtin_registration_order()`.

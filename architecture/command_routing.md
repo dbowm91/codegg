@@ -4,6 +4,13 @@ The command dispatch target is owned by `CommandPlan` and maps its selected
 backend to a specific CodeGG subsystem. It is the dispatch boundary of the
 typed command pipeline; it does not reinterpret command text or intent.
 
+> **There is no independent `command_routing` module.** `src/command_routing.rs`
+> is a 30-line, zero-logic compatibility facade whose own header states this:
+> it exists only so integration callers using the pre-M006 API keep compiling.
+> The sole production mapping lives in `CommandPlan::dispatch_target()` in
+> `src/command_intent/plan.rs`. This document describes that canonical
+> mapping; the facade is documented only for source compatibility.
+
 ## Purpose
 
 Map a `CommandPlan`'s `ExecutionBackend` to a `CommandDispatchTarget` enum variant
@@ -12,9 +19,14 @@ that carries the executor-specific data needed for actual dispatch.
 ## Where It Lives
 
 - `src/command_intent/plan.rs` — `CommandDispatchTarget` and
-  `CommandPlan::dispatch_target()`
-- `src/command_routing.rs` — compatibility alias and `resolve_routing()` shim
-- `src/tool/bash.rs` — dispatch methods that consume the canonical target
+  `CommandPlan::dispatch_target()` (canonical owner)
+- `src/command_routing.rs` — 30-line compatibility facade: re-exports
+  `CommandDispatchTarget` as `RoutingDecision` and wraps
+  `resolve_routing(plan) -> plan.dispatch_target()`
+- `src/tool/bash/process.rs` — dispatch methods that consume the canonical
+  target (`dispatch_command_target`, `execute_via_raw_shell`,
+  `submit_test_job`, `dispatch_to_managed_process`, `dispatch_to_git`,
+  `dispatch_to_python_script`, `dispatch_python_via_scheduler`)
 
 ## How It Works
 
@@ -126,7 +138,7 @@ Active routing is controlled by `CommandIntentMode::Active`. When active:
   `RouteLevel::Off` disables routing for that family
 - Default mode is `Observe` — no active routing unless explicitly enabled
 
-The kill switch check is at `src/tool/bash/policy.rs:318-335`:
+The kill switch check is at `src/tool/bash/policy.rs:318`:
 ```rust
 fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
     let env_disabled = self.routing_disabled_override
@@ -147,14 +159,16 @@ including dispatch target and any explicit observe/kill-switch fallback.
 
 ### Safety
 
-Active routing only fires when `validate_for_active_routing()` passes all 7
-checks (SimpleArgv, High confidence, non-RawShell, non-Critical, no
-destructive/outside-workspace capabilities, no pending permissions). Commands
+Active routing only fires when `validate_for_active_routing()`
+(`src/command_intent/plan.rs:535`) passes all 7 checks (SimpleArgv, High
+confidence, non-RawShell/non-Reject backend, non-Critical, no
+destructive-file-mutation capability, no outside-workspace capability, no
+pending permissions). Commands
 that fail validation execute via raw shell as if in observe mode.
 
 ### Polish-pass provenance parity
 
-The execution-origin matrix (`tests/git_execution_origin_matrix.rs`, 19 tests)
+The execution-origin matrix (`tests/git_execution_origin_matrix.rs`, 12 tests)
 verifies that the routing layer produces consistent decisions for every origin.
 The matrix covers:
 
@@ -201,11 +215,11 @@ pub struct DispatchOutcome {
 ### TestRunner delegation flow
 
 ```
-classify → plan → submit_test_job (bash.rs:620)
+classify → plan → submit_test_job (bash/process.rs:246)
   → JobSubmissionService → JobKind::Test
   → JobScheduler admission + TestJobExecutor
   → TestScope::BashDispatch(argv) (types.rs:18)
-  → resolve_and_run_test (resolve.rs:60-71)
+  → resolve_and_run_test (runner.rs:749)
       [bypasses allowlist re-validation — argv already validated by planner]
   → DelegatedTestRun { report, run_id } (runner.rs:356-359)
   → DispatchOutcome { ..., delegated_run_id }
@@ -225,9 +239,9 @@ Key points:
 ### Python delegation flow
 
 ```
-classify → plan → dispatch_to_python_script (bash.rs:791)
+classify → plan → dispatch_to_python_script (bash/process.rs:417)
   → PythonScriptRequest { code, mode, cwd, ... }
-  → dispatch_python_via_scheduler (bash.rs:839)
+  → dispatch_python_via_scheduler (bash/process.rs:467)
       [scheduler admission required — production path]
   → DelegatedPythonRun { result, run_id } (tool.rs:16-19)
   → DispatchOutcome { ..., delegated_run_id }
@@ -250,7 +264,7 @@ Key points:
 to label raw-shell executions. Intent remains available through
 `planned_backend`, routing metadata, and intent kind fields.
 
-### Persistence gating (`src/tool/bash.rs:1882-1894`)
+### Persistence gating (`src/tool/bash/output.rs:367`)
 
 ```rust
 let persist_run = match (delegated_executor, delegated_run_id.as_ref()) {
@@ -314,3 +328,21 @@ Backend metadata is tagged `backend_family = "git_bash_translation"`,
 `RunOwnership::DelegatedBackend`. The conservative default
 (`route_git_local_mutation = Off`) ensures existing user-visible behavior
 is unchanged unless the user opts in.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: framing now states up front that
+`src/command_routing.rs` is a 30-line zero-logic compatibility facade (its own
+header says so), not an independent module. Line refs: dispatch methods
+`bash.rs:620/791/839` → `src/tool/bash/process.rs:246/417/467`;
+persistence gating `src/tool/bash.rs:1882-1894` → `src/tool/bash/output.rs:367`;
+`resolve_and_run_test` `resolve.rs:60-71` → `src/test_runner/runner.rs:749`;
+execution-origin matrix 19 → 12 tests; `check_kill_switches`
+`policy.rs:318-335` → `:318`. Verified accurate: 7-variant
+`CommandDispatchTarget`, 7-row backend mapping table, 7
+`validate_for_active_routing` checks (`src/command_intent/plan.rs:535`),
+`DispatchOutcome` 4 fields (`src/tool/bash/process.rs:61`),
+`run_kind_for_outcome` (`src/command_outcome.rs:158-181`) with unconditional
+`RawShell → "raw_shell"`, `TestScope::BashDispatch` (`types.rs:18`),
+`DelegatedTestRun` (`runner.rs:356`), `DelegatedPythonRun`
+(`src/python_script/tool.rs:16`), `persist_python_run` (`tool.rs:232`).

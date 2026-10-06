@@ -337,9 +337,19 @@ pub enum AgentRuntimeKind {
 
 ### AgentLoop (`src/agent/loop.rs:86`)
 
-The loop has 32 direct fields. Service and policy handles are grouped in
+The loop has 34 direct fields. Service and policy handles are grouped in
 `AgentLoopServices` so the coordinator cannot accidentally initialize one
 canonical concern independently of the others.
+
+Full field list: `services`, `lifecycle`, `state`, `limits`, `steering`,
+`follow_up_tx`, `follow_up_rx`, `question_tx`, `question_rx`, `plugin_service`,
+`session_id`, `turn_id`, `workspace_id`, `workspace_locks`,
+`workspace_service_lease`, `checkpoint_batch_seq`, `recent_findings`,
+`reviewer_denial_counts`, `original_user_prompt`, `current_user_prompt`,
+`subagent_pool`, `submission`, `workspace_root`, `max_tool_calls`,
+`goal_wall_clock`, `cancel_rx`, `steer_rx`, `pending_steer`, `local_paths`,
+`context_ledger`, `run_id`, `habit_project_namespace`, `habit_actions`,
+`habit_had_failure`.
 
 - **Coordinator state**: `state`, `limits`, `lifecycle`, `pending_steer`, and live control channels
 - **Identity**: `session_id`, `turn_id`, `run_id`, and immutable `workspace_root`
@@ -347,7 +357,7 @@ canonical concern independently of the others.
 - **Compatibility/observation**: `context_ledger`, `recent_findings`, and bounded habit observation
 - **Delegation**: `subagent_pool`, `submission`
 
-### AgentLoopState (`src/agent/loop.rs`)
+### AgentLoopState (`src/agent/loop.rs:56`)
 
 ```rust
 pub struct AgentLoopState {
@@ -364,7 +374,7 @@ pub struct AgentLoopState {
 }
 ```
 
-### ExecutionLimits (`src/agent/loop.rs`)
+### ExecutionLimits (`src/agent/loop.rs:70`)
 
 ```rust
 pub struct ExecutionLimits {
@@ -387,6 +397,9 @@ parent model → config model → emergency default.
 pub const EMERGENCY_DEFAULT_MODEL: &str = "openai/gpt-4o";
 pub const EMERGENCY_DEFAULT_WORKHORSE_MODEL: &str = "openai/gpt-4o-mini";
 ```
+
+`EMERGENCY_DEFAULT_WORKHORSE_MODEL` is defined at
+`src/agent/definition.rs:382`.
 
 ### Durable delegated runs
 
@@ -481,9 +494,11 @@ pub const MODEL_ALIAS_WORKHORSE: &str = "tier.workhorse";
 ```rust
 pub struct SubAgentRequest {
     pub task_id: u64,
+    pub run_id: Option<codegg_core::identity::AgentRunId>,
     pub prompt: String,
     pub agent: String,
     pub parent_id: Option<String>,
+    pub parent_run_id: Option<codegg_core::identity::AgentRunId>,
     pub denied_tools: Vec<String>,
     pub allowed_paths: Vec<String>,
     pub description: String,
@@ -491,8 +506,17 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
+    pub parent_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 ```
+
+`run_id`/`parent_run_id` carry typed durable run identity;
+`workspace_locks` is shared with the owning turn when the child runs in the same
+workspace; `parent_sandbox_profile` is the parent-turn ceiling the child is
+narrowed against and can never broaden, and a `FullHost` request under a
+constrained parent fails closed.
 
 ### SubAgentReport (`src/agent/worker.rs:31`)
 
@@ -518,9 +542,10 @@ prompt content keywords. Configured via `auto_route_models`,
 Per-turn configuration derived from `ResolvedModelProfile`. Controls
 context window, compaction threshold, reserved output tokens, max
 parallel tools, tool exposure mode (Full/Curated/MinimalWithDiscovery),
-and disabled tools.
+and disabled tools. It has 13 fields; see
+`src/agent/policy.rs:12` for the full listing.
 
-### ToolExposureMode (`src/agent/policy.rs:4`)
+### ToolExposureMode (`src/agent/policy.rs:5`)
 
 ```rust
 pub enum ToolExposureMode {
@@ -536,14 +561,15 @@ context-artifact recovery when registered. Goal and WorkPlan tools are
 promoted from the policy-allowed deferred universe only when their host-bound
 session state is active; WorkOrder remains distinct from live task delegation.
 
-### Capability & AgentCapabilitySet (`src/agent/tool_surface.rs:14`)
+### Capability & AgentCapabilitySet (`src/agent/tool_surface.rs:15`)
 
-12 capability kinds: `FilesystemRead`, `FilesystemWrite`, `ShellReadonly`,
+15 capability kinds: `FilesystemRead`, `FilesystemWrite`, `ShellReadonly`,
 `ShellMutating`, `GitRead`, `GitWrite`, `NetworkResearch`, `Delegate`,
-`ManageTodos`, `ManageGoals`, `Terminal`, `Image`. The capability set is
+`ManageTodos`, `ManageGoals`, `ManageWorkOrders`, `Terminal`, `Image`,
+`MemoryRead`, `PluginExecute`. The capability set is
 monotonic and supports intersection for parent ceiling enforcement.
 
-### AgentRegistry (`src/agent/registry.rs:374`)
+### AgentRegistry (`src/agent/registry.rs:377`)
 
 Central registry separating declarative sources from resolved runtime
 agents. API: `load_for_context()`, `get()`, `list()`, `list_visible()`,
@@ -659,3 +685,18 @@ verification remains authoritative.
 - [permission.md](permission.md) — permission system
 - [goal.md](goal.md) — goal runtime for long-horizon work
 - [scheduler.md](scheduler.md) — global admission scheduler
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `AgentLoop` field count
+32 → 34 (all 34 names now listed, `src/agent/loop.rs:86`);
+`SubAgentRequest` listing 11 → 16 fields (`src/agent/worker.rs:82`);
+`Capability` 12 → 15 kinds (`src/agent/tool_surface.rs:15`); stale refs
+`tool_surface.rs:14` → `:15`, `policy.rs:4` → `:5`,
+`registry.rs:374` → `:377`, `ToolExposureMode`. Verified accurate:
+`Agent` (18 fields, `definition.rs:78`), `AgentRuntimeKind` (6 variants,
+`:30`), `AgentLoopState` (10 fields, `loop.rs:56`), `ExecutionLimits`
+(3 fields, `loop.rs:70`), `SubAgentReport` (6 fields, `worker.rs:31`),
+`ModelRouter` (`router.rs:22`), `ExecutionPolicy` (13 fields,
+`policy.rs:12`), `EMERGENCY_DEFAULT_MODEL` (`:379`), `MODEL_ALIAS_*`
+(`:374`), referenced test files.

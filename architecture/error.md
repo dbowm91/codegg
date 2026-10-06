@@ -36,7 +36,7 @@ without leaking internal details.
 
 ## Key Types & APIs
 
-### AppError (`crates/codegg-core/src/error.rs:5`)
+### AppError (`crates/codegg-core/src/error.rs:6`) — 18 variants
 
 ```rust
 #[derive(Error, Debug)]
@@ -62,9 +62,9 @@ pub enum AppError {
 }
 ```
 
-### ConfigError (`crates/codegg-core/src/error.rs:62`)
+### ConfigError (`crates/codegg-core/src/error.rs:84`)
 
-Wraps `codegg_config::ConfigError` with an explicit `From` impl (line 80).
+Wraps `codegg_config::ConfigError` with an explicit `From` impl (line 101).
 Variants: `NotFound`, `Invalid`, `Parse`, `Merge`, `Watch`.
 
 ### ProviderError (re-exported from `codegg_providers::error`)
@@ -83,22 +83,22 @@ transient-status `Api`). `Auth`, `ModelNotFound`, and `CircuitOpen`
 secret-safe diagnostic label; `Transport` carries only the eggfetch
 category, never URLs or keys.
 
-### ToolError (`crates/codegg-core/src/error.rs:119`)
+### ToolError (`crates/codegg-core/src/error.rs:141`)
 
 Variants: `NotFound`, `Execution`, `Timeout`, `Permission`, `Format`,
 `Disabled`, `Io`, `Network`. `is_retryable()` for `Io`, `Network`, `Timeout`.
 
-### PermissionError (`crates/codegg-core/src/error.rs:167`)
+### PermissionError (`crates/codegg-core/src/error.rs:189`)
 
 Variants: `Denied { tool, path }`, `Check`.
 
-### McpError (`crates/codegg-core/src/error.rs:176`)
+### McpError (`crates/codegg-core/src/error.rs:198`)
 
 Variants: `Connection`, `Server`, `ToolCall`, `OAuth`, `Encryption`,
 `Timeout`. `is_retryable()` for `Connection`, `Server`, `ToolCall`,
 `OAuth`, `Timeout`. `Encryption` is intentionally NOT retryable.
 
-### LspError (`crates/codegg-core/src/error.rs:271`)
+### LspError (`crates/codegg-core/src/error.rs:293`)
 
 Variants: `ServerNotFound`, `DownloadFailed`, `LaunchFailed`,
 `NotInitialized`, `RequestFailed`, `RequestTimeout`, `UnsupportedLanguage`,
@@ -113,38 +113,38 @@ Note: `egglsp::LspError` has additional variants (`UnsupportedEdit`,
 `PathOutsideRoot`, `Utf16Position`, `OverlappingEdits`, `Protocol`,
 `WriterClosed`, `InitializationCancelled`, `ServerRestarted`,
 `ServerUnavailable`, `ServerDegraded`, `InvalidConfig`) that are
-collapsed into `RequestFailed` by the `From` conversion (line 210).
+collapsed into `RequestFailed` by the `From` conversion (line 231).
 
-### PluginError (`crates/codegg-core/src/error.rs:335`)
+### PluginError (`crates/codegg-core/src/error.rs:357`)
 
 Variants: `NotFound`, `LoadFailed`, `HookFailed`, `InstallFailed`,
 `InvalidManifest`.
 
-### ServerRuntimeError (`crates/codegg-core/src/error.rs:353`)
+### ServerRuntimeError (`crates/codegg-core/src/error.rs:375`)
 
 Variants: `Bind`, `Shutdown`, `WebSocket`, `Rpc`, `Auth`.
 
-### ClientError (`crates/codegg-core/src/error.rs:371`)
+### ClientError (`crates/codegg-core/src/error.rs:393`)
 
 Variants: `Connection`, `Unreachable`, `Rpc`, `WebSocket`, `Auth`.
 
-### RunStoreError (`crates/codegg-core/src/error.rs:389`)
+### RunStoreError (`crates/codegg-core/src/error.rs:411`)
 
 Variants: `Io`, `Json`, `NotFound`, `PathTraversal`, `IntegrityViolation`,
 `RetentionError`, `ConcurrentWrite`.
 
-### AgentError (`crates/codegg-core/src/error.rs:110`)
+### AgentError (`crates/codegg-core/src/error.rs:132`)
 
 Variants: `NotFound`, `Invalid`.
 
-### AxumAppError (`src/error.rs:16`)
+### AxumAppError (`src/error.rs:17`)
 
 Newtype wrapper for `AppError` implementing `IntoResponse`. Also has `From`
 impls for `StorageError`, `std::io::Error`, `serde_json::Error`,
 `anyhow::Error`, so `?` works directly in axum handlers. HTTP transport
 failures are converted at their owning boundary into CodeGG error types.
 
-### AxumServerRuntimeError (`src/error.rs:171`)
+### AxumServerRuntimeError (`src/error.rs:169`)
 
 Newtype wrapper for `ServerRuntimeError` implementing `IntoResponse`.
 
@@ -158,7 +158,7 @@ None. Error types are determined by the codebase, not configuration.
   is implemented in root `src/error.rs` via newtype wrappers because axum
   is a forbidden dependency of `codegg-core`.
 - **ConfigError bridge**: `codegg_config::ConfigError` is converted to
-  `codegg_core::error::ConfigError` via explicit `From` impl (line 80),
+  `codegg_core::error::ConfigError` via explicit `From` impl (line 101),
   not a direct `#[from]` on `AppError`.
 - **McpError::Encryption not retryable**: Intentional; encryption failures
   require manual intervention.
@@ -168,7 +168,7 @@ None. Error types are determined by the codebase, not configuration.
   collapsed into `LspError::RequestFailed` by the `From` conversion.
   Callers see less granularity than the LSP crate provides.
 
-## HTTP Status Mapping (`src/error.rs:63-147`)
+## HTTP Status Mapping (`src/error.rs:57-165`)
 
 | Error Type | Status |
 |------------|--------|
@@ -205,7 +205,7 @@ None. Error types are determined by the codebase, not configuration.
 | Http | upstream status or 502 |
 | Io/Other/Worktree/Upgrade/Clipboard/Tui/RunStore | 500 |
 
-**ServerRuntimeError IntoResponse** (`src/error.rs:181-206`):
+**ServerRuntimeError IntoResponse** (`src/error.rs:179-206`):
 
 | Status | Variants |
 |--------|----------|
@@ -240,3 +240,23 @@ phrases in response bodies, no secret leakage in error messages, and
 - `resilience/` — Circuit breaker patterns using `is_retryable()`
 - `exec/` — Exec mode error classification
 - `provider/` — Provider retry logic using `is_retryable()`
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/error.rs` and
+`src/error.rs`. Corrected every stale `file.rs:line` ref (the enum
+declarations had all drifted ~20 lines later): `AppError` `:5` → `:6`,
+`AgentError` `:110` → `:132`, `ToolError` `:119` → `:141`, `ConfigError`
+`:62` → `:84`, `PermissionError` `:167` → `:189`, `McpError` `:176` →
+`:198`, the `egglsp::LspError` `From` impl `line 210` → `:231`,
+`LspError` `:271` → `:293`, `PluginError` `:335` → `:357`,
+`ServerRuntimeError` `:353` → `:375`, `ClientError` `:371` → `:393`,
+`RunStoreError` `:389` → `:411`, `AxumAppError` `src/error.rs:16` →
+`:17`, and `AxumServerRuntimeError` `:171` → `:169`. Corrected the
+`ConfigError` `From` impl ref `line 80` → `line 101` in both places.
+Added the verified `AppError` variant count (18). Verified accurate: the
+variant list for every documented enum (`ConfigError` 5, `ToolError` 8,
+`PermissionError` 2, `McpError` 6, `LspError` 15, `PluginError` 5,
+`ServerRuntimeError` 5, `ClientError` 5, `RunStoreError` 7,
+`AgentError` 2), the `ProviderError` variant/constructor list and
+retry taxonomy, and the HTTP status mapping tables.

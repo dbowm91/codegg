@@ -58,11 +58,11 @@ and as the source for the migration tooling.
 
 ### Bundle and lease
 
-- `WorkspaceServices` — the per-workspace bundle. Owns the
-  `Arc<dyn RunStore>`, the `Arc<WorkspacePathPolicy>`, the
-  `Arc<WorkspaceLockTable>`, the `Arc<WorkspaceConfigSnapshot>`, and the
-  bookkeeping counters (`activated_at`, `last_used_at`,
-  `active_leases`).
+- `WorkspaceServices` — the per-workspace bundle, with these ten
+  fields: `workspace`, `config_snapshot`, `run_store`, `path_policy`,
+  `locks`, `artifact_root`, `activated_at`, `last_used_at`,
+  `active_leases`, and `shutdown` (see `workspace_services.rs:241` for the
+  authoritative declaration).
 - `WorkspaceServicesLease` — RAII handle returned by
   `WorkspaceServiceRegistry::acquire`. On drop the registry decrements
   the bundle's active-lease counter, marking it eligible for idle
@@ -355,3 +355,18 @@ workspace.
   and DTO additions.
 - [`architecture/core.md`](core.md) — `CoreDaemon` and `CoreRuntimeDeps`
   wiring (workspace_services section).
+
+## Source verification
+
+Verified 2026-10-06 against
+`crates/codegg-core/src/workspace_services.rs` and
+`crates/codegg-core/src/storage/mod.rs`. The `WorkspaceServices` entry
+listed 5 of the struct's 10 public fields; replaced it with the complete
+field list and anchored the declaration at
+`workspace_services.rs:241`. Verified accurate: the storage entry-point
+table (`init_daemon_catalog` at `storage/mod.rs:117`,
+`init_legacy_project_store` at `:142`, `init_pool_at` at `:149`), the
+`max_active_workspaces` default of 16, the `WorkspaceServiceError` /
+`WorkspaceServicePolicy` / `WorkspaceLockTable` /
+`WorkspaceServicesLease` / `ProductionWorkspaceServicesFactory` types,
+and the macOS / Linux user-scoped catalog paths.

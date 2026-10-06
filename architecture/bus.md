@@ -15,7 +15,7 @@ pair a pending event with a oneshot response channel.
 | Path | Role |
 |------|------|
 | `crates/codegg-core/src/bus/global.rs` | `GlobalEventBus` singleton |
-| `crates/codegg-core/src/bus/events.rs` | `AppEvent` enum (53 variants) |
+| `crates/codegg-core/src/bus/events.rs` | `AppEvent` enum (58 variants) |
 | `crates/codegg-core/src/bus/mod.rs` | `PermissionRegistry`, `QuestionRegistry`, `PermissionDecision`, pending-info types |
 
 ## How It Works
@@ -40,7 +40,7 @@ pub struct GlobalEventBus {
 
 ### AppEvent Enum
 
-53 variants across these categories:
+58 variants across these categories:
 
 | Category | Count | Variants |
 |----------|-------|----------|
@@ -59,14 +59,17 @@ pub struct GlobalEventBus {
 | Diff | 2 | `DiffPending`, `DiffResponded` |
 | Goal | 4 | `GoalUpdated`, `GoalUsageUpdated`, `GoalBudgetLimited`, `GoalCompleted` |
 | Run | 1 | `RunRerunLinked` |
-| Other | 8 | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `ContextUpdated`, `PluginUiEffect` |
+| ProviderAttempt | 3 | `ProviderAttemptStarted`, `ProviderAttemptFailed`, `ProviderAttemptSuperseded` |
+| Context/Plan | 2 | `ContextEpochStarted`, `WorkPlanUpdated` |
+| Other | 10 | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `ContextUpdated`, `PluginUiEffect` |
 
 Each variant has an `event_type()` method returning a `&'static str`
 discriminator for SSE filtering (e.g. `"session:created"`,
-`"tool:delta"`, `"permission:pending"`).
+`"tool_call:started"`, `"permission:pending"`, `"provider_attempt:failed"`).
 
-Events use `Arc<str>` for hot-path fields (`session_id` and `delta`
-on `TextDelta`; `session_id` on `ReasoningDelta`).
+Events use `Arc<str>` for hot-path fields: `session_id` and `delta` on
+`TextDelta`, and `session_id` on `ReasoningDelta` (whose `delta` remains a
+`String`).
 
 ### PermissionRegistry
 
@@ -150,22 +153,26 @@ checked on each `register` / `pending_*_ids` call.
 
 The `cleanup_now()` method forces an immediate sweep.
 
-### Server Route Limitation
+### Server Route Session Scoping
 
-The `/api/permission` and `/api/question` SSE routes currently call
-the legacy `pending_permission_ids()` / `pending_question_ids()`
-methods, which return all pending entries without session filtering.
-Because the registry keys are `perm_id` / `question_id` (not
-session-scoped), these routes return empty lists to indicate
-filtering is not possible. The scoped `get_pending_for_session()`
-methods exist on both registries and properly filter by session.
+The session-scoped routes are `/api/permission/{session_id}`,
+`/api/permission/{session_id}/submit`, and `/api/question/{session_id}`
+(`src/server/http.rs:289-297`). Their handlers call
+`get_pending_for_session()` on both registries
+(`src/server/routes/permission.rs:74`, `src/server/routes/question.rs:38`),
+so pending entries are filtered by owning session.
+
+The legacy unscoped `pending_permission_ids()` / `pending_question_ids()`
+methods still exist and are used only to populate `ResyncRequired` WS
+envelopes (`src/server/ws.rs:2572-2687`), where no session scope is
+available from the socket.
 
 ## Key Types & APIs
 
 | Type | File:line | Purpose |
 |------|-----------|---------|
 | `GlobalEventBus` | `bus/global.rs:7` | Broadcast singleton |
-| `AppEvent` | `bus/events.rs:61` | 53-variant event enum |
+| `AppEvent` | `bus/events.rs:81` | 58-variant event enum |
 | `PermissionRegistry` | `bus/mod.rs:88` | Permission request/response |
 | `QuestionRegistry` | `bus/mod.rs:252` | Question request/response |
 | `PermissionDecision` | `bus/mod.rs:12` | Bus-owned permission DTO |
@@ -255,3 +262,19 @@ cargo test --test server -- permission question
 - `architecture/tui.md` — TUI event subscription
 - `architecture/server.md` — SSE endpoint
 - `architecture/agent.md` — agent loop event publishing
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/bus/{mod,global,events}.rs`
+and `src/server/{http,ws}.rs`, `src/server/routes/{permission,question}.rs`.
+Corrected `AppEvent` 53 → 58 variants; the "Other" row claimed 8 while
+listing 10 and omitted `ProviderAttempt*` (3) and `ContextEpochStarted` /
+`WorkPlanUpdated` (2) — added a `ProviderAttempt` and a `Context/Plan`
+row and set `Other` to 10, then diffed all 58 names and every per-row
+count against the enum. Corrected `AppEvent` line ref `events.rs:61` →
+`events.rs:81`. Replaced the stale "Server Route Limitation" section: the
+permission/question routes are now session-scoped and use
+`get_pending_for_session()`. Corrected the `event_type()` example
+`"tool:delta"` → `"tool_call:started"` and noted `ReasoningDelta.delta`
+stays `String`. All other refs (broadcast 4096, TTL 310 s, throttle 30 s,
+registry/mod.rs line numbers) verified accurate.

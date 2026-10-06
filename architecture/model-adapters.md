@@ -79,7 +79,7 @@ profile may explicitly override the tier.
 
 ## Key Types & APIs
 
-### AdapterDefinition (`adapter.rs:10`)
+### AdapterDefinition (`adapter.rs:14`)
 
 ```rust
 pub struct AdapterDefinition {
@@ -95,7 +95,7 @@ pub struct AdapterDefinition {
 }
 ```
 
-### AdapterMatch (`adapter.rs:38`)
+### AdapterMatch (`adapter.rs:42`)
 
 ```rust
 pub struct AdapterMatch {
@@ -108,7 +108,7 @@ pub struct AdapterMatch {
 }
 ```
 
-### ResolvedModelAdapter (`adapter.rs:183`)
+### ResolvedModelAdapter (`adapter.rs:187`)
 
 Immutable, fully-resolved adapter returned by `resolve_adapter()`.
 Contains: `profile`, `adapter_id`, `adapter_version`, `fingerprint`,
@@ -117,7 +117,7 @@ Contains: `profile`, `adapter_id`, `adapter_version`, `fingerprint`,
 `prompt_system_role`, `prompt_control_role`, `recovery`, `server_requirements`,
 `transforms`.
 
-### ResolvedModelProfile (`types.rs:8`)
+### ResolvedModelProfile (`types.rs:9`)
 
 Core model capability profile:
 - `prompt_profile: PromptProfileKind` — selects execution policy defaults
@@ -128,7 +128,7 @@ Core model capability profile:
 - `max_parallel_tools`, `preferred_tools`, `disabled_tools`
 - `task_state_policy: TaskStatePolicy` — todo injection behavior
 
-### RequestTransform (`adapter.rs:146`)
+### RequestTransform (`adapter.rs:150`)
 
 Closed, typed set of request mutations:
 
@@ -218,3 +218,11 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
 - [agent-tool-surface.md](agent-tool-surface.md) — resolved tool surface
 - [agent.md](agent.md) — agent loop, execution policy
 - [provider.md](provider.md) — provider trait and registry
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/model_profile/{adapter.rs,types.rs}`.
+- Corrected 5 stale line refs: `AdapterDefinition` `10`->`14`, `AdapterMatch`
+  `38`->`42`, `RequestTransform` `146`->`150`, `ResolvedModelAdapter`
+  `183`->`187`, `ResolvedModelProfile` `8`->`9`. All five were off by 2-4
+  lines; the relative ordering in this document was already correct.

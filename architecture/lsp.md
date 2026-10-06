@@ -4365,3 +4365,30 @@ After an LSP server restart, previously collected context items may be marked as
 - [tool.md](tool.md) - LSP tool wrapper
 - [LSP Phase 9–12 hardening plan](../plans/lsp_phase_9_12_hardening_plan.md) - Current hardening plan
 - [LSP Phase 13–17 corrective verification](../plans/lsp_phase_13_17_corrective_verification_plan.md) - Current verification plan
+
+## Source Verification
+
+Spot-checked 2026-10-06 against `crates/egglsp/src/` (authoritative), the
+`src/lsp/` shim, `crates/codegg-config/src/schema.rs`, and `src/tool/mod.rs`.
+This document is large (4300+ lines), so the load-bearing numeric and
+structural claims were verified rather than every line.
+
+Confirmed accurate, no change needed:
+- **39 LSP servers**: `server_definitions()` in `crates/egglsp/src/server.rs:27`
+  returns exactly 39 `LspServerDef` entries, matching the Phase 6 verification
+  count.
+- **Backend abstraction**: `ToolImplementationBackendSchema`
+  (`crates/codegg-config/src/schema.rs`) has exactly the 4 documented values —
+  `Native`, `Mcp`, `Builtin`, `Disabled` (`:2885`-`:2888`). The
+  native/MCP/disabled + `fallback_to_native` matrix in "Backend config (MCP
+  fallback semantics)" matches `src/tool/mod.rs`, including the
+  `ConfiguredButUnavailable` → `unavailable` status mapping (`src/tool/mod.rs:1337`,
+  `:1402`; rendered in `src/main.rs:2609`).
+- **Cache**: `LspCacheMode` has only `Disabled` and `Memory`
+  (`crates/egglsp/src/cache.rs:53`), consistent with the "0 active disk cache
+  mode" claim at line 1941.
+
+One dated claim has drifted (not corrected in place, since it sits in the
+historical "Phase 6-8 Closeout" record): "714 egglsp tests pass" (line ~4298) —
+egglsp now has **1001** `#[test]`/`#[tokio::test]` functions under
+`crates/egglsp/src/` plus **107** under `crates/egglsp/tests/`.

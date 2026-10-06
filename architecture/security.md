@@ -34,21 +34,21 @@ review that never mutates files.
 Prevents requests to internal infrastructure via a multi-stage
 validation pipeline:
 
-1. **`validate_url_target(raw_url)`** (`ssrf.rs:129`) — parses URL,
+1. **`validate_url_target(raw_url)`** (`ssrf.rs:126`) — parses URL,
    checks scheme (http/https only), resolves DNS once, validates all
    resolved addresses. Returns `ValidatedUrlTarget` with a pinned
    `SocketAddr` set for Eggfetch `RequestBuilder::resolved_addresses`.
-2. **`validate_url_host(url)`** (`ssrf.rs:182`) — convenience wrapper
+2. **`validate_url_host(url)`** (`ssrf.rs:179`) — convenience wrapper
    returning just the normalized host string.
-3. **`validate_host_ip(host, port)`** (`ssrf.rs:88`) — DNS resolution +
+3. **`validate_host_ip(host, port)`** (`ssrf.rs:85`) — DNS resolution +
    internal IP check on all resolved addresses.
-4. **`revalidate_dns(host, port, validated_ips)`** (`ssrf.rs:155`) —
+4. **`revalidate_dns(host, port, validated_ips)`** (`ssrf.rs:152`) —
    re-resolves DNS and verifies IPs haven't changed (DNS rebinding
    protection). Handles IPv4-mapped IPv6 equivalence.
-5. **`is_internal_ip(ip)`** (`ssrf.rs:25`) — checks against all
+5. **`is_internal_ip(ip)`** (`ssrf.rs:22`) — checks against all
    reserved ranges (loopback, private, link-local, multicast, CGNAT,
    benchmark, IPv4-mapped IPv6, IPv6 unique local, etc.).
-6. **`ipv6_segments_to_ipv4(ipv6)`** (`ssrf.rs:60`) — converts
+6. **`ipv6_segments_to_ipv4(ipv6)`** (`ssrf.rs:57`) — converts
    IPv4-mapped and IPv4-compatible IPv6 to IPv4 for range checking.
 
 Used by:
@@ -124,7 +124,8 @@ leased worktree. Guard: `scripts/check_sandbox_policy_wiring.py`.
   workspace-contained cwd, snapshot-based post-exec checks
 
 **CANONICAL_PATHS_CACHE:** Static cache with 300s TTL and 100-entry
-cap (`sandbox.rs:453-458`). Entries older than 300s are evicted on
+cap (`sandbox.rs:568`-`:573`: `CACHE_TTL = 300s`, `MAX_CACHE_ENTRIES = 100`).
+Entries older than 300s are evicted on
 access.
 
 ### Security Policy (`policy.rs`)
@@ -224,7 +225,7 @@ CORS wildcards, and bind-all addresses.
   chmod, sed -i, perl -pi, git push
 - Low: cargo test/check/build/clippy, git read-only, ls, cat, grep
 
-### Sensitive Path Matching (`mod.rs:65`)
+### Sensitive Path Matching (`mod.rs:64`)
 
 ```rust
 pub fn matches_sensitive_path<'a>(
@@ -294,10 +295,10 @@ CodeGG-owned generic chunk accumulator remains.
 ### eggsentry (`crates/eggsentry/src/`)
 
 - `classify_bash_command(cmd) -> CommandClassification` (command.rs:201)
-- `classify_git_subcommand(sub) -> CommandClassification` (command.rs:503)
-- `classify_tool_call(name, args) -> CommandClassification` (command.rs:507)
+- `classify_git_subcommand(sub) -> CommandClassification` (command.rs:505)
+- `classify_tool_call(name, args) -> CommandClassification` (command.rs:509)
 - `inspect_text(path, text) -> Vec<SecurityFinding>` (scanner.rs:319)
-- `inspect_file(path, max_bytes) -> Result<Vec<SecurityFinding>>` (scanner.rs:402)
+- `async inspect_file(path, max_bytes) -> Result<Vec<SecurityFinding>>` (scanner.rs:402)
 - `ProfileRunner::inspect_paths(profile, paths) -> SecurityReport` (profile.rs:48)
 
 ## Configuration Surface
@@ -460,3 +461,27 @@ unsupported-host `Unavailable` path.
 - [tool.md](tool.md) — Uses security validation
 - [permission.md](permission.md) — Path permissions
 - [native_crates.md](native_crates.md) — eggsentry crate details
+
+## Source Verification
+
+Verified 2026-10-06 against `src/security/` and `crates/eggsentry/src/`.
+- Corrected 9 stale `file.rs:line` refs. All six SSRF entry points had
+  drifted by ~3 lines: `validate_url_target` `129`→`126` (it is `pub(crate)`),
+  `validate_url_host` `182`→`179`, `validate_host_ip` `88`→`85`,
+  `revalidate_dns` `155`→`152`, `is_internal_ip` `25`→`22`,
+  `ipv6_segments_to_ipv4` `60`→`57`. Also
+  `matches_sensitive_path` `mod.rs:65`→`:64` and the eggsentry list
+  `classify_git_subcommand` `503`→`505`, `classify_tool_call` `507`→`509`.
+- Corrected the canonical-paths cache ref: `sandbox.rs:453-458` pointed at
+  `resolve_executable`. The cache is `CANONICAL_PATHS_CACHE` at
+  `sandbox.rs:568` with `CACHE_TTL = 300s` (`:573`) and
+  `MAX_CACHE_ENTRIES = 100` (`:572`) — the documented 300s TTL and 100-entry
+  cap were correct, only the line range was stale.
+- Marked `inspect_file` as `async` (`crates/eggsentry/src/scanner.rs:402`).
+
+Confirmed accurate, no change: `classify_bash_command`
+(`command.rs:201`), `inspect_text` (`scanner.rs:319`), and
+`ProfileRunner::inspect_paths` (`profile.rs:48`). The eggsentry items live in
+`crates/eggsentry/src/`, not `src/security/` (whose `workflow/` submodules are
+`context`, `diff`, `enrichment`, `evidence`, `mod`, `preflight`, `receipt`,
+`report`, `types`).

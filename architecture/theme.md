@@ -154,8 +154,10 @@ heuristic detects this format. All 50 bundled themes use this format.
 - **Contrast checking**: WCAG contrast ratio validation between
   background/foreground and other color pairs
 - **Structural diagnostics**: Missing fields, invalid hex values
-- **ThemeDiagnostic**: `Error` or `Warn` level with theme ID, optional
-  file path, and message
+- **ThemeDiagnostic** (`src/theme/validate.rs:16`): `level`
+  (`ThemeDiagnosticLevel::Warning` or `::Error`), `theme_id`, optional
+  `field: Option<String>` naming the offending color field (not a file
+  path), and `message`
 
 ## Configuration Surface
 
@@ -210,3 +212,22 @@ cargo test -p codegg -- theme    # Theme module tests
 
 - [tui.md](tui.md) — TUI rendering that consumes the Theme
 - [config.md](config.md) — Theme config schema
+
+## Source verification
+
+Verified 2026-10-06 against `src/theme/` (10 source files, as stated) and
+`assets/themes/halloy/`: 50 bundled themes, all Halloy-format, embedded via
+52 `include_str!` calls in `BUILTIN_THEME_FILES`
+(`registry.rs:36`); `DEFAULT_THEME_ID = "cyber-red"` (`registry.rs:652`);
+`SemanticTheme` (`schema.rs:17`) and all 11 of its fields; `ThemeSource`
+(`schema.rs:32`); every color group field list (`BaseColors` 2,
+`UiColors` 9, `TextColors` 2, `StatusColors` 6, `ConversationColors` 6,
+`CodeColors` 2, `DiffColors` 3, `AgentColors` 5); `ThemeResolutionConfig`
+(`registry.rs:313`) with exactly the six documented fields; registry
+entry points `load_builtins` (`:363`), `load_with_config` (`:411`),
+`load_dir` (`:487`), `load_file_auto` (`:514`), `expand_home` (`:638`),
+`builtin_fallback` (`:664`), `resolve_theme_for_app` (`:733`);
+`looks_like_halloy` (`halloy.rs:387`); `Theme::from(&SemanticTheme)`
+(`target.rs:52`); and contrast checking (`validate.rs:148`). The only
+correction was `ThemeDiagnostic`'s optional field, which is a color-field
+name rather than a file path.

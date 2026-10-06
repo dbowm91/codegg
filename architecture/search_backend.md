@@ -271,14 +271,14 @@ resolved from `SearchConfig` so custom names are honored.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `SearchConfig` | `config/src/schema.rs:516` | Backend, output caps, eggsearch config |
-| `SearchBackendConfig` | `config/src/schema.rs:610` | Eggsearch / Builtin / Disabled |
-| `EggsearchConfig` | `config/src/schema.rs:621` | Server name, command, args, timeouts |
-| `ToolTimeoutKind` | `config/src/schema.rs:637` | Default / Security / Research / Batch |
-| `McpService` | `src/mcp/mod.rs:130` | MCP server registry (consumed by eggsearch adapter) |
+| `SearchConfig` | `config/src/schema.rs:739` | Backend, output caps, eggsearch config |
+| `SearchBackendConfig` | `config/src/schema.rs:833` | Eggsearch / Builtin / Disabled |
+| `EggsearchConfig` | `config/src/schema.rs:844` | Server name, command, args, timeouts |
+| `ToolTimeoutKind` | `config/src/schema.rs:860` | Default / Security / Research / Batch |
+| `McpService` | `src/mcp/mod.rs:165` | MCP server registry (consumed by eggsearch adapter) |
 | `StructuredSearchResult` | `src/search_backend/mod.rs:56` | output + value + truncated |
-| `EggsearchCallResult` | `eggsearch.rs:399` | output, value, truncated (per-call) |
-| `BootstrapReport` | `src/search_backend/bootstrap.rs:306` | Startup diagnostic report |
+| `EggsearchCallResult` | `src/search_backend/eggsearch.rs:539` | output, value, truncated (per-call) |
+| `BootstrapReport` | `src/search_backend/bootstrap.rs:433` | Startup diagnostic report |
 | `CrossProcessLockGuard` | `src/search_backend/test_support.rs:25` | Test isolation via flock |
 
 ## Configuration Surface
@@ -428,3 +428,19 @@ bootstrap compat tests that still assert on the legacy install slots.
   wrapper tools
 - [config.md](config.md) — config loading and validation
 - [security.md](security.md) — SSRF protection, trust framing
+
+## Source Verification
+
+Verified 2026-10-06 against `src/search_backend/`, `src/search/`,
+`src/mcp/mod.rs`, and `crates/codegg-config/src/schema.rs`.
+- Corrected 7 stale line refs. All four config refs had drifted ~220 lines
+  (`SearchConfig` `516`->`739`, `SearchBackendConfig` `610`->`833`,
+  `EggsearchConfig` `621`->`844`, `ToolTimeoutKind` `637`->`860`), plus
+  `McpService` `130`->`165`, `EggsearchCallResult` `399`->`539` (and added its
+  full path, `src/search_backend/eggsearch.rs`), and `BootstrapReport`
+  `306`->`433`.
+- Confirmed correct as written: `StructuredSearchResult`
+  (`src/search_backend/mod.rs:56`) and `CrossProcessLockGuard`
+  (`src/search_backend/test_support.rs:25`).
+- Confirmed `SearchBackendConfig` (`schema.rs:833`) has exactly the 3
+  documented variants: `Eggsearch`, `Builtin`, `Disabled`.

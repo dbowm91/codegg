@@ -88,3 +88,22 @@ commits the legacy projections and `session_project_binding` in one transaction
 after validating the resolved workspace binding. `session_project_binding` and
 `workspace_project_binding` remain authoritative; historical `session.project_id`
 and `session.directory` values are compatibility projections.
+
+## Source verification
+
+Verified 2026-10-06 against
+`crates/codegg-core/src/project_storage.rs`,
+`crates/codegg-core/src/migration.rs`, and
+`crates/codegg-core/src/session/schema.rs`. No corrections were needed —
+this doc was accurate. Verified accurate: all six canonical v25 tables
+(`logical_project`, `repository`, `project_repository`,
+`workspace_project_binding`, `session_project_binding`,
+`identity_diagnostic`), the `ProjectStorage` API surface
+(`reconcile_workspace_path`, `reconcile_catalog`, `rebind_workspace`,
+`rebind_session`, `inspect_workspace`,
+`list_diagnostics_for_workspace`), `migrate_legacy_project_database` in
+`migration.rs:128` establishing the workspace binding before importing
+session IDs, the four `ProjectStorageError` variants including
+`RevisionConflict`, and the `SessionStore::create_with_binding` seam. The
+doc carries no numeric or line-ref claims, so nothing required
+correction.

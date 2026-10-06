@@ -141,7 +141,7 @@ carries the typed operation, argv, origin, and risk set produced by codegg-git's
 parser, enabling downstream routing to handle git operations uniformly.
 
 **Routing caveat (polish-pass finding, closed by Track U):** The plan-level
-backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash.rs:109`
+backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash/policy.rs:98`
 historically returned `None` for `CommandIntentKind::GitMutating`, meaning
 bash-translated simple git mutations planned as `Git` but dispatched as
 `RawShell`. As of Track U, bash git mutations route through
@@ -240,7 +240,8 @@ The `is_safe_git_subcommand()` helper walks past simple global options
 `src/command_planner.rs` re-exports everything from `command_intent::plan`:
 ```rust
 pub use crate::command_intent::plan::{
-    plan_execution, CommandPermissionRequest, CommandPlan, CompressionGoal,
+    command_intent_family_for_kind, plan_execution, plan_execution_with_context,
+    CommandDispatchTarget, CommandPermissionRequest, CommandPlan, CompressionGoal,
     ExecutionBackend, GitExecutionRequest, NativeCommand, PermissionDefault,
     PlanRtkPolicy, ProjectionSpanKind, ProjectorRoute, PythonModeGuess,
 };
@@ -273,3 +274,19 @@ cargo test -p codegg --lib command_intent
 Includes routing/validation tests for `validate_for_active_routing()`,
 `GitMutating` backend selection, `git_operation_family()` mapping, and
 permission generation for git subcommands.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: the compatibility re-export block
+was missing `command_intent_family_for_kind`, `plan_execution_with_context`, and
+`CommandDispatchTarget`; `intent_kind_to_family()` moved from the claimed
+`src/tool/bash.rs:109` to `src/tool/bash/policy.rs:98`. Verified accurate:
+`src/command_planner.rs` is a 6-line shim, `ExecutionBackend` 7 variants,
+`ProjectorRoute` 10 variants and its per-route table, `PlanRtkPolicy` 3 variants,
+`PythonModeGuess` 4 variants, `CommandPlan` 9 fields, the backend-selection and
+projector-selection tables, all 7 `validate_for_active_routing()` checks
+(`plan.rs:535`), the complete RTK policy table (4096/2048 byte thresholds,
+span kinds, and `CompressionGoal` values as listed), the full timeout table
+(`select_timeout`, `plan.rs:1035-1046`), and all 10 permission defaults
+(`generate_permission_requests`, `plan.rs:844`) including the `git add`-only
+`GitMutation` allow and the read-only-formatter `WriteWorkspace` allow.

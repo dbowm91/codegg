@@ -16,7 +16,7 @@ formatted reports, and optionally verifies citations with an LLM.
 
 | Artifact | Path |
 |----------|------|
-| Core pipeline | `src/research/` (14 files + sources/ subdirectory with 8 adapters) |
+| Core pipeline | `src/research/` (22 `.rs` files: 14 top-level + 8 under `sources/`, of which 7 implement `ResearchSourceAdapter`) |
 | Tool surface | `src/tool/research.rs` |
 | Service facade | `src/research/service.rs` |
 | Specialized runtime | `src/research/runtime.rs` |
@@ -39,6 +39,7 @@ formatted reports, and optionally verifies citations with an LLM.
 | `runtime.rs` | Bounded contracts for the specialized multi-agent research runtime |
 | `triggers.rs` | Auto-invocation heuristics based on task keywords |
 | `error.rs` | `ResearchError` enum |
+| `mod.rs` | Module declaration and re-exports |
 | `sources/` | Source adapter implementations |
 
 ## How It Works
@@ -79,8 +80,9 @@ Each adapter implements `ResearchSourceAdapter` (defined in
 | `DocsRsSource` | `docs_rs.rs` | docs.rs documentation pages |
 | `EggsearchSource` | `eggsearch.rs` | External search via `search_backend::dispatch_research_search_structured()` |
 
-**Registered in coordinator** (`coordinator.rs:37-52`):
-`LocalRepoSource`, `UrlSource`, `CratesIoSource` (if TLS available),
+**Registered in coordinator** (`coordinator.rs:36-53`, in
+`ResearchCoordinator::new()`): `LocalRepoSource`, `UrlSource`,
+`CratesIoSource` (if TLS available),
 `GitHubSource` (if TLS available), `DocsRsSource` (if TLS available),
 `EggsearchSource`.
 
@@ -114,10 +116,10 @@ authoritative input for source conversion.
 ### Evidence Extraction (`extract.rs`)
 
 - **Deterministic chunking**: Local files chunked by 100-line windows with
-  10-line overlap (`chunk_local_file()`, line 30). URL text chunked by
+  10-line overlap (`chunk_local_file()`, line 31). URL text chunked by
   heading breaks or ~2000-char word-boundary windows (`chunk_url_text()`,
-  line 80).
-- **LLM-backed extraction** (`extract_evidence_with_model()`, line 317):
+  line 81).
+- **LLM-backed extraction** (`extract_evidence_with_model()`, line 326):
   When a `Provider` is available, calls the LLM with
   `EVIDENCE_EXTRACTION_PROMPT` for each chunk. Falls back to deterministic
   extraction on error.
@@ -132,7 +134,7 @@ authoritative input for source conversion.
   briefs to the model with `CLAIM_CONSTRUCTION_PROMPT`, parses structured
   JSON into `ClaimRecord`s. Falls back to deterministic on any error.
 
-### Contradiction Detection (`coordinator.rs:423-482`)
+### Contradiction Detection (`ResearchCoordinator::check_contradictions`, `coordinator.rs:443`)
 
 Deterministic pass that:
 1. Groups claims by `applies_to` target.
@@ -182,11 +184,11 @@ All defined in `src/research/types.rs`:
 | `SourceRecord` | 95 | Collected source with URI, type, quality, locator, content hash |
 | `EvidenceSpan` | 162 | Extracted text span with source reference and locator |
 | `ClaimRecord` | 176 | Claim with type, confidence, evidence references, caveats |
-| `ContradictionRecord` | 225 | Detected contradiction between claims |
-| `ResearchRunStatus` | 245 | Timing, counts, state, error |
-| `ResearchPlan` | 282 | Scope, comparison axes, source classes, stopping conditions |
-| `ResearchBundle` | 295 | Complete artifact bundle loaded from store |
-| `ResearchRunResult` | 317 | Completion result with outputs and artifact dir |
+| `ContradictionRecord` | 237 | Detected contradiction between claims |
+| `ResearchRunStatus` | 257 | Timing, counts, state, error |
+| `ResearchPlan` | 294 | Scope, comparison axes, source classes, stopping conditions |
+| `ResearchBundle` | 307 | Complete artifact bundle loaded from store |
+| `ResearchRunResult` | 329 | Completion result with outputs and artifact dir |
 
 ### Claim Types (`ClaimType`, line 189)
 
@@ -289,11 +291,11 @@ Default artifact root: `<project_root>/.codegg/research/`.
 
 ## LLM Integration (`llm.rs`)
 
-`call_llm()` (line 19): Sends a single user message (optional system
+`call_llm()` (line 21): Sends a single user message (optional system
 prompt) to the provider, collects text deltas, returns concatenated text.
 120s timeout. Temperature 0.3.
 
-`call_llm_json()` (line 83): Same but strips markdown code fences and
+`call_llm_json()` (line 87): Same but strips markdown code fences and
 parses JSON response.
 
 Used by `extract_evidence_with_model`, `build_claims_with_model`, and
@@ -322,3 +324,25 @@ cargo test -p codegg --lib research::triggers # trigger heuristic tests
 - [agent.md](agent.md) — Built-in `research` agent definition
 - [tool.md](tool.md) — Tool registry, research tool registration
 - [provider.md](provider.md) — LLM provider interface used for model-backed phases
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: "14 files + sources/ subdir
+with 8 adapters" → 22 `.rs` files (14 top-level + 8 under `sources/`, of which
+7 implement `ResearchSourceAdapter`; `AdvisorySource` is the 7th and is not
+registered). Line refs in the `types.rs` table: `ContradictionRecord` 225 → 237,
+`ResearchRunStatus` 245 → 257, `ResearchPlan` 282 → 294, `ResearchBundle`
+295 → 307, `ResearchRunResult` 317 → 329; `chunk_local_file` line 30 → 31,
+`chunk_url_text` line 80 → 81, `extract_evidence_with_model` 317 → 326,
+`call_llm` 19 → 21, `call_llm_json` 83 → 87; contradiction detection is
+`ResearchCoordinator::check_contradictions` at `coordinator.rs:443` (not
+`:423-482`); coordinator adapter registration `coordinator.rs:36-53`; added the
+missing `mod.rs` row to the module-layout table. Verified accurate:
+`ResearchSourceAdapter` (`sources/mod.rs:15`), `deterministic_claims`
+(`claims.rs:8`), `build_claims_with_model` (`claims.rs:70`),
+`verify_structural` (`verify.rs:25`), `verify_semantic` (`verify.rs:114`),
+`classify`/`build_plan`/`validate_report` (`runtime.rs:108/129/199`),
+`analyze_trigger` (`triggers.rs:92`), the five runtime bounds (3/32/96/48/2000),
+all enum variant lists (`ResearchMode` 8, `ResearchAudience` 5, `ResearchDepth`
+3, `ResearchOutputProfile` 5, `ClaimType` 7, `SourceType` 10), `ResearchBudget`
+6 fields, and the five output-profile artifact filenames (`store.rs:117-121`).

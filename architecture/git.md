@@ -28,7 +28,7 @@ logging, or persistence surfaces.
 | Recovery | `src/git_recovery.rs` | `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress`, `assert_action_matches` |
 | Projector | `src/git_mutation_projector.rs` | `project_mutation`, `project_network_mutation`, `project_destructive_mutation`, `project_recovery` |
 | RunStore | `src/git_run_store.rs` | `persist_mutation`, `persist_recovery` |
-| Tool surface | `src/tool/git.rs` | `GitTool` with `subcommand`, `mutation` (40 actions), `recover`, `operation_state` |
+| Tool surface | `src/tool/git.rs` | `GitTool` with `subcommand`, `mutation` (42 actions), `recover`, `operation_state` |
 | Canonical env/process policy | `crates/egggit/src/process.rs` | `ALLOWED_ENV_VARS` (21), `ALWAYS_STRIPPED_ENV_VARS` (28), `GitEnvPolicy` — single source of truth; `codegg-git` keeps compatibility re-exports |
 | Managed worktree lifecycle | `crates/codegg-core/src/worktree_service.rs` | Durable worktree identity/lease state over hardened add/remove helpers |
 
@@ -228,21 +228,21 @@ then re-run recover: continue").
 |------|------|---------|
 | `GitExecutionService` | `git_service.rs:232` | Unified read+raw executor |
 | `GitPayload` (13 variants) | `git_service.rs:42` | Structured read payloads |
-| `GitMutationExecutor` | `git_mutations.rs:471` | Mutation executor with snapshot/delta; M002 emits one structural `git_operation` per executed transition via the injected `execution_audit` + `audit_emitter` pair (silent without it). Typed, network, and recovery paths funnel through `execute`; unparsed variants emit in `run_raw_mutation`. Labels/digests via `git_audit_op_label`/`git_audit_ref_digest` (ref/remote-name only, never URLs/messages/paths); see `architecture/audit.md` "Live execution hooks (M002)" |
-| `GitEnvPolicy` | `git_mutations.rs:51` | `apply()` (async) / `apply_sync()` (sync) |
+| `GitMutationExecutor` | `git_mutations.rs:477` | Mutation executor with snapshot/delta; M002 emits one structural `git_operation` per executed transition via the injected `execution_audit` + `audit_emitter` pair (silent without it). Typed, network, and recovery paths funnel through `execute`; unparsed variants emit in `run_raw_mutation`. Labels/digests via `git_audit_op_label`/`git_audit_ref_digest` (ref/remote-name only, never URLs/messages/paths); see `architecture/audit.md` "Live execution hooks (M002)" |
+| `GitEnvPolicy` | `git_mutations.rs:49` (re-export of `egggit::process::GitEnvPolicy`) | `apply()` (async) / `apply_sync()` (sync) |
 | `RepoSnapshot` | `codegg-git/src/workflow.rs:15` | Pre/post state capture |
 | `StateDelta` | `codegg-git/src/workflow.rs:30` | Diff between snapshots |
 | `MutationOutcome` (5 variants) | `codegg-git/src/workflow.rs:64` | Completed/NoOp/FastForward/Conflict/Rejected |
 | `MutationResult` | `codegg-git/src/workflow.rs:86` | Full mutation record |
 | `GitMutationError` (7 variants) | `git_mutations.rs:219` | Detailed error with `ExecutionContext` |
-| `NetworkEnvPolicy` | `git_network_ops.rs:44` | Extends base env with network vars |
-| `PushForce` (3 variants) | `git_network_ops.rs:207` | Normal/ForceWithLease/Force |
-| `PushRequest` | `git_network_ops.rs:248` | Push parameters |
-| `PullStrategy` (3 variants) | `git_network_ops.rs:155` | Merge/Rebase/FastForwardOnly |
-| `CleanRequest`, `CleanPreview` | `git_network_ops.rs:733,714` | Clean operation types |
-| `NetworkFailureKind` (7 variants) | `git_network_policy.rs:71` | Failure classification |
-| `RecoveryOutcome` (5 variants) | `git_recovery.rs:27` | Recovery result classification |
-| `GitTool` | `tool/git.rs:14` | Model-facing tool with 40 mutation actions |
+| `NetworkEnvPolicy` | `git_network_ops.rs:46` | Extends base env with network vars |
+| `PushForce` (3 variants) | `git_network_ops.rs:187` | Normal/ForceWithLease/Force |
+| `PushRequest` | `git_network_ops.rs:228` | Push parameters |
+| `PullStrategy` (3 variants) | `git_network_ops.rs:135` | Merge/Rebase/FastForwardOnly |
+| `CleanRequest`, `CleanPreview` | `git_network_ops.rs:713,694` | Clean operation types |
+| `NetworkFailureKind` (7 variants) | `git_network_policy.rs:72` | Failure classification |
+| `RecoveryOutcome` (5 variants) | `git_recovery.rs:28` | Recovery result classification |
+| `GitTool` | `tool/git.rs:23` | Model-facing tool with 42 mutation actions |
 
 ## Configuration Surface
 
@@ -407,16 +407,17 @@ dirty/conflicted state, validation summary, and retention attention. It does
 not expose credentials, full diffs, or authority to integrate; integration
 remains an explicit parent-side typed Git operation.
 
-### Test counts (verified today)
+### Test counts (verified 2026-10-06)
 
 | Module / file | #[test] + #[tokio::test] |
 |---------------|--------------------------|
-| `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 342 |
+| `codegg-git` (parser, operation, risk, path, ref_name, render, process_policy) | 358 |
 | `egggit/operation_state.rs` | 8 |
+| `egggit` (all `src/*.rs`) | 78 |
 | `egggit/conflict.rs` | 7 |
 | `tests/git_mutations_integration.rs` | 12 (tokio::test) |
-| `tests/git_network_integration.rs` | 13 |
-| `tests/git_recovery_integration.rs` | 13 |
+| `tests/git_network_integration.rs` | 29 |
+| `tests/git_recovery_integration.rs` | 19 |
 
 ### Key test categories
 
@@ -462,3 +463,30 @@ digest for bounded dirty state without returning paths or file contents.
 Capture is rooted at the scheduler's canonical workspace path. Unsafe paths,
 non-Git workspaces, and bound/capture failures return typed unavailability;
 callers must not downgrade to a weaker status-only identity.
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/codegg-git/src/`, `crates/egggit/src/`,
+and the root `src/git_*.rs` / `src/tool/git.rs` modules.
+- Corrected the `GitTool` mutation count **40 → 42** (both occurrences).
+  The schema `mutation.enum` at `src/tool/git.rs:140`-`:155` holds exactly 42
+  entries; `mutation_enum_includes_phase_f_recovery_aliases` cross-checks them.
+- Corrected 9 stale `file.rs:line` refs: `GitMutationExecutor` `471`→`477`,
+  `GitEnvPolicy` `51`→`49` (a `pub use` re-export of
+  `egggit::process::GitEnvPolicy`, not a local definition),
+  `NetworkEnvPolicy` `44`→`46`, `PushForce` `207`→`187`,
+  `PushRequest` `248`→`228`, `PullStrategy` `155`→`135`,
+  `CleanRequest`/`CleanPreview` `733,714`→`713,694`,
+  `NetworkFailureKind` `71`→`72`, `RecoveryOutcome` `27`→`28`,
+  `GitTool` `14`→`23`.
+- Refreshed the test-count table: `codegg-git` 342→358, `egggit` all-`src` 78
+  added as a row, `git_network_integration` 13→29,
+  `git_recovery_integration` 13→19.
+- Confirmed correct as written: `GitOperation` 54 variants, `GitRiskClass` 11,
+  `ALLOWED_ENV_VARS` 21, `ALWAYS_STRIPPED_ENV_VARS` 28,
+  `NETWORK_ALLOWED_ENV_VARS` 21, `ALLOWED_MERGE_STRATEGIES` 6 (`src/git_mutations_ops.rs:418`),
+  `GitPayload` 13, `GitMutationError` 7, `NetworkFailureKind` 7,
+  `RecoveryOutcome` 5, `MutationOutcome` 5, `ConflictKind` 8,
+  `RepositoryOperationState` 9, `OperationFamily` 9, `PushForce` 3,
+  `PullStrategy` 3, and the `codegg-git/src/workflow.rs` refs (`:15`, `:30`,
+  `:64`, `:86`).

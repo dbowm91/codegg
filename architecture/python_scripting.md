@@ -64,7 +64,7 @@ safely. The module is the domain authority for Python execution semantics.
 
 All production model-facing Python execution flows through the scheduler:
 
-- `PythonJobExecutor` (`src/scheduler/executors.rs:492`) implements `JobExecutor`
+- `PythonJobExecutor` (`src/scheduler/executors.rs:1148`) implements `JobExecutor`
   for `JobKind::Python`. It validates source digest, begins a RunStore record,
   invokes `execute_python_script_with_cancellation()`, persists artifacts, and
   completes the record.
@@ -75,7 +75,7 @@ All production model-facing Python execution flows through the scheduler:
 
 ## Key Types & APIs
 
-### PythonExecutionMode (`types.rs:259-267`)
+### PythonExecutionMode (`types.rs:260`)
 
 | Mode | Description | Default Timeout | Subprocess | Writes |
 |------|-------------|----------------|------------|--------|
@@ -83,7 +83,7 @@ All production model-facing Python execution flows through the scheduler:
 | `Transform` | Mutating transformation | 60s | Denied | Allowed (workspace) |
 | `Verify` | Test/verification | 300s | Allowed (allowlisted) | Denied |
 
-### PythonScriptRequest (`types.rs:474-484`)
+### PythonScriptRequest (`types.rs:475`)
 
 ```rust
 pub struct PythonScriptRequest {
@@ -100,7 +100,7 @@ pub struct PythonScriptRequest {
 `workspace_root` provides the authoritative workspace boundary for CWD containment.
 Falls back to process cwd when `None`.
 
-### PythonRiskAssessment (`types.rs:437-449`)
+### PythonRiskAssessment (`types.rs:437`)
 
 ```rust
 pub struct PythonRiskAssessment {
@@ -120,13 +120,13 @@ pub struct PythonRiskAssessment {
 
 `PythonRiskScanner`: `Ast | Fallback` — which analysis backend produced the result.
 
-### PythonRiskLevel (`types.rs:418-424`)
+### PythonRiskLevel (`types.rs:419`)
 
 `Safe | Low | Medium | High`
 
 Priority: destructive_ops > subprocess/network > file_io/dynamic_exec/dep_install > safe.
 
-### PythonCapabilityProfile (`types.rs:65-86`)
+### PythonCapabilityProfile (`types.rs:66`)
 
 ```rust
 pub struct PythonCapabilityProfile {
@@ -147,7 +147,7 @@ Constructors: `analyze(workspace_root)`, `transform(workspace_root)`,
 `verify(workspace_root)`, `from_mode_risk_and_context(mode, workspace_root, risk)`.
 Risk analysis can only narrow capabilities, never widen.
 
-### ExecutableRule (`types.rs:19-27`)
+### ExecutableRule (`types.rs:20`)
 
 Controls which subprocess binaries are allowed in Verify mode:
 
@@ -162,13 +162,13 @@ pub struct ExecutableRule {
 Default Verify rules: `cargo`, `cargo-test`, `pytest`, `python3 -m pytest`,
 `go test`, `make test`, `make build`.
 
-### PythonCapabilityEnvelope (`types.rs:310-421`)
+### PythonCapabilityEnvelope (`types.rs:311`)
 
 Legacy capability envelope (backward compat). Fields: `read_workspace`,
 `write_workspace`, `read_outside_workspace`, `write_outside_workspace`, `subprocess`,
 `network`, `env_access`, `dependency_install`, `destructive_fs`.
 
-### PythonPolicyDecision (`types.rs:239-256`)
+### PythonPolicyDecision (`types.rs:240`)
 
 ```rust
 pub struct PythonPolicyDecision {
@@ -182,11 +182,11 @@ pub struct PythonPolicyDecision {
 }
 ```
 
-### SandboxBackend (`types.rs:182-190`)
+### SandboxBackend (`types.rs:183`)
 
 `Landlock | PortableFallback | None`
 
-### SandboxOutcome (`types.rs:204-219`)
+### SandboxOutcome (`types.rs:205`)
 
 ```rust
 pub enum SandboxOutcome {
@@ -197,7 +197,7 @@ pub enum SandboxOutcome {
 }
 ```
 
-### PythonRunResult (`types.rs:519-566`)
+### PythonRunResult (`types.rs:520`, 23 fields)
 
 ```rust
 pub struct PythonRunResult {
@@ -230,7 +230,7 @@ pub struct PythonRunResult {
 
 Labels are pseudo-local run identifiers, not registered in any artifact store.
 
-### DelegatedPythonRun (`tool.rs:16-28`)
+### DelegatedPythonRun (`tool.rs:16`)
 
 ```rust
 pub struct DelegatedPythonRun {
@@ -259,7 +259,7 @@ pub fn cleanup_orphans(&self, active_digests: &[&str]) -> usize
 
 `INLINE_SOURCE_MAX_BYTES = 200 KiB`, `SOURCE_STORE_MAX_BYTES = 2 MiB`.
 
-### PythonProjector (`projection.rs:148-285`)
+### PythonProjector (`src/python_script/projection.rs:163`)
 
 Implements `CommandOutputProjector` for the shell projection pipeline. Name: `"python"`.
 Detects Python commands by argv prefix (`python3`, `python`, `pip`, `pip3`, `conda`).
@@ -322,7 +322,7 @@ pub fn compute_digest(source: &str) -> String
 
 ## Configuration Surface
 
-### Executor constants (`executor.rs:21-22`)
+### Executor constants (`src/python_script/executor.rs:20-21`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -331,17 +331,17 @@ pub fn compute_digest(source: &str) -> String
 
 ### Verify mode timeouts
 
-The tool default for Verify mode is 300s (`tool.rs:525`). The scheduler may
+The tool default for Verify mode is 300s (`src/python_script/tool.rs:543`). The scheduler may
 override via `JobPayload.timeout_secs`.
 
-### Source store constants (`source_store.rs:17-20`)
+### Source store constants (`src/python_script/source_store.rs:17`/`:20`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `INLINE_SOURCE_MAX_BYTES` | 204,800 | Max source inlineable in job payload |
 | `SOURCE_STORE_MAX_BYTES` | 2,000,000 | Max total source accepted by store |
 
-### Environment policy (`executor.rs:24-33`)
+### Environment policy (`src/python_script/executor.rs:24-31`)
 
 Inherited env vars: `PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`,
 `PYTHONPATH`, `DYLD_LIBRARY_PATH`. All other env vars are cleared.
@@ -418,12 +418,12 @@ cargo test -p codegg --lib python_script
 Submodule targeting:
 
 ```bash
-cargo test -p codegg --lib python_script::analyze      # 30+ tests
-cargo test -p codegg --lib python_script::sandbox       # 30+ tests
-cargo test -p codegg --lib python_script::executor      # 15+ tests
-cargo test -p codegg --lib python_script::projection    # 17 tests
+cargo test -p codegg --lib python_script::analyze      # 39 tests
+cargo test -p codegg --lib python_script::sandbox       # 43 tests
+cargo test -p codegg --lib python_script::executor      # 20 tests
+cargo test -p codegg --lib python_script::projection    # 20 tests
 cargo test -p codegg --lib python_script::tool          # 2 tests
-cargo test -p codegg --lib python_script::source_store  # 12 tests
+cargo test -p codegg --lib python_script::source_store  # 13 tests
 cargo test -p codegg --lib python_script::snapshot      # 4 tests
 cargo test -p codegg --lib python_script::tests         # module-level integration tests
 ```
@@ -451,3 +451,28 @@ cargo test -p codegg --lib tool::bash
 - `architecture/human_shell.md` — projection pipeline
 - `architecture/tool_programs.md` — tool program execution (separate subsystem)
 - `architecture/security.md` — Landlock sandbox enforcement
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected (all refs were stale by ~1 line):
+`PythonJobExecutor` `executors.rs:492` → `:1148`; Verify default 300s
+`tool.rs:525` → `:543`; executor constants `executor.rs:21-22` → `:20-21`;
+env policy `executor.rs:24-33` → `:24-31`; `PythonProjector`
+`projection.rs:148-285` → `:163`; source-store constants `:17-20` → `:17`/`:20`;
+and the `types.rs` type refs (+1 each): `PythonExecutionMode` 259→260,
+`PythonScriptRequest` 474→475, `PythonRiskLevel` 418→419,
+`PythonCapabilityProfile` 65→66, `ExecutableRule` 19→20,
+`PythonCapabilityEnvelope` 310→311, `PythonPolicyDecision` 239→240,
+`SandboxBackend` 182→183, `SandboxOutcome` 204→205,
+`PythonRunResult` 519→520 (now states 23 fields), `DelegatedPythonRun`
+`tool.rs:16-28` → `16`. Per-submodule test counts replaced with measured
+values (analyze 39, sandbox 43, executor 20, projection 20, tool 2,
+source_store 13, snapshot 4). Verified accurate: 9 files in
+`src/python_script/`, `PythonRiskAssessment` 11 fields, `PythonCapabilityProfile`
+10 fields, `PythonPolicyDecision` 7 fields, `PythonRunResult`'s 23 fields
+matching the doc block exactly, `PythonScriptRequest` 7 fields,
+`ExecutableRule` 3 fields, 4 `SandboxOutcome` variants, `DEFAULT_TIMEOUT_SECS`
+60 and `MAX_SCRIPT_LENGTH` 500,000 (`executor.rs:20-21`),
+`INLINE_SOURCE_MAX_BYTES` 200 KiB and `SOURCE_STORE_MAX_BYTES` 2,000,000
+(`source_store.rs:17`/`:20`), and the 2 MiB / 4000-char diff limits
+(`executor.rs:617`/`:688`).

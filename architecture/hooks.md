@@ -63,27 +63,27 @@ pub struct HookContext {
     pub timestamp: i64,
 }
 
-// :89
+// :93
 pub trait Hook: Send + Sync {
     async fn execute(&self, ctx: &HookContext) -> Result<(), AppError>;
 }
 
-// :93
+// :97
 pub struct ShellCommandHook {
     pub command: String,
-    pub timeout: Duration,  // default 30s
+    pub timeout: Duration,  // default 30s (hooks/mod.rs:107)
     pub event: HookEvent,
 }
 
-// :170
+// :174
 pub struct HookRegistry {
     hooks: HashMap<HookEvent, Vec<Box<dyn Hook>>>,
 }
 ```
 
-`HookRegistry::from_config()` (:185) builds from `HookConfigEntry` list.
-`HookRegistry::run_hooks()` (:211) executes all hooks for an event,
-collecting errors.
+`HookRegistry::from_config()` (:189) builds from `HookConfigEntry` list.
+`HookRegistry::run_hooks()` (:215) executes all hooks for an event,
+collecting errors into a returned `Vec<AppError>`.
 
 ### Plugin Hooks (`src/plugin/hooks.rs`)
 
@@ -99,7 +99,7 @@ pub enum HookType {
     MessagesTransform,
 }
 
-// :92
+// :93
 pub struct HookResult {
     pub output: serde_json::Value,
     pub blocked: bool,
@@ -121,7 +121,9 @@ command = "echo"
 timeout_secs = 10
 ```
 
-`InlineScript` hook type is deprecated and silently skipped at runtime.
+`InlineScript` hook type is deprecated (`codegg-config/src/schema.rs:975`
+carries the `#[deprecated]` attribute) and silently skipped at runtime with a
+warning (`src/hooks/mod.rs:205-206`).
 
 ### Environment Variables Passed to Shell Hooks
 
@@ -144,10 +146,11 @@ timeout_secs = 10
 - `AgentEnd` hooks do NOT run on stream errors (the loop breaks before
   reaching them).
 - `SessionEnd` hooks run after the loop exits.
-- Plugin hooks have a 5-second timeout per hook. Shell hooks default to
-  30s (configurable via `timeout_secs`).
+- Plugin hooks have a 5-second timeout per hook (`hook_timeout:
+  Duration::from_secs(5)`, `src/plugin/service.rs:41`). Shell hooks default to
+  30s (configurable via `timeout_secs`, `src/hooks/mod.rs:107`).
 - Plugin hook errors include the plugin_id prefix:
-  `{plugin_id}: hook timeout: ...`
+  `{plugin_id}: hook timeout: ...` (`src/plugin/service.rs:624`)
 
 ## Testing
 
@@ -159,3 +162,24 @@ cargo test -p codegg -- hooks
 
 - [agent.md](agent.md) — AgentLoop integration points
 - [plugin.md](plugin.md) — WASM plugin hooks
+
+## Source verification
+
+Verified 2026-10-06 against `src/hooks/mod.rs`, `src/plugin/hooks.rs`,
+`src/plugin/service.rs`, and `crates/codegg-config/src/schema.rs`. Corrected 6
+stale refs, all shifted by +4 lines except one: the `Hook` trait `:89` → `:93`,
+`ShellCommandHook` `:93` → `:97`, `HookRegistry` `:170` → `:174`,
+`HookRegistry::from_config` `:185` → `:189`, `HookRegistry::run_hooks`
+`:211` → `:215`, and `HookResult` `plugin/hooks.rs:92` → `:93`.
+Added source refs for three previously uncited invariants: the `InlineScript`
+`#[deprecated]` attribute (`schema.rs:975`) and its skip-with-warning arm
+(`hooks/mod.rs:205-206`), the 5s plugin hook timeout
+(`src/plugin/service.rs:41`), and the `{plugin_id}: hook timeout` error prefix
+(`service.rs:624`); also recorded that `run_hooks()` returns
+`Vec<AppError>` and the 30s shell-hook default at `hooks/mod.rs:107`.
+Confirmed correct as written: `HookEvent` (`:16`, 6 variants) and
+`HookContext` (`:55`, 6 fields) with exact field lists, the 6 `CODEGG_*`
+environment variable names (`hooks/mod.rs:68-83`), `HookType`
+(`plugin/hooks.rs:6`, 13 variants in the documented order), `HookResult`
+(4 fields, `blocked`/`output`/`error`/`effects`), and that `src/hooks/` is a
+single `mod.rs` with no sibling files.

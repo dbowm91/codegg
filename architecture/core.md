@@ -22,12 +22,21 @@ that authority.
 
 ### Owned Modules
 
-`codegg-core` currently owns these modules (exported from
+`codegg-core` currently owns 45 modules (exported from
 `crates/codegg-core/src/lib.rs`):
 
 | Module | Key Types |
 |--------|-----------|
+| `agent_convergence` | durable convergence records |
+| `agent_run` | durable agent-run records and store |
+| `agent_run_control` | durable run control (cancel/steer) service |
+| `agent_run_group` | durable run-group state |
+| `approval` | approval policy types |
+| `audit` | append-only audit events |
+| `audit_instrumentation` | audit emission helpers |
+| `authorization` | capability authorization service and operation matrix |
 | `bus` | GlobalEventBus, PermissionRegistry, QuestionRegistry |
+| `collaboration` | project-chat collaboration domain |
 | `context` | ProjectContextResolver, ProjectContext, SessionId |
 | `error` | AppError, ProviderError, ToolError, is_retryable |
 | `goal` | Goal, GoalStatus, GoalBudget, GoalStore, runtime |
@@ -37,6 +46,7 @@ that authority.
 | `migration` | database migration and legacy store conversion |
 | `model_profile` | model profile types |
 | `model_routing` | Codegg adapter for shared semantic model-policy compilation |
+| `presence` | ephemeral presence leases |
 | `project_catalog` | durable logical project registry |
 | `project_discovery` | project root detection heuristics |
 | `project_discovery_service` | service facade for discovery |
@@ -46,15 +56,22 @@ that authority.
 | `provider_connections` | connection store, metadata, lifecycle |
 | `repository_lineage` | repository identity and lineage |
 | `resilience` | CircuitBreaker, FallbackProvider |
+| `run_result` | durable run result records |
 | `run_store` | run record persistence and artifact storage |
 | `session` | session storage, message history, checkpointing |
+| `session_control` | session control state |
 | `snapshot` | file state capture and restore |
 | `storage` | SQLite initialization, connection pooling |
 | `task_state` | task state tracking |
+| `team` | principal, membership, role, capability domain |
 | `tool_program` | tool program IR, language, interpreter |
+| `transport_auth` | transport authentication and principal binding (M002) |
+| `work_order` | durable project work orders, occurrences, lanes, triggers |
+| `work_plan` | work-plan types |
 | `workspace` | WorkspaceRegistry, WorkspaceId, ExecutionContext |
 | `workspace_services` | per-workspace service bundles and lifecycle |
 | `worktree` | git worktree management |
+| `worktree_service` | managed worktree lifecycle service |
 
 ### Re-exports into Root
 
@@ -63,10 +80,10 @@ Root `src/lib.rs` re-exports these modules so downstream code can use
 
 ```rust
 pub use codegg_core::{
-    bus, goal, identity, memory, migration, model_profile,
-    project_storage, repository_lineage, resilience, run_store,
-    session, snapshot, storage, task_state, workspace,
-    workspace_services, worktree,
+    agent_convergence, agent_run, agent_run_control, agent_run_group, bus,
+    goal, identity, memory, migration, model_profile, project_storage,
+    repository_lineage, resilience, run_store, session, snapshot, storage,
+    task_state, work_plan, workspace, workspace_services, worktree,
 };
 ```
 
@@ -172,7 +189,7 @@ intentionally live outside it.
 ### Next Likely Extraction Target
 
 The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
-the `CoreDaemon` request dispatch into `core::daemon_family` plus nine
+the `CoreDaemon` request dispatch into `core::daemon_family` plus 16
 `core::daemon_*` family modules; Residual M003 has separated construction,
 bootstrap/recovery, refresh, and shutdown into `core::daemon_construct`,
 `core::daemon_bootstrap`, `core::daemon_refresh`, and
@@ -200,9 +217,15 @@ transport from the underlying agent and session logic.
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
-| `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router (~110 lines) that delegates each envelope to exactly one family handler. ~4,600 lines (was ~12,000 before M002, ~6,300 after M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
-| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 166 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
+| `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~6,000 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
+| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 232 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
+| `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. |
+| `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
+| `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |
+| `core::daemon_team` | `handle_team_request` | Team membership, principal, and device-token administration (team-collaboration M003). |
+| `core::daemon_work_orders` | `handle_work_order_request` | Project work orders, occurrences, sequence lanes, and trigger management. |
+| `core::daemon_workspace_dashboard` | `handle_workspace_dashboard_request` | Workspace dashboard aggregates over daemon-owned workspace state. |
 | `core::daemon_providers` | `handle_providers_request` | Eggpool provisioning and provider-connection lifecycle over the daemon-owned provisioner. |
 | `core::daemon_sessions` | `handle_sessions_request` | Session CRUD, selection reads, message reads, import/export/template over daemon-owned session stores. |
 | `core::daemon_turns` | `handle_turns_request` | Turn submit/cancel/steer, agent/model selection writes, permission/question responses, transport lifecycle. |
@@ -229,6 +252,8 @@ listener binding, and core construction remain root-owned. See
 | `core::event_log` | `EventLog` | In-memory event ring buffer with optional SQLite-backed projection sink. |
 | `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
 | `core::notification` | `NotificationRouter`, `AudioArbiter` | TTS and notification policy routing. |
+| `core::lsp_diagnostics_store` | diagnostics store | Daemon-owned LSP diagnostics persistence. |
+| `core::work_order_coordinator` | work-order coordinator | Wakes and advances work-order gates and schedules. |
 | `core::session_runtime` | `SessionRuntimeRegistry` | Active session runtime state tracking. |
 | `core::session_selection` | `SelectionService` | Session-level connection/model selection via typed stores. M004: `ModelSelect` adapter, `apply_last_used_preference`, durable-projected runtime cache. |
 | `core::provider_connections` | `ConnectionManager`, `ProviderConnectionStore` | Provider instance caching, lifecycle, and purge. |
@@ -428,7 +453,7 @@ documented user-scoped lock, metadata, and log root. The production daemon opens
 user-scoped catalog (`codegg.db`) before normal runtime initialization;
 project-local `.codegg/sessions.db` remains legacy/import storage only.
 
-**`CoreRuntimeMode`** enum (`src/core/instance.rs:42`):
+**`CoreRuntimeMode`** enum (`src/core/instance.rs:41`):
 - `DaemonClient` (default) — connect-or-start against the singleton daemon
 - `StandaloneInproc` — in-process core, no daemon interaction (`--standalone`)
 - `StandaloneStdio` — `core-stdio` subprocess (`--stdio`)
@@ -515,10 +540,10 @@ compatibility boundary.
 ### Implementation Notes
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in
-  `crates/codegg-protocol/src/core.rs:26`).
-- `CoreDaemon` (~4,600 lines in `daemon.rs` plus nine `daemon_*`
-  family modules totaling ~6,400 lines plus four `daemon_*` lifecycle
-  modules totaling ~2,300 lines) holds daemon identity, runtime deps, event
+  `crates/codegg-protocol/src/core.rs:28`).
+- `CoreDaemon` (~6,000 lines in `daemon.rs` plus 16 `daemon_*`
+  family modules totaling ~15,400 lines plus four `daemon_*` lifecycle
+  modules totaling ~2,400 lines) holds daemon identity, runtime deps, event
   log, session/client registries, notification router, workspace registry,
   workspace services, eggpool provisioner, selection service, asset refresh
   coordinator, project activation, and projection seam. Family handlers and
@@ -580,7 +605,7 @@ compatibility boundary.
 
 ### Test Coverage
 
-- `turn_submit_uses_injected_runtime` (`src/core/daemon.rs:4489`) —
+- `turn_submit_uses_injected_runtime` (`src/core/daemon.rs:5944`) —
   Verifies that `TurnSubmit` delegates to the injected `TurnRuntime` rather
   than constructing one inline.
 - `request_family_routes_each_coherent_family`
@@ -611,3 +636,36 @@ session creation, loading, turns, and project-scoped listing. It performs
 bounded input parsing and durable membership/lifecycle checks before
 execution. The resolver does not authorize principals and does not scan the
 filesystem or use process cwd as identity authority.
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`, `src/lib.rs`,
+`src/core/*.rs`, `src/core/instance.rs`,
+`crates/codegg-protocol/src/core.rs`, and
+`crates/codegg-core/src/storage/mod.rs`. Corrected the `codegg-core`
+module inventory, which listed 28 of the crate's 45 `pub mod`
+declarations: added `agent_convergence`, `agent_run`, `agent_run_control`,
+`agent_run_group`, `approval`, `audit`, `audit_instrumentation`,
+`authorization`, `collaboration`, `presence`, `run_result`,
+`session_control`, `team`, `transport_auth`, `work_order`, `work_plan`,
+and `worktree_service`, and stated the 45 total. Corrected the root
+`src/lib.rs` re-export block, which omitted `agent_convergence`,
+`agent_run`, `agent_run_control`, `agent_run_group`, and `work_plan`.
+Corrected `daemon.rs` size `~4,600` → `~6,000` lines (actual 6,005) and
+the family-module count nine → 16 (actual ~15,400 lines across the 16
+family modules, plus ~2,400 across the four lifecycle modules); corrected
+the `DaemonRequestFamily::of` variant count 166 → 232 to match
+`CoreRequest`. Added the six undocumented `src/core/daemon_*` family
+modules (`daemon_control`, `daemon_documents`, `daemon_lsp`,
+`daemon_team`, `daemon_work_orders`, `daemon_workspace_dashboard`) and
+the two undocumented modules `core::lsp_diagnostics_store` and
+`core::work_order_coordinator`. Corrected `file.rs:line` refs:
+`PROTOCOL_VERSION` `core.rs:26` → `:28`, `CoreRuntimeMode`
+`instance.rs:42` → `:41`, and `turn_submit_uses_injected_runtime`
+`daemon.rs:4489` → `:5944`. Verified accurate: the three `CoreClient`
+implementations, the three `CoreRuntimeMode` variants, the
+`DaemonPaths` / `DaemonInstanceGuard` / `DaemonInstanceMetadata` /
+`DaemonConnectError` / `ConnectOrStartOptions` types and their
+declarations in `instance.rs`, the `ConnectOrStartOptions` 10 s / 100 ms
+defaults, `STORAGE_LAYOUT_VERSION` = 68, `PROTOCOL_VERSION` = 2, and the
+`ExecutionContext` / `WorkspaceRegistry` contract.

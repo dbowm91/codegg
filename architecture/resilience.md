@@ -13,7 +13,7 @@ to unhealthy backends.
 
 | Layer | Path | Role |
 |-------|------|------|
-| Canonical implementation | `crates/codegg-providers/src/circuit.rs` (282 lines) | `CircuitBreaker`, `CircuitState`, `CircuitError` |
+| Canonical implementation | `crates/codegg-providers/src/circuit.rs` (342 lines) | `CircuitBreaker`, `CircuitState`, `CircuitError` |
 | Core re-export | `crates/codegg-core/src/resilience.rs:6` | `pub use codegg_providers::circuit::{CircuitBreaker, CircuitError, CircuitState};` |
 | Root re-export | `src/lib.rs:11` | `pub use codegg_core::resilience;` |
 
@@ -62,7 +62,7 @@ caller's responsibility.
   back to Open and seeds `last_failure_time` so the normal
   Open→HalfOpen timeout applies before the next probe.
 
-### is_available (circuit.rs:81)
+### is_available (circuit.rs:90, `#[deprecated]` at :89)
 
 > **Deprecated**: `is_available()` is kept for backward compatibility
 > only. Prefer `call()` which atomically owns admission and the
@@ -71,9 +71,11 @@ caller's responsibility.
 
 Uses a **write lock** from the start to avoid TOCTOU races. When the
 state is Open and the timeout has elapsed, atomically transitions
-to HalfOpen and returns `true`.
+to HalfOpen and returns `true`. `is_available()` does not take the
+half-open probe, so it does not consume probe ownership — only
+`call()` and `try_admit()` (`circuit.rs:139`) do.
 
-### call (circuit.rs:105)
+### call (circuit.rs:114)
 
 ```rust
 pub async fn call<F, R, E>(&self, op: F) -> Result<R, E>
@@ -82,11 +84,18 @@ where
     E: From<CircuitError>,
 ```
 
-Checks availability, then in HalfOpen enforces single-probe via
-`half_open_probe` CAS. Executes the operation, records
-success/failure.
+Delegates admission to `try_admit()` (`circuit.rs:139`), which runs the
+same state machine as `call` — including the HalfOpen single-probe CAS
+claim — then awaits the operation and records exactly one outcome:
+`record_success()` on `Ok`, `record_failure()` on `Err`. Admission failure
+short-circuits with `E::from(CircuitError)`.
 
-### record_success (circuit.rs:194)
+`try_admit()` is the admission-only variant for stream owners: it claims
+the probe but leaves health accounting to the caller, so a successful
+stream acquisition is not counted as health success before the terminal
+stream outcome is known.
+
+### record_success (circuit.rs:215)
 
 - **Closed**: Resets `failure_count` to 0.
 - **HalfOpen**: Increments `success_count`; transitions to Closed
@@ -94,7 +103,7 @@ success/failure.
   `last_failure_time`. Releases `half_open_probe`.
 - **Open**: No action.
 
-### record_failure (circuit.rs:219)
+### record_failure (circuit.rs:240)
 
 - **Closed**: Increments `failure_count`; transitions to Open when
   threshold exceeded.
@@ -106,7 +115,7 @@ Always sets `last_failure_time`.
 
 ## Key Types & APIs
 
-### CircuitBreaker (circuit.rs:44)
+### CircuitBreaker (circuit.rs:53)
 
 ```rust
 #[derive(Clone)]
@@ -125,7 +134,7 @@ pub fn new(
 ) -> Self
 ```
 
-### CircuitBreakerInner (circuit.rs:29)
+### CircuitBreakerInner (circuit.rs:38)
 
 ```rust
 struct CircuitBreakerInner {
@@ -143,13 +152,13 @@ struct CircuitBreakerInner {
 }
 ```
 
-### CircuitState (circuit.rs:8)
+### CircuitState (circuit.rs:17)
 
 ```rust
 pub enum CircuitState { Closed, Open, HalfOpen }
 ```
 
-### CircuitError (circuit.rs:15)
+### CircuitError (circuit.rs:24)
 
 ```rust
 pub enum CircuitError { Open(String) }
@@ -201,11 +210,40 @@ CircuitBreaker::new(p.name(), 3, 60, 2)
 cargo test -p codegg-providers circuit    # unit tests
 ```
 
-Tests cover: HalfOpen single-probe enforcement, HalfOpen timeout
-recovery via Open, and basic state transitions.
+Two unit tests in `circuit.rs` (`mod tests`, `:271`):
+`half_open_allows_only_one_probe` and `half_open_timeout_recovers_via_open`.
+The latter asserts the Open→HalfOpen timeout still admits a new probe after
+a forced HalfOpen timeout, and that `last_failure_time` stays seeded.
 
 ## Related Docs
 
 - [provider.md](provider.md) — Provider architecture and FallbackProvider
 - `crates/codegg-providers/src/circuit.rs` — Canonical implementation
 - `crates/codegg-providers/src/fallback.rs` — Consumer integration
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-providers/src/circuit.rs`,
+`crates/codegg-providers/src/fallback.rs`,
+`crates/codegg-core/src/resilience.rs`, and `src/lib.rs`. Corrected 10
+stale refs, all in `circuit.rs`: file length `282` → `342`, `CircuitState`
+`:8` → `:17`, `CircuitError` `:15` → `:24`, `CircuitBreakerInner`
+`:29` → `:38`, `CircuitBreaker` `:44` → `:53`, `is_available` `:81` →
+`:90` (`#[deprecated]` at `:89`), `call` `:105` → `:114`,
+`record_success` `:194` → `:215`, `record_failure` `:219` → `:240`.
+Restructured the `call()` section to match the real implementation: `call`
+delegates admission to `try_admit()` (`circuit.rs:139`) and then records
+exactly one outcome, and the previously undocumented `try_admit()`
+admission-only stream path was added.
+Confirmed the prior review's "prefer `call()` over deprecated
+`is_available()`" claim: the `#[deprecated]` attribute at `circuit.rs:89`
+carries exactly that note ("use `call()` so admission and half-open probe
+ownership are atomic"). Confirmed correct as written: the
+`resilience.rs:6` and `src/lib.rs:11` re-exports, the 11-field
+`CircuitBreakerInner` listing, `max_half_open_duration` = 30s, the
+`FallbackProvider` wiring `CircuitBreaker::new(p.name(), 3, 60, 2)`
+(`fallback.rs:38`), the default retryable status list
+`429, 500, 502, 503, 504` (`fallback.rs:223`), the `2^i` capped-at-30s
+backoff (`fallback.rs:149`), and the existence of both
+`scripts/check_provider_resilience_ownership.py` and
+`src/agent/provider_turn.rs`.

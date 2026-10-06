@@ -78,10 +78,10 @@ ExecutorCompletion returned to scheduler
 | Type | Location | Purpose |
 |------|----------|---------|
 | `ProgramResult` | `crates/codegg-core/src/tool_program/interpreter.rs:229` | Terminal type, value/artifacts, failure class, budget usage |
-| `ProgramStatus` | `crates/codegg-core/src/tool_program/interpreter.rs:242` | `Completed` / `Failed` / `Cancelled` / `TimedOut` / `Stalled` / `Incomplete` / `Recoverable` |
-| `ProgramValue` | `crates/codegg-core/src/tool_program/mod.rs` | Serializable value type for program results |
+| `ProgramStatus` | `crates/codegg-core/src/tool_program/interpreter.rs:243` | `Completed` / `Failed` / `Cancelled` / `TimedOut` / `Stalled` / `Incomplete` / `Recoverable` |
+| `ProgramValue` | `crates/codegg-core/src/tool_program/interpreter.rs:32` | Serializable value type for program results |
 | `FailureClass` | `crates/codegg-core/src/tool_program/interpreter.rs:169` | 13 classes: Validation, ManifestDrift, AuthorityNarrowed, SchemaMismatch, TransientBackend, Timeout, Stall, Cancelled, Storage, ReplayDivergence, BudgetExhausted, Execution, InternalPanic |
-| `BrokerCallback` | `crates/codegg-core/src/tool_program/interpreter.rs:675` | Trait: `execute_call`, `submit_child_job`, `submit_child_job_with_checkpoint`, `heartbeat`, `call_reserved`, `call_completed`, `checkpoint` |
+| `BrokerCallback` | `crates/codegg-core/src/tool_program/interpreter.rs:679` | Trait: `execute_call`, `submit_child_job`, `submit_child_job_with_checkpoint`, `heartbeat`, `call_reserved`, `call_completed`, `checkpoint` |
 | `CallRequest` | `crates/codegg-core/src/tool_program/interpreter.rs` | Request type for broker tool calls |
 | `CallResult` | `crates/codegg-core/src/tool_program/interpreter.rs` | Result type from broker tool calls |
 | `CompletedCall` | `crates/codegg-core/src/tool_program/interpreter.rs` | Completed nested-call ledger entry |
@@ -223,7 +223,7 @@ Rejection reasons:
 tool calls within a program run.
 
 - **Cache key**: `CacheKey { tool_name, input_hash, workspace_id }`
-- **Default TTL**: 300s (configurable per `ProgramCacheConfig`)
+- **Default TTL**: 300s (`ProgramCacheConfig::default_ttl`, `src/tool/program_cache.rs:63`)
 - **Max entries**: 100 per tool, 1000 total
 - **Eviction**: oldest-first when limits reached
 - **Thread-safe**: `parking_lot::RwLock<HashMap<...>>`
@@ -724,3 +724,19 @@ and notifies the owning session on terminal completion; it does not create an
 agent-run group or an unowned task. Use ordinary direct/parallel tools for
 short turn-local work, Tool Programs for bounded deterministic tool loops, and
 run groups only for independent delegated agent lifetimes.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `ProgramStatus` `:242` → `:243`,
+`BrokerCallback` `:675` → `:679`, and `ProgramValue` was attributed to
+`crates/codegg-core/src/tool_program/mod.rs` but is defined in
+`interpreter.rs:32`. Verified accurate: `ProgramResult` (`:229`),
+`FailureClass` 13 classes with the listed names, `ProgramStatus` 7 variants,
+`RuntimeLimits` (`:359`), `InterpreterCheckpoint` (`:450`), `ProgramStore`
+(`store.rs:29`), `ToolProgramTool` (`src/tool/tool_program.rs:79`),
+`ToolProgramExecutor`/`BrokerAdapter` (`src/scheduler/tool_program_executor.rs:119`/`:181`),
+the 7 `BrokerCallback` methods, the 8-tool read-only palette table with its
+caller policies/effect classes/cache TTLs, `ProgramCacheConfig` defaults
+(300s TTL, 100 per tool, 1000 total — `program_cache.rs:63-68`), and the
+`CallRequest`/`CallResult`/`CompletedCall` locations in `interpreter.rs`
+(`:582`/`:591`/`:660`).

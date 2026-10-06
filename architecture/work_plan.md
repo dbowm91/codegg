@@ -29,7 +29,7 @@ evidence correlation, and the host-owned completion arbiter.
 | Evidence assembly (jobs/runs) | `src/work_plan_evidence.rs` |
 | Completion arbiter + turn/Goal gates | `src/work_plan_arbiter.rs` |
 | Todo one-way sync | `src/work_plan_todo_sync.rs` |
-| DB schema | `crates/codegg-core/src/session/schema.rs` migration v59; layout `storage::STORAGE_LAYOUT_VERSION = 59` |
+| DB schema | `crates/codegg-core/src/session/schema.rs` migration v59 (plan tables); v68 adds the repository-binding tables. Current layout `storage::STORAGE_LAYOUT_VERSION = 68` |
 | Integration tests | `crates/codegg-core/tests/work_plan_foundation.rs`, `crates/codegg-core/tests/work_plan_projection_arbiter.rs`, `tests/work_plan_projection_arbiter.rs` + in-module unit tests |
 
 ## How It Works
@@ -268,7 +268,8 @@ production graph (static pin/boundary guard in-module).
   core assessor remains the compatibility API and the explicit legacy
   engines; a source guard test forbids new direct production calls.
 - Differential parity: `tests/work_plan_eggplan_differential.rs`
-  (28 cases incl. the S1/S2 race); no permissive delta is accepted.
+  (21 `differential_*` test cases incl. the S1/S2 race); no permissive
+  delta is accepted.
 
 ## M003 repository Plan binding and writeback
 
@@ -454,3 +455,31 @@ source provenance and native job/attempt/run identifiers. It resolves
 AgentRun subjects only through the durable exact job+attempt link. Missing,
 dangling, legacy, drifted, and unsealed provenance is never filled from the
 current workspace.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: the DB-schema row claimed
+`STORAGE_LAYOUT_VERSION = 59`; it is 68
+(`crates/codegg-core/src/storage/mod.rs:39`) — the row now separates "plan
+tables are v59" from "binding tables are v68" from the current layout version;
+the differential parity claim of "28 cases" is 21 `differential_*` test
+functions in `tests/work_plan_eggplan_differential.rs`. Verified accurate:
+the 10 files in `crates/codegg-core/src/work_plan/` (including
+`repository_binding.rs`, which the module table already listed), every row of
+the validation-bound table (`MAX_ITEMS_PER_PLAN` 64, objective 4000, origin
+provenance 1024, phase 256, item description 1024, dependencies 16, acceptance
+16/512/512, evidence 16/512/512, blocker 1024, next action 1024, owner refs
+256, scope ids 256 — `work_plan/model.rs:29-59`), `WorkPlan` 15 fields,
+`WorkItem` 17 fields, 4 `WorkPlanStatus` variants, 6 `WorkItemStatus`
+variants, `WorkAcceptance` 3 fields, 3 `WorkAcceptanceDisposition` variants,
+`WorkEvidenceKind` 6 variants, `WorkEvidenceRef` 3 fields, the five
+`WorkPlanCompletionAssessment` variants (`assessment.rs:26`),
+`MAX_PROJECTION_ITEMS` 8 and default `limit` 5 (`projection.rs:15`/`:35`),
+`MAX_PROJECTION_BYTES` 4096 (`projection.rs:18`), the todo-projection rule
+that `Disabled` and a zero `max_total_items` both yield no items and the cap
+is `clamp(1, 12)` (`todo_projection.rs:122-127`), the TaskStatePolicy-driven
+todo caps for Sparse/Explicit/Guided, every referenced file path
+(`src/work_plan_{arbiter,eggplan,evidence,repository_binding,todo_sync}.rs`,
+`src/tool/work_plan.rs`, `src/agent/loop.rs`, `src/tool/goal.rs`, both
+`work_plan_projection_arbiter.rs` tests, `work_plan_foundation.rs`), and
+`scripts/check_work_plan_repository_binding.py`.

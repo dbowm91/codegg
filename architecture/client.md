@@ -93,12 +93,12 @@ pub async fn run_attach(
 ### Connection Flow
 
 1. **URL Building**
-   - `build_tui_ws_url()` (`attach.rs:148`): Converts HTTP/HTTPS/WS/WSS
+   - `build_tui_ws_url()` (`attach.rs:154`): Converts HTTP/HTTPS/WS/WSS
      to the `/tui` WebSocket endpoint.
-   - `build_http_url()` (`attach.rs:161`): Converts WS/WSS to HTTP/HTTPS
+   - `build_http_url()` (`attach.rs:167`): Converts WS/WSS to HTTP/HTTPS
      for the health check.
 
-2. **Health Check** (`sdk.rs:35`)
+2. **Health Check** (`sdk.rs:27`, request timeout at `:33`)
    - `RemoteClient::health()` → `GET /health` with 10s timeout.
     - The client uses `eggfetch-core 0.2.0` with the packaged WebPKI trust set
      and explicit redirect bounds.
@@ -117,18 +117,18 @@ pub async fn run_attach(
    - Once a projection subscription exists, reconnects use
      `ProjectionResume` with the persisted `ProjectionCursor`.
 
-5. **Channel Setup** (`attach.rs:95-101`)
+5. **Channel Setup** (`attach.rs:101-104`)
    - `event_tx/rx`: server WS → TUI (256 capacity)
    - `out_tx/rx`: TUI → server WS (256 capacity)
 
-6. **Background Tasks** (`attach.rs:103-138`)
+6. **Background Tasks** (`attach.rs:109-144`)
    - `event_task`: receives WS messages, parses JSON, forwards to TUI
    - `send_task`: receives `TuiMessage` from TUI, serializes, sends WS
 
-7. **TUI Initialization** (`attach.rs:93`)
+7. **TUI Initialization** (`attach.rs:99`)
    - `tui::App::new_remote()` with event channels.
 
-8. **Cleanup** (`attach.rs:142-143`)
+8. **Cleanup** (`attach.rs:148-149`)
    - Both tasks aborted when `run_event_loop()` returns.
 
 ### Daemon Integration
@@ -150,7 +150,7 @@ handshake/identity probe before reusing a daemon or auto-starting one.
 ### RemoteClient
 
 ```rust
-// src/client/sdk.rs:7
+// src/client/sdk.rs:5
 pub struct RemoteClient {
     base_url: String,
     http: Client,
@@ -234,13 +234,13 @@ passed via CLI arguments.
 
 | Timeout | Value | Location |
 |---------|-------|----------|
-| Health check (HTTP) | 10s | `sdk.rs:40` |
-| Health check (connect) | 10s | `sdk.rs:26` |
+| Health check (HTTP) | 10s | `sdk.rs:33` |
+| Health check (connect) | 10s | `sdk.rs:12` |
 | WebSocket connect | 30s | `attach.rs:46` |
-| Max retry attempts | 3 | `attach.rs:39` |
-| Backoff (1st retry) | 1s | `attach.rs:42` |
-| Backoff (2nd retry) | 2s | `attach.rs:42` |
-| Backoff (3rd retry) | 4s | `attach.rs:42` |
+| Max retry attempts | 3 | `attach.rs:38` |
+| Backoff (1st retry) | 1s | `attach.rs:41` |
+| Backoff (2nd retry) | 2s | `attach.rs:41` |
+| Backoff (3rd retry) | 4s | `attach.rs:41` |
 
 ## Invariants & Gotchas
 
@@ -280,3 +280,23 @@ cargo test --test tui -- --test-threads=1
 - `crates/codegg-protocol/src/tui.rs` — TuiMessage protocol
 - [tui.md](tui.md) — TUI and remote-client integration
 - `src/core/instance.rs` — `connect_or_start_daemon` singleton
+
+## Source verification
+
+Verified 2026-10-06 against `src/client/attach.rs`, `src/client/sdk.rs`,
+and `crates/codegg-protocol/src/tui.rs`. Corrected nine stale
+`file.rs:line` refs in the connection-flow steps and timing table:
+`build_tui_ws_url` `attach.rs:148` → `:154`, `build_http_url` `:161` →
+`:167`, the health-check step `sdk.rs:35` → `:27`, channel setup
+`attach.rs:95-101` → `:101-104`, background tasks `:103-138` →
+`:109-144`, TUI initialization `:93` → `:99`, cleanup `:142-143` →
+`:148-149`, the `RemoteClient` decl `sdk.rs:7` → `:5`, and the two
+health-check timeout refs (`sdk.rs:40` → `:33`, `sdk.rs:26` → `:12`).
+Retargeted the retry/backoff refs to their real declarations —
+`max_attempts` at `attach.rs:38` and the `2^(attempt-1)` backoff at
+`:41`, replacing the repeated `:42`. Verified accurate: `run_attach` at
+`attach.rs:17`, the 30s connect timeout at `:46`, both 256-entry channel
+capacities (`REMOTE_EVENT_CHANNEL_CAPACITY` / `REMOTE_OUTBOUND_CHANNEL_CAPACITY`),
+3 max retry attempts with 1s/2s/4s backoff,
+`REMOTE_TUI_PROTOCOL_VERSION` = 5 at `tui.rs:14`, `TuiMessage` at
+`tui.rs:19`, and the five `ClientError` variants.

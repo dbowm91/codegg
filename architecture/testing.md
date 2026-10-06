@@ -18,13 +18,26 @@ scripts/verify.sh full     # broad verification before handoff or release
 1. `cargo fmt --check --all`
 2. `generate_builtin_agents.py --check`
 3. `check-core-boundary.sh`
-4. `check_sandbox_contract.py`
-5. `check_execution_ownership.py`
-6. `check_tui_project_authority.py`
-7. `check_http_route_disposition.py`
-8. `check_audit_coverage.py`
-9. `check_scheduler_bypass.py`
-10. `cargo check --workspace --all-targets --locked`
+4. `check-client-boundary.sh`
+5. `check-desktop-boundary.sh`
+6. `check_sandbox_contract.py`
+7. `check_execution_ownership.py`
+8. `check_tui_project_authority.py`
+9. `check_tui_editor_text_authority.py`
+10. `check_http_route_disposition.py`
+11. `check_audit_coverage.py`
+12. `check_scheduler_bypass.py`
+13. `check_provider_wire_boundary.py`
+14. `check_provider_wire_cutover.py`
+15. `check_openai_endpoint_composition.py`
+16. `check_provider_catalog_consistency.py`
+17. `check_provider_resilience_ownership.py`
+18. `check_eggwork_target_routing.py`
+19. `cargo check --workspace --all-targets --locked`
+
+Quick runs **19** steps (18 checks plus the workspace `cargo check`). The
+boundary and provider-wire guards were added after this list was first
+written; `scripts/verify.sh` is the authority.
 
 ### `verify.sh full`
 
@@ -210,10 +223,13 @@ starving subprocess timing tests). That is why it is sound despite
 process-global env
 mutation throughout the test code: unlike `cargo test --test-threads=N`,
 no two tests ever share an address space, so intra-suite env races are
-impossible by construction (verified by audit 2026-09-25). The four
-sleep/timeout-bound heavy files (`eggwork_remote_execution_live`,
+impossible by construction (verified by audit 2026-09-25). The five
+sleep/timeout-bound heavy binaries (`eggwork_remote_execution_live`,
 `interactive_process_attach_resume`, `interactive_process_sessions`,
-`interactive_terminal_tui`) run alone via `threads-required = "num-cpus"`.
+`interactive_terminal_tui`, `scheduler_cancellation`) run alone via
+`threads-required = "num-cpus"`. `scheduler_cancellation` joined this list
+2026-09-25 after real-`sleep` token assertions flaked twice under parallel
+load while passing serially.
 The profile is workspace-wide only — subset runs (`-p <crate>`) use the
 default or timing profile, because the heavy-binary filter strictly
 requires its binaries to exist.
@@ -244,17 +260,18 @@ pre-consolidation). Steps in order:
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
 5. TUI project authority guard (`check_tui_project_authority.py`)
-6. HTTP route disposition guard (`check_http_route_disposition.py`)
-7. Audit coverage guard (`check_audit_coverage.py`)
-8. Scheduler bypass guard (`check_scheduler_bypass.py`)
-9. Formatting (`cargo fmt --check --all`)
-10. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
-11. Live-Eggwork relevance detection
+6. TUI editor text-authority guard (`check_tui_editor_text_authority.py`)
+7. HTTP route disposition guard (`check_http_route_disposition.py`)
+8. Audit coverage guard (`check_audit_coverage.py`)
+9. Scheduler bypass guard (`check_scheduler_bypass.py`)
+10. Formatting (`cargo fmt --check --all`)
+11. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
+12. Live-Eggwork relevance detection
 (`scripts/detect-live-eggwork-changes.sh`; main pushes always
 require live; PRs require live only for live-relevant paths)
-12. Conditional Eggwork fixture prebuild
+13. Conditional Eggwork fixture prebuild
 (`scripts/prebuild-eggwork-fixtures.sh`; skipped when live is omitted)
-13. Workspace tests (`cargo nextest run --workspace --locked --profile ci`;
+14. Workspace tests (`cargo nextest run --workspace --locked --profile ci`;
 full suite on main/relevant-PR live path, `-E 'not
 binary(eggwork_remote_execution_live)'` on the ordinary unrelated-PR
 fast path).
@@ -517,3 +534,41 @@ diagnostic only.
 - `AGENTS.md` — full test command catalog
 - `.config/nextest.toml` — nextest profiles
 - `scripts/audit_tokio_tests.py` — Tokio runtime flavor audit
+
+## Source Verification
+
+Verified 2026-10-06 against `scripts/verify.sh`, `.config/nextest.toml`,
+`.github/workflows/ci.yml`, `tests/common/pool.rs`, and the workspace tree.
+The many dated CI wall-clock/baseline measurements further down this document
+are historical records and were deliberately left untouched.
+
+Corrected:
+- **`verify.sh quick` step list 10 → 19 steps.** Nine guards were added after
+  the list was written: `check-client-boundary.sh`,
+  `check-desktop-boundary.sh`, `check_tui_editor_text_authority.py`,
+  `check_provider_wire_boundary.py`, `check_provider_wire_cutover.py`,
+  `check_openai_endpoint_composition.py`,
+  `check_provider_catalog_consistency.py`,
+  `check_provider_resilience_ownership.py`, and
+  `check_eggwork_target_routing.py`. Verified against the `==> ` echo order in
+  `scripts/verify.sh:50`-`:107`.
+- **CI step list 13 → 14 steps.** Added the TUI editor text-authority guard
+  between the TUI project authority and HTTP route disposition guards
+  (`.github/workflows/ci.yml:110`).
+- **Run-alone heavies "four" → "five".** The `ci` profile override lists five
+  binaries; `scheduler_cancellation` is the fifth and was missing
+  (`.config/nextest.toml`).
+
+Confirmed accurate, no change:
+- Nextest profiles match exactly: `default` 14 threads, `timing` serial
+  (1 thread), `ci` 4 threads, all with `slow-timeout`
+  (`terminate-after = 2`, `60s` period for `timing`/`ci`, `30s` for `default`).
+- `isolated_pool()` (`tests/common/pool.rs:52`) does build a named in-memory
+  DB as `codegg_test_iso_{uuid}` (`:53`) and runs migrations internally, so
+  the "do NOT add redundant `migrate()`" rule holds. `shared_pool()`
+  (`:37`) is the `OnceLock` process-wide pool, as documented.
+- `scripts/audit_tokio_tests.py` exists.
+- `verify.sh full` uses `--features server,plugins,lsp-test-support` with
+  `--profile ci`, not `--all-features`, avoiding `lsp-real-server-tests`.
+- Plain `cargo test` broad runs keep `--test-threads=1`
+  (`scripts/verify.sh:43`).

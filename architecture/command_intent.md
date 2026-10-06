@@ -188,8 +188,10 @@ to `RawShell` for unrecognized forms).
 commands differently than the heuristic fallback. For example, `git remote -v`
 and `git remote show origin` are classified as `GitMutating` by the typed
 parser (treats `-v`/`show` as unrecognized sub-subcommands), even though the
-heuristic would treat them as read-only. Tests at
-`src/command_intent/mod.rs:1348-1364` document these cases. Similarly,
+heuristic would treat them as read-only. Tests
+`git_branch_contains_is_mutating`, `git_branch_merged_is_mutating`
+(`src/command_intent/mod.rs:1323`/`:1331`), `git_remote_v_is_mutating`, and
+`git_remote_show_is_mutating` (`:1363`/`:1375`) document these cases. Similarly,
 `git branch --contains HEAD` and `git branch --merged main` are classified as
 `GitMutating` by the typed parser because `--contains`/`--merged` are treated
 as unhandled flags, making the positional arg look like a branch to create.
@@ -202,7 +204,7 @@ Known mutating operations identified by the typed parser include: `add`,
 type and flags (e.g., `--hard` on `reset`, `-f` on `clean`).
 
 **Polish-pass provenance parity:** The execution-origin matrix in
-`tests/git_execution_origin_matrix.rs` (19 tests, rows 1-10) asserts that
+`tests/git_execution_origin_matrix.rs` (12 tests, rows 1-10) asserts that
 every origin — native typed read/mutation, native raw git subcommand, Bash
 simple git read/mutation, managed git argv fallback, raw shell with
 `|`/`&&`/`;`, TUI git action, daemon git action, replay/rerun — has
@@ -222,9 +224,11 @@ as `GitMutating` but dispatches as `RawShell` (see
 ## Integration
 
 `classify_command()` is called by:
-- `BashTool::execute()` in `src/tool/bash.rs:339` (via `prepare_command()`
-  in `src/command_intent/pipeline.rs`) — attaches routing metadata when
-  `CommandIntentConfig` is set
+- `BashTool`'s shared `execute_inner()` (`src/tool/bash.rs:335`) calls
+  `prepare_command()` (`src/tool/bash.rs:449`,
+  `src/command_intent/pipeline.rs:31`), which classifies via
+  `classify_command_with_context` (`pipeline.rs:32`) and attaches routing
+  metadata when `CommandIntentConfig` is set
 
 ### CommandIntentMode
 
@@ -237,7 +241,7 @@ backward-compatible alias for `Active`; new configuration should use `Active`.
 ### CommandIntentFamily
 
 `CommandIntentFamily` enum with 10 variants, used for per-family active
-routing config (defined in `crates/codegg-config/src/schema.rs:2904`):
+routing config (defined in `crates/codegg-config/src/schema.rs:3417`):
 
 ```rust
 pub enum CommandIntentFamily {
@@ -266,7 +270,7 @@ pub enum RouteLevel {
 ```
 
 Per-family fields in `CommandIntentConfig`
-(`crates/codegg-config/src/schema.rs:2741`):
+(`crates/codegg-config/src/schema.rs:3254`):
 - `route_tests: Option<RouteLevel>` — Test family
 - `route_git_read: Option<RouteLevel>` — Git read-only family
 - `route_search: Option<RouteLevel>` — Search/list/read family
@@ -339,9 +343,26 @@ own `RouteLevel`:
 - **`GitDestructive`** — `reset --hard`, `clean -fdx`, `push --force`.
   Gated by `route_git_destructive`.
 
-The `git_operation_family()` resolver in `src/command_intent/plan.rs:286`
+The `git_operation_family()` resolver in `src/command_intent/plan.rs:288`
 maps `GitOperation` variants to the appropriate family via risk precedence:
 `Destructive > Network > Read > LocalMutation`. This replaces the former
 `intent_kind_to_family()` mapping that returned `None` for `GitMutating`,
 which caused bash-translated simple git mutations to fall back to raw shell
 even when active routing was enabled.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `CommandIntentFamily`
+`schema.rs:2904` → `:3417`; `CommandIntentConfig` `schema.rs:2741` → `:3254`;
+`git_operation_family()` `plan.rs:286` → `:288`; execution-origin matrix 19 →
+12 tests; the git-parser divergence tests are now named with their real lines
+(`src/command_intent/mod.rs:1323/1331/1363/1375` rather than the stale
+`:1348-1364`); the integration entry point is now `execute_inner`
+(`src/tool/bash.rs:335`) → `prepare_command` (`bash.rs:449`,
+`pipeline.rs:31`) rather than the stale `bash.rs:339`. Verified accurate:
+`CommandIntentKind` 15 variants, `ExecutionCapability` 10,
+`CommandSource` 5, `CommandOrigin` 6, `IntentConfidence` 4, `RiskLevel` 5,
+`ContextPolicy` 4, `RiskAssessment` 3 fields, `CommandIntent` 7 fields,
+`CommandIntentContext` 2 fields, `CommandIntentFamily` 10 variants,
+`CommandIntentMode` (`Observe`/`Active`/deprecated `Route`, default `Observe`),
+and the 10 per-family `route_*` config fields.

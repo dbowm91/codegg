@@ -15,12 +15,15 @@ discovery). It is designed to be a low-coupling foundation that root
 
 ## Modules
 
+45 `pub mod` declarations in `crates/codegg-core/src/lib.rs`:
+
 | Module | Purpose |
 |--------|---------|
 | `agent_convergence` | Agent convergence orchestration and cycle management |
 | `agent_run` | Agent run lifecycle and state |
 | `agent_run_control` | Agent run control signals and cancellation |
 | `agent_run_group` | Agent run group coordination |
+| `approval` | Approval routing domain and durable runtime preferences (M003) |
 | `audit` | Audit logging and event recording |
 | `audit_instrumentation` | Audit instrumentation hooks |
 | `authorization` | Authorization policy and operation descriptors |
@@ -34,6 +37,7 @@ discovery). It is designed to be a low-coupling foundation that root
 | `memory` | Persistent memory patterns |
 | `migration` | Legacy project database migration (idempotent) |
 | `model_profile` | Declarative adapter resolution, model profiles, task state policy |
+| `model_routing` | Adapter into the neutral `eggpool-model-routing` semantic router |
 | `presence` | Ephemeral project-scoped presence leases (M001, task-free, bounded) |
 | `project_catalog` | Project catalog management and invariants |
 | `project_discovery` | Bounded project discovery logic |
@@ -47,12 +51,15 @@ discovery). It is designed to be a low-coupling foundation that root
 | `run_result` | Agent run result types and persistence |
 | `run_store` | Run store for persisting agent run artifacts |
 | `session` | Session storage, schema, checkpoint |
+| `session_control` | Turn-scoped shared-session controller lease (ADR-0007) |
 | `snapshot` | File state capture and diff |
 | `storage` | SQLite initialization, preferences, daemon catalog |
 | `task_state` | Todo state management and projections |
 | `team` | Team membership and role management |
 | `tool_program` | Restricted-Python frontend for Tool Programs (IR, parser) |
 | `transport_auth` | Transport-level authentication types |
+| `work_order` | Durable work orders: model, store, coordinator, trigger |
+| `work_plan` | Bounded work plans: model, store, checkpoint, assessment, projection |
 | `workspace` | Workspace identity, registry, path policy, execution context |
 | `workspace_services` | Per-workspace service bundle (RunStore, PathPolicy, etc.) |
 | `worktree` | Git worktree operations |
@@ -67,6 +74,8 @@ discovery). It is designed to be a low-coupling foundation that root
   classification
 - `codegg-protocol` — protocol DTOs
 - `codegg-providers` — provider types and circuit breaker
+- `eggpool-model-routing` — neutral semantic model-routing compiler
+  (git dep, rev-pinned in `Cargo.toml`; reached through `model_routing`)
 - `egggit` — read-only git facts (status, diff, log, blame, refs)
 - `egglsp` — LSP client/service/operations
 - `eggsentry` — deterministic security scanning
@@ -196,3 +205,15 @@ module. Key test modules:
   state deep dive
 - `architecture/native_crates.md` — library-first tool architecture
 - `architecture/testing.md` — test resource taxonomy
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`,
+`crates/codegg-core/Cargo.toml`, and the module header comments in
+`crates/codegg-core/src/*.rs`. Corrected the module table from 40 to 45
+entries: added `approval`, `model_routing`, `session_control`, `work_order`,
+and `work_plan`, then diffed the table's names against `lib.rs` (exact
+match). Added `eggpool-model-routing` to the dependency list — it is a
+rev-pinned git dependency in `Cargo.toml` and reached through
+`model_routing`. Confirmed `codegg-core` does not depend on `eggcontext`,
+`codegg-document`, axum/ratatui/wasmtime, or the root crate.

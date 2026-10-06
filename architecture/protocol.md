@@ -17,13 +17,19 @@ in `src/lib.rs`.
 crates/codegg-protocol/src/
 ├── lib.rs              # Module exports
 ├── core.rs             # CoreRequest, CoreResponse, CoreEvent, envelopes
+├── document.rs         # document.v1 DTOs and bounds (MAX_DOCUMENT_*)
 ├── dto.rs              # Shared DTOs (Session, Message, etc.)
-├── provider.rs         # Secret-safe provider connection/provisioning DTOs
-├── frames.rs           # ClientCapabilities, RequestEnvelope, EventEnvelope
+├── frames.rs           # ClientHello/ServerHello, ClientCapabilities,
+│                      #   ServerCapabilities
+├── interactive_process.rs # InteractiveProcess attach/stream DTOs
+├── lsp.rs              # LSP preview-apply and read-surface DTOs
 ├── plugin.rs           # PluginManifestDto, PluginInvocation, PluginResponse
 ├── projection/         # Frontend-neutral session projection contract
+├── provider.rs         # Secret-safe provider connection/provisioning DTOs
+├── runtime_assets.rs   # Inert bounded runtime-asset manifest DTOs
 ├── tui.rs              # TuiMessage, QuestionSpec, RemoteTuiStateSnapshot
-└── ui.rs               # UiNode, UiEffect, UiEffectEnvelope, UiLimits
+├── ui.rs               # UiNode, UiEffect, UiEffectEnvelope, UiLimits
+└── work_order.rs       # Durable project work order wire DTOs
 ```
 
 Domain identity types live in `codegg-core::identity`, not in this wire
@@ -56,7 +62,7 @@ events pushed to subscribed clients.
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `PROTOCOL_VERSION` | 2 | `core.rs:26` |
+| `PROTOCOL_VERSION` | 2 | `core.rs:28` |
 | `REMOTE_TUI_PROTOCOL_VERSION` | 5 | `tui.rs:14` |
 | `PLUGIN_PROTOCOL_VERSION` | 1 | `plugin.rs` |
 | `PROJECTION_PROTOCOL_VERSION` | 1 | `projection/caps.rs` |
@@ -71,7 +77,7 @@ Version history:
 
 ## Key Types & APIs
 
-### RequestEnvelope (`core.rs:31`)
+### RequestEnvelope (`core.rs:33`)
 
 ```rust
 pub struct RequestEnvelope<T> {
@@ -81,7 +87,7 @@ pub struct RequestEnvelope<T> {
 }
 ```
 
-### EventEnvelope (`core.rs:531`)
+### EventEnvelope (`core.rs:984`)
 
 ```rust
 pub struct EventEnvelope<T> {
@@ -94,14 +100,14 @@ pub struct EventEnvelope<T> {
 }
 ```
 
-### CoreRequest (`core.rs:1132`)
+### CoreRequest (`core.rs:1806`)
 
-Tagged enum with ~166 variants. Major groups:
+Tagged enum with 232 variants. Major groups:
 
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
 
-**Connection Lifecycle (~18)**: `EggpoolConnectionCreate` (temporary
+**Connection Lifecycle (21)**: `EggpoolConnectionCreate` (temporary
 compatibility adapter), `ProviderConnectionCreate` (canonical
 provider-neutral create), `ProviderSetupList` (secret-free setup catalog),
 `EggpoolConnectionCancel`, `EggpoolConnectionStatus`,
@@ -124,7 +130,7 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 **Session Selection (4)**: `SessionSelectionGet`, `SessionSelectionList`,
 `SessionSelectionUpdate`, `SessionSelectionModels`
 
-**Session Lifecycle (2)**: `SessionLifecycleGet`
+**Session Lifecycle Query (1)**: `SessionLifecycleGet`
 
 **Turn (6)**: `TurnSubmit`, `TurnCancel`, `TurnSteer`, `AgentSelect`,
 `ModelSelect` (M004 compatibility adapter over durable
@@ -158,9 +164,9 @@ and bounded reasons only, never secrets)
 `WorkspaceArchive`, `WorkspaceSnapshotRequest`,
 `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`
 
-**Project Catalog (7)**: `ProjectList`, `ProjectGet`, `ProjectRegister`,
+**Project Catalog (8)**: `ProjectList`, `ProjectGet`, `ProjectRegister`,
 `ProjectArchive`, `ProjectRestore`, `ProjectHealth`,
-`ProjectCatalogCapabilities`
+`ProjectCatalogCapabilities`, `WorkspaceDashboard`
 
 **Run (4)**: `RunList`, `RunGet`, `RunArtifactRead`, `RunRerun`
 
@@ -182,7 +188,7 @@ and bounded reasons only, never secrets)
 **Schedules (6)**: `ScheduleCreate`, `ScheduleList`, `ScheduleGet`,
 `SchedulePause`, `ScheduleResume`, `ScheduleDelete`
 
-**Projections (7)**: `ProjectionCapabilities`, `ProjectionSubscribe`,
+**Projections (8)**: `ProjectionCapabilities`, `ProjectionSubscribe`,
 `ProjectionResume`, `ProjectionAck`, `ProjectionUnsubscribe`,
 `ProjectionSnapshotGet`, `ProjectionArtifactRead`, `ProjectionArtifactList`
 
@@ -190,9 +196,23 @@ and bounded reasons only, never secrets)
 `ToolProgramCallPage`, `ToolProgramNotificationReinject`,
 `ToolProgramRecoveryDebugInspect`
 
-### CoreResponse (`core.rs:542`)
+Groups present in `CoreRequest` but not enumerated above (see
+`crates/codegg-protocol/src/core.rs:1806` for the authoritative list):
+`Document*` (9: `DocumentCapabilities`, `DocumentOpen`,
+`DocumentSnapshotGet`, `DocumentStatusGet`, `DocumentWriterAcquire`,
+`DocumentChange`, `DocumentSave`, `DocumentReload`, `DocumentClose`),
+`ActiveGoalLoad`,
+`ManagedWorktree*` (4), `WorkPlanBindRepository` /
+`WorkPlanRepositoryBinding` (2) plus `WorkOrderBindRepository`,
+`EditCheckpoint*` (6), `Lsp*` (4), `Audit*` (3),
+`InteractiveProcess*` (10), `Presence*` (3), `Chat*` (19), `Team*` (11),
+approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
+`SandboxProfileSet`, `RuntimePolicySet`, `TaskModelPreferenceSet`,
+`ExecutionPolicyGet`), and `WorkOrder*` (22).
 
-Tagged enum with ~110 variants. Major groups:
+### CoreResponse (`core.rs:998`)
+
+Tagged enum with 147 variants. Major groups:
 
 **Connection Responses**: `EggpoolConnectionCreated` (shared result shape,
 also aliased as `CreateProviderConnectionResult`),
@@ -255,9 +275,9 @@ interruption, and never treats raw compatibility events as projection state.
 `SessionSelectionUpdated`, `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`, `JobRecoveryReport`
 
-### CoreEvent (`core.rs:1953`)
+### CoreEvent (`core.rs:3135`)
 
-Tagged enum with ~76 variants. Major groups:
+Tagged enum with 87 variants. Major groups:
 
 **Snapshot (6)**: `SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`,
 `AssetRefreshCompleted`, `ConnectionRotated`, `ConnectionStateChanged`
@@ -279,28 +299,31 @@ Tagged enum with ~76 variants. Major groups:
 
 **Test Run (3)**: `TestRunStarted`, `TestRunProgress`, `TestRunCompleted`
 
-**Run (7)**: `RunStarted`, `RunProgress`, `RunArtifactCreated`,
+**Run (9)**: `RunStarted`, `RunProgress`, `RunArtifactCreated`,
 `RunProjectionReady`, `RunCompleted`, `RunDenied`, `RunPinned`,
 `ContextPromotionChanged`, `RunRerunLinked`
 
 **Plugin UI (1)**: `PluginUiEffect` (carries `UiEffectEnvelope`)
 
-**Job (10+)**: `JobCreated`, `JobQueued`, `JobBlocked`,
+**Job (13)**: `JobCreated`, `JobQueued`, `JobBlocked`,
 `JobAttemptCreated`, `JobStarted`, `JobProgress`, `JobCancelRequested`,
 `JobCompleted`, `JobFailed`, `JobCancelled`, `JobTimedOut`,
-`JobInterrupted`, `JobRecovered`, `JobScheduled`, `JobDependencyResolved`
+`JobInterrupted`, `JobRetried`
 
 ### TuiMessage (`tui.rs:19`)
 
-Tagged enum with ~41 variants. Major groups:
+Tagged enum with 40 variants. Major groups:
+
+**Envelope (1)**: `EventEnvelope`
 
 **Client-to-Server (3)**: `Input`, `KeyDown`, `MouseClick`
 
-**Connection (3)**: `Resize`, `Resume`, `RequestSnapshot`
+**Connection (4)**: `Resize`, `Resume`, `RequestSnapshot`,
+`ResyncRequired`
 
 **Response (2)**: `PermissionResponse`, `QuestionResponse`
 
-**Server-to-Client (10)**: `RenderFrame` (unsupported — returns error),
+**Server-to-Client (11)**: `RenderFrame` (unsupported — returns error),
 `TextDelta`, `PermissionPending`, `QuestionPending`, `SessionInfo`,
 `SessionEnded`, `ToolCallStarted`, `ToolResult`, `PluginUiEffect`,
 `Error`, `StateSnapshot`
@@ -316,8 +339,6 @@ Tagged enum with ~41 variants. Major groups:
 `ProjectionArtifactReadRequest`, `ProjectionArtifactReadResult`,
 `ProjectionCompatibilityDiagnostic`
 
-**Special (1)**: `ResyncRequired`
-
 ### ClientHello / ServerHello (`frames.rs`)
 
 `ClientHello` carries `client_name`, `ClientKind` (Tui/Gui/Web/Cli/Automation),
@@ -329,11 +350,28 @@ The trusted frontend composition selects these values with
 connection identity or capabilities. The descriptor changes client-side
 composition only and does not grant authorization.
 
-`ClientCapabilities` includes `visual_notifications`, `desktop_notifications`,
-`audio`, `tts`, `multi_session_view`, and 7 `plugin_ui_*` capability flags.
+`ClientCapabilities` (`frames.rs:35`) has 16 boolean fields:
+`visual_notifications`, `desktop_notifications`, `audio`, `tts`,
+`multi_session_view`, 8 `plugin_ui_*` flags (`plugin_ui_dialog`,
+`plugin_ui_toast`, `plugin_ui_panel`, `plugin_ui_status_item`,
+`plugin_ui_table`, `plugin_ui_markdown`, `plugin_ui_code`,
+`plugin_ui_progress`), and `workspace_registration`, `project_catalog`,
+`session_projection`.
 
-`ServerCapabilities` includes `event_replay`, `session_management`,
-`permission_routing`, `workspace_registration`, `workspace_snapshots`.
+`ServerCapabilities` (`frames.rs:102`) has 10 boolean fields:
+
+| Field | `#[serde(default)]` | Meaning |
+|-------|---------------------|---------|
+| `event_replay` | no | Event replay is supported |
+| `session_management` | no | Session CRUD is supported |
+| `permission_routing` | no | Permission routing is supported |
+| `workspace_registration` | yes | Workspace registration/snapshots (replaces legacy `SnapshotWorkspace { project_dir }`) |
+| `workspace_snapshots` | yes | `WorkspaceSnapshot` records in turn snapshots |
+| `durable_jobs` | yes | Durable job submit/list/cancel protocol variants |
+| `durable_schedules` | yes | Durable schedules |
+| `identity_aware_context` | yes | Canonical project/workspace context + session bindings |
+| `project_catalog` | yes | Bounded project catalog request/response/event family |
+| `session_projection` | yes | `codegg_protocol::projection` frontend-neutral contract |
 
 ### UiEffectEnvelope (`ui.rs`)
 
@@ -388,6 +426,10 @@ The `projection/` submodule defines:
 - Deterministic `ProjectionReducer` with `ReducerEventInput` and
   `ReducerConfig` (`reducer.rs`)
 - Adapters from `CoreResponse`/`CoreEvent` (`adapters.rs`)
+- Replay transport types for subscription replay (`replay.rs`)
+- Transport-neutral `ProjectionClientController` frontend state machine
+  (`controller.rs`) and the `HeadlessProjectionConsumer` reference consumer
+  (`consumer.rs`)
 - Golden fixtures (`fixtures.rs`)
 
 ## Identity-Aware Additive Protocol
@@ -423,9 +465,9 @@ resolve through deterministic lookup of an existing unique locator.
 - **Secret-bearing requests rejected by remote WebSocket**: denial is
   defined by secret-bearing semantics (`CoreRequest::is_secret_bearing`),
   not by provider names — `EggpoolConnectionCreate`,
-  `ProviderConnectionCreate`, `ConnectionRotateSecretStage`, and
-  `ConnectionRotateBegin` are local-only. The remote core WebSocket
-  rejects them with `secret_operation_remote_denied`, and the
+  `ProviderConnectionCreate`, `ConnectionRotateSecretStage`,
+  `ConnectionRotateBegin`, and `TeamTokenCreate` are local-only. The remote
+  core WebSocket rejects them with `secret_operation_remote_denied`, and the
   `secret_bearing_variants_are_denied` protocol test pins the set so a
   future secret-bearing variant fails until it is added to the guard.
 - **Projection is additive**: Unknown optional variants are tolerated
@@ -513,3 +555,49 @@ The reusable `codegg-client::DocumentController` calls this same request
 family for TUI and headless native clients. It preserves stable change IDs for
 uncertain retries and uses `DocumentStatusGet` only for observer metadata;
 status revision changes require an explicit authoritative snapshot request.
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-protocol/src/lib.rs`,
+`core.rs`, `frames.rs`, `tui.rs`, `document.rs`, and `projection/`, plus
+`crates/codegg-core/src/authorization/policy.rs` for the capability split.
+- Confirmed the three wire totals by counting variant declarations, not by
+  estimation: **CoreRequest 232** (209 struct-bodied + 23 unit, `core.rs:1806`
+  through `core.rs:3106`), **CoreResponse 147** (146 struct-bodied plus the
+  unit `Ack`, `core.rs:998` through `core.rs:1767`), **CoreEvent 87**
+  (`core.rs:3135` through `core.rs:3735`), and `TuiMessage` 40 (`tui.rs:19`).
+  An earlier review pass reported 110 / 76 for `CoreResponse` / `CoreEvent`;
+  those numbers were wrong and the doc's 147 / 87 are correct.
+- Corrected the CoreRequest group headers against their own listed names:
+  Connection Lifecycle 20 → 21, Session Lifecycle 20 → 19, and the second
+  `Session Lifecycle (2)` group, which lists only `SessionLifecycleGet`,
+  became `Session Lifecycle Query (1)`. Dropped the duplicate `TodoList` from
+  the not-enumerated list (already covered by the `Todo (1)` group).
+- Corrected two CoreEvent headers: Run 7 → 9, and Job `10+` → 13. The
+  job list named three variants that do not exist anywhere in the crate
+  (`JobRecovered`, `JobScheduled`, `JobDependencyResolved`); replaced them
+  with the real 13th variant, `JobRetried`.
+- Corrected `ClientCapabilities` (`frames.rs:35`) **18 → 16 boolean fields**
+  and "7 `plugin_ui_*` flags" → 8; the prose already listed all eight flag
+  names, so only the two counts were wrong.
+- Rebuilt the "Where It Lives" tree: `lib.rs` declares 13 modules, and the doc
+  omitted `document.rs`, `interactive_process.rs`, `lsp.rs`,
+  `runtime_assets.rs`, and `work_order.rs`. `frames.rs` also no longer claims
+  `RequestEnvelope`/`EventEnvelope`, which are defined in `core.rs` (`:33` and
+  `:984`). Added the three missing projection submodules (`replay.rs`,
+  `controller.rs`, `consumer.rs`) to the M1 contract list.
+- Added `TeamTokenCreate` to the secret-bearing local-only list:
+  `is_secret_bearing` at `core.rs:3117` matches five variants, not four.
+- Verified accurate: `ServerCapabilities` (`frames.rs:102`) has exactly 10
+  boolean fields and only `event_replay`, `session_management`, and
+  `permission_routing` lack `#[serde(default)]`; `PROTOCOL_VERSION = 2` at
+  `core.rs:28`; `REMOTE_TUI_PROTOCOL_VERSION = 5` at `tui.rs:14`;
+  `PLUGIN_PROTOCOL_VERSION = 1` at `plugin.rs:7`;
+  `PROJECTION_PROTOCOL_VERSION = 1` at `projection/caps.rs:27`; every
+  enumerated variant name in the CoreRequest/CoreResponse/CoreEvent/TuiMessage
+  groups resolves to a real variant; the not-enumerated counts
+  `Document*` 9, `ManagedWorktree*` 4, `EditCheckpoint*` 6, `Lsp*` 4,
+  `Audit*` 3, `InteractiveProcess*` 10, `Presence*` 3, `Chat*` 19, `Team*` 11,
+  `WorkOrder*` 22, and WorkPlan repository bindings 2; the
+  `CreateProviderConnectionResult` alias; and
+  `projection::consumer::HeadlessProjectionConsumer`.

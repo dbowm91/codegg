@@ -22,7 +22,7 @@ crates/codegg-core/src/storage/
 
 ### Database Initialization
 
-There are **four** entry points for getting a `SqlitePool`:
+There are **six** entry points for getting a `SqlitePool`:
 
 | Function | Path | Purpose |
 |----------|------|---------|
@@ -30,6 +30,7 @@ There are **four** entry points for getting a `SqlitePool`:
 | `init_migrated_daemon_catalog(paths)` | Same as above | Runs migrations on a single-connection bootstrap pool, closes it, then opens the normal catalog pool |
 | `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db` | Legacy project-local store for backward compat |
 | `init_pool_at(db_path)` | Caller-supplied path | Generic pool at an arbitrary path |
+| `init_pool_at_for_migration(db_path)` | Caller-supplied path | Single-connection pool reserved for migrations |
 | `init(project_dir)` (deprecated) | Empty → config dir; non-empty → legacy | Retained for tests; new code MUST NOT use |
 
 `init_migrated_daemon_catalog` is the **production daemon bootstrap
@@ -57,6 +58,14 @@ pub struct DaemonPaths {
 }
 ```
 
+Public constructors/accessors: `with_overrides`
+(`storage/paths.rs:32`), `default_data_root()` (`:40`),
+`default_config_root()` (`:51`), `data_root()` (`:59`),
+`config_root()` (`:66`), `catalog_db_path()` (`:73`),
+`catalog_db_wal_path()` (`:78`), `agents_dir()` (`:88`),
+`credentials_path()` (`:94`), `workspace_local_artifact_root()` (`:101`).
+See `crates/codegg-core/src/storage/paths.rs` for the full listing.
+
 Key derived paths:
 - `catalog_db_path()` → `<data_root>/codegg.db`
 - `catalog_db_wal_path()` → `<data_root>/codegg.db-wal`
@@ -73,20 +82,22 @@ single batched query:
 |--------|-------|---------|
 | `journal_mode` | `WAL` | Write-Ahead Logging for concurrency |
 | `wal_autocheckpoint` | `1000` | Checkpoint every 1000 pages |
-| `busy_timeout` | `30000` per connection | 30s timeout on busy, applied to every pooled connection |
-
-> Per-connection pragmas must ride `SqliteConnectOptions`, not a
-> post-connect query: a `PRAGMA busy_timeout` executed through the pool
-> touches exactly one pooled connection, leaving the rest at
-> `busy_timeout=0` (instant `SQLITE_BUSY` on transient contention —
-> observed as silently dropped projection publications under concurrent
-> turn + subscription load in M004 E2E). Builder options apply to every
-> connection the pool opens.
+| `busy_timeout` | `30000` ms (builder) / `5000` (post-connect) | 30s builder timeout applied to every pooled connection; the post-connect batch re-asserts a 5s value on the opening connection |
 | `synchronous` | `NORMAL` | Balanced performance/safety |
 | `mmap_size` | `268435456` | 256MB memory-mapped I/O |
 | `cache_size` | `-2000` | 2MB page cache |
 | `temp_store` | `MEMORY` | Temp tables in RAM |
 | `foreign_keys` | `ON` | FK enforcement |
+
+> Per-connection pragmas must ride `SqliteConnectOptions`, not only a
+> post-connect query: a `PRAGMA busy_timeout` executed through the pool
+> touches exactly one pooled connection, leaving the rest at
+> `busy_timeout=0` (instant `SQLITE_BUSY` on transient contention —
+> observed as silently dropped projection publications under concurrent
+> turn + subscription load in M004 E2E). The builder sets
+> `busy_timeout(30s)`, `foreign_keys(true)`, `journal_mode(WAL)`, and
+> `synchronous(NORMAL)` for every connection the pool opens; the
+> post-connect batch then applies the remaining pragmas.
 
 ### Connection Pool
 
@@ -117,8 +128,9 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is defined by `storage::STORAGE_LAYOUT_VERSION`
-(`storage/mod.rs:39`) and must track the highest migration wired into the
+The current layout version is **68**, defined by
+`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:39`), and must track the
+highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
 `tests/storage_migrations.rs` equality assertion). It is exported and
@@ -149,7 +161,7 @@ reconciles terminal/non-replayable delegated jobs to `Interrupted`,
 
 ## Key Types & APIs
 
-### Database (`storage/mod.rs:41`)
+### Database (`storage/mod.rs:41`, `impl` at `storage/mod.rs:45`)
 
 ```rust
 impl Database {
@@ -204,6 +216,8 @@ pub async fn init_legacy_project_store(project_root: &Path)
     -> Result<SqlitePool, StorageError>;
 pub async fn init_pool_at(db_path: &Path)
     -> Result<SqlitePool, StorageError>;
+pub async fn init_pool_at_for_migration(db_path: &Path)
+    -> Result<SqlitePool, StorageError>;
 #[deprecated] pub async fn init(project_dir: &str)
     -> Result<SqlitePool, StorageError>;
 ```
@@ -211,7 +225,8 @@ pub async fn init_pool_at(db_path: &Path)
 ## Configuration Surface
 
 - `CODEGG_DATA_HOME` env var overrides the default data root in
-  `DaemonPaths::default_data_root()` (`storage/paths.rs:41`)
+  `DaemonPaths::default_data_root()` (`storage/paths.rs:40`, env read at
+  `storage/paths.rs:41`)
 
 ## Invariants & Gotchas
 
@@ -240,7 +255,19 @@ pub async fn init_pool_at(db_path: &Path)
 
 Migrations are implemented in `session/schema.rs`, not in the storage
 module. The storage module calls `session::schema::migrate()` during
-initialization.
+initialization. `session/schema.rs` contains 73 `CREATE TABLE`
+statements; migrations v1–v68 are all present as `migrate_v<N>` functions
+(declaration order in the file is not numeric — `migrate_v67`,
+`migrate_v34`, `migrate_v33` lead, and `migrate_v50`/`v47`/`v46`/`v32` are
+defined at the end).
+
+Several late migrations delegate their statements to a module-owned
+schema constant rather than inlining SQL: v55 →
+`collaboration::CHAT_SCHEMA_STATEMENTS`, v58 →
+`approval::RUNTIME_PREFERENCE_SCHEMA_STATEMENTS`, v59 →
+`work_plan::WORK_PLAN_SCHEMA_STATEMENTS`, v65 →
+`session_control::SESSION_CONTROL_SCHEMA_STATEMENTS`, and v68 →
+`work_plan::WORK_PLAN_REPOSITORY_BINDING_SCHEMA_STATEMENTS`.
 
 Key storage-layout migrations:
 - **v22**: Workspace table, `session.workspace_id` column — Phase 2
@@ -258,9 +285,21 @@ Key storage-layout migrations:
 - **v32**: Projection streams, events, checkpoints
 - **v33–v34**: Tool Program domain, notification claims
 - **v35**: Nullable typed lineage columns for child jobs
-- **v36**: Durable per-job execution timeouts
+- **v36**: Durable per-job execution timeouts (`job.timeout_ms`)
+- **v37**: Canonical `agent_task` + `agent_run` tables with typed string IDs, session/root/parent/workspace/status indexes, unique delegation identity, scheduler job/attempt links, bounded terminal references, versioned budget JSON
+- **v38**: `agent_run_mailbox`, `agent_run_journal` — inter-run mail and ordered journal
+- **v39**: `managed_worktree`, `worktree_lease` — daemon-owned worktree records and leases
+- **v40**: `agent_run_result` — durable run result records
+- **v41**: `agent_run_group`, `agent_run_group_member` — run grouping
+- **v42**: `agent_run.depth` (bounded 1..64) for nesting
+- **v43**: `agent_run_group` owner attribution (`owner_kind`, `owner_session_id`, `owner_turn_id`)
+- **v44**: `agent_task.request_fingerprint` for delegation idempotency
+- **v45**: `goal.revision` for CAS goal updates
 - **v46**: `edit_checkpoint` for mutation attribution (pre/post Absent/Present, workspace/session/turn/batch scoped)
 - **v47**: `edit_restore_operation` for checked Undo/Reapply audit (applied/conflict/partial, durable lineage, bounded paths)
+- **v48**: session/event/part lookup indexes (`idx_session_project_updated`, `idx_session_events_session_created`, `part_session_idx`)
+- **v49**: `agent_convergence`, `agent_convergence_cycle` — M001 durable convergence foundation
+- **v50**: job/attempt and schedule lookup indexes (`idx_job_attempt_run_id`, `idx_schedule_occurrence_status`)
 - **v51**: team domain — `principal`, `project_membership` (M001 durable principals/memberships)
 - **v52**: `personal_auth_token` digests for team authentication (M002, never plaintext)
 - **v53**: `origin_attribution` for immutable originating-principal capture (M003)
@@ -297,3 +336,20 @@ cargo test -p codegg-core --test storage_migrations
 - `crates/codegg-core/src/migration.rs` — Legacy database import
   tooling
 - `crates/codegg-core/src/jobs/` — Durable job store (v23+)
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/storage/{mod,paths,preferences}.rs`
+and `crates/codegg-core/src/session/schema.rs`. Corrected: added the
+missing v37–v45, v48, and v50 migration entries (the list jumped v36 → v46);
+stated the layout version explicitly as 68 and fixed
+`default_data_root()` ref `paths.rs:41` → `:40`; added the omitted
+`init_pool_at_for_migration` entry point and corrected "four" → "six";
+fixed the pragma table (the blockquote had been spliced into the middle of
+it, truncating it after `busy_timeout`, and the post-connect batch
+actually sets `busy_timeout=5000` while the builder sets 30s); added the
+`DaemonPaths` accessor line numbers and `Database` impl ref; noted the 73
+`CREATE TABLE` statements and the module-owned schema-constant delegation
+used by v55/v58/v59/v65/v68. All other refs (`:39` layout const, `:41`
+struct, `:214` connect fn, pool sizes, TTLs, preference keys) verified
+accurate.

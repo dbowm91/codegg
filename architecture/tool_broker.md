@@ -58,18 +58,18 @@ AgentLoop / Tool Program
 | `ToolContract` | `src/tool/contract.rs:184` | Metadata: caller policy, effect class, schemas, retry/cache/projection policy |
 | `ToolCallerPolicy` | `src/tool/contract.rs:28` | `DirectOnly` / `DirectOrProgrammatic` / `ProgrammaticOnly` |
 | `ToolEffectClass` | `src/tool/contract.rs:48` | `ReadOnly` / `ReadValidate` / `SafeRepeat` / `IdempotentMutating` / `NonIdempotent` / `ProcessExec` |
-| `ToolTerminalStatus` | `src/tool/contract.rs:302` | `Success` / `Error` / `Denied` / `Cancelled` / `TimedOut` / `InfrastructureError` |
-| `ToolValue` | `src/tool/contract.rs:328` | Typed result: display, value, artifacts, provenance, status, truncated |
-| `ToolContractCatalog` | `src/tool/contract.rs:452` | Pre-built HashMap of tool contracts |
-| `ToolBroker` | `src/tool/broker.rs:435` | Execution pipeline: catalog, config, optional artifact store |
+| `ToolTerminalStatus` | `src/tool/contract.rs:302` | `Success` / `Error` / `Denied` / `Cancelled` / `TimedOut` / `InfrastructureError` / `UncertainSideEffect` |
+| `ToolValue` | `src/tool/contract.rs:333` | Typed result: display, value, artifacts, provenance, status, truncated |
+| `ToolContractCatalog` | `src/tool/contract.rs:471` | Pre-built HashMap of tool contracts |
+| `ToolBroker` | `src/tool/broker.rs:495` | Execution pipeline: catalog, config, optional artifact store |
 | `ToolBrokerConfig` | `src/tool/broker.rs:40` | `default_timeout_ms`, `max_input_bytes`, `max_output_display_bytes`, `max_output_bytes` |
-| `BrokerInvocationContext` | `src/tool/broker.rs:72` | Rich caller context (caller, cwd, session/workspace/agent/turn/job/attempt IDs, authority, cancellation, deadline, principal, path policy, allowed tools, policy revision) |
-| `BrokerAuthority` | `src/tool/broker.rs:115` | `Unverified` / `Verified { grant: ToolAuthorityGrant }` |
-| `BrokerResult` | `src/tool/broker.rs:386` | Typed result with contract, invocation_id, elapsed_ms |
-| `BrokerError` | `src/tool/broker.rs:951` | `NotFound` / `NoContract` / `CallerDenied` / `InputTooLarge` / `Execution` / `AuthorityError` |
+| `BrokerInvocationContext` | `src/tool/broker.rs:72` | Rich caller context with 20 fields: `caller`, `cwd`, `session_id`, `workspace_id`, `agent_id`, `turn_id`, `job_id`, `attempt_id`, `permission_mode`, `timeout_ms`, `submission_key`, `authority`, `cancellation`, `deadline`, `principal_ref`, `workspace_path_policy_id`, `allowed_tools`, `current_policy_revision`, `execution_audit`, `audit_emitter` |
+| `BrokerAuthority` | `src/tool/broker.rs:163` | `Unverified` / `Verified { grant: ToolAuthorityGrant }` |
+| `BrokerResult` | `src/tool/broker.rs:440` | Typed result with contract, invocation_id, elapsed_ms |
+| `BrokerError` | `src/tool/broker.rs:1281` | `NotFound` / `NoContract` / `CallerDenied` / `InputTooLarge` / `Execution` / `AuthorityError` |
 | `ToolCaller` | `src/tool/contract.rs:283` | `Agent` / `Program { program_id }` / `Subagent { parent_agent_id }` / `Api { client_id }` / `Internal` |
 
-## Pipeline Steps (broker.rs:5-16)
+## Pipeline Steps (`src/tool/broker.rs:7-16`)
 
 1. **Lookup**: resolve contract from pre-built catalog
 2. **Caller policy**: check `ToolCallerPolicy` against `ToolCaller`
@@ -148,3 +148,19 @@ cargo test -p codegg --lib tool::contract
 - `architecture/tool.md` — Tool trait and registry
 - `architecture/tool_programs.md` — Tool Program domain, storage, call ledger
 - `architecture/tool_program_language.md` — Restricted-Python language spec
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `ToolValue` `:328` → `:333`,
+`ToolContractCatalog` `:452` → `:471`, `ToolBroker` `broker.rs:435` → `:495`,
+`BrokerAuthority` `:115` → `:163`, `BrokerResult` `:386` → `:440`,
+`BrokerError` `:951` → `:1281`, pipeline steps `broker.rs:5-16` → `:7-16`;
+`ToolTerminalStatus` 6 → 7 variants (`UncertainSideEffect` was missing);
+`BrokerInvocationContext` now lists all 20 fields instead of a subset.
+Verified accurate: `ToolContract` (11 fields, `contract.rs:184`),
+`ToolCallerPolicy` (`:28`), `ToolEffectClass` (`:48`), `ToolCaller` (`:283`),
+`ToolValue` 6 fields, `ToolBroker` 3 fields, `BrokerAuthority` 2 variants,
+`BrokerResult` 4 fields, `BrokerError` 6 variants, `ToolBrokerConfig` (4 fields,
+`broker.rs:40`) and all four of its defaults (120,000 ms / 10 MB / 256 KB /
+10 MB), the 10-step pipeline list, the 5-item legacy contract default set,
+and `scripts/check_tool_broker_boundary.py`.

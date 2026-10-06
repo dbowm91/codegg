@@ -43,7 +43,7 @@ Config::load()
   6. validate()                -> produce warnings (not errors)
 ```
 
-### Merge Strategies (`paths.rs:164`)
+### Merge Strategies (`paths.rs:164`, `merge_configs`)
 
 Different strategies per field type:
 
@@ -69,7 +69,7 @@ Different strategies per field type:
   `human_shell`, `shell`, `deterministic_tools`, `preflight`,
   `command_intent`, `orchestration`, `decision_engine`
 
-### ProviderConfig Merge (`schema.rs:827`)
+### ProviderConfig Merge (`schema.rs:1071`)
 
 `decision_engine` is a simple optional override. Its schema defaults to
 disabled, uses `reference` or `ollama` as an explicit compatibility profile,
@@ -115,7 +115,7 @@ has `base_url`, merged result has both.
 
 ## Key Types & APIs
 
-### Config (`schema.rs:217`)
+### Config (`schema.rs:218`)
 
 ```rust
 pub struct Config {
@@ -183,7 +183,7 @@ pub struct Config {
 }
 ```
 
-### ProviderConfig (`schema.rs:789`)
+### ProviderConfig (`schema.rs:1033`)
 
 ```rust
 pub struct ProviderConfig {
@@ -207,7 +207,7 @@ pub struct ProviderConfig {
 `api_key(&self, prefix)` checks `{PREFIX}_API_KEY` env var first, then
 inline `api_key` field.
 
-### AuthConfig (`schema.rs:15`)
+### AuthConfig (`schema.rs:16`)
 
 ```rust
 pub enum AuthConfig {
@@ -219,13 +219,13 @@ pub enum AuthConfig {
 }
 ```
 
-### ProviderConnectionsConfig (`schema.rs:339`)
+### ProviderConnectionsConfig (`schema.rs:350`)
 
 Daemon-owned provider-connection refresh policy. Defaults:
 `background_refresh=false`, `max_concurrent_refreshes=1`,
 `global_refresh_cap=4`, `health_stale_after_ms=300000`.
 
-### ServerConfig (`schema.rs:741`)
+### ServerConfig (`schema.rs:985`)
 
 ```rust
 pub struct ServerConfig {
@@ -285,7 +285,7 @@ if no explicit or managed key exists and the protected store is genuinely
 fresh, CodeGG atomically bootstraps the managed key. Read/decrypt paths never
 create one.
 
-### ModelProfileConfig (`schema.rs:98`)
+### ModelProfileConfig (`schema.rs:112`)
 
 Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `max_output_tokens`, `tool_call_reliability`, `instruction_adherence`,
@@ -296,13 +296,13 @@ Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `default_thinking_budget`, `max_parallel_tools`, `preferred_tools`,
 `disabled_tools`, `task_state_policy`.
 
-### ContextPolicyConfig (`schema.rs:366`)
+### ContextPolicyConfig (`schema.rs:644`)
 
 Gated active context policy. First use: tool-palette reduction driven
 by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
 `Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-### SearchConfig (`schema.rs:461`)
+### SearchConfig (`schema.rs:739`)
 
 Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 `expose_raw_mcp_tools`, `fallback_to_builtin`, output caps per domain,
@@ -430,3 +430,14 @@ cargo test -p codegg-config -- validation   # validation tests
 - `architecture/search_backend.md` — search backend dispatch
 - `architecture/lsp.md` — LSP semantic cache config
 - `architecture/agent.md` — agent config usage
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/codegg-config/{schema.rs,paths.rs,watcher.rs}`.
+- Corrected 10 stale `file.rs:line` refs. `SearchConfig` had drifted the
+  furthest (`461`→`739`), followed by `ContextPolicyConfig` (`366`→`644`),
+  `ServerConfig` (`741`→`985`), `ProviderConfig` (`789`→`1033`), and
+  `ProviderConnectionsConfig` (`339`→`350`). `ProviderConfig::merge` is at
+  `schema.rs:1071`, not `827`.
+- Confirmed correct as written: `merge_configs` (`paths.rs:164`) and
+  `ConfigWatcher` (`watcher.rs:12`).

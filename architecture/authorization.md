@@ -100,9 +100,9 @@ into the generic subscribe fails rather than silently regressing the gate.
 `OriginAttribution` is built from the bound principal plus the captured
 `AuthorizationDecision` (`from_authority`). One row per scope
 (`session`, `turn`, `job`, `provider`) in `origin_attribution`
-(introduced by migration v53 at storage layout 53); the first write wins so the
-origin is immutable under concurrent writers. Restart-safe: file-DB
-close/reopen preserves rows.
+(introduced by migration v53; the catalog is at storage layout 68); the
+first write wins so the origin is immutable under concurrent writers.
+Restart-safe: file-DB close/reopen preserves rows.
 
 Pre-M003 records carry no canonical principal and are attributed
 explicitly through `OriginAttribution::legacy_local` — the literal
@@ -324,19 +324,25 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (188 native operations; M004 adds `audit_capabilities`,
+rendering (226 native operations; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
-audit store contract; collaboration M001 adds fourteen `chat_*`
-operations below, all `project.chat`; M003 adds three `chat_action_*`
-rows on the same gate; work orders M001 adds seventeen `work_order_*`
-rows below, all project-scoped on `session.create`/`session.read`;
-M005 adds four `work_order_trigger_*` management rows on the same
-gates (firing is not a Core operation):
+audit store contract; collaboration M001 adds twelve `chat_*`
+operations below (all `project.chat` except the global
+`chat_capabilities` negotiation row), of which M003 adds three
+`chat_action_*` rows on the same gate; collaboration M002 adds four
+chat-policy administration rows on `member.manage`; work orders M001
+adds seventeen `work_order_*` rows below, all project-scoped on
+`session.create`/`session.read` (repository binding adds `work_plan_*`
+plus `work_order_bind_repository` on the same gates); M005 adds four
+`work_order_trigger_*` management rows on the same gates (firing is
+not a Core operation):
 
 | Operation | Scope | Capability |
 |---|---|---|
 | `active_goal_load` | via_session | `session.read` |
 | `agent_select` | via_session | `agent.invoke` |
+| `approval_mode_set` | global | `none` |
+| `approval_preference_get` | global | `none` |
 | `asset_refresh` | direct_project | `project.configure` |
 | `asset_refresh_capabilities` | global | `none` |
 | `asset_refresh_status` | direct_project | `project.read` |
@@ -349,10 +355,14 @@ gates (firing is not a Core operation):
 | `chat_action_submit` | direct_project | `project.chat` |
 | `chat_channel_ensure` | direct_project | `project.chat` |
 | `chat_channel_list` | direct_project | `project.chat` |
+| `chat_channel_policy_set` | direct_project | `member.manage` |
 | `chat_composing_list` | direct_project | `project.chat` |
 | `chat_composing_set` | direct_project | `project.chat` |
 | `chat_edit` | direct_project | `project.chat` |
 | `chat_history` | direct_project | `project.chat` |
+| `chat_policy_get` | direct_project | `member.manage` |
+| `chat_policy_list` | direct_project | `member.manage` |
+| `chat_project_policy_set` | direct_project | `member.manage` |
 | `chat_read_get` | direct_project | `project.chat` |
 | `chat_read_set` | direct_project | `project.chat` |
 | `chat_redact` | direct_project | `project.chat` |
@@ -372,6 +382,9 @@ gates (firing is not a Core operation):
 | `connection_rotate_cancel` | opaque | `project.configure` |
 | `connection_rotate_secret_stage` | opaque | `project.configure` |
 | `connection_rotate_status` | opaque | `project.read` |
+| `document_capabilities` | global | `none` |
+| `document_modify` | direct_project | `file.modify` |
+| `document_read` | direct_project | `file.read` |
 | `edit_checkpoint_get` | opaque | `file.read` |
 | `edit_checkpoint_list` | via_session | `file.read` |
 | `edit_checkpoint_reapply` | via_session | `file.modify` |
@@ -381,6 +394,7 @@ gates (firing is not a Core operation):
 | `eggpool_connection_cancel` | opaque | `project.read` |
 | `eggpool_connection_create` | opaque | `project.configure` |
 | `eggpool_connection_status` | opaque | `project.read` |
+| `execution_policy_get` | global | `none` |
 | `goal_checkpoint` | via_session | `session.create` |
 | `goal_clear` | via_session | `session.create` |
 | `goal_done` | via_session | `session.create` |
@@ -391,6 +405,16 @@ gates (firing is not a Core operation):
 | `goal_set_budget` | via_session | `session.create` |
 | `goal_show` | via_session | `session.read` |
 | `initialize` | global | `none` |
+| `interactive_process_attach` | global | `none` |
+| `interactive_process_capabilities` | global | `none` |
+| `interactive_process_create` | global | `none` |
+| `interactive_process_detach` | global | `none` |
+| `interactive_process_input` | global | `none` |
+| `interactive_process_list` | global | `none` |
+| `interactive_process_remove` | global | `none` |
+| `interactive_process_resize` | global | `none` |
+| `interactive_process_resume` | global | `none` |
+| `interactive_process_terminate` | global | `none` |
 | `job_attempts` | via_job | `session.read` |
 | `job_cancel` | via_job | `job.cancel` |
 | `job_get` | via_job | `session.read` |
@@ -431,14 +455,18 @@ gates (firing is not a Core operation):
 | `projection_snapshot_get` | opaque | `project.observe` |
 | `projection_subscribe` | opaque | `project.observe` |
 | `projection_unsubscribe` | global | `none` |
+| `provider_connection_create` | opaque | `project.configure` |
 | `provider_connection_list` | enumeration | `none` |
 | `provider_connection_models` | opaque | `project.read` |
+| `provider_setup_list` | enumeration | `none` |
 | `question_respond` | global | `none` |
 | `resume` | global | `none` |
 | `run_artifact_read` | opaque | `session.read` |
 | `run_get` | opaque | `session.read` |
 | `run_list` | opaque | `session.read` |
 | `run_rerun` | via_session | `agent.invoke` |
+| `runtime_policy_set` | global | `none` |
+| `sandbox_profile_set` | global | `none` |
 | `schedule_create` | via_session | `job.submit` |
 | `schedule_delete` | opaque | `job.cancel` |
 | `schedule_get` | opaque | `session.read` |
@@ -459,6 +487,7 @@ gates (firing is not a Core operation):
 | `session_load` | via_session | `session.read` |
 | `session_message_counts` | opaque | `session.read` |
 | `session_messages_load` | via_session | `session.read` |
+| `session_prompt_submit` | via_session | `agent.invoke` |
 | `session_rename` | via_session | `session.create` |
 | `session_restore` | via_session | `session.create` |
 | `session_selection_get` | via_session | `session.read` |
@@ -482,7 +511,19 @@ gates (firing is not a Core operation):
 | `subscribe` | global | `none` |
 | `task_delete` | global | `none` |
 | `task_list` | global | `none` |
+| `task_model_preference_set` | global | `none` |
 | `task_schedule` | global | `none` |
+| `team_capabilities` | global | `none` |
+| `team_membership_add` | direct_project | `member.manage` |
+| `team_membership_list` | direct_project | `member.manage` |
+| `team_membership_revoke` | direct_project | `member.manage` |
+| `team_membership_update` | direct_project | `member.manage` |
+| `team_principal_create` | opaque | `project.configure` |
+| `team_principal_list` | opaque | `project.configure` |
+| `team_principal_status_set` | opaque | `project.configure` |
+| `team_token_create` | opaque | `project.configure` |
+| `team_token_list` | opaque | `project.configure` |
+| `team_token_revoke` | opaque | `project.configure` |
 | `todo_list` | via_session | `session.read` |
 | `tool_program_call_page` | opaque | `session.read` |
 | `tool_program_inspect` | opaque | `session.read` |
@@ -493,6 +534,7 @@ gates (firing is not a Core operation):
 | `turn_steer` | via_session | `agent.invoke` |
 | `turn_submit` | via_session | `agent.invoke` |
 | `work_order_batch_create` | direct_project | `session.create` |
+| `work_order_bind_repository` | direct_project | `session.create` |
 | `work_order_cancel` | direct_project | `session.create` |
 | `work_order_capabilities` | global | `none` |
 | `work_order_create` | direct_project | `session.create` |
@@ -513,8 +555,11 @@ gates (firing is not a Core operation):
 | `work_order_trigger_list` | direct_project | `session.read` |
 | `work_order_trigger_revoke` | direct_project | `session.create` |
 | `work_order_update` | direct_project | `session.create` |
+| `work_plan_bind_repository` | direct_project | `session.create` |
+| `work_plan_repository_binding` | direct_project | `session.read` |
 | `workspace_archive` | opaque | `project.configure` |
 | `workspace_config_reload` | opaque | `project.configure` |
+| `workspace_dashboard` | enumeration | `project.read` |
 | `workspace_list` | opaque | `project.read` |
 | `workspace_register` | opaque | `project.configure` |
 | `workspace_services_snapshot` | global | `none` |
@@ -532,3 +577,30 @@ bash scripts/check-core-boundary.sh
 cargo fmt --all -- --check
 scripts/verify.sh quick
 ```
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/authorization/policy.rs`
+(`operation_descriptor`, `:101`-`:1243`), `crates/codegg-protocol/src/core.rs`,
+and `crates/codegg-core/src/session/schema.rs`. Rebuilt the
+operation-capability matrix to the current 226 operations: extracted every
+operation-name literal from the `operation_descriptor` body (both the
+single-line `OperationDescriptor::new("name", …)` arms and the multi-line
+form) and confirmed an exact set-diff against the doc table in both
+directions — 226 doc rows, 226 source names, zero additions and zero
+removals. Corrected the prose count "188 native operations" → 226. Corrected
+the stale collaboration group size: M001 contributes twelve `chat_*`
+operations (the source section at `policy.rs:857`-`:923`), not fourteen, and
+only `chat_capabilities` is global rather than `project.chat`; confirmed M003's
+three `chat_action_*` rows on the same gate (`policy.rs:924`) and M002's four
+chat-policy administration rows on `member.manage` (`policy.rs:947`).
+Confirmed work orders M001 is seventeen `work_order_*` rows
+(`policy.rs:1099`-`:1192`), with `work_plan_*` and
+`work_order_bind_repository` on the same `session.create`/`session.read`
+gates, and M005's four `work_order_trigger_*` rows (`policy.rs:1193`).
+Corrected `origin_attribution`: introduced by migration v53 while the catalog
+is at storage layout 68. Verified accurate: the twelve M001 chat rows, the
+four chat-policy rows, the seventeen work-order rows and the
+`work_plan_*`/`work_order_bind_repository` rows, each cross-checked against
+the `ScopeKind`/`Capability` arguments of its `OperationDescriptor::new`
+call, plus the 226-row table structure.

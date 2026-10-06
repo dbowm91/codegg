@@ -33,11 +33,11 @@ provides lazy, security-bounded resource access for skill assets.
 
 1. `AssetRegistry::build(config, project_root, global_roots)` resolves
    `SourceRoot` entries from the config, project root, and global roots.
-2. For each root, `discover_in_root` reads directory entries, validates
-   symlink boundaries, and calls `parser::parse_candidate` for each
-   `SKILL.md` (or direct `.md` for CodeGG-native compat).
-3. `resolve` groups candidates by normalized name, sorts by precedence
-   rank, selects the winner (first valid), records shadowed alternatives.
+2. For each root, `discover_in_root` (registry.rs:308) reads directory
+   entries, validates symlink boundaries, and calls `parser::parse_candidate`
+   (parser.rs:51) for each `SKILL.md` (or direct `.md` for CodeGG-native compat).
+3. `resolve` (registry.rs:450) groups candidates by normalized name, sorts by
+   precedence rank, selects the winner (first valid), records shadowed alternatives.
 4. Returns `AssetRegistry { effective, diagnostics, sources }`.
 
 ### Precedence
@@ -88,7 +88,7 @@ CodeGG-native `.codegg/skills/` also accepts legacy frontmatter
 (`name`, `version`, `tags`). The parser auto-detects portable vs
 native shape by checking for portable required fields.
 
-### Digest computation (parser.rs:308)
+### Digest computation (parser.rs:377)
 
 SHA-256 over: frontmatter bytes + `\n` + body with CRLF→LF
 normalization. Format-stable across platforms.
@@ -117,8 +117,8 @@ pub struct AssetRegistry {
 }
 ```
 
-Methods: `build`, `get`, `list`, `find_matching`, `build_system_prompt`,
-`activate`, `resource_handle`.
+Methods: `build`, `build_with_plugin_sources`, `get`, `list`,
+`find_matching`, `build_system_prompt`, `activate`, `resource_handle`.
 
 ### EffectiveSkill (candidate.rs:33)
 
@@ -204,7 +204,8 @@ pub struct Diagnostic {
 ## Security Bounds
 
 - Symlink escape containment: canonicalize paths, reject candidates
-  that escape the source root (registry.rs:328)
+  that escape the source root (`validate_symlink_boundary`, registry.rs:419,
+  called at `:354` and `:377`)
 - Resource path traversal: relative paths only, no `..` (resource.rs:89)
 - Script files inventoried (name + size) but never executed
 - Resource bodies lazy and bounded by `ResourceReadLimits`
@@ -282,3 +283,33 @@ warning, digest stability, digest CRLF normalization, name validation.
   compatibility). These guides are on-demand module references for agents,
   not user-installed skill packages; keep each guide aligned with its
   `architecture/` contract when the module changes.
+
+## Source verification
+
+Verified 2026-10-06 against all 10 files in `src/skills/`
+(`mod.rs`, `registry.rs`, `source.rs`, `parser.rs`, `candidate.rs`,
+`promotion.rs`, `publish.rs`, `resource.rs`, `diagnostic.rs`, `compat.rs`)
+and the three named test files. Corrected 4 items: the digest ref
+`parser.rs:308` → `:377` (`compute_digest`; the CRLF-normalization and
+stability tests are at `:411` and `:420`), the symlink-containment ref
+`registry.rs:328` → `validate_symlink_boundary` at `:419` (called from
+`discover_in_root` at `:354` and `:377`; `:328` is only the per-root
+truncation diagnostic), and the addition of the undocumented
+`AssetRegistry::build_with_plugin_sources` (`registry.rs:26`) to the method
+list. Added call-site refs for the discovery pipeline
+(`discover_in_root` `:308`, `resolve` `:450`, `parse_candidate`
+`parser.rs:51`).
+Confirmed correct as written: every struct/enum line ref
+(`AssetRegistry` `registry.rs:11`, `EffectiveSkill` `candidate.rs:33`,
+`SourceKind` `source.rs:6`, `AssetDiscoveryConfig` `source.rs:91`,
+`ResourceHandle` `resource.rs:44`, `ResourceReadLimits` `resource.rs:8`,
+`SkillIndexCompat` `compat.rs:11`, `Diagnostic` `diagnostic.rs:22`), the
+exact 10 `SourceKind` variants with their literal discriminants
+`0/10/20/30/35/40/50/60/70/80`, the 12-field `EffectiveSkill` listing, the
+5 `SourceKind` methods, the 7 `ResourceHandle` methods, the
+`AssetDiscoveryConfig` defaults (256 KiB / 64 KiB / 256 / 64 / 128 / 2048,
+`source.rs:115-120`), the `ResourceReadLimits` defaults (1 MiB / 64 KiB,
+`resource.rs:16-17`), `resource.rs:89` for relative-path validation, and the
+M002/M003 symbols (`validate_portable_document` `parser.rs:171`,
+`SkillPromotionStore::submit` `promotion.rs:429`,
+`SkillPublicationService` `publish.rs:71`, `reconcile` `publish.rs:133`).

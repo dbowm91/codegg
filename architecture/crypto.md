@@ -16,7 +16,7 @@ backward-compatible decryption of legacy HMAC-SHA256-derived ciphertexts.
 |----------|----------|
 | Encryption/decryption functions | `crates/codegg-providers/src/crypto.rs` |
 | Re-exported via | `codegg_providers::crypto` |
-| `CryptoError` | `crates/codegg-providers/src/crypto.rs:12` |
+| `CryptoError` | `crates/codegg-providers/src/crypto.rs:13` |
 | Master key retrieval | `codegg_config::encryption::get_master_key()` |
 
 > **Note:** This module was previously at `src/crypto/` and has been
@@ -52,7 +52,7 @@ one-shot KDF (not memory-hard).
 
 ## Key Types & APIs
 
-### CryptoError (`crypto.rs:12`)
+### CryptoError (`crypto.rs:13`)
 
 ```rust
 pub enum CryptoError {
@@ -75,10 +75,10 @@ pub struct EncryptedData {
 
 ### Public Functions
 
-- `encrypt(plaintext, password) -> Result<EncryptedData, CryptoError>` (:55)
-- `decrypt(encrypted, password) -> Result<String, CryptoError>` (:75)
-- `encrypt_to_string(plaintext, password) -> Result<String, CryptoError>` (:97)
-- `decrypt_from_string(encrypted_str, password) -> Result<String, CryptoError>` (:106)
+- `encrypt(plaintext, password) -> Result<EncryptedData, CryptoError>` (:56)
+- `decrypt(encrypted, password) -> Result<String, CryptoError>` (:76)
+- `encrypt_to_string(plaintext, password) -> Result<String, CryptoError>` (:98)
+- `decrypt_from_string(encrypted_str, password) -> Result<String, CryptoError>` (:107)
 
 ### Constants
 
@@ -101,8 +101,8 @@ fn derive_key_argon2id(password: &str, salt: &[u8]) -> Result<[u8; 32], CryptoEr
 
 **Legacy (HMAC-SHA256):**
 ```rust
-fn derive_key_legacy(password: &str, salt: &[u8]) -> [u8; 32] {
-    // HMAC-SHA256(salt, password) → first 32 bytes
+fn derive_key_legacy(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], CryptoError> {
+    // HMAC-SHA256(salt, password) → first KEY_LEN bytes
 }
 ```
 
@@ -219,3 +219,19 @@ Tests verify:
 - [config.md](config.md) — Config encryption integration
 - [auth.md](auth.md) — Credential store and resolution
 - [security.md](security.md) — Additional security measures
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/codegg-providers/src/crypto.rs`
+(the only `crypto.rs` in the workspace; exported as `pub mod crypto` from
+`crates/codegg-providers/src/lib.rs:18`).
+- Corrected 6 off-by-one line refs: `CryptoError` `12`→`13`, `encrypt`
+  `55`→`56`, `decrypt` `75`→`76`, `encrypt_to_string` `97`→`98`,
+  `decrypt_from_string` `106`→`107`. `EncryptedData` at `:24` was correct.
+- Corrected the legacy KDF signature: `derive_key_legacy` returns
+  `Result<[u8; KEY_LEN], CryptoError>`, not a bare `[u8; 32]`.
+- Confirmed correct as written: 4 `CryptoError` variants, Argon2id params
+  `m=19_456, t=2, p=1, V0x13`, the 4 constants (`KEY_LEN=32`,
+  `NONCE_LEN=12`, `SALT_LEN=32`, `FORMAT_V2_PREFIX="v2:"` at `:7`-`:10`), and
+  the module location table — `src/auth/mod.rs` re-exports `auth_types` only
+  and does **not** contain crypto.

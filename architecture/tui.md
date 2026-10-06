@@ -11,7 +11,7 @@ backends via `CoreClient`.
 
 ## Where It Lives
 
-`src/tui/` — ~13,675 lines in `app/mod.rs` alone.
+`src/tui/` — ~14,360 lines in `app/mod.rs` alone.
 
 ## How It Works
 
@@ -131,10 +131,7 @@ pub struct AsyncUiRequestState {
 `last_error()`.
 
 **DialogState fields using AsyncUiRequestState**:
-`import_request`, `research_request`, `session_reload_request`,
-`task_list_request`, `task_delete_request`, `worktree_list_request`,
-`template_create_request`, `session_mutation_request`,
-`session_messages_request`, `test_run_request`.
+22 fields total; the exhaustive list is in the `DialogState` section below.
 
 **Dialog close integration**: `close_dialog()` cancels async request
 states for Import, ResearchBrowser, and Session dialogs.
@@ -152,14 +149,14 @@ Never mix `is_current()` + manual mutation; always use `finish`/`fail`.
 ### Background Task Lifecycle
 
 TUI-owned background tasks tracked via `TuiTaskRegistry`
-(`src/tui/task_lifecycle.rs:14`) on `App`.
+(`src/tui/task_lifecycle.rs:133`) on `App`.
 
 **Key types**:
 - `TuiTaskId(u64)` — monotonically increasing task ID
-- `TuiTaskKind` — category enum: `Command`, `FileDiff`, `Shell`,
+- `TuiTaskKind` — 13-variant category enum: `Command`, `FileDiff`, `Shell`,
   `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`,
-  `GitStatus`, `Other`, `Workspace` (view-owned dashboard
-  refresh/expand fetches; the only kind cancelled on Workspace close)
+  `GitStatus`, `Workspace` (view-owned dashboard refresh/expand fetches; the
+  only kind cancelled on Workspace close), `Editor`, `FileTree`, `Other`
 - `TuiTaskRecord` — stores name, kind, started_at, abort_handle,
   completion flag
 
@@ -437,11 +434,17 @@ Two independent routes: `RemoteTuiMessage::PluginUiEffect` via WebSocket
 and `AppEvent::PluginUiEffect` via `GlobalEventBus`. Both apply session
 filtering before `apply_plugin_ui_effect()`.
 
-### Synchronous Command Dispatch
+### Command Dispatch
 
-All dispatch arms in `src/tui/runtime/command_dispatch.rs` are
-`fn` (non-async). No `.await` points in the match. Handlers that need
-async work use spawn-and-complete or fire-and-forget patterns.
+`dispatch_tui_command` (`src/tui/runtime/command_dispatch.rs:84`) is
+`pub(crate) async fn`. The match is overwhelmingly synchronous, but it
+contains five `.await` points, all of the same shape:
+`match core_client.request(req).await` inside the durable-editor arms
+(`EditUndoLatest`, `EditReapplyLatest`, `EditUndo`, `EditReapply`,
+`EditCheckpointList`, at lines 2109/2160/2214/2268/2320). Those arms
+await an in-process `CoreClient` round trip and return a completion
+`TuiCommand`. Every other arm is non-async; handlers needing latency use
+spawn-and-complete or fire-and-forget instead.
 
 ## Key Types & APIs
 
@@ -484,33 +487,37 @@ pub struct App {
 
 ### State Domains (`src/tui/app/state/`)
 
-22 state modules:
+27 state modules (28 `.rs` files including `mod.rs`):
 
 | Module | Purpose |
 |--------|---------|
-| `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
-| `session.rs` | Session, token counts, changed files, git sidebar, rate limits |
 | `agent.rs` | Agents, models, selection, plan mode, project asset snapshot |
-| `dialog.rs` | All dialog instances, async request states, pending operations |
-| `messages.rs` | Message history, toasts, spinner |
-| `prompt.rs` | Prompt text, completions |
 | `async_request.rs` | `AsyncUiRequestState` reusable state machine |
-| `diagnostics.rs` | `TuiDiagnostics` runtime counters |
-| `plugin_ui.rs` | Plugin dialog/panel/status storage |
-| `project_tabs.rs` | Multi-project tab state (Milestone 1) |
-| `project_picker.rs` | Project picker state (Milestone 2) |
-| `view_switch.rs` | Active-view switch coordinator |
-| `routing.rs` | Route routing helpers |
-| `snapshot.rs` | Remote snapshot building |
-| `persistence.rs` | State persistence |
-| `restore.rs` | State restore |
-| `manifest.rs` | Manifest handling |
-| `projection_client.rs` | Projection client state |
+| `change_review.rs` | M006-E agent-change review state machine |
 | `chat.rs` | Project-scoped chat projection |
-| `execution_context.rs` | Explicit project execution context |
+| `diagnostics.rs` | `TuiDiagnostics` runtime counters |
+| `dialog.rs` | All dialog instances, async request states, pending operations |
 | `editor.rs` | M006-A editor attachment, status, and notice presentation |
+| `execution_context.rs` | Explicit project execution context |
+| `file_tree.rs` | M006-D project-scoped file tree view state |
+| `manifest.rs` | Manifest handling |
+| `messages.rs` | Message history, toasts, spinner |
 | `observe.rs` | Read-only session observation |
+| `persistence.rs` | State persistence |
+| `plugin_ui.rs` | Plugin dialog/panel/status storage |
 | `presence.rs` | Collaborator presence projection |
+| `project_picker.rs` | Project picker state (Milestone 2) |
+| `project_tabs.rs` | Multi-project tab state (Milestone 1) |
+| `projection_client.rs` | Projection client state |
+| `prompt.rs` | Prompt text, completions |
+| `restore.rs` | State restore |
+| `routing.rs` | Route routing helpers |
+| `session.rs` | Session, token counts, history, changed files, git sidebar, rate limits |
+| `snapshot.rs` | Remote snapshot building |
+| `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
+| `view_switch.rs` | Active-view switch coordinator |
+| `work_orders.rs` | M003/C001 task + work-order state, `ComposerMode` |
+| `workspace_dashboard.rs` | M005 Workspace primary-view cache |
 
 ### Durable agent-run inspection (M006)
 
@@ -644,12 +651,14 @@ async request generations. Mounted modal components are owned by
 `FocusManager`; it is the only writable owner used for render and input.
 The command palette remains prompt-completion state rather than a modal.
 
-Async request states: `import_request`, `research_request`,
-`session_reload_request`, `task_list_request`, `task_delete_request`,
-`task_sheet_request`, `work_order_create_request`,
-`work_order_list_request`, `work_order_reorder_request`,
-`work_order_mutation_request`, `work_order_occurrence_request`,
-`task_model_pref_request`, `worktree_list_request`,
+Async request states (all 22 `AsyncUiRequestState` fields):
+`import_request`, `research_request`, `session_reload_request`,
+`task_list_request`, `task_delete_request`, `task_sheet_request`,
+`work_order_create_request`, `work_order_list_request`,
+`work_order_reorder_request`, `work_order_mutation_request`,
+`work_order_occurrence_request`, `task_model_pref_request`,
+`team_request`, `control_request`, `trigger_create_request`,
+`trigger_manage_request`, `worktree_list_request`,
 `template_create_request`, `session_mutation_request`,
 `session_messages_request`, `test_run_request`, `terminal_request`.
 
@@ -685,9 +694,12 @@ pub enum Dialog {
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
+    Team, TeamTokenSecret, TriggerSecret,
     TaskSchedule, TaskView, WorkspaceDashboard,
 }
 ```
+
+46 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -708,9 +720,13 @@ pub enum DialogType {
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, Collaborators, ProjectChat,
-    ProjectPicker, TaskSchedule, TaskView, WorkspaceDashboard, None,
+    Team, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
+    TriggerSecret, WorkspaceDashboard, None,
 }
 ```
+
+46 variants, matching `Dialog` 1:1 through the exhaustive compatibility
+conversions.
 
 `TaskSchedule` is the WorkOrder scheduling sheet
 (`components/dialogs/task_schedule.rs`): seeded buffers for
@@ -778,7 +794,7 @@ with close observes the dropped dashboard state and does nothing.
 canonical lifecycle identity is the live component's `DialogType`; the
 `ui_state.dialog` value is only a derived compatibility mirror.
 
-### Component Trait (`src/tui/components/component.rs:165`)
+### Component Trait (`src/tui/components/component.rs:183`)
 
 ```rust
 pub trait Component: Send + Any + AsAny {
@@ -813,22 +829,29 @@ push/pop preserves the underlying modal's selection. `Tab` and `Shift-Tab`
 wrap against the current component count, including zero and one-control
 dialogs.
 
-### TuiMsg (`src/tui/app/types.rs:97`)
+### TuiMsg (`src/tui/app/types.rs:123`)
 
-Internal messages from TUI to App. Key variants: `SubmitPrompt`,
-`NavigateUp`/`Down`/`Left`/`Right`, `CycleAgent`, `OpenModelDialog`,
-`OpenAgentDialog`, `OpenSessionDialog`, `OpenHelpDialog`, `OpenTreeDialog`,
-`SelectModel`, `SelectAgent`, `SelectSession(Box<Session>)`,
-`OpenDiffDialog`, `OpenShareDialog`, `OpenThemeDialog`,
-`ExternalEditor`, `UndoDelete`, `ConfirmResult`, `ReviewOpenDiff`,
-`ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`,
-`ToggleComposerMode`, `TaskScheduleConfirm`, `TaskScheduleMove`,
-`TaskViewMove`, `TaskViewReorder`, `TaskViewOpen`, `TaskViewRefresh`,
-`TaskViewCancel`, `TaskViewResume`, `TaskViewDetail`.
+116 variants — synchronous intent from TUI to App, consumed by
+`App::process_msg`. Grouped by intent:
 
-### TuiCommand (`src/tui/app/types.rs`)
+| Group | Variants |
+|---|---|
+| Prompt/navigation | `SubmitPrompt`, `NavigateUp`/`Down`/`Left`/`Right`, `PageUp`, `PageDown`, `Search`, `SearchNext`, `SearchPrev`, `ClearSearch`, `FocusPrompt`, `StashPrompt`, `RestorePrompt` |
+| Text editing | `CharInput`, `Backspace`, `Delete`, `CursorLeft`/`Right`/`Home`/`End` |
+| Dialog opening | `OpenModelDialog`, `OpenAgentDialog`, `OpenSessionDialog`, `OpenHelpDialog`, `OpenTreeDialog`, `OpenThemeDialog`, `OpenShareDialog`, `OpenImportDialog`, `OpenDiffDialog`, `OpenSourcePreview`, `OpenRunDetail`, `OpenProjectPicker`, `OpenWorkspaceDashboard`, `CloseDialog` |
+| Dialog selection | `SelectModel`, `SelectAgent`, `SelectSession`, `SelectTheme`, `ThemePreviewChanged`, `ThemeCommit`, `ThemeRevert`, `KeybindChanged`, `SelectTemplate`, `GotoMessage`, `CopyShareUrl`, `McpAction`, `ConnectionLifecycle`, `ProviderConnectionsUpdated`, `ProviderConnectionModelsUpdated`, `OpenConnectionRotation` |
+| Dialog submit/confirm | `SubmitConnect`, `SubmitPermission`, `SubmitQuestionAnswers`, `SubmitImportPreview`, `ConfirmImport`, `ConfirmResult`, `ConfirmDeleteSession`, `ConfirmArchiveSession`, `ConfirmBulkDelete`, `ConfirmBulkArchive`, `SubmitSelectionUpdate`, `SessionSelectionUpdated` |
+| Session lifecycle | `NewSession`, `CloseSession`, `ClearSession`, `CycleAgent`, `CycleModelForward`, `CycleModelBackward`, `ForkSession`, `ForkTreeSession`, `SelectTreeSession`, `UndoDelete`, `Quit` |
+| Toggles | `ToggleSidebar`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
+| Project tabs | `NextProjectTab`, `PreviousProjectTab`, `CloseProjectTab`, `SelectProjectTabByIndex` |
+| Research/shell/git | `ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`, `SecurityReviewJump`, `ReviewOpenDiff`, `ExternalEditor`, `CopyMessage`, `ShellInclude`, `ShellAsk`, `ShellRerun`, `ShellKill`, `RunRerun`, `RunPromote`, `RunCopyId` |
+| Workspace dashboard | `WorkspaceDashboardMove`, `WorkspaceDashboardOpen`, `WorkspaceDashboardRefresh`, `WorkspaceDashboardToggleExpand` |
+| Task view | `TaskViewMove`, `TaskViewReorder`, `TaskViewOpen`, `TaskViewRefresh`, `TaskViewCancel`, `TaskViewResume`, `TaskViewDetail` |
+| Task schedule / triggers | `TaskScheduleConfirm`, `TaskScheduleMove`, `TaskTriggerSetup`, `TaskTriggerRevoke`, `TaskTriggerRotate`, `TaskTriggerRefresh`, `TriggerSecretClose`, `TeamTokenSecretClose` |
 
-Async commands sent via channel. ~80 variants covering: session CRUD,
+### TuiCommand (`src/tui/app/commands.rs:15`)
+
+Async commands sent via channel — 203 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
 template creation, session message loading, subagent spawn, task/worktree
 operations, memory operations, goal lifecycle, research browser, doctor,
@@ -1073,11 +1096,17 @@ root routing.
 
 ### InputAction
 
-Key events mapped to: `Send`, `Newline`, `Cancel`, `NavigateUp`/`Down`,
-`SwitchAgent`, `SelectModel`, `ClearSession`, `NewSession`,
-`FocusPrompt`, `StashPrompt`, `RestorePrompt`, `Char`, `Backspace`,
-`Delete`, `CursorLeft`/`Right`/`Home`/`End`, `PageUp`, `PageDown`,
-`Search`, `GoToTop`, `GoToBottom`, `ToggleComposerMode`.
+50 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
+`NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
+`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleSection`,
+`CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
+`CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
+`Quit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`, `Left`, `Right`,
+`Home`, `End`, `PageUp`, `PageDown`, `Search`, `SearchNext`, `SearchPrev`,
+`ClearSearch`, `Command`, `ToggleTts`, `StopTts`, `ToggleFullscreen`,
+`TogglePermissionMode`, `OpenDiff`, `GoToTop`, `GoToBottom`,
+`OpenProjectPicker`, `NextProjectTab`, `PreviousProjectTab`,
+`CloseProjectTab`, `ToggleComposerMode`, `OpenWorkspaceDashboard`.
 
 ## Directory Structure
 
@@ -1093,13 +1122,16 @@ tui/
 │   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
 │   ├── modal.rs            # FocusManager-backed modal lifecycle
 │   ├── plugin_ui.rs        # Validated plugin UI effect application
-│   └── state/              # state domain modules (see state/ for the current set)
+│   └── state/              # 27 state domain modules + mod.rs
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
+│       ├── change_review.rs # M006-E review state machine
 │       ├── chat.rs         # Project-scoped chat projection
 │       ├── diagnostics.rs  # TuiDiagnostics
 │       ├── dialog.rs       # DialogState (all dialog instances)
+│       ├── editor.rs       # M006-A editor presentation state
 │       ├── execution_context.rs # Explicit project execution context
+│       ├── file_tree.rs    # M006-D file tree view state
 │       ├── manifest.rs     # Manifest handling
 │       ├── messages.rs     # MessagesState (messages, toasts, spinner)
 │       ├── observe.rs      # Read-only session observation
@@ -1115,12 +1147,18 @@ tui/
 │       ├── session.rs      # SessionState (session, history, git info)
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
-│       └── view_switch.rs  # Active-view switch coordinator
-├── commands/               # command handler submodules (see mod.rs for the current set)
+│       ├── view_switch.rs  # Active-view switch coordinator
+│       ├── work_orders.rs  # Task/work-order state, ComposerMode
+│       └── workspace_dashboard.rs # M005 Workspace primary-view cache
+├── commands/               # 33 command handler submodules + mod.rs
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
+│   ├── change_review.rs    # M006-E review commands
 │   ├── chat.rs             # Project chat commands
+│   ├── control.rs          # Shared-session control (M004)
 │   ├── diagnostics.rs      # Doctor, diagnostics, tool contracts
+│   ├── editor.rs           # M006-A document open/save/reload
+│   ├── file_tree.rs        # M006-D tree walk
 │   ├── git_sidebar.rs      # Git sidebar refresh
 │   ├── goals.rs            # Goal lifecycle, session state refresh
 │   ├── import.rs           # Import preview, confirm
@@ -1130,6 +1168,7 @@ tui/
 │   ├── observe.rs          # Read-only session observation
 │   ├── plugin_management.rs # Plugin management operations
 │   ├── plugins.rs          # Plugin command run, UI effect
+│   ├── policy.rs           # Approval mode / sandbox profile
 │   ├── presence.rs         # Collaborator presence commands
 │   ├── project_catalog.rs  # Project catalog refresh
 │   ├── project_picker.rs   # Project picker navigation
@@ -1142,7 +1181,10 @@ tui/
 │   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share
 │   ├── shell.rs            # Shell list, include, rerun, kill, show, ask
 │   ├── tasks.rs            # Task/worktree/template/notification/file-diff
-│   └── test.rs             # Test run lifecycle
+│   ├── team.rs             # Team administration (M003)
+│   ├── test.rs             # Test run lifecycle
+│   ├── work_orders.rs      # WorkOrder/TaskSheet/TaskView operations
+│   └── workspace_dashboard.rs # M005 Workspace primary-view fetches
 ├── runtime/
 │   ├── mod.rs              # Re-exports
 │   ├── event_loop.rs       # Main event loop (select loop, render, terminal)
@@ -1150,11 +1192,11 @@ tui/
 │   ├── app_events.rs       # Bus event handling (AppEvent subscription)
 │   └── render_recovery.rs  # Render panic recovery (progressive fallback)
 ├── components/
+│   ├── component.rs        # Component trait, DialogType enum
 │   ├── component/
-│   │   ├── component.rs    # Component trait, DialogType enum
 │   │   ├── focus.rs        # FocusManager for modal focus stack
 │   │   └── context.rs      # AppContext for overlay dialogs
-│   ├── dialogs/            # Modal dialogs (all implement Component)
+│   ├── dialogs/            # 34 modal dialogs + mod.rs (all implement Component)
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette
 │   │   ├── confirm.rs      # ConfirmDialog
@@ -1162,6 +1204,7 @@ tui/
 │   │   │                     # setup-catalog selection + typed per-provider
 │   │   │                     # credential forms; Eggpool is one proxy preset)
 │   │   ├── connection_selection.rs # ConnectionSelectionDialog
+│   │   ├── device_secret.rs # DeviceSecretDialog (LocalOwner credential render-once)
 │   │   ├── diff.rs         # DiffDialog
 │   │   ├── goto.rs         # GotoDialog
 │   │   ├── help.rs         # HelpDialog
@@ -1182,15 +1225,24 @@ tui/
 │   │   ├── session.rs      # SessionDialog
 │   │   ├── share.rs        # ShareDialog
 │   │   ├── source_preview.rs # SourcePreviewDialog
+│   │   ├── task_schedule.rs # TaskScheduleDialog (WorkOrder sheet)
+│   │   ├── task_view.rs    # TaskViewDialog
 │   │   ├── template.rs     # TemplateDialog
 │   │   ├── theme.rs        # ThemePickerDialog
 │   │   ├── tree.rs         # TreeDialog
-│   │   └── ui_node.rs      # UiNodeDialog (generic, reuses Plugin slot)
+│   │   ├── trigger_secret.rs # TriggerSecretDialog (render-once secret)
+│   │   ├── ui_node.rs      # UiNodeDialog (generic, reuses Plugin slot)
+│   │   └── workspace_dashboard.rs # WorkspaceDashboardDialog (compat shim)
+│   ├── change_review.rs    # M006-E review component
 │   ├── completion_overlay.rs # Slash/file/agent completion popups
 │   ├── diff.rs             # DiffViewer
+│   ├── editor.rs           # M006-A buffer widget
+│   ├── file_tree.rs        # M006-D file tree widget
 │   ├── help_overlay.rs     # Dead code (help is mode-aware via input.rs)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
+│   ├── messages/           # MessagesWidget submodules
+│   │   └── layout.rs       # Message layout/measurement helpers
 │   ├── notification.rs     # NotificationManager
 │   ├── plugin_renderer.rs  # Compat alias for UiNodeRenderer
 │   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode → ratatui/line)
@@ -1203,13 +1255,18 @@ tui/
 │   └── tool_output.rs      # ToolOutput
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
-├── route.rs                # Route/RouteManager (Home, Session)
+├── route.rs                # Route/RouteManager (Home, Session, Workspace, Editor)
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
+├── editor.rs               # M006-A editor presentation record/state
+├── document_session.rs     # TuiDocumentSession (DocumentController seam)
 ├── file_diff.rs            # Async diff stats for sidebar
+├── file_tree.rs            # M006-D directory walk + node model
+├── interactive_terminal.rs # Interactive terminal projection
+├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (108 built-in)
+├── command.rs              # Slash command registry (153 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats
@@ -1300,12 +1357,13 @@ action.
   `src/tui/components/component/component.rs`, not `types.rs`.
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant
   handles all plugin dialogs. `UiNodeDialog` also reuses this slot.
-- **Dispatch arms are all non-async**: `command_dispatch.rs` has no
-  `.await` points.
+- **Dispatch is async-capable, not async-free**: `dispatch_tui_command` is
+  `pub(crate) async fn` with five `.await` points, all in the durable-editor
+  `Edit*` arms. Most arms remain synchronous.
 - **Git sidebar is cached, not live**: Render reads from
   `session_state.git_sidebar`; never shells out to git.
 - **Remote TUI is event/state-driven**: `RenderFrame` is unsupported.
-- **State domains are 22 modules**: Not the 6 listed in the doc header;
+- **State domains are 27 modules**: Not the 6 listed in older revisions;
   the domain model expanded across multiple milestones.
 - **Async command stale-completion tests**: Each guarded handler has a
   stale-completion test in `src/tui/mod.rs::async_cmd_tests`.
@@ -1342,3 +1400,21 @@ does not add editor widgets, keybindings, or a second TUI text buffer.
 - [agent.md](agent.md) — AgentLoop that processes TUI commands
 - [bus.md](bus.md) — GlobalEventBus and event types
 - [session.md](session.md) — Session storage
+
+## Source verification
+
+Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
+(14,360), the 27 `app/state/` modules (28 `.rs` files), `App` at
+`app/mod.rs:222`, `Component` at `components/component.rs:183`,
+`TuiMsg` (116 variants) at `app/types.rs:123`, `Dialog` (46) at
+`app/types.rs:2`, `DialogType` (46) at `components/component.rs:22`,
+`TuiCommand` (203 variants) at `app/commands.rs:15`, `InputAction`
+(50) at `input.rs:102`, `TuiTaskKind` (13) and `TuiTaskRegistry`
+(`task_lifecycle.rs:133`), `GitSidebarState` (`session.rs:134`),
+`UiState` (`ui.rs:40`), `SessionState` (`session.rs:71`),
+`AgentState` (`agent.rs:6`), `AsyncUiRequestState`
+(`async_request.rs:20`), the 22 `DialogState` async-request fields,
+`ComposerMode` (`work_orders.rs:25`), `Route` (`route.rs:2`), and the
+five `.await` points in `dispatch_tui_command`
+(`runtime/command_dispatch.rs:84`). Render-regression test count (99
+`#[test]` in `tests/tui_render.rs`) confirmed.

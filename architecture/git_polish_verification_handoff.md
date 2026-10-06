@@ -1,6 +1,11 @@
 # Git Polish / Maintainability / Verification Handoff
 
 > **Historical snapshot**: This document records the post-closure verified state. For current architecture, see `architecture/git.md`.
+>
+> **Counts below are as-of-close and have since drifted.** Verified 2026-10-06
+> against current source; see "Snapshot drift" at the end of this document for
+> the as-of-close → current mapping. The narrative, matrix, and rationale
+> sections are left as written so the polish-pass record stays intact.
 
 > Companion to
 > Git Polish Maintainability Verification (plan pruned post-completion).
@@ -376,3 +381,76 @@ cross-platform behavior:
 | `86c16a9` | Polish plan proposal |
 | `8d686c7` | Polish / maintainability / verification handoff (canonical subprocess policy, AuditSafeArgv, forbidden-pattern checks) |
 | *this commit* | Gap-closure delta (D4 repo resolution, F2/F3 quadratic + truncation, E1/G1 doc refresh, B4 cross-platform policy tests) |
+## Snapshot drift
+
+Snapshot taken at the polish/maintainability gap-closure delta. Numbers above
+are as-of-close and are intentionally **not** rewritten. Current values
+verified 2026-10-06:
+
+| Claim (as-of-close) | Current value | Where verified |
+|---|---|---|
+| `GitOperation` enum, **47** variants (line 39) | **54** | `crates/codegg-git/src/operation.rs` |
+| `cargo test -p codegg-git` — "354 + 7 ignored + new B4 tests" | **358** test functions; **0** `#[ignore]` attributes remain in the crate | `crates/codegg-git/src/*.rs` |
+| `git_execution_origin_matrix` — 19 tests, then 26 after D4 delta (lines 106, 241, 247, 352) | **23** | `tests/git_execution_origin_matrix.rs` |
+| `git_closure_matrix` — "141+ passed (10 original + 4 new)" | **34** | `tests/git_closure_matrix.rs` |
+| TUI `RunRerun` placeholder at `src/tui/app/mod.rs:3615` (lines 174, 310) | No `RunRerun` symbol remains; the rerun path is now the `/shell-rerun` command at `src/tui/app/mod.rs:6142`, which resolves a real id and emits `ShellRerun { id }` (not `id: 0`) | `src/tui/app/mod.rs` |
+| B4 — "3 new in-module tests in `crates/codegg-git/src/process_policy.rs`" (line 345) | **0** tests there; the file is now a bare re-export shim. The canonical policy and its single `policy_tables_are_disjoint_and_unique` test live in `crates/egggit/src/process.rs` | `crates/codegg-git/src/process_policy.rs`, `crates/egggit/src/process.rs:249` |
+| Env-policy ownership — "Single source of truth: `codegg_git::process_policy`" (line 137) | Inverted: `egggit::process` is canonical; `codegg_git::process_policy` is documented as a compatibility re-export | `crates/codegg-git/src/process_policy.rs:1`-`:6` |
+| crate module maps (lines 37-101) | Now also contain `crates/codegg-git/src/workflow.rs`, `crates/egggit/src/process.rs`, and `crates/egggit/src/subject.rs` | `ls crates/codegg-git/src crates/egggit/src` |
+| `cargo test -p codegg-core` — "119" (line 253) | **826** test functions crate-wide (`crates/codegg-core/src/**`); the as-of-close figure's filter scope is not stated, so it is not directly comparable | `crates/codegg-core/src/` |
+| `git_credential_cross_path` — "14" after F2/F3 (lines 239, 360, 363) | **9** | `tests/git_credential_cross_path.rs` |
+
+All counts above are `#[test]` / `#[tokio::test(…)]` attribute counts, not
+`cargo test` output — no build or test run was performed. They measure test
+*functions*; a `cargo test` run may report a different passed/ignored split.
+
+Confirmed correct as written: `ParseError` has 9 variants
+(`crates/codegg-git/src/error.rs`), and `crates/codegg-git/src/origin.rs`
+exists as described.
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-git/src/`, `crates/egggit/src/`,
+`crates/codegg-core/src/{run_store,worktree}.rs`, the root `src/git_*.rs` /
+`src/tool/git.rs` modules, and `tests/`.
+
+This is a **historical snapshot** of the post-closure polish/gap-closure delta.
+Its counts are as-of-close by design and have deliberately drifted; the
+Snapshot drift table above carries the current values, re-verified in this
+pass. The narrative, execution-origin matrix, and permission/risk matrix are
+left as written so the polish record stays intact.
+
+Corrections made this pass, all confined to the Snapshot drift table plus its
+self-references — no as-of-close claim in the body was rewritten:
+
+- **`#[ignore]` claim was wrong.** The prior note said the 358 `codegg-git`
+  tests include "20 occurrences of `#[ignore]` across `operation.rs`,
+  `parser.rs`, `render.rs`". Those 20 `ignore` hits are the git-status
+  `--ignored` flag (`operation.rs:216`, `parser.rs:260`/`1027`) and prose
+  comments; the crate contains **zero** `#[ignore]` attributes. The 358 total
+  itself was correct.
+- **All `(line N)` self-references** in the drift table were off by 4-5 (an
+  earlier framing blockquote had shifted the body); 39, 106, 241, 247, 352,
+  137, 253, 239, 360, and 363 now resolve to the claims they cite.
+- Added six rows the prior note never covered: the stale TUI rerun line ref,
+  the B4 test location, the inverted env-policy ownership, the three module-map
+  omissions, `codegg-core`'s 826, and `git_credential_cross_path` 14→9.
+
+Verified accurate as written:
+
+| Claim | Source |
+|---|---|
+| `ParseError` = 9 variants | `crates/codegg-git/src/error.rs:4`-`:30` |
+| `GitOperation` = 54 variants, `GitRiskClass` = 11 | `crates/codegg-git/src/operation.rs`, `risk.rs` |
+| `RedactedUrl` in `crates/codegg-git/src/sensitive.rs` | `sensitive.rs:39`, `:44` |
+| `crates/codegg-git/src/origin.rs` exists | present |
+| `NetworkEnvPolicy::apply_to_command` | `src/git_network_ops.rs:54` |
+| `git_mutations.rs::policy_drift_tests` | `src/git_mutations.rs:52` |
+| `worktree_uses_canonical_policy` | `crates/codegg-core/src/worktree.rs:142` |
+| every `egggit` module named in the map | `blame`, `conflict`, `diff`, `log`, `operation_state`, `refs`, `status`, `status_v2`, `worktree` all present |
+| every `codegg-git` module named in the map | `error`, `operation`, `origin`, `parser`, `path`, `process_policy`, `ref_name`, `render`, `risk`, `sensitive` all present |
+| commits `cb192e9`, `c2e806f`, `53b2beb`, `86c16a9`, `8d686c7` | all resolve in `git log` |
+
+Not re-verified: the performance table (`perf_git_phase_f.sh` results) and the
+`PASS (0 findings)` forbidden-pattern output are recorded run outputs. They
+were not re-executed here, and remain as-of-close measurements.

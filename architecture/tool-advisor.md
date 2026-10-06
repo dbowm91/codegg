@@ -58,6 +58,12 @@ a cancellable `DecisionEngine` interface with a caller-supplied deadline. Its
 validation and canonical fingerprinting have no model, transport, or training
 dependency. `NoopDecisionEngine` represents the ordinary off configuration.
 
+`candidates_from_deferred_surface`
+(`src/tool_advisor/mod.rs:328`) projects only the already resolved
+policy-allowed surface, so denied, disabled, plan-ineligible, and parent-ceiling
+tools cannot enter the advisor input. The scorer has no broker, permission,
+registry, or execution handle.
+
 The opt-in `src/decision.rs` adapter implements Binary (`noul`), Choice, and
 integer-range Score over one question per request. Its reference and Ollama
 profiles share the bounded `/v1/systemone` subset; Rank stays explicitly
@@ -393,3 +399,24 @@ M004 observe integration selects the positive M002 frontier.
  closes structurally positive (disposition B) and remains opt-in research:
  it does not unblock the historical live-primary-model trajectory work,
  which still requires disposition A with live evidence.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: the projection helper was named
+`candidates_from_surface`, which does not exist; the real entry point is
+`candidates_from_deferred_surface` (`src/tool_advisor/mod.rs:328`, also called
+from `src/agent/request_preparation.rs:100`). Verified accurate:
+`assets/tool-advisor/corpus.jsonl` (256 cases),
+`causal-frontier-v1.jsonl` (168 cases), the 20-entry `NATIVE_PILOT_TOOLS`
+contract catalog (`causal_frontier.rs:529-551`), the contextual parameter
+points 5,242,881 and 15,728,641 (`contextual.rs:1292-1293`), every referenced
+asset file and generator script
+(`scripts/generate_tool_advisor_corpus.py`,
+`scripts/generate_causal_m005_holdout.py`), `build_leakage_groups`,
+`partition_cases`, `family_holdout_partition`, `split_for`,
+`ToolCatalog::rank_descriptors`, `preselect_candidates`,
+`CausalInadmissibilityReason`, `find_minimal_effect_path`, `plan_effect_path`,
+`CausalFrontier::evaluate`, `observe_tool_call`, `causal_contract_of`, and all
+M002/M003/M005 metrics cross-checked against the frozen result JSONs
+(preservation 1.00, 0 violations, reduction 1.00, median 3 -> 1, M003 qual
+preservation 0.41, M005 284-scenario holdout with median 2 and p95 gate 5.0).

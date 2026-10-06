@@ -110,3 +110,28 @@ drift. Restarts load only `Installed` rows. The `context_epoch:started`
 bus event carries IDs/revisions/counts/reasons only. Normal compaction
 remains the canonical fallback/default path; unsupported profiles
 (default/fast/local/tool-fragile) stay on it.
+
+## Source Verification
+
+Verified 2026-10-06 against `src/context/`, `src/agent/compaction.rs`, and
+`crates/codegg-core/src/session/`. This document's ownership claims are all
+load-bearing and all held — no correction was needed.
+
+Confirmed accurate, no change:
+- `CompactionStatus` (`src/context/compaction.rs:832`) has exactly the 7
+  variants listed above: `Ready`, `CompactionRequired`, `Compacted`,
+  `InsufficientCapacity`, `ProviderFailure`, `InvalidHistoryOrBudget`,
+  `Cancelled`.
+- The `ContextCompactionRequest` → `ContextCompactionResult` boundary is real
+  (`compaction.rs:844`, `:889`), with `compact_context` at `:950`.
+- `src/agent/compaction.rs` is a **7-line pure re-export**
+  (`pub use crate::context::compaction::*;`) with **zero** `pub fn` /
+  `pub async fn` definitions — it contains no implementation, as documented.
+- All named modules exist: `src/context/{compaction,rollover,epoch,plan,packer,
+  policy,volatile_tail,continuation}.rs`.
+- The durable store claims are exact:
+  `CONTINUATION_CHECKPOINT_MAX_PAYLOAD_BYTES = 128 * 1024`
+  (`crates/codegg-core/src/session/continuation.rs:51`) and the
+  `continuation_checkpoint` table is created by `migrate_v57`
+  (`crates/codegg-core/src/session/schema.rs:2491`, dispatched at `:297`),
+  matching the doc's `continuation_checkpoint` (v57) reference.

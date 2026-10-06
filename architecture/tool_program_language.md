@@ -282,7 +282,8 @@ The `IrOp` enum defines 39 opcodes in `crates/codegg-core/src/tool_program/ir.rs
 ## Runtime Limits (M005)
 
 The compiler computes static bounds (`IrBounds`) that constrain
-runtime execution. The interpreter enforces these via `RuntimeLimits`:
+runtime execution. The interpreter enforces these via `RuntimeLimits`
+(`crates/codegg-core/src/tool_program/interpreter.rs:359`, 14 fields):
 
 | Budget | Source | Description |
 |--------|--------|-------------|
@@ -293,6 +294,7 @@ runtime execution. The interpreter enforces these via `RuntimeLimits`:
 | Parallel width | `max_parallel_width` | Concurrent `parallel()` calls |
 | Parallel depth | `max_parallel_depth` | Nested parallel groups |
 | Value growth | `max_value_growth` | Aggregate byte size of all live values |
+| Value bytes | `max_bytes` | Per-value byte bound |
 | In-flight calls | `max_inflight_calls` | Concurrent broker calls |
 | Wall time | `max_wall_time_ms` | Total execution time (0 = unlimited) |
 | Stall time | `max_stall_time_ms` | No-progress timeout (0 = unlimited) |
@@ -413,3 +415,16 @@ cargo test -p codegg-core --lib tool_program::ir_verifier
 
 - `architecture/tool_programs.md` — Domain, storage, execution
 - `architecture/tool_broker.md` — Tool Broker pipeline
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: the runtime-limit table listed
+13 of `RuntimeLimits`' 14 fields — `max_bytes` (per-value byte bound) was
+missing, and the table now states the full count and location
+(`crates/codegg-core/src/tool_program/interpreter.rs:359`). Verified accurate:
+`IrOp` 39 opcodes at `ir.rs:93` with every name in the category table matching
+the enum, all 21 diagnostic codes (`TP001`–`TP018`, `TP998`, `TP999`) and their
+names in `diagnostics.rs:56-75`, the 12 `ALLOWED_METHODS` entries at
+`validator.rs:17`, the 5 reserved built-ins at `validator.rs:14`, the 9
+built-in table rows, the grammar productions, and the value-type bound
+defaults.

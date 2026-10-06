@@ -39,7 +39,11 @@ attempt; it is not a second scheduler or job authority.
 ## Disposition of production process sites
 
 The machine-readable inventory in `docs/execution-ownership.toml` is the
-complete guard input. Its production dispositions are:
+complete guard input; it currently declares **54 entries** (14 `scheduler`,
+12 `definition_or_adapter`, 10 `standalone_compat`, 9 `interactive`,
+8 `deferred_domain_executor`, 1 `test_only`). The table below summarizes its
+production dispositions and additionally lists the M003 TUI projection
+surfaces, which spawn nothing and so are deliberately not manifest entries:
 
 | Surface | Disposition | Boundary |
 |---|---|---|
@@ -58,7 +62,7 @@ complete guard input. Its production dispositions are:
 | `crates/codegg-client/src/connect.rs` | Frontend daemon lifecycle adapter | Connect-or-start launches only the canonical `codegg daemon start` lifecycle; singleton lock and execution authority remain root-owned. |
 | `src/core/instance.rs`, `src/tui/app/`, `src/tts/`, `src/core/notification.rs`, `src/upgrade/` | Standalone/interactive exceptions | Daemon bootstrap, external editor, speech, and self-upgrade are explicit administrative or user-controlled surfaces. |
 | `src/bin/codegg-sandbox-helper.rs` | Service adapter | Installation-owned helper applies Landlock and replaces itself with the already-validated target; it is launched only by `ManagedProcessService`. |
-| `src/git_*.rs`, `crates/egggit/`, `crates/codegg-core/src/{worktree.rs,worktree_service.rs,repository_lineage.rs}` | Deferred domain | Typed Git/worktree/read probes retain domain semantics and are tracked for M003 Git ownership convergence. Test-only fixtures are annotated separately. |
+| `src/git_*.rs`, `crates/egggit/`, `crates/codegg-core/src/{worktree.rs,repository_lineage.rs}` | Deferred domain | Typed Git/worktree/read probes retain domain semantics and are tracked for M003 Git ownership convergence. Test-only fixtures are annotated separately. `worktree_service.rs` is not a manifest entry — it owns no direct spawn site. |
 
 Every exception is represented in the manifest with an owner and reason.
 New direct process or dispatch sites fail
@@ -134,3 +138,24 @@ daemon restart marks non-exited views gone. Raw terminal bytes never
 become session observation: the controller has no session/projection/
 observer dependency, headers describe without carrying output, and
 `/terminal-*` commands are human-shell-family commands, not model tools.
+
+## Source Verification
+
+Verified 2026-10-06 against `docs/execution-ownership.toml`,
+`scripts/check_execution_ownership.py`, and the named source files.
+- Confirmed the manifest declares **54** entries and recorded its owner
+  distribution in the section above (14 `scheduler`, 12
+  `definition_or_adapter`, 10 `standalone_compat`, 9 `interactive`,
+  8 `deferred_domain_executor`, 1 `test_only`).
+- Corrected the deferred-domain row: the manifest declares
+  `crates/codegg-core/src/worktree.rs` and `repository_lineage.rs`, but **not**
+  `worktree_service.rs` (it owns no direct spawn site).
+- Clarified that the M003 TUI projection surfaces
+  (`src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs`)
+  appear in this table but are **not** manifest entries — they spawn nothing.
+  Both files exist.
+- Confirmed correct as written: `src/shell_session/` does not exist (the
+  legacy metadata-only store was removed as the doc states), and every other
+  path named in the disposition table exists.
+- `python3 scripts/check_execution_ownership.py` passes (`execution-ownership
+  guard ok`), so the doc is in sync with the CI guard.

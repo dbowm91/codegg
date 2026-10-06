@@ -19,8 +19,19 @@ src/mcp/
 ├── remote.rs       # JSON-RPC over HTTP + optional SSE, McpConnectionManager
 ├── auth.rs         # OAuthManager, token encryption, PKCE, callback server
 ├── cli.rs          # CLI subcommands: add, list, remove, enable, debug
-└── ide_server.rs   # IDE integration MCP server (openDiff tool)
+├── ide_server.rs   # IDE integration MCP server (openDiff tool)
+└── protocol.rs     # pub(crate) shared protocol negotiation + bounded metadata
 ```
+
+`protocol.rs` is a `pub(crate)` internal module (declared at `mod.rs:12`),
+not part of the public surface. It owns `MODERN_PROTOCOL_VERSION`
+(`2026-07-28`), `LEGACY_PROTOCOL_VERSION` (`2024-11-05`),
+`SERVER_DISCOVER_METHOD` (`server/discover`), and the description/schema/
+metadata byte ceilings (`MAX_MCP_DESCRIPTION_BYTES` 16 KiB,
+`MAX_MCP_SCHEMA_BYTES` 256 KiB, `MAX_MCP_METADATA_BYTES` 64 KiB).
+
+`McpError` is **not** defined in `src/mcp/` — there is no `src/mcp/error.rs`.
+It lives in `crates/codegg-core/src/error.rs`.
 
 ## How It Works
 
@@ -261,27 +272,27 @@ and reports the count.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `McpService` | `mod.rs:130` | Server registry + OAuth manager |
-| `McpServer` | `mod.rs:82` | Per-server state (name, status, tools, version, client) |
-| `McpClientType` | `mod.rs:112` | Local / Remote / Mock dispatch |
-| `McpExposurePolicy` | `mod.rs:144` | Controls raw MCP tool visibility |
-| `McpTool` | `mod.rs:56` | Tool definition from server |
-| `McpToolCallResult` | `mod.rs:68` | Text + optional structured JSON |
-| `McpServerStatus` | `mod.rs:74` | Disconnected / Connecting / Connected / Error |
-| `McpPrompt` | `mod.rs:26` | Prompt definition |
-| `McpResource` | `mod.rs:40` | Resource definition |
-| `McpResourceContent` | `mod.rs:48` | Resource content (text or blob) |
-| `LocalClient` | `local.rs:47` | JSON-RPC over stdio child process |
-| `RemoteClient` | `remote.rs:345` | JSON-RPC over HTTP with SSE parsing |
-| `McpConnectionManager` | `remote.rs:29` | Auto-reconnect + heartbeat wrapper |
-| `ConnectionState` | `remote.rs:20` | Connected / Disconnected / Reconnecting |
-| `OAuthManager` | `auth.rs:142` | Token lifecycle, encryption, PKCE |
-| `TokenSet` | `auth.rs:68` | Access + refresh tokens with expiry |
+| `McpService` | `mod.rs:165` | Server registry + OAuth manager |
+| `McpServer` | `mod.rs:115` | Per-server state (name, status, tools, version, client) |
+| `McpClientType` | `mod.rs:147` | Local / Remote / Mock dispatch |
+| `McpExposurePolicy` | `mod.rs:179` | Controls raw MCP tool visibility |
+| `McpTool` | `mod.rs:78` | Tool definition from server |
+| `McpToolCallResult` | `mod.rs:98` | Text + optional structured JSON |
+| `McpServerStatus` | `mod.rs:107` | `Disconnected` (default) / `Connecting` / `Connected` / `Error(String)` |
+| `McpPrompt` | `mod.rs:27` | Prompt definition |
+| `McpResource` | `mod.rs:57` | Resource definition |
+| `McpResourceContent` | `mod.rs:65` | Resource content (text or blob) |
+| `LocalClient` | `local.rs:58` | JSON-RPC over stdio child process |
+| `RemoteClient` | `remote.rs:378` | JSON-RPC over HTTP with SSE parsing |
+| `McpConnectionManager` | `remote.rs:32` | Auto-reconnect + heartbeat wrapper |
+| `ConnectionState` | `remote.rs:23` | Connected / Disconnected / Reconnecting |
+| `OAuthManager` | `auth.rs:154` | Token lifecycle, encryption, PKCE |
+| `TokenSet` | `auth.rs:80` | Access + refresh tokens with expiry |
 | `McpCli` | `cli.rs:17` | CLI command handler |
 | `McpCommand` | `cli.rs:185` | Clap subcommand enum |
 | `IdeServer` | `ide_server.rs:50` | IDE MCP server (openDiff) |
-| `McpError` | `error.rs:177` | Connection, Server, ToolCall, OAuth, Encryption, Timeout |
-| `parse_mcp_tool_server` | `mod.rs:185` | Extract server from `mcp__<server>__<tool>` |
+| `McpError` | `crates/codegg-core/src/error.rs:198` | Connection, Server, ToolCall, OAuth, Encryption, Timeout |
+| `parse_mcp_tool_server` | `mod.rs:220` | Extract server from `mcp__<server>__<tool>` |
 
 ## Configuration Surface
 
@@ -404,3 +415,20 @@ path using an in-process mock `McpService` (no real binary needed).
 - [tool.md](tool.md) — tool execution and `McpExposurePolicy`
 - [agent.md](agent.md) — uses MCP tools via `ToolRegistry`
 - [security.md](security.md) — DNS rebinding protection
+
+## Source Verification
+
+Verified 2026-10-06 against `src/mcp/` and `crates/codegg-core/src/error.rs`.
+- Added the omitted `protocol.rs` to the "Where It Lives" tree, documented as
+  `pub(crate)` (`mod.rs:12`) with its protocol-version constants and byte
+  ceilings.
+- Corrected 18 stale `file.rs:line` refs in the Key Types table (all `mod.rs`
+  rows were off by 13-52 lines). `McpCli` (`cli.rs:17`), `McpCommand`
+  (`cli.rs:185`), and `IdeServer` (`ide_server.rs:50`) were already correct.
+- Corrected a broken ref: `McpError` was documented at `error.rs:177`, but no
+  `src/mcp/error.rs` exists — the enum is
+  `crates/codegg-core/src/error.rs:198`.
+- Confirmed correct as written: `McpExposurePolicy`'s two fields
+  (`show_raw`, `hidden_servers`, `:179`), the 3-variant `McpClientType`,
+  protocol versions `2026-07-28` / `2024-11-05`, and the
+  `CodeGG MCP` OAuth envelope contract.

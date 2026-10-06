@@ -84,18 +84,18 @@ used for interning tool names and identifiers in `src/util/interner.rs:41`.
 | Type | File:Line | Purpose |
 |------|-----------|---------|
 | `copy_to_clipboard()` | `clipboard.rs:4` | Copy text to system clipboard |
-| `read_from_clipboard()` | `clipboard.rs:19` | Read text from system clipboard |
+| `read_from_clipboard()` | `clipboard.rs:19` (arboard) / `:26` (fallback) | Read text from system clipboard |
 | `fuzzy_match()` | `fuzzy.rs:3` | Levenshtein-based candidate ranking |
 | `fuzzy_score()` | `fuzzy.rs:12` | Subsequence score with bonuses |
 | `truncate_lines()` | `truncate.rs:1` | Head/tail line truncation |
 | `truncate_bytes()` | `truncate.rs:19` | UTF-8 safe byte truncation |
-| `truncate_prefix()` | `truncate.rs:34` | UTF-8 safe prefix slice |
-| `truncate_suffix()` | `truncate.rs:50` | UTF-8 safe suffix slice |
+| `truncate_prefix()` | `truncate.rs:32` | UTF-8 safe prefix slice |
+| `truncate_suffix()` | `truncate.rs:46` | UTF-8 safe suffix slice |
 | `Metrics` | `metrics.rs:12` | Global metrics singleton |
 | `Counter` | `metrics.rs:84` | Atomic counter |
 | `Gauge` | `metrics.rs:96` | Atomic gauge (saturating dec) |
-| `Histogram` | `metrics.rs:116` | Bounded histogram (1000 entries) |
-| `MetricsSnapshot` | `metrics.rs:128` | Point-in-time metrics copy |
+| `Histogram` | `metrics.rs:120` | Bounded histogram (1000 entries) |
+| `MetricsSnapshot` | `metrics.rs:133` | Point-in-time metrics copy |
 | `ModelPricing` | `pricing.rs:7` | Per-model token pricing |
 | `PricingService` | `pricing.rs:20` | Cost calculation service |
 | `StringInterner` | `interner.rs:6` | Concurrent string dedup |
@@ -110,9 +110,9 @@ used for interning tool names and identifiers in `src/util/interner.rs:41`.
 ## Invariants & Gotchas
 
 - **Histogram cap**: `Histogram` keeps at most 1000 entries via
-  `pop_front()` (`metrics.rs:122-124`).
+  `pop_front()` (`metrics.rs:126-128`).
 - **Gauge saturates at zero**: `dec()` uses `saturating_sub(1)`
-  (`metrics.rs:111`).
+  (`metrics.rs:115`).
 - **Fuzzy score returns 0 for incomplete matches**: if not all query
   chars found in order, returns 0 (`fuzzy.rs:37-38`).
 - **Pricing fallback**: if exact key not found, falls back to substring
@@ -123,3 +123,23 @@ used for interning tool names and identifiers in `src/util/interner.rs:41`.
 
 - [tool.md](tool.md) — tools using utilities
 - [tui.md](tui.md) — TUI uses fuzzy scoring for command matching
+
+## Source Verification
+
+Verified 2026-10-06 against `src/util/` (7 modules: `clipboard.rs`, `fuzzy.rs`,
+`interner.rs`, `metrics.rs`, `mod.rs`, `pricing.rs`, `truncate.rs`).
+- Corrected 4 stale line refs: `truncate_prefix` `34`→`32`,
+  `truncate_suffix` `50`→`46`, `Histogram` `116`→`120`,
+  `MetricsSnapshot` `128`→`133`. Also refreshed the two Invariants refs:
+  the 1000-entry `pop_front()` cap is `metrics.rs:126`-`:128` and
+  `Gauge::dec()`'s `saturating_sub(1)` is `metrics.rs:115`.
+- Noted that `read_from_clipboard()` has two cfg-gated definitions
+  (`clipboard.rs:19` arboard, `:26` fallback) at the documented `:19`.
+- Confirmed correct as written: `copy_to_clipboard()` (`clipboard.rs:4`),
+  `fuzzy_match()` (`fuzzy.rs:3`), `fuzzy_score()` (`fuzzy.rs:12`) and its
+  returns-0-on-incomplete-match rule (`fuzzy.rs:37`-`:38`),
+  `truncate_lines()` (`truncate.rs:1`), `truncate_bytes()` (`truncate.rs:19`),
+  `Metrics` (`metrics.rs:12`), `Counter` (`:84`), `Gauge` (`:96`),
+  `ModelPricing` (`pricing.rs:7`), `PricingService` (`pricing.rs:20`),
+  `StringInterner` (`interner.rs:6`), `tool_interner()` (`interner.rs:41`),
+  and the substring-containment pricing fallback (`pricing.rs:241`-`:250`).

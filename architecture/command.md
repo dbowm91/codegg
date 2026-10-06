@@ -13,7 +13,8 @@ template substitution or process-backed execution.
 
 - `src/command/` — Core `Command` struct, file loading, template processing
 - `src/tui/command.rs` — TUI `CommandRegistry` with 153 built-in commands
-- `src/config/schema.rs` — `CommandConfig` for config-file commands
+- `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
+  commands (re-exported as `crate::config::schema`)
 
 ## How It Works
 
@@ -125,7 +126,7 @@ pub struct ProcessCommandSpec {
 }
 ```
 
-### TUI Command (`src/tui/command.rs:27`)
+### TUI Command (`src/tui/command.rs:281`)
 
 ```rust
 pub struct Command {
@@ -160,8 +161,9 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (143 variants). Adding a new built-in
-command requires touching this one typed registry/action authority;
+built-in executable operation (146 variants, `src/tui/command.rs:112`).
+Adding a new built-in command requires touching this one typed
+registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
 `every_builtin_action_is_referenced_by_a_canonical_command` /
 `every_builtin_entry_has_coherent_action` tests make a registry-only
@@ -180,7 +182,7 @@ The palette searches the canonical name, aliases, description, domain, and
 keywords, and caps visible fuzzy results. Switching project tabs replaces the
 project catalog without rediscovering files during palette input.
 
-### CommandCategory (`src/tui/command.rs:9`)
+### CommandCategory (`src/tui/command.rs:10`)
 
 ```rust
 pub enum CommandCategory {
@@ -190,7 +192,7 @@ pub enum CommandCategory {
 }
 ```
 
-### CommandConfig (`src/config/schema.rs`)
+### CommandConfig (`crates/codegg-config/src/schema.rs:1381`)
 
 ```rust
 pub struct CommandConfig {
@@ -198,7 +200,6 @@ pub struct CommandConfig {
     pub description: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
-    pub subtask: Option<bool>,
     pub runtime: Option<CommandRuntimeKind>,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
@@ -232,7 +233,7 @@ A future headless plugin surface must call that shared authority
 without duplicating install policy, and must add parser tests plus
 docs in the same change.
 
-### CommandRegistry (`src/tui/command.rs:84`)
+### CommandRegistry (`src/tui/command.rs:458`)
 
 ```rust
 pub struct CommandRegistry {
@@ -378,8 +379,9 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
   docs test parses this file and fails on drift, so update the test
   assertion and every count in this doc together when adding built-ins.
   The authoritative catalog is `CommandRegistry::built_in_commands`.
-- **Core Command has no `subtask` field**: The `subtask` field exists
-  only in `CommandConfig` (config schema), not in `src/command::Command`.
+- **No `subtask` field anywhere**: Neither `src/command::Command` nor
+  `CommandConfig` declares `subtask`; a grep across `src/` and
+  `crates/` returns nothing.
 - **`find_command_files()` is async wrapper**: Internally calls sync
   function. `load_command_from_file()` is truly async via `tokio::fs`.
 - **Template ordering is deterministic**: Keys sorted before replacement.
@@ -398,3 +400,22 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 - [tui.md](tui.md) — TUI command input handling and dispatch
 - [agent.md](agent.md) — Agent execution with command templates
+
+## Source verification
+
+Verified 2026-10-06 against `src/tui/command.rs` and `src/command/mod.rs`:
+both count-guard tests pass by inspection — `built_in_command_count_matches_release_docs`
+(`command.rs:1104`) asserts 153, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 153 (the three
+former's matches are on lines 15, 22, and 250; the latter's on line 375).
+Also verified the 153 built-in registry length, `BuiltinSlashAction`
+(146 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+`CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
+(5, `command.rs:272`), the TUI `Command` struct fields
+(`command.rs:281`), `CommandRegistry` (`command.rs:458`), core `Command`
+(`src/command/mod.rs:39`), `ProcessCommandSpec`
+(`src/command/mod.rs:12`), `execute_command_template`
+(`src/command/mod.rs:320`), `CommandConfig`
+(`crates/codegg-config/src/schema.rs:1381`), and that `/checkpoint` is
+absent from the registry (its only remaining occurrence is the
+`CommandDomain::Execution` keyword list).

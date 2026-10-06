@@ -116,12 +116,12 @@ commands like `ls`, `cat`, `cargo build`, `git status` even in a
 strict `default = "ask"` config.
 
 Safe bash patterns are defined in `default_bash_allow_patterns()`
-(`src/permission/mod.rs:1359`). Users can extend or override these via
+(`src/permission/mod.rs:1706`). Users can extend or override these via
 `bash_allow_patterns` and `bash_deny_patterns` config fields.
 
 ## Key Types & APIs
 
-### PermissionLevel (`src/permission/mod.rs:125`)
+### PermissionLevel (`src/permission/mod.rs:197`)
 
 ```rust
 pub enum PermissionLevel {
@@ -131,7 +131,7 @@ pub enum PermissionLevel {
 }
 ```
 
-### PermissionResult (`src/permission/mod.rs:142`)
+### PermissionResult (`src/permission/mod.rs:214`)
 
 ```rust
 pub enum PermissionResult {
@@ -141,14 +141,14 @@ pub enum PermissionResult {
 }
 ```
 
-### PermissionDecisionReceipt (`src/permission/mod.rs:154`)
+### PermissionDecisionReceipt (`src/permission/mod.rs:226`)
 
 Ephemeral receipt produced when the permission boundary accepts a call.
 Contains `decision_id`, `outcome`, `source`, `issued_at`, and optional
 `policy_revision`. Callers must not manufacture policy revisions from
 unrelated session identifiers after evaluation.
 
-### PermissionChoice (`src/permission/mod.rs:189`)
+### PermissionChoice (`src/permission/mod.rs:261`)
 
 ```rust
 pub enum PermissionChoice {
@@ -162,7 +162,7 @@ pub enum PermissionChoice {
 Bidirectional `From` impls convert between `PermissionChoice` (domain)
 and `PermissionDecision` (bus DTO).
 
-### PermissionRuleset (`src/permission/mod.rs:288`)
+### PermissionRuleset (`src/permission/mod.rs:360`)
 
 ```rust
 pub struct PermissionRuleset {
@@ -172,7 +172,7 @@ pub struct PermissionRuleset {
 }
 ```
 
-### ToolRule (`src/permission/mod.rs:235`)
+### ToolRule (`src/permission/mod.rs:307`)
 
 ```rust
 pub struct ToolRule {
@@ -186,7 +186,7 @@ pub struct ToolRule {
 `matches()` supports `*` wildcard and glob compilation.
 `matches_bash_command()` checks bash command patterns similarly.
 
-### PermissionChecker (`src/permission/mod.rs:533`)
+### PermissionChecker (`src/permission/mod.rs:805`)
 
 Main enforcement point:
 
@@ -217,7 +217,7 @@ Key methods:
 - `always_allow(tool, path, session_id)` / `always_deny(...)` — persist
 - `clear_decisions()` — wipe cached decisions
 
-### PermissionStore (`src/permission/mod.rs:314`)
+### PermissionStore (`src/permission/mod.rs:507`)
 
 HMAC-signed persistent decision cache:
 
@@ -241,7 +241,7 @@ pub struct PersistentDecision {
 - HMAC signature prevents tampering (`CODEGG_PERM_KEY` env var)
 - Persists to `~/.config/codegg/permissions.json`
 
-### DoomLoopDetector (`src/permission/mod.rs:1618`)
+### DoomLoopDetector (`src/permission/mod.rs:1965`)
 
 Detects repetitive tool call patterns using window-based counting:
 
@@ -363,7 +363,7 @@ bash_deny_patterns = ["rm -rf *"]
 allow_all_bash = false
 ```
 
-### PERMISSION_TYPES Constant (`src/permission/mod.rs:71`)
+### PERMISSION_TYPES Constant (`src/permission/mod.rs:115`)
 
 27 recognized tool permission names: `read`, `edit`, `glob`, `grep`,
 `list`, `bash`, `git`, `task`, `todowrite`, `todoread`, `question`,
@@ -497,3 +497,19 @@ Key test patterns:
 - [tool.md](tool.md) — Tools that use PermissionChecker
 - [bus.md](bus.md) — PermissionRegistry pattern
 - [security.md](security.md) — Additional security measures
+
+## Source Verification
+
+Verified 2026-10-06 against `src/permission/` and
+`crates/codegg-core/src/bus/mod.rs`.
+- Corrected 11 stale `file.rs:line` refs (the module has grown ~60 lines since
+  these were written): `PERMISSION_TYPES` `71`→`115`,
+  `PermissionLevel` `125`→`197`, `PermissionResult` `142`→`214` (it is an
+  `enum`), `PermissionDecisionReceipt` `154`→`226`,
+  `PermissionChoice` `189`→`261`, `ToolRule` `235`→`307`,
+  `PermissionRuleset` `288`→`360`, `PermissionStore` `314`→`507`,
+  `PermissionChecker` `533`→`805`, `DoomLoopDetector` `1618`→`1965`, and
+  `default_bash_allow_patterns` `1359`→`1706`.
+- Confirmed correct as written: `PermissionRegistry`
+  (`crates/codegg-core/src/bus/mod.rs:88`), and the `PERMISSION_TYPES` list —
+  all 27 names match `src/permission/mod.rs:115`-`:143` exactly, in order.

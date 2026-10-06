@@ -19,7 +19,7 @@ registry side of the contract.
 ```
 crates/
   codegg-core/       Core runtime, session, storage, domain state, jobs,
-                     workspace, tool programs (40 modules)
+                     workspace, tool programs (45 modules)
   codegg-config/     Configuration schema, paths, loading, validation,
                      file watching
   codegg-protocol/   Core protocol types: CoreRequest, CoreResponse,
@@ -30,6 +30,8 @@ crates/
                      CircuitBreaker
   codegg-git/        Typed Git operation model, argv parser, risk
                      classification (pure data, no subprocess)
+  codegg-document/   Frontend-neutral UTF-8 document snapshots and
+                     deterministic byte edits
   egglsp/            Language Server Protocol client/service/operations
   egggit/            Read-only git facts: status (v2 rich), diff, log,
                      blame, refs, conflicts, operation state, worktrees
@@ -38,14 +40,21 @@ crates/
   eggcontext/        Token counting + context utilities (tiktoken)
 ```
 
-Non-member binary crate:
+Non-member / excluded directories:
 ```
   egglsp-test-server/  Fake LSP server for integration tests
                        (NOT a workspace member; binary in root
                        Cargo.toml behind lsp-test-support feature)
+  eggwork-test-node/   Standalone test-fixture workspace with its own
+                       lockfile (excluded in root Cargo.toml so it can
+                       resolve eggwork-server without this workspace's
+                       sqlx sqlite linkage)
 ```
 
-Workspace members (11 total): root `codegg` + 10 crates under `crates/`.
+Workspace members (12 entries): root `codegg` + 11 crates under `crates/`
+(`codegg-client`, `codegg-config`, `codegg-core`, `codegg-document`,
+`codegg-git`, `codegg-protocol`, `codegg-providers`, `eggcontext`, `egggit`,
+`egglsp`, `eggsentry`). `apps/desktop/src-tauri` is also excluded.
 
 ## Workspace Dependency Ownership
 
@@ -87,13 +96,18 @@ codegg (root)
   │     ├── codegg-protocol
   │     ├── codegg-providers
   │     │     └── codegg-config
+  │     ├── eggpool-model-routing (git, rev-pinned)
   │     ├── egggit
   │     ├── egglsp
   │     └── eggsentry
+  ├── codegg-client
+  │     ├── codegg-protocol
+  │     └── codegg-document
   ├── codegg-config
   ├── codegg-protocol
   ├── codegg-providers
   ├── codegg-git
+  ├── codegg-document
   ├── egggit
   ├── egglsp
   ├── eggsentry
@@ -102,7 +116,8 @@ codegg (root)
 
 Note: `codegg-core` depends on `codegg-git` (typed Git model), but
 `eggcontext` is NOT a dependency of `codegg-core` (consumed only by
-root).
+root). `codegg-document` is consumed by root and `codegg-client`; it is
+NOT a dependency of `codegg-core`.
 
 ## Runtime Contract (`src/tool/backend.rs`)
 
@@ -172,15 +187,16 @@ back to `ToolBackendConfig::all_native()`.
 
 ### `codegg-core`
 
-40 modules covering core runtime, session, storage, bus, error, goal,
-identity, jobs, memory, migration, model_profile, project_catalog,
-project_discovery, project_discovery_service, project_storage,
-projection_replay, protocol_conversions, provider_connections,
-repository_lineage, resilience, run_store, session, snapshot, storage,
-task_state, tool_program, workspace, workspace_services, worktree,
-agent_convergence, agent_run, agent_run_control, agent_run_group,
-audit, audit_instrumentation, authorization, collaboration, context,
-run_result, team, transport_auth, worktree_service.
+45 modules covering core runtime, session, storage, bus, error, goal,
+identity, jobs, memory, migration, model_profile, model_routing,
+project_catalog, project_discovery, project_discovery_service,
+project_storage, projection_replay, protocol_conversions,
+provider_connections, repository_lineage, resilience, run_store, session,
+session_control, snapshot, storage, task_state, tool_program, workspace,
+workspace_services, worktree, agent_convergence, agent_run,
+agent_run_control, agent_run_group, approval, audit, audit_instrumentation,
+authorization, collaboration, context, run_result, team, transport_auth,
+work_order, work_plan, worktree_service.
 
 Key types: `AppError`, `GlobalEventBus`, `PermissionRegistry`,
 `QuestionRegistry`, `TodoState`, `ResolvedModelProfile`,
@@ -189,6 +205,21 @@ Key types: `AppError`, `GlobalEventBus`, `PermissionRegistry`,
 `RunStore`.
 
 See `architecture/codegg_core.md` for the full module map.
+
+### `codegg-document`
+
+Frontend-neutral UTF-8 document snapshots and deterministic byte edits.
+Revisions start at zero; empty transactions succeed as no-ops and do not
+advance the revision. Ranges refer to the pre-transaction text and must be
+sorted, disjoint UTF-8 byte ranges.
+
+- `DocumentBuffer`, `DocumentSnapshot`, `DocumentRevision`
+- `TextEdit`, `TextRange`, `TextTransaction`, `AppliedTransaction`,
+  `DocumentLimits`
+- `BytePosition`, `DocumentError`, `Result`
+- Third-party: `crop =0.4.3` (line-indexed text edits, `std` only),
+  `thiserror`; `proptest` for property tests. No async, no I/O, no
+  workspace/transport awareness.
 
 ### `codegg-config`
 
@@ -260,7 +291,8 @@ See `architecture/codegg_core.md` for the full module map.
 
 ### `egglsp`
 
-Large crate (56 modules). Key public API:
+Large crate (39 `pub mod` declarations in `crates/egglsp/src/lib.rs`).
+Key public API:
 
 - `LspConfig`, `LspRule` — configuration types
 - `LspService::new(config)`, `open_file`, `update_file`, `close_file`,
@@ -270,7 +302,7 @@ Large crate (56 modules). Key public API:
   formatting, semantic_tokens
 - `DiagnosticsCollector`, `DiagnosticsOutput`
 - `LspClient` — transport layer
-- `LspError` — comprehensive error enum (20+ variants)
+- `LspError` — comprehensive error enum (26 variants)
 - `LspWorkflowRecipe` — composed multi-step operations (repair hunk,
   review diff, security review, etc.)
 - `capability`, `context`, `context_policy`, `context_renderer` —
@@ -331,6 +363,8 @@ cargo test -p codegg-config
 cargo test -p codegg-protocol
 cargo test -p codegg-providers
 cargo test -p codegg-git
+cargo test -p codegg-document
+cargo test -p codegg-client
 cargo test -p egggit
 cargo test -p eggsentry
 cargo test -p eggcontext
@@ -345,3 +379,17 @@ cargo test --test tool_structured_execution
 - `architecture/tool.md` — tool registry and model-facing contract
 - `architecture/lsp.md` — LSP subsystem
 - `architecture/deterministic_tools.md` — eggsact tool catalog
+
+## Source verification
+
+Verified 2026-10-06 against `Cargo.toml` (workspace `members`/`exclude`,
+`[workspace.dependencies]`), `crates/*/Cargo.toml`, and crate `lib.rs` files.
+Corrected: `codegg-core` module count 40 → 45 (all 45 `pub mod` names now
+listed and diffed against `lib.rs`); workspace members 11 → 12 (added
+`codegg-document`, `codegg-client`); added the previously undocumented
+`codegg-document` crate section and layout/dependency-graph entries;
+`egglsp` module count 56 → 39 `pub mod`; `LspError` 20+ → 26 variants;
+removed a duplicated `cargo test -p codegg-git` line. Confirmed
+`codegg-core` does not depend on `eggcontext` or `codegg-document`, and
+that `eggwork-test-node` / `egglsp-test-server` / `apps/desktop/src-tauri`
+are excluded.

@@ -46,7 +46,7 @@ distinguishes them:
 
 ## Key Types & APIs
 
-### EggsactRuntime (`src/eggsact/adapter.rs:88-145`)
+### EggsactRuntime (`src/eggsact/adapter.rs:88-91`, impl `:93-150`)
 
 ```rust
 pub struct EggsactRuntime {
@@ -62,7 +62,9 @@ pub struct EggsactRuntime {
 - `has_tool(tool) -> bool`
 - `config() -> &EggsactConfig`
 
-### EggsactConfig (`src/eggsact/adapter.rs:68-85`)
+Full method list is in `src/eggsact/adapter.rs:93-150`; see source for the complete set.
+
+### EggsactConfig (`src/eggsact/adapter.rs:68-75`, `Default` impl `:77`)
 
 ```rust
 pub struct EggsactConfig {
@@ -72,7 +74,7 @@ pub struct EggsactConfig {
 }
 ```
 
-### EggsactCallResult (`src/eggsact/adapter.rs:148-164`)
+### EggsactCallResult (`src/eggsact/adapter.rs:153-169`)
 
 ```rust
 pub struct EggsactCallResult {
@@ -92,7 +94,7 @@ pub struct EggsactCallResult {
 Structured fields (`result`, `findings`, `warnings`) are populated from
 eggsact `ToolResponse` when available.
 
-### EggsactTool (`src/tool/deterministic.rs:17-91`)
+### EggsactTool (`src/tool/deterministic.rs:17-26`, impl `:28`)
 
 Generic wrapper mapping a Codegg tool name to an eggsact tool name.
 Implements `Tool` trait. Both `execute()` and `execute_structured()`
@@ -221,13 +223,20 @@ in-process runtime is initialized. No fallback profile is substituted.
 
 ### Profile Selection
 
+The authoritative profile list is the linked eggsact runtime's
+`eggsact::mcp::registry::available_profiles()` (`src/eggsact/adapter.rs:97`
+reports it in the error message for an invalid profile). Profiles referenced
+inside this repository are:
+
 - `codegg_core` — curated subset for code analysis (default)
-- `codegg_core_min` — minimal subset
+- `codegg_core_min` — minimal subset (used by
+  `src/tool/integrated_config.rs` tests)
 - `default` — eggsact's default profile
-- `codegg_preflight`, `codegg_patch`, `codegg_config`,
-  `codegg_unicode_security`, `codegg_shell`, `codegg_repo_audit`, and
-  `human_math` — upstream purpose-specific profiles
 - `full` — all available eggsact tools
+
+Additional upstream purpose-specific profiles exist but are not named in this
+repository, so they are not listed here; read them from
+`available_profiles()` rather than from this table.
 
 The upstream profile set is larger than CodeGG's immediate palette. CodeGG
 currently exposes eight always-visible wrappers and five deferred wrappers;
@@ -281,3 +290,20 @@ output truncation, structured fields, and deferred-tool discoverability.
 - [preflight.md](preflight.md) — Harness-side preflight integration
 - [native_crates.md](native_crates.md) — Eggsact crate boundary
 - `crates/codegg-config/src/schema.rs` — `DeterministicToolsConfig`
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `EggsactRuntime`
+`adapter.rs:88-145` → struct `:88-91` + impl `:93-150`;
+`EggsactConfig` `adapter.rs:68-85` → struct `:68-75` + `Default` impl `:77`;
+`EggsactCallResult` `adapter.rs:148-164` → `:153-169`; `EggsactTool`
+`deterministic.rs:17-91` → struct `:17-26` + impl `:28`; added a
+see-source pointer for the `EggsactRuntime` method list. Verified accurate:
+`build_eggsact_tools` (`deterministic.rs:106-289`) and its 8 always-visible +
+5 deferred split, `truncate_utf8_safe` (`adapter.rs:18-57`), the 10
+`EggsactCallResult` fields, the two `EggsactConfig`/`EggsactTool` field sets
+listed, eggsact `1.2.5`, `format_response` (`adapter.rs:185`),
+`to_structured_result` (`adapter.rs:172`). Corrected: the profile-selection
+table asserted 11 named upstream profiles, but only `codegg_core`,
+`codegg_core_min`, `default`, and `full` are traceable in this repository —
+the rest now defer to `eggsact::mcp::registry::available_profiles()`.

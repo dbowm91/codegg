@@ -54,15 +54,17 @@ lease-generation, health, reconciliation, and cleanup state while the
 scheduler remains the machine-capacity/admission authority. No worktree
 operation bypasses the hardened Git environment policy.
 
-### Main loop (`scheduler.rs:809`)
+### Main loop (`scheduler.rs:840`)
 
 The scheduler loop runs until shutdown. Each iteration:
 1. Wait for reconcile interval, a wake signal, or cancellation
 2. `reconcile()` — pull durable `Queued` jobs into the fair queue,
    remove stale entries, update aging
-3. `admit_and_dispatch_batch()` — try up to 4 candidates per tick
+3. `admit_and_dispatch_batch()` — dispatch up to `max_batch = 4` per tick,
+   inspecting up to `max_batch * 2` candidates so a temporarily blocked
+   head job does not stall unrelated workspaces
 
-### Reconciliation (`scheduler.rs:583`)
+### Reconciliation (`scheduler.rs:614`)
 
 Reconcile pulls durable queued jobs in bounded batches
 (`config.queue.claim_batch`), deduplicates by `JobId`, and applies
@@ -70,7 +72,7 @@ aging. It also removes queue entries whose durable state is no longer
 `Queued` (confirmed via direct store read so valid queued jobs beyond
 the batch are never evicted).
 
-### Admission (`scheduler.rs:833`)
+### Admission (`scheduler.rs:864`)
 
 For each candidate, the scheduler:
 1. Pops from the fair queue
@@ -84,7 +86,7 @@ For each candidate, the scheduler:
 
 ### Key Types & APIs
 
-#### JobScheduler (`scheduler.rs:135`)
+#### JobScheduler (`scheduler.rs:137`)
 
 ```rust
 pub struct JobScheduler { ... }
@@ -265,7 +267,7 @@ process creation. `observe` and `active` remain accepted configuration
 labels for staged deployments and diagnostics, but they do not restore
 bypass execution.
 
-### Resource profiles (`mod.rs:648`)
+### Resource profiles (`codegg-core/src/jobs/mod.rs:713`)
 
 Admission reserves soft CPU/memory/IO hints, process slots, network
 slots, and typed exclusivity keys. Hints are accounting inputs, not
@@ -455,7 +457,7 @@ attempts. Managed-process cancellation kills the process session and
 descendants before the permit is released. A completion that races
 cancellation follows the durable store's terminal-state precedence.
 
-At startup, `recover_at_startup` (`scheduler.rs:1529`) calls
+At startup, `recover_at_startup` (`scheduler.rs:1764`) calls
 `JobStore::recover_generation` once and wakes the scheduler with
 `WokeReason::Reconciled` so the fair queue is rebuilt from durable
 state. Queue reconciliation rebuilds the in-memory fair queue from
@@ -464,7 +466,7 @@ durable queued jobs. Schedule occurrence uniqueness is enforced by
 to `ScheduleStore`, while standalone compatibility task loops remain
 explicitly outside daemon guarantees.
 
-### Shutdown (`scheduler.rs:1317`)
+### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:
 - `DrainQueuedUntil(Duration)` — let admitted attempts finish, cancel
@@ -485,7 +487,7 @@ clients fetch full job and attempt records through protocol requests.
 `JobWait` returns a bounded completion summary and optional RunStore
 ID.
 
-`WokeReason` variants (`events.rs:68`): `JobEnqueued`,
+`WokeReason` variants (`src/scheduler/events.rs:68`): `JobEnqueued`,
 `ExecutorCompleted`, `CancellationRequested`, `ScheduleTick`,
 `ScheduleClaimed`, `Manual`, `RetryRequested`, `Reconciled`.
 
@@ -615,3 +617,21 @@ cargo test --test scheduler_protocol_consistency
 - `architecture/jobs.md` — Phase 4 durable job/schedule domain
 - `architecture/overview.md` — full module map
 - `.opencode/skills/scheduler/SKILL.md` — skill reference
+
+## Source verification
+
+Verified 2026-10-06 against `src/scheduler/*.rs`. Corrected the
+`JobScheduler` ref `scheduler.rs:135` → `:137` (confirmed the prior
+review's claim) and the rest of the stale refs: main loop `:809` → `:840`,
+reconcile `:583` → `:614`, admission `:833` → `:864`, shutdown `:1317` →
+`:1503`, `recover_at_startup` `:1529` → `:1764`; `Resource profiles`
+`mod.rs:648` → `codegg-core/src/jobs/mod.rs:713` (the old `mod.rs:648`
+ambiguously resolved to a scheduler-local file, but `for_kind` lives in
+`codegg-core`); `WokeReason` `events.rs:68` → `src/scheduler/events.rs:68`.
+Verified accurate: `JobSubmissionService` (`submission.rs:86`),
+`SubmissionKey` (`:31`), `AdmissionController` (`admission.rs:99`), the
+3-variant `AdmissionDecision`, 7 `BlockReason` variants, 5
+`UnschedulableReason` variants, 8 `WokeReason` variants, 9 `ExecutorKind`
+variants, and all `ResourceRequest::for_kind` resource rows. Expanded the
+admit-batch claim with the real `max_batch = 4` / `max_batch * 2`
+candidate-window detail from `scheduler.rs:871-876`.

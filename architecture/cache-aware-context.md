@@ -290,15 +290,24 @@ A new top-level `[context_policy]` config section (distinct from `context_packer
 #### ContextPolicyConfig and ContextPolicyMode
 
 ```rust
-// In codegg_config::schema (crate codegg-config)
+// In codegg_config::schema (crate codegg-config), schema.rs:643 — 15 fields
 pub struct ContextPolicyConfig {
-    pub enabled: bool,                    // default false (safe)
-    pub mode: ContextPolicyMode,          // default Observe
-    pub min_observations: usize,          // default 3
-    pub max_tool_definitions: usize,      // default 24
-    pub always_include: Vec<String>,      // defaults include context_read, tool_search, todowrite, ...
-    pub never_reduce: Vec<String>,
-    pub log_decisions: bool,              // default true
+    pub enabled: Option<bool>,                    // default false (safe)
+    pub mode: Option<ContextPolicyMode>,          // default Observe
+    pub min_cache_observations: Option<usize>,    // default 3
+    pub review_tool_palette_threshold: Option<bool>, // default true
+    pub max_tool_definitions: Option<usize>,      // default 24
+    pub always_include_tools: Option<Vec<String>>, // defaults include context_read, tool_search, todowrite, ...
+    pub never_reduce_tools: Option<Vec<String>>,
+    pub log_policy_decisions: Option<bool>,       // default true
+    // --- volatile-tail compaction ---
+    pub volatile_tail_compaction: Option<bool>,
+    pub volatile_tail_mode: Option<VolatileTailPolicyMode>,
+    pub min_volatile_tokens_for_compaction: Option<usize>,
+    pub preserve_recent_messages: Option<usize>,
+    pub max_compacted_tail_tokens: Option<usize>,
+    pub require_effective_cost_signal: Option<bool>,
+    pub compact_tool_results_only_first: Option<bool>,
 }
 
 pub enum ContextPolicyMode {
@@ -308,7 +317,13 @@ pub enum ContextPolicyMode {
 }
 ```
 
-All defaults are conservative. `enabled=false` and `mode=Observe` ensure zero behavioral change on upgrade. `always_include` and `never_reduce` are explicit allow/deny lists; `tool_search` is additionally hard-guarded.
+Every field is `Option<_>`; the resolved accessors (`enabled()`,
+`min_cache_observations()`, `max_tool_definitions()`, …) apply the documented
+defaults.
+```
+
+All defaults are conservative. `enabled=false` and `mode=Observe` ensure zero behavioral change on upgrade. `always_include_tools` and `never_reduce_tools` are explicit allow/deny lists;
+`tool_search` is additionally hard-guarded.
 
 #### Policy Decision Flow
 
@@ -357,7 +372,7 @@ struct ContextPolicyRuntimeState {
 
 Reduction is purely syntactic and order-preserving:
 
-- Collect the *required set* in input order: (a) any tool whose name is in the hardcoded recovery set, (b) `always_include`, (c) `never_reduce`, (d) the tool that originally called the current sub-task (if any).
+- Collect the *required set* in input order: (a) any tool whose name is in the hardcoded recovery set, (b) `always_include_tools`, (c) `never_reduce_tools`, (d) the tool that originally called the current sub-task (if any).
 - If required set size > cap, keep only the required set and set `cap_exceeded_by_required=true` in `ToolPaletteReduction`.
 - Fill remaining slots from the original input list (in arrival order), skipping already-included required tools, up to the cap.
 - Guardrails: if the selected set would be empty while input was non-empty, fall back to the first N tools (respecting max or 1); `tool_search` is forcibly preserved if present in the input. Empty fallback sets a backoff in the caller.
@@ -514,7 +529,7 @@ Both systems are complementary. Projection reduces the size of individual `ToolR
 - **Effective-cost compaction (active)**: The diagnostic analysis (`EffectiveCostAnalysis`) is now in place and produces recommendations, but no code path acts on those recommendations. A future enhancement would wire the analysis output into the packer's budget enforcement, allowing cost-aware decisions about which volatile blocks to omit.
 - **Stable-prefix preservation decisions**: The analysis can recommend preserving stable prefixes, but the packer does not yet act on this. Future work would allow the packer to adjust block ordering or omission based on cache hit rate feedback.
 - **Dynamic tool palettes (packer-level)**: The tool definitions block is always required and always included in full by the packer. A future optimization could allow the packer to omit low-usage tools from the definitions when budget is tight, using the tool hash to detect palette changes.
-- **Gated tool-palette reduction (first active policy, hardened Phases 1-8)**: *This* pass (hardening) completed the gated policy for conservative tool-palette reduction under the new top-level `[context_policy]` section (plan: effective-cost-tool-palette-prototype). It is implemented in `src/context/policy.rs` (`decide_policy`, `reduce_tool_palette`, `ContextPolicyConfig`, `ContextPolicyMode`, `ContextPolicyDecision` (now with would_*), `ToolPaletteReduction` (cap_exceeded_by_required)) and integrated only in `AgentLoop::apply_tool_palette_policy_if_active`. Reductions always derive from unreduced `base_request_tools` (full profile-filtered palette captured once per run after model-profile filter) in AgentLoop (now 26 fields: +base_request_tools + context_policy_runtime); non-cumulative/stateless per provider call (noop or backoff can restore full base); `request.tools=None` respected and never re-enabled; ContextPolicyRuntimeState (backoff `reduction_disabled_until_turn`, consecutive_reductions, last_* counters/names); starvation detection after tool_calls parse (main loop + drain_follow_up): if name in base but not last_selected (only base-present tools), set backoff + warn; backoff triggers (empty selected fallback, starvation) logged with `policy_backoff_active`/`reduction_disabled_until_turn`; Warn performs dry-run reduce when base passed and populates would_selected/omitted counts (logs include would_select/would_omit); `review_tool_palette_threshold=false` gates ReviewToolPalette trigger in decide_policy; diagnostics (info when log_policy_decisions): base_tool_count/selected/omitted/cap_exceeded_by_required/policy_backoff_active/reduction_disabled_until_turn + debug names/overflow; phase-scoped to pre-provider windows, mutates *only* the per-request `request.tools` Vec, never touches ToolRegistry/transcript/compaction/packer mutation paths, and is behind safe defaults (`enabled=false`, `mode=Observe`). It remains a conservative, order-based reduction (no semantic selection). The broader "dynamic tool palettes" item above refers to deeper packer-level integration that is still future work.
+- **Gated tool-palette reduction (first active policy, hardened Phases 1-8)**: *This* pass (hardening) completed the gated policy for conservative tool-palette reduction under the new top-level `[context_policy]` section (plan: effective-cost-tool-palette-prototype). It is implemented in `src/context/policy.rs` (`decide_policy`, `reduce_tool_palette`, `ContextPolicyConfig`, `ContextPolicyMode`, `ContextPolicyDecision` (now with would_*), `ToolPaletteReduction` (cap_exceeded_by_required)) and integrated only in `AgentLoop::apply_tool_palette_policy_if_active`. Reductions always derive from unreduced `base_request_tools` (full profile-filtered palette captured once per run after model-profile filter) in AgentLoop (34 fields: +base_request_tools + context_policy_runtime); non-cumulative/stateless per provider call (noop or backoff can restore full base); `request.tools=None` respected and never re-enabled; ContextPolicyRuntimeState (backoff `reduction_disabled_until_turn`, consecutive_reductions, last_* counters/names); starvation detection after tool_calls parse (main loop + drain_follow_up): if name in base but not last_selected (only base-present tools), set backoff + warn; backoff triggers (empty selected fallback, starvation) logged with `policy_backoff_active`/`reduction_disabled_until_turn`; Warn performs dry-run reduce when base passed and populates would_selected/omitted counts (logs include would_select/would_omit); `review_tool_palette_threshold=false` gates ReviewToolPalette trigger in decide_policy; diagnostics (info when log_policy_decisions): base_tool_count/selected/omitted/cap_exceeded_by_required/policy_backoff_active/reduction_disabled_until_turn + debug names/overflow; phase-scoped to pre-provider windows, mutates *only* the per-request `request.tools` Vec, never touches ToolRegistry/transcript/compaction/packer mutation paths, and is behind safe defaults (`enabled=false`, `mode=Observe`). It remains a conservative, order-based reduction (no semantic selection). The broader "dynamic tool palettes" item above refers to deeper packer-level integration that is still future work.
 - **Provider-specific pricing**: Cache hit rates vary by provider and model. The packer does not currently adjust its strategy based on provider-specific cache pricing (e.g., Anthropic's 90% discount on cached tokens vs. OpenAI's 50%).
 - **Cross-turn block diffing**: The packer currently rebuilds all blocks each turn. A future optimization could diff against the previous turn's blocks and only re-pack changed blocks, further improving cache stability.
 
@@ -524,3 +539,24 @@ bounded by bytes on valid UTF-8 boundaries and never enters public cache
 diagnostics or serialized projection content. Adapter/reasoning mode remains a
 behavior identity input, while reasoning text itself is never an identity
 payload.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: the `ContextPolicyConfig` block
+had 4 wrong field names (`min_observations` → `min_cache_observations`,
+`always_include` → `always_include_tools`, `never_reduce` →
+`never_reduce_tools`, `log_decisions` → `log_policy_decisions`), non-`Option`
+types, and omitted 8 of 15 fields — it now lists all 15 in source order and
+cites `crates/codegg-config/src/schema.rs:643`; the `always_include`/
+`never_reduce` references in the reduction description were corrected to the
+real names; `AgentLoop` "now 26 fields" → 34. Verified accurate:
+`ContextBlock` 10 fields, 14 `ContextBlockKind` variants and every cell of the
+tier→`CacheClass` table, 4 `CacheClass` and 3 `Lossiness` variants,
+`ContextPackBudget` 3 fields, `ContextPackResult` 5 fields, 4 `OmissionReason`
+variants, `CacheStatsEntry` 7 fields, `ContextPolicyMode` 3 variants
+(`schema.rs:620`), all nine builder priority values (100/90/80/70/65/60/40/30/20
+— `block_builder.rs:415-438`), all seven volatile-tail defaults
+(12000/12/8000/true/true — `schema.rs:713-732`), `context_packer` defaults
+(32000/24000), the budget arithmetic (reserved 10,000 and margin 4,000 —
+`src/agent/context_runtime.rs:79-80`), and the five
+`ContextPackObservationPhase` variants (`context_runtime.rs:631-637`).

@@ -49,7 +49,7 @@ pub enum PreflightSeverity {
 }
 ```
 
-### PreflightLocation (`src/preflight/service.rs:24-29`)
+### PreflightLocation (`src/preflight/service.rs:25-29`)
 
 ```rust
 pub struct PreflightLocation {
@@ -59,7 +59,7 @@ pub struct PreflightLocation {
 }
 ```
 
-### PreflightFinding (`src/preflight/service.rs:32-39`)
+### PreflightFinding (`src/preflight/service.rs:33-39`)
 
 ```rust
 pub struct PreflightFinding {
@@ -71,7 +71,7 @@ pub struct PreflightFinding {
 }
 ```
 
-### PreflightDecision (`src/preflight/service.rs:42-86`)
+### PreflightDecision (`src/preflight/service.rs:43-47`, impl `:49-86`)
 
 ```rust
 pub enum PreflightDecision {
@@ -83,7 +83,7 @@ pub enum PreflightDecision {
 
 Methods: `is_blocked()`, `has_warnings()`, `findings()`, `summary()`.
 
-### PreflightPolicy (`src/preflight/service.rs:89-178`)
+### PreflightPolicy (`src/preflight/service.rs:90-107`, impl `:149-178`)
 
 ```rust
 pub struct PreflightPolicy {
@@ -108,7 +108,7 @@ Key methods:
 
 Default: enabled, mode `Warn`, all categories on.
 
-### PreflightMode (`src/preflight/service.rs:110-121`)
+### PreflightMode (`src/preflight/service.rs:112-121`)
 
 ```rust
 pub enum PreflightMode {
@@ -119,7 +119,7 @@ pub enum PreflightMode {
 }
 ```
 
-### PreflightService (`src/preflight/service.rs:181-548`)
+### PreflightService (`src/preflight/service.rs:181-184`, impl `:186-549`)
 
 ```rust
 pub struct PreflightService {
@@ -269,3 +269,20 @@ Unit tests cover:
 - [deterministic_tools.md](deterministic_tools.md) — Eggsact tools
 - `crates/codegg-config/src/schema.rs` — `PreflightConfig` schema
 - `src/eggsact/adapter.rs` — `EggsactRuntime` used by preflight
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected (the prior "off by 1-4 lines"
+estimate was roughly right, but several refs pointed at an `impl` block range
+while the heading claimed the type): `PreflightLocation` `24-29` → `25-29`,
+`PreflightFinding` `32-39` → `33-39`, `PreflightDecision` `42-86` → enum
+`43-47` + impl `49-86`, `PreflightPolicy` `89-178` → struct `90-107` + impl
+`149-178`, `PreflightMode` `110-121` → `112-121`, `PreflightService`
+`181-548` → struct `181-184` + impl `186-549`. Verified accurate: 2 files in
+`src/preflight/`, 3 `PreflightSeverity` variants, 3-field
+`PreflightLocation`, 5-field `PreflightFinding`, 3-variant
+`PreflightDecision`, 8-field `PreflightPolicy`, 4 `PreflightMode` variants,
+the six `check_*` and three `parse_*` methods, `PreflightPolicy::from_config`/
+`should_block`/`should_surface`, `PreflightDecision::is_blocked`/`has_warnings`,
+harness `max_output_chars: 8_000` (`service.rs:192`) vs model `12_000`
+(`src/eggsact/adapter.rs:82`), and eggsact `1.2.5` (`Cargo.toml:281`).

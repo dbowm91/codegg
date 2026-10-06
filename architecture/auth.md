@@ -168,7 +168,7 @@ config-aware path registers zero providers.
 
 ## Key Types & APIs
 
-### AuthConfig (`auth_types.rs:174`)
+### AuthConfig (`auth_types.rs:190`)
 
 ```rust
 pub enum AuthConfig {
@@ -180,7 +180,7 @@ pub enum AuthConfig {
 }
 ```
 
-### Credential (`auth_types.rs:115`)
+### Credential (`auth_types.rs:131`)
 
 ```rust
 pub struct Credential {
@@ -193,7 +193,7 @@ pub struct Credential {
 `Debug` impl masks the secret via `mask_secret()`.
 `authorization_header_value()` returns `Bearer {secret}` for both kinds.
 
-### CredentialKind (`auth_types.rs:54`)
+### CredentialKind (`auth_types.rs:70`)
 
 ```rust
 pub enum CredentialKind { ApiKey, BearerToken }
@@ -215,7 +215,7 @@ pub enum AuthError {
 }
 ```
 
-### AuthResolver (`auth_types.rs:298`)
+### AuthResolver (`auth_types.rs:314`)
 
 ```rust
 pub struct AuthResolver { external: ExternalCommandProvider }
@@ -229,7 +229,7 @@ impl AuthResolver {
 }
 ```
 
-### ResolverContext (`auth_types.rs:249`)
+### ResolverContext (`auth_types.rs:265`)
 
 ```rust
 pub struct ResolverContext {
@@ -247,7 +247,7 @@ pub struct ResolverContext {
 sets it from `credential_capability_for`; direct resolver callers must
 set it explicitly when they intend bearer support.
 
-### ResolvedAuth (`auth_types.rs:265`)
+### ResolvedAuth (`auth_types.rs:281`)
 
 ```rust
 pub struct ResolvedAuth {
@@ -256,7 +256,7 @@ pub struct ResolvedAuth {
 }
 ```
 
-### ResolvedAuthSource (`auth_types.rs:271`)
+### ResolvedAuthSource (`auth_types.rs:287`)
 
 ```rust
 pub enum ResolvedAuthSource {
@@ -281,7 +281,7 @@ pub enum CredentialCapability { ApiKeyOnly, ApiKeyOrBearer }
 `incompatible_credential_message()` builds the typed
 `Unsupported` diagnostic without secret material.
 
-### CredentialStore (`auth_types.rs:537`)
+### CredentialStore (`auth_types.rs:553`)
 
 ```rust
 pub struct CredentialStore {
@@ -309,7 +309,7 @@ Key methods:
 - `remove(provider_id, account_id)` — `Some("*")` removes all accounts
 - `list()` — returns all records (metadata only)
 
-### StoredCredentialRecord (`auth_types.rs:517`)
+### StoredCredentialRecord (`auth_types.rs:533`)
 
 ```rust
 pub struct StoredCredentialRecord {
@@ -324,7 +324,7 @@ pub struct StoredCredentialRecord {
 }
 ```
 
-### ExternalCommandProvider (`auth_types.rs:229`)
+### ExternalCommandProvider (`auth_types.rs:245`)
 
 ```rust
 pub struct ExternalCommandProvider;
@@ -529,3 +529,24 @@ Key test patterns:
 - [crypto.md](crypto.md) — Encryption primitives
 - [provider.md](provider.md) — Provider registration
 - [config.md](config.md) — Configuration schema
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/codegg-providers/src/auth_types.rs`,
+`src/auth/mod.rs`, and `crates/codegg-providers/src/crypto.rs`.
+- Corrected 10 stale `auth_types.rs:line` refs: `AuthConfig` `174`→`190`,
+  `Credential` `115`→`131`, `CredentialKind` `54`→`70`,
+  `AuthResolver` `298`→`314`, `ResolverContext` `249`→`265`,
+  `ResolvedAuth` `265`→`281`, `ResolvedAuthSource` `271`→`287`,
+  `CredentialStore` `537`→`553`, `StoredCredentialRecord` `517`→`533`,
+  `ExternalCommandProvider` `229`→`245`.
+- Confirmed correct as written: `AuthError` at `auth_types.rs:15` with
+  exactly the 9 documented variants, and `CredentialKind` at `:70` with
+  exactly `ApiKey, BearerToken`.
+- Confirmed the module boundary: `src/auth/mod.rs` re-exports
+  `codegg_providers::auth_types::{…}` and declares only `cli`, `external`,
+  and `oauth` submodules. It does **not** re-export crypto — the crypto
+  surface lives at `codegg_providers::crypto`
+  (`crates/codegg-providers/src/crypto.rs`, `pub mod crypto` at
+  `crates/codegg-providers/src/lib.rs:18`). See
+  [crypto.md](crypto.md).

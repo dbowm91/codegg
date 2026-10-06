@@ -40,8 +40,9 @@ context/candidate interaction score. Small and medium capacity points are
 not a relabeling of hashed-linear-v1. It supports unseen tool names by scoring
 bounded textual descriptors and remains advisory-only.
 
-The runtime is compiled only with the optional tool-advisor feature. Training
-commands additionally require tool-advisor-training. The default build keeps
+The runtime is compiled only with the optional `tool-advisor` feature.
+Training commands additionally require `tool-advisor-training`
+(`Cargo.toml:346-347`). The default build keeps
 the existing linear artifact path and does not contain model weights or a
 download path.
 
@@ -69,9 +70,11 @@ silently reinterpreted as that architecture.
 
 ## Sequence-encoder asset spike — 2026-09-21
 
-M001 selected Candle 0.11.0 for the experiment-only stack. The exact optional
-dependencies are `candle-core = 0.11.0`, `candle-nn = 0.11.0`, and
-`candle-transformers = 0.11.0`, all with default features disabled. The
+M001 selected Candle 0.11 for the experiment-only stack. The exact optional
+dependencies (`Cargo.toml:313-315`) are `candle-core = "0.11"`,
+`candle-nn = "0.11"`, and `candle-transformers = "0.11"` — each
+`default-features = false, optional = true` (the resolved patch version at
+the time of the spike was 0.11.0). The
 experiment features are `tool-advisor-encoder-experiment` and
 `tool-advisor-encoder-training`; neither is enabled by the default build.
 Candle is MIT OR Apache-2.0. Asset manifests require explicit config,
@@ -194,3 +197,20 @@ the contextual-slice gate has no declared contextual artifact, and cold load
 is 16.723s against the preregistered 10s limit (test ranking is 75.816s within
 the 600s limit). The sequence ranker, hybrid retriever, and local assets remain
 offline research infrastructure; no live-primary-model wiring is enabled.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: the Candle pins were stated as
+exact `= 0.11.0` requirements, but `Cargo.toml:313-315` declares them as
+`version = "0.11"` with `default-features = false, optional = true`; added the
+`Cargo.toml` locations for the two experiment features. Verified accurate:
+the two feature names and their dependency chain (`Cargo.toml:346-354`),
+`assets/tool-advisor/reference-models/all-minilm-l6-v2.json`,
+`assets/tool-advisor/sequence-encoder-m005-preregistration.json`,
+`assets/tool-advisor/sequence-qualification-result.json`, the closure records
+`plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`
+and `008-status.md`, the subsystem roadmap, the contextual parameter points
+5,242,881/15,728,641, and every M005 metric: test MRR 0.831 vs hashed-linear
+0.707, RRF recall 1.000 on the 64-tool and 128-tool fixtures, cold load
+16,723ms against the 10,000ms preregistered limit, test ranking 75,816ms
+within the 600,000ms limit, and disposition D.

@@ -54,7 +54,7 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **71 CREATE TABLE statements** across
+Migrations create and evolve **73 CREATE TABLE statements** across
 these table groups:
 
 **Core session tables (v1):**
@@ -84,6 +84,32 @@ tables (v31)
 **Durable jobs (v23):**
 `job`, `job_attempt`, `job_dependency`, `schedule`,
 `schedule_occurrence`
+
+**Agent run domain (v37–v45):**
+`agent_task` + `agent_run` (v37, with `depth` in v42),
+`agent_run_mailbox` + `agent_run_journal` (v38),
+`managed_worktree` + `worktree_lease` (v39),
+`agent_run_result` (v40),
+`agent_run_group` + `agent_run_group_member` (v41, owner attribution in
+v43). v44 adds `agent_task.request_fingerprint`; v45 adds `goal.revision`.
+
+**Mutation attribution and recovery (v46–v50):**
+`edit_checkpoint` (v46), `edit_restore_operation` (v47), lookup indexes
+(v48, v50), `agent_convergence` + `agent_convergence_cycle` (v49)
+
+**Team, audit, and collaboration (v51–v56):**
+`principal` + `project_membership` (v51), `personal_auth_token` (v52),
+`origin_attribution` (v53, scope-rebuilt in v61),
+`audit_event` + `audit_body` (v54), chat schema statements (v55–v56)
+
+**Work Orders (v60–v63):**
+`work_order` + occurrence/batch ordering tables (v60),
+`runtime_preferences` Task-composer model scope (v62),
+`task_trigger` + `task_trigger_receipt` (v63)
+
+**Chat policy and session control (v64–v65):**
+`chat_project_policy` / `chat_channel_policy` and their override tables
+(v64), the turn-scoped controller lease (v65)
 
 **Tool Programs (v33–v35):**
 `tool_program`, `tool_program_call` (v33),
@@ -121,6 +147,12 @@ model preference (see `architecture/execution_reliability.md` or
 bounded dependencies/acceptance/evidence JSON with CAS revisions. Additive
 with no backfill; legacy sessions simply have no active plan.
 
+**Repository bindings and job targets (v66–v68):**
+Eggwork fixed-target job/attempt columns (v66),
+`job_attempt.source_subject_json` (v67),
+`work_plan_eggplan_binding` / `work_plan_eggplan_item_binding` /
+`work_order_eggplan_binding` (v68, append/replace only)
+
 ### Column additions to session table
 
 The `session` table gains columns across multiple migrations:
@@ -130,9 +162,9 @@ v12 adds `time_deleted`, v22 adds `workspace_id`, v27 adds
 
 ### Session Columns constant
 
-The `SESSION_COLUMNS` constant (`session/mod.rs:39`) includes all 27
+The `SESSION_COLUMNS` constant (`session/mod.rs:48`) lists all 27
 session columns including the v27 provider connection selection fields.
-Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:46`).
+Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:55`).
 
 ### Session Lifecycle
 
@@ -174,7 +206,7 @@ or device secrets. See `architecture/authorization.md` and
 
 ### Event System
 
-`EventStore` (`session/store.rs:2598`) persists typed `SessionEvent`
+`EventStore` (`session/store.rs:2603`) persists typed `SessionEvent`
 variants into the `session_events` table. Events are:
 - `GoalSet`, `PlanUpdated`, `PlanItemUpdated`
 - `AgentMessage`, `UserMessage`
@@ -205,7 +237,7 @@ commit marker.
 
 ### TUI Session State
 
-`TuiSessionState` (`session/state.rs:112`) is a fully derived
+`TuiSessionState` (`session/state.rs:107`) is a fully derived
 in-memory representation reconstructed from events via
 `from_events()`. It tracks: goal, plan, active/recent tool calls
 (capped at 50), changed files, test state, context state, model state,
@@ -270,67 +302,67 @@ pub struct Session {
 }
 ```
 
-### SessionStore (`session/store.rs:48`)
+### SessionStore (`session/store.rs:56`)
 
 | Method | Line | Description |
 |--------|------|-------------|
-| `create(CreateSession)` | 61 | Create with auto UUID |
-| `create_with_id(id, input)` | 68 | Stable ID for imports |
-| `create_with_binding(input, pid, wid, src)` | 164 | Atomic session + binding |
-| `create_from_template(template, pid, dir)` | 303 | From config template |
-| `get(id)` | 326 | Get by ID (excludes soft-deleted) |
-| `list(pid, limit)` | 338 | Active sessions, paginated |
-| `list_with_offset(pid, limit, offset)` | 371 | Offset-based pagination |
-| `list_all(pid, limit)` | 437 | Includes archived, excludes deleted |
-| `list_all_with_offset(pid, limit, offset)` | 469 | Offset-based for all |
-| `list_by_canonical_project(pid, limit)` | 345 | Via session_project_binding |
-| `list_all_sessions(limit)` | 448 | Cross-project (import tooling) |
-| `list_deleted(pid)` | 1067 | Soft-deleted sessions |
-| `search(pid, query)` | 502 | LIKE title/slug/directory |
-| `search_all(pid, query)` | 523 | Also searches message content |
-| `find_by_tag(pid, tag)` | 545 | JSON tag matching |
-| `all_tags(pid)` | 564 | Tags with counts |
-| `session_count(pid)` | 390 | Active session count |
-| `message_count(sid)` | 401 | Messages in session |
-| `message_counts(sids)` | 410 | Batch message counts |
-| `export_session(sid)` | 587 | Full JSON export |
-| `import_session(data, new_pid)` | 668 | Import with ID remapping |
-| `import_session_with_binding(data, pid, wid, src)` | 678 | Import + binding |
-| `update(id, UpdateSession)` | 949 | Partial update (COALESCE) |
-| `delete(id)` | 1031 | Soft delete |
-| `soft_delete(id)` | 1036 | Set time_deleted |
-| `restore(id)` | 1052 | Clear time_deleted |
-| `set_tags(id, tags)` | 1079 | Replace tags |
-| `fork(id)` | 1097 | Copy with new IDs |
+| `create(CreateSession)` | 69 | Create with auto UUID |
+| `create_with_id(id, input)` | 76 | Stable ID for imports |
+| `create_with_binding(input, pid, wid, src)` | 172 | Atomic session + binding |
+| `create_from_template(template, pid, dir)` | 311 | From config template |
+| `get(id)` | 334 | Get by ID (excludes soft-deleted) |
+| `list(pid, limit)` | 346 | Active sessions, paginated |
+| `list_with_offset(pid, limit, offset)` | 379 | Offset-based pagination |
+| `list_all(pid, limit)` | 445 | Includes archived, excludes deleted |
+| `list_all_with_offset(pid, limit, offset)` | 475 | Offset-based for all |
+| `list_by_canonical_project(pid, limit)` | 353 | Via session_project_binding |
+| `list_all_sessions(limit)` | 456 | Cross-project (import tooling) |
+| `list_deleted(pid)` | 1066 | Soft-deleted sessions |
+| `search(pid, query)` | 498 | LIKE title/slug/directory |
+| `search_all(pid, query)` | 520 | Also searches message content |
+| `find_by_tag(pid, tag)` | 543 | JSON tag matching |
+| `all_tags(pid)` | 563 | Tags with counts |
+| `session_count(pid)` | 398 | Active session count |
+| `message_count(sid)` | 409 | Messages in session |
+| `message_counts(sids)` | 418 | Batch message counts |
+| `export_session(sid)` | 586 | Full JSON export |
+| `import_session(data, new_pid)` | 667 | Import with ID remapping |
+| `import_session_with_binding(data, pid, wid, src)` | 677 | Import + binding |
+| `update(id, UpdateSession)` | 948 | Partial update (COALESCE) |
+| `delete(id)` | 1030 | Soft delete |
+| `soft_delete(id)` | 1035 | Set time_deleted |
+| `restore(id)` | 1051 | Clear time_deleted |
+| `set_tags(id, tags)` | 1078 | Replace tags |
+| `fork(id)` | 1096 | Copy with new IDs |
 | `archive(id)` | 1315 | Set time_archived |
 | `unarchive(id)` | 1331 | Clear time_archived |
-| `share_session(sid)` | 1627 | Generate share URL (7-day) |
-| `unshare_session(sid)` | 1699 | Remove share |
-| `revert_to_message(sid, mid)` | 1374 | Truncate + save revert |
-| `unrevert_session(sid)` | 1730 | Restore from revert state |
-| `generate_summary(provider, sid)` | 1525 | LLM summary |
-| `generate_title(provider, sid)` | 1561 | LLM title |
-| `get_analytics(pid)` | 1862 | Aggregate statistics |
+| `share_session(sid)` | 1628 | Generate share URL (7-day) |
+| `unshare_session(sid)` | 1700 | Remove share |
+| `revert_to_message(sid, mid)` | 1375 | Truncate + save revert |
+| `unrevert_session(sid)` | 1731 | Restore from revert state |
+| `generate_summary(provider, sid)` | 1526 | LLM summary |
+| `generate_title(provider, sid)` | 1562 | LLM title |
+| `get_analytics(pid)` | 1863 | Aggregate statistics |
 | `children(id)` | 1362 | Child sessions |
 | `set_share_url(id, url)` | 1346 | Direct share URL set |
 
-### TodoStore (`session/store.rs:1917`)
+### TodoStore (`session/store.rs:1922`)
 
-Methods: `list`, `set`, `add`, `update`, `remove`, `clear`
+Methods: `new`, `list`, `set`, `add`, `update`, `remove`, `clear`
 
-### MessageStore (`session/store.rs:2122`)
+### MessageStore (`session/store.rs:2127`)
 
-Methods: `create`, `create_with_id`, `get`, `list`, `count`,
+Methods: `new`, `create`, `create_with_id`, `get`, `list`, `count`,
 `update`, `delete`
 
-### PartStore (`session/store.rs:2258`)
+### PartStore (`session/store.rs:2263`)
 
-Methods: `create`, `get`, `list_by_message`, `list_by_session`,
+Methods: `new`, `create`, `get`, `list_by_message`, `list_by_session`,
 `update`, `delete`
 
-### PermissionStore (`session/store.rs:2376`)
+### PermissionStore (`session/store.rs:2381`)
 
-Methods: `get`, `upsert`, `delete`
+Methods: `new`, `get`, `upsert`, `delete`
 
 ### RuntimePreferenceStore (`codegg-core/src/approval.rs`, table `runtime_preferences`, v58 + v62)
 
@@ -371,19 +403,19 @@ with a bounded diagnostic (never silent fallback). Guard:
 `selected_model_id` is a display hint reconciled by
 `restore::reconcile_tab_model_with_daemon` (daemon wins).
 
-### UsageStore (`session/store.rs:2441`)
+### UsageStore (`session/store.rs:2446`)
 
-Methods: `insert`, `get_session_usage`, `get_all_usage`,
+Methods: `new`, `insert`, `get_session_usage`, `get_all_usage`,
 `get_session_cost_summary`
 
-### EventStore (`session/store.rs:2598`)
+### EventStore (`session/store.rs:2603`)
 
-Methods: `append`, `append_idempotent`, `list_for_session`,
-`has_event`, `confirm_existing`
+Methods: `new`, `pool`, `append`, `append_idempotent`,
+`list_for_session`, `has_event`, `confirm_existing`
 
-### CheckpointStore (`session/checkpoint.rs:48`)
+### CheckpointStore (`session/checkpoint.rs:44`)
 
-Methods: `save`, `load`, `load_latest`, `list`, `delete`,
+Methods: `new`, `save`, `load`, `load_latest`, `list`, `delete`,
 `delete_all`, `has_checkpoint`
 
 Historical full-session snapshots only. Not a continuation store and
@@ -425,7 +457,7 @@ pub struct MessageData {
 **ToolStatus** (`session/message.rs:63`):
 `Pending` (default), `Running`, `Completed`, `Error`
 
-**SessionAnalytics** (`session/models.rs:159`):
+**SessionAnalytics** (`session/models.rs:160`):
 ```rust
 pub struct SessionAnalytics {
     pub total_sessions: u64,
@@ -435,7 +467,7 @@ pub struct SessionAnalytics {
 }
 ```
 
-**UsageRecord** (`session/models.rs:193`):
+**UsageRecord** (`session/models.rs:194`):
 `id`, `session_id`, `provider`, `model`, `input_tokens`,
 `output_tokens`, `cached_tokens`, `cost_usd`, `timestamp`
 
@@ -443,7 +475,7 @@ pub struct SessionAnalytics {
 
 - `CODEGG_SHARE_DURATION_DAYS` env var overrides the 7-day share
   expiry (parsed at `session/store.rs:1629`)
-- Import size limits (`session/import.rs:68-70`):
+- Import size limits (`session/import.rs:69-71`):
   `MAX_IMPORT_MESSAGES = 100_000`, `MAX_IMPORT_PARTS = 500_000`,
   `MAX_TOTAL_IMPORT_BYTES = 500 MB`
 
@@ -512,3 +544,27 @@ re-resolved enforcement.
 - `crates/codegg-core/src/identity.rs` — Typed project/session
   bindings
 - `crates/codegg-core/src/workspace.rs` — Workspace registry
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/session/*.rs` and
+`crates/codegg-core/src/session/schema.rs`. Corrected the `CREATE TABLE`
+count 71 → 73 and added the missing table groups (agent run domain v37–v45,
+mutation attribution/recovery v46–v50, team/audit/collaboration v51–v56, Work
+Orders v60–v63, chat policy/session control v64–v65, repository bindings
+v66–v68). Corrected every `file.rs:line` ref: `SESSION_COLUMNS` `:39` → `:48`
+and `SESSION_COLUMNS_QUALIFIED` `:46` → `:55` (27 columns confirmed by
+counting the literal), `TuiSessionState` `:112` → `:107`,
+`SessionStore` `:48` → `:56`, the five per-store `impl` blocks (TodoStore
+1918→1922, MessageStore 2123→2127, PartStore 2259→2263, PermissionStore
+2377→2381, UsageStore 2442→2446), `EventStore` 2599→2603 (both prose and
+heading), `CheckpointStore` `:48` → `:44`, `SessionAnalytics` 159→160,
+`UsageRecord` 193→194, and the import limits `:68-70` → `:69-71`. Rebuilt
+the 39-row `SessionStore` method/line table from the actual `pub async fn`
+declarations (most were off by 1-8). Added the omitted `new`/`pool`
+constructors to the store method lists and added the missing `ToolProgram
+Notification` ordering detail. Verified accurate: 20 `SessionEvent`
+variants in `events.rs`, `MAX_RECENT_TOOL_CALLS = 50`, the
+`continuation-checkpoint:` event ID prefix, the redacted tool-name list,
+`generate_slug`'s `untitled` fallback, and the `ORDER BY time_created ASC,
+id ASC` ordering.

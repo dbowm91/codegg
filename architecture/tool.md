@@ -45,8 +45,9 @@ abstraction.
 ## Purpose
 
 - Tool registry management (registration, lookup, filtering, definitions)
-- Built-in tool implementations (~31 always-registered core tools plus
-  conditional eggsact, evidence, and context tools)
+- Built-in tool implementations (39 always-registered tools in
+  `with_options()`, plus conditional eggsact, evidence, memory, extension,
+  todo-read, work-plan, context, and disabled-backend tools)
 - Tool execution with permission checking, structured provenance, and
   backend-aware diagnostics
 - Backend abstraction (native, MCP, shell, builtin legacy) via
@@ -205,7 +206,7 @@ ownership.
 
 ## Tool Trait
 
-Defined in `src/tool/mod.rs:136-205`:
+Defined in `src/tool/mod.rs:156-237`:
 
 ```rust
 #[async_trait]
@@ -229,12 +230,19 @@ pub trait Tool: Send + Sync {
 
     fn contract(&self, tool_name: &str, input_schema: serde_json::Value)
         -> ToolContract { ToolContract::legacy(tool_name, input_schema) }
+
+    fn causal_contract(&self) -> Option<ToolCausalContract> { None }
 }
 ```
 
+`causal_contract()` is additive planning metadata for the causal-frontier
+experiment (`crate::tool_advisor::causal_frontier`). A `None` means "not
+causally classifiable", never "forbidden"; pilot native tools override it with
+`native_causal_contract(...)`.
+
 ### ToolCategory
 
-Defined in `src/tool/mod.rs:115-132`, the category drives permission
+Defined in `src/tool/mod.rs:132-141`, the category drives permission
 gating and plan-mode filtering:
 
 ```rust
@@ -308,44 +316,64 @@ Operator views (`/tool-backends`, diagnostics) report registered
 capability, not just the currently advertised prompt slice. Deferred
 tools are not hidden from operators.
 
-### Always-Registered Core Tools
+### Always-Registered Tools (39)
 
-Registered unconditionally in `with_options()` (disclosure in
-`src/tool/disclosure.rs`; `Core` = ordinary immediate, `Deferred` =
-discoverable, `Hidden` = never advertised):
+Registered unconditionally in `with_options()` (`src/tool/mod.rs:392`).
+There are 46 unconditional `registry.register(...)` call sites
+(`src/tool/mod.rs:468-924`) covering 39 distinct tools: `todowrite` has two
+sites (policy branch and no-session fallback), and `lsp`/`security` each have
+four sites (native, disabled stub, MCP-with-fallback, MCP-no-fallback) that
+always register exactly one variant. A further 17 sites are gated
+(see the conditional sections below), and the `for tool in visible/deferred`
+loops at `src/tool/mod.rs:891`/`:894` each register many tools, so
+`grep -c '\.register(' src/tool/mod.rs` (= 64 sites including the
+`catalog.register` call inside `ToolRegistry::register`) is not a tool count.
 
-| Tool | File | Description |
-|------|------|-------------|
-| **bash** | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with security (blocked patterns, allowlist, Landlock). 120s timeout. Facade sequences policy → execution → result; see module headers for the pre-spawn order. |
-| **read** | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
-| **write** | `write.rs` | Create or overwrite files with auto-formatting. |
-| **edit** | `edit.rs` | Surgical search-and-replace with 8 matching strategies. |
-| **glob** | `glob.rs` | Find files matching glob patterns (gitignore-compliant). |
-| **grep** | `grep.rs` | Regex content search with bounded workers and path-ordered output. |
-| **list** | `list.rs` | Directory tree listing, limited to 300 files. |
-| **task** | `task.rs` | Spawn subagents. Supports spawn/get actions. |
-| **webfetch** | `webfetch.rs` | URL content fetching via search_backend dispatch. |
-| **websearch** | `websearch.rs` | Web search via search_backend dispatch. Core. |
-| **research** | `research.rs` | Deep research (may invoke websearch/webfetch). Deferred; immediate for `research` role. |
-| **image** | `image.rs` | DALL-E image generation (dall-e-3, size, quality). Deferred. |
-| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused repo_search (M001 retained). Deferred; canonical `repo_search` stays core. |
-| **question** | `question.rs` | Ask user clarifying questions. Core. |
-| **skill** | `skill.rs` | Load a skill (SKILL.md) by name into context. Core. |
-| **skill_proposal** | `skill_proposal.rs` | Submit one user-authorized portable SKILL.md proposal for preview. Deferred. `SafeMutating`, `DirectOnly` (agent loop only; subagents and Tool Programs denied), `NonIdempotent`, no retry. Requires an active `/skill-promote` request ID plus matching session/project/habit scope and fresh fingerprint/revision; never writes a skill root. |
-| **apply_patch** | `apply_patch.rs` | Apply unified diff patches (update/create/delete/move). Core. |
-| **diff** | `diff.rs` | Show differences between two file versions. Core. |
-| **replace** | `replace.rs` | Regex find/replace with capture groups. Deferred (`edit`/`apply_patch` stay core). |
-| **review** | `review.rs` | LLM-based code review with emoji categorization. Deferred. |
-| **terminal** | `terminal.rs` | Interactive terminal session (env var filtering). 60s timeout. Deferred (`bash` stays core). |
-| **test** | `test.rs` | Supervised test runner with previous-failures index. Category: ShellExec. Core. |
-| **python_script** | (python_script/) | Python script execution (analyze/transform/verify). Deferred (`bash` stays core). |
-| **tool_program** | `tool_program.rs` | Foreground model tool for restricted-Python programs. Deferred (`task` delegation stays core). Contract callability independent of disclosure. |
-| **git** | `git.rs` | Git command execution with subcommand/args. 30s timeout. Core. |
-| **commit** | `commit.rs` | LLM-generated commit messages from diff. Deferred (`git` stays core). |
-| **plan_enter** | `plan.rs` | Enter plan mode (reduced toolset). Core. |
-| **plan_exit** | `plan.rs` | Exit plan mode. Core. |
-| **invalid** | `invalid.rs` | Catch-all for malformed tool calls. Hidden (M002): registered but never in definitions/discovery. |
-| **tool_search** | `tool_search.rs` | On-demand tool discovery via catalog search. Core; always retained where deferral exists. Returns canonical name, category, risk, disclosure; capped at 10; empty queries return none. |
+Disclosure is resolved by `disclosure_for()` in `src/tool/disclosure.rs:61`
+(`Core` = ordinary immediate, `Deferred` = discoverable, `Hidden` = never
+advertised):
+
+| Tool | Disclosure | File | Description |
+|------|------------|------|-------------|
+| **bash** | Core | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with security (blocked patterns, allowlist, Landlock). 120s timeout. Facade sequences policy → execution → result; see module headers for the pre-spawn order. |
+| **verify** | Core | `verify.rs` | Bounded Cargo `check`/`build`/`lint`/`typecheck`/`format_check`/`auto` facade delegating through `BashTool`. Takes no command/package/path field. |
+| **read** | Core | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
+| **write** | Core | `write.rs` | Create or overwrite files with auto-formatting. |
+| **edit** | Core | `edit.rs` | Surgical search-and-replace with 8 matching strategies. |
+| **glob** | Core | `glob.rs` | Find files matching glob patterns (gitignore-compliant). |
+| **grep** | Core | `grep.rs` | Regex content search with bounded workers and path-ordered output. |
+| **list** | Core | `list.rs` | Directory tree listing, limited to 300 files. |
+| **task** | Core | `task.rs` | Spawn subagents. Supports spawn/get actions. |
+| **webfetch** | Core | `webfetch.rs` | URL content fetching via search_backend dispatch. |
+| **websearch** | Core | `websearch.rs` | Web search via search_backend dispatch. |
+| **research** | Deferred | `research.rs` | Deep research (may invoke websearch/webfetch). Immediate for the `research` role. |
+| **image** | Deferred | `image.rs` | DALL-E image generation (dall-e-3, size, quality). |
+| **codesearch** | Deferred | `codesearch.rs` | Compatibility alias for coding-focused repo_search (M001 retained); canonical `repo_search` stays core. |
+| **question** | Core | `question.rs` | Ask user clarifying questions. |
+| **mcp_resource_search** | Deferred | `mcp_resource.rs` | Search MCP-exposed resources. |
+| **mcp_resource_read** | Deferred | `mcp_resource.rs` | Read one MCP-exposed resource by URI. |
+| **todowrite** | Core | `todo.rs` | Create/update todo items. Always registered: policy-gated with persistence when `todo_state`+`todo_policy` are present, otherwise the canonical in-memory `TodoWriteTool`. |
+| **skill** | Core | `skill.rs` | Load a skill (SKILL.md) by name into context. |
+| **skill_proposal** | Deferred | `skill_proposal.rs` | Submit one user-authorized portable SKILL.md proposal for preview. `SafeMutating`, `DirectOnly` (agent loop only; subagents and Tool Programs denied), `NonIdempotent`, no retry. Requires an active `/skill-promote` request ID plus matching session/project/habit scope and fresh fingerprint/revision; never writes a skill root. |
+| **apply_patch** | Core | `apply_patch.rs` | Apply unified diff patches (update/create/delete/move). |
+| **diff** | Core | `diff.rs` | Show differences between two file versions. |
+| **replace** | Deferred | `replace.rs` | Regex find/replace with capture groups (`edit`/`apply_patch` stay core). |
+| **review** | Deferred | `review.rs` | LLM-based code review with emoji categorization. |
+| **terminal** | Deferred | `terminal.rs` | Interactive terminal session (env var filtering). 60s timeout (`bash` stays core). |
+| **test** | Core | `test.rs` | Supervised test runner with previous-failures index. Category: ShellExec. |
+| **python_script** | Deferred | `src/python_script/tool.rs` | Python script execution (analyze/transform/verify). `bash` stays core. |
+| **tool_program** | Deferred | `tool_program.rs` | Foreground model tool for restricted-Python programs. `task` delegation stays core. Contract callability independent of disclosure. |
+| **git** | Core | `git.rs` | Git command execution with subcommand/args. 30s timeout. |
+| **git_read** | Hidden | `git_read.rs` | Hidden program-only git read adapter (`ProgrammaticOnly`), broker-callable by programs, never model-visible or discoverable. |
+| **git_query** | Deferred | `git_read.rs` | Model-facing read facade delegating to `git_read` for bounded status/diff/log/branch inspection. |
+| **lsp** | Core, or hidden `DisabledTool` | `lsp.rs` | LSP client tools. Exactly one variant is always registered: native wrapper, or a `DisabledTool` stub when the backend is `disabled` or MCP-configured without fallback. |
+| **lsp_read** | Hidden | `lsp_read.rs` | Hidden program-only LSP read adapter, always registered so it fails closed as a typed execution error without a live server. |
+| **commit** | Deferred | `commit.rs` | LLM-generated commit messages from diff (`git` stays core). |
+| **security** | Deferred, or hidden `DisabledTool` | `security.rs` | Security scanning (wraps eggsentry). Same one-of-two backend logic as `lsp`; immediate for the `security-review` role. |
+| **plan_enter** | Core | `plan.rs` | Enter plan mode (reduced toolset). |
+| **plan_exit** | Core | `plan.rs` | Exit plan mode. |
+| **invalid** | Hidden | `invalid.rs` | Catch-all for malformed tool calls. Registered but never in definitions/discovery. |
+| **tool_search** | Core | `tool_search.rs` | On-demand tool discovery via catalog search. Returns canonical name, category, risk, disclosure; capped at 10; empty queries return none. |
 
 ### Conditional: Eggsearch Wrappers (7 tools)
 
@@ -375,15 +403,47 @@ Raw `mcp__eggsearch__*` tools hidden by default
 | **lsp_preview_apply** | Session-scoped native | Deferred, direct-only checked LSP preview application. Registered only with pool, workspace locks, shared LSP service, and preview handle; unavailable to Tool Programs. |
 | **security** | Native or DisabledTool | Security scanning. Same backend logic as LSP. Deferred for ordinary coding; immediate for `security-review` role. |
 
-### Conditional: Todo Tools (0-2 tools)
+### Conditional: Todo Tools (1-2 tools)
 
-Policy-gated via `TaskStatePolicy`:
+`todowrite` is always registered (see the table above); only `todoread` is
+policy-gated via `TaskStatePolicy`:
 
 | Tool | Condition | Description |
 |------|-----------|-------------|
-| **todowrite** | `allow_model_todo_write && mode != Disabled` | Create/update todo items with priority/status. |
 | **todoread** | `allow_model_todo_read` | Read todo items. |
+| **todowrite** | `allow_model_todo_write && mode != Disabled` | Policy-gated variant with session persistence. |
 | **todowrite** (no session context) | `todo_state` and `todo_policy` both `None` | Canonical `TodoWriteTool` with default in-memory state and the explicit-todo policy (no session persistence). The legacy `TodoTool` duplicate was removed in M001. |
+
+### Conditional: Memory Tools (2 tools)
+
+Registered only when `ToolRegistryOptions.memory_store` is `Some`
+(`src/tool/mod.rs:573-582`); scope derives from
+`MemoryReadScope::for_project(project_identity)`:
+
+| Tool | Disclosure | Description |
+|------|------------|-------------|
+| **memory_search** | Deferred | Bounded project-scoped memory search. |
+| **memory_get** | Deferred | Bounded project-scoped memory read. |
+
+### Conditional: Extension Tools (2 tools)
+
+Registered only when `ToolRegistryOptions.extension_catalog` is `Some`
+(`src/tool/mod.rs:583-590`):
+
+| Tool | Disclosure | Description |
+|------|------------|-------------|
+| **extension_search** | Deferred | Search the host extension catalog. |
+| **extension_install_request** | Deferred | Submit an extension install request (never installs directly). |
+
+### Conditional: WorkPlan Tools (2 tools)
+
+Registered only when both `pool` and `session_id` are `Some`
+(`src/tool/mod.rs:631-639`):
+
+| Tool | Disclosure | Description |
+|------|------------|-------------|
+| **work_plan_get** | Core | Bounded model-facing read of the durable session plan. |
+| **work_plan_update_item** | Core | Bounded model-facing per-item plan update. |
 
 ### Conditional: Context Read (0-1 tool)
 
@@ -405,7 +465,7 @@ structured_data_compare, text_fingerprint.
 
 ## ToolRegistry
 
-Manages registration and lookup at `src/tool/mod.rs:215-221`:
+Manages registration and lookup at `src/tool/mod.rs:248-257`:
 
 ```rust
 pub struct ToolRegistry {
@@ -415,6 +475,8 @@ pub struct ToolRegistry {
     integrated_config: IntegratedToolRuntimeConfig,
     search_runtime: SearchRuntimeContext,
     sandbox_profile: SandboxProfile, // M005 resolved profile
+    lsp_preview_registry: Option<LspPreviewRegistryHandle>,
+    lsp_service: Option<Arc<crate::lsp::service::LspService>>,
 }
 ```
 
@@ -442,15 +504,19 @@ pub struct ToolRegistry {
 
 ### ToolRegistryOptions
 
-Centralizes all knobs that influence registration. Key fields:
+Centralizes all knobs that influence registration (`src/tool/mod.rs:272`,
+29 fields):
 
 ```rust
 pub struct ToolRegistryOptions {
+    pub tool_advisor: Option<ToolAdvisorConfig>,
     pub todo_state: Option<Arc<Mutex<TodoState>>>,
     pub todo_policy: Option<TaskStatePolicy>,
     pub pool: Option<SqlitePool>,
     pub session_id: Option<String>,
     pub lsp_service: Option<Arc<LspService>>,
+    pub document_service: Option<Arc<DocumentService>>,
+    pub lsp_preview_registry: Option<LspPreviewRegistryHandle>,
     pub tool_backends: ToolBackendConfig,
     pub context_artifact_store: Option<Arc<dyn ContextArtifactStore>>,
     pub context_session_id: Option<String>,
@@ -463,11 +529,15 @@ pub struct ToolRegistryOptions {
     pub submission: Option<Arc<JobSubmissionService>>,
     pub command_intent: Option<CommandIntentConfig>,
     pub workspace_root: Option<PathBuf>,
+    pub child_git_policy: Option<ChildGitPolicy>,
     pub asset_snapshot: Option<Arc<ProjectAssetSnapshot>>,
     pub asset_pin: Option<Arc<Mutex<RuntimeAssetPin>>>,
     pub notification_service: Option<Arc<ToolProgramNotificationService>>,
     pub search_runtime: Option<SearchRuntimeContext>,
     pub sandbox_profile: Option<SandboxProfile>, // M005: None = WorkspaceWrite default
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
+    pub project_identity: Option<String>,
+    pub extension_catalog: Option<Arc<crate::plugin::marketplace::MarketplaceService>>,
 }
 ```
 
@@ -537,7 +607,7 @@ construction (`worker.rs`).
 ### execute_capture (Central Execution Path)
 
 `ToolRegistry::execute_capture(name, input, ctx)` at
-`src/tool/mod.rs:1036-1068` is the central execution path for native
+`src/tool/mod.rs:1249-1281` is the central execution path for native
 tools. It calls `Tool::execute_structured()` internally, populates
 a fallback `ToolProvenance::legacy(...)` for tools that do not override
 it, and records provenance via `tracing::debug!`. The returned
@@ -654,3 +724,24 @@ reconciliation without replay, and cancellation during backoff.
 - [agent.md](agent.md) — Uses ToolRegistry for execution
 - [permission.md](permission.md) — Permission checking
 - [native_crates.md](native_crates.md) — Backend boundary and provenance
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: always-registered tool count
+"~31" → 39 distinct tools from 46 unconditional register sites
+(`src/tool/mod.rs:392` `with_options()`, sites `:468-924`), with the
+register-site vs distinct-tool explanation stated inline; the core table gained
+the 8 missing always-registered tools (`verify`, `mcp_resource_search`,
+`mcp_resource_read`, `todowrite`, `git_read`, `git_query`, `lsp_read`, and
+explicit hidden/deferred disclosure for `git_read`/`lsp_read`); added missing
+conditional families Memory (2), Extension (2), WorkPlan (2); todo section
+corrected to 1-2 tools. Line refs: `Tool` `136-205` → `156-237`,
+`ToolCategory` `115-132` → `132-141`, `ToolRegistry` `215-221` → `248-257`,
+`execute_capture` `1036-1068` → `1249-1281`. `ToolRegistry` 6 → 8 fields;
+`ToolRegistryOptions` 22 → 29 fields; `Tool` gained `causal_contract`.
+Verified accurate: 64 `.register(` sites in `src/tool/mod.rs` (63 tool
+registrations + 1 `catalog.register`), 7 eggsearch wrappers, deterministic
+13 = 8 always-visible + 5 deferred (`build_eggsact_tools`,
+`src/tool/deterministic.rs:106`), 4 `ToolCategory` variants,
+`ToolResult` 4 fields, `ToolCatalog` at `src/tool/catalog.rs:170`,
+`python_script` name (`src/python_script/tool.rs:444`).

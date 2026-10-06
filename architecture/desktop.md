@@ -51,7 +51,8 @@ summary, and versioned project-catalog invalidation. `npm run bindings:check`
 compares the TypeScript surface with its Rust DTO definitions. The M004
 route/session surface adds `desktop_project_detail`, `desktop_workspace_select`,
 `desktop_session_list/create/open`, `desktop_projection_start/current/stop`,
-`desktop_prompt_submit`, `desktop_control_refresh`,
+`desktop_projection_subscribe`, `desktop_prompt_submit`,
+`desktop_control_refresh`,
 `desktop_permission_respond`, `desktop_question_respond`, and
 `desktop_artifact_read`; all stay camelCase-synced across
 `src/bridge-types.ts`, `src/bridge.ts`, and `src-tauri/src/bridge.rs`, and
@@ -240,12 +241,12 @@ Test instrumentation never widens production authority:
 ## Deferred surfaces
 
 Editor and terminal, provider credentials, plugin UI, remote daemon access,
-signing, and distribution automation are not implemented. A live-turn
+signing, and distribution automation are not implemented. The live-turn
 built-app trajectory (assistant text, tool activity, permission round-trip
-against a deterministic offline provider) is deferred: no in-repo provider
-can run a turn without external availability, so M004's E2E prompt leg
-asserts the typed fail-closed path and the live-turn leg waits on a
-test-only deterministic provider fixture as registered follow-up work.
+against a deterministic offline provider) **is** implemented — see the
+live-turn leg in the M004 `session` phase above, which asserts the typed
+`model_unselected` fail-closed path before arming a loopback mock model
+server and then a real assistant turn with a denied write.
 
 ## Developer commands
 
@@ -259,3 +260,21 @@ binary first with `npm run stage:daemon`. For built-app qualification, run
 trajectory, then restores the production-clean tree). Root verification does not invoke
 Node, WebKitGTK, or the desktop Cargo workspace; `scripts/check-desktop-boundary.sh`
 guards that separation and the renderer authority inventory.
+
+## Source verification
+
+Verified 2026-10-06 against `apps/desktop/`: the standalone Rust 1.90 /
+Tauri 2.12 pins (`src-tauri/Cargo.toml:6, 20`) against root `rust-version
+= "1.89"` (`Cargo.toml:12`); the host module set
+(`src-tauri/src/{lib,main,bridge,lifecycle,route,projection,present,prompt,control,artifact}.rs`)
+and the E2E fixture binary (`src-tauri/src/bin/desktop_e2e_fixture.rs`);
+the registered bridge command inventory including the previously
+undocumented `desktop_projection_subscribe` (`src-tauri/src/lib.rs:979, 1030`);
+`MAX_PROJECTS = 50` (`lib.rs:35`); the presentation tail caps
+(`present.rs:41-54`: 100 messages / 20 tools / 10 runs / 10 jobs /
+10 subagents / 5 recent turns / 16 artifact handles);
+`scripts/check-desktop-boundary.sh`; and the E2E specs
+(`e2e/specs/{m003-lifecycle,m003-autostart,m004-session}.e2e.ts`) with the
+live-turn leg present at `m004-session.e2e.ts:156`. The "Deferred surfaces"
+section previously contradicted this doc's own live-turn description; it
+now records the live-turn trajectory as implemented.

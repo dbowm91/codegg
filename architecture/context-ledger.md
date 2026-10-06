@@ -96,7 +96,7 @@ When `project_tool_output()` is called:
 ### Artifact Store Implementations
 
 - `InMemoryArtifactStore` — `tokio::sync::RwLock<HashMap<String, ContextArtifact>>`
-- `FileArtifactStore` — filesystem-backed (`artifact.rs:98`)
+- `FileArtifactStore` — filesystem-backed (`artifact.rs:129`)
 
 ## Key Types & APIs
 
@@ -124,7 +124,7 @@ pub enum ContextHandleKind {
 | `checkpoint_id()` / `evidence_id()` | `fn(&self) -> Option<&str>` | Evidence accessors |
 | `same_session()` | `fn(&self, &str) -> bool` | Exact session match |
 
-### ContextArtifact (`artifact.rs:22`)
+### ContextArtifact (`artifact.rs:34`, 11 fields)
 
 ```rust
 pub struct ContextArtifact {
@@ -142,7 +142,7 @@ pub struct ContextArtifact {
 }
 ```
 
-### ArtifactKind (`artifact.rs:9`)
+### ArtifactKind (`artifact.rs:11`)
 
 ```rust
 pub enum ArtifactKind {
@@ -164,7 +164,7 @@ Deterministic `ctx://evidence/...` handles converge on identical content;
 conflicting writes to the same handle fail closed. Missing optional
 evidence degrades to the checkpoint summary via `context_read` `NotFound`.
 
-### ContextArtifactStore (`artifact.rs:36`)
+### ContextArtifactStore (`artifact.rs:53`)
 
 ```rust
 #[async_trait]
@@ -291,3 +291,20 @@ for core context types.
   `source_handle` on `ContextBlock`, cache stats from telemetry)
 - [compaction.md](compaction.md) — volatile-tail compaction policy
 - [context-ledger.md](context-ledger.md) — this document
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `FileArtifactStore`
+`artifact.rs:98` → `:129`, `ContextArtifact` `artifact.rs:22` → `:34`,
+`ArtifactKind` `artifact.rs:9` → `:11`, `ContextArtifactStore` `artifact.rs:36`
+→ `:53`. Verified accurate: 8 `ArtifactKind` variants,
+`ContextArtifact`'s 11 fields, the 3-method `ContextArtifactStore` trait,
+`ContextHandle` 2 fields and `ContextHandleKind` 2 variants, all seven
+`ContextHandle` methods, `ProjectionConfig` 5 fields with their defaults,
+`ToolOutputProjection` 8 fields, the `context_read` defaults (`offset` 0,
+`max_bytes` 20000 — `read_tool.rs:52`), the 10 MiB record bound
+(`artifact.rs:152`), every `ContextLedgerState` cap and dedup rule
+(touched_files 20 dedup, commands_run 10 FIFO `VecDeque`, test_results 10
+dedup, unresolved_errors 10 dedup, artifact_handles projected to most-recent 32
+via `bounded_artifact_handles` — `src/agent/context_frame.rs:49-76`), all four
+M003 evidence bounds, and the five `[context]` config keys with defaults.

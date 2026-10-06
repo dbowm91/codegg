@@ -18,8 +18,10 @@ best-effort emission, redaction, backpressure, and operator reads).
   sequences with idempotent at-least-once acceptance.
 - Canonical implementation: `crates/codegg-core/src/audit.rs`
   (`AuditStore`, `AuditEventBuilder`, `AuditWriter`).
-- Storage: introduced by migration v54 (storage layout 54), which creates
-  `audit_event` and `audit_body`.
+- Storage: introduced by migration v54 (`migrate_v54`,
+  `crates/codegg-core/src/session/schema.rs`), which creates
+  `audit_event` and `audit_body`. The catalog is now at storage
+  layout 68; v54 remains the audit origin.
 - Protocol: `AuditQueryRequestDto`, `AuditExportRequestDto`,
   `AuditEventDto`, `AuditCapabilitiesDto` plus
   `CoreRequest::AuditQuery/AuditExport/AuditCapabilities` and
@@ -77,20 +79,29 @@ Visibility (`AuditVisibility`): `project`, `session_participants`,
 
 ## Attribution (caller cannot rewrite)
 
-`AuditEventBuilder::new(action, principal, decision)` copies the
-transport-bound `AuthenticatedPrincipal` plus the captured M003
-`AuthorizationDecision`. There are no setters for actor, decision,
-policy, or sequence. Correlation defaults to the decision's
-correlation id. This preserves the M003 invariant: request payloads
-supply locators, never authority.
+`AuditEventBuilder::new(action, principal, provenance)`
+(`crates/codegg-core/src/audit.rs:574`) copies the transport-bound
+`AuthenticatedPrincipal` plus the captured M003
+`AuditDecisionProvenance` (the decision linkage copied from the
+`AuthorizationDecision` that allowed the operation). There are no
+setters for actor, decision, policy, or sequence. Correlation defaults
+to the decision's correlation id. This preserves the M003 invariant:
+request payloads supply locators, never authority.
 
 ## Bounded redacted metadata
 
 - At most 16 entries; keys 1–64 bytes matching
   `[a-z0-9][a-z0-9_.-]*`; values 0–512 bytes; 4096 bytes total.
-- Keys containing secret-bearing substrings (`password`, `secret`,
-  `token`, `api_key`, `bearer`, `credential`, `private_key`,
-  `cookie`, `authorization`, …) are rejected.
+- Keys containing secret-bearing substrings are rejected via
+  `SECRET_KEY_SUBSTRINGS` (`crates/codegg-core/src/audit.rs:317`, 14 entries):
+  `password`, `passwd`, `secret`, `token`, `api_key`, `apikey`, `bearer`,
+  `credential`, `private_key`, `privatekey`, `cookie`, `authorization`,
+  `session_key`, `client_secret`.
+- Values are scanned separately by `SECRET_VALUE_SUBSTRINGS`
+  (`audit.rs:337`, 16 entries): `password`, `passwd`, `secret`, `bearer `,
+  `private_key`, `-----begin`, `sk-live`, `sk-test`, `ghp_`, `gho_`,
+  `github_token`, `akia`, `aws_secret`, `client_secret`, `api_key=`,
+  `token=`.
 - Values scanning as credential text (`-----BEGIN`, `ghp_`,
   `sk-live`, `AKIA`, `aws_secret`, `password`, `token=`, …) are
   rejected, as are bodies that scan as credential text.
@@ -115,19 +126,23 @@ losing attributable structure.
 - Pages order by `seq ASC` with cursor pagination (`next_cursor`,
   `truncated`). Filters are conjunctive; unknown action/principal
   filters return empty pages.
-- `export_digest` is SHA-256 over the canonical per-event line
-  `seq:event_id:action:actor:decision:metadata_digest:content_digest`.
-  Reordering or tampering changes the digest.
+- `export_digest` (`crates/codegg-core/src/audit.rs:902`) is SHA-256
+  over the canonical per-event line
+  `<seq LE bytes>|event_id|action|actor_principal|decision_id|metadata_digest|content_digest`
+  (pipe-separated, newline-terminated; absent `content_digest` is fed
+  as `-`). Reordering or tampering changes the digest.
 - Authorization: team principals MUST scope reads to one project and
   hold `audit.read` there (`Maintainer`/`Owner` by default;
   `Viewer`/`Contributor` are denied). `LocalOwner` broad policy may
   query across projects. Unscoped team queries fail closed with
   `authorization_denied`. Single-project denials carry no existence
   signal beyond the operation/capability names the caller supplied.
-- Capability negotiation: `AuditCapabilities` reports
-  `max_query_limit`, `max_export_events`, `max_metadata_entries`,
-  `max_metadata_total_bytes`, `max_body_bytes`. Clients MUST clamp to
-  these bounds before sending.
+- Capability negotiation: `AuditCapabilities` reports all six
+  `AuditCapabilitiesDto` fields (`crates/codegg-protocol/src/core.rs:205`):
+  `supported`, `max_query_limit`, `max_export_events`,
+  `max_metadata_entries`, `max_metadata_total_bytes`,
+  `max_body_bytes`. Clients MUST clamp to the numeric bounds before
+  sending.
 
 ## Failure, backpressure, observability
 
@@ -162,8 +177,9 @@ losing attributable structure.
 
 ## Operator runbook
 
-- After upgrading, the daemon migrates the catalog to v54 on next
-  start (additive; restart-safe; no backfill).
+- After upgrading, the daemon migrates the catalog to the current
+  layout v68 on next start; the audit tables entered at v54
+  (additive; restart-safe; no backfill).
 - Grant `Maintainer` or `Owner` to team members who need audit reads;
   `Viewer`/`Contributor` cannot query or export.
 - Query with bounded pages (`limit` ≤ 100, resume via `next_cursor`);
@@ -208,11 +224,13 @@ Coverage has four distinct categories (M004):
 
 Live daemon seam (`src/core/daemon.rs`):
 
-- `emit_audit_for_authorized` runs after the M003 gate and before any
-  side effect for every `audit_action_for_request` mapping except
+- `emit_audit_for_authorized` (`src/core/daemon.rs:3119`) runs after the
+  M003 gate and before any side effect for every
+  `operation_to_audit_action` mapping (`src/core/daemon.rs:3128`) except
   creation/audit-read operations that mint their identity or count in
-  the handler (`SessionCreate`, `JobSubmit`, `AuditQuery`,
-  `AuditExport`, which emit post-creation with durable ids/counts).
+  the handler (`SessionCreate`, `JobSubmit`, `ChatActionSubmit`,
+  `AuditQuery`, `AuditExport`, which emit post-creation with durable
+  ids/counts).
 - `emit_audit_for_denial` emits one terminal `authorization_decision`
   event with the operation/capability the caller supplied and the
   denial reason. Direct project locators are preserved so
@@ -502,3 +520,38 @@ bash scripts/check-core-boundary.sh
 cargo fmt --all -- --check
 scripts/verify.sh quick
 ```
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/audit.rs`,
+`crates/codegg-core/src/audit_instrumentation.rs`,
+`crates/codegg-core/src/session/schema.rs`,
+`crates/codegg-protocol/src/core.rs`, `src/core/daemon.rs`, and
+`scripts/check_audit_invariants.py`. Corrected
+`AuditEventBuilder::new`'s third parameter (`decision` → `provenance`, the
+`AuditDecisionProvenance` copied from the allowing `AuthorizationDecision`,
+not the decision itself) and pinned it at `audit.rs:574`. Corrected the
+export-digest preimage: it is pipe-separated and binary-fed, not
+colon-separated text — the sequence is fed as eight raw little-endian bytes,
+an absent `content_digest` is fed as `-`, and each line ends `\n` — and
+corrected its line ref `:901` → `:902`. Corrected the daemon mapping name
+(`audit_action_for_request` → `operation_to_audit_action`,
+`src/core/daemon.rs:3128`) and added `ChatActionSubmit` to the post-creation
+emit exceptions, which the code's early-return arm list also carries.
+Corrected the capability-negotiation claim: `AuditCapabilities` reports all
+six `AuditCapabilitiesDto` fields (`core.rs:205`), including `supported`.
+Corrected the storage statements: `audit_event`/`audit_body` entered at
+migration v54 (`migrate_v54`) with the catalog now at layout 68, and
+`origin_attribution` at v53. Expanded both secret deny-lists to their full
+inventories: `SECRET_KEY_SUBSTRINGS` (14 entries, `audit.rs:317`) and
+`SECRET_VALUE_SUBSTRINGS` (16 entries, `audit.rs:337`). Verified accurate:
+the metadata bounds and rules (16 entries, keys 1–64 bytes matching
+`[a-z0-9][a-z0-9_.-]*`, values 0–512 bytes, 4096 bytes total, 64 KiB bodies),
+the `AuditAction::ALL` count of 26 and its exact name list, the
+`AuditWriterConfig` defaults (`max_inflight` 32, `write_timeout_ms` 2000), the
+`AuditWriterMetrics` fields, the `AuditWriter` method surface (`new`,
+`store`, `metrics`, `try_append`, `append`) with the `audit_backpressure` and
+`audit_write_timeout` wire codes, the `AuditQueryFilter` fields with the
+1–100 query clamp (default 50) and the 200-event export bound, and
+`session_turn_controller` being applied at v65 through
+`SESSION_CONTROL_SCHEMA_STATEMENTS` rather than a standalone `CREATE TABLE`.

@@ -47,10 +47,18 @@ existing files are never treated as owned. An existing notice is preserved
 because the updater cannot prove its ownership.
 
 Only `x86_64` and `aarch64` Linux/macOS prebuilt targets are eligible for
-in-place replacement. Windows, unsupported targets, and installations outside
-the qualified sibling contract receive pinned manual fresh-install guidance.
-The inert `autoupdate` configuration remains inactive; this path runs only
-when the user invokes `codegg upgrade`.
+in-place replacement (`SUPPORTED_TARGETS`, `managed.rs:25`). Windows,
+unsupported targets, and installations outside the qualified sibling
+contract receive pinned manual fresh-install guidance
+(`describe_manual_fresh_install`, `mod.rs:124`).
+
+The `autoupdate` configuration is inert: `Config.autoupdate`
+(`crates/codegg-config/src/schema.rs:231`) is an untagged
+`AutoupdateConfig` (`Bool(bool)` / `Notify(String)`, defaulting to
+`Bool(true)`, `schema.rs:205`) that is deserialized and destructured but
+never read by any production code path. Nothing schedules or triggers an
+upgrade automatically; this path runs only when the user invokes
+`codegg upgrade`.
 
 ## Source locations
 
@@ -64,3 +72,23 @@ when the user invokes `codegg upgrade`.
 The Eggup dependency is pinned to immutable revision
 `66813b3b94de3a9b2f270e0000dc339ef6f0b478`; it is not a floating branch.
 CodeGG retains its current Eggfetch/Rustls/WebPKI trust and redirect policy.
+
+## Source verification
+
+Verified 2026-10-06 against `src/upgrade/{mod,managed}.rs`, `src/main.rs`,
+`tests/upgrade.rs`, `Cargo.toml`, and
+`crates/codegg-config/src/schema.rs`. No stale refs remained from the prior
+pass; the corrections here are additive precision. Confirmed correct as
+written: the Eggup pin `66813b3b94de3a9b2f270e0000dc339ef6f0b478` for both
+`eggup-core` and `eggup-acquisition` (`Cargo.toml:116-117`), the four
+`SUPPORTED_TARGETS` entries (`managed.rs:25`) and the exact `supported_target()`
+Linux/macOS x86_64/aarch64 mapping (`managed.rs:31`), the pinned eggsearch
+version (`PINNED_EGGSEARCH_VERSION`, `managed.rs:24`), `cmd_upgrade()` in
+`src/main.rs`, `upgrade()` (`mod.rs:101`), the manual fresh-install guidance
+path pointing at `install.sh` on raw.githubusercontent.com (`mod.rs:32,124`),
+and the presence of `tests/upgrade.rs` (10 tests).
+Re-verified the dead-config claim: it is still true and is now stated
+precisely — `Config.autoupdate` (`schema.rs:231`) and its `AutoupdateConfig`
+enum (`schema.rs:205`) are the only occurrences of the symbol in any `.rs`
+file outside the unrelated `--rerere-autoupdate` git flags, so the field is
+parsed and destructured (`codegg-config/src/paths.rs:180`) but never read.

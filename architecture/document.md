@@ -30,7 +30,10 @@ process-local `DocumentService`. Open keys include project, workspace, and a
 normalized workspace-relative path. Opening attaches read-only with `file.read`;
 writer acquisition is a separate `file.modify` operation. The daemon validates project/workspace
 binding, performs file capability authorization before the handler reads text,
-rejects path traversal and symlink components, and bounds snapshots to 8 MiB.
+rejects path traversal and symlink components, and bounds snapshots to 8 MiB
+(`codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES`). Per-request bounds
+are `MAX_DOCUMENT_EDITS` (256) and `MAX_DOCUMENT_INSERT_BYTES` (1 MiB); the
+service also holds at most `MAX_DOCUMENTS` (128) open documents.
 One transport connection owns the writer lease; disconnect releases its
 attachments and lease but keeps dirty canonical text. Change requests carry a
 stable id and base revision, and exact duplicate ids return their accepted
@@ -55,7 +58,8 @@ local drafts after reconnect.
 optimistic edits. It keeps daemon revision separate from local text, assigns a
 stable UUID change ID to each queued transaction, serializes flushes, retains
 an uncertain request for idempotent retry, and bounds the queue to 128
-transactions / 4 MiB of inserted text. `apply_local` updates the local
+transactions (`MAX_PENDING_TRANSACTIONS`) / 4 MiB of inserted text
+(`MAX_PENDING_INSERT_BYTES`). `apply_local` updates the local
 snapshot synchronously; one controller-owned debounce task flushes the queue.
 Adjacent unsent pure insertions coalesce only when their byte coordinates
 prove the merge; all other transactions keep their original boundaries.
@@ -64,10 +68,14 @@ reacquires its writer lease, then compares server text/revision against queued
 transaction boundaries. It acknowledges a proven accepted prefix, retries an
 unchanged base with the same IDs, or retains the draft in resync-required
 state. A missing/new document identity becomes `GoneWithLocalDraft`.
-The controller has explicit synced, local-dirty, flushing, conflict,
-disconnected, resync-required, read-only, and gone-with-draft states. It has no
-operational transform: unexpected divergence is retained and surfaced for
-recovery.
+`DocumentState` has 10 explicit variants: `Closed`, `Opening`, `Synced`,
+`DirtyLocal`, `Flushing`, `ResyncRequired`, `Conflict`, `ReadOnly`,
+`Disconnected`, and `GoneWithLocalDraft`. It has no operational transform:
+unexpected divergence is retained and surfaced for recovery. The companion
+`DocumentControllerError` enum (`Transport`, `Response`, `Edit`, `NotOpen`,
+`AlreadyOpen`, `LifecycleBusy`, `ReadOnly`, `QueueFull`, `QueueBytes`,
+`ResyncRequired`, `Conflict`) carries the full failure vocabulary — see
+`crates/codegg-client/src/document.rs` for the authoritative listings.
 
 The TUI `TuiDocumentSession` is a thin ownership seam over that same
 controller. It stores only presentation cursor, selection, and viewport
@@ -81,7 +89,8 @@ presentation record — but the presentation record now carries cursor, anchor,
 viewport line and column, buffer mode, a bounded command prefix, and a
 depth/byte-capped undo/redo history. It still holds no text. The render path
 reads the replica through two read-only accessors on the controller,
-`try_snapshot` (a `DocumentSnapshot` borrow, dropped with the frame) and
+`try_snapshot` (an owned `(DocumentSnapshot, u64)` tuple over the
+controller's own buffer, dropped with the frame) and
 `try_attachment_info` (line count, writer lease, conflict flag, no text), so a
 frontend can hold the second across frames without holding a second buffer.
 `scripts/check_tui_editor_text_authority.py` enforces this statically; see
@@ -142,3 +151,58 @@ a user who edits after generating a candidate is still told to save and
 regenerate. Merging an apply into a *dirty* buffer — rather than refusing it —
 is not in scope for M006-E and is deferred to a future ADR; the rejection in
 `src/lsp/mutation.rs` is unchanged by that milestone.
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-document/` (manifest and all five
+source modules), `crates/codegg-protocol/src/document.rs`,
+`src/document_service.rs`, `src/core/daemon_documents.rs`,
+`src/lsp/mutation.rs`, `crates/codegg-client/src/document.rs`, and
+`crates/codegg-core/src/authorization/policy.rs`.
+- Confirmed the crop claims. `crates/codegg-document/Cargo.toml` pins
+  `crop = "=0.4.3"` with `default-features = false, features = ["std"]`;
+  that release declares `rust-version = "1.85"` against the workspace's
+  `1.89` (`Cargo.toml:12`), and `ropey` is absent from `Cargo.lock`, with
+  `ropey` 1.6.1 recorded as the rejected alternative in ADR-0011 and
+  `plans/closure/editor-document-foundation/001-status.md`.
+- Confirmed the private backend boundary. `lib.rs` declares `mod buffer;`
+  (not `pub mod`) and re-exports only `DocumentBuffer`, `DocumentRevision`,
+  `DocumentSnapshot`, `AppliedTransaction`, `DocumentLimits`, `TextEdit`,
+  `TextRange`, `TextTransaction`, `DocumentError`, `Result`, and
+  `BytePosition`. `crop::Rope` appears only inside `buffer.rs` / `edit.rs`,
+  and only in private or `pub(crate)` fields, so no backend type reaches the
+  public API.
+- Confirmed the transaction contract in source: revisions start at zero
+  (`DocumentRevision::default()`), an empty transaction returns the current
+  revision without advancing it (`buffer.rs:158-164`), edits apply in reverse
+  (`buffer.rs:192`), inverse edits are built in ascending post-image
+  coordinates from a running shift (`buffer.rs:171-191`), and `validate()`
+  enforces sorted, disjoint, UTF-8-boundary, and limit rules
+  (`edit.rs:56-103`). `DocumentLimits::default()` is unbounded, so resource
+  policy stays with the daemon, as this doc states. NUL is accepted: no
+  `DocumentError` variant rejects it.
+- Confirmed every numeric claim the M005/M006 passes added:
+  `MAX_DOCUMENT_TEXT_BYTES` = 8 MiB, `MAX_DOCUMENT_EDITS` = 256,
+  `MAX_DOCUMENT_INSERT_BYTES` = 1 MiB (`document.rs:6-8`);
+  `MAX_DOCUMENTS` = 128 (`src/document_service.rs:16`);
+  `MAX_PENDING_TRANSACTIONS` = 128 and `MAX_PENDING_INSERT_BYTES` = 4 MiB
+  (`crates/codegg-client/src/document.rs:21-22`); and `DocumentState`'s 10
+  variants plus `DocumentControllerError`'s 11, both in the exact order
+  listed above.
+- Corrected one accessor description: `try_snapshot` returns an owned
+  `(DocumentSnapshot, u64)` tuple (`crates/codegg-client/src/document.rs:272`),
+  not a borrow.
+- Verified accurate: the `file.read` / `file.modify` split
+  (`authorization/policy.rs:108-123` maps `DocumentOpen` / `SnapshotGet` /
+  `StatusGet` / `Close` to `Capability::FileRead`, and `WriterAcquire` /
+  `Change` / `Save` / `Reload` to `Capability::FileModify`, evaluated before
+  the handlers read text); symlink-component and non-`Normal`-component
+  rejection (`document_service.rs:784-800`); an exact duplicate change id
+  returning its accepted revision while a differing payload collides
+  (`document_service.rs:331-337`); `detach_client` releasing a connection's
+  attachments and lease (`document_service.rs:645`); and `DocumentSave`
+  routed through `checked_workspace_text_write`, which revalidates the path,
+  rereads and compares SHA-256, writes a `.codegg-save-<uuid>` sibling with
+  `sync_all`, then renames (`src/lsp/mutation.rs:32-77`). `CoreEvent` carries
+  no `Document*` variant, confirming the "not sent through the global fanout"
+  claim.

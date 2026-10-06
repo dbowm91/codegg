@@ -10,7 +10,7 @@ JSON or plain text to stdout.
 
 ## Where It Lives
 
-`src/exec.rs` (single file, ~311 lines)
+`src/exec.rs` (single file, ~357 lines)
 
 ## How It Works
 
@@ -84,15 +84,20 @@ pub struct ExecMode {
     quiet: bool,
     json_output: bool,
     session_id: Option<String>,
+    policy: Option<crate::policy_surface::CliPolicyOverride>,
 }
 ```
 
-`ExecMode::new(quiet, json_output, session_id)` constructs the mode.
+`ExecMode::new(quiet, json_output, session_id)` constructs the mode and
+leaves `policy` at `None` (the documented legacy permissive exec
+behaviour). `ExecMode::with_policy(policy)` selects the same daemon
+`ApprovalMode` / `SandboxProfile` contract the TUI selector uses.
 
 Key methods:
 - `run(input: ExecInput) -> Result<ExecOutput, AppError>` — execute the turn
 - `print_output(output: &ExecOutput)` — format output (JSON or plain text)
 - `exit_code(output: &ExecOutput) -> i32` — 0 for success, 1 for failure
+- `parse_model(model: &str) -> (String, String)` — `provider/model` split
 
 ## Usage
 
@@ -176,8 +181,10 @@ codegg exec --json '{"prompt": "fix the bug"}' --json-output
 | `CLIPBOARD_ERROR` | Clipboard error |
 | `TUI_ERROR` | TUI error |
 
-Error codes are produced by `classify_error()` (`src/exec.rs:204-272`) which
-maps `AppError` variants to `(code, message)` tuples.
+29 codes are produced by `classify_error()` (`src/exec.rs:263-334`),
+which maps `AppError` variants to `(code, message)` tuples. The
+`INTERNAL_ERROR` string in `print_output` is a JSON-serialization
+fallback literal, not a `classify_error` arm.
 
 ## Exit Codes
 
@@ -221,3 +228,21 @@ cargo test -p codegg --lib exec
 
 - [agent.md](agent.md) — AgentLoop used for execution
 - [tool.md](tool.md) — ToolRegistry construction
+
+## Source verification
+
+Verified 2026-10-06 against `src/exec.rs`. Corrected the file size
+`~311` → `~357` lines; corrected the `classify_error()` ref
+`src/exec.rs:204-272` → `:263-334` (the prior `:217` claim was also
+wrong); stated the error-code count as 29, matching the table (the prior
+review's "24 error codes" claim is wrong); added the missing fourth
+`ExecMode` field `policy: Option<crate::policy_surface::CliPolicyOverride>`
+plus its `with_policy` builder, and listed `parse_model` as a key
+method. Verified accurate: every one of the 29 `classify_error` code
+strings and their descriptions, the `ExecInput` and `ExecOutput` field
+lists, `ExecOutput::success` / `::error` constructors, the
+`ExecMode::new` signature, the `exit_code` 0/1 contract, the
+`parse_model` `"openai"` default, and the `"{msg}: {error}
+({duration}ms)"` error format. Noted that `INTERNAL_ERROR` is a
+serialization-fallback literal in `print_output`, not a `classify_error`
+arm.

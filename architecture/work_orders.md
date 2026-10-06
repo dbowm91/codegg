@@ -132,8 +132,12 @@ empty work-order tables; no `schedule` row is ever backfilled):
   position)` ordering with `UNIQUE(lane_id, position)`.
 
 Indexes cover project/state/updated listings, occurrence lookup,
-lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 63
-(`storage/mod.rs:39`); `session/schema.rs` wires `migrate_v60` (domain
+lane/project lookup, and lane ordering. `STORAGE_LAYOUT_VERSION` is 68
+(`storage/mod.rs:39`), but the work-order migrations are still
+v60-v63; the later migrations belong to other subsystems (v64
+collaboration chat policy, v65 session control, v66 job target
+kind/node, v67 job-attempt source subject, v68 work-plan repository
+binding). `session/schema.rs` wires `migrate_v60` (domain
 tables), `migrate_v61` (admits the `work_order` origin-attribution
 scope in the v53 table's kind CHECK via a row-preserving rebuild;
 legacy attribution rows survive verbatim), `migrate_v62` (nullable
@@ -674,3 +678,21 @@ M002 (10), M004 (8), M005 incl. server HTTP (22), M006 (21),
   consume but never duplicate.
 - `plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md`
   — governing decision.
+
+## Source Verification
+
+Verified 2026-10-06 against source. Corrected: `STORAGE_LAYOUT_VERSION` was
+stated as 63; it is 68 (`crates/codegg-core/src/storage/mod.rs:39`). The
+work-order migration range v60-v63 is still correct — the section now says so
+explicitly and names the owner of each later migration (v64 collaboration chat
+policy, v65 session control, v66 job target kind/node, v67 job-attempt source
+subject, v68 work-plan repository binding), so the storage heading cannot be
+misread as the current layout version. Verified accurate: the three typed
+identities `WorkOrderId`/`WorkOrderOccurrenceId`/`SequenceLaneId`
+(`crates/codegg-core/src/identity.rs:288-316`), the 5 `GateKind` variants with
+their wire names (`work_order/model.rs:228-241`), `GateJoin` `All`/`Any`,
+5 `WorkOrderState` variants, 8 `OccurrenceState` variants,
+`LaneFailurePolicy` (`HoldLane` default / `ContinueLane`), `repeat_count` bound
+`1..=256` (`MAX_REPEAT_COUNT`, `work_order/model.rs:49`), and every referenced
+file path (boundary script, both daemon modules, all five TUI modules, and both
+integration test files).

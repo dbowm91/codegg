@@ -96,7 +96,7 @@ an emergency marker system message. Preserves tool call/result pairs.
 
 ## Key Types & APIs
 
-### ContextTracker (`src/context/compaction.rs`)
+### ContextTracker (`src/context/compaction.rs:23`, 7 fields)
 
 ```rust
 pub struct ContextTracker {
@@ -113,7 +113,7 @@ pub struct ContextTracker {
 Key methods: `add_message()`, `needs_compaction()`, `needs_overflow_protection()`,
 `remaining_tokens()`, `estimate_tokens_for_messages()`, `reset()`.
 
-### CompactionStrategy (Legacy) (`src/context/compaction.rs`)
+### CompactionStrategy (Legacy) (`src/context/compaction.rs:198`)
 
 ```rust
 pub enum CompactionStrategy {
@@ -123,7 +123,7 @@ pub enum CompactionStrategy {
 }
 ```
 
-### CompactionMode (`src/context/compaction.rs`)
+### CompactionMode (`src/context/compaction.rs:654`)
 
 ```rust
 pub enum CompactionMode {
@@ -133,7 +133,7 @@ pub enum CompactionMode {
 }
 ```
 
-### CompactionPolicy (`src/context/compaction.rs`)
+### CompactionPolicy (`src/context/compaction.rs:662`)
 
 | Policy | Max Tool Output Tokens | Keep Recent | Max Summary Tokens |
 |--------|----------------------|-------------|-------------------|
@@ -143,13 +143,13 @@ pub enum CompactionMode {
 | `Emergency` | 200 | 1 | 200 |
 | `LosslessDebug` | MAX | 999 | 2000 |
 
-### ResolvedCompactionConfig (`src/context/compaction.rs`)
+### ResolvedCompactionConfig (`src/context/compaction.rs:703`)
 
 All config fields resolved to concrete values. `from_config()` maps from
 `CompactionConfig` schema with policy-based defaults. Model resolution:
 `compaction.model` → `summarize_model` → `active_model`.
 
-### CompactionInput / CompactionOutput (`src/context/compaction.rs`)
+### CompactionInput / CompactionOutput (`src/context/compaction.rs:1250`/`:1262`)
 
 ```rust
 pub struct CompactionInput<'a> {
@@ -167,7 +167,7 @@ pub struct CompactionOutput {
 }
 ```
 
-### ProgrammaticCompactionState (`src/context/compaction.rs`)
+### ProgrammaticCompactionState (`src/context/compaction.rs:1243`)
 
 ```rust
 pub struct ProgrammaticCompactionState {
@@ -178,7 +178,7 @@ pub struct ProgrammaticCompactionState {
 }
 ```
 
-### EvidenceRef (`src/context/compaction.rs`)
+### EvidenceRef (`src/context/compaction.rs:1197`, 9 fields)
 
 ```rust
 pub struct EvidenceRef {
@@ -449,3 +449,26 @@ steering are never reset.
 - [agent.md](agent.md) — AgentLoop integration, ContextTracker
 - [context_frame.rs](../src/agent/context_frame.rs) — ContextFrame type
 - [context-ledger.md](context-ledger.md) — artifact storage, context packing
+
+## Source Verification
+
+Verified 2026-10-06 against source — **no claim required correction**; this doc
+had no stale line refs. Added verified line anchors for the eight
+`src/context/compaction.rs` type headings (`ContextTracker`:23,
+`CompactionStrategy`:198, `ProgrammaticCompactionState`:1243, `EvidenceRef`:1197,
+`CompactionInput`/`CompactionOutput`:1250/1262, `CompactionPolicy`:662,
+`CompactionMode`:654, `ResolvedCompactionConfig`:703). Verified accurate:
+`ContextTracker` 7 fields, `EvidenceRef` 9 fields, 10 `EvidenceKind` variants,
+3 `CompactionStrategy` and 3 `CompactionMode` variants, 5 `CompactionPolicy`
+variants and every cell of the policy value table (`max_tool_output_tokens`
+2000/1000/500/200/MAX, `keep_recent_messages` 8/4/2/1/999,
+`max_summary_tokens` 1200/800/400/200/2000 — `compaction.rs:673-699`), the
+500-char tool-output truncation (`compaction.rs:289`), the 60s/120s LLM
+timeouts (`compaction.rs:1523`/`:427`), all 16 `compaction.*` config keys
+(`crates/codegg-config/src/schema.rs:1335-1352`) with verified defaults
+(threshold 0.7 at `compaction.rs:780`, reserved 16000 at `:781`, max_events 50
+at `:798`), and every M003 evidence bound (64 refs, 256 KiB total, 64 KiB per
+artifact, 280-char summaries — `src/context/evidence.rs:34-40`), the
+20,000-token / 8,000-char intent-spine bounds
+(`src/context/continuation.rs:61`/`:65`), and the 32-item evidence cap
+(`continuation.rs:74`).

@@ -14,9 +14,9 @@ in-memory test doubles.
 
 | Layer | Path |
 |-------|------|
-| Trait + types + impls | `crates/codegg-core/src/run_store.rs` (~2503 lines) |
-| Error variants | `crates/codegg-core/src/error.rs:390-411` (`RunStoreError`) |
-| Root re-export | `src/lib.rs:11` — `pub use codegg_core::run_store;` |
+| Trait + types + impls | `crates/codegg-core/src/run_store.rs` (2612 lines) |
+| Error variants | `crates/codegg-core/src/error.rs:410-431` (`RunStoreError`, 7 variants) |
+| Root re-export | `src/lib.rs:12` — `run_store` in the `pub use codegg_core::{...}` re-export list |
 | Ownership by `WorkspaceServices` | `crates/codegg-core/src/workspace_services.rs` |
 
 Storage root: `<workspace>/.codegg/runs/`.
@@ -71,72 +71,72 @@ pinned runs exempt. Uses `FsRunStore::plan_cleanup` for dry-run.
 
 | Type | File:Line | Notes |
 |------|-----------|-------|
-| `RunId` | :24 | UUID v4 newtype, `Display`, `Default` |
-| `ArtifactId` | :55 | Same pattern |
+| `RunId` | :25 | UUID v4 newtype, `Display`, `Default` |
+| `ArtifactId` | :56 | Same pattern |
 
 ### Enums
 
 | Type | File:Line | Variants |
 |------|-----------|----------|
-| `RunKind` | :206 | `RawShell`, `ManagedProcess`, `Test`, `GitRead`, `GitMutation`, `Search`, `Python`, `NativeTool` (8) |
-| `RunStatus` | :236 | `Running`, `Complete`, `Failed`, `TimedOut`, `Cancelled`, `Incomplete` (6) |
-| `ArtifactKind` | :262 | `Stdout`, `Stderr`, `CombinedLog`, `CommandSource`, `TestReport`, `TestLog`, `UnifiedDiff`, `ChangedFiles`, `Projection`, `RtkProjection`, `StructuredJson`, `PolicyEvidence` (12) |
-| `ContextPromotionState` | :694 | `LocalOnly`, `ProjectionIncluded`, `ArtifactRangeIncluded`, `Pinned`, `Excluded` (5) |
-| `RunOwnership` | :94 | `Caller`, `DelegatedBackend`, `ChildOf(RunId)` (3) |
+| `RunKind` | :211 | `RawShell`, `ManagedProcess`, `Test`, `GitRead`, `GitMutation`, `Search`, `Python`, `NativeTool` (8) |
+| `RunStatus` | :241 | `Running`, `Complete`, `Failed`, `TimedOut`, `Cancelled`, `Incomplete` (6) |
+| `ArtifactKind` | :267 | `Stdout`, `Stderr`, `CombinedLog`, `CommandSource`, `TestReport`, `TestLog`, `UnifiedDiff`, `ChangedFiles`, `Projection`, `RtkProjection`, `StructuredJson`, `PolicyEvidence` (12) |
+| `ContextPromotionState` | :701 | `LocalOnly`, `ProjectionIncluded`, `ArtifactRangeIncluded`, `Pinned`, `Excluded` (5) |
+| `RunOwnership` | :95 | `Caller`, `DelegatedBackend`, `ChildOf(RunId)` (3) |
 | `PlannedBackend` | :113 | `Unrouted`, `RawShell`, `TestRunner`, `PythonScript`, `NativeTool`, `ManagedArgv`, `Git`, `GitMutating` (8, last deprecated) |
-| `ActualBackend` | :156 | Same as PlannedBackend + `Rejected { reason }` (8) |
+| `ActualBackend` | :156 | `Unrouted`, `RawShell`, `TestRunner`, `PythonScript`, `NativeTool`, `ManagedArgv`, `Git`, `GitMutating`, `Eggwork`, `Rejected { reason }` (10) |
 
 ### Record Types
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `RunInvocation` | :281 | command, argv, script_hash |
-| `BackendRecord` | :292 | family, detail |
-| `RiskRecord` | :301 | level, has_subprocess, has_git_mutation, has_destructive_mutation |
-| `PermissionDecisionRecord` | :311 | tool, path, decision |
-| `SandboxRecord` | :321 | os_isolation, network_isolation, read_roots, write_roots |
-| `ArtifactRecord` | :333 | artifact_id, kind, relative_path, mime_type, byte_length, sha256, truncated, redacted, created_at, safe_for_model |
-| `ProjectionRecord` | :349 | projector, exactness, omitted_ranges, projection_id, source_spans, redaction_records, rtk_metadata, estimated_output_tokens, promotion_decision, input_digests |
-| `ChangedPathRecord` | :419 | path, kind |
-| `RerunDescriptor` | :427 | argv (AuditSafeArgv), script_source_ref, backend_family, cwd, workspace_root, mode, config_profile, parent_run_id |
-| `FallbackRecord` | :194 | planned, actual, reason |
-| `RunAssetProvenance` | :506 | generation, fingerprint, activated_skill_digests |
+| `RunInvocation` | :285 | command, argv, script_hash |
+| `BackendRecord` | :296 | family, detail |
+| `RiskRecord` | :305 | level, has_subprocess, has_git_mutation, has_destructive_mutation |
+| `PermissionDecisionRecord` | :315 | tool, path, decision |
+| `SandboxRecord` | :325 | os_isolation, network_isolation, read_roots, write_roots |
+| `ArtifactRecord` | :337 | artifact_id, kind, relative_path, mime_type, byte_length, sha256, truncated, redacted, created_at, safe_for_model |
+| `ProjectionRecord` | :353 | projector, exactness, omitted_ranges, projection_id, source_spans, redaction_records, rtk_metadata, estimated_output_tokens, promotion_decision, input_digests |
+| `ChangedPathRecord` | :423 | path, kind |
+| `RerunDescriptor` | :431 | argv (AuditSafeArgv), script_source_ref, backend_family, cwd, workspace_root, mode, config_profile, parent_run_id |
+| `FallbackRecord` | :198 | planned, actual, reason |
+| `RunAssetProvenance` | :513 | generation, fingerprint, activated_skill_digests |
 
 ### Composite Types
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `RunManifest` | :456 | Full run descriptor (~22 fields) |
-| `RunSummary` | :541 | Lightweight listing for `list_runs` |
-| `RunDraft` | :555 | Input for `begin_run` |
-| `RunHandle` | :576 | Returned by `begin_run` (run_id, run_dir, started_at) |
-| `RunCompletion` | :583 | Input for `complete_run` |
-| `RunQuery` | :604 | Filter for `list_runs` |
-| `ArtifactInput` | :615 | Input for `write_artifact` |
-| `ArtifactRef` | :623 | Returned by `write_artifact` |
-| `ArtifactChunk` | :631 | Returned by `read_artifact` (supports ranged reads) |
-| `ByteRange` | :639 | start, end |
-| `RetentionConfig` | :647 | max_total_bytes, max_run_count, max_age_days, preserve_failed_longer, failed_extra_days |
-| `CleanupPlan` | :668 | runs_to_delete, bytes_to_free, pinned_runs_skipped |
-| `IndexEntry` | :677 | JSONL index record |
+| `RunManifest` | :459 | Full run descriptor, 25 fields: `schema_version`, `run_id`, `session_id`, `parent_run_id`, `kind`, `invocation`, `started_at`, `completed_at`, `status`, `workspace_root`, `cwd`, `backend`, `risk`, `permissions`, `sandbox`, `artifacts`, `projection`, `changes`, `rerun`, `planned_backend`, `actual_backend`, `fallback`, `ownership`, `asset_provenance`, `source_subject` |
+| `RunSummary` | :548 | Lightweight listing for `list_runs` |
+| `RunDraft` | :561 | Input for `begin_run` |
+| `RunHandle` | :582 | Returned by `begin_run` (run_id, run_dir, started_at) |
+| `RunCompletion` | :589 | Input for `complete_run` |
+| `RunQuery` | :610 | Filter for `list_runs` |
+| `ArtifactInput` | :622 | Input for `write_artifact` |
+| `ArtifactRef` | :630 | Returned by `write_artifact` |
+| `ArtifactChunk` | :638 | Returned by `read_artifact` (supports ranged reads) |
+| `ByteRange` | :646 | start, end |
+| `RetentionConfig` | :654 | max_total_bytes, max_run_count, max_age_days, preserve_failed_longer, failed_extra_days |
+| `CleanupPlan` | :675 | runs_to_delete, bytes_to_free, pinned_runs_skipped |
+| `IndexEntry` | :684 | JSONL index record |
 
 ### View Models
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `RunCellView` | :718 | Compact TUI cell; `from_manifest()` computes capability flags |
-| `RunDetailView` | :861 | Full detail overlay; `from_manifest()` |
-| `RunInvocationView` | :873 | Command, argv, cwd, backend |
-| `RunPermissionView` | :884 | Tool, path, decision |
-| `RunPolicyView` | :891 | Risk + sandbox |
-| `RunArtifactView` | :911 | Metadata only (no raw bytes) |
-| `RunProjectionView` | :923 | projector, exactness, omitted_ranges |
-| `RunChangeView` | :930 | path, kind |
+| `RunCellView` | :724 | Compact TUI cell; `from_manifest()` computes capability flags |
+| `RunDetailView` | :883 | Full detail overlay; `from_manifest()` |
+| `RunInvocationView` | :896 | Command, argv, cwd, backend |
+| `RunPermissionView` | :907 | Tool, path, decision |
+| `RunPolicyView` | :914 | Risk + sandbox |
+| `RunArtifactView` | :934 | Metadata only (no raw bytes) |
+| `RunProjectionView` | :946 | projector, exactness, omitted_ranges |
+| `RunChangeView` | :953 | path, kind |
 
 ### Trait
 
 ```rust
-// run_store.rs:1028
+// run_store.rs:1054
 #[async_trait]
 pub trait RunStore: Send + Sync {
     async fn begin_run(&self, draft: RunDraft) -> Result<RunHandle, RunStoreError>;
@@ -155,8 +155,8 @@ pub trait RunStore: Send + Sync {
 
 | Impl | File:Line | Backend |
 |------|-----------|---------|
-| `FsRunStore` | :1110 | Filesystem with JSONL index, `tokio::sync::Mutex<()>` serialization |
-| `MemRunStore` | :1730 | In-memory `parking_lot::RwLock<HashMap>` |
+| `FsRunStore` | :1145 | Filesystem with JSONL index, `tokio::sync::Mutex<()>` serialization |
+| `MemRunStore` | :1809 | In-memory `parking_lot::RwLock<HashMap>` |
 
 ### Constants
 
@@ -175,18 +175,18 @@ pub trait RunStore: Send + Sync {
 
 | Location | How Used |
 |----------|----------|
-| `src/tool/mod.rs:242` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` |
-| `src/tool/factory.rs:45-52` | Creates `FsRunStore` at `.codegg/runs/`, passes to tools |
-| `src/tool/bash.rs:664-760` | Persists runs with correct `RunKind` per routing decision |
-| `src/python_script/tool.rs:143-257` | Persists `Python` runs with diff/sandbox/changes |
+| `src/tool/mod.rs:330` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` (struct at `:272`) |
+| `src/tool/factory.rs:139-143` | Creates `FsRunStore` at `execution.workspace_root/.codegg/runs`, passes to tools |
+| `src/tool/bash.rs:651-664` (`persist_caller_run` impl `src/tool/bash/output.rs:149`) | Persists runs with the correct `RunKind` derived from the command intent; delegation is decided by `persistence_decision` |
+| `src/python_script/tool.rs:57-227` (`build_python_run_draft`, `begin_python_run`, artifact/complete helpers) | Persists `RunKind::Python` runs with diff/sandbox/changes |
 | `src/test_runner/runner.rs` | Begins the `Test` RunStore record before process launch and completes it after supervision |
 
 ### TUI integration
 
 | Location | How Used |
 |----------|----------|
-| `src/tui/app/mod.rs:681` | `App.run_store: Option<Arc<dyn RunStore>>` |
-| `src/tui/app/mod.rs:872-877` | Initializes `FsRunStore` at `.codegg/runs/` |
+| `src/tui/app/mod.rs:246` | `App.run_store: Option<Arc<dyn RunStore>>` |
+| `src/tui/app/mod.rs:533-539` | Initializes `FsRunStore` at `<project_dir>/.codegg/runs` |
 | `src/tui/components/dialogs/run_detail.rs` | `RunDetailDialog` — 7-tab detail view |
 
 ### Durable rerun
@@ -286,6 +286,31 @@ Run with `--test-threads=1` to avoid spurious hangs under concurrent load.
 - [snapshot.md](snapshot.md) — Pre-mutation snapshots
 - `architecture/tool_programs.md` — Tool Program lifecycle
 - `architecture/scheduler.md` — Scheduler admission and RunStore linkage
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/run_store.rs` (2612
+lines), `crates/codegg-core/src/error.rs`, `src/lib.rs`,
+`src/tool/{mod,factory,bash}.rs`, `src/tool/bash/output.rs`,
+`src/python_script/tool.rs`, and `src/tui/app/mod.rs`. Confirmed and
+extended the prior review's finding that the view-model refs were
+systematically stale: they were off by 15-22 lines, and the *entire*
+type table was stale too. Corrected all 34 type/enum/impl/constant refs
+(`RunCellView` :718→:724 through `RunChangeView` :930→:953, `RunStore` trait
+:1028→:1054, `FsRunStore` :1110→:1145, `MemRunStore` :1730→:1809,
+`RunOwnership` :94→:95, and all 20 record/composite types). Corrected
+`RunStoreError` ref `error.rs:390-411` → `:410-431` and recorded its 7
+variants; root re-export `src/lib.rs:11` → `:12`. Corrected
+`ActualBackend`: it is NOT "PlannedBackend + `Rejected`" — it has 10
+variants, adding `Eggwork`; listed all 10. Replaced `RunManifest`'s
+"~22 fields" with the verified 25. Corrected the integration-point refs:
+`ToolRegistryOptions.run_store` `tool/mod.rs:242`→`:330`,
+`FsRunStore` construction `tool/factory.rs:45-52`→`:139-143`,
+`App.run_store` `tui/app/mod.rs:681`→`:246` and init `:872-877`→`:533-539`,
+bash persistence `:664-760`→`:651-664` (impl is in `bash/output.rs:149`),
+python `:143-257`→`:57-227`. Verified accurate: `RunKind` 8, `RunStatus` 6,
+`ArtifactKind` 12, `ContextPromotionState` 5, `PlannedBackend` 8,
+`RunOwnership` 3, and all six retention constants.
 # Execution subject projection
 
 Run manifests may carry the optional attempt-scoped `source_subject`

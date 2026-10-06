@@ -5,6 +5,13 @@
 > **Note:** This is a prospective design document. The current
 > `LspCacheMode` enum supports `Disabled` and `Memory` only; disk
 > persistence (`"disk"` mode) has not been implemented.
+>
+> **Snapshot:** Prospective design from Phase 16. Its *design* claims
+> (recommendations, `schema_version`, encryption-at-rest) remain
+> unimplemented and are stated prospectively below; they are not
+> stale. Its *measured* defaults and API claims were re-verified
+> against current source on 2026-10-06 — see "Source Verification"
+> at the end.
 
 ## Risk Summary
 
@@ -309,3 +316,32 @@ Disk persistence of the LSP semantic cache is **not recommended** without at lea
 3. Explicit opt-in with prominent warning (P0).
 
 The in-memory-only cache (`mode = "memory"`) has acceptable privacy characteristics: no data persists after process exit, no disk exposure, and all integrity checks (TTL, hash, generation) are enforced. Disk persistence trades privacy for performance, and the trade-off should be user-driven, not default.
+
+---
+
+## Source Verification
+
+Verified 2026-10-06 against `crates/egglsp/src/cache.rs` and
+`crates/egglsp/src/context.rs`. This document's design/forward-looking claims
+are prospective by intent; only the measured claims below were checked.
+
+Confirmed accurate, no change needed:
+- `LspCacheMode` (`cache.rs:53`) still has exactly 2 variants, `Disabled`
+  (default) and `Memory` — no `Disk` variant has been added, so the document's
+  central premise still holds.
+- Cache defaults are exactly as documented (`cache.rs:39`-`:41`):
+  `max_entries: 64`, `max_bytes: 4 * 1024 * 1024` (4 MiB), `ttl_seconds: 300`.
+- `max_entries`/`max_bytes` enforcement is LRU-style, evicting oldest entries
+  (`cache.rs:525`-`:548`).
+- `clear_for_root(root)` exists (`cache.rs:470`) and is scoped to one root;
+  `test_clear_for_root_does_not_affect_other_roots` (`cache.rs:1134`) asserts
+  no cross-root effect.
+- Cache keys carry `workspace_root: PathBuf` (`cache.rs:69`) and
+  `input_hashes: BTreeMap<PathBuf, String>` (`cache.rs:73`), and key equality
+  compares both (`cache.rs:156`, `:160`).
+- `egglsp::download::cache_dir()` exists (`crates/egglsp/src/download.rs:10`),
+  matching the storage-location pattern in section 2.
+- `LspContextItem` fields match section 1: `kind`, `file`, `range`, `line`,
+  `column`, `message`, `symbol` (`context.rs:363`-`:383`).
+- The `/lsp-cache-clear` and `/lsp-cache-status` commands referenced in
+  sections 4 and 10 exist (`src/tui/app/mod.rs:5728`, `:12529`).

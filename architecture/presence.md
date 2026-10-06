@@ -351,3 +351,33 @@ observer, owner-disconnect control negative, revocation resume-denial +
 cleanup, multi-observer + per-client/daemon bounds, snapshot+replay
 secret-redaction proof, artifact project scope, TUI lifecycle/banner/
 policy/reconnect, collaborator observe-hint seam).
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/presence.rs`,
+`crates/codegg-protocol/src/core.rs`,
+`crates/codegg-core/src/projection_replay/subscription.rs`,
+`src/tui/app/state/presence.rs`, `src/tui/app/state/observe.rs`,
+`crates/codegg-core/src/authorization/policy.rs`, and the three presence
+integration test files. **No corrections were required** — every numeric
+bound, enum listing, protocol variant, and path in this doc matches source.
+Confirmed explicitly: the 4-variant `PresenceActivity` and its rank order
+`Idle=0 < Observing=1 < Active=2 < AgentRunning=3` (`presence.rs:92-99`,
+i.e. `AgentRunning > Active > Observing > Idle`), the `PresenceConfig`
+defaults — `lease_ttl` 90s, `idle_after` 30s, `max_contributions` 4096,
+`max_projects` 512, `max_principals_per_project` 256,
+`max_sessions_per_principal` 16 (`presence.rs:148-153`) — and
+`heartbeat_interval_hint() == lease_ttl / 3` (`presence.rs:161`); the
+protocol surface of exactly 3 `CoreRequest` Presence variants
+(`Capabilities`/`Heartbeat`/`SnapshotGet`), 3 `CoreResponse` variants
+(`HeartbeatAck`/`Snapshot`/`Capabilities`), and 1 `CoreEvent` variant
+(`PresenceUpdated`); the subscription caps `max_per_client: 32` and
+`max_per_daemon: 256` (`subscription.rs:47-48`); the TUI bounds
+`MAX_PRESENCE_PROJECTS = 16` and `MAX_PRESENCE_DISPLAY_PRINCIPALS = 32`
+(`src/tui/app/state/presence.rs:34,36`), `MAX_OBSERVE_LOCATOR_LEN = 128`
+(`observe.rs:37`), and `MAX_PRESENCE_ERROR_LEN = 256`; and the test counts
+— `tests/presence_m001_leases.rs` 15 tests (matching the documented "8
+service + 7 daemon"), `tests/presence_m003_observation.rs` 11 tests, and 11
+unit tests inside `crates/codegg-core/src/presence.rs`. Also confirmed the
+"no storage migration" claim holds: no presence tables exist in
+`session/schema.rs`.
