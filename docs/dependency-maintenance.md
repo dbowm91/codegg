@@ -87,13 +87,17 @@ default-feature policy:
   syntect, image stack, server/plugin optionals, lsp-types/zip/xz2,
   rustpython-parser, notify, and similar) stay local to their owning
   crate and must not be hoisted for uniformity.
-- `[workspace.lints.rust] unsafe_code = "deny"` is inherited only by
-  `codegg-core`, the one library crate that already enforced it with no
-  deliberate unsafe. The root package stays outside package-wide
+- `[workspace.lints.rust] unsafe_code = "deny"` is inherited by three
+  crates — `codegg-core`, `codegg-client`, and `codegg-document` — via
+  `[lints] workspace = true`. Where deliberate, reviewed `unsafe` is
+  required, it is carved out with narrow local `#[allow(unsafe_code)]`:
+  `codegg-core` on its `libc::flock` memory-lock helpers
+  (`src/memory/mod.rs`, `src/memory/habit.rs`) and `codegg-client` on its
+  Windows pipe/process modules; `codegg-document` has no `unsafe` at all.
+  The root package stays outside package-wide
   inheritance because `src/bin/codegg-sandbox-helper.rs` contains
   deliberate, reviewed `unsafe` (fd ownership + fcntl); its library
-  keeps `#![deny(unsafe_code)]` in `src/lib.rs`. Other crates keep
-  explicit local `#[allow(unsafe_code)]` on reviewed test helpers.
+  keeps `#![deny(unsafe_code)]` in `src/lib.rs`.
 - Remaining duplicate majors in `cargo tree -d` are third-party owned
   (for example `base64` 0.22/0.23 via `eggsact`, `md5` 0.7/0.8,
   `strum` 0.26/0.28 via Ratatui) and are retained with evidence, not

@@ -40,11 +40,14 @@ The ordinary `codegg` frontend is not the daemon's lifetime owner. If it autosta
 ### Endpoint overrides
 
 Use `--endpoint /path/to/core.sock` (Unix) or a `npipe://<name>` endpoint
-(Windows) with daemon commands or `codegg attach --endpoint`. The explicit CLI
-endpoint takes precedence over `CODEGG_CORE_ENDPOINT`; without either, CodeGG
-uses the platform default under the user-scoped daemon home. All forms use the
-same lock and metadata root. Windows named-pipe operation remains best-effort
-until live Windows qualification is recorded.
+(Windows) with daemon commands or `codegg daemon attach --endpoint`. (The
+top-level `codegg attach` is a different, feature-gated remote HTTP command that
+takes a server URL, not a socket; `codegg attach-daemon` is a hidden deprecated
+alias of `codegg daemon attach`.) The explicit CLI endpoint takes precedence
+over `CODEGG_CORE_ENDPOINT`; without either, CodeGG uses the platform default
+under the user-scoped daemon home. All forms use the same lock and metadata root.
+Windows named-pipe operation remains best-effort until live Windows qualification
+is recorded.
 
 ### Graceful daemon stop
 
@@ -119,7 +122,7 @@ until live Windows qualification is recorded.
 
 **Solutions:**
 1. Ensure `lsp_tool: true` in experimental config
-2. Check language server is installed: `rust-analyzer`, `pyright`, etc.
+2. Check language server is installed and on `PATH`: `rust-analyzer`, `pyright-langserver`, `typescript-language-server`, `gopls`, `clangd`, etc. (`pyright` is the server id, not the executable.)
 3. Run codegg from project directory (LSP needs project root)
 4. Check server logs with `RUST_LOG=debug`
 
@@ -185,7 +188,7 @@ until live Windows qualification is recorded.
 **Solutions:**
 1. Reduce plugin complexity
 2. Check for infinite loops in plugin code
-3. Fuel resets every 60 seconds automatically
+3. Fuel is a one-shot per-plugin budget (`MAX_PLUGIN_FUEL_BUDGET`, 10M instructions) that is not replenished on a timer — a plugin that has burned its budget stays exhausted until the process restarts
 4. Consider splitting into smaller plugins
 
 ## Performance Issues

@@ -160,6 +160,7 @@ pub struct HookResult {
     pub output: serde_json::Value,
     pub blocked: bool,
     pub error: Option<String>,
+    pub effects: Vec<crate::protocol::ui::UiEffect>,
 }
 ```
 
@@ -304,8 +305,8 @@ Plugins can emit UI effects through lifecycle hooks and process command response
 | **Toast** | Transient notification | `toast` |
 | **Dialog** | Modal dialog with title and body | `dialog` |
 | **Panel** | Persistent side panel (Left/Right) | `panel` |
-| **Status Item** | Status bar indicator | `status_item` |
-| **Chat Block** | Inline chat message rendered to user (toast for short blocks, info dialog for long blocks) | `toast` (shares flag) |
+| **Status Item** | Status bar indicator | `status` |
+| **Chat Block** | Inline chat message rendered to user (toast for short blocks, info dialog for long blocks) | `chat` |
 
 **Chat Block visibility semantics:** EmitChat effects are rendered visibly
 to the user via the toast / info-dialog surface. They are **not** added to
@@ -440,7 +441,7 @@ When multiple frontends are connected:
 
 ### Canonical Entry Point
 
-`App::apply_plugin_ui_envelope(envelope)` in `src/tui/app/mod.rs` is the canonical entry point for all plugin UI effects regardless of transport (local TUI command or remote WebSocket). It:
+`App::apply_plugin_ui_envelope(envelope)` in `src/tui/app/plugin_ui.rs` is the canonical entry point for all plugin UI effects regardless of transport (local TUI command or remote WebSocket). It:
 
 1. Derives `source_plugin_id` from the envelope.
 2. Runs the session guard (drops effects for non-matching session).
@@ -496,8 +497,17 @@ Plugin selectors resolve in order: exact id → exact name → unique id prefix 
 `/plugin-install <path>` accepts a local directory path that the user explicitly
 chose. Both absolute and relative paths are supported, including paths that
 contain `..` components, as long as the canonicalized target exists, is a
-directory, and contains a `manifest.toml`. The path is canonicalized before any
-filesystem operation.
+directory, and contains a supported plugin manifest (`manifest.toml`,
+`plugin.json`, or `.claude-plugin/plugin.json`). The path is canonicalized before
+any filesystem operation.
+
+> **The bundled WASM examples are not installable as shipped.**
+> `examples/plugins/wasm-command-table/`, `wasm-hook-message-transform/`, and
+> `wasm-status-widget/` each ship `plugin.toml`, which is not one of the
+> manifest names accepted above, and neither the installer nor the loader
+> (`src/plugin/loader.rs` reads `manifest.toml`) recognizes it. `/plugin-install`
+> against one of them fails with `supported plugin manifest not found`. Rename
+> `plugin.toml` to `manifest.toml` in the source directory before installing.
 
 Archive members and copy-relative paths remain strictly validated
 (`validate_relative_install_path`) — they still reject `..`, `RootDir`,
@@ -524,7 +534,7 @@ touching the registry.
 
 - Enable/disable is durable in the daemon-owned activation store; `/plugins` and `/plugin-info` show the effective scope/source and stale-record diagnostics
 - Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`); the target is validated against this directory before unregister and removal
-- Install validates manifests before copying and rejects invalid manifests; local source paths are canonicalized and must contain a `manifest.toml`; archive members and copy-relative paths remain strictly validated
+- Install validates manifests before copying and rejects invalid manifests; local source paths are canonicalized and must contain a supported manifest (`manifest.toml`, `plugin.json`, or `.claude-plugin/plugin.json`); archive members and copy-relative paths remain strictly validated
 - Doctor checks are read-only and never execute plugin code by default
 
 ### Source Metadata Model
@@ -553,7 +563,7 @@ Run `./scripts/validate_plugin_ui.sh` to reproduce plugin validation checks loca
 | Sub-Policy | Default | Controls |
 |------------|---------|----------|
 | `PluginLifecyclePolicy` | Observation hooks allowed; mutating/blocking/process denied | Hook type + runtime gating |
-| `PluginUiPolicy` | Dialog/toast allowed; panel/status denied | UI effect surfaces |
+| `PluginUiPolicy` | Chat/dialog/toast allowed; panel/status denied | UI effect surfaces |
 | `PluginPermissionPolicy` | All capabilities denied unless declared | Command/hook declarations |
 | `PluginInstallPolicy` | Env passthrough denied | Environment variable access |
 | `PluginRuntimePolicy` | Secrets denied; auth-hook requires high trust | Secret access, high-trust gating |
@@ -563,8 +573,8 @@ Run `./scripts/validate_plugin_ui.sh` to reproduce plugin validation checks loca
 ```rust
 pub enum PolicyDecision {
     Allow,
-    Deny { reason: String },
-    Degrade { reason: String },
+    Deny(String),
+    Degrade(String),
 }
 ```
 

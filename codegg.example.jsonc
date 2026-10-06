@@ -1,12 +1,26 @@
 {
-  // Optional semantic model routing. Select "virtual:code" for a bounded
-  // selector decision; concrete model selections bypass this policy. Codegg
+  // Full annotated example of a CodeGG configuration file.
+  //
+  // Every block below parses against the current schema and is checked by
+  // `codegg validate --config codegg.example.jsonc`. Several keys are
+  // untagged enums whose accepted shapes are easy to get wrong, so the
+  // exact types are noted inline.
+  //
+  // Discovery order (crates/codegg-config/src/paths.rs):
+  //   CODEGG_TUI_CONFIG -> system -> global -> project (upward walk).
+  // Unknown keys are ignored rather than rejected, so a typo is silent.
+  "$schema": "https://opencode.ai/schema/config.json",
+  "version": "1",
+  "log_level": "info",
+
+  // Optional semantic model routing. Select "virtual:code" to run a bounded
+  // selector decision; concrete model selections bypass this policy. CodeGG
   // applies only a route compatible with the already-selected connection.
   "model_routers": {
     "virtual:code": {
       "selector_model": "openai/gpt-4o-mini",
       "default_model": "openai/gpt-4o-mini",
-      // Retained for shared policy/fingerprint compatibility. Codegg does not
+      // Retained for shared policy/fingerprint compatibility. CodeGG does not
       // maintain an EggPool-style local affinity cache.
       "sticky": false,
       "routes": {
@@ -17,30 +31,34 @@
       }
     }
   },
-  "$schema": "https://opencode.ai/schema/config.json",
-  "log_level": "info",
-  
-  "model": "opencode_zen/minimax-m2.5-free",
-  "small_model": "opencode_zen/nemotron-3-super-free",
-  
+
+  // Default model. Accepts "provider/model-id" or a bare "model-id".
+  "model": "anthropic/claude-sonnet-4-20250514",
+  // Optional cheaper model for background/summarization work.
+  "small_model": "anthropic/claude-haiku-4-20250514",
+
   "username": "your-username",
-  "share": "public",
-  
-  "autoupdate": {
-    "enabled": true,
-    "check_interval_hours": 24
-  },
-  
+  // Session sharing: one of "manual", "auto", "disabled".
+  "share": "disabled",
+
+  // Accepted for backward compatibility but INERT: no production code path
+  // reads it and nothing schedules an upgrade automatically.
+  // `codegg upgrade` runs only on explicit user invocation.
+  // Accepted shapes are a boolean or a string (untagged enum).
+  "autoupdate": false,
+
+  // HTTP/WebSocket server. Only reachable when built with the `server`
+  // Cargo feature.
   "server": {
     "port": 3000,
-    "hostname": "0.0.0.0",
-    "mdns": true,
+    "hostname": "127.0.0.1",
+    "mdns": false,
     "mdns_domain": "opencode.local",
     "cors_origins": ["https://opencode.ai"],
     "tool_timeout_seconds": 120,
     "max_parallel_tools": 5
   },
-  
+
   "model_profile": {
     "openai/gpt-5": {
       "task_state_policy": {
@@ -59,25 +77,30 @@
       }
     }
   },
-  
+
   "provider": {
+    // Each provider below independently checks its config block and then its
+    // conventional env var (e.g. ANTHROPIC_API_KEY), so declaring one here
+    // does not disable env-var credentials for the others.
     "anthropic": {
       "auth": { "type": "api_key", "env": "ANTHROPIC_API_KEY" },
       "base_url": "https://api.anthropic.com",
-      "timeout": "60s",
+      // `timeout` is an untagged enum: integer MILLISECONDS, or a boolean.
+      // A duration string such as "60s" is rejected and invalidates the file.
+      "timeout": 60000,
       "whitelist": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"]
     },
     "openai": {
       "auth": { "type": "api_key", "env": "OPENAI_API_KEY" },
       "base_url": "https://api.openai.com/v1",
-      "timeout": "30s",
+      "timeout": 30000,
       "options": {
         "max_retries": 3
       }
     },
     "google": {
       "auth": { "type": "api_key", "env": "GOOGLE_API_KEY" },
-      "timeout": "45s"
+      "timeout": 45000
     },
     "openrouter": {
       "auth": { "type": "api_key", "env": "OPENROUTER_API_KEY" },
@@ -90,21 +113,6 @@
         "minimax-m2.5-free": {
           "context_window": 200000,
           "max_output_tokens": 64000,
-          "supports_tools": true
-        },
-        "big-pickle": {
-          "context_window": 200000,
-          "max_output_tokens": 64000,
-          "supports_tools": true
-        },
-        "nemotron-3-super-free": {
-          "context_window": 128000,
-          "max_output_tokens": 32000,
-          "supports_tools": true
-        },
-        "qwen3.6-plus-free": {
-          "context_window": 128000,
-          "max_output_tokens": 32000,
           "supports_tools": true
         }
       }
@@ -142,41 +150,51 @@
   // Legacy: the original `api_key` and `encrypted_api_key` fields on the
   // provider object are still honored as a fallback. They are read by
   // `AuthResolver` (single resolution path), not by the registration
-  // helper directly. Stored credentials live in
-  // `~/.config/codegg/credentials.json` and require `CODEGG_MASTER_KEY`
-  // (or `CODEGG_ENCRYPTION_KEY` / `OPENCODE_ENCRYPTION_KEY`) to be set.
-  // Use `codegg auth status`, `codegg auth set-key <provider>`, and
-  // `codegg auth logout <provider>` to manage them. The CLI validates
-  // provider and account ids (`[A-Za-z0-9_-]`, with `*` allowed for
+  // helper directly.
+  //
+  // Stored credentials live in <config_dir>/codegg/credentials.json (for
+  // example ~/.config/codegg/credentials.json on Linux, or
+  // ~/Library/Application Support/codegg/credentials.json on macOS). They do
+  // NOT require any environment variable: the first protected write creates
+  // and persists a CodeGG-managed key at <config_dir>/codegg/master.key.
+  // CODEGG_MASTER_KEY, CODEGG_ENCRYPTION_KEY and OPENCODE_ENCRYPTION_KEY are
+  // optional higher-precedence overrides for deployments that manage key
+  // material externally. If existing ciphertext was created with an external
+  // key and that key is later unavailable, CodeGG fails closed rather than
+  // replacing it.
+  //
+  // Manage the store with `codegg auth status`, `codegg auth set-key <provider>`
+  // (reads the key from stdin), and `codegg auth logout <provider>`. The CLI
+  // validates provider and account ids (`[A-Za-z0-9_-]`, with `*` allowed for
   // `logout` only) and never echoes key material.
-  
+
+  // MCP servers are keyed DIRECTLY under `mcp` - there is no `servers` wrapper.
+  // Also manageable from the CLI: `codegg mcp add|list|remove|enable|debug`.
   "mcp": {
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "env": {}
-    },
-    "github": {
-      "command": "uvx",
-      "args": ["mcp-server-github", "--token", "ghp_..."]
     }
   },
-  
+
+  // Permissions are declared PER TOOL, not as allow/deny lists. Each value is
+  // an untagged enum: either an action string, or an object whose values are
+  // all strings.
   "permission": {
-    "allow": [
-      { "tool": "bash", "path": "**/node_modules/**" },
-      { "tool": "read", "path": "**/*" },
-      { "tool": "glob", "path": "**/*" },
-      { "tool": "grep", "path": "**/*" }
-    ],
-    "deny": [
-      { "tool": "bash", "path": "**/secrets/**" },
-      { "tool": "edit", "path": "**/node_modules/**" }
-    ],
-    "auto_respond": true,
-    "auto_allow_duration_seconds": 300
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "bash": "ask",
+    "edit": "ask",
+    // Bash patterns are global, not per-rule.
+    "bash_allow_patterns": ["git status", "git diff", "git log"],
+    "bash_deny_patterns": ["rm -rf", "git push --force"],
+    "tools": {
+      "webfetch": "allow"
+    }
   },
-  
+
   "compaction": {
     "enabled": true,
     "auto": true,
@@ -185,22 +203,30 @@
     "threshold": 0.8,
     "reserved": 10000
   },
-  
+
+  // Additional skill locations, on top of the automatically discovered
+  // .codegg/skills, .agents/skills, .opencode/skills and .claude/skills roots.
   "skills": {
-    "directories": [".opencode/skills"],
-    "default": ["docs", "testing"]
+    "enabled": true,
+    "paths": ["./docs/skills"]
   },
-  
+
+  // Custom slash commands. `template` is REQUIRED (a natural-language
+  // instruction); `command`/`args` are the executable and are only used when
+  // `runtime` is "process".
   "commands": {
-    "git": {
-      "command": "git",
-      "always_allow": true
-    },
-    "npm": {
-      "command": "npm"
+    "test": {
+      "template": "Run the project test suite and summarize failures",
+      "description": "Project test suite",
+      "agent": "build",
+      "runtime": "process",
+      "command": "npm",
+      "args": ["test"],
+      "timeout_ms": 120000
     }
   },
-  
+
+  // Per-tool enable/disable switches.
   "tools": {
     "bash": true,
     "read": true,
@@ -212,57 +238,73 @@
     "webfetch": true,
     "question": true
   },
-  
+
+  // Formatters are keyed DIRECTLY by file extension - there is no `rules`
+  // wrapper.
   "formatter": {
-    "rules": {
-      "rs": {
-        "command": ["rustfmt", "$FILE"],
-        "disabled": false
-      },
-      "js": {
-        "command": ["prettier", "--write", "$FILE"],
-        "disabled": false
-      },
-      "ts": {
-        "command": ["prettier", "--write", "$FILE"],
-        "disabled": false
-      }
-    }
-  },
-  
-  "lsp": {
-    "rust": {
-      "command": "rust-analyzer"
+    "rs": {
+      "command": ["rustfmt", "$FILE"],
+      "disabled": false
     },
-    "typescript": {
-      "command": "typescript-language-server",
-      "args": ["--stdio"]
+    "ts": {
+      "command": ["prettier", "--write", "$FILE"],
+      "disabled": false
     }
   },
-  
+
+  // LSP servers are keyed DIRECTLY by builtin server id - there is no
+  // `servers` wrapper, and the key is the server id (not a language name):
+  // rust-analyzer, gopls, pyright, typescript-language-server, clangd, ...
+  // Each active rule requires `command` as an ARRAY of strings; the executable
+  // and its flags both belong in that array, and there is no `args` field.
+  // Run `codegg doctor lsp` to see which servers are active in your setup.
+  "lsp": {
+    "rust-analyzer": {
+      "command": ["rust-analyzer"]
+    },
+    "typescript-language-server": {
+      "command": ["typescript-language-server", "--stdio"]
+    }
+  },
+
   "watcher": {
-    "enabled": true,
-    "debounce_ms": 500
+    "ignore": ["**/target/**", "**/node_modules/**"],
+    "debounce_duration_ms": 500
   },
-  
+
+  // WASM plugin manifests, as paths. Each entry is a string (or a
+  // [path, options] pair), NOT an object.
   "plugin": [
-    {
-      "id": "custom-plugin",
-      "path": "./plugins/custom.wasm"
-    }
+    "./plugins/custom.wasm"
   ],
-  
+
+  // Experimental flags. Each one gates an unstable feature; check
+  // `codegg doctor lsp` for the current value of an individual gate.
   "experimental": {
-    "stream_tool_output": true,
-    "compact_on_overflow": true
+    "batch_tool": true,
+    "lsp_tool": true
   },
-  
+
+  "theme": {
+    "name": "cyber-red",
+    // Custom theme directories must be listed explicitly; nothing is scanned
+    // from the platform config directory implicitly.
+    "directories": ["./themes"]
+  },
+
+  // Keybind overrides: "<modifiers>+<key>" -> action.
+  // Modifiers are ctrl|control, shift, alt; the key is enter, esc, tab,
+  // backspace, delete, left, right, up, down, home, end, pageup, pagedown,
+  // space, or a single character. Action values are snake_case names from the
+  // ActionKey enum (send, newline, cancel, clear_session, new_session,
+  // toggle_sidebar, switch_agent, select_model, navigate_up, ...).
+  // An unparseable key or an unknown action is silently ignored.
   "keybinds": {
-    "ctrl+enter": "submit",
-    "ctrl+c": "cancel",
-    "ctrl+l": "clear"
+    "ctrl+enter": "send",
+    "ctrl+l": "clear_session",
+    "ctrl+p": "switch_agent"
   },
-  
+
   "instructions": [
     "Always write tests before committing code",
     "Use meaningful commit messages"

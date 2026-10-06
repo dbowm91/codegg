@@ -41,12 +41,10 @@ Example configuration:
 ```json
 {
   "mcp": {
-    "servers": {
-      "filesystem": {
-        "type": "local",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
-      }
+    "filesystem": {
+      "type": "local",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
     }
   }
 }
@@ -162,20 +160,23 @@ The `OAuthManager` (`auth.rs`) handles the OAuth flow for servers that require i
 
 ## Configuration
 
+Servers are keyed **directly** under `mcp` — there is no `servers` level. Note that
+plugin MCP import files such as `assets/portable-plugins/playwright-mcp/mcp.json`
+wrap their servers in an `mcpServers` object; that is a separate plugin file format,
+not the `codegg.jsonc` schema, and the two are not interchangeable.
+
 ### Local Server Config
 ```json
 {
   "mcp": {
-    "servers": {
-      "server_name": {
-        "type": "local",
-        "command": "path/to/server",
-        "args": ["arg1", "arg2"],
-        "env": {
-          "KEY": "value"
-        },
-        "timeout": 30000
-      }
+    "server_name": {
+      "type": "local",
+      "command": "path/to/server",
+      "args": ["arg1", "arg2"],
+      "env": {
+        "KEY": "value"
+      },
+      "timeout": 30000
     }
   }
 }
@@ -185,15 +186,13 @@ The `OAuthManager` (`auth.rs`) handles the OAuth flow for servers that require i
 ```json
 {
   "mcp": {
-    "servers": {
-      "remote_server": {
-        "type": "remote",
-        "url": "https://server.example.com/mcp",
-        "headers": {
-          "Authorization": "Bearer token"
-        },
-        "timeout": 30000
-      }
+    "remote_server": {
+      "type": "remote",
+      "url": "https://server.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer token"
+      },
+      "timeout": 30000
     }
   }
 }
@@ -212,11 +211,15 @@ The `OAuthManager` (`auth.rs`) handles the OAuth flow for servers that require i
 
 ## SSE (Server-Sent Events)
 
-Remote servers use SSE for server-to-client notifications:
+Remote servers use SSE for server-to-client notifications. There is no public
+`connect_sse`; the stream is consumed by a private helper on `RemoteClient`:
 
 ```rust
-pub async fn connect_sse(&self) -> Result<(), McpError>
+#[allow(dead_code)]
+async fn connect_sse_stream(&self, mut resp: eggfetch_core::Response) -> Result<(), McpError>
 ```
+
+Buffered events are drained with `RemoteClient::take_sse_events()`.
 
 The SSE stream is parsed with:
 - 1MB buffer limit to prevent unbounded memory

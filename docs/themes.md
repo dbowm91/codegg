@@ -32,7 +32,9 @@ the default theme.
 
 The id is the kebab-case slug (e.g. `cyber-red`); the display name is the
 original case-preserved name from the Halloy gallery (e.g. `"Cyber Red"`).
-Either can be passed to `/theme use`.
+`/theme use` resolves by id only, so pass the kebab-case slug — the registry is
+keyed by `id` and looked up by exact match, and a display name such as
+`"Cyber Red"` misses and reports `Unknown theme`.
 
 Bundled themes (alphabetical by id):
 
@@ -206,10 +208,11 @@ any conversion.
 
 Three ways to load a Halloy file:
 
-### 1. Drop into the user themes directory
+### 1. List the directory in `theme.directories`
 
-Put the file in `~/.config/codegg/themes/` (or any directory you list in
-`[theme].directories`):
+There is no implicit user themes directory. codegg scans only the directories
+you list in `[theme].directories` (`theme.directories` is empty by default),
+so the directory holding the file must be listed explicitly:
 
 ```toml
 [theme]
@@ -236,9 +239,9 @@ fallback = "cyber-red"
 ### 3. The Halloy gallery
 
 Open [`themes.halloy.chat`](https://themes.halloy.chat), click "Download
-TOML file" on a theme, and drop the file into your themes directory. The
-file uses Halloy's TOML schema verbatim and is loaded by the same parser
-that powers the bundled set.
+TOML file" on a theme, and drop the file into the directory you listed in
+`theme.directories`. The file uses Halloy's TOML schema verbatim and is loaded
+by the same parser that powers the bundled set.
 
 ### Halloy field mapping
 

@@ -116,9 +116,13 @@ for the full list):
   the durable-editor arms — dispatch is not purely synchronous
   (`src/tui/runtime/command_dispatch.rs:84`).
 - Auth: `ExternalCommand` is unsupported; never log secrets. The config-first
-  registration path calls `register_builtin(registry)` — the env-var sweep — only
-  when the registry is still empty (`crates/codegg-providers/src/provider_core.rs:1088`),
-  so one config-defined provider suppresses env-var auto-registration for all others.
+  registration path explicitly registers all 17 built-ins, each resolving its
+  own config then its conventional env var, so defining a provider in config
+  does NOT disable env-var auto-registration for the others. The
+  `if registry.list().is_empty() { register_builtin(registry) }` fallback at
+  `crates/codegg-providers/src/provider_core.rs:1088` is a redundant safety
+  net that only fires when config-based registration produced zero results
+  (`architecture/provider.md:81-85`).
 - `AssetRegistry::build` takes each global root as the *parent* dir and appends
   `<vendor>/skills` (`src/skills/registry.rs:250-303`). Pass `dirs::config_dir()`,
   not an already-joined path — otherwise every global skill root resolves to a

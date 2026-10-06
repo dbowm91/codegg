@@ -66,9 +66,9 @@ pub struct DiagnosticsCollector {
 
 ## Supported Languages
 
-Servers are automatically downloaded for:
+Commonly used servers:
 
-| Language | Server |
+| Language | Server id |
 |----------|--------|
 | Rust | rust-analyzer |
 | Python | pyright |
@@ -76,22 +76,34 @@ Servers are automatically downloaded for:
 | Go | gopls |
 | C/C++ | clangd |
 
+A server binary is resolved from `PATH`, then from the LSP cache directory, and is
+downloaded only when the definition carries a download spec — `rust-analyzer` is the
+only one that does. Every other server must already be installed (or be configured
+explicitly, below).
+
 ## Configuration
 
-LSP is configured via `codegg.jsonc`:
+LSP is configured via `codegg.jsonc`. The `lsp` map is keyed **directly by server
+id** — there is no `servers` level — and each rule's `command` is the full argv
+array (there is no separate `args` field):
 
 ```jsonc
 {
   "lsp": {
-    "servers": {
-      "rust": {
-        "command": "rust-analyzer",
-        "args": []
-      }
+    "rust-analyzer": {
+      "command": ["rust-analyzer"]
+    },
+    "typescript-language-server": {
+      "command": ["typescript-language-server", "--stdio"]
     }
   }
 }
 ```
+
+A rule may also set `extensions`, `env`, `initialization`,
+`workspace_configuration`, and `restart`; `{"disabled": true}` turns a single
+server off. Leaving a server out of the map keeps the default resolution described
+above.
 
 ## Integration with Tools
 
