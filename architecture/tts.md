@@ -20,9 +20,17 @@ through the daemon's `NotificationRouter` / `AudioArbiter`.
 
 ### Embedded Mode (default)
 
-The `Tts` struct owns an `AtomicBool` speaking flag. `speak()` spawns
-`tokio::process::Command::new("say")` with the text as an argument and waits
-for completion. `stop()` uses `pkill say` to terminate the child process.
+The `Tts` struct owns an `Arc<AtomicBool>` speaking flag plus an
+`Arc<Mutex<Option<u32>>>` holding the pid of the `say` child it spawned. Both
+are `Arc`-shared because every call site works through a clone: `speak()` runs
+inside a spawned TUI task and `stop()` inside a different one, so both handles
+must observe the same child. `speak()` spawns
+`tokio::process::Command::new("say")` in its **own process group**
+(`process_group(0)`), records the child pid, and waits for completion. `stop()`
+takes the pid out of the mutex and sends `SIGTERM` to that process group (via
+`nix::sys::signal::killpg`), falling back to the bare pid if grouping was not
+established. It never pattern-kills, so a `say` the user started outside
+CodeGG is untouched.
 
 ### Remote-Core Mode
 
@@ -54,7 +62,7 @@ Methods:
 | `new()` | `-> Self` | Speaking flag starts `false` |
 | `init()` | `fn(&mut self, TtsProvider) -> Result<(), AppError>` | Only handles `TtsProvider::None` (no-op) |
 | `speak()` | `async fn(&self, &str)` | Validates non-empty; spawns `say`; sets flag |
-| `stop()` | `async fn(&self) -> Result<(), AppError>` | Early return if not speaking; `pkill say` |
+| `stop()` | `async fn(&self) -> Result<(), AppError>` | Early return if not speaking; takes the tracked pid and signals that process group (`SIGTERM`) |
 | `is_speaking()` | `fn(&self) -> bool` | Reads atomic flag |
 
 `Clone` is implemented: clones the atomic flag value (not the process).
@@ -92,8 +100,16 @@ configuration options. State is managed in-memory:
 ## Invariants & Gotchas
 
 - **macOS-only**: hardcoded to `say` command. Cross-platform not implemented.
-- **`pkill say` is blunt**: stops ALL `say` processes, not just the one
-  spawned by CodeGG.
+- **`stop()` only ever signals CodeGG's own child**: the pid is taken from the
+  mutex under lock and the whole entry is cleared, so a concurrent `stop()`
+  cannot double-signal. When no pid is tracked (idle, or `speak()` interrupted
+  before recording it) `stop()` returns `Ok` without signalling anything —
+  there is deliberately no pattern-kill fallback. `ESRCH` (child already
+  exited) is treated as success.
+- **Clones share state, deliberately**: `speaking` and `pid` are `Arc`-shared.
+  This is load-bearing, not incidental — `speak()` and `stop()` are invoked from
+  different spawned tasks holding different clones of the same logical
+  speaker. Per-clone pid state would make `stop()` unable to find the child.
 - **Speaking flag reset on spawn failure**: if `tokio::process::Command`
   fails to spawn, the flag is cleared in the error path
   (`src/tts/mod.rs:69-72`).
@@ -121,13 +137,18 @@ Slash command: `/tts` (alias `/voice`).
 
 Verified 2026-10-06 against `src/tts/mod.rs` (single 125-line module):
 `TtsProvider` (`:10`, only variant `None`), `TtsEngine` (`:20`),
-`Tts` (`:26`) with `speaking: AtomicBool` and no `Mutex`, the spawn-error
-flag reset (`:69-72`), `pkill say` in `stop()` (`:85-94`), and the
+`Tts` (`:26`) with `Arc`-shared `speaking`/`pid` state,
+the spawn-error flag reset, the `process_group(0)` setup plus pid recording in
+`speak()`, and the `killpg`-with-pid-fallback `stop()` that replaced the old
+pattern kill — together with the 6 regression tests in `src/tts/mod.rs`
+(`stop_when_idle_is_a_no_op`, `stop_without_tracked_child_does_not_signal`,
+`stop_with_stale_pid_tolerates_esrch`, `clone_does_not_inherit_child_pid`,
+`new_tts_is_idle_and_owns_no_child`, `speak_rejects_empty_text`), and the
 `UiState` fields (`src/tui/app/state/ui.rs:88, 90, 99`), `toggle_tts`/
 `stop_tts` (`src/tui/app/mod.rs:8043, 8100`), the `tts_via_daemon = true`
 assignment (`src/tui/app/mod.rs:861`), the `AgentFinished` auto-stop with
 its embedded-mode-only guard (`src/tui/runtime/app_events.rs:333-345`),
 `/tts` registration (`src/tui/command.rs:573`), and the default bindings
 `Ctrl+y` → `ToggleTts` / `Ctrl+Shift+Y` → `StopTts`
-(`src/tui/input.rs:552-562`). The `pkill say` caveat is retained: it
-terminates every `say` process on the host, not just CodeGG's child.
+(`src/tui/input.rs:552-562`). The earlier `pkill say` caveat is **resolved**:
+`stop()` now signals only the recorded child pid's process group.

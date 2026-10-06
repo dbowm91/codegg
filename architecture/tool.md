@@ -206,7 +206,7 @@ ownership.
 
 ## Tool Trait
 
-Defined in `src/tool/mod.rs:156-237`:
+Defined in `src/tool/mod.rs:157-238`:
 
 ```rust
 #[async_trait]
@@ -242,7 +242,7 @@ causally classifiable", never "forbidden"; pilot native tools override it with
 
 ### ToolCategory
 
-Defined in `src/tool/mod.rs:132-141`, the category drives permission
+Defined in `src/tool/mod.rs:133-142`, the category drives permission
 gating and plan-mode filtering:
 
 ```rust
@@ -318,14 +318,14 @@ tools are not hidden from operators.
 
 ### Always-Registered Tools (39)
 
-Registered unconditionally in `with_options()` (`src/tool/mod.rs:392`).
+Registered unconditionally in `with_options()` (`src/tool/mod.rs:408`).
 There are 46 unconditional `registry.register(...)` call sites
-(`src/tool/mod.rs:468-924`) covering 39 distinct tools: `todowrite` has two
+(`src/tool/mod.rs:512-974`) covering 39 distinct tools: `todowrite` has two
 sites (policy branch and no-session fallback), and `lsp`/`security` each have
 four sites (native, disabled stub, MCP-with-fallback, MCP-no-fallback) that
 always register exactly one variant. A further 17 sites are gated
 (see the conditional sections below), and the `for tool in visible/deferred`
-loops at `src/tool/mod.rs:891`/`:894` each register many tools, so
+loops at `src/tool/mod.rs:935`/`:938` each register many tools, so
 `grep -c '\.register(' src/tool/mod.rs` (= 64 sites including the
 `catalog.register` call inside `ToolRegistry::register`) is not a tool count.
 
@@ -417,7 +417,7 @@ policy-gated via `TaskStatePolicy`:
 ### Conditional: Memory Tools (2 tools)
 
 Registered only when `ToolRegistryOptions.memory_store` is `Some`
-(`src/tool/mod.rs:573-582`); scope derives from
+(`src/tool/mod.rs:617-626`); scope derives from
 `MemoryReadScope::for_project(project_identity)`:
 
 | Tool | Disclosure | Description |
@@ -428,7 +428,7 @@ Registered only when `ToolRegistryOptions.memory_store` is `Some`
 ### Conditional: Extension Tools (2 tools)
 
 Registered only when `ToolRegistryOptions.extension_catalog` is `Some`
-(`src/tool/mod.rs:583-590`):
+(`src/tool/mod.rs:627-634`):
 
 | Tool | Disclosure | Description |
 |------|------------|-------------|
@@ -438,7 +438,7 @@ Registered only when `ToolRegistryOptions.extension_catalog` is `Some`
 ### Conditional: WorkPlan Tools (2 tools)
 
 Registered only when both `pool` and `session_id` are `Some`
-(`src/tool/mod.rs:631-639`):
+(`src/tool/mod.rs:675-683`):
 
 | Tool | Disclosure | Description |
 |------|------------|-------------|
@@ -465,7 +465,7 @@ structured_data_compare, text_fingerprint.
 
 ## ToolRegistry
 
-Manages registration and lookup at `src/tool/mod.rs:248-257`:
+Manages registration and lookup at `src/tool/mod.rs:249-258`:
 
 ```rust
 pub struct ToolRegistry {
@@ -504,7 +504,7 @@ pub struct ToolRegistry {
 
 ### ToolRegistryOptions
 
-Centralizes all knobs that influence registration (`src/tool/mod.rs:272`,
+Centralizes all knobs that influence registration (`src/tool/mod.rs:276`,
 29 fields):
 
 ```rust
@@ -607,7 +607,7 @@ construction (`worker.rs`).
 ### execute_capture (Central Execution Path)
 
 `ToolRegistry::execute_capture(name, input, ctx)` at
-`src/tool/mod.rs:1249-1281` is the central execution path for native
+`src/tool/mod.rs:1317-1349` is the central execution path for native
 tools. It calls `Tool::execute_structured()` internally, populates
 a fallback `ToolProvenance::legacy(...)` for tools that do not override
 it, and records provenance via `tracing::debug!`. The returned
@@ -729,7 +729,7 @@ reconciliation without replay, and cancellation during backoff.
 
 Verified 2026-10-06 against source. Corrected: always-registered tool count
 "~31" → 39 distinct tools from 46 unconditional register sites
-(`src/tool/mod.rs:392` `with_options()`, sites `:468-924`), with the
+(`src/tool/mod.rs:408` `with_options()`, sites `:512-974`), with the
 register-site vs distinct-tool explanation stated inline; the core table gained
 the 8 missing always-registered tools (`verify`, `mcp_resource_search`,
 `mcp_resource_read`, `todowrite`, `git_read`, `git_query`, `lsp_read`, and
@@ -745,3 +745,18 @@ registrations + 1 `catalog.register`), 7 eggsearch wrappers, deterministic
 `src/tool/deterministic.rs:106`), 4 `ToolCategory` variants,
 `ToolResult` 4 fields, `ToolCatalog` at `src/tool/catalog.rs:170`,
 `python_script` name (`src/python_script/tool.rs:444`).
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which rewrote `src/tool/mod.rs` to carry
+the resolved `DecisionEngine` and left `ToolRegistryOptions.runtime_backend`
+selection explicit. Every `src/tool/mod.rs` line ref in this document was
+re-derived against the new file. Corrected: `ToolCategory` `132-141`->`133-142`,
+`trait Tool` `156-237`->`157-238`, `ToolRegistry` `248-257`->`249-258`,
+`ToolRegistryOptions` `272`->`276`, `with_options()` `392`->`408`, the
+registration span `468-924`->`512-974`, the two registration loops
+`891`/`894`->`935`/`938`, the memory-store block `573-582`->`617-626`, the
+extension-catalog block `583-590`->`627-634`, the WorkPlan pool/session block
+`631-639`->`675-683`, and `execute_capture` `1249-1281`->`1317-1349`. Each target
+was re-checked to land on the same construct it previously named. Confirmed
+unchanged by that commit: the disclosed tool set, the
+`off`/`observe`/`rerank`/`promote` semantics, and every tool name in the tables.

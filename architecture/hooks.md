@@ -121,7 +121,7 @@ command = "echo"
 timeout_secs = 10
 ```
 
-`InlineScript` hook type is deprecated (`codegg-config/src/schema.rs:975`
+`InlineScript` hook type is deprecated (`codegg-config/src/schema.rs:1010`
 carries the `#[deprecated]` attribute) and silently skipped at runtime with a
 warning (`src/hooks/mod.rs:205-206`).
 
@@ -183,3 +183,13 @@ environment variable names (`hooks/mod.rs:68-83`), `HookType`
 (`plugin/hooks.rs:6`, 13 variants in the documented order), `HookResult`
 (4 fields, `blocked`/`output`/`error`/`effects`), and that `src/hooks/` is a
 single `mod.rs` with no sibling files.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"). That commit inserted
+`DecisionEngineConfig` near the top of `crates/codegg-config/src/schema.rs`,
+shifting every later declaration down by 30 lines. Corrected: the
+`InlineScript` `#[deprecated]` ref `975`->`1010` in the working tree (+35,
+which includes an in-flight 5-line `AutoupdateConfig` doc-comment insertion);
+re-checked that it lands on the `#[deprecated]` attribute itself. No other hook
+reference in this document was affected — `src/hooks/mod.rs` and
+`src/plugin/hooks.rs` are untouched by that commit.

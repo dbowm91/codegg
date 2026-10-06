@@ -147,7 +147,7 @@ Verified accurate as written:
 |---|---|
 | `REVIEWER_ALLOWED_TOOLS` = `read`/`glob`/`grep`/`list`/`diff`/`git_read` (6) | `reviewer.rs:49` |
 | `ReviewerVerdict` = `Allow` / `Deny` / `DeferUser` | `reviewer.rs:313`-`:326` |
-| `ReviewerConfig` fields and the TOML block | `reviewer.rs:76`-`:83`; `schema.rs:1255`-`:1277` (identical) |
+| `ReviewerConfig` fields and the TOML block | `reviewer.rs:76`-`:83`; `schema.rs:1290`-`:1312` (identical) |
 | default 2 investigation calls, hard cap 3 | `reviewer.rs:52`, `:54`, `:110`; `schema.rs` `.min(3)` |
 | `deadline_ms` default 30_000, clamped `1_000..=120_000` | `reviewer.rs:56`, `:115` |
 | `max_output_chars` default 4_000, clamped `512..=16_384` | `reviewer.rs:58`, `:120` |
@@ -155,7 +155,7 @@ Verified accurate as written:
 | `max_equivalent_denials` default 3, clamped `1..=10` | `reviewer.rs:60`, `:130`, `:932` |
 | `REVIEWER_ALLOW`/`REVIEWER_DENY`/`REVIEWER_DEFER` in the `source` mod | `approval.rs:34`, `:48`-`:50` |
 | one bounded non-tool call: `tools: None`, `temperature: Some(0.0)`, `max_tokens: Some(512)`, `ResponseFormat::JsonObject` | `reviewer.rs:854`-`:859` |
-| investigation served through `ToolRegistry::execute_capture`, read-only context rooted to the workspace | `reviewer.rs:772`-`:786`; `execute_capture` is declared in `src/tool/mod.rs:1249` (not `src/agent/registry.rs`) |
+| investigation served through `ToolRegistry::execute_capture`, read-only context rooted to the workspace | `reviewer.rs:772`-`:786`; `execute_capture` is declared in `src/tool/mod.rs:1317` (not `src/agent/registry.rs`) |
 | forbidden tools denied without execution **and** charged to the budget | `reviewer.rs:757`-`:761` returns `ForbiddenTool`; `run_review_loop` (`reviewer.rs:1115`-`:1126`) converts it to evidence text and still `history.push`es it at `:1122`, so `history.len()` advances |
 | stale policy/sandbox discards the verdict, including a mid-review re-check before applying `Allow` | `is_stale` `reviewer.rs:1139`; pre-loop check `:1003`; pre-`Allow` re-check `:1034`-`:1035` |
 | deadline enforced by `tokio::time::timeout` | `reviewer.rs:1020` |
@@ -165,3 +165,11 @@ Verified accurate as written:
 | reviewer cannot recurse into the router, change mode/profile, or spawn subagents | `scripts/check_approval_reviewer.py` forbidden patterns `PermissionPending`, `ApprovalRouter`, `set_approval_mode`, `set_sandbox_profile`, `TaskTool`, `SubAgent`, `tool::bash`, … |
 | `provider/model` with an unknown provider ⇒ reviewer unavailable | `ReviewerConfig::resolve_model` `reviewer.rs:163`-`:180` |
 | `tests/approval_reviewer.rs` (9 `#[test]`) and the 2 `approval_automatic_reviewer_*` cases in `tests/agent_loop_harness.rs` (`:4647`, `:4728`) | Both files exist; the listed `cargo test` targets are valid |
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which added 30 lines near the top of
+`crates/codegg-config/src/schema.rs` and rewrote `src/tool/mod.rs`. Corrected:
+the `ReviewerConfig` field span `schema.rs:1255`-`:1277`->`1290`-`:1312` and
+`ToolRegistry::execute_capture` `src/tool/mod.rs:1249`->`1317`, each re-checked
+to land on the same construct. The reviewer router, mode/profile rules, and
+forbidden-pattern guard are unchanged by that commit.

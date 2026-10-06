@@ -1,16 +1,20 @@
 //! Automatic approval reviewer (M006).
 //!
 //! Dedicated, fast, bounded, read-only authorization helper invoked **only**
-//! for actions deterministic CodeGG policy classified as `Escalate` while
-//! the effective mode is `Automatic`. The reviewer inspects limited relevant
-//! context, returns a strict Allow/Deny/DeferUser verdict, may provide
-//! concise feedback to the primary model on denial, and can never broaden
-//! the current sandbox or authorization ceiling.
+//! while the effective mode is `Automatic`, and only for actions that
+//! deterministic CodeGG policy did not resolve on its own: the `Escalate`
+//! decision, and the general policy `Ask` branch. Both entry points converge
+//! on `resolve_automatic_escalation` — the `Escalate` path directly, the `Ask`
+//! path via `resolve_general_ask_via_human`. The reviewer inspects limited
+//! relevant context, returns a strict Allow/Deny/DeferUser verdict, may
+//! provide concise feedback to the primary model on denial, and can never
+//! broaden the current sandbox or authorization ceiling.
 //!
 //! Isolation contract (enforced by `scripts/check_approval_reviewer.py` and
 //! the tests in `tests/approval_reviewer.rs`):
 //!
-//! - sees only `Escalate`, never re-decides deterministic hard `Deny`;
+//! - sees only non-deterministically-resolved requests, never re-decides a
+//!   deterministic hard `Deny`;
 //! - cannot change `ApprovalMode`, `SandboxProfile`, path/capability
 //!   ceiling, provider credentials, or parent/child authority;
 //! - has no mutating/process/shell/network/subagent tools: the only

@@ -69,7 +69,7 @@ Different strategies per field type:
   `human_shell`, `shell`, `deterministic_tools`, `preflight`,
   `command_intent`, `orchestration`, `decision_engine`
 
-### ProviderConfig Merge (`schema.rs:1071`)
+### ProviderConfig Merge (`schema.rs:1106`)
 
 `decision_engine` is a simple optional override. Its schema defaults to
 disabled, uses `reference` or `ollama` as an explicit compatibility profile,
@@ -438,6 +438,16 @@ Verified 2026-10-06 against `crates/codegg-config/{schema.rs,paths.rs,watcher.rs
   furthest (`461`→`739`), followed by `ContextPolicyConfig` (`366`→`644`),
   `ServerConfig` (`741`→`985`), `ProviderConfig` (`789`→`1033`), and
   `ProviderConnectionsConfig` (`339`→`350`). `ProviderConfig::merge` is at
-  `schema.rs:1071`, not `827`.
+  `schema.rs:1106`, not `827`.
 - Confirmed correct as written: `merge_configs` (`paths.rs:164`) and
   `ConfigWatcher` (`watcher.rs:12`).
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which added 30 lines near the top of
+`crates/codegg-config/src/schema.rs`. Corrected: `ProviderConfig::merge`
+`schema.rs:1071`->`1106` in both the section heading and the note above,
+re-checked to land on the method; the audit record that it is at `1106` rather
+than `827` is retained. The `decision_engine` override described above was added
+by that same commit and is confirmed accurate: default-disabled, explicit
+`reference`/`ollama` profile, `AuthConfig` reference only, and no model discovery
+without an explicit operator call.

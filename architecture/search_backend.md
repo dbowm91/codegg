@@ -271,10 +271,10 @@ resolved from `SearchConfig` so custom names are honored.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `SearchConfig` | `config/src/schema.rs:739` | Backend, output caps, eggsearch config |
-| `SearchBackendConfig` | `config/src/schema.rs:833` | Eggsearch / Builtin / Disabled |
-| `EggsearchConfig` | `config/src/schema.rs:844` | Server name, command, args, timeouts |
-| `ToolTimeoutKind` | `config/src/schema.rs:860` | Default / Security / Research / Batch |
+| `SearchConfig` | `config/src/schema.rs:774` | Backend, output caps, eggsearch config |
+| `SearchBackendConfig` | `config/src/schema.rs:868` | Eggsearch / Builtin / Disabled |
+| `EggsearchConfig` | `config/src/schema.rs:879` | Server name, command, args, timeouts |
+| `ToolTimeoutKind` | `config/src/schema.rs:895` | Default / Security / Research / Batch |
 | `McpService` | `src/mcp/mod.rs:165` | MCP server registry (consumed by eggsearch adapter) |
 | `StructuredSearchResult` | `src/search_backend/mod.rs:56` | output + value + truncated |
 | `EggsearchCallResult` | `src/search_backend/eggsearch.rs:539` | output, value, truncated (per-call) |
@@ -442,5 +442,20 @@ Verified 2026-10-06 against `src/search_backend/`, `src/search/`,
 - Confirmed correct as written: `StructuredSearchResult`
   (`src/search_backend/mod.rs:56`) and `CrossProcessLockGuard`
   (`src/search_backend/test_support.rs:25`).
-- Confirmed `SearchBackendConfig` (`schema.rs:833`) has exactly the 3
+- Confirmed `SearchBackendConfig` (`schema.rs:868`) has exactly the 3
   documented variants: `Eggsearch`, `Builtin`, `Disabled`.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"). That commit added the
+`DecisionEngineConfig` block near the top of
+`crates/codegg-config/src/schema.rs`, shifting every declaration below it by
+30 lines and re-breaking the four config refs corrected in the pass above.
+Corrected: `SearchConfig` `739`->`774`, `SearchBackendConfig` `833`->`868`,
+`EggsearchConfig` `844`->`879`, `ToolTimeoutKind` `860`->`895` — a uniform
++35 in the working tree, which includes an in-flight 5-line
+`AutoupdateConfig` doc-comment insertion; each target was re-checked to land on
+the declared item. Confirmed unaffected: `StructuredSearchResult`
+(`src/search_backend/mod.rs:56`), `CrossProcessLockGuard`
+(`src/search_backend/test_support.rs:25`), `McpService` (`src/mcp/mod.rs:165`),
+and `EggsearchCallResult` (`src/search_backend/eggsearch.rs:539`), and the
+3-variant `SearchBackendConfig` claim.

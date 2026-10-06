@@ -857,7 +857,7 @@ impl DiagnosticsCollector {
 
 The native protocol gained an LSP **read** surface. Before this, the only LSP
 variant was `LspPreviewApply`, a write. The constraint that forced it is
-structural, not incidental: `src/main.rs:3323` builds the frontend's
+structural, not incidental: `src/main.rs:2894` builds the frontend's
 `LspTool` only under `if !is_socket_mode`, so a daemon-connected client had
 **no LSP at all**.
 
@@ -2334,7 +2334,7 @@ Failures, timeouts, and truncation are recorded as notes — they never fail the
 
 The TUI dispatches `/security-review` asynchronously so the render thread is never blocked. The handler spawns a tokio task and publishes a `TuiCommand::SecurityReviewRun { id, root, args, lsp_tool }` variant (carrying a `SecurityReviewRunId` newtype and a cloned `Arc<LspTool>`) which is consumed in the `cmd_rx` arm of `run_event_loop` in `src/tui/mod.rs` by a new `async fn handle_security_review_run(...)`. That handler invokes the new `pub async fn run_security_review_background(root: PathBuf, args: SecurityReviewCommandArgs, lsp_tool: Option<Arc<LspTool>>) -> Result<SecurityReviewReceipt, String>` in `src/security/workflow/report.rs`, which owns its inputs (no borrowed `&self` across the await) and constructs the `LspSecurityContextExecutor` internally when `lsp_tool` is `Some`. In remote/socket mode `lsp_tool` is `None` and the call falls back to deterministic stage-1 with `note_lsp_enrichment_unavailable`. A reentrancy guard, `App.security_review_running: Option<SecurityReviewTaskState>` (holding `{ id, abort_handle }`, defined in `src/security/workflow/receipt.rs:301`), is set on dispatch and cleared in both success and failure paths; a second `/security-review` issued while the guard is set is rejected with a warning toast ("Security review already running. Wait for it to finish or cancel it."). On success the full report is pushed to the message timeline as a `UIMessage` with `MessageRole::Assistant` and a `[Security Review]` label, plus a brief success toast; the structured `SecurityReviewReceipt` is stored on `App.latest_security_review` via `App::set_latest_security_review` (`src/tui/app/mod.rs:914`) for later reopening. On failure an error toast is shown. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback are both preserved.
 
-The completion handler in `src/tui/mod.rs:2205` (`handle_security_review_finished`) guards against stale completions by comparing the incoming `id` against `app.security_review_running.id` via `App::security_review_run_id`; mismatches are silently dropped. `/security-review-cancel` aborts the running task via `App::cancel_security_review` (`src/tui/app/mod.rs:936`) which calls `AbortHandle::abort()` and clears the guard; cancellation is best-effort — if the spawned task is in a non-cancellable section (e.g. inside a blocking syscall), its completion may still arrive and is dropped by the id-mismatch guard. `/security-show` reopens `Dialog::SecurityReview` (a master/detail panel at `src/tui/components/dialogs/security_review.rs` with keybindings `j/k`, `PgUp/PgDn`, `f` cycle filter (including `HunkBacked` to show only items with hunk context), `n` notes, `p` prompts, `h` jump to hunk section, `H` copy hunk text to clipboard, `]`/`[` next/previous hunk-backed item, `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; shows "Security Review Finding/Prompt" origin label; falls back to clipboard if the file cannot be opened)), `Esc/q` close) from the in-memory receipt without rerunning the review. When a finding or prompt has a matching hunk (derived from the reviewed diff, not live files), the detail section renders hunk context with added/removed/context line styling. If no receipt exists yet, `/security-review-show` surfaces a "No security review result available yet." warning toast. Receipt persistence is in-memory only; the `--panel` flag on `/security-review` auto-opens the result panel on completion.
+The completion handler in `src/tui/commands/security.rs:89` (`handle_security_review_finished`) guards against stale completions by comparing the incoming `id` against `app.security_review_running.id` via `App::security_review_run_id`; mismatches are silently dropped. `/security-review-cancel` aborts the running task via `App::cancel_security_review` (`src/tui/app/mod.rs:1408`) which calls `AbortHandle::abort()` and clears the guard; cancellation is best-effort — if the spawned task is in a non-cancellable section (e.g. inside a blocking syscall), its completion may still arrive and is dropped by the id-mismatch guard. `/security-show` reopens `Dialog::SecurityReview` (a master/detail panel at `src/tui/components/dialogs/security_review.rs` with keybindings `j/k`, `PgUp/PgDn`, `f` cycle filter (including `HunkBacked` to show only items with hunk context), `n` notes, `p` prompts, `h` jump to hunk section, `H` copy hunk text to clipboard, `]`/`[` next/previous hunk-backed item, `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; shows "Security Review Finding/Prompt" origin label; falls back to clipboard if the file cannot be opened)), `Esc/q` close) from the in-memory receipt without rerunning the review. When a finding or prompt has a matching hunk (derived from the reviewed diff, not live files), the detail section renders hunk context with added/removed/context line styling. If no receipt exists yet, `/security-review-show` surfaces a "No security review result available yet." warning toast. Receipt persistence is in-memory only; the `--panel` flag on `/security-review` auto-opens the result panel on completion.
 
 The `/security-review --enrich` command flag opts into enrichment. The `--panel` flag auto-opens the result panel on completion. Without these flags, behavior is unchanged (deterministic, no LSP execution; report goes to timeline only).
 
@@ -4382,8 +4382,8 @@ Confirmed accurate, no change needed:
   `Native`, `Mcp`, `Builtin`, `Disabled` (`:2885`-`:2888`). The
   native/MCP/disabled + `fallback_to_native` matrix in "Backend config (MCP
   fallback semantics)" matches `src/tool/mod.rs`, including the
-  `ConfiguredButUnavailable` → `unavailable` status mapping (`src/tool/mod.rs:1337`,
-  `:1402`; rendered in `src/main.rs:2609`).
+  `ConfiguredButUnavailable` → `unavailable` status mapping (`src/tool/mod.rs:1405`,
+  `:1470`; rendered in `src/main.rs:2180`).
 - **Cache**: `LspCacheMode` has only `Disabled` and `Memory`
   (`crates/egglsp/src/cache.rs:53`), consistent with the "0 active disk cache
   mode" claim at line 1941.
@@ -4392,3 +4392,13 @@ One dated claim has drifted (not corrected in place, since it sits in the
 historical "Phase 6-8 Closeout" record): "714 egglsp tests pass" (line ~4298) —
 egglsp now has **1001** `#[test]`/`#[tokio::test]` functions under
 `crates/egglsp/src/` plus **107** under `crates/egglsp/tests/`.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which shrank `src/main.rs` by roughly 640
+lines and rewrote `src/tool/mod.rs`. Corrected: the `if !is_socket_mode` guard
+that builds the frontend's `LspTool` `src/main.rs:3323`->`:2894`, the
+`ConfiguredButUnavailable` -> `unavailable` rendering `src/main.rs:2609`->`:2180`,
+the status mapping `src/tool/mod.rs:1337`->`:1405`, and the
+`RegistryBackendStatusKind` variant anchor `:1402`->`:1470`, each re-checked to
+land on the same construct. The daemon-connected client still gets no LSP, and
+the cache-mode pair (`Disabled`/`Memory`) is unchanged.

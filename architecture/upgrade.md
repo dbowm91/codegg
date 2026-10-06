@@ -53,7 +53,7 @@ contract receive pinned manual fresh-install guidance
 (`describe_manual_fresh_install`, `mod.rs:124`).
 
 The `autoupdate` configuration is inert: `Config.autoupdate`
-(`crates/codegg-config/src/schema.rs:231`) is an untagged
+(`crates/codegg-config/src/schema.rs:236`) is an untagged
 `AutoupdateConfig` (`Bool(bool)` / `Notify(String)`, defaulting to
 `Bool(true)`, `schema.rs:205`) that is deserialized and destructured but
 never read by any production code path. Nothing schedules or triggers an
@@ -92,3 +92,12 @@ precisely — `Config.autoupdate` (`schema.rs:231`) and its `AutoupdateConfig`
 enum (`schema.rs:205`) are the only occurrences of the symbol in any `.rs`
 file outside the unrelated `--rerere-autoupdate` git flags, so the field is
 parsed and destructured (`codegg-config/src/paths.rs:180`) but never read.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure") and against in-flight config work.
+Corrected: the `Config.autoupdate` ref `crates/codegg-config/src/schema.rs:231`
+->`:236`, re-checked to land on the field; it moved because of a 5-line
+doc-comment insertion immediately above it in the working tree, not because of
+that commit. The inert-autoupdate claim is unchanged: the field is still
+deserialized and destructured but read by no production path, and
+`codegg upgrade` still runs only on explicit invocation.

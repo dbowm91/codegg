@@ -241,7 +241,7 @@ backward-compatible alias for `Active`; new configuration should use `Active`.
 ### CommandIntentFamily
 
 `CommandIntentFamily` enum with 10 variants, used for per-family active
-routing config (defined in `crates/codegg-config/src/schema.rs:3417`):
+routing config (defined in `crates/codegg-config/src/schema.rs:3458`):
 
 ```rust
 pub enum CommandIntentFamily {
@@ -270,7 +270,7 @@ pub enum RouteLevel {
 ```
 
 Per-family fields in `CommandIntentConfig`
-(`crates/codegg-config/src/schema.rs:3254`):
+(`crates/codegg-config/src/schema.rs:3295`):
 - `route_tests: Option<RouteLevel>` — Test family
 - `route_git_read: Option<RouteLevel>` — Git read-only family
 - `route_search: Option<RouteLevel>` — Search/list/read family
@@ -366,3 +366,10 @@ Verified 2026-10-06 against source. Corrected: `CommandIntentFamily`
 `CommandIntentContext` 2 fields, `CommandIntentFamily` 10 variants,
 `CommandIntentMode` (`Observe`/`Active`/deprecated `Route`, default `Observe`),
 and the 10 per-family `route_*` config fields.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which added 36 lines near the top of
+`crates/codegg-config/src/schema.rs`. Corrected: `CommandIntentConfig`
+`3254`->`3295` and `CommandIntentFamily` `3417`->`3458`, both re-checked to land
+on their declarations. The 10 routing families, `CommandIntentMode` defaults,
+and the `Observe`/`Active`/deprecated-`Route` split are unchanged.

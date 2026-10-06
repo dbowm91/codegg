@@ -40,11 +40,11 @@ context/candidate interaction score. Small and medium capacity points are
 not a relabeling of hashed-linear-v1. It supports unseen tool names by scoring
 bounded textual descriptors and remains advisory-only.
 
-The runtime is compiled only with the optional `tool-advisor` feature.
-Training commands additionally require `tool-advisor-training`
-(`Cargo.toml:346-347`). The default build keeps
-the existing linear artifact path and does not contain model weights or a
-download path.
+The runtime was compiled only with the optional `tool-advisor` feature.
+Training commands additionally required `tool-advisor-training`
+(`Cargo.toml:346-347`). Both features were removed by M006 along with the
+Candle graph, so the default build now carries neither the model weights nor
+the experiment code and no longer exposes those feature names.
 
 ## Qualification protocol provenance
 
@@ -214,3 +214,25 @@ and `008-status.md`, the subsystem roadmap, the contextual parameter points
 0.707, RRF recall 1.000 on the 64-tool and 128-tool fixtures, cold load
 16,723ms against the 10,000ms preregistered limit, test ranking 75,816ms
 within the 600,000ms limit, and disposition D.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"). That commit removed the Candle feature
+graph this document describes, so the `Cargo.toml` pointers in the note above
+are now historical rather than live: `Cargo.toml:313-315` no longer declares
+`candle-core`/`candle-nn`/`candle-transformers` (it now holds the `sdm-runtime`
+git dependency), and the `tool-advisor-encoder-experiment` /
+`tool-advisor-encoder-training` features previously at `Cargo.toml:346-354` no
+longer exist. `Cargo.toml` has no `candle` entry at all, and its `[features]`
+table is now `default`, `arboard`, `plugins`, `debug-logging`, `server`,
+`image`, `lsp-test-support`, `lsp-real-server-tests`, and `decision-runtime-sdm`.
+The dated M001/M001A/M001B/M003-M005 sections above are retained deliberately as
+evidence, and the `sequence_encoder.rs` reference at the M001B section records
+the file as it existed for that experiment; that module was deleted by the same
+commit. Verified still accurate at their original verification date and still
+present: the MiniLM reference manifest
+`assets/tool-advisor/reference-models/all-minilm-l6-v2.json`,
+`assets/tool-advisor/sequence-encoder-m005-preregistration.json`,
+`assets/tool-advisor/sequence-qualification-result.json`, the closure records
+`plans/closure/tool-selection-advisor-sequence-encoder-experiment/007-status.md`
+and `008-status.md`, and the subsystem roadmap
+`plans/subsystems/tool-selection-advisor-sequence-encoder-experiment-roadmap.md`.

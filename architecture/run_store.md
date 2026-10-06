@@ -175,7 +175,7 @@ pub trait RunStore: Send + Sync {
 
 | Location | How Used |
 |----------|----------|
-| `src/tool/mod.rs:330` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` (struct at `:272`) |
+| `src/tool/mod.rs:337` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` (struct at `:276`) |
 | `src/tool/factory.rs:139-143` | Creates `FsRunStore` at `execution.workspace_root/.codegg/runs`, passes to tools |
 | `src/tool/bash.rs:651-664` (`persist_caller_run` impl `src/tool/bash/output.rs:149`) | Persists runs with the correct `RunKind` derived from the command intent; delegation is decided by `persistence_decision` |
 | `src/python_script/tool.rs:57-227` (`build_python_run_draft`, `begin_python_run`, artifact/complete helpers) | Persists `RunKind::Python` runs with diff/sandbox/changes |
@@ -319,3 +319,9 @@ RunStore never captures or reconstructs source state itself. When both the
 draft and completion carry a subject, completion must preserve the captured
 revision. Historical manifests without the field remain valid and unavailable
 for exact-subject evidence.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which rewrote `src/tool/mod.rs`.
+Corrected: `ToolRegistryOptions.run_store` `330`->`337` and the struct anchor
+`:272`->`:276`, both re-checked against the new file. The optional
+`RunStore` shape and its default-`None` behaviour are unchanged.

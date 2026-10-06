@@ -149,7 +149,7 @@ never merged from path names or directory basenames.
   `execution: Arc<ExecutionContext>`. The turn runtime uses
   `execution.workspace_root` for LSP context, Git context, project
   instructions, prompt loading, and tool registry construction.
-- `ToolRegistryOptions` (`src/tool/mod.rs:272`) carries `workspace_root`.
+- `ToolRegistryOptions` (`src/tool/mod.rs:276`) carries `workspace_root`.
   `build_session_tool_registry` (`src/tool/factory.rs`) anchors `RunStore`
   at `workspace_root/.codegg/runs/` and propagates `workspace_root` into
   tool options.
@@ -239,3 +239,9 @@ lists all six persisted fields. Verified accurate: the six
 `PathPolicyError` variants, all six `ExecutionContext` fields, the three
 `resolve_*` path-policy helpers, both `WorkspaceStore` implementations,
 and the `ProjectBinding` optional `WorktreeId` / `NodeId` description.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which rewrote `src/tool/mod.rs`.
+Corrected: the `ToolRegistryOptions` ref `272`->`276`, re-checked to land on the
+struct declaration; the `workspace_root` field it is cited for is unchanged.
+The `codegg-core` workspace refs in this document were not affected.

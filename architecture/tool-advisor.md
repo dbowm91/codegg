@@ -59,7 +59,7 @@ validation and canonical fingerprinting have no model, transport, or training
 dependency. `NoopDecisionEngine` represents the ordinary off configuration.
 
 `candidates_from_deferred_surface`
-(`src/tool_advisor/mod.rs:328`) projects only the already resolved
+(`src/tool_advisor/mod.rs:396`) projects only the already resolved
 policy-allowed surface, so denied, disabled, plan-ineligible, and parent-ceiling
 tools cannot enter the advisor input. The scorer has no broker, permission,
 registry, or execution handle.
@@ -157,10 +157,14 @@ currently supported profile does not implement Rank and is not queried through
 repeated Choice requests.
 
 The optional pinned SDM local adapter is enabled with
-`--features decision-runtime-sdm`. Backend errors and missing/corrupt artifacts
+`--features decision-runtime-sdm` and lives in `src/decision_sdm.rs`
+(`SdmDecisionEngine`, a 4 MiB bounded artifact load with optional expected-digest
+identity). Backend errors and missing/corrupt artifacts
 resolve through the existing fallback. The `promote` policy is forced to
 `observe` while the selected backend is unqualified. See the M005 and M006
-closure records for implementation and retirement evidence.
+closure records
+(`plans/closure/decision-model-extraction-runtime/005-status.md` and
+`006-status.md`) for implementation and retirement evidence.
 
 ## Generic training/runtime ownership
 
@@ -404,12 +408,13 @@ M004 observe integration selects the positive M002 frontier.
 
 Verified 2026-10-06 against source. Corrected: the projection helper was named
 `candidates_from_surface`, which does not exist; the real entry point is
-`candidates_from_deferred_surface` (`src/tool_advisor/mod.rs:328`, also called
-from `src/agent/request_preparation.rs:100`). Verified accurate:
+`candidates_from_deferred_surface` (`src/tool_advisor/mod.rs:396`, also called
+from `src/agent/request_preparation.rs:117` and `:207`). Verified accurate:
 `assets/tool-advisor/corpus.jsonl` (256 cases),
 `causal-frontier-v1.jsonl` (168 cases), the 20-entry `NATIVE_PILOT_TOOLS`
 contract catalog (`causal_frontier.rs:529-551`), the contextual parameter
-points 5,242,881 and 15,728,641 (`contextual.rs:1292-1293`), every referenced
+points 5,242,881 and 15,728,641 (verified at the time in the now-deleted
+`contextual.rs:1292-1293`; see the retirement note below), every referenced
 asset file and generator script
 (`scripts/generate_tool_advisor_corpus.py`,
 `scripts/generate_causal_m005_holdout.py`), `build_leakage_groups`,
@@ -420,3 +425,53 @@ asset file and generator script
 M002/M003/M005 metrics cross-checked against the frozen result JSONs
 (preservation 1.00, 0 violations, reduction 1.00, median 3 -> 1, M003 qual
 preservation 0.41, M005 284-scenario holdout with median 2 and p95 gate 5.0).
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"). That commit deleted thirteen
+`src/tool_advisor/` modules — `contextual.rs`, `late_interaction.rs`,
+`operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`,
+`retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`,
+`sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`,
+`sequence_retrieval.rs`, and `training.rs` — plus
+`scripts/generate_tool_advisor_qualification_holdout.py` and
+`scripts/generate_tool_advisor_qualification_v3_holdout.py`. The directory now
+holds exactly `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`,
+`context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`,
+`retrieval_relevance.rs`, and `training_data.rs`. Corrected: this document's
+Source Verification above asserted the contextual parameter points as accurate
+at `contextual.rs:1292-1293`, a path that no longer exists; that claim is now
+explicitly scoped to its original verification date. Historical sections that
+describe the retired contextual scorer, the sequence encoder, and the
+requalification CLI are retained as evidence and are marked retired; the
+`codegg tool-advisor` CLI is now `bench | data | inspect | lint | status`
+(`src/main.rs:880`), and `qualify`/`requalify` no longer exist. The named
+symbols still resolve: `build_leakage_groups`, `partition_cases`,
+`family_holdout_partition`, `split_for`, and `preselect_candidates` remain in
+`src/tool_advisor/mod.rs` (lines 1088/1149/1196/919/443),
+`ToolCatalog::rank_descriptors` in `src/tool/catalog.rs:197`, and every
+referenced asset, closure record, and generator script is present.
+
+Re-verified the new decision subsystem against source, all claims accurate:
+`crates/codegg-core/src/decision.rs` defines the bounded v1 contract — Binary,
+Choice, Score, and Rank specs; Answered/Abstained/Unsupported/Unavailable
+statuses; Off/Ready/Degraded/Unsupported/Unavailable backend states; a
+`DecisionEngine` trait whose `decide` takes a caller-supplied `Instant`
+deadline; and `NoopDecisionEngine` reporting `BackendState::Off`. `src/decision.rs`
+maps Binary to `noul` over a single `codegg_decision_v1` question, caps the
+Score range at nine levels (`maximum - minimum > 9.0`), enforces `MAX_BODY =
+64 * 1024`, sets `.follow_redirects(false)`, posts to `/systemone`, requires
+HTTPS for the Reference profile, allows plain HTTP only on unauthenticated
+loopback for Ollama, resolves credentials through
+`codegg_providers::AuthResolver`, reports `rank: false` in its capabilities,
+and exposes `/v1/models` discovery only through the explicit
+`discover_models()` call. `src/decision_sdm.rs` supplies the opt-in
+`SdmDecisionEngine::load`/`from_bytes` behind `--features decision-runtime-sdm`
+with a 4 MiB `MAX_ARTIFACT_BYTES` bound and optional expected-digest identity.
+`src/tool_advisor/decision_adapter.rs` exposes `rank_with_engine`,
+`rank_request_from_surface`, and `prediction_to_response`; the surface-taking
+constructor filters the caller-supplied name set against
+`ResolvedToolSurface.tools` and drops `required`/`never_reduce` tools, holding
+no registry, broker, or permission handle. M005 and M006 closure evidence lives
+at `plans/closure/decision-model-extraction-runtime/005-status.md` and
+`006-status.md`, with the ownership boundary in
+`plans/adrs/ADR-0013-external-decision-model-training-and-runtime-boundary.md`.

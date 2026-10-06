@@ -500,6 +500,8 @@ codegg/
 │   ├── command_intent/         # Command classification + planning
 │   ├── context/                # Token counting, context_read tool
 │   ├── core/                   # Daemon, transport, request handling
+│   ├── decision.rs             # Opt-in System One decision backend
+│   ├── decision_sdm.rs         # Opt-in pinned SDM local Rank backend
 │   ├── eggsact/                # Eggsact adapter (in-process)
 │   ├── hooks/                  # Lifecycle hooks
 │   ├── ide/                    # VS Code/JetBrains detection
@@ -587,3 +589,5 @@ Full `check_*` inventory lives in `scripts/` (40 guards) and additionally covers
 Verified against the working tree on **2026-10-06**. Counts in this document were re-measured directly (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, `AppEvent` variants, slash-command registry length, built-in agents, bundled themes, TUI state modules, `CREATE TABLE` count, `STORAGE_LAYOUT_VERSION`, git operation/risk counts, workspace members, integration test files, guard scripts).
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime ownership migration and M006 closure"). The `src/` tree above gained two root modules that were missing: `src/decision.rs` (the opt-in System One-compatible `DecisionEngine` backend) and `src/decision_sdm.rs` (the opt-in pinned SDM local Rank backend, gated behind `--features decision-runtime-sdm`). The same commit deleted thirteen `src/tool_advisor/` modules (`contextual.rs`, `late_interaction.rs`, `operating_point.rs`, `requalify.rs`, `retrieval_architecture.rs`, `retrieval_projection.rs`, `retrieval_signal.rs`, `retrieval_signal_v2.rs`, `sequence_encoder.rs`, `sequence_qualification.rs`, `sequence_ranking.rs`, `sequence_retrieval.rs`, `training.rs`), leaving `causal_active.rs`, `causal_frontier.rs`, `causal_observe.rs`, `context_v2.rs`, `decision_adapter.rs`, `mod.rs`, `order_invariance.rs`, `retrieval_relevance.rs`, and `training_data.rs`. See [tool-advisor.md](tool-advisor.md) for the decision-subsystem contract and the retired-work history.

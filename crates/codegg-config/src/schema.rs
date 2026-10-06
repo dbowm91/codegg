@@ -228,6 +228,11 @@ pub struct Config {
     pub default_agent: Option<String>,
     pub username: Option<String>,
     pub share: Option<String>,
+    /// Accepted and preserved for backward compatibility, but inert: no
+    /// production code path reads it and nothing schedules an upgrade
+    /// automatically. `codegg upgrade` runs only on explicit user invocation.
+    /// Removal would break existing config files, so the field is retained.
+    /// See `architecture/upgrade.md`.
     pub autoupdate: Option<AutoupdateConfig>,
     pub server: Option<ServerConfig>,
     pub provider: Option<HashMap<String, ProviderConfig>>,

@@ -192,7 +192,7 @@ pub enum CommandCategory {
 }
 ```
 
-### CommandConfig (`crates/codegg-config/src/schema.rs:1381`)
+### CommandConfig (`crates/codegg-config/src/schema.rs:1416`)
 
 ```rust
 pub struct CommandConfig {
@@ -416,6 +416,13 @@ Also verified the 153 built-in registry length, `BuiltinSlashAction`
 (`src/command/mod.rs:39`), `ProcessCommandSpec`
 (`src/command/mod.rs:12`), `execute_command_template`
 (`src/command/mod.rs:320`), `CommandConfig`
-(`crates/codegg-config/src/schema.rs:1381`), and that `/checkpoint` is
+(`crates/codegg-config/src/schema.rs:1416`), and that `/checkpoint` is
 absent from the registry (its only remaining occurrence is the
 `CommandDomain::Execution` keyword list).
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which added 30 lines near the top of
+`crates/codegg-config/src/schema.rs`. Corrected: `CommandConfig`
+`crates/codegg-config/src/schema.rs:1381`->`:1416` in both the section heading
+and the note below it, re-checked to land on the struct declaration. No
+`src/command/` reference in this document was affected.

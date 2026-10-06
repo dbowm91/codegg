@@ -248,9 +248,18 @@ at 205); `HEAD_CAP`/`TAIL_CAP` = 256 KiB each (`store.rs:10-11`);
 32 MiB, `..._HISTORY_ENTRIES` 100 (`projection.rs:369-375`);
 `RtkProjector::MAX_STDERR_WARNING_BYTES = 512` (`rtk.rs:610`); and
 `HumanShellConfig` defaults 100 / 1,000,000 / 8,000,000 / 300s
-(`crates/codegg-config/src/schema.rs:2914-2955`). The prior "1 MB/cmd
+(`crates/codegg-config/src/schema.rs:2955-2996`). The prior "1 MB/cmd
 (head 256KB + tail 256KB)" wording was arithmetically wrong — head plus
 tail is 512 KiB, distinct from the 1 MB per-command eviction budget.
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which inserted `DecisionEngineConfig`
+near the top of `crates/codegg-config/src/schema.rs` and shifted later
+declarations. Corrected: the `HumanShellConfig` range `2914-2955`
+->`2955-2996` in the working tree; both endpoints were re-checked to land on the
+struct declaration and the same trailing `auto_promote_bangbang` default, so the
+range still spans exactly the same members. No `src/shell/` reference in this
+document was affected by that commit.
 
 ## Archived Phase Status
 

@@ -290,7 +290,7 @@ A new top-level `[context_policy]` config section (distinct from `context_packer
 #### ContextPolicyConfig and ContextPolicyMode
 
 ```rust
-// In codegg_config::schema (crate codegg-config), schema.rs:643 — 15 fields
+// In codegg_config::schema (crate codegg-config), schema.rs:679 — 15 fields
 pub struct ContextPolicyConfig {
     pub enabled: Option<bool>,                    // default false (safe)
     pub mode: Option<ContextPolicyMode>,          // default Observe
@@ -547,16 +547,24 @@ had 4 wrong field names (`min_observations` → `min_cache_observations`,
 `always_include` → `always_include_tools`, `never_reduce` →
 `never_reduce_tools`, `log_decisions` → `log_policy_decisions`), non-`Option`
 types, and omitted 8 of 15 fields — it now lists all 15 in source order and
-cites `crates/codegg-config/src/schema.rs:643`; the `always_include`/
+cites `crates/codegg-config/src/schema.rs:679`; the `always_include`/
 `never_reduce` references in the reduction description were corrected to the
 real names; `AgentLoop` "now 26 fields" → 34. Verified accurate:
 `ContextBlock` 10 fields, 14 `ContextBlockKind` variants and every cell of the
 tier→`CacheClass` table, 4 `CacheClass` and 3 `Lossiness` variants,
 `ContextPackBudget` 3 fields, `ContextPackResult` 5 fields, 4 `OmissionReason`
 variants, `CacheStatsEntry` 7 fields, `ContextPolicyMode` 3 variants
-(`schema.rs:620`), all nine builder priority values (100/90/80/70/65/60/40/30/20
+(`schema.rs:655`), all nine builder priority values (100/90/80/70/65/60/40/30/20
 — `block_builder.rs:415-438`), all seven volatile-tail defaults
-(12000/12/8000/true/true — `schema.rs:713-732`), `context_packer` defaults
+(12000/12/8000/true/true — `schema.rs:748-767`), `context_packer` defaults
 (32000/24000), the budget arithmetic (reserved 10,000 and margin 4,000 —
 `src/agent/context_runtime.rs:79-80`), and the five
 `ContextPackObservationPhase` variants (`context_runtime.rs:631-637`).
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which added 30 lines near the top of
+`crates/codegg-config/src/schema.rs`. Corrected: `ContextPolicyConfig`
+`643`->`678`, `ContextPolicyMode` `620`->`655`, and the volatile-tail default
+span `713-732`->`748-767`, each re-checked to land on the same construct. The
+15-field `ContextPolicyConfig` listing, the 3 `ContextPolicyMode` variants, and
+all seven volatile-tail defaults (12000/12/8000/true/true) are unchanged.

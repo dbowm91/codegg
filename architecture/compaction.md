@@ -465,10 +465,17 @@ variants and every cell of the policy value table (`max_tool_output_tokens`
 `max_summary_tokens` 1200/800/400/200/2000 — `compaction.rs:673-699`), the
 500-char tool-output truncation (`compaction.rs:289`), the 60s/120s LLM
 timeouts (`compaction.rs:1523`/`:427`), all 16 `compaction.*` config keys
-(`crates/codegg-config/src/schema.rs:1335-1352`) with verified defaults
+(`crates/codegg-config/src/schema.rs:1370-1387`) with verified defaults
 (threshold 0.7 at `compaction.rs:780`, reserved 16000 at `:781`, max_events 50
 at `:798`), and every M003 evidence bound (64 refs, 256 KiB total, 64 KiB per
 artifact, 280-char summaries — `src/context/evidence.rs:34-40`), the
 20,000-token / 8,000-char intent-spine bounds
 (`src/context/continuation.rs:61`/`:65`), and the 32-item evidence cap
 (`continuation.rs:74`).
+
+Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
+ownership migration and M006 closure"), which added 30 lines near the top of
+`crates/codegg-config/src/schema.rs`. Corrected: the 16 `compaction.*` config-key
+span `1335-1352`->`1370-1387`, re-checked to span exactly the same
+`CompactionConfig` body. The verified defaults (threshold 0.7, reserved 16000,
+max_events 50) and the timeouts are unchanged.
