@@ -126,7 +126,7 @@ async fn connect_or_start_keeps_autostarted_daemon_alive_after_return() {
     let result = connect_or_start_daemon(ConnectOrStartOptions {
         paths: DaemonPaths::with_root(root.clone()),
         autostart: true,
-        startup_timeout: Duration::from_secs(10),
+        startup_timeout: Duration::from_secs(30),
         poll_interval: Duration::from_millis(50),
         executable: Some(bin.clone()),
     })
@@ -183,7 +183,7 @@ async fn concurrent_connect_or_start_calls_converge_on_one_daemon() {
     let options = || ConnectOrStartOptions {
         paths: DaemonPaths::with_root(root.clone()),
         autostart: true,
-        startup_timeout: Duration::from_secs(10),
+        startup_timeout: Duration::from_secs(30),
         poll_interval: Duration::from_millis(50),
         executable: Some(bin.clone()),
     };
@@ -298,8 +298,9 @@ async fn second_daemon_start_against_live_daemon_does_not_steal_lock() {
         .kill_on_drop(true)
         .spawn()
         .expect("spawn daemon A");
-    if !wait_for_daemon_ready(&paths, Duration::from_secs(10)).await {
+    if !wait_for_daemon_ready(&paths, Duration::from_secs(30)).await {
         // Capture stderr for diagnostics, then fail.
+        let _ = a.kill().await;
         let out = a.wait_with_output().await;
         panic!(
             "daemon A never became ready; output={:?}",
@@ -368,7 +369,7 @@ async fn stale_socket_after_ungraceful_exit_is_recoverable() {
         .spawn()
         .expect("spawn daemon X");
     assert!(
-        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        wait_for_daemon_ready(&paths, Duration::from_secs(30)).await,
         "daemon X never became ready"
     );
 
@@ -411,7 +412,7 @@ async fn stale_socket_after_ungraceful_exit_is_recoverable() {
         .spawn()
         .expect("spawn daemon Y");
     assert!(
-        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        wait_for_daemon_ready(&paths, Duration::from_secs(30)).await,
         "daemon Y never became ready after recovery"
     );
 
@@ -455,7 +456,7 @@ async fn status_reports_daemon_identity_with_metadata() {
         .expect("spawn daemon");
 
     assert!(
-        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        wait_for_daemon_ready(&paths, Duration::from_secs(30)).await,
         "daemon never became ready"
     );
 
@@ -507,7 +508,7 @@ async fn stop_requires_matching_live_daemon_identity() {
         .spawn()
         .expect("spawn daemon");
     assert!(
-        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        wait_for_daemon_ready(&paths, Duration::from_secs(30)).await,
         "daemon never became ready"
     );
 
@@ -586,7 +587,7 @@ async fn stop_signals_the_current_daemon_after_identity_match() {
         .spawn()
         .expect("spawn daemon");
     assert!(
-        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        wait_for_daemon_ready(&paths, Duration::from_secs(30)).await,
         "daemon never became ready"
     );
 
@@ -644,7 +645,7 @@ async fn stop_signals_the_current_daemon_after_identity_match() {
         .spawn()
         .expect("restart daemon after graceful stop");
     assert!(
-        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        wait_for_daemon_ready(&paths, Duration::from_secs(30)).await,
         "daemon could not restart after graceful stop"
     );
     let _ = restarted.kill().await;

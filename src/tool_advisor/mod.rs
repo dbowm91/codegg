@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
@@ -24,8 +23,6 @@ pub const MAX_CASE_BYTES: usize = 128 * 1024;
 pub const MAX_CONTEXT_BYTES: usize = 8 * 1024;
 pub const MAX_CANDIDATES: usize = 128;
 pub const MAX_CANDIDATE_TEXT_BYTES: usize = 8 * 1024;
-pub const ARTIFACT_SCHEMA_VERSION: u16 = 1;
-pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 
 const BUILTIN_CORPUS: &str = include_str!("../../assets/tool-advisor/corpus.jsonl");
 
@@ -33,32 +30,10 @@ pub mod causal_active;
 pub mod causal_frontier;
 pub mod causal_observe;
 pub mod context_v2;
-#[cfg(feature = "tool-advisor")]
-pub mod contextual;
-#[cfg(feature = "tool-advisor-encoder-experiment")]
-pub mod late_interaction;
-#[cfg(feature = "tool-advisor-encoder-training")]
-pub mod operating_point;
+pub mod decision_adapter;
+#[cfg(test)]
 pub mod order_invariance;
-#[cfg(feature = "tool-advisor-training")]
-pub mod requalify;
-#[cfg(feature = "tool-advisor-encoder-training")]
-pub mod retrieval_architecture;
-#[cfg(feature = "tool-advisor-encoder-training")]
-pub mod retrieval_projection;
 pub mod retrieval_relevance;
-pub mod retrieval_signal;
-pub mod retrieval_signal_v2;
-#[cfg(feature = "tool-advisor-encoder-experiment")]
-pub mod sequence_encoder;
-#[cfg(feature = "tool-advisor-encoder-training")]
-pub mod sequence_qualification;
-#[cfg(feature = "tool-advisor-encoder-experiment")]
-pub mod sequence_ranking;
-#[cfg(feature = "tool-advisor-encoder-experiment")]
-pub mod sequence_retrieval;
-#[cfg(feature = "tool-advisor-training")]
-pub mod training;
 pub mod training_data;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,60 +227,153 @@ pub struct CorpusCoverageReport {
     pub leakage: LeakageReport,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolAdvisorArtifactManifest {
-    pub artifact_schema_version: u16,
-    pub model_version: String,
-    pub architecture: String,
-    pub parameter_count: u64,
-    pub precision: String,
-    pub tokenizer_version: String,
-    pub tokenizer_hash: String,
-    pub candidate_schema_version: u16,
-    pub context_schema_version: u16,
-    pub calibration_version: String,
-    pub max_context_bytes: usize,
-    pub max_candidates: usize,
-    pub weights_sha256: String,
-    pub provenance_fingerprint: String,
-    pub license_notice: String,
-    /// Families excluded from this artifact's train/dev input (true-holdout
-    /// retraining). Empty for standard runs.
-    #[serde(default)]
-    pub excluded_tool_families: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolAdvisorArtifact {
-    pub manifest: ToolAdvisorArtifactManifest,
-    #[serde(default)]
-    pub bias: f32,
-    #[serde(default)]
-    pub abstain_bias: f32,
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-    #[serde(default)]
-    pub weights: BTreeMap<String, f32>,
-}
-
-fn default_temperature() -> f32 {
-    1.0
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AdvisorRuntimeState {
-    Disabled,
-    NotInstalled,
-    Incompatible,
-    Ready,
-    Degraded,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AdvisorRuntimeStatus {
-    pub state: AdvisorRuntimeState,
+#[derive(Debug, Clone)]
+pub struct DecisionBackendResolution {
+    pub backend: String,
     pub detail: String,
-    pub model_version: Option<String>,
+    pub state: codegg_core::decision::BackendState,
+    pub capabilities: codegg_core::decision::BackendCapabilities,
+    /// Learned promotion is disabled until CodeGG records explicit
+    /// qualification for this backend and artifact identity.
+    pub promotion_qualified: bool,
+}
+
+/// Resolve one immutable decision backend for the learned tool-advisor path.
+/// Legacy CodeGG-local scorer artifacts have no runtime mapping; callers must
+/// explicitly select a supported backend.
+pub fn decision_engine_from_config(
+    advisor: Option<&codegg_config::schema::ToolAdvisorConfig>,
+    decision: Option<&codegg_config::schema::DecisionEngineConfig>,
+) -> (
+    Arc<dyn codegg_core::decision::DecisionEngine>,
+    DecisionBackendResolution,
+) {
+    use codegg_core::decision::{BackendState, DecisionEngine, NoopDecisionEngine};
+
+    let off = || {
+        let engine: Arc<dyn DecisionEngine> = Arc::new(NoopDecisionEngine);
+        let resolution = DecisionBackendResolution {
+            backend: "noop".into(),
+            detail: "tool advisor is disabled".into(),
+            state: engine.state(),
+            capabilities: engine.capabilities(),
+            promotion_qualified: false,
+        };
+        (engine, resolution)
+    };
+    let Some(advisor) = advisor.filter(|config| {
+        config.enabled.unwrap_or(false)
+            && AdvisorMode::parse(config.mode.as_deref()) != AdvisorMode::Off
+    }) else {
+        return off();
+    };
+
+    let selected = advisor.runtime_backend.as_deref().or_else(|| {
+        decision
+            .filter(|config| config.enabled)
+            .map(|_| "system_one")
+    });
+    match selected {
+        Some("sdm_local_v1") => {
+            #[cfg(feature = "decision-runtime-sdm")]
+            {
+                let Some(path) = advisor.model_path.as_deref().map(Path::new) else {
+                    let (engine, mut resolution) = off();
+                    resolution.detail = "SDM backend has no artifact path".into();
+                    resolution.state = BackendState::Unavailable(resolution.detail.clone());
+                    return (engine, resolution);
+                };
+                match crate::decision_sdm::SdmDecisionEngine::load(
+                    path,
+                    advisor.expected_artifact_sha256.as_deref(),
+                ) {
+                    Ok(engine) => {
+                        let engine: Arc<dyn DecisionEngine> = Arc::new(engine);
+                        let resolution = DecisionBackendResolution {
+                            backend: "sdm_local_v1".into(),
+                            detail: "pinned SDM Rank runtime loaded; artifact remains unqualified"
+                                .into(),
+                            state: engine.state(),
+                            capabilities: engine.capabilities(),
+                            promotion_qualified: false,
+                        };
+                        (engine, resolution)
+                    }
+                    Err(error) => {
+                        let (engine, mut resolution) = off();
+                        resolution.backend = "sdm_local_v1".into();
+                        resolution.detail = format!("SDM artifact rejected: {error}");
+                        resolution.state = BackendState::Unavailable(resolution.detail.clone());
+                        (engine, resolution)
+                    }
+                }
+            }
+            #[cfg(not(feature = "decision-runtime-sdm"))]
+            {
+                let (engine, mut resolution) = off();
+                resolution.backend = "sdm_local_v1".into();
+                resolution.detail = "SDM runtime requires decision-runtime-sdm feature".into();
+                resolution.state = BackendState::Unsupported(resolution.detail.clone());
+                (engine, resolution)
+            }
+        }
+        Some("system_one") => {
+            let Some(config) = decision.filter(|config| config.enabled) else {
+                let (engine, mut resolution) = off();
+                resolution.backend = "system_one".into();
+                resolution.detail = "System One backend is not enabled".into();
+                resolution.state = BackendState::Off;
+                return (engine, resolution);
+            };
+            let credential_store = codegg_providers::CredentialStore::at_default_location()
+                .ok()
+                .map(Arc::new);
+            match crate::decision::engine_from_config(Some(config), credential_store) {
+                Ok(engine) => {
+                    let engine: Arc<dyn DecisionEngine> = Arc::from(engine);
+                    let state = engine.state();
+                    let capabilities = engine.capabilities();
+                    let detail = if capabilities.rank {
+                        "System One Rank capability available".into()
+                    } else {
+                        "System One does not support Rank; deterministic advisor fallback".into()
+                    };
+                    (
+                        engine,
+                        DecisionBackendResolution {
+                            backend: "system_one".into(),
+                            detail,
+                            state,
+                            capabilities,
+                            promotion_qualified: false,
+                        },
+                    )
+                }
+                Err(error) => {
+                    let (engine, mut resolution) = off();
+                    resolution.backend = "system_one".into();
+                    resolution.detail = format!("System One configuration rejected: {error}");
+                    resolution.state = BackendState::Unsupported(resolution.detail.clone());
+                    (engine, resolution)
+                }
+            }
+        }
+        None => {
+            let (engine, mut resolution) = off();
+            resolution.backend = "legacy".into();
+            resolution.detail =
+                "legacy learned runtimes are retired from production routing".into();
+            resolution.state = BackendState::Unsupported(resolution.detail.clone());
+            (engine, resolution)
+        }
+        Some(_) => {
+            let (engine, mut resolution) = off();
+            resolution.backend = "unknown".into();
+            resolution.detail = "unsupported decision backend selection".into();
+            resolution.state = BackendState::Unsupported(resolution.detail.clone());
+            (engine, resolution)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -476,6 +544,7 @@ pub fn preselection_recall(
     }
 }
 
+#[cfg(test)]
 pub trait ToolAdvisor: Send + Sync {
     fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction>;
 }
@@ -515,6 +584,7 @@ pub struct AdvisorProjection {
 /// Apply an advisor prediction after discovery policy has already filtered the
 /// catalog. `deferred_allowed` is an independently filtered set and is the
 /// only universe from which promotion may add tools.
+#[cfg(test)]
 pub fn project_discovery(
     current: &[ToolMetadata],
     deferred_allowed: &[ToolMetadata],
@@ -547,6 +617,41 @@ pub fn project_discovery(
             }
         }
     };
+    project_discovery_from_prediction(
+        current,
+        deferred_allowed,
+        mode,
+        threshold,
+        max_promotions,
+        Some(prediction),
+        false,
+    )
+}
+
+/// Apply a validated generic Rank projection through the same CodeGG-owned
+/// rerank/promotion policy used by historical advisor fixtures.
+pub fn project_discovery_from_prediction(
+    current: &[ToolMetadata],
+    deferred_allowed: &[ToolMetadata],
+    mode: AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+    prediction: Option<ToolAdvisorPrediction>,
+    fallback: bool,
+) -> AdvisorProjection {
+    let unchanged = || AdvisorProjection {
+        ordered: current.to_vec(),
+        prediction: None,
+        promoted: Vec::new(),
+        abstained: false,
+        fallback,
+    };
+    if mode == AdvisorMode::Off {
+        return unchanged();
+    }
+    let Some(prediction) = prediction else {
+        return unchanged();
+    };
     let abstained = prediction.abstain_probability.unwrap_or(0.0) >= 0.5;
     if mode == AdvisorMode::Observe || prediction.ranked.is_empty() || abstained {
         return AdvisorProjection {
@@ -554,7 +659,7 @@ pub fn project_discovery(
             prediction: Some(prediction),
             promoted: Vec::new(),
             abstained,
-            fallback: false,
+            fallback,
         };
     }
 
@@ -613,13 +718,15 @@ pub fn project_discovery(
         prediction: Some(prediction),
         promoted,
         abstained,
-        fallback: false,
+        fallback,
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopAdvisor;
 
+#[cfg(test)]
 impl ToolAdvisor for NoopAdvisor {
     fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
         Ok(ToolAdvisorPrediction {
@@ -630,309 +737,6 @@ impl ToolAdvisor for NoopAdvisor {
             mode: "off".to_string(),
         })
     }
-}
-
-pub struct LinearAdvisor {
-    artifact: Arc<ToolAdvisorArtifact>,
-    failures: AtomicU8,
-    max_failures: u8,
-}
-
-impl LinearAdvisor {
-    pub fn new(artifact: ToolAdvisorArtifact) -> Result<Self> {
-        validate_artifact(&artifact)?;
-        Ok(Self {
-            artifact: Arc::new(artifact),
-            failures: AtomicU8::new(0),
-            max_failures: 3,
-        })
-    }
-
-    pub fn artifact(&self) -> &ToolAdvisorArtifact {
-        &self.artifact
-    }
-
-    fn score_inner(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
-        if input.context.len() > self.artifact.manifest.max_context_bytes {
-            return Err(anyhow!("advisor context exceeds artifact limit"));
-        }
-        if input.candidates.len() > self.artifact.manifest.max_candidates {
-            return Err(anyhow!("advisor candidate set exceeds artifact limit"));
-        }
-        let context_terms = tokenize(&input.context);
-        let mut ranked = input
-            .candidates
-            .iter()
-            .map(|candidate| {
-                let candidate_terms =
-                    tokenize(&format!("{} {}", candidate.name, candidate.description));
-                let overlap = candidate_terms
-                    .iter()
-                    .filter(|term| context_terms.contains(term))
-                    .count() as f32;
-                let learned = candidate_terms
-                    .iter()
-                    .filter_map(|term| self.artifact.weights.get(term))
-                    .copied()
-                    .sum::<f32>();
-                let score = self.artifact.bias + learned + overlap * 0.1;
-                (candidate.name.clone(), score as f64)
-            })
-            .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        let abstain_probability = sigmoid(
-            (self.artifact.abstain_bias
-                - ranked
-                    .first()
-                    .map(|(_, score)| *score as f32)
-                    .unwrap_or(0.0))
-                / self.artifact.temperature.max(0.001),
-        );
-        Ok(ToolAdvisorPrediction {
-            schema_version: PREDICTION_SCHEMA_VERSION,
-            case_id: input.case_id.clone(),
-            ranked: ranked
-                .into_iter()
-                .map(|(name, score)| RankedCandidate { name, score })
-                .collect(),
-            abstain_probability: Some(abstain_probability as f64),
-            mode: "observe".to_string(),
-        })
-    }
-}
-
-impl ToolAdvisor for LinearAdvisor {
-    fn score(&self, input: &ToolAdvisorInput) -> Result<ToolAdvisorPrediction> {
-        if self.failures.load(Ordering::Relaxed) >= self.max_failures {
-            return Err(anyhow!("advisor circuit breaker is open"));
-        }
-        let started = Instant::now();
-        let result = self.score_inner(input);
-        if result.is_err() {
-            self.failures.fetch_add(1, Ordering::Relaxed);
-        }
-        if started.elapsed().as_millis() > 1000 {
-            return Err(anyhow!("advisor scoring exceeded local bound"));
-        }
-        result
-    }
-}
-
-pub fn validate_artifact(artifact: &ToolAdvisorArtifact) -> Result<()> {
-    let manifest = &artifact.manifest;
-    if manifest.artifact_schema_version != ARTIFACT_SCHEMA_VERSION {
-        return Err(anyhow!(
-            "unsupported advisor artifact schema version {}",
-            manifest.artifact_schema_version
-        ));
-    }
-    if manifest.candidate_schema_version != CASE_SCHEMA_VERSION
-        || manifest.context_schema_version != CASE_SCHEMA_VERSION
-    {
-        return Err(anyhow!(
-            "advisor artifact schema does not match case/context schema"
-        ));
-    }
-    if manifest.architecture != "hashed-linear-v1"
-        || manifest.max_candidates == 0
-        || manifest.max_candidates > MAX_CANDIDATES
-        || manifest.max_context_bytes == 0
-        || manifest.max_context_bytes > MAX_CONTEXT_BYTES
-    {
-        return Err(anyhow!(
-            "advisor artifact manifest has unsupported architecture or limits"
-        ));
-    }
-    if artifact.temperature <= 0.0
-        || !artifact.temperature.is_finite()
-        || !artifact.bias.is_finite()
-        || !artifact.abstain_bias.is_finite()
-    {
-        return Err(anyhow!(
-            "advisor artifact contains invalid calibration values"
-        ));
-    }
-    let encoded = serde_json::to_vec(&artifact.weights).context("serialize advisor weights")?;
-    let digest = hex::encode(Sha256::digest(encoded));
-    if digest != manifest.weights_sha256 {
-        return Err(anyhow!("advisor artifact weights hash mismatch"));
-    }
-    Ok(())
-}
-
-pub fn load_artifact(path: &Path) -> Result<ToolAdvisorArtifact> {
-    let metadata =
-        fs::metadata(path).with_context(|| format!("stat advisor artifact {}", path.display()))?;
-    if metadata.len() > MAX_ARTIFACT_BYTES {
-        return Err(anyhow!(
-            "advisor artifact exceeds {} bytes",
-            MAX_ARTIFACT_BYTES
-        ));
-    }
-    let bytes =
-        fs::read(path).with_context(|| format!("read advisor artifact {}", path.display()))?;
-    let artifact: ToolAdvisorArtifact =
-        serde_json::from_slice(&bytes).context("parse advisor artifact")?;
-    validate_artifact(&artifact)?;
-    Ok(artifact)
-}
-
-pub fn inspect_artifact_manifest(path: &Path) -> Result<serde_json::Value> {
-    #[cfg(feature = "tool-advisor")]
-    if let Ok(artifact) = contextual::load(path) {
-        return serde_json::to_value(artifact.manifest).context("serialize contextual manifest");
-    }
-    let artifact = load_artifact(path)?;
-    serde_json::to_value(artifact.manifest).context("serialize advisor manifest")
-}
-
-pub fn write_artifact_atomic(path: &Path, artifact: &ToolAdvisorArtifact) -> Result<()> {
-    validate_artifact(artifact)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("advisor artifact has no parent directory"))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("create artifact directory {}", parent.display()))?;
-    let temp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(artifact).context("serialize advisor artifact")?;
-    fs::write(&temp, bytes)
-        .with_context(|| format!("write temporary advisor artifact {}", temp.display()))?;
-    fs::rename(&temp, path)
-        .with_context(|| format!("install advisor artifact {}", path.display()))?;
-    Ok(())
-}
-
-pub fn advisor_from_config(
-    config: Option<&codegg_config::schema::ToolAdvisorConfig>,
-) -> (Box<dyn ToolAdvisor>, AdvisorRuntimeStatus) {
-    let Some(config) = config else {
-        return (
-            Box::new(NoopAdvisor),
-            AdvisorRuntimeStatus {
-                state: AdvisorRuntimeState::Disabled,
-                detail: "no advisor configuration".into(),
-                model_version: None,
-            },
-        );
-    };
-    if !config.enabled.unwrap_or(false) || config.mode.as_deref().unwrap_or("off") == "off" {
-        return (
-            Box::new(NoopAdvisor),
-            AdvisorRuntimeStatus {
-                state: AdvisorRuntimeState::Disabled,
-                detail: "advisor is disabled (default)".into(),
-                model_version: None,
-            },
-        );
-    }
-    let mode = AdvisorMode::parse(config.mode.as_deref());
-    if mode == AdvisorMode::Off {
-        return (
-            Box::new(NoopAdvisor),
-            AdvisorRuntimeStatus {
-                state: AdvisorRuntimeState::Disabled,
-                detail: "advisor is disabled (default)".into(),
-                model_version: None,
-            },
-        );
-    }
-    if !matches!(
-        mode,
-        AdvisorMode::Observe | AdvisorMode::Rerank | AdvisorMode::Promote
-    ) {
-        return (
-            Box::new(NoopAdvisor),
-            AdvisorRuntimeStatus {
-                state: AdvisorRuntimeState::Incompatible,
-                detail: "unsupported advisor mode".into(),
-                model_version: None,
-            },
-        );
-    }
-    let Some(path) = config.model_path.as_deref().map(Path::new) else {
-        return (
-            Box::new(NoopAdvisor),
-            AdvisorRuntimeStatus {
-                state: AdvisorRuntimeState::NotInstalled,
-                detail: "observe mode has no model artifact".into(),
-                model_version: None,
-            },
-        );
-    };
-    #[cfg(feature = "tool-advisor")]
-    if let Ok(artifact) = contextual::load(path) {
-        match contextual::ContextualAdvisor::new(artifact) {
-            Ok(advisor) => {
-                let version = advisor.artifact().manifest.model_version.clone();
-                let qualified = advisor.artifact().is_qualified();
-                return (
-                    Box::new(advisor),
-                    AdvisorRuntimeStatus {
-                        state: AdvisorRuntimeState::Ready,
-                        detail: if qualified {
-                            "calibrated contextual encoder loaded".into()
-                        } else {
-                            "legacy unqualified contextual encoder loaded (research baseline only)"
-                                .into()
-                        },
-                        model_version: Some(version),
-                    },
-                );
-            }
-            Err(error) => {
-                return (
-                    Box::new(NoopAdvisor),
-                    AdvisorRuntimeStatus {
-                        state: AdvisorRuntimeState::Degraded,
-                        detail: format!("contextual advisor fallback: {error}"),
-                        model_version: None,
-                    },
-                );
-            }
-        }
-    }
-    match load_artifact(path).and_then(LinearAdvisor::new) {
-        Ok(advisor) => {
-            let version = advisor.artifact().manifest.model_version.clone();
-            (
-                Box::new(advisor),
-                AdvisorRuntimeStatus {
-                    state: AdvisorRuntimeState::Ready,
-                    detail: format!(
-                        "{} advisor loaded",
-                        config.mode.as_deref().unwrap_or("observe")
-                    ),
-                    model_version: Some(version),
-                },
-            )
-        }
-        Err(error) => (
-            Box::new(NoopAdvisor),
-            AdvisorRuntimeStatus {
-                state: AdvisorRuntimeState::Degraded,
-                detail: format!("advisor fallback: {error}"),
-                model_version: None,
-            },
-        ),
-    }
-}
-
-fn tokenize(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn sigmoid(value: f32) -> f32 {
-    1.0 / (1.0 + (-value).exp())
 }
 
 impl ToolAdvisorCase {
@@ -2090,162 +1894,6 @@ pub fn run_benchmark(path: Option<&Path>, mode: SearchMode) -> Result<BaselineRe
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QualificationComparison {
-    pub tier: String,
-    pub cases: usize,
-    pub keyword: MetricSummary,
-    pub bm25: MetricSummary,
-    pub learned_observe: MetricSummary,
-    pub learned_rerank: MetricSummary,
-    pub learned_promote: MetricSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct QualificationReport {
-    pub suite_fingerprint: String,
-    pub model_version: String,
-    pub comparisons: Vec<QualificationComparison>,
-    pub unknown_tool: MetricSummary,
-    pub score_elapsed_millis: u128,
-    pub max_candidate_count: usize,
-    pub max_candidate_bytes: usize,
-    pub max_promotions: usize,
-    pub policy_negative_tests: usize,
-}
-
-fn advisor_predictions(
-    advisor: &dyn ToolAdvisor,
-    cases: &[ToolAdvisorCase],
-    mode: &str,
-) -> Result<Vec<ToolAdvisorPrediction>> {
-    cases
-        .iter()
-        .map(|case| {
-            let started = Instant::now();
-            let mut prediction = advisor.score(&ToolAdvisorInput {
-                case_id: case.case_id.clone(),
-                context: case.context.clone(),
-                candidates: case.candidates.clone(),
-                surface_fingerprint: dataset_fingerprint(std::slice::from_ref(case))?,
-            })?;
-            if started.elapsed().as_millis() > 1000 {
-                return Err(anyhow!("advisor qualification exceeded local score bound"));
-            }
-            prediction.mode = mode.to_string();
-            Ok(prediction)
-        })
-        .collect()
-}
-
-fn tier_for_case(case: &ToolAdvisorCase) -> String {
-    case.tags
-        .iter()
-        .find_map(|tag| tag.strip_prefix("tier:"))
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| {
-            if case.tags.iter().any(|tag| tag == "hard-negative") {
-                "small-tool-fragile".into()
-            } else {
-                "fixture".into()
-            }
-        })
-}
-
-pub fn run_qualification(model_path: &Path, suite_path: &Path) -> Result<QualificationReport> {
-    let cases = load_cases(Some(suite_path))?;
-    let artifact = load_artifact(model_path)?;
-    let advisor = LinearAdvisor::new(artifact.clone())?;
-    let unknown_cases = cases
-        .iter()
-        .map(unknown_tool_holdout)
-        .collect::<Result<Vec<_>>>()?;
-    let started = Instant::now();
-    let learned_observe = advisor_predictions(&advisor, &cases, "observe")?;
-    let learned_elapsed = started.elapsed().as_millis();
-    let learned_rerank = learned_observe
-        .iter()
-        .cloned()
-        .map(|mut prediction| {
-            prediction.mode = "rerank".into();
-            prediction
-        })
-        .collect::<Vec<_>>();
-    let learned_promote = learned_observe
-        .iter()
-        .cloned()
-        .map(|mut prediction| {
-            prediction.mode = "promote".into();
-            prediction
-        })
-        .collect::<Vec<_>>();
-    let keyword = cases
-        .iter()
-        .map(|case| baseline_prediction(case, SearchMode::Keyword))
-        .collect::<Vec<_>>();
-    let bm25 = cases
-        .iter()
-        .map(|case| baseline_prediction(case, SearchMode::BM25))
-        .collect::<Vec<_>>();
-    let mut tiers = BTreeSet::new();
-    tiers.extend(cases.iter().map(tier_for_case));
-    let comparisons = tiers
-        .into_iter()
-        .map(|tier| {
-            let selected: Vec<_> = cases
-                .iter()
-                .filter(|case| tier_for_case(case) == tier)
-                .cloned()
-                .collect();
-            let select_predictions = |predictions: &[ToolAdvisorPrediction]| {
-                predictions
-                    .iter()
-                    .filter(|prediction| {
-                        selected
-                            .iter()
-                            .any(|case| case.case_id == prediction.case_id)
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            Ok(QualificationComparison {
-                cases: selected.len(),
-                tier,
-                keyword: evaluate(&selected, &select_predictions(&keyword))?,
-                bm25: evaluate(&selected, &select_predictions(&bm25))?,
-                learned_observe: evaluate(&selected, &select_predictions(&learned_observe))?,
-                learned_rerank: evaluate(&selected, &select_predictions(&learned_rerank))?,
-                learned_promote: evaluate(&selected, &select_predictions(&learned_promote))?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let unknown_predictions = advisor_predictions(&advisor, &unknown_cases, "unknown-holdout")?;
-    let unknown_tool = evaluate(&unknown_cases, &unknown_predictions)?;
-    let max_candidate_count = cases
-        .iter()
-        .map(|case| case.candidates.len())
-        .max()
-        .unwrap_or(0);
-    let max_candidate_bytes = cases
-        .iter()
-        .map(|case| serde_json::to_vec(&case.candidates).map(|bytes| bytes.len()))
-        .collect::<serde_json::Result<Vec<_>>>()?
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-    Ok(QualificationReport {
-        suite_fingerprint: dataset_fingerprint(&cases)?,
-        model_version: artifact.manifest.model_version,
-        comparisons,
-        unknown_tool,
-        score_elapsed_millis: learned_elapsed,
-        max_candidate_count,
-        max_candidate_bytes,
-        max_promotions: 2,
-        policy_negative_tests: 4,
-    })
-}
-
 pub fn render_report(report: &BaselineReport) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "tool-advisor baseline: {}", report.mode);
@@ -2646,118 +2294,6 @@ mod tests {
         }
     }
 
-    fn artifact() -> ToolAdvisorArtifact {
-        let weights =
-            BTreeMap::from([("definition".to_string(), 1.0), ("symbol".to_string(), 0.5)]);
-        let weights_sha256 = hex::encode(Sha256::digest(
-            serde_json::to_vec(&weights).expect("weights"),
-        ));
-        ToolAdvisorArtifact {
-            manifest: ToolAdvisorArtifactManifest {
-                artifact_schema_version: ARTIFACT_SCHEMA_VERSION,
-                model_version: "test-1".into(),
-                architecture: "hashed-linear-v1".into(),
-                parameter_count: weights.len() as u64 + 2,
-                precision: "f32".into(),
-                tokenizer_version: "unicode-alnum-v1".into(),
-                tokenizer_hash: "test-tokenizer".into(),
-                candidate_schema_version: CASE_SCHEMA_VERSION,
-                context_schema_version: CASE_SCHEMA_VERSION,
-                calibration_version: "temperature-v1".into(),
-                max_context_bytes: MAX_CONTEXT_BYTES,
-                max_candidates: 16,
-                weights_sha256,
-                provenance_fingerprint: "test-data".into(),
-                license_notice: "test".into(),
-                excluded_tool_families: Vec::new(),
-            },
-            bias: 0.0,
-            abstain_bias: 0.0,
-            temperature: 1.0,
-            weights,
-        }
-    }
-
-    #[test]
-    fn artifact_validation_and_scoring_are_fail_closed() {
-        let artifact = artifact();
-        let advisor = LinearAdvisor::new(artifact.clone()).expect("valid artifact");
-        let input = ToolAdvisorInput {
-            case_id: "runtime-case".into(),
-            context: "find a symbol definition".into(),
-            candidates: vec![ToolAdvisorCandidate {
-                name: "lsp_definition".into(),
-                description: "Jump to a symbol definition".into(),
-                category: "ReadOnly".into(),
-                disclosure: "deferred".into(),
-                synthetic_identity: false,
-            }],
-            surface_fingerprint: "surface".into(),
-        };
-        let prediction = advisor.score(&input).expect("score");
-        assert_eq!(prediction.ranked[0].name, "lsp_definition");
-        let mut corrupt = artifact;
-        corrupt.manifest.weights_sha256 = "bad".into();
-        assert!(validate_artifact(&corrupt).is_err());
-        corrupt.manifest.weights_sha256 = "".into();
-        corrupt.manifest.artifact_schema_version = 99;
-        assert!(validate_artifact(&corrupt).is_err());
-    }
-
-    #[test]
-    fn artifact_install_is_atomic_and_loads_only_valid_artifacts() {
-        let directory = tempfile::tempdir().expect("temporary artifact directory");
-        let path = directory.path().join("advisor.json");
-        let artifact = artifact();
-        write_artifact_atomic(&path, &artifact).expect("install artifact");
-        assert_eq!(load_artifact(&path).expect("load artifact"), artifact);
-    }
-
-    #[test]
-    fn scoring_has_a_bounded_cpu_path() {
-        let advisor = LinearAdvisor::new(artifact()).expect("valid artifact");
-        let input = ToolAdvisorInput {
-            case_id: "latency".into(),
-            context: "find a symbol definition".into(),
-            candidates: vec![ToolAdvisorCandidate {
-                name: "lsp_definition".into(),
-                description: "Jump to a symbol definition".into(),
-                category: "ReadOnly".into(),
-                disclosure: "deferred".into(),
-                synthetic_identity: false,
-            }],
-            surface_fingerprint: "surface".into(),
-        };
-        let started = Instant::now();
-        for _ in 0..1000 {
-            advisor.score(&input).expect("bounded score");
-        }
-        let elapsed = started.elapsed();
-        eprintln!("tool advisor 1000-score CPU sample: {elapsed:?}");
-        assert!(
-            elapsed.as_secs() < 1,
-            "scoring exceeded local CPU budget: {elapsed:?}"
-        );
-    }
-
-    #[test]
-    fn config_without_model_degrades_to_noop_and_active_modes_are_not_defaulted_on() {
-        let config = codegg_config::schema::ToolAdvisorConfig {
-            enabled: Some(true),
-            mode: Some("observe".into()),
-            ..Default::default()
-        };
-        let (_, status) = advisor_from_config(Some(&config));
-        assert_eq!(status.state, AdvisorRuntimeState::NotInstalled);
-        let config = codegg_config::schema::ToolAdvisorConfig {
-            enabled: Some(true),
-            mode: Some("rerank".into()),
-            ..Default::default()
-        };
-        let (_, status) = advisor_from_config(Some(&config));
-        assert_eq!(status.state, AdvisorRuntimeState::NotInstalled);
-    }
-
     struct FixedAdvisor {
         prediction: ToolAdvisorPrediction,
     }
@@ -3067,5 +2603,29 @@ mod tests {
             vec!["first", "second"]
         );
         assert!(projection.abstained);
+    }
+
+    #[test]
+    fn decision_backend_resolution_keeps_policy_off_and_legacy_safe() {
+        let disabled = codegg_config::schema::ToolAdvisorConfig::default();
+        let (_, disabled_status) = decision_engine_from_config(Some(&disabled), None);
+        assert_eq!(disabled_status.backend, "noop");
+        assert_eq!(
+            disabled_status.state,
+            codegg_core::decision::BackendState::Off
+        );
+
+        let legacy = codegg_config::schema::ToolAdvisorConfig {
+            enabled: Some(true),
+            mode: Some("observe".into()),
+            runtime_backend: Some("legacy_encoder_v1".into()),
+            ..Default::default()
+        };
+        let (_, legacy_status) = decision_engine_from_config(Some(&legacy), None);
+        assert_eq!(legacy_status.backend, "unknown");
+        assert!(matches!(
+            legacy_status.state,
+            codegg_core::decision::BackendState::Unsupported(_)
+        ));
     }
 }

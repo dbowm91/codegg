@@ -2437,6 +2437,13 @@ async fn real_core_rollback_invariants_on_writer_closed() {
     );
 
     wait_projection_subscription_count(&daemon, 0).await;
+    timeout(Duration::from_millis(1500), async {
+        while probe.cleanup_count() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("writer-closed cleanup must complete");
     probe.assert_all_at_baseline();
     server.abort();
 }
@@ -5128,6 +5135,8 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
         ConnectionTaskKind, ConnectionTaskProbe, ProjectionTransportTestConfig,
     };
 
+    std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
+
     let raw_cancel = tokio_util::sync::CancellationToken::new();
     let config = ProjectionTransportTestConfig {
         outbound_queue_capacity: Some(256),
@@ -5231,6 +5240,9 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
 /// have only checked daemon subscription count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_core_rollback_harness_asserts_unrelated_client_continuity() {
+    // This fixture builds its own router rather than using spawn_server,
+    // so declare the same auth test policy explicitly in its process.
+    std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
     let mut config = codegg::server::ws::ProjectionTransportTestConfig {
         outbound_queue_capacity: Some(1),
         gate_before_recv: false,

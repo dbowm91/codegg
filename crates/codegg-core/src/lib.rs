@@ -9,6 +9,7 @@ pub mod authorization;
 pub mod bus;
 pub mod collaboration;
 pub mod context;
+pub mod decision;
 pub mod error;
 pub mod goal;
 pub mod identity;

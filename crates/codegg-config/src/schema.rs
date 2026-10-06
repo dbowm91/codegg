@@ -273,6 +273,8 @@ pub struct Config {
     pub tool_deferral: Option<ToolDeferralConfig>,
     /// Optional local tool-selection advisor. Disabled unless explicitly enabled.
     pub tool_advisor: Option<ToolAdvisorConfig>,
+    /// Optional System One decision backend. No network use unless enabled.
+    pub decision_engine: Option<DecisionEngineConfig>,
     pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
     pub research: Option<ResearchConfig>,
@@ -304,6 +306,34 @@ pub struct Config {
     /// Named Eggwork nodes for fixed-target remote execution. Absent by
     /// default; Eggwork-targeted jobs require an entry here.
     pub eggwork: Option<EggworkConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DecisionEngineConfig {
+    pub enabled: bool,
+    pub backend: String,
+    pub profile: String,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub auth: Option<AuthConfig>,
+    pub timeout_ms: u64,
+    pub discover_models: bool,
+}
+
+impl Default for DecisionEngineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: "system_one".into(),
+            profile: "reference".into(),
+            base_url: None,
+            model: None,
+            auth: None,
+            timeout_ms: 2_000,
+            discover_models: false,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -2259,7 +2289,11 @@ pub struct ToolDeferralConfig {
 pub struct ToolAdvisorConfig {
     pub enabled: Option<bool>,
     pub mode: Option<String>,
+    /// Explicit artifact/runtime selector. `sdm_local_v1` never guesses format.
+    pub runtime_backend: Option<String>,
     pub model_path: Option<String>,
+    /// Optional exact digest required before the artifact is accepted.
+    pub expected_artifact_sha256: Option<String>,
     pub max_candidates: Option<usize>,
     pub timeout_ms: Option<u64>,
     /// Minimum advisor score for pre-turn experimental disclosure.
@@ -2279,7 +2313,9 @@ impl Default for ToolAdvisorConfig {
         Self {
             enabled: Some(false),
             mode: Some("off".to_string()),
+            runtime_backend: None,
             model_path: None,
+            expected_artifact_sha256: None,
             max_candidates: Some(16),
             timeout_ms: Some(25),
             disclosure_threshold: Some(0.5),

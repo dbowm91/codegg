@@ -1,5 +1,20 @@
 # Tool-advisor contextual runtime framework spike
 
+> Historical implementation note (M002 extraction, 2026-10-05): this document records
+> the CodeGG-local research comparison and its evidence. Generic training/runtime
+> ownership has moved to [`dbowm91/sdm`](https://github.com/dbowm91/sdm); the old source,
+> artifacts, and experiment results remain in CodeGG as immutable historical evidence.
+> M006 retired the obsolete implementation and Candle feature graph; the historical
+> commands below are evidence and are no longer available. This document does not define the SDM
+> runtime contract or promote any model.
+
+Historically, M003 added an explicit, opt-in SDM local Rank backend behind the existing advisor
+interface. Its immutable artifact/runtime revision is
+`8139b064bdcf3212e8f6fd912e801a479b55751c`; the compatibility artifact remains
+unqualified and observe-only. Legacy model-specific request-preparation routing was
+migrated by M005 through `DecisionEngine`. This spike remains historical evidence, not the current
+backend-selection specification.
+
 This document records two distinct decisions. The historical M002 decision
 selected the repository-local hashed contextual scorer for the bounded
 corrective. C004 later demoted `contextual-embedding-v2` to a research/observe

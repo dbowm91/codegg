@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Order-Invariance Experiment Roadmap
 
-Status: active
+Status: closed (negative at M004; M005 terminally blocked; future learned-model work superseded by ADR-0013)
 
 Repository planning baseline: `198524aa4ff8656928c86cf36168892532f2e29c`
 
@@ -185,7 +185,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked on positive M004 (M004 closed negatively — no operating point frozen).
+Status: superseded (terminal — M004 closed negatively, so the required positive predecessor can never be satisfied in this workstream). Future learned-model architecture/training work is owned externally by `https://github.com/dbowm91/sdm`; CodeGG integration/authority work follows `plans/subsystems/decision-model-extraction-runtime-roadmap.md` under ADR-0013.
 
 Freeze architecture/model/operating point plus a fresh v4 semantic holdout in a separate preregistration commit, require CI, then perform one release-mode final evaluation.
 
@@ -201,4 +201,4 @@ A successful workstream requires:
 - fresh-v4 quality/generalization gates passed;
 - authority/resource/default-off invariants preserved.
 
-A negative M005 result closes the experiment and leaves live M004 blocked. Only M005 disposition A may make live M004 dependency-ready.
+M005 never opens because M004 closed negatively. The experiment is therefore terminally closed at M004; historical live M004 remains blocked. Future learned-model experimentation is externalized under ADR-0013 rather than appended as another milestone or architecture line here.

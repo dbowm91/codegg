@@ -17,14 +17,119 @@ use serde_json::json;
 use crate::error::ToolError;
 use crate::tool::catalog::ToolCatalog;
 use crate::tool::{Tool, ToolCategory};
-use crate::tool_advisor::{
-    project_discovery, AdvisorMode, NoopAdvisor, ToolAdvisor, ToolAdvisorCandidate,
-    ToolAdvisorInput,
-};
+use crate::tool_advisor::{AdvisorMode, ToolAdvisorCandidate, ToolAdvisorInput};
 
 /// Maximum tools returned per search so a broad query cannot move prompt
 /// bloat into the search result.
 pub const MAX_SEARCH_RESULTS: usize = 10;
+
+async fn project_discovery_with_engine(
+    engine: Arc<dyn codegg_core::decision::DecisionEngine>,
+    current: &[crate::tool::catalog::ToolMetadata],
+    deferred_allowed: &[crate::tool::catalog::ToolMetadata],
+    mut input: ToolAdvisorInput,
+    mode: AdvisorMode,
+    threshold: f64,
+    max_promotions: usize,
+    timeout: std::time::Duration,
+) -> crate::tool_advisor::AdvisorProjection {
+    if mode == AdvisorMode::Off {
+        return crate::tool_advisor::project_discovery_from_prediction(
+            current,
+            deferred_allowed,
+            mode,
+            threshold,
+            max_promotions,
+            None,
+            false,
+        );
+    }
+    if !matches!(engine.state(), codegg_core::decision::BackendState::Ready)
+        || !engine.capabilities().rank
+    {
+        tracing::debug!(
+            scope = "tool_search",
+            backend_state = ?engine.state(),
+            "decision backend cannot rank; using deterministic discovery"
+        );
+        return crate::tool_advisor::project_discovery_from_prediction(
+            current,
+            deferred_allowed,
+            mode,
+            threshold,
+            max_promotions,
+            None,
+            true,
+        );
+    }
+    let capability_limit = engine.capabilities().max_candidates;
+    if capability_limit == 0 {
+        return crate::tool_advisor::project_discovery_from_prediction(
+            current,
+            deferred_allowed,
+            mode,
+            threshold,
+            max_promotions,
+            None,
+            true,
+        );
+    }
+    let (candidates, preselection) = crate::tool_advisor::preselect_candidates(
+        input.candidates,
+        &input.context,
+        capability_limit.min(crate::tool_advisor::MAX_CANDIDATES),
+    );
+    input.candidates = candidates;
+    tracing::debug!(
+        scope = "tool_search",
+        eligible = preselection.eligible_deferred,
+        shortlisted = preselection.shortlisted,
+        truncated = preselection.truncated,
+        preselect_millis = preselection.elapsed_millis,
+        "bounded decision candidate set"
+    );
+    use futures_util::FutureExt;
+    let result = std::panic::AssertUnwindSafe(
+        crate::tool_advisor::decision_adapter::rank_with_engine(&engine, &input, timeout),
+    )
+    .catch_unwind()
+    .await;
+    let result = match result {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) | Err(_) => {
+            tracing::debug!(
+                scope = "tool_search",
+                "decision failed; using deterministic discovery"
+            );
+            return crate::tool_advisor::project_discovery_from_prediction(
+                current,
+                deferred_allowed,
+                mode,
+                threshold,
+                max_promotions,
+                None,
+                true,
+            );
+        }
+    };
+    tracing::debug!(
+        scope = "tool_search",
+        backend = %result.provenance.backend,
+        model = ?result.provenance.model,
+        runtime_version = ?result.provenance.runtime_version,
+        latency_micros = result.provenance.latency_micros,
+        "decision backend returned discovery ranking"
+    );
+    crate::tool_advisor::project_discovery_from_prediction(
+        current,
+        deferred_allowed,
+        mode,
+        threshold,
+        max_promotions,
+        Some(result.prediction),
+        false,
+    )
+}
 
 /// Tool for searching available tools by query.
 ///
@@ -35,10 +140,13 @@ pub const MAX_SEARCH_RESULTS: usize = 10;
 pub struct ToolSearchTool {
     catalog: Arc<ToolCatalog>,
     available_tools: Option<Vec<String>>,
-    advisor: Arc<dyn ToolAdvisor>,
+    decision_engine: Arc<dyn codegg_core::decision::DecisionEngine>,
+    decision_timeout: std::time::Duration,
     advisor_mode: AdvisorMode,
     advisor_threshold: f64,
     advisor_max_promotions: usize,
+    #[cfg(test)]
+    test_advisor: Option<Arc<dyn crate::tool_advisor::ToolAdvisor>>,
 }
 
 impl ToolSearchTool {
@@ -47,10 +155,13 @@ impl ToolSearchTool {
         Self {
             catalog,
             available_tools: None,
-            advisor: Arc::new(NoopAdvisor),
+            decision_engine: Arc::new(codegg_core::decision::NoopDecisionEngine),
+            decision_timeout: std::time::Duration::from_millis(25),
             advisor_mode: AdvisorMode::Off,
             advisor_threshold: 0.5,
             advisor_max_promotions: 2,
+            #[cfg(test)]
+            test_advisor: None,
         }
     }
 
@@ -63,8 +174,24 @@ impl ToolSearchTool {
     /// Configure the optional advisory projection. The caller is responsible
     /// for constructing the advisor only after the normal policy surface is
     /// known; this method never changes that surface itself.
-    pub fn set_advisor(&mut self, advisor: Arc<dyn ToolAdvisor>, mode: AdvisorMode) {
-        self.advisor = advisor;
+    pub fn set_decision_engine(
+        &mut self,
+        engine: Arc<dyn codegg_core::decision::DecisionEngine>,
+        mode: AdvisorMode,
+        timeout: std::time::Duration,
+    ) {
+        self.decision_engine = engine;
+        self.advisor_mode = mode;
+        self.decision_timeout = timeout;
+    }
+
+    #[cfg(test)]
+    pub fn set_advisor(
+        &mut self,
+        advisor: Arc<dyn crate::tool_advisor::ToolAdvisor>,
+        mode: AdvisorMode,
+    ) {
+        self.test_advisor = Some(advisor);
         self.advisor_mode = mode;
     }
 
@@ -225,20 +352,48 @@ impl Tool for ToolSearchTool {
             .chain(deferred_allowed.iter())
             .map(ToolAdvisorCandidate::from_metadata)
             .collect();
-        let projection = project_discovery(
+        let input = ToolAdvisorInput {
+            case_id: "tool-search".to_string(),
+            context: query.to_string(),
+            candidates,
+            surface_fingerprint: format!("query:{}", query),
+        };
+        #[cfg(test)]
+        let projection = if let Some(advisor) = &self.test_advisor {
+            crate::tool_advisor::project_discovery(
+                &current,
+                &deferred_allowed,
+                &input,
+                advisor.as_ref(),
+                self.advisor_mode,
+                self.advisor_threshold,
+                self.advisor_max_promotions,
+            )
+        } else {
+            project_discovery_with_engine(
+                Arc::clone(&self.decision_engine),
+                &current,
+                &deferred_allowed,
+                input,
+                self.advisor_mode,
+                self.advisor_threshold,
+                self.advisor_max_promotions,
+                self.decision_timeout,
+            )
+            .await
+        };
+        #[cfg(not(test))]
+        let projection = project_discovery_with_engine(
+            Arc::clone(&self.decision_engine),
             &current,
             &deferred_allowed,
-            &ToolAdvisorInput {
-                case_id: "tool-search".to_string(),
-                context: query.to_string(),
-                candidates,
-                surface_fingerprint: format!("query:{}", query),
-            },
-            self.advisor.as_ref(),
+            input,
             self.advisor_mode,
             self.advisor_threshold,
             self.advisor_max_promotions,
-        );
+            self.decision_timeout,
+        )
+        .await;
         let total_matches = total_matches + projection.promoted.len();
         let tools: Vec<serde_json::Value> = projection
             .ordered
@@ -283,6 +438,7 @@ impl Tool for ToolSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_advisor::{ToolAdvisor, ToolAdvisorInput};
     use async_trait::async_trait;
 
     struct MockTool {

@@ -15,6 +15,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Barrier;
 
 use codegg::scheduler::{
     AdmissionController, AdmissionDecision, ExecutorCompletion, ExecutorKind, ExecutorMetrics,
@@ -69,6 +70,7 @@ struct DelayExecutor {
     active: Arc<AtomicUsize>,
     max_seen: Arc<AtomicUsize>,
     delay_ms: u64,
+    start_barrier: Option<Arc<Barrier>>,
 }
 
 #[async_trait::async_trait]
@@ -92,7 +94,11 @@ impl JobExecutor for DelayExecutor {
     async fn execute(&self, _ctx: JobExecutionContext) -> ExecutorCompletion {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_seen.fetch_max(active, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        if let Some(barrier) = &self.start_barrier {
+            barrier.wait().await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        }
         self.active.fetch_sub(1, Ordering::SeqCst);
         ExecutorCompletion {
             status: ExecutorStatus::Completed,
@@ -479,6 +485,7 @@ async fn global_process_cap_never_exceeded() {
             active: active.clone(),
             max_seen: max_seen.clone(),
             delay_ms: 60,
+            start_barrier: None,
         }))
         .await
         .unwrap();
@@ -565,6 +572,7 @@ async fn temporary_block_preserves_sequential_execution() {
             active: active.clone(),
             max_seen: max_seen.clone(),
             delay_ms: 30,
+            start_barrier: None,
         }))
         .await
         .unwrap();
@@ -668,6 +676,7 @@ async fn same_exclusivity_key_blocks_concurrent() {
             active: active.clone(),
             max_seen: max_seen.clone(),
             delay_ms: 50,
+            start_barrier: None,
         }))
         .await
         .unwrap();
@@ -741,6 +750,7 @@ async fn different_exclusivity_keys_run_in_parallel() {
             active: active.clone(),
             max_seen: max_seen.clone(),
             delay_ms: 50,
+            start_barrier: Some(Arc::new(Barrier::new(2))),
         }))
         .await
         .unwrap();
