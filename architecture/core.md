@@ -239,7 +239,7 @@ transport from the underlying agent and session logic.
 | `core::daemon_refresh` | `refresh_project_context`, `refresh_project_activation`, `activate_project_workspace`, `project_health`, `refresh_runtime_assets` | Runtime refresh coordinators plus shared workspace/binding resolvers. All refresh flows through the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_shutdown` | `Drop`, `abort_background_handles` | Joined shutdown: cancel precedes joins; aborts projection-maintenance and worktree-reconcile tasks in order. Scheduler loop stays detached by design. |
 | `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Daemon-owned lock/metadata lifecycle and compatibility-facing connect-or-start API. |
-| `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles pool, memory_store, legacy_agent (subagent_pool), turn_runtime, lsp_service, workspace_services, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always has a default TurnRuntime; override via `with_turn_runtime()`. |
+| `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles pool, memory_store, legacy_agent (subagent_pool), agent_run_store, run_control, run_group_service, convergence_store, turn_runtime, lsp_service, workspace_services, worktree_service, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always has a default TurnRuntime; override via `with_turn_runtime()`. |
 | `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL over platform-local byte streams and stdio. Also contains `daemon_socket` for the daemon-side accept loop. |
 
 Frontend identity, local endpoint/path resolution, socket transport, and
@@ -487,7 +487,11 @@ workspace.
 
 **Session binding**: `CoreDaemon::bind_runtime_for_session` resolves a
 `session_id` to a `SessionRuntime` via `SessionStore` + `WorkspaceRegistry`.
-`TurnSubmit`, `AgentSelect`, and `ModelSelect` reject unbound sessions.
+`TurnSubmit` and `AgentSelect` reject unbound sessions. `ModelSelect` does
+not bind a runtime: it validates session existence through
+`SelectionService::update` (`src/core/session_selection.rs:471-475`) and then
+projects the selection into the runtime cache best-effort
+(`src/core/daemon_turns.rs:825-940`).
 
 **Storage**: workspace tables were introduced by migration v22 (a `workspace`
 table plus `workspace_id` index on `session`). The schema has advanced well

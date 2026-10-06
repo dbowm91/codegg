@@ -8,11 +8,12 @@ codegg's theme system has three layers:
 2. **Registry** — `crate::theme::registry::ThemeRegistry`. Owns the available
    themes, accepts user-supplied directories, applies fallback, and emits
    diagnostics.
-3. **Projection** — `crate::theme::target::ratatui` (and eventually
-   `crate::theme::target::iced`) maps the semantic schema to a frontend's
-   style catalog. The TUI today uses `crate::tui::theme::Theme`; a future
-   iced GUI would use a different projection. Halloy themes are *not*
-   parsed into either projection directly.
+3. **Projection** — `crate::theme::target` is a single flat module (not a
+   module directory); it maps the semantic schema to a frontend's style
+   catalog. `ratatui` is currently the only target. The TUI uses
+   `crate::tui::theme::Theme`; a future iced GUI would add a second target
+   beside the existing one. Halloy themes are *not* parsed into the
+   projection directly.
 
 ```
 native codegg TOML  ┐

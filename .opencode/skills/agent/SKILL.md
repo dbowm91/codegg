@@ -50,9 +50,9 @@ invariants that are easy to violate.
 6. **`PermissionRegistry`/`QuestionRegistry` are sync.** Register the
    responder BEFORE publishing the Pending event.
 7. **Run control is the only agent coordination authority.** The legacy
-   `src/agent/team.rs` inbox is removed; `task` tool ops (`spawn`,
-   `status`/`get`, `message`, `interrupt`, `wait`, `cancel`,
-   `spawn_many`) address typed durable run IDs with bounded payloads.
+   `src/agent/team.rs` inbox is removed; `task` tool ops address typed
+   durable run IDs with bounded payloads. Derive the current action set
+   from the tool schema in `src/tool/task.rs` rather than pinning it here.
 
 ## Static Guards
 
@@ -77,3 +77,35 @@ cargo test --test tool_program_scenarios  # programmatic tool path through the l
 - `.skills/context/SKILL.md` — packer observation, tool-palette policy, volatile-tail
 - `.skills/jobs/SKILL.md` + `.skills/scheduler/SKILL.md` — durable runs and admission
 - `.skills/core/SKILL.md` — turn submission transport
+
+## Source verification
+
+Verified 2026-10-06 against `src/agent/mod.rs`, `src/agent/loop.rs`,
+`src/agent/turn_runtime.rs`, `src/agent/coordinator.rs`,
+`src/agent/{request_preparation,tool_surface,prompt,provider_turn,processor,semantic_router,router}.rs`,
+`src/agent/{tool_batch,tool_inspect}.rs`,
+`src/agent/{compaction,context_runtime,context_frame}.rs`,
+`src/agent/{worker,run_control,run_integration,convergence}.rs`,
+`src/agent/{asset_snapshot,asset_snapshot_builder,asset_context,asset_refresh,instructions,definition,registry,file_agents}.rs`,
+`src/context/compaction.rs`, `src/agent/task_tool_runtime.rs`,
+`src/tool/task.rs`, `src/tool/broker.rs`, `assets/agents/*.toml`,
+`assets/prompts/`, and `scripts/generate_builtin_agents.py`,
+`scripts/check_daemon_cwd_usage.py`, `scripts/check_scheduler_bypass.py`.
+Corrected the hard rule that pinned the `task` tool action set to seven
+ops; the schema enum in `src/tool/task.rs:799` has sixteen
+(`spawn`, `converge`, `convergence_status`, `convergence_decide`,
+`convergence_cancel`, `spawn_many`, `create_group`, `status`, `get`,
+`message`, `interrupt`, `wait`, `cancel`, `status_group`, `wait_group`,
+`cancel_group`), so the list was replaced with a pointer to the source.
+Confirmed accurate as written: every `src/agent/*` path in the ownership
+map, `AgentLoop::run`/`run_inner`, `DefaultTurnRuntime::run_turn`,
+`AgentLoopServices`/`TurnLifecycle`, `ResolvedToolSurface`,
+`PromptCompiler`, `ProviderTurnAdapter`, `EventProcessor`,
+`SemanticRouter`, `ModelRouter`, `ToolBatchExecutor`,
+`ToolTimeoutConfig`, the compat re-export in `src/agent/compaction.rs`,
+`compact_if_needed` in `src/agent/context_runtime.rs`, `ContextFrame`,
+`SubAgentPool`/`SubAgentSpawner`, the bounded `RunControlService::wait`,
+`ProjectAssetSnapshot`, `AssetContext`, `AssetRefreshCoordinator`, the
+absence of `src/agent/team.rs`, the sync registry entry points, and all
+three guard scripts plus all four `cargo test` targets. Claims without a
+traceable source were removed rather than guessed.

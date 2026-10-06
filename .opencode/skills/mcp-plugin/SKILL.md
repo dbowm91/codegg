@@ -23,7 +23,7 @@ to violate.
 | MCP auth/CLI | `src/mcp/auth.rs`, `cli.rs`, `ide_server.rs` | `OAuthManager` (PKCE, token encryption, callback server), `add/list/remove/enable/debug`, `openDiff` IDE server |
 | Eggsearch wiring | `src/search_backend/`, `src/mcp/` bootstrap | Production `websearch`/`webfetch` wrappers dispatch via `search_backend` → eggsearch MCP; legacy `src/search/` is fallback only — never add new web-search providers there (external `eggsearch` project owns them) |
 | Plugin service | `src/plugin/service.rs`, `registry.rs`, `manifest.rs` | `PluginService` hook dispatch + command invocation; `PluginRegistry` capability index; `PluginManifest`/`PluginCapability`/`PluginRuntimeSpec` |
-| Plugin runtimes | `src/plugin/runtime/process.rs`, `runtime/wasm.rs`, `runtime/builtin.rs`, `loader.rs` | Process commands, sandboxed WASM (`plugins` feature; `WasmModuleCache` mtime-keyed), native auth hooks (copilot, gitlab, codex, poe) |
+| Plugin runtimes | `src/plugin/runtime/process.rs`, `runtime/wasm.rs`, `runtime/wasm_cache.rs`, `runtime/builtin.rs`, `loader.rs`, `src/plugin/builtin/` | Process commands, sandboxed WASM (`plugins` feature; `WasmModuleCache` mtime-keyed), `BuiltinRuntime`/`BuiltinHandlerRegistry`, native auth hook handlers (copilot, gitlab, codex, poe) |
 | Plugin policy | `src/plugin/policy.rs`, `permission.rs`, `lifecycle.rs`, `activation.rs` | Composite `PluginPolicy`, `check_*_allowed`, typed lifecycle I/O, durable global/workspace activation |
 | Plugin UX | `src/plugin/management.rs`, `management_ui.rs`, `marketplace.rs`, `install.rs`, `hooks.rs`, `event_bus.rs`, `api.rs` | Manager/doctor views, marketplace, path-validated install/uninstall, hook types, `PluginEventBus`, `API_VERSION` |
 
@@ -48,7 +48,8 @@ to violate.
 ```bash
 cargo test -p codegg mcp::
 cargo test -p codegg plugin::
-cargo test --test mcp_no_hanging_promises 2>/dev/null || true
+cargo test --test mcp            # MCP client integration tests
+cargo test --test mcp_reconnect  # reconnect path
 python3 -m unittest discover  # examples/plugins/sdk-python (separate)
 cargo test -p codegg --features plugins  # WASM-gated paths (via verify full)
 ```
@@ -61,3 +62,23 @@ Docs: `docs/MCP.md` and `docs/PLUGINS.md` are user integration notes;
 - `architecture/mcp.md`, `architecture/plugin.md`, `architecture/search_backend.md`
 - `.skills/provider-auth/SKILL.md` — credential store vs MCP TokenSet
 - `.skills/agent/SKILL.md` — MCP/tool batch boundary in the loop
+
+## Source verification
+
+Verified 2026-10-06 against `architecture/mcp.md`, `architecture/plugin.md`,
+`src/mcp/mod.rs`, `src/mcp/auth.rs`, `src/mcp/cli.rs`, `src/mcp/ide_server.rs`,
+`src/mcp/local.rs`, `src/mcp/remote.rs`, `src/plugin/mod.rs`,
+`src/plugin/service.rs`, `src/plugin/registry.rs`, `src/plugin/manifest.rs`,
+`src/plugin/policy.rs`, `src/plugin/permission.rs`, `src/plugin/install.rs`,
+`src/plugin/api.rs`, `src/plugin/event_bus.rs`, `src/plugin/loader.rs`,
+`src/plugin/runtime/wasm.rs`, `src/plugin/runtime/wasm_cache.rs`,
+`src/plugin/runtime/builtin.rs`, `src/plugin/builtin/mod.rs`,
+`crates/codegg-protocol/src/ui.rs`, `examples/plugins/sdk-python`, and
+`tests/`. Corrected two module attributions in the Plugin runtimes row
+(`WasmModuleCache` lives in `runtime/wasm_cache.rs`, and the native auth
+hook handlers for copilot/gitlab/codex/poe live in `src/plugin/builtin/`,
+not `runtime/builtin.rs`, which holds `BuiltinRuntime`/
+`BuiltinHandlerRegistry`), and removed the `cargo test --test
+mcp_no_hanging_promises` command, which no longer exists in `tests/`
+(`tests/mcp.rs` and `tests/mcp_reconnect.rs` do). Claims without a
+traceable source were removed rather than guessed.

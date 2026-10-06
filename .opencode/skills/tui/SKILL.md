@@ -1,6 +1,6 @@
 ---
 name: tui
-description: Operational guide for changing the terminal UI safely - command registration, sync dispatch, async spawn-and-complete pattern, dialogs, and background task lifecycle
+description: Operational guide for changing the terminal UI safely - command registration, dispatch boundaries, async spawn-and-complete pattern, dialogs, and background task lifecycle
 version: 1.0.0
 tags:
   - tui
@@ -29,7 +29,7 @@ root and lifecycle modules.
 | `src/tui/app/prompt_turn.rs` | Prompt submission and route-safe turn start |
 | `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
-| `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope, `async_request.rs` holds the finish/fail guard, `work_orders.rs` owns Task composer/sheet/view pure state (mode, validation, grouping, reorder math), and `workspace_dashboard.rs` owns global dashboard pure state (filter/nav/generation/dirty/revocation) |
+| `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope, `async_request.rs` holds the finish/fail guard, `routing.rs` holds the `UiRouteToken` project/tab scope token for prompt/session continuations, `work_orders.rs` owns Task composer/sheet/view pure state (mode, validation, grouping, reorder math), and `workspace_dashboard.rs` owns global dashboard pure state (filter/nav/generation/dirty/revocation) |
 | `src/tui/commands/work_orders.rs` | Project Task flows: composer toggle (bare Tab owns Session/Task, `Ctrl+A` owns SwitchAgent, `Ctrl+G` alias), sheet prefetch/confirm with focused queue insertion (`j/k`/Up/Down) and capability-aware external-trigger gate, `WorkOrderCreate` then chained `WorkOrderTriggerCreate` with one-time secret dialog, Task view refresh/reorder/mutate/open plus trigger setup/rotate/revoke/refresh (`t`/`T`/`X`/`e`), `/tasks` migration — all spawn-and-complete with route+generation stale guards; bearer cleared on close/switch/reconnect |
 | `src/tui/commands/workspace_dashboard.rs` | Workspace primary-view flows (`Route::Workspace`, non-modal): open/refresh (one `WorkspaceDashboard` aggregate), `Space` expand (one bounded `WorkOrderList`), empty-`Enter` descend via project tabs + Task view, `/workspace` + `/chat` side-panel focus — generation+epoch stale guards, hint-dirty without focus theft; composer/chat routing via selected-project locator with no cwd/hidden-session fallback. Cancellation ownership: dashboard refresh/expand spawn as `TuiTaskKind::Workspace`; `leave_workspace_view` cancels only that kind (never `Command`), and generation/request fencing stays the correctness boundary for races |
 | `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
@@ -37,7 +37,7 @@ root and lifecycle modules.
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
 | `src/tui/runtime/` | Runtime loop and event routing |
 | `src/tui/async_cmd.rs` | `spawn_tui_task` / `spawn_registered_tui_task` |
-| `src/tui/route.rs` | `UiRouteToken` project/tab scope token for prompt/session continuations |
+| `src/tui/route.rs` | `Route`/`RouteManager` primary views (Home, Session, Workspace, Editor) |
 | `src/tui/ui_builders/` | Typed UI builders (`shell.rs`, `plugins.rs`, `stats.rs`) for complex panels |
 | `src/tui/task_lifecycle.rs` | `TuiTaskRegistry` - tracks spawned background tasks on `App` |
 | `src/tui/components/` | Widgets; `component.rs` has `DialogType`, `focus.rs` has `FocusManager` |
@@ -65,8 +65,14 @@ root and lifecycle modules.
 
 ## Dispatch Rules
 
-- **Sync dispatch is the rule**: dispatch arms are all `fn` (non-async). Do NOT
-  add `.await` in a dispatch arm.
+- **`dispatch_tui_command` is `pub(crate) async fn`**
+  (`src/tui/runtime/command_dispatch.rs:84`). The match is overwhelmingly
+  synchronous, but it contains five `.await` points, all of the same shape:
+  `match core_client.request(req).await` inside the durable-editor arms
+  (`EditUndoLatest`, `EditReapplyLatest`, `EditUndo`, `EditReapply`,
+  `EditCheckpointList`, at lines 2109/2160/2214/2268/2320). Those arms await
+  an in-process `CoreClient` round trip and return a completion `TuiCommand`.
+  Every other arm is non-async.
 - High-latency work uses the **spawn-and-complete** pattern instead:
   1. Spawn with `spawn_registered_tui_task(tx, registry, kind, name, fut)`
      (registers with `TuiTaskRegistry` for lifecycle tracking).
@@ -143,3 +149,25 @@ cargo test --test tui               # behavior tests
 
 Rendering tests assert on buffer contents; keep widget output deterministic
 (no wall-clock times without injection seams).
+
+## Source verification
+
+Verified 2026-10-06 against `architecture/tui.md`,
+`src/tui/runtime/command_dispatch.rs`, `src/tui/route.rs`,
+`src/tui/app/state/routing.rs`, `src/tui/app/state/async_request.rs`,
+`src/tui/app/state/work_orders.rs`, `src/tui/app/state/ui.rs`,
+`src/tui/app/state/session.rs`, `src/tui/app/types.rs`,
+`src/tui/app/modal.rs`, `src/tui/app/input.rs`, `src/tui/app/prompt_turn.rs`,
+`src/tui/app/project_session.rs`, `src/tui/app/plugin_ui.rs`,
+`src/tui/async_cmd.rs`, `src/tui/command.rs`, `src/tui/input.rs`,
+`src/tui/task_lifecycle.rs`, `src/tui/commands/work_orders.rs`,
+`src/tui/commands/workspace_dashboard.rs`, `src/tui/components/component.rs`,
+`src/tui/components/component/focus.rs`, `src/tui/components/dialogs/info.rs`,
+`src/server/http.rs`, and `tests/`. Corrected the inverted dispatch
+invariant (`dispatch_tui_command` is `pub(crate) async fn` at
+`command_dispatch.rs:84` with five `core_client.request(req).await` points
+in the durable-editor arms at 2109/2160/2214/2268/2320, not an all-sync
+`fn`), the `UiRouteToken` module attribution (`app/state/routing.rs:66`,
+not `route.rs`, which holds `Route`/`RouteManager`), and the same "sync
+dispatch" wording in the frontmatter description. Claims without a
+traceable source were removed rather than guessed.

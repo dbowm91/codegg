@@ -24,25 +24,33 @@ are allowed in tests (`clippy.toml`).
   `src/lib.rs` re-exports `codegg_protocol as protocol`, `codegg_providers as provider`,
   and `codegg_config as config` — there is no `src/protocol/`, `src/provider/`,
   or `src/config/` implementation directory.
-- `crates/`: 10 crates (+ root = 11 workspace members in `Cargo.toml`) — `codegg-core` (domain types: bus, jobs, session,
+- `crates/`: 11 crates (+ root = 12 workspace members in `Cargo.toml`) — `codegg-core` (domain types: bus, jobs, session,
   storage, workspace; must stay UI/server/plugin/auth-free, enforced by
   `scripts/check-core-boundary.sh`), `codegg-config`, `codegg-protocol`,
-  `codegg-providers`, `codegg-git` (typed git ops + risk), `egglsp` (authoritative LSP;
+  `codegg-providers`, `codegg-git` (typed git ops + risk), `codegg-document`
+  (text transaction core), `egglsp` (authoritative LSP;
   `src/lsp/` is a thin shim), `egggit` (read-only git facts), `eggsentry` (security
   scanning), `eggcontext` (tokens), `codegg-client` (frontend-side native client).
-  `crates/egglsp-test-server/` is NOT a member; it
-  builds the `codegg-lsp-test-server` binary behind `lsp-test-support`.
+  `crates/egglsp-test-server/` has no `Cargo.toml` and is NOT a member; the root
+  package builds it as the `codegg-lsp-test-server` bin target behind
+  `lsp-test-support`. The `egglsp` package separately builds an
+  `egglsp-test-server` bin from `crates/egglsp/src/bin/` — two distinct binaries.
 - Workspace ownership: root `Cargo.toml` `[workspace.package]`/`[workspace.dependencies]`
   own shared versions/default policy; members use `*.workspace = true` plus only their
   local features (minimal baseline — member manifests add only what they need;
-  `serde` keeps no workspace features). Single-consumer deps stay local.
-  `[workspace.lints] unsafe_code = "deny"` is inherited via `[lints] workspace = true`
+  `serde` keeps no workspace features). Single-consumer deps stay local —
+  including the optional `sdm-core`/`sdm-runtime` git deps, which only the root
+  package uses behind `decision-runtime-sdm`.
+  `[workspace.lints.rust] unsafe_code = "deny"` is inherited via `[lints] workspace = true`
   (e.g. `codegg-core`); the root package intentionally does NOT inherit it because
   `src/bin/codegg-sandbox-helper.rs` has deliberate reviewed `unsafe` — the lib
   enforces `#![deny(unsafe_code)]` in `src/lib.rs` instead.
 - Aliases (`.cargo/config.toml`): `cargo ck` (workspace check),
   `ckroot ckcore ckprotocol ckconfig ckproviders ckgit cksplit`.
 - Features: `server` (axum HTTP/WS), `plugins` (wasmtime), `image`,
+  `debug-logging` (tracing-based, no file output by default),
+  `decision-runtime-sdm` (optional local SDM decision runtime, gates
+  `src/decision_sdm.rs`; default builds exclude it),
   `lsp-test-support` (fake-LSP harness), `lsp-real-server-tests` (needs installed
   servers — never in default sweeps), `arboard` (default). Never `--all-features` for
   workspace sweeps; it drags in real-server tests. `verify.sh full` uses
@@ -103,9 +111,18 @@ for the full list):
   `CODEGG_ROUTING_DISABLE=1`.
 - Human `!cmd` is hidden from the model; `!!cmd` promotes (bounded/redacted) output.
 - Slow TUI handlers use `spawn_tui_task` + `finish(request_id)`/`fail(request_id, err)`
-  guard with a stale-completion test (see `src/tui/async_cmd.rs`).
-- Auth: `ExternalCommand` is unsupported; never log secrets; adding any config-defined
-  provider disables all env-var auto-registration.
+  guard with a stale-completion test (see `src/tui/async_cmd.rs`). Note
+  `dispatch_tui_command` itself is `pub(crate) async` with five `.await` points in
+  the durable-editor arms — dispatch is not purely synchronous
+  (`src/tui/runtime/command_dispatch.rs:84`).
+- Auth: `ExternalCommand` is unsupported; never log secrets. The config-first
+  registration path calls `register_builtin(registry)` — the env-var sweep — only
+  when the registry is still empty (`crates/codegg-providers/src/provider_core.rs:1088`),
+  so one config-defined provider suppresses env-var auto-registration for all others.
+- `AssetRegistry::build` takes each global root as the *parent* dir and appends
+  `<vendor>/skills` (`src/skills/registry.rs:250-303`). Pass `dirs::config_dir()`,
+  not an already-joined path — otherwise every global skill root resolves to a
+  nonexistent directory and is silently skipped.
 - New web-search providers belong in the external `eggsearch` project, not `src/search/`
   (legacy fallback). New deterministic validators go in the `eggsact` crate first. New
   LSP servers go in `crates/egglsp/src/server.rs` + config.
@@ -125,11 +142,42 @@ for the full list):
 - `architecture/overview.md` is the module map; one doc per module under `architecture/`.
 - `plans/registry.md` is the authoritative milestone/roadmap status — check it before
   assuming any roadmap state.
-- `.opencode/skills/*/SKILL.md` are on-demand module guides (load via the skill tool;
-  `ls .opencode/skills/` for the list). Canonical location is `.opencode/skills/`;
-  `.skills` and `.agents/skills` are symlinks to it. When a module contract changes,
-  update the skill and its `architecture/` doc together.
 - `docs/`: `execution-ownership.md` (+ `.toml` manifest), `security-semantics.md`,
-  `LSP.md`/`MCP.md`/`PLUGINS.md` (user integration notes; `architecture/` is authoritative),
-  `TROUBLESHOOTING.md`, `dependency-maintenance.md`, `themes.md`,
-  `validation/` (historical closure records).
+  `LSP.md`/`MCP.md`/`PLUGINS.md`/`playwright.md` (user integration notes;
+  `architecture/` is authoritative), `TROUBLESHOOTING.md`,
+  `dependency-maintenance.md`, `themes.md`, `validation/` (historical closure
+  records).
+
+### Skills index
+
+`.opencode/skills/*/SKILL.md` are on-demand module guides (load via the skill
+tool). Canonical location is `.opencode/skills/`; `.skills` and
+`.agents/skills` are symlinks to it. Load the skill for the module you are
+changing; each names its authoritative `architecture/` doc in its intro and
+`## See Also`. When a module contract changes, update the skill and its
+`architecture/` doc together.
+
+| Skill | Read with it |
+|---|---|
+| `agent` | `architecture/agent.md` |
+| `authorization` | `architecture/authorization.md`, `architecture/audit.md` |
+| `bus-projection` | `architecture/bus.md`, `architecture/projection.md` |
+| `config` | `architecture/config.md` |
+| `context` | `architecture/context-ledger.md`, `architecture/compaction.md` |
+| `core` | `architecture/core.md` |
+| `git` | `architecture/git.md` |
+| `human-shell` | `architecture/human_shell.md` |
+| `jobs` | `architecture/jobs.md` |
+| `mcp-plugin` | `architecture/mcp.md`, `architecture/plugin.md` |
+| `permission` | `architecture/permission.md`, `architecture/approval_reviewer.md` |
+| `planning` | `architecture/work_plan.md`, `plans/` |
+| `provider-auth` | `architecture/provider.md`, `architecture/auth.md` |
+| `scheduler` | `architecture/scheduler.md`, `architecture/jobs.md` |
+| `server` | `architecture/server.md`, `architecture/client.md` |
+| `session-storage` | `architecture/session.md`, `architecture/storage.md` |
+| `skills` | `architecture/skills.md` |
+| `tool-program-harness` | `architecture/tool_programs.md` |
+| `tui` | `architecture/tui.md` |
+| `upgrade` | `architecture/upgrade.md` |
+| `util` | `architecture/util.md` |
+| `architecture-review` | `architecture/overview.md` (how to verify these docs) |

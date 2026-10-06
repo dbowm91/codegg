@@ -1,3 +1,10 @@
+> **Archived 2026-10-06.** Superseded by the full architecture rewrite and
+> source verification in commits `541a1c84` and `5a26d484`. Every finding below
+> was re-derived from source during that work; several were themselves wrong
+> (stale counts, drifted line references, and three invented job variants).
+> Retained for traceability only — do not treat these findings as current.
+> Current truth lives in `architecture/overview.md` and its deep dives.
+
 # Batch 2 Review: Command Pipeline and Execution
 
 Reviewed: 2026-09-13

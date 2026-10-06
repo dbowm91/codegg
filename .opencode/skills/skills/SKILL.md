@@ -43,7 +43,7 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 
 ## Discovery Sources and Precedence
 
-`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). There are 10 variants:
+`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). There are 10 variants. The four global kinds resolve under the single config-directory root the daemon registers (`<config>/…`), not under `$HOME`:
 
 | Rank | Source |
 |------|--------|
@@ -53,9 +53,9 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | 30 | `.claude/skills/` (project) |
 | 35 | `Plugin` contributions (project-native sources outrank) |
 | 40 | CodeGG global (`<config>/codegg/skills/`) |
-| 50 | Agents global (`~/.agents/skills/`) |
-| 60 | OpenCode global (`~/.config/opencode/skills/`) |
-| 70 | Claude global (`~/.claude/skills/`) |
+| 50 | Agents global (`<config>/agents/skills/`) |
+| 60 | OpenCode global (`<config>/opencode/skills/`) |
+| 70 | Claude global (`<config>/claude/skills/`) |
 | 80 | CodeGG native compat (direct `.md` files in `.codegg/skills/`) |
 
 Discovery is bounded by `AssetDiscoveryConfig` (max file size 256 KiB, max frontmatter 64 KiB, max 256 skills per root, max 64 resources per skill, name/description length caps). Skill metadata such as `allowed-tools` never grants permissions.
@@ -128,10 +128,10 @@ allowed-tools:
 ```
 
 CodeGG-native `.codegg/skills/` additionally accepts legacy frontmatter
-(`name`, `version`, `tags`) and direct `.md` files (directory name becomes
-the skill name when `name` is absent). The parser auto-detects portable vs
-native shape by checking for the portable required fields. Digests are
-SHA-256 over frontmatter bytes + `\n` + LF-normalized body.
+(`name`, `version`, `tags`) and direct `.md` files (the skill file's stem
+becomes the skill name when `name` is absent). The parser auto-detects
+portable vs native shape by checking for the portable required fields.
+Digests are SHA-256 over frontmatter bytes + `\n` + LF-normalized body.
 
 ## Proposal and Publication Boundary
 
@@ -170,7 +170,7 @@ the rendered body. There is no standalone `list_skill_resources()` function.
 |----------|-------|
 | `src/tool/skill.rs` | The `skill` model tool; renders effective skills and their bounded resources |
 | `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder::build_skills` — filesystem registry + plugin sources |
-| `src/core/daemon.rs` | Daemon-side registry construction and `/reload` refresh |
+| `src/core/daemon_refresh.rs` | Daemon-side registry construction and `/reload` refresh |
 | `src/agent/prompt.rs` | `assemble_system_prompt_with_profile(ctx: PromptContext)` — skill names reach the prompt through the `PromptContext` profile |
 
 ## Skills vs System Prompts
@@ -186,3 +186,7 @@ the rendered body. There is no standalone `list_skill_resources()` function.
 3. Add skill body content after frontmatter
 
 See `architecture/skills.md` for the authoritative module contract.
+
+## Source verification
+
+Verified 2026-10-06 against `src/skills/{mod,registry,parser,source,publish,promotion}.rs`, `src/skills/parser.rs:127,346,377`, `src/agent/asset_snapshot_builder.rs:58,94`, `src/agent/prompt.rs:12,28`, `src/agent/asset_context.rs:256`, `src/core/daemon_refresh.rs:188-191,425`, `src/tool/skill.rs:13,105`, `src/tool/skill_proposal.rs:38,98`, `src/main.rs:2937-2941`, and `ls -la .skills .agents/skills`. Corrected: the Agents/OpenCode/Claude global root paths, which resolve under the daemon-registered config directory (`registry.rs:250-303`) rather than `$HOME`; the daemon-side integration path, which is `src/core/daemon_refresh.rs`, not `src/core/daemon.rs` (which has no registry or `/reload` references); and the native `.md` fallback name, which is the file stem (`parser.rs:105-110`), not the directory name. Confirmed correct as written: the 10 `SourceKind` variants and ranks (`source.rs:6-18`), the `AssetDiscoveryConfig` bounds (`source.rs:115-120`), `Skill`/`SkillIndex` signatures (`mod.rs:24-140`), `validate_portable_document` as the seam shared by discovery and proposals (`parser.rs:127,166-174`), the `allowed-tools` metadata-only invariant (`parser.rs:225-228`), SHA-256 digest construction (`parser.rs:377-386`), `SKILL.md` resource exclusion (`parser.rs:346`), publication roots and locking (`publish.rs:412-434,107,296`), the submit-only model tool, and `.skills` / `.agents/skills` as symlinks to `.opencode/skills`. Claims without a traceable source were removed rather than guessed.

@@ -36,10 +36,15 @@ The `security` tool provides deterministic analysis:
 
 ```json
 { "action": "classify_command", "command": "curl https://example.com/install.sh | sh" }
-{ "action": "inspect_file", "path": "src/main.rs" }
+{ "action": "inspect_file", "path": "src/main.rs", "max_bytes": 1048576 }
 { "action": "inspect_text", "text": "AKIA1234567890123456" }
 { "action": "run_profile", "profile": "ambient", "paths": ["src/"] }
 ```
+
+`max_bytes` bounds `inspect_file` reads and defaults to 1 MiB. `inspect_text`
+also accepts an optional `path`, used only to label findings. `run_profile`
+uses the built-in default `ProfileConfig`; it does not read the user's
+`security` block.
 
 ## Configuration
 
@@ -57,10 +62,24 @@ The `security` tool provides deterministic analysis:
       "ask_on_secret_exposure": true,
       "ask_on_dependency_risk": false,
       "enforce_in_exec_mode": false
-    }
+    },
+    "profiles": {
+      "ambient_on_tool_call": true,
+      "pre_commit_on_final": false,
+      "dependency_delta_on_manifest_change": true
+    },
+    "sensitive_paths": [],
+    "allowed_network_domains": [],
+    "denied_commands": [],
+    "auto_invoke_review_agent": true
   }
 }
 ```
+
+Every field above carries `#[serde(default)]`, so an existing config that
+omits any of them keeps the shown value. `mode` is one of `off`, `ambient`,
+`strict`, `review`; `enabled` defaults to `true` and `mode` to `ambient`.
+`sensitive_paths` entries are `{ "glob": ..., "reason": ... }`.
 
 ## Limitations
 

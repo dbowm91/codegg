@@ -22,10 +22,10 @@ violate.
 
 | Layer | Location | Role |
 |-------|----------|------|
-| Bus | `crates/codegg-core/src/bus/global.rs`, `events.rs`, `mod.rs` | `GlobalEventBus` (tokio broadcast, cap 4096, sync `publish()`), `AppEvent`, `PermissionRegistry` + `QuestionRegistry` (sync); `events.rs` owns the current event set |
-| Projection contract | `crates/codegg-protocol/src/projection/` | `ProjectionEnvelope`/`ProjectionEvent`, `SessionProjectionSnapshot`, deterministic canonical reducer (no I/O), `caps`/`limits`/`dto`/`adapters`/`fixtures`; the projection enum owns the current variant set |
+| Bus | `crates/codegg-core/src/bus/global.rs`, `events.rs`, `mod.rs` | `GlobalEventBus` (tokio broadcast, cap 4096, sync `publish()`) in `global.rs`; `AppEvent` in `events.rs`, which owns the current event set; `PermissionRegistry` + `QuestionRegistry` (sync) in `mod.rs` |
+| Projection contract | `crates/codegg-protocol/src/projection/` | `ProjectionEnvelope`/`ProjectionEvent` (`event.rs`), `SessionProjectionSnapshot` (`snapshot.rs`), deterministic canonical reducer (no I/O, `reducer.rs`), plus `caps`/`limits`/`dto`/`adapters`/`consumer`/`controller`/`replay`/`fixtures`; the projection enum owns the current variant set |
 | Replay | `crates/codegg-core/src/projection_replay/` | Durable replay for reconnect/resume |
-| Daemon seam | `src/core/daemon_projection.rs`, `daemon.rs` | Projection request family handler; SSE uses the global bus (no per-state `event_bus` field) |
+| Daemon seam | `src/core/daemon_projection.rs`, `src/core/daemon.rs` | Projection request family handler; the compatibility SSE route (`src/server/routes/event.rs`) reads the global bus, and there is no per-state `event_bus` field |
 | Collaboration | `crates/codegg-core/src/collaboration.rs`, `src/tui/app/state/chat.rs` | Project channels/messages (threads, mentions, refs, edits/redactions, read markers, retention, bounded sync); bodies stay inert text |
 | Presence | `crates/codegg-core/src/presence.rs`, `src/core/daemon.rs` | Ephemeral leases (heartbeat/idle/expiry); liveness-only, never authorizes work |
 
@@ -52,11 +52,16 @@ violate.
 
 ```bash
 python3 scripts/check_projection_transport_isolation.py  # raw-broadcast/identity guard
-python3 scripts/check_projection_disclosure.sh           # disclosure seam
-python3 scripts/check_projection_publication_seam.sh     # publication seam
+bash    scripts/check_projection_disclosure.sh           # disclosure seam
+bash    scripts/check_projection_publication_seam.sh     # publication seam
 python3 scripts/check_projection_transport_lifecycle.py  # transport lifecycle
 python3 scripts/check_websocket_bounds.py                # WS bounds
 ```
+
+Note: as of 2026-10-06 `check_projection_transport_lifecycle.py` fails on
+`src/core/transport/daemon_socket.rs` ("raw forwarder is spawned without an
+owned handle"). The guard is real and current; the source side is what is
+out of contract.
 
 ## Testing
 
@@ -64,6 +69,7 @@ python3 scripts/check_websocket_bounds.py                # WS bounds
 cargo test -p codegg-core bus::
 cargo test -p codegg-protocol projection
 cargo test --test collaboration_m001_chat
+cargo test --test collaboration_m002_chat_policy
 cargo test --test collaboration_m002_chat_tui
 cargo test --test collaboration_m003_chat_actions
 ```
@@ -74,3 +80,23 @@ cargo test --test collaboration_m003_chat_actions
 - `.skills/core/SKILL.md` — projection request family on the daemon
 - `.skills/server/SKILL.md` — `/tui` WS event/state protocol (no `RenderFrame`)
 - `.skills/tui/SKILL.md` — sidebar/run-tree joins by exact canonical task IDs
+
+## Source verification
+
+Verified 2026-10-06 against `crates/codegg-core/src/bus/{global,events,mod}.rs`,
+`crates/codegg-core/src/presence.rs`,
+`crates/codegg-core/src/collaboration.rs`,
+`crates/codegg-core/src/projection_replay/`,
+`crates/codegg-protocol/src/projection/*.rs`,
+`src/core/daemon_projection.rs`, `src/core/daemon.rs`,
+`src/server/routes/event.rs`, `src/tui/app/state/chat.rs`, and
+`scripts/check_projection_*`, `scripts/check_websocket_bounds.py`.
+Corrected the bus-row attribution, which implied `AppEvent` and the
+permission/question registries all live in `events.rs` (they are split
+`events.rs` / `mod.rs`); the projection module inventory, which omitted the
+`consumer`, `controller`, and `replay` modules; the two `.sh` guards, which
+were written as `python3` invocations; the SSE attribution, which named no
+source file; and the test list, which omitted
+`collaboration_m002_chat_policy`. Added the observed failure of
+`check_projection_transport_lifecycle.py`. Claims without a traceable source
+were removed rather than guessed.

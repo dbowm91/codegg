@@ -52,13 +52,22 @@ Lower rank wins. Project-local always beats global.
 | 30 | `ClaudeProject` | `<project>/.claude/skills/<name>/SKILL.md` |
 | 35 | `Plugin` | Plugin contribution (project-native sources outrank) |
 | 40 | `CodeGGGlobal` | `<config>/codegg/skills/<name>/SKILL.md` |
-| 50 | `AgentsGlobal` | `~/.agents/skills/<name>/SKILL.md` |
-| 60 | `OpenCodeGlobal` | `~/.config/opencode/skills/<name>/SKILL.md` |
-| 70 | `ClaudeGlobal` | `~/.claude/skills/<name>/SKILL.md` |
+| 50 | `AgentsGlobal` | `<config>/agents/skills/<name>/SKILL.md` |
+| 60 | `OpenCodeGlobal` | `<config>/opencode/skills/<name>/SKILL.md` |
+| 70 | `ClaudeGlobal` | `<config>/claude/skills/<name>/SKILL.md` |
 | 80 | `CodeGGNativeCompat` | `<project>/.codegg/skills/*.md` (direct markdown) |
 
+`<config>` is the platform configuration directory (`dirs::config_dir()`, e.g.
+`~/.config` on Linux and `~/Library/Application Support` on macOS). The
+foreign-harness global roots are config-dir-relative, **not** `$HOME`-relative:
+`AssetRegistry::build` takes each global root as the *parent* and appends
+`<vendor>/skills` (`src/skills/registry.rs:250-303`), and the daemon passes
+`dirs::config_dir()` as that parent (`src/core/daemon_refresh.rs:187-191`).
+
 CodeGGProject also discovers direct `.md` files in `.codegg/skills/`,
-treating them as `CodeGGNativeCompat` entries.
+treating them as `CodeGGNativeCompat` entries; the skill name falls back to
+the markdown file's stem when the frontmatter omits `name`
+(`src/skills/parser.rs:105-110`).
 
 ### Portable SKILL.md schema
 

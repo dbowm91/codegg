@@ -72,10 +72,18 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 ## Bounded Storage
 
 `ShellOutputStore` enforces limits:
-- **Per command**: 1MB (256KB head + 256KB middle dropped + 256KB tail)
-- **Total**: 8MB across all commands
-- **History**: 100 entries max
+- **Per command**: `DEFAULT_MAX_BYTES_PER_COMMAND = 1_000_000`
+  (`src/shell/types.rs:105`)
+- **Total**: `DEFAULT_MAX_TOTAL_BYTES = 8_000_000` across all commands
+  (`src/shell/types.rs:106`)
+- **History**: `DEFAULT_MAX_HISTORY_ENTRIES = 100` (`src/shell/types.rs:107`)
 - Eviction: oldest entries removed first
+
+`BoundedOutput` (`src/shell/store.rs:14`) keeps at most **512 KiB** of each
+command's output regardless of that 1 MB budget: `HEAD_CAP = 256 * 1024` and
+`TAIL_CAP = 256 * 1024` (`src/shell/store.rs:10-11`). Everything in between is
+dropped and counted in `omitted_bytes`; `total_bytes` still reports the full
+streamed length. The head/tail split is not a 3-way split of the budget.
 
 ## Digest Extraction
 
@@ -126,5 +134,13 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 
 ## See Also
 
-- [architecture/human_shell.md](../../architecture/human_shell.md) — full module contract (10-phase projection pipeline: `projection.rs`, `projector.rs`, `redactor.rs`, `rtk.rs`, `projection_bridge.rs`)
+- `architecture/human_shell.md` — full module contract (10-phase projection pipeline: `projection.rs`, `projector.rs`, `redactor.rs`, `rtk.rs`, `projection_bridge.rs`)
 - `.skills/tui/SKILL.md` — TUI command registration and async dispatch rules
+
+## Source verification
+
+Verified 2026-10-06 against `src/shell/{store,types,policy,projection,projector,redactor,rtk,projection_bridge}.rs`.
+Corrected the bounded-storage arithmetic (`BoundedOutput` retains 512 KiB of
+head+tail, not the full 1 MB budget; the middle is dropped and counted in
+`omitted_bytes`) and pinned the three store limits to their declaring lines.
+Claims without a traceable source were removed rather than guessed.

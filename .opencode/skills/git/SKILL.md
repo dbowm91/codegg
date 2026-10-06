@@ -84,7 +84,7 @@ cargo test --test git_recovery_integration
 
 ## See Also
 
-- [architecture/git.md](../../architecture/git.md) — authoritative contract
+- `architecture/git.md` — authoritative contract
 - `.skills/scheduler/SKILL.md` — git domains are deferred-domain executors
   in `docs/execution-ownership.toml`, not scheduler executors yet
 - `.skills/human-shell/SKILL.md` — `!`/`!!` shell boundary (raw shell is

@@ -268,7 +268,7 @@ Root `src/error.rs` re-exports it; Axum-specific error wrappers live behind `#[c
 
 ## See Also
 
-- [architecture/server.md](../../architecture/server.md) - Architecture overview (includes the `/core` CoreFrame protocol)
+- `architecture/server.md` - Architecture overview (includes the `/core` CoreFrame protocol)
 - `.skills/core/SKILL.md` - Core facade and daemon lifecycle
 - `.skills/context/SKILL.md` - Context projection used by WebSocket transports
 

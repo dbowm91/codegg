@@ -29,6 +29,10 @@ The context module manages artifact storage, tool-output projection, the `contex
 | `read_tool.rs` | `context_read` tool registration |
 | `plan.rs` | `ContextPlan`, `ContextPlanDiagnostics`, `ContextPlanMode`, `PlannedMessage` |
 | `compaction.rs` | Single-owner compaction budgets/triggers/strategy (see `architecture/context-compaction-ownership.md`; `agent::compaction` is a compat re-export, `eggcontext` is the tokenizer primitive) |
+| `continuation.rs` | Authoritative continuation snapshot assembler |
+| `evidence.rs` | Bounded exact context recovery references |
+| `epoch.rs` | Fresh provider context-epoch reconstruction for long horizons |
+| `rollover.rs` | Transactional context rollover sequencing |
 
 ## Key Facts
 
@@ -135,3 +139,10 @@ The `[context_policy]` section (`ContextPolicyConfig` in `crates/codegg-config/s
 | `log_policy_decisions` | `bool` | `true` | Structured policy decision logs (info decisions, debug names) |
 
 Reductions are always derived from `base_request_tools` (the full profile-filtered palette captured once per run), never cumulatively from an already-reduced palette.
+
+## Source verification
+
+Verified 2026-10-06 against `src/context/` (21 modules) and
+`crates/codegg-config/src/schema.rs`. Corrected the module table, which was
+missing `continuation.rs`, `evidence.rs`, `epoch.rs`, and `rollover.rs`.
+Claims without a traceable source were removed rather than guessed.

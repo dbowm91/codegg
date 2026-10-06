@@ -124,7 +124,7 @@ Infrastructure and polish MUST NOT be presented as completed user capability unl
 8. Write a closure record under `closure/<subsystem>/`.
 9. Update `registry.md` and the subsystem roadmap status.
 10. Archive completed interim documents when they no longer represent active work.
-11. Audit blocked work: if any registered plan's blocker is resolved by this closure, register/register it as `ready` in the same commit.
+11. Audit blocked work: if any registered plan's blocker is resolved by this closure, register it as `ready` in the same commit.
 
 A milestone is complete only when closure evidence defined by its implementation plan and subsystem roadmap is satisfied. A commit message saying "closed" is not closure evidence.
 
@@ -313,7 +313,7 @@ Maintenance rules:
 8. Remove closed rows from active sections after recording them under recently closed work.
 9. Periodically archive old closed interim documents while preserving links.
 10. Do not copy detailed milestone requirements into this registry.
-11. **When one milestone closes, audit blocked work: if any registered plan's blocker is now satisfied, register/register it as `ready` in the same commit.** This is the unblock check.
+11. **When one milestone closes, audit blocked work: if any registered plan's blocker is now satisfied, register it as `ready` in the same commit.** This is the unblock check.
 
 ## Unblocking Downstream Work (Critical Step)
 
@@ -455,3 +455,7 @@ When adding to `plans/registry.md`:
 - **Plan number is local to subsystem**: M001 in session-projections is unrelated to M001 in any other subsystem.
 - **Subsystem names are stable**: use the same `kebab-case` name across roadmap, implementation, closure, and registry entries. Do not encode dates.
 - **Status labels in registry must match the plan/roadmap/closure record** — contradictions are a closure defect (see M011–M012 history).
+
+## Source verification
+
+Verified 2026-10-06 against `plans/registry.md`, `plans/003-planning-process.md`, `plans/{README,adrs/README,subsystems/README,implementation/README,closure/README,archive/README}.md`, `plans/000-long-term-specification.md`, `plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`, `plans/closure/session-projections/012-status.md`, and the `plans/{adrs,subsystems,implementation,closure}/` trees. Corrected the duplicated word in the unblock rule (lifecycle step 11 and registry maintenance rule 11): "register/register it" → "register it". Confirmed correct as written: the status vocabulary table matches `plans/registry.md:12-22`; the roadmap/plan/closure/ADR template structures match the four `README.md` templates; the Related Files table paths all exist; the M012-unblocks-nothing example matches `plans/closure/session-projections/012-status.md:212,224`; and the registry currently records the tool-selection advisor as closed with its generic runtime/training retired by decision-runtime M006, so no active `tool_advisor` runtime is claimed here. Claims without a traceable source were removed rather than guessed.
