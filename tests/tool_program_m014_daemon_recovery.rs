@@ -11,6 +11,31 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
+/// Resolve the daemon binary, which is the `codegg` binary itself.
+///
+/// Cargo exposes `CARGO_BIN_EXE_<name>` to integration tests, but it is not
+/// populated for every bin target/feature combination, so it cannot be the
+/// only source. `current_exe()` for an integration test resolves under
+/// `target/<profile>/deps/`, which means the built binary sits one directory
+/// up — joining `codegg` onto `deps/` directly never matches. Walk up until
+/// a real file is found, then fall back to a bare `codegg` on `PATH`.
+fn daemon_binary() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_codegg") {
+        return PathBuf::from(path);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        // `exe` is `target/<profile>/deps/<test>`; the binary is at
+        // `target/<profile>/codegg`, so keep walking until a real file hits.
+        for dir in exe.ancestors().skip(1) {
+            let candidate = dir.join("codegg");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("codegg")
+}
+
 /// C-45: A real daemon process accepts a Tool Program through a public protocol
 /// boundary.
 ///
@@ -19,15 +44,10 @@ use std::time::Duration;
 /// the daemon's public stdio protocol.
 #[tokio::test(flavor = "current_thread")]
 async fn c45_daemon_binary_exists_and_starts() {
-    // The daemon binary is the codegg binary itself
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .map(|d| d.join("codegg"))
-        .unwrap_or_else(|| PathBuf::from("codegg"));
+    let binary = daemon_binary();
 
     // Verify the binary exists (either as codegg or via cargo)
-    let binary_exists = binary.exists() || std::env::var("CARGO_BIN_EXE_codegg").is_ok();
+    let binary_exists = binary.is_file();
     assert!(
         binary_exists,
         "codegg daemon binary must exist for process-level tests"
@@ -52,9 +72,7 @@ async fn c46_kill_and_restart_daemon() {
     let daemon_home = temp.path().join("daemon");
     std::fs::create_dir_all(&daemon_home).unwrap();
 
-    let binary = std::env::var("CARGO_BIN_EXE_codegg")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("codegg"));
+    let binary = daemon_binary();
 
     let child = tokio::process::Command::new(&binary)
         .arg("--daemon")
@@ -212,7 +230,7 @@ async fn c49_process_tests_not_universally_ignored() {
     // is present and not universally skipped. The test itself runs on
     // all platforms.
     assert!(
-        std::env::var("CARGO_BIN_EXE_codegg").is_ok() || std::env::current_exe().is_ok(),
+        daemon_binary().is_file(),
         "process test infrastructure must be available"
     );
 }

@@ -29,7 +29,7 @@ registration call sites in `src/tool/mod.rs::with_options()`, 39 LSP server
 definitions (`crates/egglsp/src/server.rs::server_definitions()`), 58
 `AppEvent` variants, 153 built-in slash commands, 10 built-in agents, 73
 `CREATE TABLE` tables / storage layout 68, 215 integration test files, 85
-architecture docs, 40 `check_*` guards.
+architecture docs, 41 `check_*` guards.
 
 ## Review Process
 

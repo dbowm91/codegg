@@ -368,6 +368,88 @@ pub fn merge_configs(configs: &[Config]) -> Config {
         if let Some(ref theme) = config.theme {
             merged.theme = Some(theme.clone());
         }
+
+        // Every remaining `Config` field is merged here. A field with no arm
+        // below is silently discarded for every layer, so `scripts/
+        // check_config_merge_coverage.py` fails the build if one is added.
+        //
+        // Two precedence shapes are used:
+        //   * `merge()` — the section's top-level fields combine, so a later
+        //     layer can override one key without restating the rest.
+        //   * whole-value replace — reserved for sections whose fields are all
+        //     non-`Option` (serde defaults bake in the absent case), where
+        //     field-by-field combination cannot distinguish "unset" from
+        //     "set to the default".
+        if let Some(ref v) = config.approval_reviewer {
+            match &mut merged.approval_reviewer {
+                Some(existing) => existing.merge(v),
+                None => merged.approval_reviewer = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.daemon {
+            match &mut merged.daemon {
+                Some(existing) => existing.merge(v),
+                None => merged.daemon = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.scheduler {
+            match &mut merged.scheduler {
+                Some(existing) => existing.merge(v),
+                None => merged.scheduler = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.tool_deferral {
+            match &mut merged.tool_deferral {
+                Some(existing) => existing.merge(v),
+                None => merged.tool_deferral = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.research {
+            match &mut merged.research {
+                Some(existing) => existing.merge(v),
+                None => merged.research = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.tool_backends {
+            match &mut merged.tool_backends {
+                Some(existing) => existing.merge(v),
+                None => merged.tool_backends = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.human_shell {
+            match &mut merged.human_shell {
+                Some(existing) => existing.merge(v),
+                None => merged.human_shell = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.shell {
+            match &mut merged.shell {
+                Some(existing) => existing.merge(v),
+                None => merged.shell = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.preflight {
+            match &mut merged.preflight {
+                Some(existing) => existing.merge(v),
+                None => merged.preflight = Some(v.clone()),
+            }
+        }
+        if let Some(ref v) = config.command_intent {
+            match &mut merged.command_intent {
+                Some(existing) => existing.merge(v),
+                None => merged.command_intent = Some(v.clone()),
+            }
+        }
+        // Whole-value replace: all fields are non-`Option`.
+        if let Some(ref v) = config.provider_connections {
+            merged.provider_connections = Some(v.clone());
+        }
+        if let Some(ref v) = config.security {
+            merged.security = Some(v.clone());
+        }
+        if let Some(ref v) = config.deterministic_tools {
+            merged.deterministic_tools = Some(v.clone());
+        }
     }
     merged
 }
@@ -943,5 +1025,158 @@ mod tests {
             openai.timeout,
             Some(crate::schema::ProviderTimeout::Ms(5000))
         ));
+    }
+
+    /// Every section a user can write must survive a merge. This used to need
+    /// two layers to fail; `merge_configs` is the only path from file to
+    /// `Config`, so a section with no arm is discarded even for a single
+    /// layer and the setting silently does nothing.
+    #[test]
+    fn test_merge_configs_preserves_single_layer_sections() {
+        let raw = r#"{
+            "approval_reviewer": { "model": "fixture/reviewer" },
+            "daemon": { "enabled": true },
+            "scheduler": { "enabled": true },
+            "tool_deferral": { "defer_loading": true },
+            "security": { "enabled": true },
+            "research": { "search_provider": { "backend": "fixture" } },
+            "tool_backends": { "lsp": { "backend": "native" } },
+            "human_shell": { "enabled": true },
+            "shell": { "output": { "retain_raw": false } },
+            "deterministic_tools": { "enabled": true },
+            "preflight": { "enabled": false },
+            "command_intent": { "route_safe_commands": true },
+            "provider_connections": { "background_refresh": true }
+        }"#;
+        let parsed = parse_config(raw, Path::new("fixture.jsonc")).expect("parses");
+
+        let merged = merge_configs(&[parsed]);
+
+        assert_eq!(
+            merged
+                .approval_reviewer
+                .as_ref()
+                .and_then(|c| c.model.as_deref()),
+            Some("fixture/reviewer")
+        );
+        assert_eq!(merged.daemon.as_ref().and_then(|c| c.enabled), Some(true));
+        assert_eq!(
+            merged.scheduler.as_ref().and_then(|c| c.enabled),
+            Some(true)
+        );
+        assert_eq!(
+            merged.tool_deferral.as_ref().and_then(|c| c.defer_loading),
+            Some(true)
+        );
+        assert!(merged.security.as_ref().expect("security survives").enabled);
+        assert!(merged.research.is_some());
+        assert!(merged.tool_backends.is_some());
+        assert_eq!(
+            merged.human_shell.as_ref().and_then(|c| c.enabled),
+            Some(true)
+        );
+        assert!(merged.shell.is_some());
+        assert!(
+            merged
+                .deterministic_tools
+                .as_ref()
+                .expect("deterministic_tools survives")
+                .enabled
+        );
+        assert_eq!(
+            merged.preflight.as_ref().and_then(|c| c.enabled),
+            Some(false)
+        );
+        assert_eq!(
+            merged
+                .command_intent
+                .as_ref()
+                .and_then(|c| c.route_safe_commands),
+            Some(true)
+        );
+        assert!(
+            merged
+                .provider_connections
+                .as_ref()
+                .expect("provider_connections survives")
+                .background_refresh
+        );
+    }
+
+    /// All-`Option` sections combine key-by-key across layers, so a later
+    /// layer can override one key without restating the rest of the block.
+    #[test]
+    fn test_merge_configs_combines_optional_sections_field_by_field() {
+        let base = Config {
+            daemon: Some(crate::schema::DaemonConfig {
+                enabled: Some(true),
+                startup_timeout_ms: Some(1_500),
+                ..Default::default()
+            }),
+            human_shell: Some(crate::schema::HumanShellConfig {
+                max_history_entries: Some(42),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let overlay = Config {
+            daemon: Some(crate::schema::DaemonConfig {
+                startup_timeout_ms: Some(9_000),
+                ..Default::default()
+            }),
+            human_shell: Some(crate::schema::HumanShellConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(&[base, overlay]);
+
+        let daemon = merged.daemon.expect("daemon section");
+        assert_eq!(daemon.enabled, Some(true), "unset key survives from base");
+        assert_eq!(daemon.startup_timeout_ms, Some(9_000), "later layer wins");
+
+        let human_shell = merged.human_shell.expect("human_shell section");
+        assert_eq!(human_shell.enabled, Some(false));
+        assert_eq!(human_shell.max_history_entries, Some(42));
+    }
+
+    /// Sections whose fields are all non-`Option` cannot be combined without
+    /// an `Option`-backed shadow, so they replace wholesale.
+    #[test]
+    fn test_merge_configs_replaces_default_backed_sections_whole() {
+        let base = Config {
+            security: Some(crate::schema::SecurityConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+            deterministic_tools: Some(crate::schema::DeterministicToolsConfig {
+                enabled: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let overlay = Config {
+            security: Some(crate::schema::SecurityConfig {
+                enabled: false,
+                ..Default::default()
+            }),
+            deterministic_tools: Some(crate::schema::DeterministicToolsConfig {
+                enabled: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(&[base, overlay]);
+
+        assert!(!merged.security.expect("security section").enabled);
+        assert!(
+            !merged
+                .deterministic_tools
+                .expect("deterministic_tools section")
+                .enabled
+        );
     }
 }

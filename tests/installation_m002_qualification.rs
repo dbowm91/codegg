@@ -222,17 +222,21 @@ fn eggsact_is_inprocess_curated_and_pinned() {
 
 #[test]
 fn prebuilt_docs_do_not_require_separate_eggsearch_install() {
-    let readme = std::fs::read_to_string("README.md").expect("README readable");
+    // The prebuilt quick start lives in `docs/install.md`; README defers to it
+    // until a release is published, because no prebuilt asset exists to
+    // download yet. Anchor the contract where the prebuilt path is actually
+    // documented rather than where it used to be.
+    let install = std::fs::read_to_string("docs/install.md").expect("install doc readable");
     // The supported prebuilt quick start must not tell users to install
     // eggsearch separately. Source-build notes may describe the sidecar
     // override, but the prebuilt path owns the bundle.
-    let prebuilt_start = readme
-        .find("### Prebuilt installer")
+    let prebuilt_start = install
+        .find("## Prebuilt installer")
         .expect("prebuilt section exists");
-    let source_start = readme
-        .find("### From source")
+    let source_start = install
+        .find("## From source")
         .expect("source section exists");
-    let prebuilt = &readme[prebuilt_start..source_start];
+    let prebuilt = &install[prebuilt_start..source_start];
     let lower = prebuilt.to_lowercase();
     assert!(
         !lower.contains("install eggsearch separately") && !lower.contains("install eggsearch"),
@@ -241,6 +245,14 @@ fn prebuilt_docs_do_not_require_separate_eggsearch_install() {
     assert!(
         prebuilt.contains("codegg-eggsearch"),
         "prebuilt section must name the managed sidecar"
+    );
+
+    // README's quick start must route readers to that section instead of
+    // restating a prebuilt path the installer cannot yet serve.
+    let readme = std::fs::read_to_string("README.md").expect("README readable");
+    assert!(
+        readme.contains("docs/install.md"),
+        "README install step must defer to docs/install.md for the other install paths"
     );
 }
 

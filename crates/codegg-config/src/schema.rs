@@ -1344,6 +1344,32 @@ impl ApprovalReviewerConfig {
             }
         })
     }
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.model.is_some() {
+            self.model.clone_from(&other.model);
+        }
+        if other.max_investigation_calls.is_some() {
+            self.max_investigation_calls
+                .clone_from(&other.max_investigation_calls);
+        }
+        if other.deadline_ms.is_some() {
+            self.deadline_ms.clone_from(&other.deadline_ms);
+        }
+        if other.max_output_chars.is_some() {
+            self.max_output_chars.clone_from(&other.max_output_chars);
+        }
+        if other.headless_deny.is_some() {
+            self.headless_deny.clone_from(&other.headless_deny);
+        }
+        if other.max_equivalent_denials.is_some() {
+            self.max_equivalent_denials
+                .clone_from(&other.max_equivalent_denials);
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -1686,6 +1712,41 @@ pub struct DaemonConfig {
     /// before forcing exit. Default: 5000 ms.
     pub shutdown_timeout_ms: Option<u64>,
 }
+impl DaemonConfig {
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.enabled.is_some() {
+            self.enabled.clone_from(&other.enabled);
+        }
+        if other.auto_start.is_some() {
+            self.auto_start.clone_from(&other.auto_start);
+        }
+        if other.socket.is_some() {
+            self.socket.clone_from(&other.socket);
+        }
+        if other.project_scope.is_some() {
+            self.project_scope.clone_from(&other.project_scope);
+        }
+        if other.event_log_capacity.is_some() {
+            self.event_log_capacity
+                .clone_from(&other.event_log_capacity);
+        }
+        if other.mode.is_some() {
+            self.mode.clone_from(&other.mode);
+        }
+        if other.startup_timeout_ms.is_some() {
+            self.startup_timeout_ms
+                .clone_from(&other.startup_timeout_ms);
+        }
+        if other.shutdown_timeout_ms.is_some() {
+            self.shutdown_timeout_ms
+                .clone_from(&other.shutdown_timeout_ms);
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1710,6 +1771,33 @@ pub struct SchedulerConfig {
     pub resources: Option<SchedulerResourceConfig>,
     pub queue: Option<SchedulerQueueConfig>,
     pub fairness: Option<SchedulerFairnessConfig>,
+}
+impl SchedulerConfig {
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.enabled.is_some() {
+            self.enabled.clone_from(&other.enabled);
+        }
+        if other.rollout.is_some() {
+            self.rollout.clone_from(&other.rollout);
+        }
+        if other.reconcile_interval_ms.is_some() {
+            self.reconcile_interval_ms
+                .clone_from(&other.reconcile_interval_ms);
+        }
+        if other.resources.is_some() {
+            self.resources.clone_from(&other.resources);
+        }
+        if other.queue.is_some() {
+            self.queue.clone_from(&other.queue);
+        }
+        if other.fairness.is_some() {
+            self.fairness.clone_from(&other.fairness);
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2288,6 +2376,26 @@ pub struct ToolDeferralConfig {
     /// Maximum number of tools sent in the initial request.
     pub max_initial_tools: Option<usize>,
 }
+impl ToolDeferralConfig {
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.defer_loading.is_some() {
+            self.defer_loading.clone_from(&other.defer_loading);
+        }
+        if other.always_loaded.is_some() {
+            self.always_loaded.clone_from(&other.always_loaded);
+        }
+        if other.search_mode.is_some() {
+            self.search_mode.clone_from(&other.search_mode);
+        }
+        if other.max_initial_tools.is_some() {
+            self.max_initial_tools.clone_from(&other.max_initial_tools);
+        }
+    }
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(default)]
@@ -2853,6 +2961,20 @@ pub struct ResearchConfig {
     /// Trigger heuristic configuration.
     pub auto_trigger: Option<ResearchAutoTriggerConfig>,
 }
+impl ResearchConfig {
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.search_provider.is_some() {
+            self.search_provider.clone_from(&other.search_provider);
+        }
+        if other.auto_trigger.is_some() {
+            self.auto_trigger.clone_from(&other.auto_trigger);
+        }
+    }
+}
 
 /// Per-domain tool backend selection.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
@@ -2877,6 +2999,21 @@ impl ToolBackendConfigSchema {
             _ => None,
         };
         section.and_then(|s| s.backend)
+    }
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.lsp.is_some() {
+            self.lsp.clone_from(&other.lsp);
+        }
+        if other.security.is_some() {
+            self.security.clone_from(&other.security);
+        }
+        if other.context.is_some() {
+            self.context.clone_from(&other.context);
+        }
     }
 }
 
@@ -3036,6 +3173,40 @@ impl HumanShellConfig {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.enabled.is_some() {
+            self.enabled.clone_from(&other.enabled);
+        }
+        if other.default_timeout_secs.is_some() {
+            self.default_timeout_secs
+                .clone_from(&other.default_timeout_secs);
+        }
+        if other.max_history_entries.is_some() {
+            self.max_history_entries
+                .clone_from(&other.max_history_entries);
+        }
+        if other.max_bytes_per_command.is_some() {
+            self.max_bytes_per_command
+                .clone_from(&other.max_bytes_per_command);
+        }
+        if other.max_total_bytes.is_some() {
+            self.max_total_bytes.clone_from(&other.max_total_bytes);
+        }
+        if other.ansi.is_some() {
+            self.ansi.clone_from(&other.ansi);
+        }
+        if other.confirm_dangerous.is_some() {
+            self.confirm_dangerous.clone_from(&other.confirm_dangerous);
+        }
+        if other.auto_promote_bangbang.is_some() {
+            self.auto_promote_bangbang
+                .clone_from(&other.auto_promote_bangbang);
         }
     }
 }
@@ -3199,6 +3370,17 @@ impl ShellOutputConfig {
 #[serde(default)]
 pub struct ShellConfig {
     pub output: Option<ShellOutputConfig>,
+}
+impl ShellConfig {
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.output.is_some() {
+            self.output.clone_from(&other.output);
+        }
+    }
 }
 
 /// Configuration for eggsact-backed deterministic tools.
@@ -3447,6 +3629,51 @@ impl CommandIntentConfig {
         }
         matches!(self.family_level(family), RouteLevel::Active)
     }
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.mode.is_some() {
+            self.mode.clone_from(&other.mode);
+        }
+        if other.route_safe_commands.is_some() {
+            self.route_safe_commands
+                .clone_from(&other.route_safe_commands);
+        }
+        if other.route_tests.is_some() {
+            self.route_tests.clone_from(&other.route_tests);
+        }
+        if other.route_git_read.is_some() {
+            self.route_git_read.clone_from(&other.route_git_read);
+        }
+        if other.route_search.is_some() {
+            self.route_search.clone_from(&other.route_search);
+        }
+        if other.route_python.is_some() {
+            self.route_python.clone_from(&other.route_python);
+        }
+        if other.route_build.is_some() {
+            self.route_build.clone_from(&other.route_build);
+        }
+        if other.route_lint.is_some() {
+            self.route_lint.clone_from(&other.route_lint);
+        }
+        if other.route_format.is_some() {
+            self.route_format.clone_from(&other.route_format);
+        }
+        if other.route_git_local_mutation.is_some() {
+            self.route_git_local_mutation
+                .clone_from(&other.route_git_local_mutation);
+        }
+        if other.route_git_network.is_some() {
+            self.route_git_network.clone_from(&other.route_git_network);
+        }
+        if other.route_git_destructive.is_some() {
+            self.route_git_destructive
+                .clone_from(&other.route_git_destructive);
+        }
+    }
 }
 
 /// Command intent routing families for config-gated routing.
@@ -3571,6 +3798,37 @@ impl PreflightConfig {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+    /// Merge a later config layer into this one: every top-level field
+    /// that is set in `other` wins. Nested blocks are replaced wholesale
+    /// (a block you specify overrides the whole block, it does not
+    /// merge key-by-key with the layer beneath it).
+    pub fn merge(&mut self, other: &Self) {
+        if other.enabled.is_some() {
+            self.enabled.clone_from(&other.enabled);
+        }
+        if other.mode.is_some() {
+            self.mode.clone_from(&other.mode);
+        }
+        if other.patch.is_some() {
+            self.patch.clone_from(&other.patch);
+        }
+        if other.config.is_some() {
+            self.config.clone_from(&other.config);
+        }
+        if other.shell.is_some() {
+            self.shell.clone_from(&other.shell);
+        }
+        if other.unicode.is_some() {
+            self.unicode.clone_from(&other.unicode);
+        }
+        if other.log_findings.is_some() {
+            self.log_findings.clone_from(&other.log_findings);
+        }
+        if other.model_visible_findings.is_some() {
+            self.model_visible_findings
+                .clone_from(&other.model_visible_findings);
         }
     }
 }

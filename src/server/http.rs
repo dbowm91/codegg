@@ -252,11 +252,11 @@ pub async fn run_server(
     // the HTTP and WebSocket surfaces fail closed and reject requests.
     let auth_open = !crate::server::middleware::auth::auth_disabled_by_env()
         && std::env::var("CODEGG_SERVER_TOKEN").is_err()
-        && !state
+        && state
             .config
             .server
             .as_ref()
-            .is_some_and(|s| s.token.as_deref().is_some_and(|t| !t.is_empty()));
+            .is_none_or(|s| s.token.as_deref().is_none_or(|t| t.is_empty()));
 
     let compression = CompressionLayer::new()
         .gzip(true)

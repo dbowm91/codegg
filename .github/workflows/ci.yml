@@ -119,6 +119,9 @@ jobs:
       - name: Scheduler bypass guard
         run: python3 scripts/check_scheduler_bypass.py
 
+      - name: Config merge coverage guard
+        run: python3 scripts/check_config_merge_coverage.py
+
       - name: Formatting
         run: cargo fmt --check --all
 

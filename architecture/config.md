@@ -57,13 +57,21 @@ Different strategies per field type:
 - **Field-by-field**: `provider` (via `ProviderConfig::merge()`),
   `server` (via `ServerConfig::merge()`), `watcher`, `search`,
   `discovery`, `eggwork` (via `EggworkConfig::merge()` per node key,
-  mirroring the `provider` map merge)
+  mirroring the `provider` map merge), and the ten optional sections
+  `approval_reviewer`, `command_intent`, `daemon`, `human_shell`,
+  `preflight`, `research`, `scheduler`, `shell`, `tool_backends`,
+  `tool_deferral`, each via its own `merge(&mut self, other: &Self)` in
+  `schema.rs`
 - **Key replacement**: `agent`, `mcp`, `commands`, `mode`, `model_profile` (insert
   overwrites existing keys)
 - **Key replacement**: `model_routers` (each virtual model key from a later
   config layer replaces the earlier policy)
 - **Concatenation**: `instructions` (appended to list)
-- **Whole-value replace**: `theme` (later layer wins outright)
+- **Whole-value replace**: `theme`, plus `provider_connections`, `security`,
+  and `deterministic_tools`. Those three are replace-only because every one
+  of their fields is non-`Option`, so serde bakes the default into the
+  struct and field-by-field combination cannot distinguish "unset" from
+  "set to the default". See "Merge coverage is enforced" below.
 - **Simple override** (via `merge_option!`): `schema`, `version`, `log_level`,
   `model`, `small_model`, `medium_model`, `auto_route_models`, `default_agent`,
   `username`, `share`, `autoupdate`, `disabled_providers`,
@@ -74,22 +82,41 @@ Different strategies per field type:
   `context_packer`, `context_policy`, `tool_advisor`, `decision_engine`,
   `orchestration`
 
-#### Fields `merge_configs` does NOT merge
+Within a field-by-field section, top-level keys combine individually, but a
+**nested block replaces wholesale** — specifying `[scheduler.queue]` in a
+later layer overrides the whole `queue` block rather than merging into the
+`queue` block from the layer beneath it.
 
-`merge_configs` is an explicit whitelist. A `Config` field with no arm is
-**silently dropped** whenever two or more config layers are resolved — the
-field is `None` on the merged result even when a parsed file set it. Verified
-empirically against the crate: a file containing `[security]` survives
-`load_config` but is `None` after `merge_configs`.
+#### Merge coverage is enforced
 
-Currently unmerged: `approval_reviewer`, `command_intent`, `daemon`,
-`deterministic_tools`, `human_shell`, `preflight`, `provider_connections`,
-`research`, `scheduler`, `security`, `shell`, `tool_backends`,
-`tool_deferral`.
+`merge_configs` is an explicit whitelist, and it is the **only** path from a
+parsed file to `Config`: both `Config::load` (`schema.rs`) and
+`ConfigWatcher::reload_config` (`watcher.rs:154`) call it. A field with no arm
+is therefore dropped for **every** layer, not only for multi-layer loads — the
+setting parses without error and then silently does nothing.
 
-When adding a `Config` field, add the merge arm in the same change and extend
-a `tests/paths.rs` merge assertion. This is a known gap, not an intentional
-design boundary.
+`scripts/check_config_merge_coverage.py` derives the `Config` field set from
+the struct definition and the merged field set from `merge_configs`, and fails
+when they differ. It embeds no field names, so adding a covered field passes
+without editing it and adding an uncovered one fails. It runs in
+`scripts/verify.sh quick` and in CI. Run it directly with `--verbose`; the
+guard's own sensitivity is exercised by `--self-test`.
+
+When adding a `Config` field, add the merge arm in the same change and extend a
+merge assertion in `paths.rs`'s test module. The guard will catch an omission,
+but the test is what pins the intended precedence.
+
+**Previously broken.** Thirteen fields — `approval_reviewer`,
+`command_intent`, `daemon`, `deterministic_tools`, `human_shell`, `preflight`,
+`provider_connections`, `research`, `scheduler`, `security`, `shell`,
+`tool_backends`, `tool_deferral` — had no arm at all and were dropped on every
+load, so those config sections were entirely inert. The ten optional sections
+got field-by-field `merge()` impls and the three default-backed sections got
+whole-value replace. Regression coverage is
+`test_merge_configs_preserves_single_layer_sections` (parses a single layer
+containing all thirteen and asserts each survives), plus
+`test_merge_configs_combines_optional_sections_field_by_field` and
+`test_merge_configs_replaces_default_backed_sections_whole`.
 
 ### ProviderConfig Merge (`schema.rs:1106`)
 
@@ -433,7 +460,10 @@ Validated fields:
 - **Merge is per-type**: HashMap fields use key replacement (later wins);
   `ProviderConfig`/`ServerConfig`/`WatcherConfig` use field-by-field;
   `instructions` concatenates. New fields need a new arm — see
-  "Fields `merge_configs` does NOT merge" above.
+  "Merge coverage is enforced" above.
+- **Nested blocks replace wholesale**: within a field-by-field section, a
+  nested block in a later layer overrides that whole block rather than
+  merging into the layer beneath it.
 - **No decrypt step on load or reload**: `ConfigWatcher::reload_config()`
   calls `decrypt_provider_keys()` (`watcher.rs:167`), but that function is a
   no-op. Hot reload never decrypts; credential resolution happens at the
@@ -525,3 +555,34 @@ throwaway crate built against `codegg-config`:
   agent `mode`/`color`, `tool_timeout_seconds` 1-3600,
   `max_parallel_tools` 1-100, `compaction.threshold` 0.1-1.0,
   `compaction.max_tokens >= 1000`).
+
+Third pass (2026-10-06) — **the 13-field merge gap recorded above is fixed.**
+- **Re-scoped the blast radius.** The second pass called it a "multi-layer
+  load" defect. That understated it: `merge_configs` is the only path from a
+  parsed file to `Config` (`Config::load` and `ConfigWatcher::reload_config`
+  at `watcher.rs:154` both call it), so the 13 sections were dropped even for a
+  **single** config file. Confirmed by running the pre-fix `merge_configs`
+  against `merge_configs(&[parsed])` for one parsed layer — every one of the
+  13 came back `None`.
+- **Classified by field shape before choosing a strategy**, rather than
+  applying one rule to all 13. The ten all-`Option` sections
+  (`approval_reviewer`, `command_intent`, `daemon`, `human_shell`,
+  `preflight`, `research`, `scheduler`, `shell`, `tool_backends`,
+  `tool_deferral`) can express "unset", so they got a field-by-field
+  `merge(&mut self, other: &Self)` each. The three whose fields are **all
+  non-`Option`** (`provider_connections`, `security`,
+  `deterministic_tools`) cannot — serde bakes the default into the struct, so
+  a `bool`/`usize` cannot be distinguished from "explicitly set to the
+  default" — and use whole-value replace, which is already the documented
+  behaviour of `theme`.
+- **Nested blocks replace wholesale** even inside a field-by-field section;
+  documented as an explicit rule rather than left implicit.
+- **Added `scripts/check_config_merge_coverage.py`** so the class of defect
+  cannot recur. It derives both sides (struct fields vs. `merge_configs`
+  reads) and embeds no field names, so a future covered field passes without
+  editing it and a future uncovered one fails. Verified it reports exactly the
+  historical 13 against the pre-fix `paths.rs` and 0 after. Wired into
+  `scripts/verify.sh quick` and CI, bringing the guard count to 41.
+- **Regression coverage** proves the defect rather than the fix only: the
+  three new tests in `paths.rs` were confirmed to fail against the pre-fix
+  function and pass after.

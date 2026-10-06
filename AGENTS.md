@@ -8,8 +8,8 @@ Rust 1.89+, edition 2021.
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
                           # boundaries, sandbox, execution-ownership, TUI authority,
                           # http-route-disposition, audit-coverage, scheduler-bypass,
-                          # provider wire/catalog/resilience + OpenAI endpoint, Eggwork
-                          # target routing, cargo check workspace
+                          # config-merge-coverage, provider wire/catalog/resilience +
+                          # OpenAI endpoint, Eggwork target routing, cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
@@ -81,7 +81,8 @@ cargo nextest run --workspace --locked --profile ci  # capped full suite (needs 
 
 `verify.sh quick` runs the routine subset. CI (`.github/workflows/ci.yml`) is one bounded
 `verify` job: agent schema, core-boundary, sandbox, execution-ownership, tui-authority,
-http-route-disposition, audit-coverage, scheduler-bypass, fmt, clippy, workspace tests.
+http-route-disposition, audit-coverage, scheduler-bypass, config-merge-coverage, fmt,
+clippy, workspace tests.
 CI is a strict **subset** of `quick` — it omits the client/desktop boundaries and the
 provider wire/catalog/resilience, OpenAI endpoint, and Eggwork routing guards, so a
 green CI run does not imply a green `quick`. Everything outside both is

@@ -85,6 +85,9 @@ run_quick() {
     echo "==> python3 scripts/check_scheduler_bypass.py"
     (cd "$REPO_ROOT" && python3 scripts/check_scheduler_bypass.py)
 
+    echo "==> python3 scripts/check_config_merge_coverage.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_config_merge_coverage.py)
+
     echo "==> python3 scripts/check_provider_wire_boundary.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_wire_boundary.py)
 

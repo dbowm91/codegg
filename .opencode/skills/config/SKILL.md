@@ -60,14 +60,24 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
 - **A new `Config` field is invisible until `merge_configs` handles it.**
   `merge_configs` (`paths.rs:164`) is an explicit whitelist, not a derived
   merge: `merge_option!` for scalar/`Option` fields, then hand-written arms
-  for maps and nested structs. Thirteen fields are currently **dropped on
-  every multi-layer load** — `approval_reviewer`, `command_intent`, `daemon`,
-  `deterministic_tools`, `human_shell`, `preflight`, `provider_connections`,
-  `research`, `scheduler`, `security`, `shell`, `tool_backends`,
-  `tool_deferral` (`theme` is the one exception: whole-value replace).
-  Verified empirically: a parsed `[security]` block survives `load_config`
-  but is `None` after `merge_configs`. Adding a field means adding a merge
-  arm in the same change, plus a `tests/` merge assertion.
+  for maps and nested structs. It is the **only** path from a parsed file to
+  `Config` — `Config::load` and `ConfigWatcher::reload_config`
+  (`watcher.rs:154`) both call it — so a field with no arm is dropped for
+  *every* layer, including a single config file. The setting then parses
+  cleanly and silently does nothing.
+  `scripts/check_config_merge_coverage.py` derives the struct's field set and
+  `merge_configs`' read set and fails when they differ; it runs in
+  `verify.sh quick` and CI. Adding a field still means adding a merge arm in
+  the same change, plus a `paths.rs` test assertion pinning the intended
+  precedence. Match the existing strategy for the field's shape:
+  - all-`Option` section → a `merge(&mut self, other: &Self)` field-by-field
+    impl (ten sections do this);
+  - section whose fields are **all non-`Option`** (`security`,
+    `provider_connections`, `deterministic_tools`) → whole-value replace, since
+    serde bakes the default into the struct and a `bool`/`usize` cannot be
+    distinguished from "explicitly set to the default";
+  - within a field-by-field section, a **nested block replaces wholesale** —
+    a later `[scheduler.queue]` overrides the whole `queue` block.
 - **Inert-but-retained fields stay.** `[autoupdate]` (`schema.rs:236`) is
   accepted and preserved but **nothing reads it**; `codegg upgrade` only runs
   on explicit invocation (see `architecture/upgrade.md`). It is deliberately
@@ -87,7 +97,15 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
 
 ```bash
 cargo test -p codegg-config
+python3 scripts/check_config_merge_coverage.py --verbose  # every Config field has a merge arm
+python3 scripts/check_config_merge_coverage.py --self-test # prove the guard is sensitive
 ```
+
+Merge assertions live in the `paths.rs` test module
+(`test_merge_configs_preserves_single_layer_sections`,
+`test_merge_configs_combines_optional_sections_field_by_field`,
+`test_merge_configs_replaces_default_backed_sections_whole`). Add to them
+when adding a field; the guard proves coverage, the test pins precedence.
 
 Storage-adjacent config tests belong with storage; see
 `.opencode/skills/session-storage/SKILL.md`.
@@ -115,3 +133,14 @@ load, verified by building against the crate and comparing
 `load_config(path)` with `merge_configs(&[config])` — and the
 `encrypt_provider_keys`/`decrypt_provider_keys` no-op contract
 (`encryption.rs:544`/`:549`).
+
+Third pass: **that gap is now fixed**, and the second pass's "multi-layer"
+framing was itself too narrow — `merge_configs` is the only path to `Config`,
+so all 13 sections were dropped even for a single config file. Ten
+all-`Option` sections gained field-by-field `merge()` impls; `security`,
+`provider_connections`, and `deterministic_tools` gained whole-value replace
+because their non-`Option` fields cannot express "unset". Added
+`scripts/check_config_merge_coverage.py` (wired into `verify.sh quick` and
+CI) so the defect class cannot recur; verified it reports exactly the
+historical 13 against the pre-fix `paths.rs`. The three new `paths.rs` tests
+were confirmed to fail before the fix and pass after.

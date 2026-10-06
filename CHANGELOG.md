@@ -18,6 +18,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Config layer merge silently dropped 13 sections.** `merge_configs`
+  (`crates/codegg-config/src/paths.rs:164`) is an explicit whitelist and is the
+  only path from a parsed config file to `Config` — both `Config::load` and
+  `ConfigWatcher::reload_config` call it — so a `Config` field with no merge arm
+  was discarded for *every* layer, not only multi-layer loads. `provider_connections`,
+  `approval_reviewer`, `daemon`, `scheduler`, `tool_deferral`, `security`,
+  `research`, `tool_backends`, `human_shell`, `shell`, `deterministic_tools`,
+  `preflight`, and `command_intent` had no arm, so those config sections parsed
+  without error and then did nothing. The ten all-`Option` sections
+  (`approval_reviewer`, `command_intent`, `daemon`, `human_shell`, `preflight`,
+  `research`, `scheduler`, `shell`, `tool_backends`, `tool_deferral`) now merge
+  field-by-field via a `merge()` impl each; `security`, `provider_connections`,
+  and `deterministic_tools` replace wholesale, because their fields are all
+  non-`Option` and serde bakes the default into the struct, so "unset" cannot be
+  distinguished from "set to the default". **Behaviour change:** those thirteen
+  sections now take effect, where previously they were inert.
+- Added `scripts/check_config_merge_coverage.py`, wired into
+  `scripts/verify.sh quick` and CI, to stop the defect class recurring. It
+  derives the `Config` field set from the struct and the merged field set from
+  `merge_configs` and fails when they differ; it embeds no field names, so a
+  future covered field passes without editing it and an uncovered one fails.
+- Three pre-existing verification defects surfaced while validating the above,
+  all unrelated to config layering:
+  - `installation_m002_qualification::prebuilt_docs_do_not_require_separate_eggsearch_install`
+    anchored on `### Prebuilt installer` / `### From source` headings that the
+    README restructure removed, so it failed on a missing section rather than on
+    the contract. It now anchors on the same headings in `docs/install.md`,
+    where the prebuilt path is actually documented, and additionally asserts the
+    README routes readers there.
+  - `tool_program_m014_daemon_recovery` resolved the daemon binary as
+    `current_exe().parent()/codegg`, i.e. `target/<profile>/deps/codegg`, which
+    never exists, and relied on `CARGO_BIN_EXE_codegg` being populated (it is
+    not for this target/feature combination). A shared `daemon_binary()` helper
+    now walks up from `deps/` to `target/<profile>/codegg`.
+  - `clippy::nonminimal_bool` in `server`-gated `src/server/http.rs`. The
+    routine clippy sweep runs without `--features server`, so the lint was never
+    reached; it is now expressed with `Option::is_none_or`.
 - Global skill discovery: five registry construction sites
   (`src/tui/app/mod.rs` ×2, `src/tool/skill.rs`, `src/tool/skill_proposal.rs`,
   `src/skills/compat.rs`) passed an already-joined `<config>/codegg/skills` path
@@ -36,25 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets retain pinned fresh-install guidance; normal upgrade never fetches
   or executes `install.sh`. Eggup is pinned to immutable revision
   `66813b3b94de3a9b2f270e0000dc339ef6f0b478`.
-
-### Fixed
-
 - `upgrade()`: retire the network-fetched installer-script execution path (M005 hardening). `upgrade()` no longer spawns external `curl`, never fetches or executes a shell script, acquires no candidate bytes, and attempts no executable replacement; a valid newer tag now fails closed with manual fresh-install guidance (`CODEGG_VERSION=v{latest}` + `install.sh` URL) via the pure `describe_upgrade()` disposition. `check_for_updates()` (Eggfetch, 10s timeout, bounded redirects) and `installer_invocation()` fresh-install pin contract are unchanged.
 - `upgrade()`: export the installer version pin as `CODEGG_VERSION` (the name `install.sh` honors) instead of `INSTALL_VERSION`, which the installer ignored — the pin was silently dropped and latest installed. Point the installer at the GitHub-hosted script (`raw.githubusercontent.com/dbowm91/codegg/main/install.sh`; there is no `codegg.ai` domain) and print the full `curl ... | sh` upgrade command. Pin construction lives in the pure `installer_invocation()` helper with a regression test (`tests/upgrade.rs`). `upgrade()` itself remains unwired from `codegg upgrade` (check-only CLI).
 
 ### Documented
 
-- Recorded a latent configuration defect found while auditing the `config` skill:
-  `merge_configs` (`crates/codegg-config/src/paths.rs:164`) is an explicit
-  whitelist, and **13 `Config` fields are silently dropped on every multi-layer
-  load** — `provider_connections`, `approval_reviewer`, `daemon`, `scheduler`,
-  `tool_deferral`, `security`, `research`, `tool_backends`, `human_shell`,
-  `shell`, `deterministic_tools`, `preflight`, `command_intent`. A `[security]`
-  block parses and survives `load_config` but is `None` after `merge_configs`.
-  This is left unfixed here: adding the merge arms changes which user config
-  blocks take effect, which needs its own review and test coverage. The contract
-  is now documented in `.opencode/skills/config/SKILL.md` so it is not
-  rediscovered from scratch.
 - Skills and architecture third pass (`.opencode/skills/` + `architecture/` +
   `AGENTS.md`): re-verified all 23 module guides against source and corrected the
   claims that no longer held. The material ones — `architecture/mcp.md` showed a

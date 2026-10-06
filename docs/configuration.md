@@ -17,14 +17,25 @@ parses and passes semantic checks, and exits 1 with a message otherwise.
 
 ## Where configuration is read from
 
-The first match wins:
+All of these layers are loaded and **merged** — this is not first-match-wins.
+They are collected in this order, and a later layer overrides an earlier one:
 
-| Precedence | Location | Notes |
+| Order | Location | Notes |
 |---|---|---|
-| 1 | `$CODEGG_TUI_CONFIG` | An explicit file path. Highest precedence. |
+| 1 | `$CODEGG_TUI_CONFIG` | An explicit file path, if it exists. Merged first, so it is the **lowest** precedence. |
 | 2 | System | macOS `/Library/Application Support/codegg/codegg.json`; other Unix `/etc/codegg/codegg.json`; Windows `%ProgramData%\codegg\codegg.json`. |
 | 3 | Global | `<config_dir>/codegg/codegg.jsonc`, then `.json`, then `config.json`. Falls back to `<config_dir>/codegg/codegg.jsonc`. |
-| 4 | Project | Walked upward from the working directory. |
+| 4 | Project | Walked upward from the working directory. Merged last, so it is the **highest** precedence. |
+
+So effective precedence, highest first, is: **project → global → system →
+`$CODEGG_TUI_CONFIG`**.
+
+How the layers combine depends on the field (the full table is under
+"Merge Strategies" in `architecture/config.md`): most sections combine
+key-by-key, maps replace per key, and `instructions` concatenates. A section
+whose fields are all non-`Option` (`security`, `provider_connections`,
+`deterministic_tools`) is replaced wholesale rather than merged. Within a
+key-by-key section, a nested block you specify replaces that whole block.
 
 `<config_dir>` is the platform config directory — `~/.config` on Linux,
 `~/Library/Application Support` on macOS.
