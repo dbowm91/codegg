@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime — Post-Closure Merge Qualification Corrective Addendum
 
-Status: active; C001 ready
+Status: active; C001 active
 
 Repository baseline reviewed: `291a361d402c7062a713278e8e5ef3a840cee884`
 
@@ -53,7 +53,7 @@ The historical M001-M006 closure records remain valid and MUST NOT be rewritten.
 
 ### C001 — Final hosted CI and merge qualification
 
-Status: ready.
+Status: active.
 
 Implementation plan:
 
@@ -233,4 +233,4 @@ C001 closure authorizes merge. It does not itself claim that the merge has occur
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 Final hosted CI and merge qualification | ready | `plans/implementation/decision-model-extraction-runtime-post-closure-merge-corrective/001-final-hosted-ci-and-merge-qualification.md` | pending | None; M001-M006 are closed. |
+| C001 Final hosted CI and merge qualification | active | `plans/implementation/decision-model-extraction-runtime-post-closure-merge-corrective/001-final-hosted-ci-and-merge-qualification.md` | pending | None; M001-M006 are closed. |

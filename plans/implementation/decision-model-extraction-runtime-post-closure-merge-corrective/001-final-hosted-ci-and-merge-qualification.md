@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Post-Closure Corrective C001 — Final Hosted CI and Merge Qualification
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `291a361d402c7062a713278e8e5ef3a840cee884`
 
