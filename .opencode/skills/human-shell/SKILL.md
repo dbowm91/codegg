@@ -27,11 +27,13 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 |-------|---------|
 | `!command` | Run command, store output ephemerally (model never sees it) |
 | `!!command` | Run command, auto-promote output into conversation |
+| `\!command` | Escape hatch — becomes literal chat text starting with `!`, never runs (`src/shell/types.rs:127`) |
 | `/shell-list` | Show recent shell commands with status |
-| `/shell-show <id>` | Show stored output for a command |
-| `/shell-include <id> [stdout\|stderr\|all]` | Promote a stored command's output into context |
-| `/shell-rerun <id>` | Re-execute a previous command |
-| `/shell-kill <id>` | Abort a running command |
+| `/shell-show <id\|last>` | Show stored output for a command |
+| `/shell-include <id\|last> [--tail N\|--stdout\|--stderr\|--summary\|all]` | Promote a stored command's output into context |
+| `/shell-expand <id\|last> stdout\|stderr [start..end]` | Expand a byte/line region of a stored output |
+| `/shell-rerun <id\|last>` | Re-execute a previous command |
+| `/shell-kill <id\|last>` | Abort a running command |
 
 ## How It Works
 
@@ -42,14 +44,25 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 5. stdout/stderr chunks stream as `ShellEvent::Stdout`/`ShellEvent::Stderr`
 6. `ShellOutputStore` captures output in `BoundedOutput` (head 256KB + tail 256KB)
 7. `ShellCell` renders in the message timeline with status, elapsed, exit code
-8. `/shell-list` displays recent commands in format: `[id] done exit=N X.Xs $ command`
+8. `/shell-list` displays the last 10 commands as `[id] <status> $ command`,
+   where `<status>` is `done exit=N X.Xs`, `running X.Xs`, `timeout Xs`,
+   `killed X.Xs`, or `failed`, plus a ` [promoted]` marker once the entry has
+   been promoted (`src/tui/commands/shell.rs:567-574`)
 9. Output is NOT added to the model's context
 
 ## Promotion Model
 
-- `!cmd` → `ShellOrigin::HumanEphemeral`, `ShellCapturePolicy::StoreEphemeral`
-- `!!cmd` → `ShellOrigin::HumanPromoted`, `ShellCapturePolicy::StoreAndPromote`
+- `!cmd` → `ShellCapturePolicy::StoreEphemeral`
+- `!!cmd` → `ShellCapturePolicy::StoreAndPromote`
 - `/shell-include <id>` → Promotes an existing ephemeral entry into context
+
+**Both keep `origin: ShellOrigin::HumanEphemeral`**
+(`src/tui/commands/shell.rs:66`). `promote_after` only selects the capture
+policy — do not branch on origin to detect promotion. The
+`ShellOrigin::HumanPromoted` variant is declared (`src/shell/types.rs:7`)
+but is **never constructed** anywhere in `src/`, `crates/`, or `tests/`;
+`ShellOutputEntry::promoted` is the field that records the actual promotion
+(`src/shell/store.rs:90`).
 
 ## Safety Policy
 
@@ -61,13 +74,21 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 - Fork bombs
 - `shutdown`, `reboot`, `halt`, `poweroff`
 
-**Warned** (confirmation dialog if `confirm_dangerous` is enabled):
-- `rm -rf .` (current directory)
-- `git clean -f`
+**Warned** (confirmation dialog if `confirm_dangerous` is enabled —
+gated at `src/tui/commands/shell.rs:28`):
+- `rm -rf .` (current directory), `rm -rf ~` / `$HOME`
+- `git clean -f...`
 - `sudo`
-- `curl|sh`, `curl|bash`, `wget|sh`
-- `chmod -R 777`, `chmod -R a+rwx`
+- `curl|sh`, `curl|bash`, `wget|sh`, `wget|bash` (optional `sudo`)
+- `sh <(curl ...)`, `bash <(wget ...)` — process substitution
+- `chmod` with a numeric 000/4xx/777 mode, or `[ugoa]+rwx` adds
 - `chown -R`
+- `find ... -delete`, `find ... -exec rm`
+
+Regexes live in `src/shell/policy.rs:12-56` and are matched against a
+*normalized* command (`src/shell/policy.rs:72`): trimmed, lowercased, with
+`--recursive`→`-r`, `--force`→`-f`, and quotes stripped. Long-form flags are
+only caught because of that normalization.
 
 ## Bounded Storage
 
@@ -113,34 +134,68 @@ streamed length. The head/tail split is not a 3-way split of the budget.
 }
 ```
 
-`ansi` controls ANSI escape handling in captured output (`AnsiMode`: `sgr-only` (default), `strip`, `raw`).
+`ansi` controls ANSI escape handling in captured output (`AnsiMode`: `sgr-only`
+(default), `strip`, `raw` — `crates/codegg-config/src/schema.rs:2936`).
+`default_timeout_secs` defaults to 300 (`DEFAULT_TIMEOUT_SECS`,
+`src/shell/types.rs:104`) and is capped at 1 hour by config validation.
+
+`auto_promote_bangbang` is currently **inert**: it is parsed and defaults to
+`true` (`crates/codegg-config/src/schema.rs:2995`), but nothing reads it.
+`!!` promotion is unconditional — `promote_after` is fixed by
+`classify_prompt_submission` at parse time and threaded straight to
+`spawn_human_shell`. Do not assume setting it to `false` disables `!!`
+promotion; wire it up in `src/tui/app/prompt_turn.rs` first.
+
+## Command Routing (agent bash, not human shell)
+
+Separate from the `!`/`!!` path, the *agent's* bash tool classifies commands
+by family. `RouteLevel` defaults to `Observe`
+(`crates/codegg-config/src/schema.rs:3483`) — classification and metadata
+only, with every command still executing via raw shell. Raising a family to
+`Active` is what routes execution to structured backends. Setting
+`CODEGG_ROUTING_DISABLE=1` is the emergency kill switch that disables routing
+for all families (`src/tool/bash/policy.rs:322`); per-family `Off` config
+disables one family.
 
 ## Key Types
 
-- `ShellOrigin` — Who initiated: `HumanEphemeral`, `HumanPromoted`, `AgentTool`
-- `ShellCapturePolicy` — What to store: `DisplayOnly`, `StoreEphemeral`, `StoreAndPromote`
-- `ShellCommandId` — Newtype `u64`, monotonically allocated
+- `ShellOrigin` — Declared: `HumanEphemeral`, `HumanPromoted`, `AgentTool`.
+  Only `HumanEphemeral` is ever constructed
+- `ShellCapturePolicy` — What to store: `DisplayOnly`, `StoreEphemeral`,
+  `StoreAndPromote`. Only the latter two are ever constructed
+- `ShellCommandId` — Newtype `u64`, monotonically allocated (`src/shell/types.rs:52`)
 - `ShellEvent` — Stream events: `Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`, `FailedToStart`
-- `ShellRuntime` — Spawns child processes via `$SHELL -lc`
-- `ShellHandle` — Abort handle for killing running commands
+- `ShellRuntime` — Spawns child processes via `$SHELL -lc` (falls back to `sh`; `src/shell/runtime.rs:16,108`)
+- `ShellHandle` — Abort handle for killing running commands (`CancellationToken` + task `AbortHandle`)
 - `BoundedOutput` — Head/tail split storage with omitted byte tracking
-- `ShellOutputEntry` — Stores `exit_code: Option<i32>` alongside status, stdout, stderr, elapsed time
+- `ShellOutputEntry` — Stores `exit_code: Option<i32>` alongside status, stdout, stderr, elapsed time, plus `promoted`/`promote_after`/`capture_policy` (`src/shell/store.rs:79`)
 - `ShellDigest` — Structured failure extraction from output
 
 ## Relationship to Other Modules
 
-- **tool::bash** — Agent bash tool uses `ShellOrigin::AgentTool`; separate from human shell
+- **tool::bash** — Fully separate: the agent bash tool (`src/tool/bash.rs`)
+  never references `crate::shell` types. `ShellOrigin::AgentTool` is
+  declared (`src/shell/types.rs:8`) but never constructed
 - **tui** — Renders `MsgPart::ShellCell`, handles `/shell-*` commands via `TuiCommand` variants
 
 ## See Also
 
 - `architecture/human_shell.md` — full module contract (10-phase projection pipeline: `projection.rs`, `projector.rs`, `redactor.rs`, `rtk.rs`, `projection_bridge.rs`)
-- `.skills/tui/SKILL.md` — TUI command registration and async dispatch rules
+- `.opencode/skills/tui/SKILL.md` — TUI command registration and async dispatch rules
 
 ## Source verification
 
-Verified 2026-10-06 against `src/shell/{store,types,policy,projection,projector,redactor,rtk,projection_bridge}.rs`.
-Corrected the bounded-storage arithmetic (`BoundedOutput` retains 512 KiB of
-head+tail, not the full 1 MB budget; the middle is dropped and counted in
-`omitted_bytes`) and pinned the three store limits to their declaring lines.
-Claims without a traceable source were removed rather than guessed.
+Re-verified 2026-10-06 against `src/shell/{store,types,policy,runtime,digest}.rs`,
+`src/tui/commands/shell.rs`, `src/tui/app/mod.rs`, `crates/codegg-config/src/schema.rs`,
+and `src/tool/bash/policy.rs`. Corrected the promotion model — `!!` keeps
+`ShellOrigin::HumanEphemeral` and only switches `capture_policy`;
+`HumanPromoted`, `AgentTool`, and `DisplayOnly` are declared but never
+constructed. Replaced the `/shell-include` flag list with the real usage
+string, added the undocumented `/shell-expand` command and the `\!` escape
+hatch, completed the warn-pattern list, and flagged `auto_promote_bangbang`
+as parsed-but-unread. Added the `RouteLevel::Observe` default and the
+`CODEGG_ROUTING_DISABLE=1` kill switch. Claims without a traceable source
+were removed rather than guessed. The earlier bounded-storage correction
+stands: `BoundedOutput` retains 512 KiB of head+tail, not the full 1 MB
+budget; the middle is dropped and counted in `omitted_bytes`, and eviction
+is oldest-first via `VecDeque::pop_front` (`src/shell/store.rs:253-255`).

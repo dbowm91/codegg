@@ -60,6 +60,20 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 
 Discovery is bounded by `AssetDiscoveryConfig` (max file size 256 KiB, max frontmatter 64 KiB, max 256 skills per root, max 64 resources per skill, name/description length caps). Skill metadata such as `allowed-tools` never grants permissions.
 
+### Global roots are parent directories
+
+`resolve_source_roots` (`registry.rs:250-303`) appends `<vendor>/skills` to every
+global root it is given, so a global root is the **config directory itself**,
+not the skills directory. Pass `default_global_discovery_root()`
+(`src/agent/asset_context.rs`), which is exactly `dirs::config_dir()`.
+
+Passing an already-joined path silently discovers nothing: the root resolves to
+`<config>/codegg/skills/codegg/skills`, which does not exist, and
+`resolve_source_roots` skips a root whose path is not a directory without
+emitting a diagnostic. There is no user-visible symptom other than global
+skills simply never appearing. `already_joined_global_root_discovers_nothing`
+in `registry.rs` pins this failure mode.
+
 ## Key Types
 
 ### Skill (legacy facade)
@@ -169,9 +183,15 @@ the rendered body. There is no standalone `list_skill_resources()` function.
 | Location | Usage |
 |----------|-------|
 | `src/tool/skill.rs` | The `skill` model tool; renders effective skills and their bounded resources |
+| `src/tool/skill_proposal.rs` | Collision diagnostics for a submitted proposal |
+| `src/tui/app/mod.rs` | `/skill-promote` habit listing and `/skill-proposal` live-collision view |
+| `src/skills/compat.rs` | `SkillIndexCompat::load` — the legacy facade's own registry build |
 | `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder::build_skills` — filesystem registry + plugin sources |
 | `src/core/daemon_refresh.rs` | Daemon-side registry construction and `/reload` refresh |
 | `src/agent/prompt.rs` | `assemble_system_prompt_with_profile(ctx: PromptContext)` — skill names reach the prompt through the `PromptContext` profile |
+
+Every one of these constructs its own `AssetRegistry`, so every one of them must
+honor the parent-directory contract above.
 
 ## Skills vs System Prompts
 
@@ -189,4 +209,6 @@ See `architecture/skills.md` for the authoritative module contract.
 
 ## Source verification
 
-Verified 2026-10-06 against `src/skills/{mod,registry,parser,source,publish,promotion}.rs`, `src/skills/parser.rs:127,346,377`, `src/agent/asset_snapshot_builder.rs:58,94`, `src/agent/prompt.rs:12,28`, `src/agent/asset_context.rs:256`, `src/core/daemon_refresh.rs:188-191,425`, `src/tool/skill.rs:13,105`, `src/tool/skill_proposal.rs:38,98`, `src/main.rs:2937-2941`, and `ls -la .skills .agents/skills`. Corrected: the Agents/OpenCode/Claude global root paths, which resolve under the daemon-registered config directory (`registry.rs:250-303`) rather than `$HOME`; the daemon-side integration path, which is `src/core/daemon_refresh.rs`, not `src/core/daemon.rs` (which has no registry or `/reload` references); and the native `.md` fallback name, which is the file stem (`parser.rs:105-110`), not the directory name. Confirmed correct as written: the 10 `SourceKind` variants and ranks (`source.rs:6-18`), the `AssetDiscoveryConfig` bounds (`source.rs:115-120`), `Skill`/`SkillIndex` signatures (`mod.rs:24-140`), `validate_portable_document` as the seam shared by discovery and proposals (`parser.rs:127,166-174`), the `allowed-tools` metadata-only invariant (`parser.rs:225-228`), SHA-256 digest construction (`parser.rs:377-386`), `SKILL.md` resource exclusion (`parser.rs:346`), publication roots and locking (`publish.rs:412-434,107,296`), the submit-only model tool, and `.skills` / `.agents/skills` as symlinks to `.opencode/skills`. Claims without a traceable source were removed rather than guessed.
+Re-verified 2026-10-06 against `src/skills/{mod,registry,parser,source,publish,promotion,compat}.rs`, `src/agent/asset_context.rs`, `src/core/daemon_refresh.rs:187-191`, `src/tool/skill.rs`, `src/tool/skill_proposal.rs`, `src/tui/app/mod.rs:4482-4489,4641-4652`, and `ls -la .skills .agents/skills`. Corrected: the global-root contract, which was documented only for the daemon path — `AssetRegistry::build` appends `<vendor>/skills` to each root (`registry.rs:250-303`), but `src/tui/app/mod.rs` (two sites), `src/tool/skill.rs`, `src/tool/skill_proposal.rs`, and `src/skills/compat.rs` each passed an already-joined `…/codegg/skills` path, resolving to `…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips missing directories silently, global skills were dropped with no diagnostic in every one of those paths. `default_global_skills_root()` was replaced by `default_global_discovery_root()` (exactly `dirs::config_dir()`) and all five call sites now pass the parent directory; `already_joined_global_root_discovers_nothing` and `global_discovery_root_is_the_unjoined_config_dir` pin both halves of the contract. Note `src/skills/compat.rs` previously took `.parent()` of the already-joined path, landing on `<config>/codegg` and still double-joining. The integration-points table previously listed only the daemon, tool, and snapshot call sites and omitted these four.
+
+Also corrected earlier and still confirmed: the Agents/OpenCode/Claude global roots resolve under the daemon-registered config directory rather than `$HOME`; the daemon integration path is `src/core/daemon_refresh.rs`, not `src/core/daemon.rs`; and the native `.md` fallback name is the file stem (`parser.rs:105-110`), not the directory name. Claims without a traceable source were removed rather than guessed.

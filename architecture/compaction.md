@@ -19,7 +19,7 @@ fallback.
 | `src/agent/compaction.rs` | Compatibility re-export only; no production implementation |
 | `src/agent/context_frame.rs` | `ContextFrame`, `ContextLedgerState` — post-compaction context snapshot |
 | `src/agent/context_runtime.rs` | `compact_if_needed()` — integration point called each turn |
-| `src/config/schema.rs` | `CompactionConfig`, `CompactionModeConfig`, `CompactionPolicyConfig` |
+| `crates/codegg-config/src/schema.rs` | `CompactionConfig`, `CompactionModeConfig`, `CompactionPolicyConfig` |
 | `tests/compaction.rs` | Module-level integration tests |
 
 ## How It Works
@@ -479,3 +479,25 @@ ownership migration and M006 closure"), which added 30 lines near the top of
 span `1335-1352`->`1370-1387`, re-checked to span exactly the same
 `CompactionConfig` body. The verified defaults (threshold 0.7, reserved 16000,
 max_events 50) and the timeouts are unchanged.
+
+Second pass (2026-10-06) against `src/context/compaction.rs`,
+`src/context/continuation.rs`, `src/context/evidence.rs`, and
+`crates/codegg-config/src/schema.rs`:
+- **"Where It Lives" pointed at a path that does not exist**:
+  `src/config/schema.rs`. The `CompactionConfig` / `CompactionModeConfig` /
+  `CompactionPolicyConfig` types live in the extracted config crate at
+  `crates/codegg-config/src/schema.rs:1369` / `:1351` / `:1359`. There is no
+  `src/config/` directory.
+- Verified accurate: every type heading line anchor (`ContextTracker`:23,
+  `CompactionStrategy`:198, `CompactionMode`:654, `CompactionPolicy`:662,
+  `ResolvedCompactionConfig`:703, `EvidenceRef`:1197,
+  `ProgrammaticCompactionState`:1243, `CompactionInput`/`CompactionOutput`
+  1250/1262), `ContextTracker` 7 fields, `EvidenceRef` 9 fields, 10
+  `EvidenceKind` variants, all 17 `compaction.*` schema keys
+  (`schema.rs:1370-1387`), the 5-variant policy table
+  (`compaction.rs:672-699`), 500-char tool-output truncation
+  (`compaction.rs:289`), 60s/120s LLM timeouts (`:1523`/`:427`), the 20,000-
+  token / 8,000-char intent-spine bounds (`continuation.rs:61`/`:65`), the
+  32-item evidence cap (`continuation.rs:74`), the four M003 evidence bounds
+  (`evidence.rs:33-40`), and the Hybrid/Balanced `unwrap_or` defaults
+  (`compaction.rs:760`/`:771`).

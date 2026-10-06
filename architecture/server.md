@@ -174,9 +174,18 @@ with `#[serde(tag = "type")]` JSON serialization.
 `ProjectionResume`, `ProjectionAck`, `ProjectionUnsubscribe`.
 
 **Server → Client**: `EventEnvelope` (sequence-tagged for replay),
-`TextDelta`, `StateSnapshot`, `ToolCallStarted`, `ToolResult`,
+`TextDelta`, `ToolCallStarted`, `ToolResult`,
 `PermissionPending`, `QuestionPending`, `SessionInfo`, `SessionEnded`,
-`Error`, `ResyncRequired`.
+`Error`, `ResyncRequired`, plus the projection family
+(`ProjectionCapabilitiesAck`, `ProjectionSnapshot`, `ProjectionReplay`,
+`ProjectionResync`, `ProjectionEvent`, `ProjectionAckResult`,
+`ProjectionUnsubscribeResult`, `ProjectionSubscriptionStatusResult`,
+`ProjectionArtifactListResult`, `ProjectionArtifactReadResult`,
+`ProjectionCompatibilityDiagnostic`).
+
+`StateSnapshot` is declared on `TuiMessage` and answered by the TUI's own
+remote-mode handler (`src/tui/app/mod.rs:1855`), but `src/server/ws.rs` never
+emits it — this server does not send state snapshots.
 
 `RenderFrame` is unsupported — returns `Error` with code
 `unsupported_render_frame`.
@@ -423,10 +432,12 @@ cargo test -p codegg --features server
 # WebSocket integration
 cargo test --test tui_render
 
-# Static guards (after changes)
+# Static guards (after changes; only the first two run in verify.sh quick / CI)
+python3 scripts/check_http_route_disposition.py
 python3 scripts/check_websocket_bounds.py
 python3 scripts/check_projection_transport_isolation.py
 python3 scripts/check_projection_transport_lifecycle.py
+python3 scripts/check_execution_ownership.py
 ```
 
 ## Related Docs
@@ -454,4 +465,22 @@ per-connection projection transport caps to their real declarations in
 `ServerState` at `state.rs:106` with its 9 listed fields, both rate
 limiters at 100 req/60s with a 10,000-key cap
 (`MAX_RATE_LIMITER_KEYS` / `MAX_WS_RATE_LIMITER_KEYS`), the CORS default
-origins, and the `ServerRuntimeError` variants/status mapping.
+origins and GET/POST/DELETE method set, the compression skip-status set, and
+the middleware ordering (auth outermost, then rate limit).
+
+Re-verified 2026-10-06 against `src/server/`, `src/main.rs`, and
+`crates/codegg-protocol/src/tui.rs`. Corrected the Server → Client message
+list, which omitted the 11 projection-family variants
+(`ProjectionCapabilitiesAck` … `ProjectionCompatibilityDiagnostic`), and
+removed `StateSnapshot` from it: `src/server/ws.rs` never constructs that
+variant (0 matches) — it is emitted only by the TUI's remote-mode handler at
+`src/tui/app/mod.rs:1855`. Re-confirmed accurate: every route in the Router
+Structure tree is mounted in `http.rs` (the trigger route comes from the
+merged `task_trigger_router`, not an `api_router` `.route()` call);
+`/health` is mounted on the outer router at `http.rs:349` and served by
+`routes::health::health_check` imported at `http.rs:24` (no inline copy);
+`ServerRuntimeError`'s five variants and the `Auth`→401 / rest→500 mapping in
+`src/error.rs:179-187`; `--standalone-core` exiting 2 at `src/main.rs:3552`;
+the SSE 15s heartbeat and its broadcast-lag-only `resync_required` path; the
+`sanitize_path` ordering and its absolute-root requirement; and
+`auth_disabled_by_env` accepting only `1`/`true`.

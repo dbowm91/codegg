@@ -307,9 +307,11 @@ test corpus:
    `HeadlessProjectionConsumer` with typed capability, subscribe, replay,
    resume, terminal-state, and artifact responses.
 
-`tests/session_projection_consumer.rs` remains a bounded equivalence fixture
-for the existing TUI-shaped adapter; it is not the headless consumer or a
-second projection protocol.
+The former `tests/session_projection_consumer.rs` binary was consolidated
+into `tests/session_family/projection_consumer.inc` (M004) and is now
+reachable through the `session_family` target. It remains a bounded
+equivalence fixture for the existing TUI-shaped adapter; it is not the
+headless consumer or a second projection protocol.
 
 ## Key Types & APIs
 
@@ -375,7 +377,7 @@ when additive changes land that the reducer MUST interpret.
 cargo test -p codegg-protocol
 
 # Independent consumer equivalence test
-cargo test --test session_projection_consumer
+cargo test --test session_family
 
 # Headless reference consumer and canonical CoreResponse flow
 cargo test --test headless_projection_consumer
@@ -428,4 +430,8 @@ limit value, the three replay caps (512 events / 1 MiB / 64 KiB), the
 three controller caps, `PROJECTION_PROTOCOL_VERSION` /
 `PROJECTION_PROTOCOL_VERSION_MIN` = 1, `PROJECTION_CAPABILITY`, the six
 `ApplyOutcome` variants, the four `ProjectionStreamScope` variants, and
-`REMOTE_TUI_PROTOCOL_VERSION` = 5.
+`REMOTE_TUI_PROTOCOL_VERSION` = 5. Retargeted the two references to the
+deleted `tests/session_projection_consumer.rs` binary (M004 consolidated
+it into `tests/session_family/projection_consumer.inc`): the Testing entry
+now runs `--test session_family`, and the fixture paragraph names the
+consolidated module. All five static guards pass today.

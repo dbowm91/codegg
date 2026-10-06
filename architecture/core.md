@@ -22,7 +22,7 @@ that authority.
 
 ### Owned Modules
 
-`codegg-core` currently owns 45 modules (exported from
+`codegg-core` currently owns 46 modules (exported from
 `crates/codegg-core/src/lib.rs`):
 
 | Module | Key Types |
@@ -38,6 +38,7 @@ that authority.
 | `bus` | GlobalEventBus, PermissionRegistry, QuestionRegistry |
 | `collaboration` | project-chat collaboration domain |
 | `context` | ProjectContextResolver, ProjectContext, SessionId |
+| `decision` | bounded backend-neutral decision semantics (no tool authority, model, or transport) |
 | `error` | AppError, ProviderError, ToolError, is_retryable |
 | `goal` | Goal, GoalStatus, GoalBudget, GoalStore, runtime |
 | `identity` | typed IDs and project/repository/workspace/session relations |
@@ -189,12 +190,13 @@ intentionally live outside it.
 ### Next Likely Extraction Target
 
 The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
-the `CoreDaemon` request dispatch into `core::daemon_family` plus 16
-`core::daemon_*` family modules; Residual M003 has separated construction,
-bootstrap/recovery, refresh, and shutdown into `core::daemon_construct`,
-`core::daemon_bootstrap`, `core::daemon_refresh`, and
-`core::daemon_shutdown` while preserving the exact initialization order and
-joined shutdown sequence.
+the `CoreDaemon` request dispatch into `core::daemon_family` plus 15
+`core::daemon_*` family handler modules (and the two sub-handler modules
+`daemon_control` / `daemon_workspace_dashboard`); Residual M003 has separated
+construction, bootstrap/recovery, refresh, and shutdown into
+`core::daemon_construct`, `core::daemon_bootstrap`, `core::daemon_refresh`,
+and `core::daemon_shutdown` while preserving the exact initialization order
+and joined shutdown sequence.
 
 ---
 
@@ -241,13 +243,6 @@ transport from the underlying agent and session logic.
 | `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Daemon-owned lock/metadata lifecycle and compatibility-facing connect-or-start API. |
 | `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles pool, memory_store, legacy_agent (subagent_pool), agent_run_store, run_control, run_group_service, convergence_store, turn_runtime, lsp_service, workspace_services, worktree_service, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always has a default TurnRuntime; override via `with_turn_runtime()`. |
 | `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL over platform-local byte streams and stdio. Also contains `daemon_socket` for the daemon-side accept loop. |
-
-Frontend identity, local endpoint/path resolution, socket transport, and
-connect/reuse/start orchestration live in the leaf `codegg-client` crate.
-Root `SocketCoreClient` and `connect_or_start_daemon` preserve existing root
-APIs while adapting the extracted client. Daemon lock ownership, metadata,
-listener binding, and core construction remain root-owned. See
-[`client.md`](client.md).
 | `core::transport::projection` | projection stream management | Connection-local projection subscription, cursor, and forwarding state. |
 | `core::event_log` | `EventLog` | In-memory event ring buffer with optional SQLite-backed projection sink. |
 | `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
@@ -259,6 +254,13 @@ listener binding, and core construction remain root-owned. See
 | `core::provider_connections` | `ConnectionManager`, `ProviderConnectionStore` | Provider instance caching, lifecycle, and purge. |
 | `core::eggpool` | `EggpoolProvisioner` | Connection provisioning and background refresh. |
 | `core::project_activation` | `ProjectActivationRegistry` | Owner-scoped activation leases for projects. |
+
+Frontend identity, local endpoint/path resolution, socket transport, and
+connect/reuse/start orchestration live in the leaf `codegg-client` crate.
+Root `SocketCoreClient` and `connect_or_start_daemon` preserve existing root
+APIs while adapting the extracted client. Daemon lock ownership, metadata,
+listener binding, and core construction remain root-owned. See
+[`client.md`](client.md).
 
 ### `CoreClient`
 
@@ -343,6 +345,20 @@ Defined in `crates/codegg-protocol/src/core.rs`.
 - `SessionCreate` / `SessionLoad` / `SessionAttach` — Session operations
 - All other session variants (List, Fork, Delete, Archive, Restore, Share,
   Unshare, Rename, Export, Import, CreateFromTemplate)
+- `Subscribe` — returns `Json { current_seq, session_id }`
+  (`daemon_turns.rs:643`); it is a probe, not a streaming registration
+- `Resume` — replays events from `from_event_seq`, or returns
+  `ResyncRequired` when the requested sequence is no longer covered, or an
+  empty `Events` when the client is already in sync (`daemon_turns.rs:652`)
+- `TurnCancel` / `TurnSteer` — gated on the controller predicate; observers
+  and non-controller Contributors are rejected (`daemon_turns.rs:695`/`:737`)
+- `AgentSelect` — binds through `bind_runtime_for_session`, returns
+  `session_unbound` when binding fails (`daemon_turns.rs:798`)
+- `ModelSelect` — durable `SelectionService` adapter; the runtime cache is
+  projected only *after* durable success (`daemon_turns.rs:825`)
+- `Initialize` — classified to the Turns family
+  (`daemon_family.rs:292`) but has no handler arm in `daemon_turns.rs` and
+  falls into the family's `_ =>` `unimplemented` response
 - `PermissionRespond` / `QuestionRespond` — Registry responses
 - `ModelsRefresh` — Returns refreshed model list
 - `TaskList` / `TaskSchedule` / `TaskDelete` — Task operations
@@ -350,10 +366,6 @@ Defined in `crates/codegg-protocol/src/core.rs`.
 - `WorktreeList` — Returns worktree list
 - All workspace, project, job, schedule, goal, projection, provider
   connection, selection, asset refresh, and eggpool variants
-
-**Fallthrough variants** (return `Ack` without processing):
-- `Initialize`, `Subscribe`, `Resume`, `TurnCancel`, `TurnSteer`,
-  `AgentSelect`, `ModelSelect`
 
 ### Transport Modes
 
@@ -393,12 +405,13 @@ Codegg daemon owns execution at a time. All implementation lives in
 | `core.sock` / named pipe | Platform-local CoreFrame endpoint; Windows implementation is present but live transport/lifecycle qualification is pending |
 | `daemon.log` | Debug log (best-effort, rotated at 10 MB) |
 
-Production locations:
+Production locations (from `default_user_runtime_root`,
+`crates/codegg-client/src/paths.rs:161`):
 - macOS: `$HOME/Library/Application Support/codegg`
-- Linux: `${XDG_RUNTIME_DIR:-/tmp}/codegg` (falls back to
-  `$HOME/.local/share/codegg` when neither is writable)
+- Linux, in order: `$XDG_RUNTIME_DIR/codegg`, then `$XDG_DATA_HOME/codegg`,
+  then `$HOME/.local/share/codegg`
 - Other Unix: `/tmp/codegg`
-- Windows: per-user local application data directory
+- Windows: `dirs::data_local_dir()`, else `%TEMP%`
 
 Override via `CODEGG_DAEMON_HOME`.
 
@@ -485,13 +498,14 @@ Replaces `std::env::current_dir()` reasoning. Carries `workspace_root`,
 **`WorkspaceId`** is a typed `String` newtype identifying a registered
 workspace.
 
-**Session binding**: `CoreDaemon::bind_runtime_for_session` resolves a
-`session_id` to a `SessionRuntime` via `SessionStore` + `WorkspaceRegistry`.
-`TurnSubmit` and `AgentSelect` reject unbound sessions. `ModelSelect` does
-not bind a runtime: it validates session existence through
-`SelectionService::update` (`src/core/session_selection.rs:471-475`) and then
-projects the selection into the runtime cache best-effort
-(`src/core/daemon_turns.rs:825-940`).
+**Session binding**: `CoreDaemon::bind_runtime_for_session` (`daemon_refresh.rs:830`)
+resolves a `session_id` to a `SessionRuntime` via `SessionStore` +
+`WorkspaceRegistry`. `TurnSubmit` and `AgentSelect` reject unbound sessions
+with `session_unbound`. `ModelSelect` does not bind a runtime: it validates
+session existence through `SelectionService::update`
+(`src/core/session_selection.rs:641`) and then projects the selection into the
+runtime cache best-effort, only after durable success
+(`src/core/daemon_turns.rs:825-899`).
 
 **Storage**: workspace tables were introduced by migration v22 (a `workspace`
 table plus `workspace_id` index on `session`). The schema has advanced well
@@ -545,10 +559,11 @@ compatibility boundary.
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in
   `crates/codegg-protocol/src/core.rs:28`).
-- `CoreDaemon` (~6,000 lines in `daemon.rs` plus 16 `daemon_*`
-  family modules totaling ~15,400 lines plus four `daemon_*` lifecycle
-  modules totaling ~2,400 lines) holds daemon identity, runtime deps, event
-  log, session/client registries, notification router, workspace registry,
+- `CoreDaemon` spans `~6,000` lines in `daemon.rs` plus 15 `daemon_*`
+  family handler modules totaling ~12,600 lines, plus `daemon_family.rs`
+  (~420 lines), plus four `daemon_*` lifecycle modules totaling ~2,400
+  lines. It holds daemon identity, runtime deps, event log, session/client
+  registries, notification router, workspace registry,
   workspace services, eggpool provisioner, selection service, asset refresh
   coordinator, project activation, and projection seam. Family handlers and
   lifecycle helpers are boring `impl CoreDaemon` methods operating on the
@@ -647,19 +662,20 @@ Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`, `src/lib.rs`,
 `src/core/*.rs`, `src/core/instance.rs`,
 `crates/codegg-protocol/src/core.rs`, and
 `crates/codegg-core/src/storage/mod.rs`. Corrected the `codegg-core`
-module inventory, which listed 28 of the crate's 45 `pub mod`
+module inventory, which listed 28 of the crate's 46 `pub mod`
 declarations: added `agent_convergence`, `agent_run`, `agent_run_control`,
 `agent_run_group`, `approval`, `audit`, `audit_instrumentation`,
-`authorization`, `collaboration`, `presence`, `run_result`,
+`authorization`, `collaboration`, `decision`, `presence`, `run_result`,
 `session_control`, `team`, `transport_auth`, `work_order`, `work_plan`,
-and `worktree_service`, and stated the 45 total. Corrected the root
+and `worktree_service`, and stated the 46 total. Corrected the root
 `src/lib.rs` re-export block, which omitted `agent_convergence`,
 `agent_run`, `agent_run_control`, `agent_run_group`, and `work_plan`.
 Corrected `daemon.rs` size `~4,600` → `~6,000` lines (actual 6,005) and
-the family-module count nine → 16 (actual ~15,400 lines across the 16
-family modules, plus ~2,400 across the four lifecycle modules); corrected
-the `DaemonRequestFamily::of` variant count 166 → 232 to match
-`CoreRequest`. Added the six undocumented `src/core/daemon_*` family
+the family-module count nine → 15 handlers (actual 12,626 lines across the
+15 handler modules, plus 423 in `daemon_family.rs`, plus 2,391 across the
+four lifecycle modules); corrected the `DaemonRequestFamily::of` variant
+count 166 → 232 to match `CoreRequest` (counted programmatically from the
+enum body). Added the six undocumented `src/core/daemon_*` family
 modules (`daemon_control`, `daemon_documents`, `daemon_lsp`,
 `daemon_team`, `daemon_work_orders`, `daemon_workspace_dashboard`) and
 the two undocumented modules `core::lsp_diagnostics_store` and
@@ -673,3 +689,51 @@ implementations, the three `CoreRuntimeMode` variants, the
 declarations in `instance.rs`, the `ConnectOrStartOptions` 10 s / 100 ms
 defaults, `STORAGE_LAYOUT_VERSION` = 68, `PROTOCOL_VERSION` = 2, and the
 `ExecutionContext` / `WorkspaceRegistry` contract.
+
+Second pass (2026-10-06) against `src/core/daemon.rs`,
+`src/core/daemon_family.rs`, `src/core/daemon_turns.rs`,
+`src/core/session_selection.rs`, `src/core/instance.rs`,
+`crates/codegg-client/src/paths.rs`, and `crates/codegg-core/src/lib.rs`:
+- **Module count was 45, actual 46**: `decision` was missing from the
+  inventory and from the total. Added with its own contract line.
+- **The Module Inventory table was broken.** A prose paragraph about
+  `codegg-client` had been inserted mid-table between the `core::transport`
+  and `core::transport::projection` rows, silently dropping those rows out of
+  the rendered table. Moved the paragraph after the table.
+- **"Fallthrough variants (return `Ack` without processing)" was wrong.**
+  It listed `Initialize`, `Subscribe`, `Resume`, `TurnCancel`, `TurnSteer`,
+  `AgentSelect`, and `ModelSelect` as no-ops. All seven have real handler
+  arms: `Subscribe` returns a `current_seq` probe (`daemon_turns.rs:643`),
+  `Resume` replays or returns `ResyncRequired` (`:652`), `TurnCancel`/
+  `TurnSteer` enforce the controller predicate (`:695`/`:737`), `AgentSelect`
+  binds a runtime (`:798`), and `ModelSelect` runs the durable
+  `SelectionService` CAS (`:825`). Only `Initialize` genuinely reaches the
+  family's `_ =>` `unimplemented` arm despite being classified to Turns
+  (`daemon_family.rs:292`). Rewrote the section.
+- `SelectionService::update` ref `session_selection.rs:471-475` → `:641`
+  (`:471-475` is the body of the free `update_selection` helper).
+- `bind_runtime_for_session` is in `daemon_refresh.rs:830`, not `daemon.rs`.
+- **Family-module line totals were overstated** as "~15,400 across the 16
+  family modules". Actual: 15 handler modules = 12,626 lines, plus
+  `daemon_family.rs` = 423, plus four lifecycle modules = 2,391. Corrected in
+  both the Implementation Notes and the extraction-target paragraph.
+- Verified accurate: the 15-variant `DaemonRequestFamily` enum and its
+  `owner_module` mapping, the 11-family vs 4-pre-router split (verified by
+  reading the dispatch in `daemon.rs:3545-3624` — chat, work-order, team,
+  and interactive each return before the family match), the
+  `Box::pin`-per-family discipline, the 11 construction phases
+  (`daemon_construct.rs:460`), the `File::try_lock` + drop-release guard
+  (`instance.rs:277`/`:587`), the `default_user_runtime_root` cascade
+  (`crates/codegg-client/src/paths.rs:161-190`),
+  the four root files under the daemon root, the hidden-CLI-flag test
+  (`main.rs:1025-1053`), and `WorkspaceRegistry::get_or_register`
+  (`workspace.rs:478`).
+- **The Linux daemon-home cascade was wrong**: it read
+  `${XDG_RUNTIME_DIR:-/tmp}/codegg (falls back to $HOME/.local/share/codegg
+  when neither is writable)`. `default_user_runtime_root`
+  (`crates/codegg-client/src/paths.rs:161-190`) tries, in order,
+  `$XDG_RUNTIME_DIR/codegg`, `$XDG_DATA_HOME/codegg`, and
+  `$HOME/.local/share/codegg`, with `/tmp/codegg` only as the
+  non-Linux-Unix fallback. The Windows entry was also vaguer than the source
+  (`dirs::data_local_dir()` else `env::temp_dir()`). This is the same cascade
+  the `.opencode/skills/core/SKILL.md` table already carried correctly.

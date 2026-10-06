@@ -14,9 +14,9 @@ asset management.
 | File | Role |
 |------|------|
 | `src/agent/mod.rs` | Module declaration/re-export/composition surface; legacy `resolve_agents()` CLI boundary |
-| `src/agent/definition.rs` | `Agent`, `AgentMode`, `AgentRuntimeKind`, model aliases, execution profiles, config-layer resolution |
+| `src/agent/definition.rs` | `Agent` (18 fields), `AgentMode`, `AgentRuntimeKind` (6 variants), model aliases, execution profiles, config-layer resolution |
 | `src/agent/file_agents.rs` | Global/project agent-file loading (markdown/TOML), overlay flags, permission specs, lookup helpers |
-| `src/agent/loop.rs` | `AgentLoop` — turn identity, live controls, constructors, and high-level `run`/`run_inner` sequencing |
+| `src/agent/loop.rs` | `AgentLoop` — struct definition, turn identity, live controls, constructors, and high-level `run`/`run_inner` sequencing |
 | `src/agent/tool_inspect.rs` | Pure tool-call inspection/classification (paths, bash/test/git/MCP), timeouts, model-flag gating |
 | `src/agent/loop_output.rs` | Bounded `AgentLoopTerminalOutput` collector and local-path redaction |
 | `src/agent/request_preparation.rs` | Per-turn request preparation: policy, routing, research hints, context frames, tool definitions |
@@ -26,7 +26,6 @@ asset management.
 | `src/agent/snapshot_capture.rs` | Snapshot capture, file-change draining, security-review trigger dispatch |
 | `src/agent/follow_up.rs` | Notification injection and non-blocking follow-up drain |
 | `src/agent/coordinator.rs` | `AgentLoopServices` construction boundary and typed `TurnLifecycle` phases |
-| `src/agent/loop.rs` | `AgentLoop` struct definition; canonical service handles are grouped in `AgentLoopServices` |
 | `src/agent/context_runtime.rs` | Turn-lifecycle compaction (`compact_if_needed`) and pack-observation phase (context-owned) |
 | `src/agent/tool_batch.rs` | Typed permission/MCP/broker batch boundary for tool calls |
 | `src/context/policy.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
@@ -263,14 +262,17 @@ the bounded group projection through the same bus path. Durable notification
 claims prevent replay or concurrent reconciliation from duplicating terminal
 follow-ups.
 
-The `task` tool exposes `spawn`, `status` (`get` remains the legacy alias),
-`message`, `interrupt`, `wait`, and `cancel`. `message` is ordinary bounded
-model input. `interrupt` sets the loop steering flag and delivers at the next
-safe boundary; it does not claim to preempt a side effect already executing.
-`wait` is capped at 30 seconds and timeout means `still running`, never run
-failure. The journal records lifecycle, control, safe-boundary, completion,
-and recovery milestones only; token streams, hidden reasoning, credentials,
-and complete tool output remain outside it.
+The `task` tool action set is the schema enum in `src/tool/task.rs:799`:
+`spawn`, `converge`, `convergence_status`, `convergence_decide`,
+`convergence_cancel`, `spawn_many`, `create_group`, `status` (`get` is the
+legacy alias), `message`, `interrupt`, `wait`, `cancel`, `status_group`,
+`wait_group`, `cancel_group`. `message` is ordinary bounded model input.
+`interrupt` sets the loop steering flag and delivers at the next safe
+boundary; it does not claim to preempt a side effect already executing.
+`wait` and `wait_group` clamp `timeout_ms` to 30,000 and a timeout means
+`still running`, never run failure. The journal records lifecycle, control,
+safe-boundary, completion, and recovery milestones only; token streams, hidden
+reasoning, credentials, and complete tool output remain outside it.
 
 Durable orchestration ownership is explicit: a root turn owns its accepted
 top-level fan-out, while a delegated run owns only its direct descendants.
@@ -700,3 +702,45 @@ Verified 2026-10-06 against source. Corrected: `AgentLoop` field count
 `ModelRouter` (`router.rs:22`), `ExecutionPolicy` (13 fields,
 `policy.rs:12`), `EMERGENCY_DEFAULT_MODEL` (`:379`), `MODEL_ALIAS_*`
 (`:374`), referenced test files.
+
+Second pass (2026-10-06) against all of `src/agent/*.rs`,
+`src/tool/task.rs`, `src/agent/builtins/generated.rs`, `assets/agents/*.toml`,
+and the three referenced guard scripts:
+- **`task` tool action set was stale.** It listed six ops; the schema enum at
+  `src/tool/task.rs:799` has sixteen, and the four `convergence_*` plus four
+  `*_group` ops were undocumented at the durable-run-control section even
+  though the bounded-run-groups section described them. Rewrote the list from
+  the enum and added the `wait_group` 30s clamp (`task.rs:1101`).
+- "Where It Lives" listed `src/agent/loop.rs` twice (two rows); merged into
+  one and annotated the verified `Agent` / `AgentRuntimeKind` shapes.
+- Verified accurate: every `src/agent/*` path in the inventory table;
+  `AgentLoop::run`/`run_inner` (`loop.rs:766`/`:776`);
+  `TurnRunInput`/`DefaultTurnRuntime` (`turn_runtime.rs:84`/`:193`) and
+  per-turn construction (`:725`); `AgentLoopServices`/`TurnLifecycle`
+  (`coordinator.rs:44`/`:122`) with 6 `TurnPhase` variants (`:110`);
+  `ResolvedToolSurface` (`tool_surface.rs:147`), `PromptCompiler`
+  (`prompt.rs:338`), `ProviderTurnAdapter` (`provider_turn.rs:42`),
+  `EventProcessor` (`processor.rs:5`), `SemanticRouter`
+  (`semantic_router.rs:92`), `ModelRouter` (`router.rs:22`);
+  `MAX_ATTEMPTS` 3 and the 1s/2s/4s / 30s-cap backoff
+  (`provider_turn.rs:64`/`:66`/`:532-534`); `ExecutionLimits` defaults 100 /
+  1,000,000 / 600s (`loop.rs:79-81`); 5-layer agent resolution and the
+  `~/.config/codegg/agents` + `.codegg/agents` paths
+  (`definition.rs:484-516`); `ExecutionLimits` header at `:70`; the
+  compatibility re-export at `src/agent/compaction.rs:6`;
+  `compact_if_needed` (`context_runtime.rs:827`); `ContextFrame`
+  (`context_frame.rs:131`); `SubAgentPool`/`SubAgentSpawner`
+  (`worker.rs:284`/`:752`) and the bounded `RunControlService::wait`
+  (`run_control.rs:318`); `ProjectAssetSnapshot`/`AssetContext`/
+  `AssetRefreshCoordinator` (`asset_snapshot.rs:34`, `asset_context.rs:82`,
+  `asset_refresh.rs:130`); `MAX_GROUP_MEMBERS` 16 and
+  `MAX_GROUP_WAIT_MS` 30,000 (`crates/codegg-core/src/agent_run_group.rs:20-22`);
+  the four `TaskPolicy` wire names; `TaskStatePolicy` variants
+  `SoloPreferred`/`ConvergenceCapable` (`schema.rs:105`/`:107`);
+  `apply_semantic_routing` (`request_preparation.rs:691`) and its
+  single call site (`loop.rs:846`); the absence of `src/agent/team.rs`;
+  `Arc<ExecutionContext>` on `AgentLoopBuildInput`
+  (`agent_loop_factory.rs:27`); the 10 built-in agents in `generated.rs`;
+  and all three guard scripts, including that
+  `check_daemon_cwd_usage.py` guards `core/**` plus `agent/turn_runtime.rs`
+  and `agent/worker.rs` specifically.

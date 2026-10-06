@@ -47,9 +47,14 @@ into a second source of truth.
    `migrate()` call.
 3. **Use only the canonical pool entry points.** `init_daemon_catalog`,
    `init_migrated_daemon_catalog` (production bootstrap authority),
-   `init_legacy_project_store`, `init_pool_at`, and the
-   migration-only `init_pool_at_for_migration`. Deprecated `init()` has no
-   in-tree callers; new code MUST NOT use it.
+   `init_legacy_project_store`, `init_migrated_legacy_project_store`,
+   `init_pool_at`, and the migration-only `init_pool_at_for_migration`.
+   Deprecated `init()` has no in-tree callers; new code MUST NOT use it.
+   Note the deliberate split: `init_legacy_project_store` does **not** migrate,
+   because `migrate_legacy_project_database` uses it to probe whether a file is
+   a genuine legacy DB — migrating first would make the probe self-fulfilling.
+   Consumers that need a migrated store must call
+   `init_migrated_legacy_project_store`.
 4. **Sessions resolve through workspace binding.** `CoreDaemon::
    bind_runtime_for_session` (`src/core/daemon_refresh.rs`) resolves
    `session_id` via `SessionStore` + `WorkspaceRegistry`; `TurnSubmit` and
@@ -85,8 +90,8 @@ concurrency/subprocesses.
 ## See Also
 
 - `architecture/session.md`, `architecture/storage.md`, `architecture/project_catalog.md`
-- `.skills/core/SKILL.md` — session lifecycle on the core facade
-- `.skills/bus-projection/SKILL.md` — durable replay vs derived views
+- `.opencode/skills/core/SKILL.md` — session lifecycle on the core facade
+- `.opencode/skills/bus-projection/SKILL.md` — durable replay vs derived views
 
 ## Source verification
 
@@ -112,3 +117,14 @@ migration, all seven store types, `SessionEvent`/`EventMeta`,
 `validate_import_size`/`redact_for_export`, `RunStore`, the rerun linkage
 marker, and all three `cargo test` targets. Claims without a traceable
 source were removed rather than guessed.
+
+Third pass: added `init_migrated_legacy_project_store` to the pool rule and
+recorded why the non-migrating initializer is deliberately kept separate —
+`migrate_legacy_project_database` calls `init_legacy_project_store` to probe
+whether a file is a genuine legacy DB, so migrating there would make the probe
+self-fulfilling. All six canonical entry points verified present in
+`crates/codegg-core/src/storage/mod.rs` (`:119`, `:130`, `:144`, `:163`,
+`:175`, `:226`); `init()` at `:297` confirmed to have no in-tree callers; and
+`verify_file` confirmed to be defined and re-exported
+(`session/mod.rs:25`) but never called in-tree. Normalized `.skills/` skill
+cross-references to `.opencode/skills/`.

@@ -64,6 +64,12 @@ Without the `plugins` feature, `WasmRuntime::invoke` returns
 `RuntimeError::Unsupported` and WASM plugins silently return passthrough
 results.
 
+`PluginRuntimeSpec::Passive` is a manifest-only marker, not a fourth
+runtime: there are exactly three `impl PluginRuntime for` sites
+(`runtime/builtin.rs:87`, `runtime/process.rs:91`, `runtime/wasm.rs:115`).
+Command invocation against a passive plugin returns `PluginError::Runtime`
+(`service.rs:314`).
+
 ### Capability-Based Registry
 
 `PluginRegistry` (`registry.rs:173`) indexes six capability types
@@ -160,14 +166,16 @@ unique prefix on id → unique prefix on name → error on ambiguous/none.
 ```rust
 // src/plugin/manifest.rs:49
 pub enum PluginRuntimeSpec {
+    Passive,
     Builtin { handler: String },
     Process { command, args, timeout_ms },
     Wasm { module, timeout_ms, memory_max_mb, fuel_per_call },
 }
 
-// src/plugin/manifest.rs:78
+// src/plugin/manifest.rs:79
 pub enum PluginCapability {
     Command(PluginCommandSpec),
+    Tool(PluginToolSpec),
     Hook(PluginHookSpec),
     Panel(PluginPanelContribution),
     StatusWidget(PluginStatusContribution),

@@ -252,9 +252,17 @@ pub fn default_global_agents_root() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("codegg").join("agents"))
 }
 
-/// Return the platform's default global skills root directory.
-pub fn default_global_skills_root() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("codegg").join("skills"))
+/// Return the platform root that global asset discovery treats as the
+/// *parent* of the `<vendor>/skills` tree.
+///
+/// `AssetRegistry::build` appends `<vendor>/skills` to every root it is
+/// given, so this must be the configuration directory itself. Passing an
+/// already-joined path such as `…/codegg/skills` double-joins to
+/// `…/codegg/skills/codegg/skills`, which never exists; because discovery
+/// skips missing directories silently, every global skill is then dropped
+/// with no diagnostic. Use this for `global_roots` arguments.
+pub fn default_global_discovery_root() -> Option<PathBuf> {
+    dirs::config_dir()
 }
 
 /// Return the platform's default global instructions file path. The
@@ -319,6 +327,15 @@ mod tests {
             .with_workspace_root("")
             .build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn global_discovery_root_is_the_unjoined_config_dir() {
+        // `AssetRegistry::build` appends `<vendor>/skills` itself, so the
+        // discovery root must stay the configuration directory. A joined
+        // `…/codegg/skills` value would resolve to
+        // `…/codegg/skills/codegg/skills`, which never exists.
+        assert_eq!(default_global_discovery_root(), dirs::config_dir());
     }
 
     #[test]

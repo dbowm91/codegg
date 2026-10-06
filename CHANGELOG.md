@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `documentation` skill (`.opencode/skills/documentation/SKILL.md`) covering
+  the repo's doc surface: the authority order from source through `architecture/`
+  to `README.md`, the verify-before-you-assert discipline, the untagged-enum
+  config trap that silently discards a whole config file, and the content that is
+  deliberately frozen (`docs/validation/`, `plans/closure/`, archived rounds) and
+  must not be "refreshed". Registered in the `AGENTS.md` skills index.
+
+### Fixed
+
+- Global skill discovery: five registry construction sites
+  (`src/tui/app/mod.rs` ×2, `src/tool/skill.rs`, `src/tool/skill_proposal.rs`,
+  `src/skills/compat.rs`) passed an already-joined `<config>/codegg/skills` path
+  where `AssetRegistry::build` expects the *parent* directory, so the root
+  resolved to `<config>/codegg/skills/codegg/skills`. That path never exists and
+  `resolve_source_roots` skips missing roots without a diagnostic, so global
+  skills were silently dropped everywhere except the daemon. `default_global_skills_root()`
+  is replaced by `default_global_discovery_root()` (exactly `dirs::config_dir()`),
+  all sites pass the parent, and two regression tests pin both halves of the
+  contract.
 - `codegg upgrade` now performs native verified replacement of the managed
   three-runfile bundle on supported Linux/macOS targets through Eggup. It
   preserves CodeGG's release/target policy and Eggfetch trust profile,
@@ -25,6 +44,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documented
 
+- Recorded a latent configuration defect found while auditing the `config` skill:
+  `merge_configs` (`crates/codegg-config/src/paths.rs:164`) is an explicit
+  whitelist, and **13 `Config` fields are silently dropped on every multi-layer
+  load** — `provider_connections`, `approval_reviewer`, `daemon`, `scheduler`,
+  `tool_deferral`, `security`, `research`, `tool_backends`, `human_shell`,
+  `shell`, `deterministic_tools`, `preflight`, `command_intent`. A `[security]`
+  block parses and survives `load_config` but is `None` after `merge_configs`.
+  This is left unfixed here: adding the merge arms changes which user config
+  blocks take effect, which needs its own review and test coverage. The contract
+  is now documented in `.opencode/skills/config/SKILL.md` so it is not
+  rediscovered from scratch.
+- Skills and architecture third pass (`.opencode/skills/` + `architecture/` +
+  `AGENTS.md`): re-verified all 23 module guides against source and corrected the
+  claims that no longer held. The material ones — `architecture/mcp.md` showed a
+  phantom `"mcp": {"servers": {...}}` nesting that parses as a single server named
+  `servers` (corrected; the example now validates against the real parser);
+  `provider-auth` wrongly claimed one config-defined provider suppresses env-var
+  auto-registration for the rest; `human-shell` documented a `ShellOrigin::HumanPromoted`
+  that is declared but never constructed and missed the `\!` escape hatch,
+  `/shell-expand`, and the real warned-pattern set; `authorization` claimed CI
+  coverage for three guards that are not wired; `architecture/approval_reviewer.md`
+  carried a whole line-reference table shifted by +4; `bus-projection` still
+  reported a projection guard failure that now passes; `projection.md` pointed at
+  a test binary consolidated into `tests/session_family/`. `AGENTS.md`'s
+  `verify.sh quick` guard list omitted eight guards it actually runs, and CI is a
+  strict subset of `quick` — both now stated. Added the construction-site table to
+  `architecture/skills.md`. `assets/agents/README.md` referenced
+  `scripts/check_builtin_agents.py`, which does not exist; corrected to the real
+  `generate_builtin_agents.py --check` and documented `runtime_kind`'s accepted
+  values. `architecture-review`'s batch table was re-checked and does cover all 85
+  docs. No production behavior changed.
+- Removed `codeggers.example.jsonc`: it is an OpenCode config (foreign schema,
+  `opencode_zen/*` models) left under the old plural branding, referenced by nothing,
+  and it failed `codegg validate` with the same untagged-enum defect the canonical
+  `codegg.example.jsonc` had. Fixed three broken path references found by a
+  whole-surface link scan: `docs/cli.md` pointed at a nonexistent `docs/server.md`,
+  `docs/dependency-maintenance.md` cited `src/memory/*.rs` instead of
+  `crates/codegg-core/src/memory/*.rs`, and the `permission` skill pointed at a
+  nonexistent `.opencode/skills/security-semantics/SKILL.md`. Historical
+  cross-references inside `plans/closure/` and `plans/archive/` remain broken by
+  design — they are immutable evidence and guessing a replacement would be worse.
 - Skills refresh, second pass (`.opencode/skills/`): rewrote `architecture-review` (full 11-batch coverage for all 77 docs, counts defer to `overview.md` Verified Counts, added working-paper archival step); refreshed `skills` (10-variant precedence with Plugin rank 35, portable schema, `/reload` refresh lifecycle, proposal/publication boundary, `promotion.rs`/`publish.rs`); clarified `tool-program-harness` ACP placeholder vs the `codegg acp` frontend; documented the `upgrade()` installer-pin contract (also in `architecture/upgrade.md`); added a new `git` skill (ownership map, hard rules, forbidden-pattern guard). `AGENTS.md` pointers are now an index: Skills Index table plus `docs/` map. `architecture/skills.md` notes the canonical skill-guide location and its symlinks. No production behavior changed.
 - Repository-surface housekeeping (M001): repaired `scripts/check_project_catalog_invariants.py` to assert the storage layout marker tracks the highest wired schema migration instead of pinning a volatile exact version; corrected stale storage-layout claims to reference `storage::STORAGE_LAYOUT_VERSION`; removed fragile TUI command-module and LSP server counts in favor of their owning registries; fixed `check-core-boundary.sh` invocations to use `bash`; corrected TUI source comments for multi-tab state and top-modal-only focus; reconciled README/AGENTS/skills/architecture with current source truth. No production behavior, schema, version, or release state changed.
 - Skills refresh (`.opencode/skills/`): corrected stale claims in `context`, `core`, `jobs`, `server`, `skills`, `architecture-review`, `tool-program-harness`, and `shell_session` guides (full `CoreRuntimeDeps` field list, `NewJob` lineage fields, `TuiMessage` crate location, `run_server` daemon parameter, `ContextPolicyConfig` tool-palette fields, current storage layout reference). Added a new `tui` skill covering command registration, sync dispatch, the async spawn-and-complete guard pattern, and dialog invariants.

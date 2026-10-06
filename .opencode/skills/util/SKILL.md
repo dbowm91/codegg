@@ -15,6 +15,8 @@ tags:
 # Util Module Guide
 
 This skill covers the utility functions in codegg for common operations.
+The authoritative contract lives in `architecture/util.md`; this skill is the
+quick orientation map.
 
 ## Overview
 
@@ -30,14 +32,20 @@ The `src/util/` module provides:
 
 ### clipboard.rs
 
-Clipboard operations using the `arboard` crate. Requires `arboard` feature flag.
+Clipboard operations using the `arboard` crate, behind the `arboard`
+Cargo feature.
 
 ```rust
 pub fn copy_to_clipboard(text: &str) -> Result<(), AppError>;
 pub fn read_from_clipboard() -> Option<String>;
 ```
 
-**Feature Gate**: `arboard` must be enabled in Cargo.toml for clipboard support.
+**Feature Gate**: `arboard` is a **default** feature (`Cargo.toml:329-330`),
+so it is on unless you build with `--no-default-features`. Both functions
+exist either way — the `#[cfg(not(feature = "arboard"))]` twins return
+`Err(AppError::Clipboard(...))` and `None` respectively
+(`clipboard.rs:12`, `:26`). The dependency is declared
+`default-features = false` (`Cargo.toml:196`), so it is the text-only API.
 
 ### fuzzy.rs
 
@@ -138,11 +146,13 @@ let score = fuzzy_score("hello", "hello"); // case-insensitive scoring
 // Truncation
 let truncated = truncate_lines("line1\nline2\n...", 10);
 let truncated = truncate_bytes("very long text...", 10);
-```## Integration Points
+```
+
+## Integration Points
 
 | Location | Usage |
 |----------|-------|
-| `src/tui/app/mod.rs` | Uses `fuzzy_score` for command filtering |
+| `src/tui/app/mod.rs` | Uses `fuzzy_score` for item filtering (`:3206`, `:9380`) and `clipboard::copy_to_clipboard` for export/share (`:8699`) |
 | `src/tui/command.rs` | Uses `fuzzy_score` for slash command matching |
 | `src/tui/components/completion_overlay.rs` | Uses `fuzzy_score` for completion filtering |
 | `src/tui/components/dialogs/share.rs` | Uses `clipboard` for URL copying |
@@ -161,6 +171,11 @@ Tests include:
 
 ## Dependencies
 
-- `arboard` (optional, requires `arboard` feature) - Clipboard operations
+- `arboard` (optional; the `arboard` feature is a **default** feature) - Clipboard operations
 - `strsim` - Levenshtein distance for fuzzy matching
 - `parking_lot` - Synchronization for metrics
+
+## See Also
+
+- `architecture/util.md` — authoritative contract, key-type line refs, invariants
+- `.opencode/skills/tui/SKILL.md` — the heaviest consumer (`fuzzy_score`, clipboard)

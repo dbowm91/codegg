@@ -54,6 +54,27 @@ invariants that are easy to violate.
    durable run IDs with bounded payloads. Derive the current action set
    from the tool schema in `src/tool/task.rs` rather than pinning it here.
 
+## Orientation Facts
+
+- **A turn is one `AgentLoop` instance.** `DefaultTurnRuntime::run_turn`
+  builds a fresh loop per turn (`src/agent/turn_runtime.rs:725`), so
+  per-loop state — `AgentLoopState`, `ContextCacheStats`, `context_ledger`,
+  `ExecutionLimits` — is per-turn and never spans turns.
+- **Turn phases are typed and in-memory only.** `TurnPhase`
+  (`src/agent/coordinator.rs:110`) has six variants — `Admission`,
+  `ContextPreparation`, `ProviderInvocation`, `ToolExecution`, `Recovery`,
+  `Completion`. `TurnLifecycle` is a sequencing aid; durable state belongs to
+  run-control/RunStore/scheduler.
+- **Provider retry is bounded before visible output.** `MAX_ATTEMPTS = 3`
+  (`provider_turn.rs:64`) under one UUID-scoped attempt chain; backoff is
+  1s/2s/4s capped at 30s. After a `TextDelta`/`ReasoningDelta`/
+  `ToolCallStarted` the turn aborts rather than replaying, so an abandoned
+  tool-call start never executes.
+- **Group ops are bounded.** `MAX_GROUP_MEMBERS = 16` and
+  `MAX_GROUP_WAIT_MS = 30_000`
+  (`crates/codegg-core/src/agent_run_group.rs:20-22`); `wait`/`wait_group`
+  clamp `timeout_ms` to 30,000 and a timeout means *still running*.
+
 ## Static Guards
 
 ```bash
@@ -61,6 +82,10 @@ python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + sc
 python3 scripts/check_daemon_cwd_usage.py           # no current_dir in daemon turn code
 python3 scripts/check_scheduler_bypass.py           # heavy work via JobSubmissionService
 ```
+
+`check_daemon_cwd_usage.py` guards `src/core/**` plus the specific turn-code
+files `src/agent/turn_runtime.rs` and `src/agent/worker.rs` (not all of
+`src/agent/`), with tool `default()` constructors allowlisted.
 
 ## Testing
 
@@ -109,3 +134,12 @@ map, `AgentLoop::run`/`run_inner`, `DefaultTurnRuntime::run_turn`,
 absence of `src/agent/team.rs`, the sync registry entry points, and all
 three guard scripts plus all four `cargo test` targets. Claims without a
 traceable source were removed rather than guessed.
+
+Second pass (2026-10-06): re-verified the same surface and added the
+`## Orientation Facts` section (per-turn `AgentLoop` lifetime, 6
+`TurnPhase` variants, `MAX_ATTEMPTS`/backoff bounds, group caps), each
+anchored to source. Narrowed the `check_daemon_cwd_usage.py` guard
+description to the actual `PROTECTED_GLOBS` list. The sync-registry claim
+was re-checked against `crates/codegg-core/src/bus/mod.rs:104-305`, where
+`register`/`respond`/`answer_question` are plain `fn` (not `async fn`). No stale claims
+were found in this file's existing content.

@@ -296,57 +296,75 @@ and reports the count.
 
 ## Configuration Surface
 
-MCP servers are configured under `[mcp]` in `config.json`:
+MCP servers are configured under `[mcp]` in `config.json`, keyed **directly by
+server name**. `Config.mcp` is `Option<HashMap<String, McpEntry>>`
+(`crates/codegg-config/src/schema.rs:245`) — there is **no `servers` level**. A
+nested `"mcp": {"servers": {...}}` does not register its children at all:
+`servers` is read as one entry named `servers`, and because `McpEntry`/
+`McpServerConfig` are `#[serde(default)]` without `deny_unknown_fields`, it
+silently deserializes to an all-`None` entry (a phantom server with no
+`command`/`url`) instead of failing.
 
 ```json
 {
   "mcp": {
-    "servers": {
-      "filesystem": {
+    "filesystem": {
+      "enabled": true,
+      "type": "local",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"],
+      "env": { "PATH": "${PATH}" },
+      "timeout": 30000
+    },
+    "github": {
+      "enabled": true,
+      "type": "remote",
+      "url": "https://api.github.com/mcp",
+      "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
+      "timeout": 60000,
+      "reconnect": {
         "enabled": true,
-        "type": "local",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"],
-        "env": { "PATH": "${PATH}" },
-        "timeout": 30000
-      },
-      "github": {
-        "enabled": true,
-        "type": "remote",
-        "url": "https://api.github.com/mcp",
-        "headers": { "Authorization": "Bearer ${GITHUB_TOKEN}" },
-        "timeout": 60000,
-        "reconnect": {
-          "enabled": true,
-          "max_retries": 5,
-          "base_delay_secs": 1,
-          "max_delay_secs": 60,
-          "heartbeat_interval_secs": 30
-        }
-      },
-      "slack": {
-        "enabled": true,
-        "type": "remote",
-        "url": "https://slack-mcp.example.com",
-        "oauth": {
-          "client_id": "${SLACK_CLIENT_ID}",
-          "client_secret": "${SLACK_CLIENT_SECRET}",
-          "scope": "chat:write,channels:read"
-        }
+        "max_retries": 5,
+        "base_delay_secs": 1,
+        "max_delay_secs": 60,
+        "heartbeat_interval_secs": 30
+      }
+    },
+    "slack": {
+      "enabled": true,
+      "type": "remote",
+      "url": "https://slack-mcp.example.com",
+      "oauth": {
+        "client_id": "${SLACK_CLIENT_ID}",
+        "client_secret": "${SLACK_CLIENT_SECRET}",
+        "scope": "chat:write,channels:read"
       }
     }
   }
 }
 ```
 
-Config types (`codegg-config/src/schema.rs`):
+The TOML spelling is the same shape, one level of tables:
 
-| Struct | Key | JSON field |
-|--------|-----|------------|
-| `McpEntry` | `:934` | `enabled`, flattened `McpServerConfig` |
-| `McpServerConfig` | `:942` | type, command, args, env, url, headers, etc. |
-| `McpReconnectConfig` | `:959` | `enabled`, `max_retries`, delay, heartbeat intervals |
-| `McpOAuthConfig` | `:969` | `client_id`, `client_secret`, `scope` |
+```toml
+[mcp.eggsearch]
+type = "local"
+command = "eggsearch"
+args = ["mcp", "stdio"]
+```
+
+The `schema.rs:3868` test `explicit_mcp_eggsearch_does_not_force_search_section`
+parses exactly this direct-key form and asserts
+`cfg.mcp.contains_key("eggsearch")`.
+
+Config types (`crates/codegg-config/src/schema.rs`):
+
+| Struct | Line | Keys |
+|--------|------|------|
+| `McpEntry` | `:1213` | `enabled`, flattened `McpServerConfig` |
+| `McpServerConfig` | `:1221` | `type`, command, args, env, url, headers, etc. |
+| `McpReconnectConfig` | `:1238` | `enabled`, `max_retries`, delay, heartbeat intervals |
+| `McpOAuthConfig` | `:1248` | `client_id`, `client_secret`, `scope` |
 
 Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 `McpServerConfig.server_type`). The `environment` field is merged with
@@ -432,3 +450,20 @@ Verified 2026-10-06 against `src/mcp/` and `crates/codegg-core/src/error.rs`.
   (`show_raw`, `hidden_servers`, `:179`), the 3-variant `McpClientType`,
   protocol versions `2026-07-28` / `2024-11-05`, and the
   `CodeGG MCP` OAuth envelope contract.
+
+Verified 2026-10-06 (second pass) against `crates/codegg-config/src/schema.rs`.
+- **Removed a phantom `mcp.servers.<name>` level** from the Configuration
+  Surface example. `Config.mcp` is `Option<HashMap<String, McpEntry>>`
+  (`schema.rs:245`) — the map key *is* the server name. The prior nested
+  `"servers"` object could never register its children: it parsed as one
+  entry named `servers` whose flattened `McpServerConfig` was all-`None`,
+  because `McpEntry`/`McpServerConfig` are `#[serde(default)]` without
+  `deny_unknown_fields` (`schema.rs:1211`, `:1219`). Proof of the real shape:
+  the test `explicit_mcp_eggsearch_does_not_force_search_section`
+  (`schema.rs:3868`) parses `"mcp": {"eggsearch": {...}}` directly and
+  asserts `contains_key("eggsearch")`. Added the equivalent TOML spelling.
+- Corrected 4 stale schema line refs: `McpEntry` `:934`→`:1213`,
+  `McpServerConfig` `:942`→`:1221`, `McpReconnectConfig` `:959`→`:1238`,
+  `McpOAuthConfig` `:969`→`:1248`.
+- Re-confirmed all 17 `mod.rs`/`local.rs`/`remote.rs`/`auth.rs`/`cli.rs`/
+  `ide_server.rs` rows in the Key Types table as still accurate.

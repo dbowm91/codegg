@@ -252,8 +252,8 @@ timeout, unregister after completion.
 # Unit tests for bus, events, registries
 cargo test -p codegg-core -- bus
 
-# SSE handler (server feature)
-cargo test --test server -- permission question
+# Session-scoped permission/question HTTP routes (server feature)
+cargo test --test team_collaboration_m001_http_auth --features server
 ```
 
 ## Related Docs
@@ -276,5 +276,11 @@ count against the enum. Corrected `AppEvent` line ref `events.rs:61` →
 permission/question routes are now session-scoped and use
 `get_pending_for_session()`. Corrected the `event_type()` example
 `"tool:delta"` → `"tool_call:started"` and noted `ReasoningDelta.delta`
-stays `String`. All other refs (broadcast 4096, TTL 310 s, throttle 30 s,
-registry/mod.rs line numbers) verified accurate.
+stays `String`. Removed the Testing command `cargo test --test server`,
+which targets a nonexistent binary: the permission/question HTTP routes
+are covered by `tests/team_collaboration_m001_http_auth.rs` (gated on
+the `server` feature), and there is no `tests/server.rs`. All other refs
+(broadcast 4096, TTL 310 s, throttle 30 s, registry/mod.rs line numbers,
+the 300 s agent-loop wait in `src/permission/approval.rs:297` and
+`src/agent/tool_batch.rs:1839`, and the bidirectional `PermissionChoice`
+conversions at `src/permission/mod.rs:284,295`) verified accurate.

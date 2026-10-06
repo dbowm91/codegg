@@ -119,8 +119,11 @@ root and lifecycle modules.
 - **Git sidebar is cached**: `GitSidebarState` caches git info; stale
   generations are dropped silently. Do not render git state live per frame.
 - **Remote protocol is event/state-driven**: the `/tui` WebSocket speaks the
-  `TuiCommand` enum with sequence-tagged `EventEnvelope` replay. There is no
-  `RenderFrame` support - do not add pixel/frame-style remote messages.
+  `TuiMessage` wire enum (`crates/codegg-protocol/src/tui.rs`) with
+  sequence-tagged `EventEnvelope` replay. `TuiCommand` is the in-process
+  runtime channel only - it is not `Serialize` and never crosses the socket.
+  There is no `RenderFrame` support - do not add pixel/frame-style remote
+  messages.
 - **Human shell cells** render via `MsgPart::ShellCell`; `/shell-*` commands
   live in `commands/shell.rs` (see the `human-shell` skill).
 - **Project scope**: resolve `App::project_execution_context()` before
@@ -140,6 +143,16 @@ root and lifecycle modules.
   explicit retry must not duplicate the already-visible user message. Tab
   switch/close, reconnect, and shutdown invalidate the continuation.
 
+## Static Guards
+
+Both guards fail `verify.sh quick` and the CI `verify` job. Read them before
+adding TUI code - they are the executable form of the invariants above.
+
+| Script | Enforces |
+|---|---|
+| `python3 scripts/check_tui_project_authority.py` | Scans `tui/app/state/**`, `tui/app/mod.rs`, `tui/commands/**`, `tui/runtime/**`, `tui/command.rs`, and `tui/components/dialogs/command.rs`; rejects `session_state.project_dir` and `std::env::current_dir()` as project authority. Only clearly marked bootstrap boundaries and test fixtures are exempt. |
+| `python3 scripts/check_tui_editor_text_authority.py` | In the editor path, rejects a second text buffer (struct fields named `text`/`content`/`lines`/`body`/`buffer`/`rope`/`source`/`document`, owned `DocumentSnapshot`/`DocumentBuffer`/`Rope`, materialized `Vec<String>`/`Vec<Line>`), any filesystem read API, and any `DocumentBuffer`/`Rope` construction. `&DocumentSnapshot` borrows and `TextTransaction` undo history are deliberately allowed (ADR-0011). |
+
 ## Testing
 
 ```bash
@@ -152,22 +165,34 @@ Rendering tests assert on buffer contents; keep widget output deterministic
 
 ## Source verification
 
-Verified 2026-10-06 against `architecture/tui.md`,
-`src/tui/runtime/command_dispatch.rs`, `src/tui/route.rs`,
-`src/tui/app/state/routing.rs`, `src/tui/app/state/async_request.rs`,
-`src/tui/app/state/work_orders.rs`, `src/tui/app/state/ui.rs`,
-`src/tui/app/state/session.rs`, `src/tui/app/types.rs`,
-`src/tui/app/modal.rs`, `src/tui/app/input.rs`, `src/tui/app/prompt_turn.rs`,
-`src/tui/app/project_session.rs`, `src/tui/app/plugin_ui.rs`,
-`src/tui/async_cmd.rs`, `src/tui/command.rs`, `src/tui/input.rs`,
-`src/tui/task_lifecycle.rs`, `src/tui/commands/work_orders.rs`,
-`src/tui/commands/workspace_dashboard.rs`, `src/tui/components/component.rs`,
-`src/tui/components/component/focus.rs`, `src/tui/components/dialogs/info.rs`,
-`src/server/http.rs`, and `tests/`. Corrected the inverted dispatch
-invariant (`dispatch_tui_command` is `pub(crate) async fn` at
-`command_dispatch.rs:84` with five `core_client.request(req).await` points
-in the durable-editor arms at 2109/2160/2214/2268/2320, not an all-sync
-`fn`), the `UiRouteToken` module attribution (`app/state/routing.rs:66`,
-not `route.rs`, which holds `Route`/`RouteManager`), and the same "sync
-dispatch" wording in the frontmatter description. Claims without a
-traceable source were removed rather than guessed.
+Re-verified 2026-10-06 against `architecture/tui.md` and source. Re-confirmed
+accurate: `dispatch_tui_command` is `pub(crate) async fn` at
+`runtime/command_dispatch.rs:84` with exactly five `.await` points at
+2109/2160/2214/2268/2320, all `match core_client.request(req).await` inside
+the `EditUndoLatest` / `EditReapplyLatest` / `EditUndo` / `EditReapply` /
+`EditCheckpointList` arms (verified by grep, not by reading the match);
+`spawn_tui_task` / `spawn_registered_tui_task` in `src/tui/async_cmd.rs`;
+`AsyncUiRequestState::finish`/`fail` returning `bool` in
+`app/state/async_request.rs`; `UiRouteToken` at `app/state/routing.rs:66`
+(`route.rs` holds `Route`/`RouteManager`); `DialogType` at
+`components/component.rs:22`; `FocusManager` at `components/component/focus.rs`;
+`Dialog::Info` absent while `components/dialogs/info.rs` exists;
+`show_short_or_info` toasting at <= 3 lines (`MAX_TOAST_LINES`);
+`ActionKey::all()` as the exhaustive configurable list with `InputAction::Char`
+the non-configurable exception; `MsgPart::ShellCell` in
+`components/messages.rs`; `/shell-*` registered in `command.rs` and handled in
+`commands/shell.rs`; both `--test tui_render` and `--test tui` targets.
+
+Corrected this pass: the remote-protocol bullet claimed the `/tui`
+WebSocket "speaks the `TuiCommand` enum". `TuiCommand` derives only
+`Debug, Clone` (`app/commands.rs:14`) and appears nowhere in `src/server/` or
+`crates/codegg-protocol/`; the wire type is
+`codegg_protocol::tui::TuiMessage` (`#[serde(tag = "type")]`,
+`crates/codegg-protocol/src/tui.rs:16-19`), which `src/server/ws.rs:23`
+imports and serializes. Replaced with the wire-enum name.
+
+Added: a `## Static Guards` section naming
+`scripts/check_tui_project_authority.py` and
+`scripts/check_tui_editor_text_authority.py` with the surfaces and patterns
+each one actually rejects (both scripts confirmed present and wired into
+`verify.sh quick`).

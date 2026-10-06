@@ -5,9 +5,11 @@
 Rust 1.89+, edition 2021.
 
 ```bash
-scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core-boundary, sandbox,
-                          # execution-ownership, tui-authority, http-route-disposition,
-                          # audit-coverage, scheduler-bypass guards, cargo check workspace
+scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
+                          # boundaries, sandbox, execution-ownership, TUI authority,
+                          # http-route-disposition, audit-coverage, scheduler-bypass,
+                          # provider wire/catalog/resilience + OpenAI endpoint, Eggwork
+                          # target routing, cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
 cargo fmt                 # rustfmt: max_width 100, 4-space; non-Rust files use 2-space
@@ -80,8 +82,10 @@ cargo nextest run --workspace --locked --profile ci  # capped full suite (needs 
 `verify.sh quick` runs the routine subset. CI (`.github/workflows/ci.yml`) is one bounded
 `verify` job: agent schema, core-boundary, sandbox, execution-ownership, tui-authority,
 http-route-disposition, audit-coverage, scheduler-bypass, fmt, clippy, workspace tests.
-Everything else is change-triggered (`ls scripts/check_*`
-for the full list):
+CI is a strict **subset** of `quick` — it omits the client/desktop boundaries and the
+provider wire/catalog/resilience, OpenAI endpoint, and Eggwork routing guards, so a
+green CI run does not imply a green `quick`. Everything outside both is
+change-triggered (`ls scripts/check_*` for the full list):
 
 - `codegg-core` or workspace deps → `bash scripts/check-core-boundary.sh`
 - Process spawning / execution surfaces → `python3 scripts/check_execution_ownership.py`
@@ -91,8 +95,9 @@ for the full list):
 - `assets/agents/*.toml` or `assets/prompts/` → `python3 scripts/generate_builtin_agents.py`
   to regenerate `src/agent/builtins/generated.rs` (never edit it); `--check` in CI
 - Git risk/policy → `check_git_forbidden_patterns.py`; storage layout →
-  `check_project_catalog_invariants.py` (`STORAGE_LAYOUT_VERSION` must track the highest
-  migration in `session/schema.rs`); projection transport → `check_projection_*.py` +
+  `check_project_catalog_invariants.py` (`STORAGE_LAYOUT_VERSION` must track the
+  highest migration in `crates/codegg-core/src/session/schema.rs`); projection
+  transport → `check_projection_*.py` +
   `check_websocket_bounds.py`; provider lifecycle → `check_provider_connections_*.sh`
 
 ## Gotchas
@@ -124,9 +129,13 @@ for the full list):
   net that only fires when config-based registration produced zero results
   (`architecture/provider.md:81-85`).
 - `AssetRegistry::build` takes each global root as the *parent* dir and appends
-  `<vendor>/skills` (`src/skills/registry.rs:250-303`). Pass `dirs::config_dir()`,
-  not an already-joined path — otherwise every global skill root resolves to a
-  nonexistent directory and is silently skipped.
+  `<vendor>/skills` (`src/skills/registry.rs:250-303`). Pass
+  `default_global_discovery_root()` — exactly `dirs::config_dir()` — never an
+  already-joined `…/codegg/skills` path, which double-joins to
+  `…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips a
+  missing root with no diagnostic, that mistake silently drops every global
+  skill. Six sites build their own registry; all are listed in
+  `architecture/skills.md`.
 - New web-search providers belong in the external `eggsearch` project, not `src/search/`
   (legacy fallback). New deterministic validators go in the `eggsact` crate first. New
   LSP servers go in `crates/egglsp/src/server.rs` + config.
@@ -144,13 +153,26 @@ for the full list):
 ## Pointers
 
 - `architecture/overview.md` is the module map; one doc per module under `architecture/`.
+  Its `## Verified counts` table is the single source of truth for counts — verify
+  each against the listed `Source` rather than copying a number between docs.
 - `plans/registry.md` is the authoritative milestone/roadmap status — check it before
-  assuming any roadmap state.
-- `docs/`: `execution-ownership.md` (+ `.toml` manifest), `security-semantics.md`,
-  `LSP.md`/`MCP.md`/`PLUGINS.md`/`playwright.md` (user integration notes;
-  `architecture/` is authoritative), `TROUBLESHOOTING.md`,
-  `dependency-maintenance.md`, `themes.md`, `validation/` (historical closure
-  records).
+  assuming any roadmap state. `plans/README.md` defines the planning hierarchy and
+  status vocabulary; the `planning` skill is the operational guide.
+- `README.md` is the user-facing entry point (quickstart) and indexes `docs/`.
+  `docs/` is user-facing guidance; `architecture/` is authoritative where the two differ.
+
+### docs/ index
+
+| Scope | Files |
+|---|---|
+| User guides (linked from the README) | `install.md`, `cli.md`, `configuration.md`, `providers.md`, `daemon.md`, `tui.md`, `agents-skills.md`, `tools.md` |
+| Integration notes | `LSP.md`, `MCP.md`, `PLUGINS.md`, `themes.md`, `playwright.md` |
+| Reference | `security-semantics.md`, `TROUBLESHOOTING.md`, `execution-ownership.md` (+ `execution-ownership.toml` manifest), `dependency-maintenance.md` |
+| Historical evidence | `validation/` (closure records; line numbers are pinned to old SHAs by design — do not "refresh" them) |
+
+`codegg.example.jsonc` is the annotated config example; validate it with
+`codegg validate --config codegg.example.jsonc`. Several config keys are untagged
+enums whose wrong shape silently discards the whole file, so keep the example valid.
 
 ### Skills index
 
@@ -169,6 +191,7 @@ changing; each names its authoritative `architecture/` doc in its intro and
 | `config` | `architecture/config.md` |
 | `context` | `architecture/context-ledger.md`, `architecture/compaction.md` |
 | `core` | `architecture/core.md` |
+| `documentation` | `architecture/overview.md`, `docs/` (doc-surface maintenance) |
 | `git` | `architecture/git.md` |
 | `human-shell` | `architecture/human_shell.md` |
 | `jobs` | `architecture/jobs.md` |

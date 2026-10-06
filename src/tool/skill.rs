@@ -85,7 +85,7 @@ impl Tool for SkillTool {
         let global_roots: Vec<std::path::PathBuf> = ctx
             .global_roots()
             .iter()
-            .chain(crate::agent::asset_context::default_global_skills_root().as_ref())
+            .chain(crate::agent::asset_context::default_global_discovery_root().as_ref())
             .cloned()
             .collect();
         let registry =

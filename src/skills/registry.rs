@@ -648,6 +648,32 @@ mod tests {
     }
 
     #[test]
+    fn already_joined_global_root_discovers_nothing() {
+        // Regression guard: `AssetRegistry::build` appends `<vendor>/skills`
+        // to each root, so handing it an already-joined `…/codegg/skills`
+        // path yields `…/codegg/skills/codegg/skills`. Because missing
+        // directories are skipped silently, every global skill is dropped.
+        // Callers must pass the configuration directory instead.
+        let dir = TempDir::new().unwrap();
+        let global_root = dir.path().join("global");
+        let codegg_skills = global_root.join("codegg").join("skills").join("g-skill");
+        fs::create_dir_all(&codegg_skills).unwrap();
+        fs::write(
+            codegg_skills.join("SKILL.md"),
+            "---\nname: g-skill\ndescription: Global skill\n---\nBody",
+        )
+        .unwrap();
+
+        let config = test_config();
+        let joined = global_root.join("codegg").join("skills");
+        let registry = AssetRegistry::build(&config, dir.path(), &[joined]);
+        assert!(
+            registry.effective.is_empty(),
+            "already-joined root must not be treated as a parent dir"
+        );
+    }
+
+    #[test]
     fn precedence_project_over_global() {
         let dir = TempDir::new().unwrap();
         let global_root = dir.path().join("global");

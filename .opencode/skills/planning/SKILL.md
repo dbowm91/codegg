@@ -16,6 +16,10 @@ This skill covers the CodeGG planning system under `plans/`. It explains how to 
 
 CodeGG separates **canonical long-term direction** (stable) from **interim planning** (operational, may evolve with the codebase). Implementation agents MUST NOT silently rewrite the long-term documents.
 
+`plans/registry.md` is the authoritative record of which milestones and
+roadmaps are active, blocked, or closed. Read it before assuming any
+roadmap state; this skill deliberately does not restate milestone status.
+
 ## When to Load
 
 Load this skill when working on:
@@ -62,7 +66,8 @@ Interim plans MUST reference canonical documents rather than duplicating them. R
 
 | Class | Location | Stability | Purpose |
 |---|---|---|---|
-| Canonical long-term | `plans/000-`, `plans/001-`, `plans/002-`, `plans/003-` | Very stable; requires ADR or user direction to amend | What CodeGG is becoming and what must remain true |
+| Canonical long-term | `plans/000-`, `plans/001-`, `plans/002-` | Very stable; requires an explicit long-term decision to amend | What CodeGG is becoming and what must remain true |
+| Planning governance | `plans/003-planning-process.md` | Canonical rules for deriving and managing interim plans | How plans are written, registered, and closed |
 | ADR | `plans/adrs/ADR-NNNN-*.md` | Immutable once accepted; supersede, don't rewrite | One durable architectural decision across milestones |
 | Subsystem roadmap | `plans/subsystems/<name>-roadmap.md` | Stable per workstream; may evolve with evidence | Translates long-term requirements into ordered milestones |
 | Milestone implementation plan | `plans/implementation/<subsystem>/NNN-*.md` | Operational; may be corrected | Bounded handoff for one implementation agent |
@@ -100,6 +105,12 @@ When repository evidence conflicts with the plan, preserve long-term invariants,
 - Implementation plan: `implementation/<subsystem>/NNN-short-title.md` (number local to subsystem)
 - Closure record: `closure/<subsystem>/NNN-status.md` (same number as plan)
 - Archive: preserve original relative structure under `archive/`
+
+A corrective pass or experiment workstream is registered as a sibling
+document with a descriptive suffix rather than a new subsystem directory —
+`*-corrective-closure-addendum.md`, `*-corrective-addendum.md`, and
+`*-experiment-roadmap.md` are all in use under `plans/subsystems/`, with
+matching `implementation/` and `closure/` directories.
 
 ## Work Classification
 
@@ -292,13 +303,16 @@ Repeated corrective passes indicate the subsystem roadmap or milestone sizing ne
 
 ## Registry.md Maintenance Rules
 
-`plans/registry.md` is the compact control surface. It links active documents and blockers without duplicating their detailed requirements. Required contents:
+`plans/registry.md` is the compact control surface. It links active documents and blockers without duplicating their detailed requirements. Its sections today are:
 
 - Active subsystem roadmaps (with current milestone and dependencies/blockers)
 - Dependency-ready implementation plans
-- Active closure work
+- Current execution order and dependency gates
+- Milestones eligible for fresh planning
 - Blocked work and blockers
+- Closure work and current control points
 - Recently closed or conditionally closed work (with commit references)
+- Verification policy
 - Deferred unregistered product work
 
 Maintenance rules:
@@ -326,7 +340,10 @@ When closing a milestone (writing the closure record), you MUST audit the regist
 5. Also check whether the closure created new follow-up work (corrective pass required, deferred product work). Register any corrective plan under the same subsystem immediately so it isn't lost.
 6. Never silently unblock plans without recording the dependency audit in the closure record.
 
-Example: closing M012 of session-projections unblocked nothing because no registered future plan listed M012 as a hard or interface dependency. Deferred product work (cross-tab artifact hand-off, presence/chat, etc.) remained intentionally unregistered because it is not dependency-ready correctness work.
+A closure that unblocked nothing is still a valid outcome — record it as
+such in the closure record's Registry updates section rather than leaving
+the audit implicit. Current blockers and their owning documents are always
+read from the registry's **Blocked work** section.
 
 ## Archive Workflow
 
@@ -449,13 +466,39 @@ When adding to `plans/registry.md`:
 
 ## Operational Notes
 
-- **Authority order when conflicts arise**: canonical long-term > accepted ADRs > subsystem roadmap > implementation plan > current repository evidence.
-- **One commit = one status change** in registry.md whenever a plan moves between `ready`/`active`/`closing`/`closed`/`blocked`.
+- **Authority order when conflicts arise**: canonical long-term > accepted ADRs > subsystem roadmap > implementation plan > current repository evidence (`plans/003-planning-process.md` §6).
 - **Closure commit is not the close commit**: the closure record (`closure/<subsystem>/NNN-status.md`) is the gate. The plan itself is not "closed" until that record exists and is accepted.
-- **Plan number is local to subsystem**: M001 in session-projections is unrelated to M001 in any other subsystem.
+- **Plan number is local to subsystem**: a `001-*.md` plan in one subsystem directory is unrelated to the same number in another.
 - **Subsystem names are stable**: use the same `kebab-case` name across roadmap, implementation, closure, and registry entries. Do not encode dates.
-- **Status labels in registry must match the plan/roadmap/closure record** — contradictions are a closure defect (see M011–M012 history).
+- **Status labels in registry must match the plan/roadmap/closure record** — a contradiction is a closure defect, and the reconciliation belongs in the closure record's Registry updates section.
 
 ## Source verification
 
-Verified 2026-10-06 against `plans/registry.md`, `plans/003-planning-process.md`, `plans/{README,adrs/README,subsystems/README,implementation/README,closure/README,archive/README}.md`, `plans/000-long-term-specification.md`, `plans/001-terminology-and-domain-model.md`, `plans/002-long-term-roadmap.md`, `plans/closure/session-projections/012-status.md`, and the `plans/{adrs,subsystems,implementation,closure}/` trees. Corrected the duplicated word in the unblock rule (lifecycle step 11 and registry maintenance rule 11): "register/register it" → "register it". Confirmed correct as written: the status vocabulary table matches `plans/registry.md:12-22`; the roadmap/plan/closure/ADR template structures match the four `README.md` templates; the Related Files table paths all exist; the M012-unblocks-nothing example matches `plans/closure/session-projections/012-status.md:212,224`; and the registry currently records the tool-selection advisor as closed with its generic runtime/training retired by decision-runtime M006, so no active `tool_advisor` runtime is claimed here. Claims without a traceable source were removed rather than guessed.
+Verified 2026-10-06 against `plans/registry.md`, `plans/README.md`,
+`plans/003-planning-process.md`,
+`plans/{adrs,subsystems,implementation,closure,archive}/README.md`, and
+the `plans/{subsystems,implementation,closure}/` directory listings.
+Confirmed correct as written: the status vocabulary table matches
+`plans/registry.md:12-22`; the five-step authority order matches
+`plans/003-planning-process.md:204-210`; the 10-item handoff review and
+the 10 planning anti-patterns match `plans/003-planning-process.md` §10
+and §11; the corrective-pass rules match
+`plans/003-planning-process.md` §7 and
+`plans/implementation/README.md`; the archive workflow matches
+`plans/archive/README.md`; and the Related Files table paths all exist.
+
+Removed this revision's restated milestone status (a worked "this
+closure unblocked nothing" example and two milestone-number citations) and
+replaced them with pointers to `plans/registry.md` and the closure
+template's Registry updates section.
+Removed "One commit = one status change", which no document in `plans/`
+states. Corrected the registry contents list to the sections that exist
+today (`plans/registry.md` §24 onwards), which include Current execution
+order and dependency gates, Milestones eligible for fresh planning, and
+Verification policy. Split `plans/003-planning-process.md` out of the
+canonical-long-term row: `plans/README.md` treats only 000–002 as the
+stable architectural references and describes 003 as the rules for
+deriving interim plans. Added the sibling `-addendum`/`-experiment`
+roadmap naming used throughout `plans/subsystems/`, which the
+`<subsystem>-roadmap.md` convention alone does not describe. Claims
+without a traceable source were removed rather than guessed.

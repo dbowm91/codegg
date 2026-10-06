@@ -14,7 +14,9 @@ tags:
 
 This skill covers Codegg's global admission control scheduler: the
 single authority between the durable job store (Phase 4) and the typed
-executors that actually run work.
+executors that actually run work. The authoritative contract lives in
+`architecture/scheduler.md`; this skill covers the entry points, the
+invariants a newcomer violates first, and the static guards.
 
 ## When to Load
 
@@ -100,38 +102,16 @@ scheduler.register_executor(my_exec).await?;
 ## Configuration
 
 The on-disk schema lives in `crates/codegg-config/src/schema.rs`:
+`SchedulerConfig` (`:1704`) with `SchedulerRolloutConfig` (`:1717`, default
+`Observe`), `SchedulerResourceConfig` (`:1726`),
+`SchedulerQueueConfig` (`:1736`), and `SchedulerFairnessConfig` (`:1745`).
+The full `[scheduler]` TOML with defaults is in `architecture/scheduler.md`.
 
-```toml
-[scheduler]
-enabled = true                       # default: true
-rollout = "mandatory"               # mandatory (default); observe/active are staged values
-reconcile_interval_ms = 1000         # wake tick interval
-
-[scheduler.resources]
-max_process_slots = 4                # global concurrent processes
-max_cpu_weight = 8                   # soft cap
-max_memory_mb_hint = 8192            # hint, not enforced
-max_io_weight = 8                    # soft cap
-max_network_slots = 4                # hard cap
-
-[scheduler.queue]
-max_total = 256
-max_per_workspace = 64
-max_interactive_per_session = 8
-claim_batch = 32
-
-[scheduler.fairness]
-interactive_weight = 8
-normal_weight = 4
-background_weight = 2
-maintenance_weight = 1
-max_high_priority_burst = 8
-aging_secs = 300
-```
-
-`ResolvedSchedulerConfig::from_input` validates and freezes these defaults.
-In daemon mode, `enabled = false` creates an explicit rejecting placeholder;
-it does not restore unscheduled execution.
+Two behaviours matter more than the numbers:
+`ResolvedSchedulerConfig::from_input` validates and freezes the defaults; and
+in daemon mode `enabled = false` creates an explicit *rejecting* placeholder —
+it does not restore unscheduled execution. `observe`/`active` remain accepted
+staged labels that also do not restore bypass.
 
 ## Gotchas
 
@@ -178,6 +158,17 @@ it does not restore unscheduled execution.
    sites. `scripts/check_execution_ownership.py` greps for spawn
    patterns and fails CI on unclassified sites. New production spawn
    sites must be declared in the manifest before they pass CI.
+10. **`deferred_domain_executor` is not coverage.** The manifest's six
+   owner classifications include `deferred_domain_executor` — a typed
+   subsystem scheduled for future migration, currently a documented
+   compatibility path. 8 of the 54 declared sites carry it
+   (`src/git_mutations.rs`, `src/git_network_ops.rs`,
+   `src/git_recovery.rs`, `src/git_service.rs`,
+   `src/plugin/runtime/process.rs`, `crates/egggit/src/`,
+   `crates/codegg-core/src/worktree.rs`,
+   `crates/codegg-core/src/repository_lineage.rs`). Do not describe
+   these as covered by the daemon scheduler invariant until migrated;
+   see `architecture/scheduler.md` "Execution-surface inventory".
 
 ## Recent changes
 
@@ -194,7 +185,7 @@ it does not restore unscheduled execution.
   generation and attempts whose stored generation differs are interrupted.
 - **New integration tests** (closure pass):
   - `tests/scheduler_submission_idempotency.rs` (11 tests)
-  - `tests/scheduler_permit_lifecycle.rs` (18 tests)
+  - `tests/scheduler_permit_lifecycle.rs` (19 tests)
   - `tests/scheduler_cancellation.rs` (10 tests)
   - `tests/scheduler_restart_recovery.rs` (15 tests)
   - `tests/scheduler_contention.rs` (14 tests)
@@ -210,10 +201,23 @@ it does not restore unscheduled execution.
   - `check_execution_ownership.py` enforces the machine-readable
     `docs/execution-ownership.toml` manifest.
 
-## Migration Stakes
+## Rollout mode
 
-| Stage | Rollout | Production behaviour |
-|-------|---------|---------------------|
-| A | `observe` | Historical comparison mode; not the daemon default |
-| C | `active` | Category-by-category routing validation |
-| E | `mandatory` | Current daemon default; scheduler-backed submission is authoritative |
+`SchedulerRolloutConfig` (`crates/codegg-config/src/schema.rs:1717`, aliased
+as `SchedulerRolloutMode` at `src/scheduler/config.rs:19`) has `Observe`
+(default), `Active`, and `Mandatory`; `ResolvedSchedulerConfig` defaults to
+`Mandatory` (`config.rs:94`). Rollout is **observability metadata, not a
+behaviour switch**: the only consumer is `JobScheduler::is_mandatory()`
+(`scheduler.rs:307`), and the mode is otherwise only stringified into
+`SchedulerSnapshot::rollout_mode` (`scheduler.rs:1495`,
+`snapshot.rs:152`). `observe` and `active` do not restore bypass execution —
+`enabled = false` is the only setting that rejects submission, and it does so
+explicitly rather than by falling back.
+
+## See Also
+
+- `architecture/scheduler.md`, `architecture/jobs.md`
+- `.opencode/skills/jobs/SKILL.md` — durable store, attempts, recovery
+- `.opencode/skills/permission/SKILL.md` — tool-permission boundaries
+- `docs/execution-ownership.md` + `docs/execution-ownership.toml` — the
+  spawn-site inventory the static guard enforces

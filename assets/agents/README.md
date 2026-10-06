@@ -36,13 +36,25 @@ hidden = false
 color = "magenta"          # optional
 temperature = 0.2          # optional
 steps = 24                 # optional
+runtime_kind = "standard"  # optional; see below
 prompt_file = "prompts/agents/name.md"  # optional, overrides convention
 
 [agent.permissions]
 tool_name = "allow" | "deny" | "ask"
 ```
 
+`runtime_kind` selects Rust-defined runtime behavior and is not free-form.
+The accepted values are `standard` (the default), `security_review`,
+`research`, `compaction`, `title`, and `summary`; any other value is a load
+error. Leave it unset for a normal agent.
+
 > **Note:** Built-in agent TOML files (this directory) use capitalized mode values (`Primary`, `Subagent`, `All`). User-defined agent TOML files loaded at runtime require lowercase mode values (`primary`, `subagent`, `all`). This is because built-in files are compiled by the Python generator into Rust enum variants, while user files pass through `parse_mode()` which only accepts lowercase.
 
-Run `python3 scripts/check_builtin_agents.py` to verify TOML sources match
-the generated Rust output.
+`python3 scripts/generate_builtin_agents.py --check` verifies that the TOML
+sources and prompt files still match the generated Rust output. Run it without
+`--check` to regenerate. CI runs the same check and fails if the generated file
+is stale.
+
+The full key list accepted at runtime, and the overlay flags (`extends`,
+`merge`, `replace`, `disable`) available to user-defined agents, are documented
+in `docs/agents-skills.md`.

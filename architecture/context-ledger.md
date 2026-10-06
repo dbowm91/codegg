@@ -231,7 +231,8 @@ artifact-handle projection into the frame for model awareness (M002
 
 ## Configuration Surface
 
-In `opencode.json` under `context`:
+In the `context` section of `codegg.json` / `codegg.jsonc` (or any other
+layered config file — see `architecture/config.md`):
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
@@ -263,9 +264,11 @@ In `opencode.json` under `context`:
 
 ## Integration with AgentLoop
 
-All three tool result insertion sites (bootstrap, main loop,
-streaming/retry) use the same semantics: checked handle building,
-config gating, store failure logging, no unrecoverable handles.
+Two tool result insertion sites (`src/agent/loop.rs:1764` and
+`src/agent/follow_up.rs:280`) use the same semantics: checked handle building,
+config gating, store failure logging, no unrecoverable handles. Both read the
+turn index from `self.state.turn_count`, so every tool result in one provider
+turn shares an index.
 
 ## Continuation recovery handles (M004)
 
@@ -280,9 +283,15 @@ checkpoint. `context_read` recovers both forms same-session and bounded.
 
 ## Testing
 
-Integration tests live in `src/context/mod.rs` (projection, artifact,
-ledger, config tests). LLM-specific tests: `cargo test -p codegg-core`
-for core context types.
+Unit tests live next to the code in each `src/context/*.rs` module
+(`mod tests` in all 20 files); `src/context/mod.rs:58` holds the module-root
+integration tests covering projection, artifact, ledger, and config gating.
+
+```bash
+cargo test -p codegg context::
+cargo test -p codegg --test context_projection_adversarial
+cargo test -p codegg --test tool_program_context_artifacts
+```
 
 ## Related Docs
 
@@ -306,5 +315,31 @@ Verified 2026-10-06 against source. Corrected: `FileArtifactStore`
 (`artifact.rs:152`), every `ContextLedgerState` cap and dedup rule
 (touched_files 20 dedup, commands_run 10 FIFO `VecDeque`, test_results 10
 dedup, unresolved_errors 10 dedup, artifact_handles projected to most-recent 32
-via `bounded_artifact_handles` — `src/agent/context_frame.rs:49-76`), all four
-M003 evidence bounds, and the five `[context]` config keys with defaults.
+via `bounded_artifact_handles` — `src/agent/context_frame.rs:7-83`), all four
+M003 evidence bounds (`src/context/evidence.rs:33-40`), and the five
+`[context]` config keys with defaults.
+
+Second pass (2026-10-06) against all of `src/context/`,
+`src/agent/context_frame.rs`, `src/agent/loop.rs`, `src/agent/follow_up.rs`,
+`src/tool/factory.rs`, and `crates/codegg-config/src/schema.rs`:
+- **Config file name was wrong**: it said `opencode.json`; the accepted user
+  filenames are `codegg.jsonc` / `codegg.json`
+  (`crates/codegg-config/src/paths.rs:46-73`).
+- **Insertion-site count was wrong**: "all three tool result insertion sites
+  (bootstrap, main loop, streaming/retry)" — there are exactly two,
+  `src/agent/loop.rs:1764` and `src/agent/follow_up.rs:280`, both keyed on
+  `self.state.turn_count`.
+- **Testing section was not actionable** ("LLM-specific tests:
+  `cargo test -p codegg-core`") — replaced with real targets and the fact
+  that all 20 `src/context/*.rs` files carry their own `mod tests`.
+- Verified accurate as written: `ContextArtifact` 11 fields
+  (`artifact.rs:34`), `ArtifactKind` 8 variants (`artifact.rs:11`),
+  `FileArtifactStore` (`artifact.rs:129`) writing under
+  `.codegg/context_artifacts` (`artifact.rs:134-141`), the 3-method
+  `ContextArtifactStore` trait (`artifact.rs:53`), the 10 MiB bound
+  (`artifact.rs:152`), `ContextHandle` 2 fields / 2 variants
+  (`handle.rs:13`/`19`) and all seven documented methods, `ProjectionConfig`
+  5 fields + defaults (`projection.rs:23-45`), `ToolOutputProjection`
+  8 fields (`projection.rs:11`), `read_tool` defaults (`read_tool.rs:70-75`),
+  and that `context_read` registration depends only on `artifact_store`
+  (`src/tool/factory.rs:113-118`).

@@ -39,9 +39,20 @@ to violate.
    grants permissions.
 4. **MCP OAuth is server-scoped lifecycle, not a single secret.** Reuses
    only the canonical master key + crypto from provider-auth; retains a
-   decrypt-only `CODEGG_ENC_v1` reader.
+   decrypt-only `CODEGG_ENC_v1` reader (`src/mcp/auth.rs:22`).
 5. **Plugin UI goes through `UiNode`/`UiEffect`.** Management renderers in
    `management_ui.rs` stay within `crates/codegg-protocol` wire limits.
+6. **The MCP config key is the server name.** `Config.mcp` is
+   `Option<HashMap<String, McpEntry>>`
+   (`crates/codegg-config/src/schema.rs:245`), so the TOML is
+   `[mcp.<name>]` / JSON `"mcp": { "<name>": {...} }`. There is no
+   `mcp.servers` level — nesting one registers a phantom all-`None` entry
+   named `servers` instead of the intended servers, and does not fail
+   loudly.
+7. **The plugin manifest filename is `manifest.toml`.** `loader.rs:61`
+   joins `plugin_dir.join("manifest.toml")`; there is no `plugin.toml`
+   discovery fallback. Every example under `examples/plugins/` ships
+   `manifest.toml`.
 
 ## Testing
 
@@ -50,8 +61,11 @@ cargo test -p codegg mcp::
 cargo test -p codegg plugin::
 cargo test --test mcp            # MCP client integration tests
 cargo test --test mcp_reconnect  # reconnect path
-python3 -m unittest discover  # examples/plugins/sdk-python (separate)
+cargo test --test fake_eggsearch_mcp
+PYTHONPATH=examples/plugins/sdk-python \
+  python3 -m unittest discover examples/plugins/sdk-python/tests   # separate SDK
 cargo test -p codegg --features plugins  # WASM-gated paths (via verify full)
+./scripts/validate_plugin_ui.sh
 ```
 
 Docs: `docs/MCP.md` and `docs/PLUGINS.md` are user integration notes;

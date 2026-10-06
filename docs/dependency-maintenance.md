@@ -92,7 +92,8 @@ default-feature policy:
   `[lints] workspace = true`. Where deliberate, reviewed `unsafe` is
   required, it is carved out with narrow local `#[allow(unsafe_code)]`:
   `codegg-core` on its `libc::flock` memory-lock helpers
-  (`src/memory/mod.rs`, `src/memory/habit.rs`) and `codegg-client` on its
+  (`crates/codegg-core/src/memory/mod.rs`,
+  `crates/codegg-core/src/memory/habit.rs`) and `codegg-client` on its
   Windows pipe/process modules; `codegg-document` has no `unsafe` at all.
   The root package stays outside package-wide
   inheritance because `src/bin/codegg-sandbox-helper.rs` contains

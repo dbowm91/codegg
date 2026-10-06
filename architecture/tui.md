@@ -11,7 +11,7 @@ backends via `CoreClient`.
 
 ## Where It Lives
 
-`src/tui/` — ~14,360 lines in `app/mod.rs` alone.
+`src/tui/` — ~14,358 lines in `app/mod.rs` alone.
 
 ## How It Works
 
@@ -430,9 +430,10 @@ through the TUI `CoreClient`.
 
 ### Remote Plugin UI Effects
 
-Two independent routes: `RemoteTuiMessage::PluginUiEffect` via WebSocket
+Two independent routes: `TuiMessage::PluginUiEffect` via WebSocket
 and `AppEvent::PluginUiEffect` via `GlobalEventBus`. Both apply session
-filtering before `apply_plugin_ui_effect()`.
+filtering before `apply_plugin_ui_effect()`. (`RemoteTuiMessage` is only a
+local import alias for `TuiMessage`, e.g. `src/tui/app/mod.rs:79`.)
 
 ### Command Dispatch
 
@@ -1354,7 +1355,9 @@ action.
   `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,
   `TerminalShow`, etc. via `dialog_type_for_info_type()`.
 - **DialogType in component.rs**: `DialogType` lives in
-  `src/tui/components/component/component.rs`, not `types.rs`.
+  `src/tui/components/component.rs` (not `types.rs`, and not a
+  `component/component.rs` — that directory holds only `context.rs` and
+  `focus.rs`).
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant
   handles all plugin dialogs. `UiNodeDialog` also reuses this slot.
 - **Dispatch is async-capable, not async-free**: `dispatch_tui_command` is
@@ -1404,7 +1407,7 @@ does not add editor widgets, keybindings, or a second TUI text buffer.
 ## Source verification
 
 Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
-(14,360), the 27 `app/state/` modules (28 `.rs` files), `App` at
+(14,358), the 27 `app/state/` modules (28 `.rs` files), `App` at
 `app/mod.rs:222`, `Component` at `components/component.rs:183`,
 `TuiMsg` (116 variants) at `app/types.rs:123`, `Dialog` (46) at
 `app/types.rs:2`, `DialogType` (46) at `components/component.rs:22`,
@@ -1418,3 +1421,23 @@ Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
 five `.await` points in `dispatch_tui_command`
 (`runtime/command_dispatch.rs:84`). Render-regression test count (99
 `#[test]` in `tests/tui_render.rs`) confirmed.
+
+Re-verified 2026-10-06 against `src/tui/` and
+`scripts/check_tui_*`. Corrected the Invariants entry that placed
+`DialogType` at `src/tui/components/component/component.rs` — that path does
+not exist; the enum is at `src/tui/components/component.rs:22`, and
+`components/component/` contains only `context.rs` and `focus.rs`. Replaced
+`RemoteTuiMessage::PluginUiEffect` with `TuiMessage::PluginUiEffect`;
+`RemoteTuiMessage` is only a local import alias
+(`src/tui/app/mod.rs:79`) for the `TuiMessage` wire enum, which derives
+`Serialize`/`Deserialize`, whereas `TuiCommand` (`app/commands.rs:14`) is the
+in-process runtime channel and is never serialized. Corrected the
+`app/mod.rs` line count to 14,358. Re-confirmed accurate: the five
+`.await` points in `dispatch_tui_command` (`runtime/command_dispatch.rs:84`,
+at 2109/2160/2214/2268/2320, all inside the `EditUndoLatest` /
+`EditReapplyLatest` / `EditUndo` / `EditReapply` / `EditCheckpointList`
+arms), `TuiCommand` (203) and `InputAction` (50) counts, the 46-variant
+`Dialog`/`DialogType` pairing, and both static guards
+(`check_tui_project_authority.py` scanning `session_state.project_dir` and
+`std::env::current_dir()`; `check_tui_editor_text_authority.py` rejecting
+second text buffers and direct filesystem reads).

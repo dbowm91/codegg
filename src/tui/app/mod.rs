@@ -4479,10 +4479,10 @@ impl App {
                 };
                 let project_dir = self.active_workspace_root().unwrap_or_default();
                 let config = crate::skills::AssetDiscoveryConfig::default();
-                let mut global_roots = Vec::new();
-                if let Some(root) = crate::agent::asset_context::default_global_skills_root() {
-                    global_roots.push(root);
-                }
+                let global_roots: Vec<std::path::PathBuf> =
+                    crate::agent::asset_context::default_global_discovery_root()
+                        .into_iter()
+                        .collect();
                 let registry = crate::skills::AssetRegistry::build(
                     &config,
                     project_dir.as_path(),
@@ -4639,12 +4639,10 @@ impl App {
                             // changed since submission, so surface the current
                             // same-name effective skill without mutating state.
                             let config = crate::skills::AssetDiscoveryConfig::default();
-                            let mut global_roots = Vec::new();
-                            if let Some(root) =
-                                crate::agent::asset_context::default_global_skills_root()
-                            {
-                                global_roots.push(root);
-                            }
+                            let global_roots: Vec<std::path::PathBuf> =
+                                crate::agent::asset_context::default_global_discovery_root()
+                                    .into_iter()
+                                    .collect();
                             let registry = crate::skills::AssetRegistry::build(
                                 &config,
                                 std::path::Path::new(&project_dir),

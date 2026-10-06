@@ -32,14 +32,13 @@ impl SkillIndexCompat {
     pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError> {
         let project_root = PathBuf::from(project_dir);
 
-        let config_dir = dirs::config_dir()
-            .map(|d| d.join("codegg").join("skills"))
-            .filter(|d| d.is_dir());
-
-        let global_roots: Vec<PathBuf> = config_dir
-            .into_iter()
-            .filter_map(|p| p.parent().map(|pp| pp.to_path_buf()))
-            .collect();
+        // `AssetRegistry::build` appends `<vendor>/skills` to each root, so
+        // the root is the configuration directory itself — not the
+        // already-joined `…/codegg/skills` path, which would double-join.
+        let global_roots: Vec<PathBuf> =
+            crate::agent::asset_context::default_global_discovery_root()
+                .into_iter()
+                .collect();
 
         let config = AssetDiscoveryConfig::default();
         let registry = AssetRegistry::build(&config, &project_root, &global_roots);

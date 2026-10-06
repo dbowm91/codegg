@@ -79,6 +79,11 @@ turns family) and `daemon_workspace_dashboard.rs`
   daemon-owned state. Shared request helpers live in `src/core/daemon.rs`
   as `pub(crate)`; lifecycle helpers live canonically in their owning
   lifecycle modules below, not in request handlers.
+- Only `Initialize` is genuinely unhandled: `DaemonRequestFamily::of` maps it
+  to `Turns` (`daemon_family.rs:292`) but `daemon_turns.rs` has no arm for
+  it, so it hits the family `_ =>` `unimplemented` response. Everything else,
+  including `Subscribe` (a `current_seq` probe) and `Resume` (replay or
+  `ResyncRequired`), is really handled.
 
 ## Lifecycle Ownership (Residual M003)
 
@@ -228,11 +233,32 @@ subagent_pool, memory_store)`; the struct itself carries far more:
 `turn_runtime` is always present and defaults to
 `DefaultTurnRuntime`; override via `with_turn_runtime()`.
 
+## Static Guard
+
+`scripts/check_daemon_cwd_usage.py` scans `src/core/**` plus a named set of
+turn-code files (`src/agent/turn_runtime.rs`, `src/agent/worker.rs`) and the
+tool modules for `std::env::current_dir()` usage. Legacy uses in tool
+`default()` constructors are allowlisted; new production-path uses fail CI.
+
+## Testing
+
+```bash
+cargo test -p codegg core::daemon        # daemon family/construct/bootstrap/refresh tests
+cargo test -p codegg-core               # domain types, workspace, storage
+```
+
 ## Maintenance Rules
 
 - Prefer `CoreClient` over direct `SessionStore` or `MessageStore` access when a request already exists in `CoreRequest`
 - If a new UI action needs backend state, add the request to `CoreRequest` before wiring the TUI directly to storage
 - Keep `core` protocol changes aligned with `architecture/core.md`, `architecture/tui.md`, `architecture/client.md`, and `architecture/server.md`
+
+## See Also
+
+- `architecture/core.md` — authoritative core contract
+- `architecture/session.md` + `architecture/storage.md` — session/workspace persistence
+- `architecture/scheduler.md` — scheduler-owned execution boundary
+- `.opencode/skills/agent/SKILL.md` — the turn that `TurnRuntime` executes
 
 ## Source verification
 
@@ -259,3 +285,17 @@ gave a Linux default of `${XDG_RUNTIME_DIR:-/tmp}` instead of the actual
 `XDG_RUNTIME_DIR` → `XDG_DATA_HOME` → `$HOME/.local/share` →
 `/tmp` cascade. Claims without a traceable source were removed rather than
 guessed.
+
+Second pass (2026-10-06) against `src/core/daemon.rs`,
+`src/core/daemon_family.rs`, `src/core/daemon_turns.rs`,
+`src/core/session_selection.rs`, `src/core/instance.rs`,
+`crates/codegg-client/src/paths.rs`, `src/main.rs`, and
+`scripts/check_daemon_cwd_usage.py`: confirmed the 15-variant
+`DaemonRequestFamily`, the 11-dispatch / 4-pre-router split, both
+sub-handler modules, all four lifecycle entry-point groups, the
+`CoreRuntimeDeps` 20-field list and 3-arg legacy constructor, the
+`default_user_runtime_root` cascade, the four daemon-root filenames, and
+the hidden-flag contract. Added the `Initialize`-is-unhandled fact, the
+`PROTECTED_GLOBS` scope of the cwd guard, a `## Testing` section, and a
+`## See Also` section. No stale claims were found in the existing body
+of this file.

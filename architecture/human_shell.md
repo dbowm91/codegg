@@ -128,8 +128,11 @@ Bounded `VecDeque<ShellOutputEntry>`. Defaults: 100 entries, 1 MB per-command
 byte budget (`max_bytes_per_command`), 8 MB total (`max_total_bytes`).
 Retained output per stream is bounded separately by `BoundedOutput`:
 `HEAD_CAP` 256 KiB + `TAIL_CAP` 256 KiB = **512 KiB retained** per stream,
-with `omitted_bytes` tracking what the tail dropped. Evicts oldest by
-count then bytes. `ShellOutputEntry` includes `promoted: bool` and
+with `omitted_bytes` tracking what the tail dropped (the overflow is drained
+from the *front* of the tail, `store.rs:51-54`). Evicts oldest by count
+first, then by total bytes, both `pop_front` — but the byte loop stops at one
+remaining entry (`store.rs:253-272`), so a single oversized command is never
+evicted. `ShellOutputEntry` includes `promoted: bool` and
 `promote_after: bool` (set from `capture_policy`).
 
 ### CommandOutputStore (`projection.rs:391`)
@@ -232,7 +235,9 @@ CODEGG_RTK_INTEGRATION=1 cargo test -p codegg --lib shell::rtk -- rtk_integratio
 
 ## Related Docs
 
-- [tool.md](tool.md) — Agent bash tool (`ShellOrigin::AgentTool`)
+- [tool.md](tool.md) — Agent bash tool (entirely separate: it never
+  references `crate::shell` types; `ShellOrigin::AgentTool` is declared but
+  never constructed)
 - [human-shell/SKILL.md](../.opencode/skills/human-shell/SKILL.md)
 - [shell_output_projection_rtk_roadmap.md](../plans/shell_output_projection_rtk_roadmap.md)
 

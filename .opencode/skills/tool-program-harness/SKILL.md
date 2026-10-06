@@ -7,7 +7,11 @@ process: any
 
 # Skill: Tool Program Harness
 
-Reusable harness for evaluating, testing, and validating Tool Programs across deterministic, live-model, and ACP transport modes.
+Reusable harness for evaluating, testing, and validating Tool Programs
+across deterministic, live-model, and ACP transport modes. The
+program domain, storage, and execution contracts live in
+`architecture/tool_programs.md`; this skill covers the harness that
+exercises them.
 
 ## When to Load
 
@@ -33,7 +37,7 @@ cargo test --test tool_program_model_behavior
 # Run the external harness
 python3 scripts/e2e/tool_program_harness.py --mode scripted --scenario all
 
-# Exercise the production scheduler/executor and public inspection protocol
+# Exercise the real-process production path (daemon failpoints, restart, replay)
 python3 scripts/e2e/tool_program_harness.py --mode native
 ```
 
@@ -45,6 +49,10 @@ Requires `CODEGG_EGGPOOL_URL`, `CODEGG_EGGPOOL_API_KEY`, and
 ```bash
 python3 scripts/e2e/tool_program_harness.py --mode eggpool --model mimo-v2.5 --no-model-fallback
 ```
+
+Without URL/key the mode SKIPs. With them but without
+`--no-model-fallback` or without `CODEGG_EGGPOOL_CONNECTION_ID` it FAILS
+— live identity must be exact, never a fallback.
 
 ### ACP Mode (placeholder)
 
@@ -61,12 +69,26 @@ protocol remains the baseline headless transport for harness evidence.
 
 ## Native source and inspection artifacts
 
-The native harness persists an immutable SHA-256 source reference under
-`.codegg/tool_program_sources/`, submits it through `JobSubmit`, waits through
-the scheduler, and verifies `ToolProgramList`, `ToolProgramInspect`, and
-`ToolProgramCallPage`. The executor writes only bounded redacted call
-summaries under `.codegg/tool_program_calls/`; raw source, arguments, and
-result bodies are not part of the public inspection response.
+`--mode native` is a thin client: it shells out to
+`cargo test -p codegg --test tool_program_m015_daemon_failpoints`
+(`scripts/e2e/tool_program_harness.py:280`), the bounded real-process
+production suite. `--mode scripted` runs that native step too, after the
+four deterministic binaries. The older inline core-stdio client (SHA-256
+source staging, `JobSubmit`, `ToolProgramList`/`ToolProgramInspect`/
+`ToolProgramCallPage`) remains in the file only as transport
+documentation after an unconditional `return`.
+
+Those artifact paths are production, not harness-owned:
+`src/tool/tool_program_source.rs` persists an immutable SHA-256 source
+reference under `.codegg/tool_program_sources/` and the executor verifies
+the digest before parsing; `src/tool/tool_program_ledger.rs:94` writes
+only bounded redacted call summaries under `.codegg/tool_program_calls/`.
+Raw source, arguments, and result bodies are not part of the public
+inspection response (`ToolProgramDetail` in
+`crates/codegg-protocol/src/projection/dto.rs`).
+
+`architecture/tool_programs.md` covers the domain, storage, and execution
+path but has no harness section; this skill is the harness's guide.
 
 ## Scenario Schema
 
@@ -96,14 +118,15 @@ Each scenario has:
 
 ## Resource Convergence
 
-Measured per scenario:
+Measured per scenario by `ResourceSnapshot`
+(`tests/tool_program_resource_convergence.rs:19`):
 
+- `tasks_spawned` — no leaked tasks
 - `calls_completed` — should equal expected call count
-- `completed_calls` vec — should be bounded by `calls_completed`
 - `bytes_used` — should be positive for programs with tool calls
 - `steps_used` — should be positive for non-trivial programs
 - `iterations_used` — should be positive for loop programs
-- No leaked tasks, processes, or permits
+- No leaked processes or permits
 
 ## Secret Handling
 
@@ -111,7 +134,7 @@ Measured per scenario:
 - Never print, log, or commit `CODEGG_EGGPOOL_URL`, `CODEGG_EGGPOOL_API_KEY`, or
   captured provider responses
 - Redacted endpoint class recorded in evidence, not actual values
-- `.gitignore` excludes any captured response files
+- The harness persists nothing outside `.codegg/`, which `.gitignore` excludes
 
 ## Evidence Capture
 
@@ -131,4 +154,27 @@ When running for closure evidence:
 | `tests/tool_program_chaos.rs` | Deterministic fault injection, 13 tests |
 | `tests/tool_program_resource_convergence.rs` | Resource baseline/final probes, 10 tests |
 | `tests/tool_program_model_behavior.rs` | Scripted model behavior and direct/programmatic metric validation, 14 tests |
-| `scripts/e2e/tool_program_harness.py` | External harness runner (scripted/eggpool/acp) |
+| `tests/tool_program_m015_daemon_failpoints.rs` | Real-process production suite run by `--mode native` |
+| `scripts/e2e/tool_program_harness.py` | External harness runner (scripted/native/eggpool/acp) |
+
+## Source verification
+
+Verified 2026-10-06 against `scripts/e2e/tool_program_harness.py`,
+`tests/tool_program_scenarios.rs`, `tests/tool_program_chaos.rs`,
+`tests/tool_program_resource_convergence.rs`,
+`tests/tool_program_model_behavior.rs`,
+`tests/tool_program_m015_daemon_failpoints.rs`,
+`src/tool/tool_program_source.rs`, `src/tool/tool_program_ledger.rs`,
+`crates/codegg-protocol/src/projection/dto.rs`, and
+`architecture/tool_programs.md`. Confirmed correct as written: the four
+CLI modes and their arguments, the `--no-model-fallback` and
+`CODEGG_EGGPOOL_CONNECTION_ID` preconditions, the `run_acp_mode`
+SKIPPED placeholder, the `Scenario` field list, all five broker names and
+their test files, and the four test counts. Rewrote "Native source and
+inspection artifacts": native mode is a `cargo test` wrapper for
+`tool_program_m015_daemon_failpoints` and the old inline client is
+unreachable after the `return` at
+`scripts/e2e/tool_program_harness.py:293`. Removed the `completed_calls`
+bullet (it is a test name, not a `ResourceSnapshot` field) and the
+`.gitignore` "captured response files" claim (the harness writes nothing
+outside `.codegg/`, which `.gitignore` already excludes wholesale).

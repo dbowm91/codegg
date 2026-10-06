@@ -61,8 +61,30 @@ Lower rank wins. Project-local always beats global.
 `~/.config` on Linux and `~/Library/Application Support` on macOS). The
 foreign-harness global roots are config-dir-relative, **not** `$HOME`-relative:
 `AssetRegistry::build` takes each global root as the *parent* and appends
-`<vendor>/skills` (`src/skills/registry.rs:250-303`), and the daemon passes
-`dirs::config_dir()` as that parent (`src/core/daemon_refresh.rs:187-191`).
+`<vendor>/skills` (`src/skills/registry.rs:250-303`), and callers pass
+`default_global_discovery_root()` — exactly `dirs::config_dir()`
+(`src/agent/asset_context.rs`) as that parent. The daemon does so at
+`src/core/daemon_refresh.rs:187-191`.
+
+Passing an already-joined path such as `<config>/codegg/skills` is a silent
+failure: it resolves to `<config>/codegg/skills/codegg/skills`, which does not
+exist, and `resolve_source_roots` skips a root whose path is not a directory
+without emitting a diagnostic. The user-visible symptom is only that global
+skills never appear. `already_joined_global_root_discovers_nothing` in
+`registry.rs` pins the failure mode and `global_discovery_root_is_the_unjoined_config_dir`
+in `src/agent/asset_context.rs` pins the accessor.
+
+Every registry construction site builds its own `AssetRegistry`, so every one
+of them must honor the parent-directory contract:
+
+| Construction site | Purpose |
+|---|---|
+| `src/core/daemon_refresh.rs:187-191,375-379` | Daemon-side registry; owns the shared `AssetContext` global roots |
+| `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder::build_skills`; adds plugin sources |
+| `src/tool/skill.rs:85-92` | The `skill` model tool; chains the context roots with the platform default |
+| `src/tool/skill_proposal.rs:132-136` | Collision diagnostics for a submitted proposal |
+| `src/tui/app/mod.rs:4482-4489,4641-4652` | `/skill-promote` listing and `/skill-proposal` live-collision view |
+| `src/skills/compat.rs:32-44` | `SkillIndexCompat::load`, the legacy facade |
 
 CodeGGProject also discovers direct `.md` files in `.codegg/skills/`,
 treating them as `CodeGGNativeCompat` entries; the skill name falls back to
@@ -193,7 +215,8 @@ pub struct ResourceReadLimits {
 
 Wraps `Arc<AssetRegistry>` behind the legacy `SkillIndex` API.
 Used by `src/main.rs` and `src/tool/skill.rs`. The `load` method
-derives global roots from `dirs::config_dir()`.
+derives global roots from `default_global_discovery_root()`
+(`dirs::config_dir()`).
 
 ### Legacy types (mod.rs)
 
@@ -295,10 +318,25 @@ warning, digest stability, digest CRLF normalization, name validation.
 
 ## Source verification
 
-Verified 2026-10-06 against all 10 files in `src/skills/`
+Re-verified 2026-10-06 against all 10 files in `src/skills/`
 (`mod.rs`, `registry.rs`, `source.rs`, `parser.rs`, `candidate.rs`,
-`promotion.rs`, `publish.rs`, `resource.rs`, `diagnostic.rs`, `compat.rs`)
-and the three named test files. Corrected 4 items: the digest ref
+`promotion.rs`, `publish.rs`, `resource.rs`, `diagnostic.rs`, `compat.rs`),
+`src/agent/asset_context.rs`, and the three named test files. Corrected the
+global-root contract: the doc recorded only the daemon's correct behavior,
+while five other construction sites passed an already-joined
+`<config>/codegg/skills` path. `AssetRegistry::build` appends
+`<vendor>/skills` to each root, so those sites resolved to
+`<config>/codegg/skills/codegg/skills`, which does not exist, and
+`resolve_source_roots` skips a missing root without a diagnostic — global
+skills were silently dropped everywhere except the daemon. `src/skills/compat.rs`
+was subtly different: it took `.parent()` of the already-joined path, landing on
+`<config>/codegg` and still double-joining. `default_global_skills_root()` is now
+`default_global_discovery_root()` (exactly `dirs::config_dir()`), all six sites
+pass the parent directory, and two regression tests pin both halves of the
+contract. Added the construction-site table, since the daemon was previously
+documented as if it were the only registry builder.
+
+Corrected 4 items in the earlier pass: the digest ref
 `parser.rs:308` → `:377` (`compute_digest`; the CRLF-normalization and
 stability tests are at `:411` and `:420`), the symlink-containment ref
 `registry.rs:328` → `validate_symlink_boundary` at `:419` (called from

@@ -201,9 +201,10 @@ pub enum TuiMessage { ... }
 | `QuestionResponse` | `id, answers` | Question answer |
 | `SessionInfo` | `id, model` | Session metadata |
 | `ProjectionCapabilities` | `capabilities` | Negotiate projection mode |
-| `ProjectionSubscribe` | `stream_id, ...` | Subscribe to projection |
-| `ProjectionResume` | `cursor, ...` | Resume with cursor |
-| `ProjectionAck` | `subscription_id, seq` | Acknowledge events |
+| `ProjectionSubscribe` | `request` | Subscribe to projection |
+| `ProjectionResume` | `cursor, include_snapshot_if_resync` | Resume with cursor |
+| `ProjectionAck` | `ack` | Acknowledge events |
+| `ProjectionUnsubscribe` | `subscription_id` | Release a subscription |
 
 ### Server → Client Messages
 
@@ -211,7 +212,7 @@ pub enum TuiMessage { ... }
 |---------|--------|---------|
 | `EventEnvelope` | `event_seq, payload` | Sequence-tagged for replay |
 | `TextDelta` | `delta` | Streaming text output |
-| `StateSnapshot` | `snapshot` | Full state for remote rendering |
+| `StateSnapshot` | `sequence, snapshot` | Full state for remote rendering |
 | `ToolCallStarted` | `tool_name, tool_id, arguments` | Tool started |
 | `ToolResult` | `tool_id, output, success` | Tool completed |
 | `PermissionPending` | `id, tool, path` | Permission request |
@@ -247,7 +248,9 @@ passed via CLI arguments.
 - **`REMOTE_TUI_PROTOCOL_VERSION = 5`** (`tui.rs:14`). This is the
   wire version the client negotiates. The server validates compatibility.
 - **`RenderFrame` is unsupported**: Both client and server reject it.
-  Remote rendering uses `StateSnapshot` instead.
+  Remote rendering uses `StateSnapshot` instead. Note `StateSnapshot` is
+  answered by the TUI's remote-mode handler (`src/tui/app/mod.rs`), not by
+  `src/server/ws.rs`.
 - **`catch_unwind`** on event task (`attach.rs:103`): Panics in the
   spawned event task do not crash the connection.
 - **Channel capacity 256**: Both event and outbound channels are bounded
@@ -300,3 +303,16 @@ capacities (`REMOTE_EVENT_CHANNEL_CAPACITY` / `REMOTE_OUTBOUND_CHANNEL_CAPACITY`
 3 max retry attempts with 1s/2s/4s backoff,
 `REMOTE_TUI_PROTOCOL_VERSION` = 5 at `tui.rs:14`, `TuiMessage` at
 `tui.rs:19`, and the five `ClientError` variants.
+
+Re-verified 2026-10-06 against `crates/codegg-protocol/src/tui.rs` and
+`src/server/ws.rs`. Corrected three field cells in the Client → Server /
+Server → Client tables that named fields the variants do not have:
+`ProjectionSubscribe` carries `request`
+(`ProjectionSubscriptionRequest`), not `stream_id`; `ProjectionAck` carries
+`ack` (`ProjectionAck`), not `subscription_id`/`seq`; and `StateSnapshot`
+carries `sequence, snapshot`, not `snapshot` alone. Added the missing
+`ProjectionUnsubscribe { subscription_id }` row. Corrected the
+"Remote rendering uses `StateSnapshot`" invariant to record that the server
+never emits that variant — `src/server/ws.rs` has zero
+`TuiMessage::StateSnapshot` constructions; it is produced only by the TUI's
+remote-mode handler (`src/tui/app/mod.rs:1855`).

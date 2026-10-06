@@ -69,8 +69,9 @@ upgrade automatically; this path runs only when the user invokes
 - `tests/upgrade.rs` and `src/upgrade/managed.rs` — deterministic policy and
   archive fixtures
 
-The Eggup dependency is pinned to immutable revision
-`66813b3b94de3a9b2f270e0000dc339ef6f0b478`; it is not a floating branch.
+The Eggup dependencies — `eggup-core` and `eggup-acquisition` — are both
+pinned to the same immutable revision `66813b3b94de3a9b2f270e0000dc339ef6f0b478`
+(`Cargo.toml:116-117`); neither is a floating branch.
 CodeGG retains its current Eggfetch/Rustls/WebPKI trust and redirect policy.
 
 ## Source verification
@@ -101,3 +102,21 @@ doc-comment insertion immediately above it in the working tree, not because of
 that commit. The inert-autoupdate claim is unchanged: the field is still
 deserialized and destructured but read by no production path, and
 `codegg upgrade` still runs only on explicit invocation.
+
+Verified 2026-10-06 (third pass) against `src/upgrade/{mod,managed}.rs`,
+`tests/upgrade.rs`, and `Cargo.toml`.
+- Corrected "The Eggup dependency" to name both `eggup-core` and
+  `eggup-acquisition`, which share the single pinned revision
+  (`Cargo.toml:116-117`).
+- Re-confirmed, no change needed: the release API URL
+  (`mod.rs:68`), `check_for_updates()` (`mod.rs:64`), `upgrade()`
+  (`mod.rs:101`), `VersionInfo` (`mod.rs:44`), `describe_manual_fresh_install()`
+  (`mod.rs:124`), the four-entry `SUPPORTED_TARGETS` (`managed.rs:25`), the
+  pinned eggsearch `0.3.9` (`managed.rs:24`), the 10-second Eggfetch profile
+  (`managed.rs:156`, `:176`), exact-404-only asset absence
+  (`managed.rs:552`, `:621`), the three required runfiles plus optional
+  `THIRD-PARTY-NOTICES.txt` (`managed.rs:263`-`:264`, `:305`), and the
+  10 tests in `tests/upgrade.rs`.
+- No stale claims remain; the CodeGG/Eggup/Eggpack ownership split and the
+  "keep Eggfetch, do not adopt `eggup-eggfetch`" constraint are unchanged
+  and still match source.

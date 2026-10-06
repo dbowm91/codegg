@@ -24,8 +24,8 @@ config files working.
 | `crates/codegg-config/src/paths.rs` | Layered config discovery and platform paths |
 | `crates/codegg-config/src/document.rs` | `DocumentFormat`, `DocumentErrorClass`, `parse_yaml` — the markdown-frontmatter codec |
 | `crates/codegg-config/src/encryption.rs` | Master-key resolution for the credential store |
-| `crates/codegg-config/src/watcher.rs` | `WatcherConfig` / config reload plumbing |
-| `crates/codegg-config/src/error.rs` | Aggregated config error type |
+| `crates/codegg-config/src/watcher.rs` | `ConfigWatcher` / config reload plumbing (`WatcherConfig` itself lives in `schema.rs`) |
+| `crates/codegg-config/src/error.rs` | Aggregated config error type (`ConfigError` + `AppError`) |
 
 ## Discovery Order
 
@@ -57,11 +57,26 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
 - **`CONFIG_VERSION` is `"1"`** (`schema.rs:5`) and `Config::migrate()`
   (`schema.rs:2739`) upgrades `"0"` → `"1"`. Do not bump it without a migration
   branch and a test.
-- **Inert-but-retained fields stay.** `[autoupdate]` (`schema.rs:231`) is
+- **A new `Config` field is invisible until `merge_configs` handles it.**
+  `merge_configs` (`paths.rs:164`) is an explicit whitelist, not a derived
+  merge: `merge_option!` for scalar/`Option` fields, then hand-written arms
+  for maps and nested structs. Thirteen fields are currently **dropped on
+  every multi-layer load** — `approval_reviewer`, `command_intent`, `daemon`,
+  `deterministic_tools`, `human_shell`, `preflight`, `provider_connections`,
+  `research`, `scheduler`, `security`, `shell`, `tool_backends`,
+  `tool_deferral` (`theme` is the one exception: whole-value replace).
+  Verified empirically: a parsed `[security]` block survives `load_config`
+  but is `None` after `merge_configs`. Adding a field means adding a merge
+  arm in the same change, plus a `tests/` merge assertion.
+- **Inert-but-retained fields stay.** `[autoupdate]` (`schema.rs:236`) is
   accepted and preserved but **nothing reads it**; `codegg upgrade` only runs
   on explicit invocation (see `architecture/upgrade.md`). It is deliberately
   not removed because existing user config files contain it. Document a
   retained field rather than deleting it.
+- **`encrypt_provider_keys` / `decrypt_provider_keys` are no-ops**
+  (`encryption.rs:544`/`:549`). The config crate owns master-key *resolution*
+  only; credential encryption/decryption lives in the providers crate and
+  the MCP auth store. `Config::load()` explicitly does not decrypt.
 - **YAML is read-only compatibility.** `parse_yaml` (`document.rs:92`) exists
   only to read markdown frontmatter in agents, commands, and skills, via
   `serde_norway` 0.9.42. New config and generated assets use TOML or
@@ -92,3 +107,11 @@ and `crates/codegg-config/Cargo.toml`. Pinned the discovery order and its
 exact lines, the system-config platform paths, `CONFIG_VERSION`, the inert
 `autoupdate` field, and the `serde_norway` 0.9.42 pin. Claims without a
 traceable source were removed rather than guessed.
+
+Second pass: corrected `autoupdate` `schema.rs:231` → `:236`; corrected the
+watcher row (the file owns `ConfigWatcher`, not `WatcherConfig`); added the
+`merge_configs` whitelist gap — 13 fields silently dropped on multi-layer
+load, verified by building against the crate and comparing
+`load_config(path)` with `merge_configs(&[config])` — and the
+`encrypt_provider_keys`/`decrypt_provider_keys` no-op contract
+(`encryption.rs:544`/`:549`).

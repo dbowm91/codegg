@@ -278,4 +278,4 @@ and older configurations keep working; prefer the canonical spelling.
 
 `codegg attach` is a different command entirely — it is the feature-gated
 remote HTTP client, takes a server URL, and only exists in `server` builds.
-See `docs/daemon.md` and `docs/server.md`.
+See `docs/daemon.md` and `architecture/server.md`.

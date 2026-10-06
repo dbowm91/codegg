@@ -42,10 +42,17 @@ and invariants that are easy to violate.
    through `sanitize_argv_for_run_store`; result text through
    `sanitize_truncate_for_result`.
 4. **Destructive ops stay denied by default.** Force-push classifies
-   `DestructiveHistory` (command-intent capability `DestructiveFileMutation`,
-   default `Deny`); broad `git clean` is rejected at dispatch; dangerous
-   `git config` keys (`credential.*`, `http.*`, `url.*`, proxy/ssh vectors)
-   are always denied; merge strategies are allowlisted.
+   `DestructiveHistory` (`operation.rs:441`), which the command-intent
+   classifier turns into capability `DestructiveFileMutation` with default
+   `Deny` (`src/command_intent/mod.rs:579`); `clean -f` classifies
+   `DestructiveWorktree` the same way. Only a *broad* clean is refused
+   outright — `CleanRequest::is_broad()` (`src/git_network_ops.rs:728`) is
+   `ignored && paths.is_empty()`, rejected at the tool dispatch layer
+   (`src/tool/git.rs:794`). Dangerous `git config` keys are denied by
+   `CONFIG_DENIED_KEY_PATTERNS` (`src/git_network_ops.rs:463`):
+   `credential.*`, `http.*`, `url.*`, `core.gitProxy`, `core.sshCommand`,
+   `core.sshVariant`. Merge strategies are allowlisted
+   (`src/git_mutations_ops.rs:419`).
 5. **Recovery re-reads state.** `assert_action_matches` re-reads operation
    state from disk immediately before acting (TOCTOU defense); mismatch is
    `GitMutationError::StateMismatch`. Recovery is never auto-resolved:
@@ -85,7 +92,7 @@ cargo test --test git_recovery_integration
 ## See Also
 
 - `architecture/git.md` — authoritative contract
-- `.skills/scheduler/SKILL.md` — git domains are deferred-domain executors
-  in `docs/execution-ownership.toml`, not scheduler executors yet
-- `.skills/human-shell/SKILL.md` — `!`/`!!` shell boundary (raw shell is
-  not the typed git path)
+- `.opencode/skills/scheduler/SKILL.md` — git domains are deferred-domain
+  executors in `docs/execution-ownership.toml`, not scheduler executors yet
+- `.opencode/skills/human-shell/SKILL.md` — `!`/`!!` shell boundary (raw
+  shell is not the typed git path)

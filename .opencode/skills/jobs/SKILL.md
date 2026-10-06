@@ -104,22 +104,33 @@ let record = schedule_store.create(ScheduleTemplate {
 ### JobState Transitions
 
 ```text
-Scheduled  → Queued | Cancelled | Expired
-Queued     → Running | Cancelled | Expired | Blocked
-Running    → Completed | Failed | Cancelled | TimedOut | Interrupted
-Failed     → Queued (retry only)
+Scheduled   → Queued | Cancelled | Expired
+Queued      → Running | Cancelled | Expired | Blocked
+Running     → Completed | Failed | Cancelled | TimedOut | Interrupted
+Failed      → Queued (retry only)
+TimedOut    → Queued (retry only)
 Interrupted → Queued (recovery only)
-Blocked    → Queued | Cancelled | Expired
+Blocked     → Queued | Cancelled | Expired
+Completed | Cancelled | Expired → (none)
 ```
 
-Terminal states: `Completed`, `Failed`, `Cancelled`, `TimedOut`, `Expired`.
+`JobState::is_terminal()` (`crates/codegg-core/src/jobs/mod.rs:940`) reports
+`Completed`, `Failed`, `Cancelled`, `TimedOut`, `Expired` as terminal — note
+that `Failed` and `TimedOut` are terminal *for dispatch* yet still have a legal
+outgoing edge to `Queued`, which is how an explicit retry re-enters the queue.
+Do not treat "terminal" and "no outgoing transitions" as the same set.
 
 ### AttemptState Transitions
 
 ```text
-Created|Admitted → Running | Failed | Cancelled | Interrupted
-Running          → Completed | Failed | Cancelled | TimedOut | Interrupted
+Created  → Admitted | Running | Failed | Cancelled | Interrupted
+Admitted → Running | Failed | Cancelled | Interrupted
+Running  → Completed | Failed | Cancelled | TimedOut | Interrupted
+Completed | Failed | Cancelled | TimedOut | Interrupted → (none)
 ```
+
+Attempts have no outgoing edges from any terminal state — retry is expressed by
+creating a new attempt, not by reopening one.
 
 ## Common Pitfalls
 
@@ -162,3 +173,28 @@ cargo test -p codegg-core schedule             # unit tests for schedule logic
 ```
 
 All tests use `current_thread` Tokio runtime. In-memory stores for state-machine tests; SQLite stores for integration tests.
+
+## See Also
+
+- `architecture/jobs.md` — authoritative jobs contract
+- `architecture/scheduler.md` — admission control that claims jobs from the queue
+- `.opencode/skills/scheduler/SKILL.md` — scheduler entry points and guards
+- `.opencode/skills/session-storage/SKILL.md` — the durable store these records land in
+
+## Source verification
+
+Third pass (2026-10-06), verifying against
+`crates/codegg-core/src/jobs/{mod,store,schedule,schedule_store}.rs`,
+`src/{job_dispatcher,job_recovery,background_task_migration}.rs`, and
+`tests/durable_jobs_phase4.rs`. Corrected both state-machine diagrams against
+the transition tables in `store.rs`:86-100 and `:104-116`. The `JobState`
+diagram omitted `TimedOut → Queued`, and the attempt diagram collapsed
+`Created` and `Admitted` into one row — `Created` can also reach `Admitted` and
+`Running` directly. Added the `is_terminal()`-versus-"no outgoing edge"
+distinction (`mod.rs:940`, `:995`): `Failed` and `TimedOut` are terminal for
+dispatch on a job but still have a legal edge back to `Queued`, while no
+attempt state has any outgoing edge from terminal. Confirmed accurate as
+written: every path in the module map, the `NewJob` field list including the
+six child-job lineage fields and `ExecutionTarget`, the idempotency
+eligibility split, and all three `cargo test` targets (`durable_jobs_phase4`
+exists as an integration target).

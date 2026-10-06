@@ -124,11 +124,18 @@ python3 scripts/check_approval_reviewer.py
 
 ## Source verification
 
-Verified 2026-10-06 against `src/permission/reviewer.rs`,
+Re-verified 2026-10-06 against `src/permission/reviewer.rs`,
 `src/permission/approval.rs`, `src/agent/tool_batch.rs`, `src/agent/loop.rs`,
 `src/tool/mod.rs`, `crates/codegg-config/src/schema.rs`, and
-`scripts/check_approval_reviewer.py`. No `file.rs:line` references in this doc
-to correct.
+`scripts/check_approval_reviewer.py`. All `file.rs:line` references in the
+verified-claims table below were re-checked; a shift in `reviewer.rs`
+moved every reference after the module header by four lines, so
+`REVIEWER_ALLOWED_TOOLS` (`:49`→`:53`), `ReviewerVerdict` (`:313`-`:326`→
+`:317`-`:330`), `ReviewerConfig` (`:76`-`:83`→`:80`-`:86`), the five default
+and clamp rows, `execute_capture` context, the `ForbiddenTool` row, the
+`is_stale` row, the deadline, `denial_key_for`, and `resolve_model` were all
+re-pinned. `loop.rs:413`→`:409` and the `ReviewerReceipt` count (8→9) were
+also stale and are corrected.
 
 - **Corrected the invocation trigger.** The doc claimed the reviewer is invoked
   "only" for `Escalate`. It is also reached from the general policy `Ask`
@@ -136,34 +143,35 @@ to correct.
   `resolve_general_ask_via_human` (`src/agent/tool_batch.rs:516`), which under
   `ApprovalMode::Automatic` calls the same
   `resolve_automatic_escalation` helper. The opening, the flow diagram, and
-  item 1 now say so; the `Escalate`-only claim is otherwise identical to the
-  module header comment in `reviewer.rs:3`-`:8`, which still overstates it.
-- Added the omitted `ReviewerReceipt.elapsed_ms` field (item 7). The struct has
-  8 fields, not the 7 listed.
+  item 1 now say so. The module header comment in `reviewer.rs:6`-`:9` has
+  since been corrected to match and now names both branches explicitly, so
+  the doc and the header agree.
+- Added the omitted `ReviewerReceipt.elapsed_ms` field (item 7). The struct
+  has 9 fields (`reviewer.rs:911`-`:921`), not the 7 originally listed.
 
 Verified accurate as written:
 
 | Claim | Source |
 |---|---|
-| `REVIEWER_ALLOWED_TOOLS` = `read`/`glob`/`grep`/`list`/`diff`/`git_read` (6) | `reviewer.rs:49` |
-| `ReviewerVerdict` = `Allow` / `Deny` / `DeferUser` | `reviewer.rs:313`-`:326` |
-| `ReviewerConfig` fields and the TOML block | `reviewer.rs:76`-`:83`; `schema.rs:1290`-`:1312` (identical) |
-| default 2 investigation calls, hard cap 3 | `reviewer.rs:52`, `:54`, `:110`; `schema.rs` `.min(3)` |
-| `deadline_ms` default 30_000, clamped `1_000..=120_000` | `reviewer.rs:56`, `:115` |
-| `max_output_chars` default 4_000, clamped `512..=16_384` | `reviewer.rs:58`, `:120` |
-| `headless_deny` default `false` | `reviewer.rs:91`; `schema.rs` `unwrap_or(false)` |
-| `max_equivalent_denials` default 3, clamped `1..=10` | `reviewer.rs:60`, `:130`, `:932` |
+| `REVIEWER_ALLOWED_TOOLS` = `read`/`glob`/`grep`/`list`/`diff`/`git_read` (6) | `reviewer.rs:53` |
+| `ReviewerVerdict` = `Allow` / `Deny` / `DeferUser` | `reviewer.rs:317`-`:330` |
+| `ReviewerConfig` fields and the TOML block | `reviewer.rs:80`-`:86`; `schema.rs:1290`-`:1312` (identical) |
+| default 2 investigation calls, hard cap 3 | `reviewer.rs:58`, `:56`, `:114`; `schema.rs` `.min(3)` |
+| `deadline_ms` default 30_000, clamped `1_000..=120_000` | `reviewer.rs:60`, `:118` |
+| `max_output_chars` default 4_000, clamped `512..=16_384` | `reviewer.rs:62`, `:123` |
+| `headless_deny` default `false` | `reviewer.rs:96`; `schema.rs` `unwrap_or(false)` |
+| `max_equivalent_denials` default 3, clamped `1..=10` | `reviewer.rs:64`, `:133`, `:936` |
 | `REVIEWER_ALLOW`/`REVIEWER_DENY`/`REVIEWER_DEFER` in the `source` mod | `approval.rs:34`, `:48`-`:50` |
-| one bounded non-tool call: `tools: None`, `temperature: Some(0.0)`, `max_tokens: Some(512)`, `ResponseFormat::JsonObject` | `reviewer.rs:854`-`:859` |
-| investigation served through `ToolRegistry::execute_capture`, read-only context rooted to the workspace | `reviewer.rs:772`-`:786`; `execute_capture` is declared in `src/tool/mod.rs:1317` (not `src/agent/registry.rs`) |
-| forbidden tools denied without execution **and** charged to the budget | `reviewer.rs:757`-`:761` returns `ForbiddenTool`; `run_review_loop` (`reviewer.rs:1115`-`:1126`) converts it to evidence text and still `history.push`es it at `:1122`, so `history.len()` advances |
-| stale policy/sandbox discards the verdict, including a mid-review re-check before applying `Allow` | `is_stale` `reviewer.rs:1139`; pre-loop check `:1003`; pre-`Allow` re-check `:1034`-`:1035` |
-| deadline enforced by `tokio::time::timeout` | `reviewer.rs:1020` |
-| denial key = tool + path + hashed summary | `denial_key_for` `reviewer.rs:950`; consumed `tool_batch.rs:651` |
-| `reviewer_denial_counts` per-loop field | `loop.rs:113`, initialized `loop.rs:413`, read `tool_batch.rs:657`, written `tool_batch.rs:782` |
-| `ApprovalRouter::route_escalation` never auto-allows for `Automatic` | `approval.rs:252`-`:261` (explicit comment: only the async reviewer may allow/deny) |
+| one bounded non-tool call: `tools: None`, `temperature: Some(0.0)`, `max_tokens: Some(512)`, `ResponseFormat::JsonObject` | `reviewer.rs:858`-`:862` |
+| investigation served through `ToolRegistry::execute_capture`, read-only context rooted to the workspace | `reviewer.rs:777`-`:790`; `execute_capture` is declared in `src/tool/mod.rs:1317` (not `src/agent/registry.rs`) |
+| forbidden tools denied without execution **and** charged to the budget | `reviewer.rs:762`-`:765` returns `ForbiddenTool`; `run_review_loop` (`reviewer.rs:1119`-`:1126`) converts it to evidence text and still `history.push`es it at `:1126`, so `history.len()` advances |
+| stale policy/sandbox discards the verdict, including a mid-review re-check before applying `Allow` | `is_stale` `reviewer.rs:1143`; pre-loop check `:1007`; pre-`Allow` re-check `:1038`-`:1039` |
+| deadline enforced by `tokio::time::timeout` | `reviewer.rs:1024` |
+| denial key = tool + path + hashed summary | `denial_key_for` `reviewer.rs:954`; consumed `tool_batch.rs:651` |
+| `reviewer_denial_counts` per-loop field | `loop.rs:113`, initialized `loop.rs:409`, read `tool_batch.rs:657`, written `tool_batch.rs:782` |
+| `ApprovalRouter::route_escalation` never auto-allows for `Automatic` | `approval.rs:252`-`:264` (explicit comment at `:253`-`:256`: only the async reviewer may allow/deny) |
 | reviewer cannot recurse into the router, change mode/profile, or spawn subagents | `scripts/check_approval_reviewer.py` forbidden patterns `PermissionPending`, `ApprovalRouter`, `set_approval_mode`, `set_sandbox_profile`, `TaskTool`, `SubAgent`, `tool::bash`, … |
-| `provider/model` with an unknown provider ⇒ reviewer unavailable | `ReviewerConfig::resolve_model` `reviewer.rs:163`-`:180` |
+| `provider/model` with an unknown provider ⇒ reviewer unavailable | `ReviewerConfig::resolve_model` `reviewer.rs:167`-`:184` |
 | `tests/approval_reviewer.rs` (9 `#[test]`) and the 2 `approval_automatic_reviewer_*` cases in `tests/agent_loop_harness.rs` (`:4647`, `:4728`) | Both files exist; the listed `cargo test` targets are valid |
 
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime

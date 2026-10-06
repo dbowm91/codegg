@@ -36,12 +36,19 @@ in `src/lib.rs`.
 ```
 Config::load()
   1. resolve_config_paths()    -> collect config file paths
-  2. load_config() per path    -> JSONC comment stripping + JSON5 parse
-  3. interpolate_env_vars()    -> expand ${VAR_NAME} syntax
-  4. merge_configs()           -> combine with per-field strategies
-  5. decrypt_provider_keys()   -> decrypt encrypted API keys
-  6. validate()                -> produce warnings (not errors)
+  2. load_config() per path    -> interpolate_env_vars(), then
+                                 JSONC comment stripping + JSON5 parse
+  3. merge_configs()           -> combine with per-field strategies
+  4. migrate()                 -> "0" -> "1" version upgrade
+  5. validate()                -> produce warnings (not errors)
 ```
+
+There is deliberately **no decrypt step here.** The config crate owns
+master-key *resolution* only; `provider.<id>` credential encryption lives in
+the providers crate (`resolve_provider_credential`) and in the MCP auth store.
+`encryption::encrypt_provider_keys` / `decrypt_provider_keys`
+(`encryption.rs:544`/`:549`) are no-ops that exist only for call-site
+compatibility.
 
 ### Merge Strategies (`paths.rs:164`, `merge_configs`)
 
@@ -56,18 +63,33 @@ Different strategies per field type:
 - **Key replacement**: `model_routers` (each virtual model key from a later
   config layer replaces the earlier policy)
 - **Concatenation**: `instructions` (appended to list)
-- **Simple override** (via `merge_option!`): all other fields including
-  `schema`, `version`, `log_level`, `model`, `small_model`, `medium_model`,
-  `auto_route_models`, `default_agent`, `username`, `share`, `autoupdate`,
-  `disabled_providers`, `enabled_providers`, `permission`, `compaction`,
-  `subagent`, `skills`, `templates`, `layout`, `tools`, `formatter`,
-  `lsp`, `lsp_semantic_cache`, `snapshot`, `snapshot_config`, `plugin`,
-  `enterprise`, `experimental`, `keybinds`, `vim_mode`, `hooks`,
-  `notifications`, `catalog`, `context`, `context_packer`,
-  `context_policy`, `daemon`, `scheduler`, `tool_deferral`,
-  `security`, `research`, `theme`, `tool_backends`,
-  `human_shell`, `shell`, `deterministic_tools`, `preflight`,
-  `command_intent`, `orchestration`, `decision_engine`
+- **Whole-value replace**: `theme` (later layer wins outright)
+- **Simple override** (via `merge_option!`): `schema`, `version`, `log_level`,
+  `model`, `small_model`, `medium_model`, `auto_route_models`, `default_agent`,
+  `username`, `share`, `autoupdate`, `disabled_providers`,
+  `enabled_providers`, `permission`, `compaction`, `subagent`, `skills`,
+  `templates`, `layout`, `tools`, `formatter`, `lsp`, `lsp_semantic_cache`,
+  `snapshot`, `snapshot_config`, `plugin`, `enterprise`, `experimental`,
+  `keybinds`, `vim_mode`, `hooks`, `notifications`, `catalog`, `context`,
+  `context_packer`, `context_policy`, `tool_advisor`, `decision_engine`,
+  `orchestration`
+
+#### Fields `merge_configs` does NOT merge
+
+`merge_configs` is an explicit whitelist. A `Config` field with no arm is
+**silently dropped** whenever two or more config layers are resolved — the
+field is `None` on the merged result even when a parsed file set it. Verified
+empirically against the crate: a file containing `[security]` survives
+`load_config` but is `None` after `merge_configs`.
+
+Currently unmerged: `approval_reviewer`, `command_intent`, `daemon`,
+`deterministic_tools`, `human_shell`, `preflight`, `provider_connections`,
+`research`, `scheduler`, `security`, `shell`, `tool_backends`,
+`tool_deferral`.
+
+When adding a `Config` field, add the merge arm in the same change and extend
+a `tests/paths.rs` merge assertion. This is a known gap, not an intentional
+design boundary.
 
 ### ProviderConfig Merge (`schema.rs:1106`)
 
@@ -139,6 +161,7 @@ pub struct Config {
     pub agent: Option<HashMap<String, AgentConfig>>,
     pub mcp: Option<HashMap<String, McpEntry>>,
     pub permission: Option<PermissionConfig>,
+    pub approval_reviewer: Option<ApprovalReviewerConfig>,
     pub compaction: Option<CompactionConfig>,
     pub subagent: Option<SubagentConfig>,
     pub skills: Option<SkillsConfig>,
@@ -166,6 +189,8 @@ pub struct Config {
     pub catalog: Option<CatalogConfig>,
     pub discovery: Option<DiscoveryConfig>,
     pub tool_deferral: Option<ToolDeferralConfig>,
+    pub tool_advisor: Option<ToolAdvisorConfig>,
+    pub decision_engine: Option<DecisionEngineConfig>,
     pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
     pub research: Option<ResearchConfig>,
@@ -180,10 +205,12 @@ pub struct Config {
     pub deterministic_tools: Option<DeterministicToolsConfig>,
     pub preflight: Option<PreflightConfig>,
     pub command_intent: Option<CommandIntentConfig>,
+    pub orchestration: Option<OrchestrationConfig>,
+    pub eggwork: Option<EggworkConfig>,
 }
 ```
 
-### ProviderConfig (`schema.rs:1033`)
+### ProviderConfig (`schema.rs:1068`)
 
 ```rust
 pub struct ProviderConfig {
@@ -219,13 +246,13 @@ pub enum AuthConfig {
 }
 ```
 
-### ProviderConnectionsConfig (`schema.rs:350`)
+### ProviderConnectionsConfig (`schema.rs:385`)
 
 Daemon-owned provider-connection refresh policy. Defaults:
 `background_refresh=false`, `max_concurrent_refreshes=1`,
 `global_refresh_cap=4`, `health_stale_after_ms=300000`.
 
-### ServerConfig (`schema.rs:985`)
+### ServerConfig (`schema.rs:1020`)
 
 ```rust
 pub struct ServerConfig {
@@ -274,6 +301,12 @@ pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
 pub fn decrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
 ```
 
+`encrypt_provider_keys` and `decrypt_provider_keys` are **no-ops** that
+return `Ok(())` (`encryption.rs:544`/`:549`). They exist so call sites compile;
+the config crate owns master-key resolution only. Provider credential
+encryption is owned by the providers crate (`resolve_provider_credential`),
+and the MCP OAuth token store owns its own `TokenSet` encryption.
+
 Master key lookup order:
 1. `CODEGG_MASTER_KEY`
 2. `CODEGG_ENCRYPTION_KEY`
@@ -296,13 +329,13 @@ Per-model tuning: `prompt_profile`, `family`, `context_window`,
 `default_thinking_budget`, `max_parallel_tools`, `preferred_tools`,
 `disabled_tools`, `task_state_policy`.
 
-### ContextPolicyConfig (`schema.rs:644`)
+### ContextPolicyConfig (`schema.rs:679`)
 
 Gated active context policy. First use: tool-palette reduction driven
 by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
 `Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-### SearchConfig (`schema.rs:739`)
+### SearchConfig (`schema.rs:774`)
 
 Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 `expose_raw_mcp_tools`, `fallback_to_builtin`, output caps per domain,
@@ -399,9 +432,12 @@ Validated fields:
 
 - **Merge is per-type**: HashMap fields use key replacement (later wins);
   `ProviderConfig`/`ServerConfig`/`WatcherConfig` use field-by-field;
-  `instructions` concatenates.
-- **Decryption on reload**: `ConfigWatcher::reload_config()` calls
-  `decrypt_provider_keys()` so encrypted keys work after hot-reload.
+  `instructions` concatenates. New fields need a new arm — see
+  "Fields `merge_configs` does NOT merge" above.
+- **No decrypt step on load or reload**: `ConfigWatcher::reload_config()`
+  calls `decrypt_provider_keys()` (`watcher.rs:167`), but that function is a
+  no-op. Hot reload never decrypts; credential resolution happens at the
+  providers crate / MCP auth boundary.
 - **Project config searches upward**: From `$PWD`, checks `.codegg/` and
   `codegg/` directories with both `.jsonc` and `.json` extensions.
 - **AuthConfig::None**: Explicit "no auth" marker — all credential
@@ -410,9 +446,10 @@ Validated fields:
   a project config setting `auth: { type: "stored" }` overrides the
   global `api_key` path.
 - **No decryption without a resolvable master key**:
-  `decrypt_provider_keys()` is a no-op when neither an explicit
-  environment key nor an existing CodeGG-managed key can be resolved.
-  Decryption never bootstraps a new key.
+  `get_master_key()` never creates a key; reads fail closed when no explicit
+  env key or managed key resolves. Only the protected-store *write* paths
+  (`get_or_create_master_key`) may bootstrap one, and only for genuinely
+  fresh stores.
 
 ## Testing
 
@@ -451,3 +488,40 @@ than `827` is retained. The `decision_engine` override described above was added
 by that same commit and is confirmed accurate: default-disabled, explicit
 `reference`/`ollama` profile, `AuthConfig` reference only, and no model discovery
 without an explicit operator call.
+
+Second pass (2026-10-06), verified against
+`crates/codegg-config/src/{paths,schema,watcher,encryption}.rs` plus a
+throwaway crate built against `codegg-config`:
+- **Merge-strategy list was wrong.** It claimed `daemon`, `scheduler`,
+  `tool_deferral`, `security`, `research`, `theme`, `tool_backends`,
+  `human_shell`, `shell`, `deterministic_tools`, `preflight`, `command_intent`
+  merge via `merge_option!`. They do not — `merge_option!` takes a fixed
+  identifier list (`paths.rs:167-207`) and the only other arms are
+  `model_routers`, `discovery`, `search`, `server`, `watcher`, `provider`,
+  `eggwork`, `agent`, `model_profile`, `mcp`, `commands`, `instructions`,
+  `mode`, `theme`. The 13 fields absent from that set are dropped on every
+  multi-layer load; documented under a new "Fields `merge_configs` does NOT
+  merge" section with the empirical `load_config` vs `merge_configs`
+  comparison that proves it. `theme` is now correctly described as whole-value
+  replace.
+- **Loading flow was wrong.** It listed `decrypt_provider_keys()` as step 5 and
+  omitted `migrate()`. `Config::load()` (`schema.rs:2447`) has an explicit
+  comment that decryption is a delegated no-op; `decrypt_provider_keys` and
+  `encrypt_provider_keys` are themselves no-ops (`encryption.rs:544`/`:549`).
+  Rewrote the flow and the encryption/invariants sections.
+- **Stale line refs re-corrected** after the same upstream insertion:
+  `ProviderConfig` `1033`→`1068`, `ProviderConnectionsConfig` `350`→`385`,
+  `ServerConfig` `985`→`1020`, `ContextPolicyConfig` `644`→`679`,
+  `SearchConfig` `739`→`774`.
+- **`Config` struct listing was incomplete**: omitted `approval_reviewer`,
+  `tool_advisor`, `decision_engine`, `orchestration`, `eggwork`. All five type
+  names verified against `schema.rs`.
+- Confirmed accurate as written: `merge_configs` (`paths.rs:164`),
+  `ConfigWatcher` (`watcher.rs:12`), `Config::migrate` (`schema.rs:2739`),
+  `CONFIG_VERSION` (`schema.rs:5`), `AuthConfig` (`schema.rs:16`),
+  `ModelProfileConfig` (`schema.rs:112`), `ProviderConfig::merge`
+  (`schema.rs:1106`), the master-key resolution chain, and every listed
+  validation bound (`log_level`, `share`, model format, `port >= 1024`,
+  agent `mode`/`color`, `tool_timeout_seconds` 1-3600,
+  `max_parallel_tools` 1-100, `compaction.threshold` 0.1-1.0,
+  `compaction.max_tokens >= 1000`).

@@ -58,10 +58,16 @@ python3 scripts/check_projection_transport_lifecycle.py  # transport lifecycle
 python3 scripts/check_websocket_bounds.py                # WS bounds
 ```
 
-Note: as of 2026-10-06 `check_projection_transport_lifecycle.py` fails on
-`src/core/transport/daemon_socket.rs` ("raw forwarder is spawned without an
-owned handle"). The guard is real and current; the source side is what is
-out of contract.
+None of these run in `scripts/verify.sh quick`; they are change-triggered.
+Run all five when you touch `crates/codegg-protocol/src/projection/`,
+`crates/codegg-core/src/projection_replay/`, a transport adapter, or a WS
+route. All five pass on the current tree.
+
+`check_projection_transport_lifecycle.py` splits each Rust source at its
+test module so `#[cfg(test)]` fixtures are not scanned as production
+transport. The gate is any `cfg` predicate mentioning `test`, not just
+the bare `#[cfg(test)]` — `src/core/transport/daemon_socket.rs` gates its
+module with `#[cfg(all(test, unix))]`.
 
 ## Testing
 
@@ -90,13 +96,18 @@ Verified 2026-10-06 against `crates/codegg-core/src/bus/{global,events,mod}.rs`,
 `crates/codegg-protocol/src/projection/*.rs`,
 `src/core/daemon_projection.rs`, `src/core/daemon.rs`,
 `src/server/routes/event.rs`, `src/tui/app/state/chat.rs`, and
-`scripts/check_projection_*`, `scripts/check_websocket_bounds.py`.
-Corrected the bus-row attribution, which implied `AppEvent` and the
-permission/question registries all live in `events.rs` (they are split
-`events.rs` / `mod.rs`); the projection module inventory, which omitted the
-`consumer`, `controller`, and `replay` modules; the two `.sh` guards, which
-were written as `python3` invocations; the SSE attribution, which named no
-source file; and the test list, which omitted
-`collaboration_m002_chat_policy`. Added the observed failure of
-`check_projection_transport_lifecycle.py`. Claims without a traceable source
-were removed rather than guessed.
+`scripts/check_projection_*`, `scripts/check_websocket_bounds.py` — with
+all five guards executed, not just read. Confirmed correct as written: the
+bus-row attribution (`AppEvent` in `events.rs`, registries in `mod.rs`),
+the 4096 broadcast capacity, the full projection module inventory
+including `consumer`, `controller`, and `replay`, the
+`GlobalEventBus::subscribe()` read behind the SSE route, and the four
+`collaboration_m00*` test targets (none feature-gated).
+
+Corrected the previous revision's stale note that
+`check_projection_transport_lifecycle.py` failed on
+`src/core/transport/daemon_socket.rs`; the guard now exits 0 after its
+test-module stripping was fixed to match any `cfg` predicate mentioning
+`test` (`scripts/check_projection_transport_lifecycle.py:25`), which is
+the fact the Static Guards section now records. Added that these five
+guards are change-triggered and absent from `scripts/verify.sh quick`.
