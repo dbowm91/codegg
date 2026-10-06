@@ -424,6 +424,7 @@ pub trait DecisionEngine: Send + Sync {
     fn state(&self) -> BackendState;
     fn capabilities(&self) -> BackendCapabilities;
     /// Implementations must validate the request before performing backend I/O.
+    #[must_use = "the decision future must be awaited and its response handled"]
     async fn decide(
         &self,
         request: DecisionRequest,
