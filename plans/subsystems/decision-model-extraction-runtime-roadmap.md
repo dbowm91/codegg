@@ -225,7 +225,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/006-legacy-training-runtime-retirement.md`
 
-Status: blocked on M005.
+Status: closed; see `plans/closure/decision-model-extraction-runtime/006-status.md`. Generic training/model-runtime retirement is complete; post-closure hosted merge qualification is tracked separately in `plans/subsystems/decision-model-extraction-runtime-post-closure-merge-corrective-addendum.md`.
 
 Objective: remove generic training/framework/runtime implementation from CodeGG, retire obsolete feature flags and optional dependencies, reconcile documentation/planning, and run end-to-end qualification of no-backend/local/System-One failure paths.
 
