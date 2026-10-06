@@ -1,6 +1,6 @@
 # Desktop Frontend/IDE Foundation Post-Closure Corrective Milestone 002 — Feature-Gated Compile Break and Undrained Diagnostics Publisher
 
-Status: planned
+Status: implemented
 
 Repository baseline: `533be594` (`main`; M006-B implementation `3bee7011`, closure
 `533be594`)
