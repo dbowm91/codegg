@@ -307,13 +307,6 @@ eggplan-repo = { git = "https://github.com/eggstack/eggplan.git", rev = "0dd33b7
 eggwork-client = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
 eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82e1ea392bb505aef1315c0e8c91d8baa0c", default-features = false }
 
-# Optional sequence-encoder experiment. These dependencies are never part of
-# the default advisor/runtime graph; the feature boundary is intentionally
-# explicit until offline qualification selects a production architecture.
-candle-core = { version = "0.11", default-features = false, optional = true }
-candle-nn = { version = "0.11", default-features = false, optional = true }
-candle-transformers = { version = "0.11", default-features = false, optional = true }
-
 # External local decision runtime, pinned to the M002-compatible revision.
 # Optional so default builds remain unchanged; no training dependency is imported.
 sdm-core = { git = "https://github.com/dbowm91/sdm.git", rev = "8139b064bdcf3212e8f6fd912e801a479b55751c", optional = true }
@@ -348,16 +341,7 @@ server = [
 image = ["dep:ratatui-image", "dep:image"]
 lsp-test-support = ["egglsp/lsp-test-support"]
 lsp-real-server-tests = ["egglsp/lsp-real-server-tests"]
-tool-advisor = []
-tool-advisor-training = ["tool-advisor"]
-tool-advisor-encoder-experiment = [
-    "tool-advisor",
-    "dep:candle-core",
-    "dep:candle-nn",
-    "dep:candle-transformers",
-]
-tool-advisor-encoder-training = ["tool-advisor-encoder-experiment", "tool-advisor-training"]
-tool-advisor-sdm-runtime = ["dep:sdm-core", "dep:sdm-runtime"]
+decision-runtime-sdm = ["dep:sdm-core", "dep:sdm-runtime"]
 
 [[test]]
 name = "lsp_composite_stdio"

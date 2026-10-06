@@ -2,6 +2,13 @@
 
 Status: closed
 
+Ownership disposition (decision-runtime M006): this roadmap is historical
+implementation evidence. Generic learned-model training, evaluation, architecture,
+and artifact runtime ownership is now `https://github.com/dbowm91/sdm`. CodeGG owns
+candidate authority, deterministic fallback, policy, capture consent, and causal
+frontier behavior. The old in-repo runtime/training commands and Candle experiment
+features have been retired; closed milestone records below remain unchanged.
+
 Repository audit baseline: `ed960f2ae7043acd816970f7d06e74dc69b09ae8`
 
 Long-term references:

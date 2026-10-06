@@ -81,10 +81,11 @@ discovery method.
 Learned tool-advisor inference is opt-in separately through
 `tool_advisor.enabled` and its policy `mode`. Set
 `tool_advisor.runtime_backend = "sdm_local_v1"` with a pinned local artifact to
-use SDM Rank. Selecting `system_one` through `decision_engine` does not emulate
-Rank; the current System One profile reports Rank unsupported and tool advice
-falls back deterministically. The effective policy/backend split is available
-from `codegg tool-advisor status`.
+use SDM Rank. Build the optional backend with `--features decision-runtime-sdm`.
+Selecting `system_one` through `decision_engine` does not emulate Rank; the
+current System One profile reports Rank unsupported and tool advice falls back
+deterministically. The effective policy/backend split is available from
+`codegg tool-advisor status`.
 
 Example remote configuration:
 

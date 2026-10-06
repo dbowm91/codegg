@@ -5135,6 +5135,8 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
         ConnectionTaskKind, ConnectionTaskProbe, ProjectionTransportTestConfig,
     };
 
+    std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
+
     let raw_cancel = tokio_util::sync::CancellationToken::new();
     let config = ProjectionTransportTestConfig {
         outbound_queue_capacity: Some(256),

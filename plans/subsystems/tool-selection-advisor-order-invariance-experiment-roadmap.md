@@ -185,7 +185,7 @@ Plan:
 
 - `plans/implementation/tool-selection-advisor-order-invariance-experiment/005-fresh-v4-preregistered-qualification.md`
 
-Status: blocked (terminal — M004 closed negatively, so the required positive predecessor can never be satisfied in this workstream). Future learned-model architecture/training work is owned by `plans/subsystems/decision-model-extraction-runtime-roadmap.md` under ADR-0013.
+Status: superseded (terminal — M004 closed negatively, so the required positive predecessor can never be satisfied in this workstream). Future learned-model architecture/training work is owned externally by `https://github.com/dbowm91/sdm`; CodeGG integration/authority work follows `plans/subsystems/decision-model-extraction-runtime-roadmap.md` under ADR-0013.
 
 Freeze architecture/model/operating point plus a fresh v4 semantic holdout in a separate preregistration commit, require CI, then perform one release-mode final evaluation.
 

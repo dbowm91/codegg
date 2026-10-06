@@ -116,7 +116,7 @@ artifact is a training/runtime smoke baseline, not a qualified or production-pro
 model.
 
 The SDM local runtime is opt-in at build and config time. Builds that expose it use
-`--features tool-advisor-sdm-runtime`; this feature imports `sdm-core`/`sdm-runtime`
+`--features decision-runtime-sdm`; this feature imports `sdm-core`/`sdm-runtime`
 from one immutable SDM revision and no SDM training dependencies. The CodeGG setting
 names the backend explicitly; an old artifact path is never reinterpreted by filename:
 
@@ -138,74 +138,41 @@ unqualified compatibility baseline, so it is not promoted as a learned capabilit
 Resource measurements at 16/64/128/256 candidates and comparison context are in
 `dbowm91/sdm/docs/benchmark-baseline.md`.
 
-## Optional runtime (linear baseline and contextual corrective)
+## Decision runtime integration
 
-The runtime is an in-process `hashed-linear-v1` Rust scorer with a versioned
-JSON artifact manifest. Manifest schema, tokenizer/context/candidate versions,
-limits, calibration, provenance, and a SHA-256 weight digest are checked before
-scoring. A missing, corrupt, incompatible, or repeatedly failing artifact
-returns a diagnostic status and uses `NoopAdvisor`; it cannot fail an agent
-turn. `off` is the configuration default. Reranking and promotion are
-available only as explicitly configured experimental M005 modes.
+Both live learned-ranking consumers pass bounded Rank requests through the
+shared `DecisionEngine`: pre-turn disclosure and on-demand `tool_search`.
+CodeGG builds the candidate set from the already resolved policy-allowed
+surface, enforces response identity, and retains deterministic fallback,
+disclosure, promotion, and execution authority. The model has no broker,
+permission, registry, or execution handle. A backend without Rank, or one that
+fails validation, does not change the deterministic result. System One's
+currently supported profile does not implement Rank and is not queried through
+repeated Choice requests.
 
-`candidates_from_surface` projects only the already resolved policy-allowed
-surface, so denied, disabled, plan-ineligible, and parent-ceiling tools cannot
-enter the advisor input. The scorer has no broker, permission, registry, or
-execution handle.
+The optional pinned SDM local adapter is enabled with
+`--features decision-runtime-sdm`. Backend errors and missing/corrupt artifacts
+resolve through the existing fallback. The `promote` policy is forced to
+`observe` while the selected backend is unqualified. See the M005 and M006
+closure records for implementation and retirement evidence.
 
-With the optional `tool-advisor` feature, a separate
-`contextual-embedding-v2` artifact can be loaded by the same advisor
-abstraction. It is a pure-Rust hashed-token embedding interaction scorer
-with a learned context/candidate interaction score, not a renamed linear
-artifact: mean-pooled hashed-token embeddings interact through a scaled dot
-product plus bias. Until clean requalification says otherwise, documentation
-must not claim more than that. The small and medium capacity points allocate
-5,242,881 and 15,728,641 parameters, but the corpus touches only a few
-hundred embedding buckets, so qualification reports trained/touched rows and
-effective trained parameters rather than headline allocation; a compact
-table configuration may match quality at a fraction of the bytes. Binary
-artifacts carry an explicit manifest, tokenizer/version, dataset
-fingerprint, weight digest, training discipline, dev-selected abstention
-calibration, provenance, and license notice. Version 1 artifacts remain
-loadable for compatibility but are always reported as legacy/unqualified;
-only schema-v2 artifacts with partitioned discipline and `dev-grid-search-v1`
-calibration may back qualification evidence. A missing, corrupt, or
-incompatible contextual artifact falls back to `NoopAdvisor` for the turn.
-Runtime abstention uses the serialized calibration
-(`sigmoid((abstain_bias - max_score) / temperature)`); uncalibrated legacy
-artifacts keep the exact historical `sigmoid(-top_score)` formula while
-reporting their status. See `architecture/tool-advisor-framework-spike.md`
-for the bounded framework comparison and selection rationale.
+## Generic training/runtime ownership
 
-## Local training (baseline and contextual corrective)
+Generic training, evaluation, model architecture, and artifact runtime
+implementation are owned by the external MIT repository
+[`dbowm91/sdm`](https://github.com/dbowm91/sdm). CodeGG's former contextual
+trainer, sequence encoder, learned retrieval experiments, requalification
+pipeline, Candle dependencies, and architecture-specific training/probe CLI
+were retired by decision-runtime M006. Frozen corpora, receipts, preregistrations,
+and closure records remain as historical evidence; they are not executable
+CodeGG training commands. Build the optional pinned SDM adapter with
+`--features decision-runtime-sdm`.
 
-The opt-in `tool-advisor-training` feature adds `codegg tool-advisor train`,
-`eval`, and `inspect`. Training uses the same `hashed-linear-v1` scorer and
-artifact writer as inference, with C001 leakage-group splits and
-dataset/config fingerprints. Each epoch writes an atomic checkpoint under a
-distinct run directory; the selected artifact is replaced only after the run
-completes. Empty train or dev partitions are hard errors: the old all-case
-training and calibration fallbacks are removed, and final-test metrics are
-never computed during tuning. `codegg tool-advisor eval --partition
-train|dev|test` (default `test`) scores one frozen partition explicitly;
-`--partition all` is labeled diagnostic and must never back qualification
-evidence. The repository includes `assets/tool-advisor/tiny-training.json`
-as a bounded smoke configuration. The contextual configs in
-`assets/tool-advisor/contextual-small-training.json`,
-`contextual-medium-training.json`, and `contextual-compact-training.json`
-exercise the two historical capacity points plus a compact table through the
-same Rust-only command. Ordinary builds do not require the training feature.
-
-Contextual training applies corrected binary-cross-entropy gradients
-(sign and mean-pooling `1/n` factors pinned by finite-difference tests and a
-tiny-overfit gate), consumes only the C001 train partition in the optimizer,
-fits the abstention head on the dev partition only through a deterministic
-temperature/bias grid search, and records per-split metrics (train/dev, never
-test), the serialized calibration with uncalibrated reference values, and an
-effective-capacity report (distinct buckets touched, rows changed, trained
-parameter estimate, cold load, score latency). Each run writes a
-machine-readable `<artifact>.training-report.json` sidecar next to the
-artifact for review and requalification.
+The CodeGG-owned `tool-advisor bench` and `lint` commands remain for deterministic
+keyword/BM25 discovery baselines and corpus validation. `inspect` validates the
+supported local artifact format; `status` reports policy and engine state without
+inference. Explicit local capture/export/status/purge remains a separate operator
+capability and does not train or transmit data.
 
 ## Training-data lifecycle (M004)
 
@@ -253,22 +220,24 @@ narrow oversized universes to the neural budget
 preselection cost is single-digit milliseconds at 128 candidates, far below
 provider latency). Resolved-surface position is never a ranking signal, so a
 relevant deferred tool past the first-N surface window still reaches the
-learned scorer. The host revalidates every predicted name against the final
+selected decision backend. The host revalidates every predicted name against the final
 surface and excludes required/never-reduce tools from learned visibility
 decisions. Denied, disabled, plan-ineligible, non-callable, and parent-ceiling
 tools never enter the advisor input.
 
-`codegg tool-advisor qualify --model <artifact> --suite <jsonl>` emits the
+### Historical qualification CLI (retired by decision-runtime M006)
+
+The former `codegg tool-advisor qualify --model <artifact> --suite <jsonl>` emitted the
 pre-registered keyword/BM25/learned matrix by fixture tier, an unknown-tool
 holdout, score-time and prompt-size bounds, and policy-negative coverage.
 The suite must be held out from training; thresholds are selected from
 development data only. The command is deterministic and offline, and its
 results are qualification evidence rather than a default-on recommendation.
 
-## Clean offline requalification (C004 disposition B)
+## Historical clean offline requalification (C004 disposition B)
 
 The frozen C004 protocol (`assets/tool-advisor/c004-requalification.json`,
-run with `codegg tool-advisor requalify --prereg …`) re-ran every baseline
+formerly run with the retired `codegg tool-advisor requalify --prereg …` command) re-ran every baseline
 and contextual variant on content-derived frozen partitions, true
 family-excluded retraining runs, counterfactual/unknown/hard-negative/
 no-tool slices, and a 64-tool candidate-recall fixture. Verdict: **B —
@@ -278,10 +247,9 @@ context-sensitive slice gain without regression, abstain worse than the
 trivial keyword baseline on no-tool cases, and transfer dev calibration
 poorly to test abstention; preselector recall is 0.83 against a 0.98 gate.
 The contextual scorer therefore remains a research/observe baseline: no
-live-provider budget is spent on it, and the live M004 trajectory study
-stays blocked pending a new model-architecture experiment. This demotion is
-a verdict on the architecture, not on the corrected training mechanism,
-which stays in place for any future experiment.
+live-provider budget was spent on it, and the live M004 trajectory study
+stayed blocked. M006 retired the local training/requalification mechanism;
+future generic training and model architecture work belongs in SDM.
 
 ## Causal frontier experiment (M001 foundation)
 

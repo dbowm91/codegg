@@ -691,12 +691,10 @@ pub fn impact_by_split(
 
 /// Local universe expansion for the C001 rebaseline (no encoder needed).
 ///
-/// Verbatim parity with `operating_point::expand_universe`: every labeled
-/// relevant tool is preserved (re-homed into the deferred set when
+/// Every labeled relevant tool is preserved (re-homed into the deferred set when
 /// necessary), the remainder is deterministic synthetic filler disjoint from
 /// every relevant name, output is name-sorted and validated. Kept local so
-/// the C001 BM25 frontier runs in the default test profile without the
-/// candle-backed encoder-training feature.
+/// the C001 BM25 frontier can be measured without any model runtime.
 pub fn expand_universe_local(
     cases: &[ToolAdvisorCase],
     size: usize,

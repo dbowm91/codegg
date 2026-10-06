@@ -25,7 +25,7 @@ pub mod command_routing;
 pub mod context;
 pub mod core;
 pub mod decision;
-#[cfg(feature = "tool-advisor-sdm-runtime")]
+#[cfg(feature = "decision-runtime-sdm")]
 pub mod decision_sdm;
 pub mod document_service;
 pub mod eggsact;

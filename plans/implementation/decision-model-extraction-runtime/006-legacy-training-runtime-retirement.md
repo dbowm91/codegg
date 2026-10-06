@@ -224,11 +224,16 @@ Before/after evidence:
 cargo tree -e features
 cargo metadata --locked --format-version 1
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --locked --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --locked -p codegg --all-targets --features server,plugins,lsp-test-support -- -D warnings
+cargo nextest run --workspace --locked --profile ci
 scripts/verify.sh quick
 git diff --check
 ```
+
+Do not run `--all-features`: repository instructions exclude it because it
+enables real-server tests. The supported feature set above is the workspace
+feature qualification surface.
 
 Also run:
 
