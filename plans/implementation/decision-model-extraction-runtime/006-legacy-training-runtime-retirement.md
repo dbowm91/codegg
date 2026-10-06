@@ -1,6 +1,6 @@
 # Decision-Model Extraction and Runtime Milestone 006 — Legacy Training/Runtime Retirement
 
-Status: active
+Status: closed
 
 Repository baseline: `533be5941ac48334743de555cda96d8695cc6527`
 
