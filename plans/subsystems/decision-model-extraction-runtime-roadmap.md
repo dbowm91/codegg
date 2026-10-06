@@ -189,7 +189,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/003-local-artifact-backend-adoption.md`
 
-Status: closed; closure: `plans/closure/decision-model-extraction-runtime/003-status.md`. M003 adopts pinned SDM revision `8139b064bdcf3212e8f6fd912e801a479b55751c` behind an opt-in feature/configuration. Production remains default-off and the compatibility baseline remains unqualified. M005 is active.
+Status: closed; closure: `plans/closure/decision-model-extraction-runtime/003-status.md`. M003 adopts pinned SDM revision `8139b064bdcf3212e8f6fd912e801a479b55751c` behind an opt-in feature/configuration. Production remains default-off and the compatibility baseline remains unqualified. M005 and M006 are closed.
 
 Objective: replace CodeGG's architecture-specific learned inference owner with the reusable local runtime backend while preserving `off`, observe-only parity, fallback, artifact validation, and resource bounds.
 
@@ -213,7 +213,7 @@ Plan:
 
 - `plans/implementation/decision-model-extraction-runtime/005-tool-advisor-decision-engine-migration.md`
 
-Status: active; M003 is positively closed and M004 contract stability is established by its closure.
+Status: closed; M003 is positively closed and M004 contract stability is established by its closure. See `plans/closure/decision-model-extraction-runtime/005-status.md`.
 
 Objective: make learned tool advice consume `DecisionEngine` instead of model-specific CodeGG runtime types, while retaining CodeGG-owned candidate filtering, BM25 fallback, disclosure budgets, telemetry/capture policy, and causal-frontier behavior.
 
