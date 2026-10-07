@@ -12,8 +12,11 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `d85ed67bef970cfe99e320a7876e7a51373b7e37`
 
-Implementation commits: see the milestone commit for this closure (single commit;
-`git log -- plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md`).
+Implementation commits:
+
+- `d2c82e08` — typed qualification axes, migration v69, revision-scoped
+  inference feedback, truthful `/connect` messaging, guard, docs, and this
+  closure record.
 
 ## 1. Executive finding
 
