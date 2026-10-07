@@ -362,14 +362,17 @@ async fn summary_dto_for(
         revision: connection.revision,
         model_count,
         catalog_revision: health.as_ref().and_then(|h| h.4.clone()),
-        health: health.map(|(status, reason_code, checked_at, duration_ms, _)| {
-            codegg_protocol::provider::ConnectionHealthDto {
-                status,
-                reason_code,
-                checked_at,
-                duration_ms: duration_ms as u64,
-            }
-        }),
+        health: health.map(
+            |(status, reason_code, checked_at, duration_ms, _, credential_status)| {
+                codegg_protocol::provider::ConnectionHealthDto {
+                    status,
+                    reason_code,
+                    checked_at,
+                    duration_ms: duration_ms as u64,
+                    credential_status,
+                }
+            },
+        ),
     })
 }
 

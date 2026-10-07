@@ -27,6 +27,7 @@ pub mod openai;
 pub mod openai_compatible;
 pub mod opencode_zen;
 pub mod openrouter;
+pub mod qualification;
 pub mod responses_api;
 pub mod retry;
 pub mod setup_catalog;
@@ -61,6 +62,10 @@ pub use provider_core::{
     ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ProviderWirePolicy,
     ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
     MAX_REASONING_BYTES,
+};
+pub use qualification::{
+    catalog_outcome_for_error, CatalogOutcome, CatalogRejected, CatalogUnavailable,
+    CredentialEvidence, CredentialVerification, ProbeQualification,
 };
 pub use responses_api::{
     filter_artifacts_for_provider, validate_arguments, validate_call_count, validate_result_size,

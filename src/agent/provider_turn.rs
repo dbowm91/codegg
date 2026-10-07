@@ -25,6 +25,7 @@
 //!   change (C003).
 
 use super::r#loop::AgentLoop;
+use crate::agent::provider_qualification::InferenceCredentialOutcome;
 use crate::bus::events::AppEvent;
 use crate::error::{AppError, ProviderError};
 use crate::provider::{ChatEvent, ChatRequest, RetryContext, RetryDisposition};
@@ -68,6 +69,36 @@ const STREAM_SETUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 async fn stream_with_retry(
+    loop_: &mut AgentLoop,
+    request: &ChatRequest,
+    retry: Option<RetryContext>,
+) -> Result<Vec<ChatEvent>, AppError> {
+    let result = stream_with_retry_inner(loop_, request, retry).await;
+    // M010: the terminal outcome of a real inference request is the first and
+    // only genuinely authenticated signal a connection produces for providers
+    // whose catalog discovery cannot validate a credential. Reporting is
+    // derived from the typed error class, revision-scoped on the writer side,
+    // and never blocks or retries the turn.
+    report_credential_outcome(loop_, &result);
+    result
+}
+
+/// Feed the terminal credential implication of this turn into connection
+/// qualification. A no-op when the turn is not bound to a durable connection.
+fn report_credential_outcome(loop_: &AgentLoop, result: &Result<Vec<ChatEvent>, AppError>) {
+    let Some(observer) = loop_.services.credential_observer.as_ref() else {
+        return;
+    };
+    let outcome = match result {
+        // A completed provider request is an authenticated success: the
+        // credential was accepted to produce output.
+        Ok(_) => InferenceCredentialOutcome::Authenticated,
+        Err(error) => InferenceCredentialOutcome::from_error(error),
+    };
+    observer.observe(outcome);
+}
+
+async fn stream_with_retry_inner(
     loop_: &mut AgentLoop,
     request: &ChatRequest,
     retry: Option<RetryContext>,

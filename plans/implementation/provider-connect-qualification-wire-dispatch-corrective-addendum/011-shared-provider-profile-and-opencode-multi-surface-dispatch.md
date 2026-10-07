@@ -2,6 +2,17 @@
 
 Status: blocked
 
+Blocker status 2026-10-07: hard dependency 1 (CodeGG M010) is **discharged** —
+closed at
+`plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md`.
+Hard dependency 2 remains outstanding: the sibling EggPool Shared Provider
+Profile Contract M001 has no accepted closure revision (its registry lists M001
+`ready`, `plans/closure/` has no `shared-provider-profile-contract/` record,
+`eggpool-provider-profile` 0.1.0 is unpublished, and the work sits on the
+unmerged `codex/plan-shared-provider-profile-contract` branch). Because this
+plan consumes only the accepted closure revision and forbids copying the
+planning-branch implementation, no CodeGG-side preparatory work is authorized.
+
 Repository baseline: `d85ed67bef970cfe99e320a7876e7a51373b7e37`
 
 Source roadmap:

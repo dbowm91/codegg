@@ -36,6 +36,10 @@ pub struct AgentLoopBuildInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M010: optional inference feedback bound to the session's selected
+    /// provider connection revision.
+    pub credential_observer:
+        Option<crate::agent::provider_qualification::SharedProviderCredentialObserver>,
 }
 
 /// Build a fully initialized loop from the daemon-resolved turn identity.
@@ -65,6 +69,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     }
     if let Some(spool) = input.subagent_pool {
         agent_loop.set_subagent_pool(spool);
+    }
+    if let Some(observer) = input.credential_observer {
+        agent_loop.set_credential_observer(observer);
     }
     if let Some(submission) = input.submission {
         agent_loop.set_submission(submission);

@@ -230,6 +230,34 @@ request.
 In other words: use `/connect` to add a provider connection, `/connections` to
 switch the current session between the ones you already added.
 
+### What "connected" does and does not mean
+
+A successful `/connect` proves two separate things, and the confirmation toast
+tells you which of them actually happened:
+
+| Toast | Meaning |
+|---|---|
+| `credential verified` | The provider itself accepted the credential during a non-billable metadata request. |
+| `no credential required` | The provider needs no credential. |
+| `catalog loaded … credential not yet verified` | The model catalog was loaded, but nothing has authenticated the credential yet. |
+
+The third case is the common one and is not a warning. Most providers expose a
+model catalog that does not require — or even check — your API key: some
+return a fixed built-in list without touching the network at all, and some
+serve `/models` publicly. Listing models therefore cannot prove a key is
+valid. For those providers the credential is confirmed by the first real
+request, and the connection's status updates to `verified` once a request
+succeeds.
+
+If your key is actually wrong, you will see it in two ways: `/connect` fails
+immediately for providers whose catalog endpoint authenticates, and otherwise
+the first real request fails with an authentication error. Either way the
+connection is marked as having a rejected credential rather than silently
+looking healthy.
+
+`/connections` shows each connection's health (catalog reachable or not)
+alongside its credential status, so the two can be read independently.
+
 ## Choosing a model
 
 `--model` accepts a `provider/model-id` string. Prefer that form: it is

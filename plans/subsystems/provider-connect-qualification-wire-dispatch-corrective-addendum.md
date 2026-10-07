@@ -60,11 +60,12 @@ EggPool already models provider-level and per-wire-surface endpoint/auth facts p
 
 ### Milestone 010 — Provider connection qualification semantics
 
-Status: ready.
+Status: closed. Closure record:
+`plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md`.
 
 Implementation plan:
 
-- `plans/implementation/provider-connections/010-provider-connection-qualification-semantics.md`
+- `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/010-provider-connection-qualification-semantics.md`
 
 Primary class: capability correctness / invariant.
 
@@ -81,7 +82,7 @@ Status: blocked.
 
 Implementation plan:
 
-- `plans/implementation/provider-connections/011-shared-provider-profile-and-opencode-multi-surface-dispatch.md`
+- `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/011-shared-provider-profile-and-opencode-multi-surface-dispatch.md`
 
 Primary class: capability correctness / infrastructure.
 
@@ -140,5 +141,5 @@ This corrective closes after M010 and M011 have accepted closure records: `/conn
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M010 provider connection qualification semantics | ready | `plans/implementation/provider-connections/010-provider-connection-qualification-semantics.md` | pending | none |
-| M011 shared provider profile + OpenCode Go multi-surface dispatch | blocked | `plans/implementation/provider-connections/011-shared-provider-profile-and-opencode-multi-surface-dispatch.md` | pending | M010 closure; EggPool shared-provider-profile M001 closure revision |
+| M010 provider connection qualification semantics | closed | `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/010-provider-connection-qualification-semantics.md` | `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md` | none |
+| M011 shared provider profile + OpenCode Go multi-surface dispatch | blocked | `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/011-shared-provider-profile-and-opencode-multi-surface-dispatch.md` | pending | M010 closure **discharged**; EggPool shared-provider-profile M001 accepted closure revision still outstanding (verified 2026-10-07: sibling registry lists M001 `ready`, no closure record, crate unpublished, work on unmerged branch `codex/plan-shared-provider-profile-contract`) |

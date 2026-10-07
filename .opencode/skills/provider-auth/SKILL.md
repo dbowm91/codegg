@@ -28,6 +28,7 @@ to violate.
 | Crypto | `crates/codegg-providers/src/crypto.rs`, `codegg_config::encryption` | AES-256-GCM + Argon2id; master key via `get_master_key()` (`CODEGG_MASTER_KEY`) |
 | Resilience | `circuit.rs`, `fallback.rs`, `cache.rs`, `catalog.rs`, `discovery.rs`, `models.rs` | `CircuitBreaker`, `FallbackProvider`, response cache, live catalog + SQLite discovery cache, embedded free-tier defs |
 | Streaming | `wire.rs`, `responses_api.rs`, `text_tool_parser.rs` | Shared `eggpool-wire` kernel bridge (canonical request encode + stream decode), Responses API adapter, bounded textual tool-call repair |
+| Connection qualification | `crates/codegg-providers/src/qualification.rs`, `src/core/provider_qualification.rs`, `src/agent/provider_qualification.rs` | `CatalogOutcome` (transport/catalog axis) vs `CredentialVerification` (credential axis); `SetupProbeStrategy::credential_evidence()`; revision-scoped inference-feedback writer |
 
 ## Hard Rules
 
@@ -72,18 +73,37 @@ to violate.
 6. **Semantic routing validates against the selected connection.** See the
    `agent` skill; provider selection itself is durable
    session/connection state, not a routing decision.
+7. **Catalog discovery is never credential verification.** A successful
+   `Provider::models()` call proves only that the catalog is usable — several
+   built-ins return local/static arrays with no network I/O, generic
+   compatible discovery falls back rather than proving auth, and some
+   provider `/models` endpoints are publicly readable. Only
+   `SetupProbeStrategy::AuthenticatedCompatibleCatalog` (a genuinely
+   authenticated, non-billable metadata request) may yield
+   `CredentialVerification::Verified`, and only
+   `CredentialVerification::from_probe` may derive a verdict from a probe.
+   Never derive one from a probe result, a model count, or a `healthy` health
+   row. `scripts/check_provider_qualification.py` enforces the naming and the
+   typed write path.
+8. **Credential verdicts are revision-scoped and monotonic in safety.** The
+   only durable credential evidence is an authenticated request on the exact
+   connection revision; transient failures write nothing, and a verdict for a
+   rotated-away revision must be discarded rather than applied to the new
+   credential.
 
 ## Static Guards
 
 ```bash
 bash scripts/check_provider_connections_m4_coverage.sh      # connection lifecycle coverage
 bash scripts/check_provider_connections_tombstone_compat.sh  # tombstone compat
+python3 scripts/check_provider_qualification.py             # catalog != credential verification
 ```
 
 ## Testing
 
 ```bash
 cargo test -p codegg-providers
+cargo test -p codegg --lib core::eggpool::tests   # qualification semantics
 codegg providers          # against real config, not a static list
 codegg models -p openai
 ```

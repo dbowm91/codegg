@@ -1660,6 +1660,91 @@ impl Component for ConnectDialog {
     }
 }
 
+/// Build the operator-visible completion message for a freshly provisioned
+/// provider connection.
+///
+/// M010: a single unqualified "connected" message asserts credential validity
+/// that catalog discovery never established. The message therefore states
+/// which of the two independent facts actually holds — the catalog is usable,
+/// and whether an *authenticated* operation accepted the credential. For most
+/// providers the second half is only established by the first real request,
+/// so the wording says so instead of implying success.
+pub fn connect_success_message(
+    display_name: &str,
+    endpoint: &str,
+    model_count: usize,
+    credential_status: Option<&str>,
+) -> String {
+    let models = if model_count == 1 {
+        "1 model".to_string()
+    } else {
+        format!("{model_count} models")
+    };
+    match credential_status {
+        Some("verified") => {
+            format!("{display_name} connected on {endpoint} — credential verified ({models})")
+        }
+        Some("no_credential_required") => {
+            format!("{display_name} connected on {endpoint} — no credential required ({models})")
+        }
+        // Default branch is the honest majority case: the catalog is usable,
+        // but nothing has authenticated the credential yet.
+        _ => format!(
+            "{display_name} connected on {endpoint} — catalog loaded ({models}); \
+             credential not yet verified, the first request will confirm it"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod connect_message_tests {
+    use super::connect_success_message;
+
+    #[test]
+    fn unverified_connections_are_not_reported_as_verified() {
+        let message = connect_success_message("Anthropic", "https://api.anthropic.com", 4, None);
+        assert!(message.contains("catalog loaded"), "{message}");
+        assert!(message.contains("credential not yet verified"), "{message}");
+        assert!(
+            !message.contains("verified (") && !message.contains("credential verified"),
+            "an unverified connection must never read as verified: {message}"
+        );
+    }
+
+    #[test]
+    fn explicit_unverified_is_treated_like_absent() {
+        let message = connect_success_message(
+            "Anthropic",
+            "https://api.anthropic.com",
+            4,
+            Some("unverified"),
+        );
+        assert!(message.contains("credential not yet verified"), "{message}");
+        assert!(!message.contains("credential verified"), "{message}");
+    }
+
+    #[test]
+    fn authenticated_connections_say_so() {
+        let message =
+            connect_success_message("Custom", "https://proxy.internal", 7, Some("verified"));
+        assert!(message.contains("credential verified"), "{message}");
+        assert!(message.contains("7 models"), "{message}");
+        assert!(!message.contains("not yet verified"), "{message}");
+    }
+
+    #[test]
+    fn credential_free_connections_say_so() {
+        let message = connect_success_message(
+            "Local",
+            "http://localhost:1234",
+            1,
+            Some("no_credential_required"),
+        );
+        assert!(message.contains("no credential required"), "{message}");
+        assert!(message.contains("1 model"), "{message}");
+    }
+}
+
 #[cfg(test)]
 mod connect_restoration_tests {
     use super::*;

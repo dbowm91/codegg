@@ -1,6 +1,6 @@
 # Provider Connections Milestone 010 — Provider Connection Qualification Semantics
 
-Status: ready for handoff
+Status: implemented (closed — `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md`)
 
 Repository baseline: `d85ed67bef970cfe99e320a7876e7a51373b7e37`
 

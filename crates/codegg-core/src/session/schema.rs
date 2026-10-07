@@ -226,6 +226,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 68 {
         migrate_and_record(pool, 68).await?;
     }
+    if current_version < 69 {
+        migrate_and_record(pool, 69).await?;
+    }
 
     Ok(())
 }
@@ -306,6 +309,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             66 => migrate_v66(&mut tx).await?,
             67 => migrate_v67(&mut tx).await?,
             68 => migrate_v68(&mut tx).await?,
+            69 => migrate_v69(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2741,6 +2745,40 @@ async fn migrate_v68(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
+    Ok(())
+}
+
+/// Provider connection qualification axis, M010.
+///
+/// Catalog reachability (`status`) and credential verification are separate
+/// facts. Historically `status = 'healthy'` was written whenever a catalog
+/// probe succeeded, which asserted both reachability *and* that a credential
+/// had been accepted — false for every provider whose `models()` returns a
+/// local/static array, for best-effort compatible discovery that falls back
+/// instead of proving auth, and for publicly readable `/models` endpoints.
+///
+/// `credential_status` makes the second axis explicit and durable. The
+/// default is `'unverified'`, which is the conservative mapping for every
+/// pre-existing row: nothing in the v68 schema recorded authenticated
+/// evidence, so no historical row can be honestly promoted to `'verified'`.
+/// The CHECK constraint values are the persisted contract shared with
+/// `codegg_providers::qualification::CredentialVerification::code()`.
+async fn migrate_v69(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        &mut *tx,
+        "ALTER TABLE provider_connection_health ADD COLUMN credential_status TEXT NOT NULL \
+         DEFAULT 'unverified' CHECK (credential_status IN \
+         ('verified', 'unverified', 'authentication_failed', 'no_credential_required'))"
+            .to_string(),
+    )
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_provider_connection_health_credential ON \
+         provider_connection_health(credential_status, checked_at DESC)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 /// Hot-path lookup indexes: `job_attempt.run_id` backs the

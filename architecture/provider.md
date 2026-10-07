@@ -160,13 +160,70 @@ No network I/O happens inside the final transaction.
   seeds on any transport/status/parse/bound failure. Redirects stay
   policy-distinct (strict disallows, ordinary client follows) without a
   second parser.
-- `DirectModels` constructs the provider through the canonical catalog
+- `ProviderCatalog` constructs the provider through the canonical catalog
   builder (`build_durable_provider`, also used by
   `ProviderConnectionFactory`) and calls `Provider::models()` behind the
   operation cancellation/timeout boundary, normalizing into the bounded
   catalog. Specialized implementations (xAI custom config, OpenCode Go
   session affinity, MiniMax/OpenRouter/Zen native transports) keep their
   own builders instead of being coerced to generic transport.
+
+### Connection Qualification Semantics (M010)
+
+Catalog reachability and credential verification are **separate** facts about
+a provider connection, and the code keeps them separate in the type system
+(`crates/codegg-providers/src/qualification.rs`).
+
+- `CatalogOutcome` (`Available` / `Unavailable` / `Rejected`) is a transport
+  and catalog verdict. It has no authentication variant at all: a public
+  `/models` endpoint answering 200 proves reachability, not credential
+  validity.
+- `CredentialVerification` (`Verified` / `Unverified` /
+  `AuthenticationFailed` / `NoCredentialRequired`) is the credential verdict.
+  `Unverified` is a durable first-class state meaning "configured, and no
+  authenticated operation has accepted this credential yet".
+- `SetupProbeStrategy::credential_evidence()` declares what a strategy may
+  prove. `ProviderCatalog` → `CredentialEvidence::CatalogOnly` (never
+  verification); `AuthenticatedCompatibleCatalog` →
+  `CredentialEvidence::Authenticated` (the strict `/models` request is a
+  genuinely authenticated, non-billable metadata call, so 2xx verifies).
+  `CredentialVerification::from_probe` is the only place provisioning may
+  derive a credential verdict from a probe.
+- No provider is ever billed to validate a credential; nothing on this path
+  issues an inference request.
+
+Durable state: `provider_connection_health.credential_status` (migration v69,
+additive `ALTER TABLE ... ADD COLUMN` with a CHECK constraint mirroring the
+enum's codes). Existing rows default to `'unverified'`, the conservative
+mapping — nothing in the pre-v69 schema recorded authenticated evidence, so
+no historical row can honestly be promoted. `ConnectionHealthDto` gained an
+additive optional `credential_status`, so older clients are unaffected.
+
+Revision-safe runtime feedback: when a turn is bound to the session's selected
+connection, `daemon_turns` installs a
+`ProviderConnectionCredentialReporter` (`src/core/provider_qualification.rs`)
+into the agent loop. The terminal outcome of the provider turn — classified
+from `ProviderError::error_class()`, never string matching — writes
+`credential_status` with `WHERE connection_id = ? AND revision = ?`, so a
+verdict for a rotated-away credential is discarded. Inconclusive outcomes
+(transient transport, timeout, rate limit, cancellation) write nothing at all.
+
+Policy on the other write paths:
+
+- **Provision**: catalog-only probes commit `unverified`; the authenticated
+  compatible probe commits `verified`.
+- **Rotate**: installs a new credential, so the verdict is re-derived from
+  the new probe rather than inherited.
+- **Refresh**: rediscovers the catalog for the *same* credential, so the
+  credential axis is preserved unless the refresh itself ran an authenticated
+  probe. A routine catalog refresh cannot erase a durable `verified` verdict
+  or a genuine `authentication_failed`. Refresh failures likewise only move
+  the credential axis on a typed 401/403 (`RefreshError::CredentialRejected`).
+
+Operator-visible messaging must state the two axes separately
+(`connect_success_message`); a single unqualified "connected" message asserts
+credential validity that catalog discovery never established.
+`scripts/check_provider_qualification.py` guards the contract.
 - Built-in endpoint dispositions (C002, first-party review 2026-10-02):
   OpenCode Go corrected to `https://opencode.ai/zen/go/v1` (chat,
   responses, messages, and `/models` under that prefix per

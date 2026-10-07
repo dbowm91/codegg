@@ -311,6 +311,7 @@ impl AgentLoop {
         Self {
             services: AgentLoopServices {
                 provider,
+                credential_observer: None,
                 permission_checker,
                 tool_registry,
                 hook_registry,
@@ -679,6 +680,18 @@ impl AgentLoop {
 
     pub fn set_submission(&mut self, submission: Arc<crate::scheduler::JobSubmissionService>) {
         self.submission = Some(submission);
+    }
+
+    /// Bind this turn to a concrete durable provider connection so the
+    /// terminal inference outcome can feed connection credential
+    /// qualification (M010). Set by the daemon from the session's selected
+    /// connection *and revision*; `None` means the turn is not bound to a
+    /// durable connection and no credential inference happens.
+    pub fn set_credential_observer(
+        &mut self,
+        observer: crate::agent::provider_qualification::SharedProviderCredentialObserver,
+    ) {
+        self.services.credential_observer = Some(observer);
     }
 
     pub fn session_id(&self) -> &str {

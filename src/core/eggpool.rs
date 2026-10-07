@@ -37,6 +37,7 @@ use codegg_protocol::provider::{
     EggpoolTlsPolicy, ProviderConnectionScope, ProviderConnectionSummaryDto,
     ProviderCredentialKind, ProviderModelDto, ProviderTlsPolicy, SecretInputRef,
 };
+use codegg_providers::qualification::{CatalogOutcome, CredentialVerification};
 use codegg_providers::setup_catalog::{
     self, SetupEndpointPolicy, SetupProbeStrategy, AZURE_ID, CUSTOM_COMPATIBLE_ID,
     EGGPOOL_PRESET_ID,
@@ -106,6 +107,8 @@ pub enum RefreshError {
     Disabled,
     #[error("credential is missing")]
     CredentialMissing,
+    #[error("credential was rejected by the provider")]
+    CredentialRejected,
     #[error("connection is tombstoned")]
     Tombstoned,
     #[error("refresh probe timed out")]
@@ -182,6 +185,11 @@ struct ProbeResult {
     models: Vec<ProbedModel>,
     catalog_revision: String,
     duration_ms: u64,
+    /// What this probe proved about the credential — see
+    /// [`codegg_providers::qualification`]. Catalog reachability and
+    /// credential verification are separate facts; a catalog probe that
+    /// returns a usable model list only proves the catalog is reachable.
+    credential: CredentialVerification,
 }
 
 struct RotationSecret {
@@ -478,16 +486,18 @@ impl ProviderConnectionProvisioner {
         // Bounded validation/model discovery selected by the provider
         // definition. Both strategies run outside the final transaction.
         let probe = match spec.probe_strategy {
-            SetupProbeStrategy::CompatibleProbe => tokio::time::timeout(
+            SetupProbeStrategy::AuthenticatedCompatibleCatalog => tokio::time::timeout(
                 WORKFLOW_TIMEOUT,
                 probe(spec.endpoint.as_str(), secret, cancel.clone()),
             )
             .await
             .map_err(|_| EggpoolError::Probe(ProbeReason::Timeout))?
             .map_err(EggpoolError::Probe),
-            SetupProbeStrategy::DirectModels => probe_direct_models(spec, secret, cancel.clone())
-                .await
-                .map_err(EggpoolError::Probe),
+            SetupProbeStrategy::ProviderCatalog => {
+                probe_provider_catalog(spec, secret, cancel.clone())
+                    .await
+                    .map_err(EggpoolError::Probe)
+            }
         };
         let probe = match probe {
             Ok(value) => value,
@@ -567,8 +577,9 @@ impl ProviderConnectionProvisioner {
         .execute(&mut *tx)
         .await
         .map_err(|_| EggpoolError::Conflict)?;
-        sqlx::query("INSERT INTO provider_connection_health (connection_id, revision, status, duration_ms, checked_at, catalog_revision) VALUES (?, 1, 'healthy', ?, ?, ?)")
+        sqlx::query("INSERT INTO provider_connection_health (connection_id, revision, status, credential_status, duration_ms, checked_at, catalog_revision) VALUES (?, 1, 'healthy', ?, ?, ?, ?)")
             .bind(connection_id.as_str())
+            .bind(probe.credential.code())
             .bind(probe.duration_ms as i64)
             .bind(now_millis())
             .bind(&probe.catalog_revision)
@@ -1068,8 +1079,12 @@ impl ProviderConnectionProvisioner {
                     .map_err(|_| RotationError::Storage)?;
             }
         }
-        sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
+        // A rotation/refresh installs a new revision, so the credential verdict is
+        // re-derived from *this* probe rather than inherited: the previous
+        // revision's verdict described a different credential.
+        sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', credential_status = ?, reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
             .bind(new_revision as i64)
+            .bind(probe_result.credential.code())
             .bind(probe_result.duration_ms as i64)
             .bind(now_millis())
             .bind(&probe_result.catalog_revision)
@@ -1175,6 +1190,7 @@ impl ProviderConnectionProvisioner {
                 RefreshError::Timeout
                     | RefreshError::EndpointPolicy
                     | RefreshError::BoundedBody
+                    | RefreshError::CredentialRejected
                     | RefreshError::Unknown
             ) {
                 let attempt = self
@@ -1201,10 +1217,17 @@ impl ProviderConnectionProvisioner {
                 );
             }
             if let Err(db_error) = sqlx::query(
-                "UPDATE provider_connection_health SET status = 'unhealthy', reason_code = ?, checked_at = ? WHERE connection_id = ? AND revision = ?",
+                "UPDATE provider_connection_health SET status = 'unhealthy', reason_code = ?, checked_at = ?, credential_status = CASE WHEN ? THEN ? ELSE credential_status END WHERE connection_id = ? AND revision = ?",
             )
             .bind(refresh_error_code(error))
             .bind(now_millis())
+            // Only a genuine typed 401/403 may move the credential axis. Every
+            // other refresh failure (timeout, endpoint policy, bounded body,
+            // cancellation, storage) leaves `credential_status` untouched — a
+            // transient failure must never read as an invalid key, which would
+            // erase a valid credential's verified state on a bad network day.
+            .bind(i64::from(matches!(error, RefreshError::CredentialRejected)))
+            .bind(CredentialVerification::AuthenticationFailed.code())
             .bind(connection_id.as_str())
             .bind(expected_revision as i64)
             .execute(&self.pool)
@@ -1349,6 +1372,9 @@ impl ProviderConnectionProvisioner {
             ProbeReason::Timeout => RefreshError::Timeout,
             ProbeReason::CatalogOversized => RefreshError::BoundedBody,
             ProbeReason::Cancelled => RefreshError::Cancelled,
+            // A typed 401/403 from an authenticated request is the only
+            // refresh failure that says anything about the credential.
+            ProbeReason::AuthenticationFailed => RefreshError::CredentialRejected,
             ProbeReason::RedirectDisallowed | ProbeReason::TlsFailed => {
                 RefreshError::EndpointPolicy
             }
@@ -1393,8 +1419,18 @@ impl ProviderConnectionProvisioner {
         } else {
             current.revision
         };
-        sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
+        // A refresh rediscovers the catalog for the *same* credential, so a
+        // catalog-only probe learns nothing new about that credential. The
+        // credential axis is therefore preserved unless this refresh ran an
+        // authenticated metadata probe that positively verified it —
+        // otherwise a routine catalog refresh would erase a durable
+        // `verified` verdict (or a genuine `authentication_failed`) that came
+        // from real inference. Rotation is different: it installs a new
+        // credential, so the verdict is re-derived below.
+        sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', credential_status = CASE WHEN ? THEN ? ELSE credential_status END, reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
             .bind(revision as i64)
+            .bind(i64::from(probe_result.credential.is_verified()))
+            .bind(CredentialVerification::Verified.code())
             .bind(probe_result.duration_ms as i64)
             .bind(now_millis())
             .bind(&probe_result.catalog_revision)
@@ -1432,8 +1468,8 @@ impl ProviderConnectionProvisioner {
         catalog_revision: Option<&str>,
         probe: Option<&ProbeResult>,
     ) -> Result<ProviderConnectionSummaryDto, EggpoolError> {
-        let health_row = sqlx::query_as::<_, (String, Option<String>, i64, i64, Option<String>)>(
-            "SELECT status, reason_code, checked_at, duration_ms, catalog_revision FROM provider_connection_health WHERE connection_id = ?",
+        let health_row = sqlx::query_as::<_, (String, Option<String>, i64, i64, Option<String>, String)>(
+            "SELECT status, reason_code, checked_at, duration_ms, catalog_revision, credential_status FROM provider_connection_health WHERE connection_id = ?",
         )
         .bind(connection.id.as_str())
         .fetch_optional(&self.pool)
@@ -1441,14 +1477,17 @@ impl ProviderConnectionProvisioner {
         .map_err(|_| EggpoolError::Storage)?
         ;
         let catalog_from_health = health_row.as_ref().and_then(|row| row.4.clone());
-        let health = health_row.map(|(status, reason_code, checked_at, duration_ms, _)| {
-            ConnectionHealthDto {
-                status,
-                reason_code,
-                checked_at,
-                duration_ms: duration_ms as u64,
-            }
-        });
+        let health = health_row.map(
+            |(status, reason_code, checked_at, duration_ms, _, credential_status)| {
+                ConnectionHealthDto {
+                    status,
+                    reason_code,
+                    checked_at,
+                    duration_ms: duration_ms as u64,
+                    credential_status: Some(credential_status),
+                }
+            },
+        );
         let model_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?")
             .bind(connection.id.as_str())
             .bind(connection.revision as i64)
@@ -1937,6 +1976,11 @@ async fn probe_with_options(
             .collect(),
         catalog_revision: summary.digest,
         duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        // The strict compatible `/models` probe authenticates the credential
+        // upstream: a 2xx means the endpoint evaluated and accepted it. An
+        // authentication rejection returns `Err` above, so reaching this point
+        // with a usable catalog is genuine positive evidence.
+        credential: CredentialVerification::Verified,
     })
 }
 
@@ -1956,13 +2000,22 @@ fn map_probe_reason(reason: codegg_providers::EggpoolProbeReasonCode) -> ProbeRe
     }
 }
 
-/// Direct-provider validation for ordinary catalog providers: construct the
-/// provider through the canonical definition builder and call
-/// `Provider::models()` behind the operation cancellation and overall
-/// timeout boundary, normalizing the result into the bounded connection
-/// catalog. Provider-specific failures map into the generic provisioning
-/// reason taxonomy without response bodies, credentials, or transport detail.
-async fn probe_direct_models(
+/// Catalog discovery for ordinary catalog providers: construct the provider
+/// through the canonical definition builder and call `Provider::models()`
+/// behind the operation cancellation and overall timeout boundary,
+/// normalizing the result into the bounded connection catalog.
+/// Provider-specific failures map into the generic provisioning reason
+/// taxonomy without response bodies, credentials, or transport detail.
+///
+/// This is **not** an authentication probe. `Provider::models()` may return a
+/// local/static array without any network I/O, generic OpenAI-compatible
+/// discovery falls back rather than proving auth, and some provider `/models`
+/// endpoints are publicly readable — so success yields
+/// [`CredentialVerification::Unverified`] and only real inference feedback can
+/// promote a connection. A typed provider auth error is still propagated as
+/// [`ProbeReason::AuthenticationFailed`], because that *is* a genuine
+/// authenticated rejection.
+async fn probe_provider_catalog(
     spec: &NormalizedSpec,
     secret: &str,
     cancel: CancellationToken,
@@ -2039,17 +2092,38 @@ async fn probe_direct_models(
             })
             .collect::<Vec<_>>(),
     );
+    let credential = CredentialVerification::from_probe(
+        spec.probe_strategy.credential_evidence(),
+        &CatalogOutcome::Available {
+            model_count: probed.len(),
+            revision: catalog_revision.clone(),
+            duration_ms: 0,
+        },
+        false,
+    );
     Ok(ProbeResult {
         models: probed,
         catalog_revision,
         duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        // `Provider::models()` success is a **catalog** fact, never a
+        // credential fact. Several providers return a local/static array with
+        // no network I/O, generic OpenAI-compatible discovery is
+        // deliberately best-effort and falls back rather than proving auth,
+        // and some provider `/models` endpoints are publicly readable. The
+        // classification therefore always lands on `Unverified` here, and the
+        // credential is promoted later by real inference feedback.
+        credential,
     })
 }
 
 fn map_provider_error_reason(error: &codegg_providers::ProviderError) -> ProbeReason {
-    match error {
-        codegg_providers::ProviderError::Auth(_) => ProbeReason::AuthenticationFailed,
-        codegg_providers::ProviderError::Timeout(_) => ProbeReason::Timeout,
+    // Typed classification only — never provider-specific string matching.
+    // `error_class() == "auth"` covers both the `Auth` variant and API errors
+    // carrying a 401/403 code, so a genuine credential rejection is never
+    // flattened into a generic catalog failure.
+    match error.error_class() {
+        "auth" => ProbeReason::AuthenticationFailed,
+        "timeout" => ProbeReason::Timeout,
         _ => ProbeReason::UnsupportedApi,
     }
 }
@@ -2124,6 +2198,7 @@ fn refresh_error_code(error: &RefreshError) -> &'static str {
         RefreshError::StaleRevision => "stale_revision",
         RefreshError::Disabled => "disabled",
         RefreshError::CredentialMissing => "credential_missing",
+        RefreshError::CredentialRejected => "credential_authentication_failed",
         RefreshError::Tombstoned => "tombstoned",
         RefreshError::Timeout => "timeout",
         RefreshError::EndpointPolicy => "endpoint_policy",
@@ -3331,5 +3406,336 @@ mod tests {
         let records = credential_store.list();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].provider_id, "custom");
+    }
+
+    // ── M010 provider connection qualification semantics ────────────────────
+    //
+    // Catalog reachability and credential verification are separate facts.
+    // These tests pin the separation against the real migration, the real
+    // provisioning path, and the real inference-feedback writer.
+
+    /// Read the durable credential verdict for a connection revision.
+    async fn credential_status_of(
+        pool: &sqlx::SqlitePool,
+        connection_id: &str,
+        revision: u64,
+    ) -> Option<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT credential_status FROM provider_connection_health \
+             WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(connection_id)
+        .bind(i64::try_from(revision).unwrap_or(i64::MAX))
+        .fetch_optional(pool)
+        .await
+        .expect("credential status row")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn static_catalog_connection_is_never_reported_as_verified() {
+        // `openai` enumerates a local/static model array: no network I/O at
+        // all. Provisioning therefore proves only that the catalog is usable.
+        // The M010 defect was that this also claimed the credential was valid.
+        let _master = MasterKeyGuard::new("m010-static-catalog-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+
+        let result = provisioner
+            .create_connection(generic_request("openai"))
+            .await
+            .expect("static-catalog provision succeeds");
+        let health = result
+            .connection
+            .health
+            .as_ref()
+            .expect("provisioning records health");
+
+        // Catalog axis: reachable.
+        assert_eq!(health.status, "healthy");
+        // Credential axis: explicitly unknown, never "verified".
+        assert_eq!(
+            health.credential_status.as_deref(),
+            Some("unverified"),
+            "catalog discovery must not verify a credential"
+        );
+        assert_ne!(health.credential_status.as_deref(), Some("verified"));
+        assert_eq!(
+            credential_status_of(&pool, &result.connection.id, result.connection.revision).await,
+            Some("unverified".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn authenticated_metadata_probe_verifies_the_credential() {
+        // `custom` uses the strict authenticated compatible `/models` probe:
+        // the endpoint evaluates the presented credential, so a 2xx is proof.
+        let _master = MasterKeyGuard::new("m010-authenticated-probe-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_status_server(
+            200,
+            r#"{"data":[{"id":"custom-model"}]}"#.to_string(),
+            Duration::ZERO,
+        );
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+
+        let mut request = generic_request("custom");
+        request.endpoint = Some(host.clone());
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        request.credential_kind = ProviderCredentialKind::Bearer;
+        let result = provisioner
+            .create_connection(request)
+            .await
+            .expect("authenticated compatible provision succeeds");
+        server.join().expect("fake server joins");
+
+        assert_eq!(
+            result
+                .connection
+                .health
+                .as_ref()
+                .and_then(|health| health.credential_status.as_deref()),
+            Some("verified"),
+            "a genuinely authenticated metadata probe must verify"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_credential_fails_provisioning_without_a_health_row() {
+        // A typed 401 from the authenticated probe is a real rejection: it
+        // must fail, and it must not leave a durable "verified" verdict.
+        let _master = MasterKeyGuard::new("m010-rejected-credential-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) =
+            fake_status_server(403, r#"{"error":"forbidden"}"#.to_string(), Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+
+        let mut request = generic_request("custom");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        request.credential_kind = ProviderCredentialKind::Bearer;
+        let error = provisioner
+            .create_connection(request)
+            .await
+            .expect_err("rejected credential must fail provisioning");
+        server.join().expect("fake server joins");
+
+        assert!(matches!(
+            error,
+            EggpoolError::Probe(ProbeReason::AuthenticationFailed)
+        ));
+        let verified: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_health WHERE credential_status = 'verified'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("verified count");
+        assert_eq!(
+            verified, 0,
+            "a rejected credential must never persist as verified"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inference_outcome_promotes_and_demotes_within_one_revision() {
+        // Real inference is the first authenticated signal a catalog-only
+        // provider connection produces.
+        let _master = MasterKeyGuard::new("m010-inference-feedback-master");
+        let pool = migrated_pool().await;
+        sqlx::query(
+            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) \
+             VALUES ('conn-1', 'openai', 'OpenAI', 'https://api.openai.com/v1', 'system', 'personal', 'local-user', 'sr', 'openai', 'acct', 'active', 1, 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("connection row");
+        sqlx::query(
+            "INSERT INTO provider_connection_health (connection_id, revision, status, credential_status, duration_ms, checked_at) \
+             VALUES ('conn-1', 1, 'healthy', 'unverified', 5, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("health row");
+
+        let reporter =
+            super::super::provider_qualification::ProviderConnectionCredentialReporter::new(
+                pool.clone(),
+                Arc::from("conn-1"),
+                1,
+            );
+
+        // 1. An inconclusive (transient) outcome writes nothing at all.
+        assert!(
+            !reporter
+                .record(
+                    super::super::provider_qualification::InferenceCredentialOutcome::Inconclusive
+                )
+                .await
+        );
+        assert_eq!(
+            credential_status_of(&pool, "conn-1", 1).await,
+            Some("unverified".to_string()),
+            "a transient failure must not move the credential axis"
+        );
+
+        // 2. An authenticated success establishes verified.
+        assert!(
+            reporter
+                .record(
+                    super::super::provider_qualification::InferenceCredentialOutcome::Authenticated
+                )
+                .await
+        );
+        assert_eq!(
+            credential_status_of(&pool, "conn-1", 1).await,
+            Some("verified".to_string())
+        );
+
+        // 3. A later genuine 401/403 for the same revision marks it rejected.
+        assert!(reporter
+            .record(
+                super::super::provider_qualification::InferenceCredentialOutcome::AuthenticationFailed
+            )
+            .await);
+        assert_eq!(
+            credential_status_of(&pool, "conn-1", 1).await,
+            Some("authentication_failed".to_string())
+        );
+        let reason: Option<String> = sqlx::query_scalar(
+            "SELECT reason_code FROM provider_connection_health WHERE connection_id = 'conn-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("reason code");
+        assert_eq!(reason.as_deref(), Some("credential_authentication_failed"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inference_outcome_for_a_stale_revision_is_discarded() {
+        // A verdict describes one credential. Once the connection rotates, a
+        // late-arriving turn must not mark the *new* credential as bad.
+        let _master = MasterKeyGuard::new("m010-stale-revision-master");
+        let pool = migrated_pool().await;
+        sqlx::query(
+            "INSERT INTO provider_connection_health (connection_id, revision, status, credential_status, duration_ms, checked_at) \
+             VALUES ('conn-2', 2, 'healthy', 'unverified', 5, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("health row");
+
+        let stale = super::super::provider_qualification::ProviderConnectionCredentialReporter::new(
+            pool.clone(),
+            Arc::from("conn-2"),
+            1,
+        );
+        assert!(
+            !stale
+                .record(
+                    super::super::provider_qualification::InferenceCredentialOutcome::AuthenticationFailed
+                )
+                .await,
+            "a verdict for revision 1 must not match revision 2"
+        );
+        assert_eq!(
+            credential_status_of(&pool, "conn-2", 2).await,
+            Some("unverified".to_string())
+        );
+
+        let current =
+            super::super::provider_qualification::ProviderConnectionCredentialReporter::new(
+                pool.clone(),
+                Arc::from("conn-2"),
+                2,
+            );
+        assert!(
+            current
+                .record(
+                    super::super::provider_qualification::InferenceCredentialOutcome::Authenticated
+                )
+                .await
+        );
+        assert_eq!(
+            credential_status_of(&pool, "conn-2", 2).await,
+            Some("verified".to_string())
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_health_rows_migrate_to_the_conservative_unverified_axis() {
+        // Additive-migration safety: a row written before the credential axis
+        // existed has no authenticated evidence, so it must land on
+        // 'unverified' — never a promotion to 'verified'.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        // Build the pre-v69 shape: the original table without credential_status.
+        sqlx::query(
+            "CREATE TABLE provider_connection_health (
+                connection_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL CHECK (revision > 0),
+                status TEXT NOT NULL CHECK (status IN ('healthy', 'unhealthy')),
+                reason_code TEXT,
+                duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+                checked_at INTEGER NOT NULL,
+                catalog_revision TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy health table");
+        sqlx::query(
+            "INSERT INTO provider_connection_health (connection_id, revision, status, duration_ms, checked_at, catalog_revision) \
+             VALUES ('legacy-1', 1, 'healthy', 12, 0, 'digest')",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy row");
+
+        sqlx::query(
+            "ALTER TABLE provider_connection_health ADD COLUMN credential_status TEXT NOT NULL \
+             DEFAULT 'unverified' CHECK (credential_status IN \
+             ('verified', 'unverified', 'authentication_failed', 'no_credential_required'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("v69 add column");
+
+        let migrated: String =
+            sqlx::query_scalar("SELECT credential_status FROM provider_connection_health WHERE connection_id = 'legacy-1'")
+                .fetch_one(&pool)
+                .await
+                .expect("migrated legacy row");
+        assert_eq!(migrated, "unverified");
+
+        // The CHECK constraint rejects a value outside the typed contract.
+        let rejected = sqlx::query(
+            "UPDATE provider_connection_health SET credential_status = 'healthy' WHERE connection_id = 'legacy-1'",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            rejected.is_err(),
+            "credential_status must reject values outside the typed contract"
+        );
     }
 }

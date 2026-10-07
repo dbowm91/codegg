@@ -960,11 +960,23 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             }
             match result {
                 Ok(result) => {
-                    app.messages_state.toasts.success(&format!(
-                        "{display_name} connected on {} ({} models)",
-                        result.connection.endpoint,
-                        result.models.len()
-                    ));
+                    // M010: state catalog reachability and credential
+                    // verification as the separate facts they are. A single
+                    // "connected" message implied the credential had been
+                    // validated, which catalog discovery never establishes for
+                    // most providers.
+                    app.messages_state.toasts.success(
+                        &crate::tui::components::dialogs::connect::connect_success_message(
+                            &display_name,
+                            &result.connection.endpoint,
+                            result.models.len(),
+                            result
+                                .connection
+                                .health
+                                .as_ref()
+                                .and_then(|health| health.credential_status.as_deref()),
+                        ),
+                    );
                     let _ = provider_id;
                     app.dialog_state.connect_dialog = None;
                     app.close_dialog();
