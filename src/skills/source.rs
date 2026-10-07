@@ -15,6 +15,13 @@ pub enum SourceKind {
     OpenCodeGlobal = 60,
     ClaudeGlobal = 70,
     CodeGGNativeCompat = 80,
+    /// User-configured extra root from `skills.paths`. Each configured entry
+    /// is treated as a skills directory *itself* (unlike the global roots,
+    /// which are parent directories that get `<vendor>/skills` appended).
+    /// Lowest precedence, so a configured path can never shadow a
+    /// well-known root's skill name; shadowed alternatives are still
+    /// recorded for diagnostics.
+    Configured = 90,
 }
 
 impl SourceKind {
@@ -53,6 +60,8 @@ impl SourceKind {
             SourceKind::OpenCodeProject | SourceKind::OpenCodeGlobal => "opencode",
             SourceKind::ClaudeProject | SourceKind::ClaudeGlobal => "claude",
             SourceKind::Plugin => "plugin",
+            // A configured root has no vendor directory name; it is used as-is.
+            SourceKind::Configured => "configured",
         }
     }
 
@@ -96,6 +105,9 @@ pub struct AssetDiscoveryConfig {
     pub max_skill_name_length: usize,
     pub max_description_length: usize,
     pub enabled_sources: HashSet<SourceKind>,
+    /// Extra skill directories from `skills.paths`. Each entry is a skills
+    /// directory itself, not a parent that gets `<vendor>/skills` appended.
+    pub configured_roots: Vec<PathBuf>,
 }
 
 impl Default for AssetDiscoveryConfig {
@@ -110,6 +122,7 @@ impl Default for AssetDiscoveryConfig {
         enabled_sources.insert(SourceKind::OpenCodeGlobal);
         enabled_sources.insert(SourceKind::ClaudeGlobal);
         enabled_sources.insert(SourceKind::CodeGGNativeCompat);
+        enabled_sources.insert(SourceKind::Configured);
 
         Self {
             max_skill_file_size: 256 * 1024,
@@ -119,6 +132,7 @@ impl Default for AssetDiscoveryConfig {
             max_skill_name_length: 128,
             max_description_length: 2048,
             enabled_sources,
+            configured_roots: Vec::new(),
         }
     }
 }

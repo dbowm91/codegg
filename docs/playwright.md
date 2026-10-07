@@ -7,6 +7,14 @@ CodeGG ships two passive Agent Plugins packages under
 - `playwright-mcp` — an explicitly opt-in MCP companion for persistent browser
   state and richer page introspection.
 
+Both are **repository assets, not built-in codegg features**: nothing in the
+Rust source references `assets/portable-plugins/`, and neither package is
+auto-loaded. Each carries a `plugin.json` manifest plus a single
+`skills/playwright-browser-testing/SKILL.md` (CLI package) or `mcp.json` (MCP
+package) — no executable code. Install them like any other plugin package
+into the canonical plugins directory (`plugins_dir()` =
+`dirs::data_local_dir()/codegg/plugins`) and enable them from the TUI.
+
 The CLI package follows the current Playwright guidance for coding agents:
 use concise `playwright-cli` commands and snapshots for ordinary frontend
 testing, and reserve MCP for loops that benefit from persistent state. The

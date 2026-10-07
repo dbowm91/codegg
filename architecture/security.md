@@ -310,8 +310,8 @@ Security configuration lives in `SecurityConfig` (from
 [security]
 enabled = true
 mode = "ambient"           # Off | Ambient | Strict | Review
-prompt_hints = false
-max_findings_in_prompt = 10
+prompt_hints = true
+max_findings_in_prompt = 5
 denied_commands = []       # explicit deny list
 
 [security.gates]
@@ -323,7 +323,9 @@ ask_on_secret_exposure = true
 
 **Security modes:**
 - `Off` — all checks return Observe
-- `Ambient` — observation only, no auto-deny
+- `Ambient` — the default. High-risk commands Ask; Critical commands are
+  **denied** because `gates.deny_critical_commands` defaults to `true`. Set that
+  gate to `false` to make Ambient observation-only.
 - `Strict` — Medium-risk commands also Ask
 - `Review` — Critical/High Ask (never Deny); everything else Observe
 

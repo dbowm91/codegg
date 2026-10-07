@@ -18,7 +18,6 @@ codegg --fork <SESSION_ID>   # fork an existing session
 codegg --no-session          # ephemeral session, nothing persisted
 codegg -m <MODEL>            # override the model
 codegg -a <AGENT>            # override the agent
-codegg --cwd <DIRECTORY>     # set the directory the initial tab is created from
 codegg --standalone          # in-process core, no daemon; global scheduling unavailable
 ```
 
@@ -65,12 +64,15 @@ codegg import out.json          # import a session from JSON
 ```
 
 These commands operate on the **project-local** store at
-`<project>/.codegg/sessions.db`, resolved from the current working directory.
-The database is created and migrated on first use — by the TUI, the daemon,
-the server, or any of these commands — so they work in a brand-new checkout.
+`<project>/.codegg/sessions.db`, resolved from the current working directory
+(`init_migrated_legacy_project_store`). The database is created and migrated
+on first use, so they work in a brand-new checkout. The same entry point backs
+the CLI session commands, an in-process (`--standalone` / `--stdio`) core, and
+`codegg server --standalone-core`.
 
-Note that this project-local store is distinct from the user-scoped daemon
-catalog. Sessions listed here are the ones recorded for this project directory.
+Note that this project-local store is legacy and distinct from the user-scoped
+daemon catalog: the ordinary daemon-backed TUI connects over the socket and
+uses the catalog (`<data-root>/codegg.db`), not this project-local file.
 
 ## Slash commands
 
@@ -151,8 +153,9 @@ command, the retained output is 512 KiB total — a 256 KiB head and a 256 KiB
 tail — and the byte count of everything in between is recorded as omitted
 rather than dropped silently. The default per-command timeout is 300 seconds.
 
-Commands are also screened before they run: a blocked command is refused with a
-reason, and a command classified as dangerous prompts for confirmation first.
+Commands are also screened before they run: a blocked command is refused with
+a reason, and one classified as dangerous opens a confirmation dialog first
+(`confirm_dangerous`, default true).
 
 `/shell-list`, `/shell-show`, `/shell-include`, `/shell-ask`, `/shell-rerun`,
 and `/shell-kill` manage the history and the promote/include actions.

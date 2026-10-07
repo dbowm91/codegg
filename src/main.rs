@@ -219,7 +219,7 @@ struct Cli {
     #[arg(long, short = 'q')]
     quiet: bool,
 
-    /// Set current working directory
+    /// Set the working directory before startup; must exist.
     #[arg(long = "cwd", value_name = "DIRECTORY")]
     cwd: Option<PathBuf>,
 
@@ -365,7 +365,7 @@ enum Commands {
         /// Shell to generate completions for (bash, zsh, fish, powershell)
         #[arg(value_enum)]
         shell: clap_complete::Shell,
-        /// Output directory (default: current directory)
+        /// Output directory; must already exist. Writes to stdout when omitted.
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
@@ -1109,6 +1109,17 @@ async fn main() -> Result<(), AppError> {
         .unwrap_or_else(|e| e.exit());
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
+    // Apply `--cwd` before anything reads the filesystem, so config
+    // discovery, project-catalog lookup, and daemon attachment all resolve
+    // relative to it. Permitted CLI bootstrap code per
+    // `scripts/check_daemon_cwd_usage.py`: daemon-owned execution paths
+    // derive their directory from `ExecutionContext::workspace_root`
+    // instead of process-global cwd.
+    if let Some(dir) = cli.cwd.as_deref() {
+        std::env::set_current_dir(dir)
+            .map_err(|e| AppError::Other(anyhow::anyhow!("--cwd {}: {e}", dir.display())))?;
+    }
+
     let log_level = verbosity_log_level(cli.verbose);
 
     let env_log_level = std::env::var("RUST_LOG").ok();
@@ -1142,11 +1153,16 @@ async fn main() -> Result<(), AppError> {
         // Silent by default in TUI mode if no verbose flag
         tracing_subscriber::registry().init();
     } else {
+        // Subcommands may emit machine-readable output on stdout (`exec
+        // --format json`, `completions`, ...), so keep tracing on stderr for
+        // the same reason core-stdio does: a diagnostic must never corrupt a
+        // response frame.
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
             )
+            .with_writer(std::io::stderr)
             .init();
     }
 
@@ -2658,7 +2674,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
                 .with_workspace_root(PathBuf::from(&project_dir))
                 .build()?;
-            let snapshot = codegg::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::with_default_config_doc(
+            let snapshot = codegg::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(
                 Arc::new(config.clone()),
             )
             .build(&asset_ctx)

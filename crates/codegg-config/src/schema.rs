@@ -1432,9 +1432,18 @@ pub struct SubagentConfig {
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct SkillsConfig {
+    /// Set to `false` to disable skill discovery entirely; every discovery
+    /// source is cleared, so no skills are loaded and the `skill` tool finds
+    /// nothing. Defaults to enabled.
     pub enabled: Option<bool>,
+    /// Extra skill directories to discover, in addition to the built-in
+    /// roots. Each entry is a skills directory **itself** — so
+    /// `"/opt/skills"` discovers `/opt/skills/<name>/SKILL.md` directly and
+    /// is *not* treated as a parent that gets `<vendor>/skills` appended.
+    /// Configured roots rank lowest, so they can never shadow a well-known
+    /// root's skill name; shadowed alternatives are still reported as
+    /// diagnostics. Non-directory entries are skipped.
     pub paths: Option<Vec<String>>,
-    pub urls: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
@@ -1709,7 +1718,7 @@ pub struct DaemonConfig {
     /// Default: 10000 ms.
     pub startup_timeout_ms: Option<u64>,
     /// How long to wait for graceful shutdown of the daemon accept loop
-    /// before forcing exit. Default: 5000 ms.
+    /// before forcing exit. Default: 10000 ms.
     pub shutdown_timeout_ms: Option<u64>,
 }
 impl DaemonConfig {

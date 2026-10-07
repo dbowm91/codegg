@@ -24,19 +24,12 @@ use crate::agent::asset_snapshot::{
 use crate::agent::instructions::ProjectInstructionResolver;
 use crate::agent::registry::{AgentRegistry, ResolvedAgent};
 use crate::config::schema::Config;
-use crate::skills::{AssetDiscoveryConfig, AssetRegistry};
-
-/// Configuration for the snapshot builder.
-#[derive(Debug, Clone, Default)]
-pub struct SnapshotBuilderConfig {
-    pub asset_discovery: AssetDiscoveryConfig,
-}
+use crate::skills::AssetRegistry;
 
 /// Builder. Construct via [`ProjectAssetSnapshotBuilder::new`] and call
 /// [`ProjectAssetSnapshotBuilder::build`] with an explicit context.
 #[derive(Debug, Clone)]
 pub struct ProjectAssetSnapshotBuilder {
-    config: SnapshotBuilderConfig,
     /// Cached `Config` to thread into `AgentRegistry`. Required because
     /// the registry still needs to honor the existing
     /// built-in/global/project/config/session overlay order. The
@@ -46,12 +39,11 @@ pub struct ProjectAssetSnapshotBuilder {
 }
 
 impl ProjectAssetSnapshotBuilder {
-    pub fn new(config: SnapshotBuilderConfig, config_doc: Arc<Config>) -> Self {
-        Self { config, config_doc }
-    }
-
-    pub fn with_default_config_doc(config_doc: Arc<Config>) -> Self {
-        Self::new(SnapshotBuilderConfig::default(), config_doc)
+    /// `asset_discovery` is derived from `config_doc` rather than injected,
+    /// so `skills.enabled` / `skills.paths` cannot be honoured in one
+    /// construction path and ignored in another.
+    pub fn new(config_doc: Arc<Config>) -> Self {
+        Self { config_doc }
     }
 
     /// Build an immutable snapshot for the explicit context.
@@ -104,7 +96,7 @@ impl ProjectAssetSnapshotBuilder {
             .cloned()
             .collect::<Vec<_>>();
         let registry = AssetRegistry::build_with_plugin_sources(
-            &self.config.asset_discovery,
+            &crate::agent::asset_context::asset_discovery_config_from(&self.config_doc),
             ctx.workspace_root(),
             &global_root_refs,
             &plugin_sources,
@@ -268,7 +260,6 @@ impl crate::agent::asset_snapshot::SnapshotBuilder for ProjectAssetSnapshotBuild
 mod tests {
     use super::*;
     use crate::agent::asset_context::{AssetContextBuilder, ProjectId};
-    use crate::skills::AssetDiscoveryConfig;
     use std::fs;
     use tempfile::TempDir;
 
@@ -277,12 +268,7 @@ mod tests {
     }
 
     fn default_builder() -> ProjectAssetSnapshotBuilder {
-        ProjectAssetSnapshotBuilder::new(
-            SnapshotBuilderConfig {
-                asset_discovery: AssetDiscoveryConfig::default(),
-            },
-            make_config(),
-        )
+        ProjectAssetSnapshotBuilder::new(make_config())
     }
 
     #[test]

@@ -57,6 +57,7 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | 60 | OpenCode global (`<config>/opencode/skills/`) |
 | 70 | Claude global (`<config>/claude/skills/`) |
 | 80 | CodeGG native compat (direct `.md` files in `.codegg/skills/`) |
+| 90 | `Configured` — each `skills.paths` entry, used as a skills directory directly |
 
 Discovery is bounded by `AssetDiscoveryConfig` (max file size 256 KiB, max frontmatter 64 KiB, max 256 skills per root, max 64 resources per skill, name/description length caps). Skill metadata such as `allowed-tools` never grants permissions.
 
@@ -73,6 +74,32 @@ Passing an already-joined path silently discovers nothing: the root resolves to
 emitting a diagnostic. There is no user-visible symptom other than global
 skills simply never appearing. `already_joined_global_root_discovers_nothing`
 in `registry.rs` pins this failure mode.
+
+## Configured roots (`skills.paths`)
+
+`skills.paths` adds extra skills directories, and each entry is a skills
+directory **itself** — `resolve_source_roots` appends nothing, so `"/opt/skills"`
+discovers `/opt/skills/<name>/SKILL.md` rather than `/opt/skills/codegg/skills`.
+This differs deliberately from the global-root parent contract above.
+Non-directories are skipped. `Configured` ranks 90, below every built-in root,
+so a configured path can never shadow a well-known root's skill name.
+
+`skills.enabled = false` clears `enabled_sources`, disabling discovery on every
+path.
+
+Both keys flow through `asset_discovery_config_from`
+(`src/agent/asset_context.rs`), which every `AssetRegistry` construction site
+calls; `ProjectAssetSnapshotBuilder::new` takes only `Arc<Config>` and derives
+the discovery config itself, so a key cannot be honoured in one construction
+path and ignored in another. Previously `SkillsConfig.paths` and `.enabled`
+were parsed and merged but read by no production path. The
+`SkillsConfig.urls` key was removed rather than left accepted-but-inert,
+because remote skill fetching is unimplemented.
+
+Pinned by `configured_root_is_used_as_a_skills_directory`,
+`configured_root_is_not_treated_as_a_global_parent`,
+`disabled_sources_suppress_project_skills`, and
+`nonexistent_configured_root_is_skipped` in `registry.rs`.
 
 ## Key Types
 

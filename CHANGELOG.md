@@ -18,6 +18,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Subcommand diagnostics were written to stdout, breaking machine-readable
+  output.** `src/main.rs` installed `tracing_subscriber::fmt()` with no writer
+  for ordinary subcommands, and `tracing-subscriber` defaults to stdout. A
+  fresh machine therefore got 14–17 `WARN codegg_providers::provider_core: NO
+  KEY for provider '...'` lines *before* the result, so the documented CI
+  pipeline `codegg exec --format json --quiet | jq` failed with a parse error,
+  and `codegg providers > file` produced a file polluted with ANSI-coloured
+  warnings. The `core-stdio`/`acp` branch already used stderr for exactly this
+  reason; the general branch now does too. `codegg providers` stdout is now
+  just the provider list, and the `exec` JSON parses.
+- **`codegg completions` help text contradicted its own behaviour.** The flag
+  was documented as "default: current directory", but with no `--output` the
+  script goes to stdout (`cmd_completions`, the `None` arm). `--output`
+  additionally requires the directory to already exist and fails otherwise.
+  Corrected the help string plus `docs/install.md` and `docs/cli.md`.
+- **`docs/install.md` wrongly claimed `cargo install` installs only `codegg`.**
+  `codegg` and `codegg-sandbox-helper` are both unconditional `[[bin]]`
+  targets, so Cargo installs both — verified by running
+  `cargo install --path . --root <tmp>`, which reported
+  `Installed package codegg v0.1.0 (executables codegg, codegg-sandbox-helper)`.
+  The substantive point stands: the pinned `codegg-eggsearch` sidecar is still
+  absent, so a source install is not a managed bundle.
+- **`--cwd` is inert but was documented as selecting the workspace.**
+  `src/main.rs` parses `cwd: Option<PathBuf>` and never reads it; verified by
+  `codegg --cwd /nonexistent-xyz-123 validate`, which succeeds with exit 0
+  exactly as a plain `codegg validate` does. The README and `docs/cli.md` no
+  longer advertise it as working.
+- **The README quickstart's non-interactive examples failed as written.** With
+  no `model` configured the agent falls back to the `EMERGENCY_DEFAULT_MODEL`
+  of `openai/gpt-4o`, so `codegg --run "..."` and the `codegg exec` payload —
+  which follow step 2's credential-only setup — died with
+  `Provider not found: openai`. Both examples now pass a model, and step 2
+  states the default outright. Verified: with `-m`/a `"model"` field both
+  commands resolve the provider and reach the model call.
+- Three source comments that contradicted their own code:
+  `crates/codegg-config/src/schema.rs` documented
+  `daemon.shutdown_timeout_ms` as defaulting to 5000 ms while both call sites
+  use 10,000; and `src/plugin/install.rs` stated twice that
+  `validate_local_install_source` accepts `..`, which it rejects by default.
+- **Doc accuracy sweep against source.** Roughly forty corrections across
+  `docs/` and `README.md`, each verified against source and, for CLI claims, by
+  running the command. Notable removals: a fabricated
+  `SandboxResult::Applied { profile: "workspace_rw" }` in
+  `docs/execution-ownership.md` (the real capability is
+  `isolation.landlock.workspace-rw.v1`), a non-existent `"Failed to launch
+  language server"` error string in `docs/TROUBLESHOOTING.md`, the wrong
+  session-database path, and `~/.config/codegg` paths that are wrong on macOS
+  (`~/Library/Application Support`). `docs/security-semantics.md` described a
+  3-step escalation ladder where the policy resolves in 7 ordered steps.
+  `docs/MCP.md` described codegg as only an MCP client, when it also runs an
+  MCP server. `docs/providers.md` listed `opencode_zen` as an env-var naming
+  exception, when `OPENCODE_ZEN_API_KEY` already follows the convention.
+
+- **`--cwd` was inert.** `src/main.rs` parsed `cwd: Option<PathBuf>` and never
+  read it: `codegg --cwd /nonexistent-xyz-123 validate` exited 0 exactly as a
+  plain run did. It now calls `std::env::set_current_dir` during CLI bootstrap —
+  permitted explicitly by `scripts/check_daemon_cwd_usage.py` — before anything
+  reads the filesystem, so config discovery and project selection both resolve
+  against it. A nonexistent path now fails loudly. Verified byte-identical
+  output between `codegg --cwd <dir> validate` and running from `<dir>`.
+- **`config.skills` was dead config** — the same defect class as the
+  `merge_configs` drop above. `enabled` and `paths` were parsed and merged but
+  read by no production path, so `skills.paths` was a silent no-op. Both now
+  work through a single `asset_discovery_config_from` helper that every
+  `AssetRegistry` construction site calls:
+  - `skills.paths` adds extra skills directories via a new `SourceKind::Configured`
+    (rank 90). Each entry is a skills directory **itself**, deliberately unlike
+    the global roots which are parent directories that get `<vendor>/skills`
+    appended, so `"/opt/skills"` discovers `/opt/skills/<name>/SKILL.md`.
+    Ranked below every built-in root so it can never shadow a standard skill
+    name; collisions are still recorded as shadowed diagnostics.
+  - `skills.enabled = false` clears `enabled_sources`, disabling discovery.
+  - `SkillsConfig.urls` was **removed** rather than left accepted-but-inert:
+    remote skill fetching is unimplemented, and an accepted-but-dead key is the
+    defect being fixed.
+  `ProjectAssetSnapshotBuilder::new` now takes only `Arc<Config>` and derives
+  its discovery config instead of accepting an injected `SnapshotBuilderConfig`,
+  so a key cannot be honoured in one construction path and ignored in another.
+  Pinned by four new tests in `src/skills/registry.rs`.
+- **`scripts/check_provider_connections_m4_coverage.sh` checked the wrong file.**
+  It asserted `ConnectionRotateBegin` appears in `src/server/ws.rs`, but WS only
+  maps a handful of JSON-RPC methods onto `CoreRequest`; the Connection
+  lifecycle is a CoreDaemon concern dispatched in
+  `src/core/daemon_providers.rs`. It now asserts all ten lifecycle handlers are
+  implemented there *and* routed to the Providers family in
+  `src/core/daemon_family.rs`, which is strictly stronger. Both halves are
+  negative-tested.
+- **`check_execution_ownership.py` had a dead path entry.** `CANONICAL_FINITE_PATHS`
+  listed `src/scheduler/executors.rs`, but the scan loop skipped all of
+  `src/scheduler/` before reaching it, so that entry never ran. The skip now
+  exempts only the annotation inventory, leaving the boundary checks live for
+  paths they are configured to police. Verified the guard still passes and that
+  an injected violation in `executors.rs` is now caught.
+- **`docs/agents-skills.md` documented the double-join failure as the real
+  path.** It listed the Linux global root as `~/.config/codegg/codegg/skills`;
+  the global root is the config directory and `<vendor>/skills` is appended
+  once, so it is `~/.config/codegg/skills`.
+- **`architecture/security.md`** described `Ambient` as "observation only, no
+  auto-deny" and showed `prompt_hints = false` / `max_findings_in_prompt = 10`.
+  `deny_critical_commands` defaults to true, so Ambient denies critical commands;
+  the real defaults are `true` and `5`.
+
+### Known issues (not fixed here)
+
+- `scripts/check_provider_connections_m4_coverage.sh` is still not part of
+  `verify.sh quick` or CI, so it only runs when invoked directly.
+
+### Fixed
+
 - **Config layer merge silently dropped 13 sections.** `merge_configs`
   (`crates/codegg-config/src/paths.rs:164`) is an explicit whitelist and is the
   only path from a parsed config file to `Config` — both `Config::load` and

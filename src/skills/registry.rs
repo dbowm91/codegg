@@ -302,6 +302,25 @@ fn resolve_source_roots(
         }
     }
 
+    // User-configured extra roots (`skills.paths`). Unlike the global roots
+    // above, each entry is already a skills directory, so nothing is
+    // appended. They are canonicalized through the same bounds, so a
+    // non-directory or unreadable path is skipped rather than trusted.
+    if config.enabled_sources.contains(&SourceKind::Configured) {
+        for root in &config.configured_roots {
+            if root.is_dir() {
+                if let Ok(canonical) = root.canonicalize() {
+                    roots.push(SourceRoot {
+                        kind: SourceKind::Configured,
+                        display_path: root.clone(),
+                        canonical_path: canonical,
+                        plugin_id: None,
+                    });
+                }
+            }
+        }
+    }
+
     roots
 }
 
@@ -547,6 +566,101 @@ mod tests {
 
     fn test_config() -> AssetDiscoveryConfig {
         AssetDiscoveryConfig::default()
+    }
+
+    /// `skills.paths` entries are skills directories themselves, so the
+    /// skill is discovered without any `<vendor>/skills` join.
+    #[test]
+    fn configured_root_is_used_as_a_skills_directory() {
+        let project = TempDir::new().unwrap();
+        let extra = TempDir::new().unwrap();
+        let skill_dir = extra.path().join("from-config");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: from-config\ndescription: A skill discovered via skills.paths\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config.configured_roots = vec![extra.path().to_path_buf()];
+
+        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        let names: Vec<_> = registry.effective.iter().map(|s| s.name.clone()).collect();
+        assert!(
+            names.contains(&"from-config".to_string()),
+            "expected configured root skill, got {names:?}"
+        );
+        assert!(
+            registry
+                .sources
+                .iter()
+                .any(|s| s.kind == SourceKind::Configured),
+            "configured root should be reported as a source"
+        );
+    }
+
+    /// A configured path must not be mistaken for a global *parent* root:
+    /// `<root>/codegg/skills` must not be joined on.
+    #[test]
+    fn configured_root_is_not_treated_as_a_global_parent() {
+        let project = TempDir::new().unwrap();
+        let extra = TempDir::new().unwrap();
+        // This layout is what a global-root parent would produce; under the
+        // configured-root contract it must be ignored.
+        let nested = extra.path().join("codegg").join("skills");
+        fs::create_dir_all(nested.join("nested")).unwrap();
+        fs::write(
+            nested.join("nested").join("SKILL.md"),
+            "---\nname: nested\ndescription: Must not be discovered\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config.configured_roots = vec![extra.path().to_path_buf()];
+
+        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        let names: Vec<_> = registry.effective.iter().map(|s| s.name.clone()).collect();
+        assert!(
+            !names.contains(&"nested".to_string()),
+            "configured root must not double-join <vendor>/skills, got {names:?}"
+        );
+    }
+
+    /// `skills.enabled = false` clears every source.
+    #[test]
+    fn disabled_sources_suppress_project_skills() {
+        let project = TempDir::new().unwrap();
+        let skill_dir = project.path().join(".codegg").join("skills").join("local");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: local\ndescription: A project skill\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let mut config = test_config();
+        config.enabled_sources.clear();
+
+        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        assert!(registry.effective.is_empty());
+    }
+
+    /// A non-directory entry in `skills.paths` is skipped, not trusted.
+    #[test]
+    fn nonexistent_configured_root_is_skipped() {
+        let project = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.configured_roots = vec![project.path().join("does-not-exist")];
+        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        assert!(registry.effective.is_empty());
+        assert!(
+            !registry
+                .sources
+                .iter()
+                .any(|s| s.kind == SourceKind::Configured),
+            "a missing configured root must not be reported as a live source"
+        );
     }
 
     #[test]

@@ -442,8 +442,10 @@ impl SkillPublicationService {
         proposal: &SkillProposal,
         destination_root: &Path,
     ) -> Result<Option<String>, SkillPublicationError> {
+        let app_config = crate::config::schema::Config::load_or_default();
+        let asset_config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
         let registry = AssetRegistry::build(
-            &AssetDiscoveryConfig::default(),
+            &asset_config,
             project_root,
             &[global_config_dir.to_path_buf()],
         );

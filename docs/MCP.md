@@ -1,6 +1,10 @@
 # MCP (Model Context Protocol)
 
-codegg implements the Model Context Protocol for connecting to external MCP servers that provide additional tools and resources.
+codegg is an MCP **client**: it connects to external MCP servers that provide
+additional tools and resources. It also runs one small MCP **server** of its
+own — `ide_server.rs` exposes IDE diff-viewing tools to IDE extensions over
+stdio or a unix socket — but the model-facing integration is entirely
+client-side.
 
 ## Overview
 
@@ -18,7 +22,8 @@ The MCP module (`src/mcp/`) consists of:
 - **`remote.rs`** - `RemoteClient` for HTTP-based remote servers
 - **`auth.rs`** - `OAuthManager` for OAuth authentication flow
 - **`cli.rs`** - CLI helper utilities
-- **`ide_server.rs`** - IDE MCP server for diff viewing
+- **`protocol.rs`** - shared JSON-RPC/protocol types
+- **`ide_server.rs`** - IDE MCP server for diff viewing (codegg as the *server*)
 
 ## Server Types
 
@@ -87,6 +92,28 @@ Key methods:
 MCP tools are exposed with a prefixed name format: `mcp__{server}__{tool}`
 
 For example, if a server named "filesystem" has a tool "read_file", it becomes `mcp__filesystem__read_file`.
+
+Whether raw `mcp__*__*` tools actually reach the model is decided by
+`McpExposurePolicy` (`McpService::list_filtered_tools`). The default policy is
+`McpExposurePolicy::hide_all()`: raw definitions are hidden and callers see
+only stable native wrappers, and `hidden_servers` can suppress a server even
+when `show_raw` is `true`. `list_tools()` is the unrestricted variant
+(`show_raw: true`, no hidden servers).
+
+## CLI
+
+MCP servers are managed from the command line:
+
+```
+codegg mcp list                        # list configured servers
+codegg mcp add <NAME> [--server-type local|remote] [-c COMMAND] [-a ARGS] [-u URL]
+codegg mcp remove <NAME>               # remove a server
+codegg mcp enable <NAME> [--enabled]   # enable (default) or disable a server
+codegg mcp debug [<NAME>] [-u URL]     # test a connection to a server
+```
+
+There is no `codegg plugins` subcommand: Agent Plugin packages are managed
+from the TUI and the `plugin` config key (see [`PLUGINS.md`](PLUGINS.md)).
 
 ## Reconnection Behavior
 

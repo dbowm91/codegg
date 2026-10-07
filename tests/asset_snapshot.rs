@@ -15,11 +15,10 @@ use codegg::agent::asset_context::{AssetContextBuilder, ProjectId};
 use codegg::agent::asset_snapshot::{
     compute_snapshot_fingerprint, ProjectAssetSnapshot, RuntimeAssetPin,
 };
-use codegg::agent::asset_snapshot_builder::{ProjectAssetSnapshotBuilder, SnapshotBuilderConfig};
+use codegg::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder;
 use codegg::agent::instructions::{InstructionFragment, ProjectInstructionResolver};
 use codegg::agent::resolve_agents_with_context;
 use codegg::config::schema::Config;
-use codegg::skills::AssetDiscoveryConfig;
 use codegg::tool::{ToolRegistry, ToolRegistryOptions};
 use tempfile::TempDir;
 
@@ -28,12 +27,7 @@ fn make_config() -> Arc<Config> {
 }
 
 fn default_builder() -> ProjectAssetSnapshotBuilder {
-    ProjectAssetSnapshotBuilder::new(
-        SnapshotBuilderConfig {
-            asset_discovery: AssetDiscoveryConfig::default(),
-        },
-        make_config(),
-    )
+    ProjectAssetSnapshotBuilder::new(make_config())
 }
 
 fn ctx_for(root: &std::path::Path) -> codegg::agent::asset_context::AssetContext {

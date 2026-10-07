@@ -56,6 +56,7 @@ Lower rank wins. Project-local always beats global.
 | 60 | `OpenCodeGlobal` | `<config>/opencode/skills/<name>/SKILL.md` |
 | 70 | `ClaudeGlobal` | `<config>/claude/skills/<name>/SKILL.md` |
 | 80 | `CodeGGNativeCompat` | `<project>/.codegg/skills/*.md` (direct markdown) |
+| 90 | `Configured` | Each entry of `skills.paths`, used as a skills directory directly |
 
 `<config>` is the platform configuration directory (`dirs::config_dir()`, e.g.
 `~/.config` on Linux and `~/Library/Application Support` on macOS). The
@@ -65,6 +66,28 @@ foreign-harness global roots are config-dir-relative, **not** `$HOME`-relative:
 `default_global_discovery_root()` — exactly `dirs::config_dir()`
 (`src/agent/asset_context.rs`) as that parent. The daemon does so at
 `src/core/daemon_refresh.rs:187-191`.
+
+### Configured roots (`skills.paths`)
+
+`skills.paths` adds extra skills directories. Unlike the global roots above,
+each entry is a skills directory **itself** — `resolve_source_roots` appends
+nothing — so `"/opt/skills"` discovers `/opt/skills/<name>/SKILL.md` and is not
+read as a parent expecting `/opt/skills/codegg/skills`. Entries are canonicalized
+through the same bounds as every other root, and a non-directory is skipped.
+`Configured` ranks 90, below every built-in root, so a shared or
+machine-wide path can never shadow a well-known root's skill name; a collision
+is recorded as a shadowed alternative diagnostic instead.
+
+`skills.enabled = false` clears `enabled_sources` entirely, disabling discovery
+on every path.
+
+Both keys are applied through `asset_discovery_config_from`
+(`src/agent/asset_context.rs`), which every `AssetRegistry` construction site
+calls. `ProjectAssetSnapshotBuilder::new` takes only `Arc<Config>` and derives
+the discovery config itself rather than accepting an injected one, so a config
+key cannot be honoured in one construction path and ignored in another. This
+mirrors the earlier defect where `SkillsConfig.paths` and `.enabled` were parsed
+and merged but read by no production code path.
 
 Passing an already-joined path such as `<config>/codegg/skills` is a silent
 failure: it resolves to `<config>/codegg/skills/codegg/skills`, which does not
@@ -351,8 +374,8 @@ Confirmed correct as written: every struct/enum line ref
 `SourceKind` `source.rs:6`, `AssetDiscoveryConfig` `source.rs:91`,
 `ResourceHandle` `resource.rs:44`, `ResourceReadLimits` `resource.rs:8`,
 `SkillIndexCompat` `compat.rs:11`, `Diagnostic` `diagnostic.rs:22`), the
-exact 10 `SourceKind` variants with their literal discriminants
-`0/10/20/30/35/40/50/60/70/80`, the 12-field `EffectiveSkill` listing, the
+exact 11 `SourceKind` variants with their literal discriminants
+`0/10/20/30/35/40/50/60/70/80/90`, the 12-field `EffectiveSkill` listing, the
 5 `SourceKind` methods, the 7 `ResourceHandle` methods, the
 `AssetDiscoveryConfig` defaults (256 KiB / 64 KiB / 256 / 64 / 128 / 2048,
 `source.rs:115-120`), the `ResourceReadLimits` defaults (1 MiB / 64 KiB,

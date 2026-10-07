@@ -89,7 +89,7 @@ is recorded.
 **Symptoms:** Previous messages disappear after restart.
 
 **Solutions:**
-- Sessions are stored in SQLite at `~/Library/Application Support/codegg/codegg.db` (macOS) or `$XDG_DATA_HOME/codegg/codegg.db` (Linux)
+- Session messages live in a project-local SQLite database at `<project>/.codegg/sessions.db`; the user-scoped `<data dir>/codegg/codegg.db` is the daemon *project catalog*, not session history
 - Check file permissions
 - Verify disk space available
 
@@ -102,7 +102,7 @@ is recorded.
 **Solutions:**
 1. Check TUI is running in foreground (not daemon mode)
 2. Try pressing `Esc` to cancel, then retry
-3. Check `~/.config/codegg/permissions.json` is writable
+3. Check the permissions store is writable — `<config dir>/codegg/permissions.json` (`~/Library/Application Support/codegg/permissions.json` on macOS, `~/.config/codegg/permissions.json` on Linux)
 4. Restart the application
 
 ### Permission always denied
@@ -111,7 +111,7 @@ is recorded.
 
 **Solutions:**
 1. Check HMAC key is consistent: `CODEGG_PERM_KEY` env var
-2. Clear permissions: delete `~/.config/codegg/permissions.json`
+2. Clear permissions: delete the `permissions.json` file from the config directory above
 3. Check path rules in config - ensure paths are correctly specified
 
 ## LSP Issues
@@ -128,7 +128,7 @@ is recorded.
 
 ### LSP server won't start
 
-**Symptoms:** "Failed to launch language server"
+**Symptoms:** `server launch failed: ...` or `server not found: ...`
 
 **Solutions:**
 1. Install server manually: `npm install -g typescript-language-server`
@@ -220,7 +220,7 @@ is recorded.
 **Symptoms:** Default values always used.
 
 **Solutions:**
-1. Check config file location: `~/.config/codegg/codegg.jsonc`
+1. Check config file location: the global config is `<config dir>/codegg/codegg.jsonc` (`~/Library/Application Support/codegg/codegg.jsonc` on macOS, `~/.config/codegg/codegg.jsonc` on Linux); `codegg.json` and `config.json` in the same directory are also accepted, and `<project>/.codegg/codegg.json` overrides it
 2. Verify JSON is valid (use `jq` to validate)
 3. Ensure file is readable
 4. Check for duplicate/conflicting settings
@@ -264,7 +264,7 @@ is recorded.
 **Solutions:**
 1. Ensure keyboard focus is on main window
 2. Check terminal supports special keys
-3. Try alternative shortcuts (e.g., `Esc` instead of `Ctrl+Q`)
+3. Try the bare key instead of the modified one (for example, plain `q` quits; `Ctrl+Q` also quits). `Esc` closes an open dialog but never quits
 4. Restart with clean terminal state
 
 ## Debug Mode

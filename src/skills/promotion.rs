@@ -850,6 +850,7 @@ fn source_kind_label(kind: SourceKind) -> &'static str {
         SourceKind::ClaudeProject => "claude-project",
         SourceKind::ClaudeGlobal => "claude-global",
         SourceKind::Plugin => "plugin",
+        SourceKind::Configured => "configured",
     }
 }
 

@@ -36,7 +36,7 @@ Inside a single per-user root directory:
 | File | Purpose |
 |---|---|
 | `daemon.lock` | The singleton lock. Authoritative — this is what "is a daemon running" really means. |
-| `daemon.json` | Identity metadata: daemon id, generation, PID, endpoint, protocol version, start time, binary version. Diagnostic only. |
+| `daemon.json` | Identity record: daemon id, generation, PID, endpoint, protocol version, start time, binary version. Read by `daemon status` and by `daemon stop`, which verifies the live daemon's id against it before signalling. |
 | `core.sock` | The local socket endpoint (a named pipe on Windows). |
 | `daemon.log` | Startup and runtime diagnostics. |
 

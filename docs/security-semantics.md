@@ -9,7 +9,7 @@ Codegg includes a deterministic security signal pipeline that classifies tool ca
 | `off` | No security checks. All tools proceed normally. |
 | `ambient` | Classifies tool calls in real-time. High-risk commands escalate to ask. Critical commands denied. Default mode. |
 | `strict` | More aggressive. Medium-risk commands also escalate to ask. |
-| `review` | Produces findings but does not auto-deny beyond critical. For human/AI reviewer consumption. |
+| `review` | Produces findings for reviewer consumption. Critical and High risk escalate to `ask`, never `deny` (an explicit `denied_commands` match still denies). |
 
 ## Command Classification
 
@@ -22,11 +22,17 @@ The command classifier (`security classify_command`) deterministically categoriz
 
 ## Permission Escalation
 
-When `security.enabled = true` (default), the agent loop runs security classification on every tool call:
+When `security.enabled = true` (default) and `mode` is not `off`, the agent's
+tool-execution path classifies every tool call and resolves an action against the
+policy, in this order:
 
-1. If classification is **critical** and `deny_critical_commands = true`: tool is denied immediately
-2. If classification is **high** and `ask_on_high_risk_command = true`: permission is escalated from Allow to Ask
-3. Otherwise: existing permission behavior is unchanged
+1. An explicit `denied_commands` match: denied
+2. **Critical** classification with `deny_critical_commands = true`: denied
+3. **Critical** with `deny_critical_commands = false` and `ask_on_high_risk_command = true`: escalated from Allow to Ask
+4. Network exfiltration or secret exposure with the matching `ask_on_*` gate: escalated from Allow to Ask
+5. **High** classification with `ask_on_high_risk_command = true`: escalated from Allow to Ask
+6. **Medium** under `strict` only: escalated from Allow to Ask
+7. Otherwise: `Observe` — existing permission behavior is unchanged
 
 This does not replace the permission system. It adds an additional safety layer.
 

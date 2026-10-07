@@ -37,7 +37,7 @@ codegg --no-session                     # ephemeral run, no persistence
 codegg -m anthropic/claude-sonnet-4-20250514   # pick a model
 codegg -a build                         # pick an agent
 codegg --cwd /path/to/project           # choose the workspace
-codegg --run "Explain this project"     # one prompt, then exit
+codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # one prompt, then exit
 ```
 
 `--model` accepts either `provider/model-id` or a bare `model-id`. The
@@ -56,7 +56,7 @@ codegg --run "Explain this project"     # one prompt, then exit
 | `-p`, `--run <PROMPT>` | Run a single prompt and exit. |
 | `-f`, `--format <text\|json>` | Output format for one-shot mode. `--output-format` is a compatibility alias. Default `text`. |
 | `-q`, `--quiet` | Hide status messages in non-interactive mode. |
-| `--cwd <DIRECTORY>` | Set the working directory. |
+| `--cwd <DIRECTORY>` | Set the working directory before startup. Must exist, or the command fails. Equivalent to launching from that directory. |
 | `-v` | Verbosity: no flag warn, `-v` info, `-vv` debug, `-vvv`+ trace. |
 | `--approval-mode <MODE>` | `interactive`, `automatic`, or `yolo`. |
 | `--sandbox <PROFILE>` | `read-only`, `workspace-write`, or `full-host`. |
@@ -242,13 +242,17 @@ if a query returns nothing.
 ## Shell completions
 
 ```bash
-codegg completions bash        # write to the current directory
-codegg completions zsh -o ~/.local/share/zsh/site-functions
+codegg completions bash                    # print to stdout
+codegg completions zsh -o ~/.zsh/completions   # write _codegg into an existing dir
 ```
 
-Supported shells: `bash`, `elvish`, `fish`, `powershell`, `zsh`. (`elvish`
-works but is missing from the command's own `--help` text — trust the
-accepted values above.)
+With no `-o`/`--output`, the script is written to stdout, not to a file.
+`--output` requires the directory to already exist and names the file per shell
+(`codegg.bash`, `_codegg`, `codegg.fish`, `codegg.ps1`, `codegg.elv`).
+
+Supported shells: `bash`, `elvish`, `fish`, `powershell`, `zsh`. The command's
+own help prose lists only four — `elvish` appears solely in the `possible values`
+line, so trust the value list rather than the sentence.
 
 ## Upgrade
 

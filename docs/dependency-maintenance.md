@@ -22,9 +22,9 @@ When maintenance is useful or a release is being prepared:
 YAML is a read-only compatibility format for markdown frontmatter in agents,
 commands, and skills. New configuration and generated assets use the
 subsystem's canonical TOML or JSON/JSON5 format. YAML parsing is centralized
-in `codegg-config`'s document codec and uses `serde_norway` 0.9.42, a
-maintained Serde-compatible fork with the repository's Rust 1.89-compatible
-MSRV. Existing YAML files are not rewritten automatically.
+in `codegg-config`'s document codec (`crates/codegg-config/src/document.rs`)
+and uses `serde_norway` 0.9.42, a maintained Serde-compatible fork. Existing
+YAML files are not rewritten automatically.
 
 ## Feature ownership checkpoints
 
@@ -46,7 +46,8 @@ The accepted dependency baseline keeps feature ownership explicit:
 - `arboard` disables defaults so the default clipboard surface remains
   text-capable without enabling image clipboard support;
 - `futures-util`, `futures-executor`, `grep-regex`, and `grep-searcher` are
-  used directly instead of the removed umbrella dependencies;
+  used directly rather than through an umbrella crate (no `grep` package
+  exists in the lockfile);
 - the legacy MD5 dependency remains only for compatibility reads/migration;
   new durable memory namespaces use domain-separated SHA-256.
 - the optional `image` stack disables defaults: `image` is
@@ -81,8 +82,9 @@ default-feature policy:
   features; member manifests add only the features they use
   (for example `sqlx` baseline is version/default policy only, root/core
   add `runtime-tokio,sqlite,derive,chrono,json` while providers adds
-  only `runtime-tokio,sqlite`; `uuid` baseline is `v4`, serde stays
-  local; `url` baseline has no `serde`, egglsp adds it).
+  only `runtime-tokio,sqlite`; `uuid` baseline is `v4` with no `serde`,
+  root and core add `serde`; `url` baseline has no `serde`, egglsp adds
+  it).
 - Single-consumer dependencies (clap, ratatui, crossterm, comrak,
   syntect, image stack, server/plugin optionals, lsp-types/zip/xz2,
   rustpython-parser, notify, and similar) stay local to their owning
@@ -99,7 +101,10 @@ default-feature policy:
   inheritance because `src/bin/codegg-sandbox-helper.rs` contains
   deliberate, reviewed `unsafe` (fd ownership + fcntl); its library
   keeps `#![deny(unsafe_code)]` in `src/lib.rs`.
-- Remaining duplicate majors in `cargo tree -d` are third-party owned
-  (for example `base64` 0.22/0.23 via `eggsact`, `md5` 0.7/0.8,
-  `strum` 0.26/0.28 via Ratatui) and are retained with evidence, not
-  patched.
+- Remaining duplicate majors in `cargo tree -d` are not all third-party
+  owned. `base64` 0.22 (the workspace pin, used by root/axum/sqlx and
+  friends) coexists with 0.23 pulled by `eggfetch-core` and `eggsact`;
+  `md5` 0.8 is `codegg-core`'s own legacy compatibility dependency while
+  0.7 comes from `eggsact`; and `strum` 0.26 is the root crate's direct
+  pin while 0.28 arrives through Ratatui (`ratatui-core`,
+  `ratatui-widgets`). Each is retained with evidence, not patched.

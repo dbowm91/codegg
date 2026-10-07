@@ -190,8 +190,11 @@ Point codegg at the directory containing the theme:
 [theme]
 name = "everforest-dark"
 directories = ["~/.config/codegg/themes"]
-fallback = "dark"
+fallback = "cyber-red"
 ```
+
+Use a real registered id for `fallback` — an unknown id silently falls
+through to the default theme.
 
 codegg loads every `*.toml` file in `directories`. Subdirectories are
 ignored in phase 1. If two files share the same id, the later-loaded entry
@@ -219,9 +222,11 @@ so the directory holding the file must be listed explicitly:
 directories = ["~/.config/codegg/themes"]
 ```
 
-codegg scans each directory for `*.toml` files, detects the format
-heuristically (presence of `[general]`/`[buffer]`/`[text]`), and adds the
-theme to the registry. The id is derived from the file stem.
+codegg scans each directory for `*.toml` files and detects the format
+heuristically: `looks_like_halloy` requires either `[general]` + `[buffer]`,
+or `[text]` + a `buttons.primary` key, or `[buffer]` + `[text]`. A file
+containing only one of those sections is not detected as Halloy. The id is
+derived from the file stem.
 
 ### 2. Point at a specific file
 
@@ -281,8 +286,9 @@ GUI-specific fields that codegg has no equivalent for. We map:
 | `[buttons.primary].background_selected` | `ui.accent_primary` (preferred) |
 | `[buttons.secondary].background_selected` | `ui.accent_secondary` |
 
-`ui.selection_dim` is derived by pulling the selection halfway back toward
-the background. Anything we cannot resolve falls back to a sensible
+`ui.selection_dim` is derived by pulling the selection a quarter of the way
+back toward the background (it subtracts a quarter of the background↔selection
+delta per channel). Anything we cannot resolve falls back to a sensible
 default, never an error.
 
 ### 8-digit hex (alpha)
@@ -337,7 +343,7 @@ and through command palette completion.
 The theme picker applies the highlighted theme to the whole TUI as you
 navigate:
 
-- **Up / Down** — moves the highlight. The TUI immediately recolors.
+- **j / k / Up / Down** — moves the highlight. The TUI immediately recolors.
   Nothing is persisted yet.
 - **Enter** — commits the new theme. Writes to `user_preferences` and
   the config file. Closes the dialog.
@@ -347,8 +353,9 @@ navigate:
   theme. The previewed theme is discarded.
 
 This means you can sweep through themes to find one you like, then
-commit only when ready. The footer of the picker changes to *"↑/↓
-preview  Enter commit  Esc revert"* once a preview is in progress.
+commit only when ready. The footer of the picker changes to
+*"j/k/↑/↓ preview  |  Enter commit  |  Esc revert"* once a preview is in
+progress.
 
 ## Diagnostics
 

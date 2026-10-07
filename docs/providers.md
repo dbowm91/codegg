@@ -27,9 +27,8 @@ this list.
 | `generalcompute` | GeneralCompute | `GENERALCOMPUTE_API_KEY` |
 
 This is the registration order CodeGG uses internally. The convention is
-`{PROVIDER_UPPER}_API_KEY`, with a few exceptions worth memorizing:
-`together` uses `TOGETHERAI_API_KEY`, and `opencode_zen` uses
-`OPENCODE_ZEN_API_KEY`.
+`{PROVIDER_UPPER}_API_KEY`, with one exception worth memorizing: `together`
+uses `TOGETHERAI_API_KEY`.
 
 ## Checking what is actually available
 
@@ -53,15 +52,15 @@ For a read-only check of configured providers that makes no network calls:
 codegg doctor providers
 ```
 
-Expect noise on a fresh machine: provider registration logs a `WARN` line to
-stderr for every built-in whose credential did not resolve, so
-`codegg providers` is usually preceded by a block of `NO KEY for provider
-'...'` lines. That is diagnostic output, not failure — the exit status is
-still 0, and only the providers listed under "Available providers" are
-actually usable. Redirect stderr if you want just the list:
+Expect noise on a fresh machine: provider registration logs a `WARN` line for
+every built-in whose credential did not resolve, so `codegg providers` is
+usually preceded by a block of `NO KEY for provider '...'` lines. That is
+diagnostic output, not failure — the exit status is still 0, and only the
+providers listed under "Available providers" are actually usable. Silence the
+diagnostics if you want just the list:
 
 ```bash
-codegg providers 2>/dev/null
+RUST_LOG=off codegg providers
 ```
 
 To see stored account metadata without exposing secrets:
@@ -110,7 +109,10 @@ variable and then the legacy `api_key` / `encrypted_api_key` fields.
 
 Resolution order for an `api_key` block is: the explicit `env` name, the
 conventional `{PROVIDER}_API_KEY` variable, an inline `value`, and finally an
-`encrypted_value` — which needs a master key to decrypt.
+`encrypted_value` — which needs a master key to decrypt. One ordering caveat:
+the OpenAI-compatible providers plus `opencode_zen` and `minimax` are
+registered with their conventional variable, and that variable is checked
+before an explicit `env`.
 
 Prefer an environment variable or the credential store over an inline
 `value`, which is plaintext in a file on disk.
@@ -222,11 +224,11 @@ a masked input that is never echoed into prompt history, command text, toasts,
 or debug output. The plaintext secret travels only in the trusted local core
 request.
 
-`/connections` is the management surface for connections that already exist —
-inspect, rotate, select, disable, delete, restore. It never collects secrets.
+`/connections` selects which provider connection — and which model within it
+— the current session uses. It never collects secrets.
 
-In other words: use `/connect` to add a provider, `/connections` to manage the
-ones you already added.
+In other words: use `/connect` to add a provider connection, `/connections` to
+switch the current session between the ones you already added.
 
 ## Choosing a model
 

@@ -4478,7 +4478,8 @@ impl App {
                     return;
                 };
                 let project_dir = self.active_workspace_root().unwrap_or_default();
-                let config = crate::skills::AssetDiscoveryConfig::default();
+                let app_config = crate::config::schema::Config::load_or_default();
+                let config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
                 let global_roots: Vec<std::path::PathBuf> =
                     crate::agent::asset_context::default_global_discovery_root()
                         .into_iter()
@@ -4638,7 +4639,10 @@ impl App {
                             // Advisory live collision view: the registry may have
                             // changed since submission, so surface the current
                             // same-name effective skill without mutating state.
-                            let config = crate::skills::AssetDiscoveryConfig::default();
+                            let app_config = crate::config::schema::Config::load_or_default();
+                            let config = crate::agent::asset_context::asset_discovery_config_from(
+                                &app_config,
+                            );
                             let global_roots: Vec<std::path::PathBuf> =
                                 crate::agent::asset_context::default_global_discovery_root()
                                     .into_iter()

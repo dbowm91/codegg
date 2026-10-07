@@ -5,7 +5,6 @@ use crate::error::AppError;
 
 use super::candidate::EffectiveSkill;
 use super::registry::AssetRegistry;
-use super::source::AssetDiscoveryConfig;
 
 #[derive(Debug, Clone)]
 pub struct SkillIndexCompat {
@@ -40,7 +39,8 @@ impl SkillIndexCompat {
                 .into_iter()
                 .collect();
 
-        let config = AssetDiscoveryConfig::default();
+        let app_config = crate::config::schema::Config::load_or_default();
+        let config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
         let registry = AssetRegistry::build(&config, &project_root, &global_roots);
         self.registry = Arc::new(registry);
         Ok(())

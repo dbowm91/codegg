@@ -84,8 +84,9 @@ system; see `docs/security-semantics.md`.
 |--------|-------|----------------|
 | Read files | `read`, `list`, `glob`, `grep`, `codesearch`, `diff` | Inspecting the workspace |
 | Write files | `write`, `edit`, `apply_patch`, `replace` | Creating and changing files |
-| Shell | `bash`, `terminal` | Running commands, managed processes, and Python script routes |
+| Shell | `bash`, `terminal`, `python_script`, `tool_program` | Shell commands, capability-controlled Python, and read-only Tool Programs. Interactive terminals are a TUI/daemon surface, not a tool |
 | Git | `git_query` (model-facing), `git_read` (program-only) | Typed read-only repository facts |
+| Git mutation | `git`, `commit` | Mutating operations, routed through the risk-classified mutation executor |
 | Test and verify | `test`, `verify` | Running the project's test suite, and bounded offline `check`/`build`/`lint`/`typecheck`/`format_check` passes |
 | Code intelligence | LSP-backed tools, `lsp_preview_apply` | Diagnostics, definitions, references, impact, repair |
 | Deterministic | 13 `eggsact`-backed validators | Text, config, and identifier checking |
@@ -174,7 +175,8 @@ Two read surfaces sit on top:
 - `git_read` — the program-only adapter over the same canonical execution
   service. Hidden from ordinary model turns.
 
-Mutations live in `src/git_mutations.rs` and share one execution model: resolve
+Mutations live in `src/git_mutations.rs` behind the `git` and `commit` tools, and
+share one execution model: resolve
 and policy-check the repository root, snapshot pre-operation state (HEAD,
 branch, index, worktree), validate preconditions, render argv shell-free, run
 with a timeout and noninteractive controls, snapshot post-operation state, and

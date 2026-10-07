@@ -333,10 +333,18 @@ def main() -> int:
 
     for path in src_files:
         rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith("src/scheduler/") or rel.startswith("src/test_runner/"):
-            # Scheduler subsystem and test_runner subsystem are definition
-            # sites; their process-spawn entries are owned by the
-            # scheduler executors themselves.
+        # Scheduler subsystem and test_runner subsystem are definition
+        # sites; their process-spawn entries are owned by the scheduler
+        # executors themselves, so the annotation inventory does not apply.
+        # The boundary checks below still run for any path those checks are
+        # configured to police -- skipping those outright would leave their
+        # CANONICAL_FINITE_PATHS / TYPED_ARGV_PATHS entries dead.
+        definition_site = rel.startswith("src/scheduler/") or rel.startswith("src/test_runner/")
+        if (
+            definition_site
+            and rel not in CANONICAL_FINITE_PATHS
+            and rel not in TYPED_ARGV_PATHS
+        ):
             continue
         try:
             content = path.read_text(encoding="utf-8")

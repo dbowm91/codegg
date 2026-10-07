@@ -163,9 +163,10 @@ pub async fn install_from_path_into(
     path: &Path,
     dest_root: &Path,
 ) -> Result<PathBuf, InstallError> {
-    // Validate the user-supplied local install source. This accepts
-    // absolute paths and paths containing `..` as long as the canonical
-    // target exists, is a directory, and contains a supported manifest.
+    // Validate the user-supplied local install source. With the default
+    // policy, lexical parent traversal (`..`) is rejected before the path
+    // is canonicalized, so the canonical target must be reachable without
+    // `..`, be a directory, and contain a supported manifest.
     let policy = PluginInstallPolicy::default();
     let path = validate_local_install_source(path, &policy)?;
 
@@ -1116,8 +1117,8 @@ api_version = 1
     #[test]
     fn archive_traversal_still_rejected_after_local_policy_split() {
         // Regression guard: the strict relative-path validator used for
-        // archive entries must still reject traversal even though
-        // validate_local_install_source accepts dotdot.
+        // archive entries must still reject traversal independently of
+        // the lexical `..` rejection in validate_local_install_source.
         let policy = PluginInstallPolicy::default();
         assert!(validate_relative_install_path(Path::new("../escape")).is_err());
         assert!(validate_relative_install_path(Path::new("/etc/passwd")).is_err());

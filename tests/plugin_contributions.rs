@@ -92,13 +92,12 @@ fn active_plugin_assets_are_namespaced_and_project_assets_keep_their_identity() 
     )
     .unwrap();
 
-    let snapshot =
-        ProjectAssetSnapshotBuilder::with_default_config_doc(Arc::new(Config::default()))
-            .build(&context(
-                workspace.path(),
-                Some(contribution_set(plugin.path())),
-            ))
-            .unwrap();
+    let snapshot = ProjectAssetSnapshotBuilder::new(Arc::new(Config::default()))
+        .build(&context(
+            workspace.path(),
+            Some(contribution_set(plugin.path())),
+        ))
+        .unwrap();
     assert_eq!(
         snapshot.skills.get("shared").unwrap().description,
         "project"
@@ -124,7 +123,7 @@ fn workspace_without_activation_cannot_see_plugin_assets_and_old_snapshot_stays_
         "---\nname: demo\ndescription: demo\n---\nbody",
     )
     .unwrap();
-    let builder = ProjectAssetSnapshotBuilder::with_default_config_doc(Arc::new(Config::default()));
+    let builder = ProjectAssetSnapshotBuilder::new(Arc::new(Config::default()));
     let active = builder
         .build(&context(
             workspace.path(),

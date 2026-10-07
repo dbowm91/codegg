@@ -554,9 +554,7 @@ fn _snapshot_build_error_is_publicly_classified(error: &SnapshotBuildError) -> &
 mod tests {
     use super::*;
     use crate::agent::asset_context::{AssetContextBuilder, ProjectId};
-    use crate::agent::asset_snapshot_builder::{
-        ProjectAssetSnapshotBuilder, SnapshotBuilderConfig,
-    };
+    use crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder;
     use crate::config::schema::Config;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -572,10 +570,7 @@ mod tests {
     }
 
     fn coordinator() -> AssetRefreshCoordinator {
-        let builder = ProjectAssetSnapshotBuilder::new(
-            SnapshotBuilderConfig::default(),
-            Arc::new(Config::default()),
-        );
+        let builder = ProjectAssetSnapshotBuilder::new(Arc::new(Config::default()));
         AssetRefreshCoordinator::new(Arc::new(builder))
     }
 
@@ -726,10 +721,7 @@ mod tests {
     async fn same_scope_requests_coalesce_to_one_publication() {
         let tmp = TempDir::new().unwrap();
         let builder = BlockingBuilder {
-            inner: ProjectAssetSnapshotBuilder::new(
-                SnapshotBuilderConfig::default(),
-                Arc::new(Config::default()),
-            ),
+            inner: ProjectAssetSnapshotBuilder::new(Arc::new(Config::default())),
             started: Arc::new(Notify::new()),
             thread: Arc::new(std::sync::Mutex::new(None)),
             calls: Arc::new(AtomicUsize::new(0)),

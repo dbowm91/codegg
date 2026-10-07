@@ -81,7 +81,8 @@ impl Tool for SkillTool {
             .build()
             .map_err(|e| ToolError::Execution(format!("invalid skill context: {e}")))?;
 
-        let asset_config = crate::skills::AssetDiscoveryConfig::default();
+        let app_config = crate::config::schema::Config::load_or_default();
+        let asset_config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
         let global_roots: Vec<std::path::PathBuf> = ctx
             .global_roots()
             .iter()

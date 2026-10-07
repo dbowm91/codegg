@@ -207,10 +207,9 @@ impl CoreDaemon {
         deps.workspace_services = Some(workspace_services.clone());
 
         let asset_builder = Arc::new(
-            crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(
-                crate::agent::asset_snapshot_builder::SnapshotBuilderConfig::default(),
-                Arc::new(config.clone()),
-            ),
+            crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::new(Arc::new(
+                config.clone(),
+            )),
         );
         let asset_refresh = Arc::new(crate::agent::asset_refresh::AssetRefreshCoordinator::new(
             asset_builder,

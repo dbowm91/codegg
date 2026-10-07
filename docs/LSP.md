@@ -27,8 +27,9 @@ Manages the lifecycle of LSP clients per project/language. Uses explicit leader/
 ```rust
 pub struct LspService {
     // Manages multiple language server clients
-    clients: Arc<RwLock<HashMap<String, Arc<LspClient>>>>,
-    config: LspConfig,
+    clients: ClientMap, // Arc<RwLock<HashMap<String, Arc<LspClient>>>>
+    // … plus init slots, document ownership, per-server operational
+    // state, and per-client generation tracking
 }
 ```
 
@@ -66,7 +67,8 @@ pub struct DiagnosticsCollector {
 
 ## Supported Languages
 
-Commonly used servers:
+`server_definitions()` in `crates/egglsp/src/server.rs` carries **39** built-in
+server definitions. Commonly used ones:
 
 | Language | Server id |
 |----------|--------|

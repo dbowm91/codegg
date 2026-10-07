@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::config::Config;
 use crate::error::AgentError;
+use crate::skills::source::AssetDiscoveryConfig;
 
 /// Stable, opaque project identifier.
 ///
@@ -263,6 +265,31 @@ pub fn default_global_agents_root() -> Option<PathBuf> {
 /// with no diagnostic. Use this for `global_roots` arguments.
 pub fn default_global_discovery_root() -> Option<PathBuf> {
     dirs::config_dir()
+}
+
+/// Build the [`AssetDiscoveryConfig`] for a given [`Config`].
+///
+/// `skills.enabled = false` clears every source, which disables skill
+/// discovery entirely. `skills.paths` adds extra skills directories; each
+/// entry is used as-is rather than being treated as a global *parent*
+/// directory, so `skills.paths = ["/opt/skills"]` discovers
+/// `/opt/skills/<name>/SKILL.md` directly.
+///
+/// Every `AssetRegistry` construction site must go through this helper, so a
+/// single config key cannot be honoured in one path and ignored in another.
+pub fn asset_discovery_config_from(config: &Config) -> AssetDiscoveryConfig {
+    let mut discovery = AssetDiscoveryConfig::default();
+    if let Some(false) = config.skills.as_ref().and_then(|skills| skills.enabled) {
+        discovery.enabled_sources.clear();
+    }
+    if let Some(paths) = config
+        .skills
+        .as_ref()
+        .and_then(|skills| skills.paths.as_ref())
+    {
+        discovery.configured_roots = paths.iter().map(PathBuf::from).collect();
+    }
+    discovery
 }
 
 /// Return the platform's default global instructions file path. The

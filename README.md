@@ -61,6 +61,11 @@ These read your real configuration, so the output depends on what you have
 set up. Full credential options — including the encrypted store — are in
 [`docs/providers.md`](docs/providers.md).
 
+A credential on its own is not quite enough. With no model configured, CodeGG
+falls back to `openai/gpt-4o`, so a run fails with `Provider not found: openai`
+until you either set `"model"` in config (see **Configuration** below) or pass
+`-m provider/model-id` on the command line.
+
 ### 3. Check the setup
 
 ```bash
@@ -87,20 +92,25 @@ codegg -s <session-id>                # open a specific session
 codegg -m anthropic/<model-id>        # pick a model
 codegg -a build                       # pick an agent
 codegg --cwd /path/to/project         # choose the workspace
-codegg --run "Explain this project"   # one prompt, then exit
+codegg -m anthropic/<model-id> --run "Explain this project"   # one prompt, then exit
 ```
+
+`--cwd` must name an existing directory; it is equivalent to `cd`-ing there
+first, so config discovery and project selection both resolve against it.
 
 ### 5. Non-interactive
 
 ```bash
-codegg --run "Summarize the changes in this repository"
+codegg -m anthropic/claude-sonnet-4-20250514 --run "Summarize the changes in this repository"
 
-printf '%s\n' '{"prompt":"Review this repository","agent":"build"}' \
+printf '%s\n' '{"prompt":"Review this repository","model":"anthropic/claude-sonnet-4-20250514","agent":"build"}' \
   | codegg exec --format json --quiet
 ```
 
 `codegg exec` is the CI-oriented entry point; set `--approval-mode` and
-`--sandbox` explicitly for a bounded run. The full CLI surface is in
+`--sandbox` explicitly for a bounded run. It prints a single JSON object with
+`success`, `result`, `toolsUsed`, `tokensUsed`, `durationMs`, `error`, and
+`code`, and exits non-zero on failure. The full CLI surface is in
 [`docs/cli.md`](docs/cli.md).
 
 ## What you get

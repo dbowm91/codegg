@@ -245,8 +245,23 @@ Global roots:
 ```
 
 for vendors `codegg`, `agents`, `opencode`, and `claude` — so on Linux the
-CodeGG one is `~/.config/codegg/codegg/skills`, and on macOS it is
-`~/Library/Application Support/codegg/codegg/skills`.
+CodeGG one is `~/.config/codegg/skills`, and on macOS it is
+`~/Library/Application Support/codegg/skills`. (The global root is the config
+directory itself and `<vendor>/skills` is appended once; the doubled form
+`~/.config/codegg/codegg/skills` is the silent double-join failure described in
+`architecture/skills.md`.)
+
+You can add your own directories with the `skills.paths` config key. Each entry
+is used as a skills directory **directly**, so `"paths": ["/opt/skills"]`
+discovers `/opt/skills/<name>/SKILL.md` rather than `/opt/skills/codegg/skills`:
+
+```jsonc
+{ "skills": { "paths": ["/opt/skills"], "enabled": true } }
+```
+
+Set `"enabled": false` to turn skill discovery off entirely. Configured roots
+rank below every built-in root, so one of them can never shadow a standard
+skill name.
 
 A missing directory is skipped silently, so you only create the ones you use.
 Discovery is bounded and containment-checked: a skill that resolves through a
@@ -262,20 +277,24 @@ Each skill is `<root>/<name>/SKILL.md`.
 For the portable form, both `name` and `description` are required and a skill
 missing either is reported as an error.
 
-The native compatibility form is more forgiving. When the frontmatter does not
-carry both portable fields, CodeGG falls back to the native shape, where a
-missing `name` is taken from the file stem and a missing `description`
-defaults to empty. That is why a directory named `release-checklist` holding
-`SKILL.md` can resolve to the name `SKILL` if its frontmatter omits `name`
-entirely — give portable skills an explicit `name` and you avoid the ambiguity.
+The native compatibility form is more forgiving, but only under the CodeGG
+roots. When the frontmatter does not carry both portable fields there, CodeGG
+falls back to the native shape, where a missing `name` is taken from the file
+stem and a missing `description` defaults to empty. That is why a directory
+named `release-checklist` holding `SKILL.md` can resolve to the name `SKILL` if
+its frontmatter omits `name` entirely. Under the `.agents`, `.opencode`, and
+`.claude` roots the portable path is the only one, so a skill missing `name` or
+`description` is an error there. Give portable skills an explicit `name` and
+`description` and you avoid the ambiguity either way.
 
 ### Discovery bounds
 
 Discovery is a startup scan with explicit caps: a maximum number of skills per
 root, a maximum `SKILL.md` size, a maximum frontmatter size, and a recommended
 maximum description length. Exceeding a size bound is an error; exceeding the
-recommended description length is a warning. Tune these in the config's
-`skills` block, which also accepts extra `paths` on top of the roots above.
+recommended description length is a warning. The caps live in
+`AssetDiscoveryConfig` (`src/skills/source.rs`) and are currently fixed at their
+built-in defaults; they are not configurable from the config file.
 
 ## Working with skills
 

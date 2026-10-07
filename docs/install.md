@@ -105,11 +105,11 @@ already discoverable. The installer prints that guidance when needed.
 
 ## From source
 
-`cargo install` installs **only** `codegg`. It does not produce a working
-managed bundle:
+`cargo install` installs both `codegg` and `codegg-sandbox-helper` — they are
+two `[[bin]]` targets with no required features, so Cargo installs both. It
+does **not** produce a working managed bundle, because the third managed
+sibling is missing:
 
-- `codegg-sandbox-helper` is a separate binary target, built by `cargo build`
-  rather than installed by `cargo install`.
 - The pinned `codegg-eggsearch` sidecar is an upstream project
   (`https://github.com/eggstack/eggsearch`, tag `v0.3.9`) with no Cargo
   dependency in this repository. You must build it from the pinned tag and
@@ -194,11 +194,13 @@ best-effort archive.
 ## Shell completions
 
 ```bash
-codegg completions zsh
+codegg completions zsh > ~/.zsh/completions/_codegg
 ```
 
-Accepted shells are `bash`, `elvish`, `fish`, `powershell`, and `zsh`. Pass
-`--output <dir>` to write elsewhere; the default is the current directory.
+Accepted shells are `bash`, `elvish`, `fish`, `powershell`, and `zsh`. With no
+`--output` the script goes to stdout, so redirect or pipe it where you want it.
+Pass `--output <dir>` to write a file instead; that directory must already
+exist, or the command fails with `Output directory does not exist`.
 
 ## Troubleshooting
 

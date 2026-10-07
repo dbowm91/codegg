@@ -12,8 +12,10 @@ codegg validate                        # auto-detected config
 codegg validate --config ./my.jsonc    # a specific file
 ```
 
-`validate` exits 0 and prints `Configuration is valid: <path>` when the file
-parses and passes semantic checks, and exits 1 with a message otherwise.
+`validate` exits 0 and prints `Configuration is valid: <path>` for the file you
+passed to `--config`, and exits 1 with a message otherwise. With no `--config`
+it validates the auto-detected config and prints `Configuration is valid.`
+without naming a path.
 
 ## Where configuration is read from
 
@@ -186,5 +188,8 @@ which keeps the lookup explicit and avoids writing an expanded secret to disk.
 | Daemon | `daemon` | `docs/daemon.md` |
 | HTTP server | `server` | `architecture/server.md` |
 
-Note that skills are discovered from a fixed set of directories whether or not
-`skills.paths` is set; that key only adds extra locations on top of them.
+Note that the `skills` block adds two extra roots and a kill switch on top of
+those fixed directories: `skills.paths` adds skills directories, each used
+**directly** rather than as a parent that gets `<vendor>/skills` appended, and
+`skills.enabled = false` disables discovery everywhere. See
+`architecture/skills.md`.

@@ -13,14 +13,18 @@ The plugin module (`src/plugin/`) consists of:
 - **`service.rs`** - `PluginService` for hook dispatch and execution
 - **`manifest.rs`** - `PluginManifest` parsing from `manifest.toml`
 - **`install.rs`** - Plugin installation from path or URL
+- **`package.rs`** - Manifest-format detection (`manifest.toml`, `plugin.json`, `.claude-plugin/plugin.json`)
+- **`contributions.rs`** - Passive skill/agent/instruction/MCP contribution resolution
 - **`event_bus.rs`** - Event bus integration for plugins
 - **`tui.rs`** - TUI component extensions
 - **`api.rs`** - Plugin API types and traits
 - **`management.rs`** - Plugin management operations (list, info, enable, disable, doctor, remove, install)
 - **`marketplace.rs`** - Plugin marketplace/registry integration
 - **`lifecycle.rs`** - Plugin lifecycle management
-- **`permission.rs`** - Plugin permission handling
+- **`permission.rs`** - Plugin permission handling (`PolicyDecision` and the
+  `check_*` evaluation functions)
 - **`management_ui.rs`** - TUI-facing plugin management views
+- **`playwright.rs`** - `PlaywrightSupportReport`
 - **`activation.rs`** - Durable global/workspace activation records and
   immutable context-bound activation views
 - **`policy.rs`** - `PluginPolicy` composite security policy
@@ -76,9 +80,16 @@ kind = "builtin"
 handler = "copilot"
 ```
 
-The legacy flat format (a top-level `[hooks]` table mapping hook type to export
-name) is still accepted and is auto-converted to `[[capabilities]]` entries on
-load. New manifests should use the canonical form above.
+The legacy hook-only format (a `[[hooks]]` array of tables, each with `type`
+and an optional `priority`) is still accepted and is auto-converted to
+`[[capabilities]]` hook entries on load. New manifests should use the
+canonical form above.
+
+```toml
+[[hooks]]
+type = "tool.execute.before"
+priority = 0
+```
 
 ### Passive contributions
 
@@ -227,6 +238,9 @@ pub struct PluginService {
     hook_timeout: Duration,
     builtin_runtime: Option<Arc<BuiltinRuntime>>,
     policy: Option<Arc<PluginPolicy>>,
+    activation_store: Arc<PluginActivationStore>,
+    pinned_activation: Option<Arc<ResolvedPluginActivationSet>>,
+    workspace_root: Option<std::path::PathBuf>,
 }
 ```
 
@@ -264,17 +278,17 @@ Plugins can be installed from:
 
 ### Local Path
 ```rust
-install_from_path(&path, &mut registry)
+install_from_path(&path).await  // installs into plugins_dir()
 ```
 
-Path validation uses lexical containment checks:
-- Symlinks, hardlinks, and absolute paths are rejected in archives and during installation
-- `validate_relative_install_path()` ensures relative paths stay within the destination directory
+Path validation is split in two:
+- `validate_relative_install_path()` (archive members and copy-relative paths) rejects `..`, `RootDir`, `Prefix`, and absolute paths
+- `validate_local_install_source()` (the user-supplied local source) allows absolute paths but still rejects `..` before canonicalizing, and requires a canonicalized existing directory containing a supported manifest
 - `validate_install_source()` performs lexical `ParentDir`/`RootDir`/`Prefix` rejection before canonicalizing
 
 ### Remote URL
 ```rust
-install_from_url(url, &mut registry).await
+install_from_url(url).await
 ```
 
 ## TUI Extensions
@@ -319,25 +333,42 @@ Surface IDs are namespaced by plugin ID: `plugin:<plugin-name>:<surface-id>`. Cr
 
 ## Degradation Rules
 
-When a client does not support a given surface type, effects degrade deterministically via `degrade_node_to_text()`:
+Degradation happens at two levels, both in `crates/codegg-protocol/src/ui.rs`.
 
-| Effect | Unsupported Behavior |
-|--------|---------------------|
-| Dialog | Chat block or toast summary |
-| Panel | Chat block |
-| Table | Markdown table |
-| Status Item | Omitted unless important |
-| Markdown | Plain text |
-| Code | Plain text with language header |
-| Progress | Text percentage |
+`degrade_effect(effect, caps)` maps an unsupported `UiEffect` to a renderable
+one, or `None` when the client cannot render it at all:
 
-The TUI reference client supports all surface types. Remote/external clients negotiate capabilities via `ClientCapabilities` flags.
+| Effect | When unsupported |
+|--------|------------------|
+| Dialog | Summary toast |
+| Panel | Summary toast |
+| Status Item | Dropped |
+| Toast / EmitChat | Dropped when the `toast` capability is also unset |
+
+`degrade_node_to_text(node)` lowers an unsupported `UiNode` to plain text
+lines:
+
+| Node | Degraded form |
+|------|---------------|
+| Text | The text itself |
+| Markdown | The raw Markdown text |
+| Code | `[lang]` header line, then the code |
+| Table | Pipe-joined columns, a `---` separator row, then the rows |
+| KeyValue | One `key: value` line per entry |
+| Progress | `label current/total` (or `label current`) |
+| Container | `--- title ---` header, then each child |
+| Empty | No output |
+| Unsupported | `[unsupported: <kind>]` |
+
+The TUI reference client supports all surface types
+(`PluginUiCapabilities::all_supported()`). Remote/external clients negotiate
+capabilities via `ClientCapabilities` flags.
 
 ## Capability Enforcement
 
-`PluginUiCapabilities` tracks which surface types a client supports. Effects are checked against capabilities before application:
-- Unsupported effects return `PluginUiApplyResult::Unsupported`
-- Toasts and EmitChat always pass (universal support)
+`PluginUiCapabilities` tracks which surface types a client supports. Effects are checked against capabilities before application in `App::apply_plugin_ui_effect`:
+- Unsupported effects emit a short summary toast and return `PluginUiApplyResult::Unsupported`
+- Toast and EmitChat are gated on the `toast` flag (always set for the reference TUI client, which uses `all_supported()`)
 - Cross-plugin ID spoofing is rejected when a `source_plugin_id` is provided
 
 ## Frontend Compatibility (Phase 15)
@@ -357,12 +388,16 @@ Phase 15 makes plugin UI, management, lifecycle effects, and durable plugin surf
 
 Clients declare their capabilities via `ClientCapabilities` (in `crates/codegg-protocol/src/frames.rs`). The protocol defines:
 
-- `plugin_ui_dialog`, `plugin_ui_panel`, `plugin_ui_status_item` — surface types
+- `plugin_ui_dialog`, `plugin_ui_toast`, `plugin_ui_panel`, `plugin_ui_status_item` — surface types
 - `plugin_ui_table`, `plugin_ui_markdown`, `plugin_ui_code`, `plugin_ui_progress` — node types
 - `visual_notifications`, `desktop_notifications`, `audio`, `tts`, `multi_session_view` — general
 - `workspace_registration`, `project_catalog`, `session_projection` — transport capabilities
 
-All fields default to `false`. `ClientCapabilities::plugin_ui_capabilities()` converts the `plugin_ui_*` fields into a `PluginUiCapabilities` struct for capability-aware degradation.
+The `plugin_ui_*` and transport fields carry `#[serde(default)]` and so
+deserialize as `false` when absent; the five general fields are required by the
+deserializer.
+`ClientCapabilities::plugin_ui_capabilities()` converts the
+`plugin_ui_*` fields into a `PluginUiCapabilities` struct for capability-aware degradation.
 
 ### Effect Transport
 
@@ -495,24 +530,28 @@ Plugin selectors resolve in order: exact id → exact name → unique id prefix 
 ### Install Source Semantics
 
 `/plugin-install <path>` accepts a local directory path that the user explicitly
-chose. Both absolute and relative paths are supported, including paths that
-contain `..` components, as long as the canonicalized target exists, is a
-directory, and contains a supported plugin manifest (`manifest.toml`,
-`plugin.json`, or `.claude-plugin/plugin.json`). The path is canonicalized before
-any filesystem operation.
+chose. Both absolute and relative paths are supported, but a path containing
+`..` components is rejected before canonicalization. Otherwise the target must
+exist, be a directory, and contain a supported plugin manifest
+(`manifest.toml`, `plugin.json`, or `.claude-plugin/plugin.json`). The path is
+canonicalized before any filesystem operation.
 
 > **A plugin directory must name its manifest `manifest.toml`, `plugin.json`,
 > or `.claude-plugin/plugin.json`.** Nothing else is recognized — in
-> particular `plugin.toml` is not accepted by either the installer
-> (`src/plugin/install.rs`) or the loader (`src/plugin/loader.rs`), and
-> `/plugin-install` against a directory that has only a `plugin.toml` fails
-> with `supported plugin manifest not found`. The bundled examples in
-> `examples/plugins/` all ship `manifest.toml`, so they install as-is.
+> particular `plugin.toml` is not accepted by the format detection in
+> `src/plugin/package.rs`, and `/plugin-install` against a directory that has
+> only a `plugin.toml` fails with `supported plugin manifest not found`. The
+> three WASM examples in `examples/plugins/` (`wasm-command-table`,
+> `wasm-hook-message-transform`, `wasm-status-widget`) each ship a
+> `manifest.toml` and install as-is; the two `process-quota-*` examples are
+> registered through `command/*.md` frontmatter instead and have no manifest.
 
 Archive members and copy-relative paths remain strictly validated
-(`validate_relative_install_path`) — they still reject `..`, `RootDir`,
-`Prefix`, symlinks, and hardlinks. Only the user-supplied local source path is
-permitted to traverse via `..`.
+(`validate_relative_install_path`) — they still reject `..`, `RootDir`, and
+`Prefix`. Archive extraction additionally rejects symlink and hard-link
+entries outright, and the local directory copy rejects symlinks. Absolute
+paths are rejected inside archives but allowed for the user-supplied local
+source.
 
 ### Remove Semantics
 
@@ -564,11 +603,14 @@ Run `./scripts/validate_plugin_ui.sh` to reproduce plugin validation checks loca
 |------------|---------|----------|
 | `PluginLifecyclePolicy` | Observation hooks allowed; mutating/blocking/process denied | Hook type + runtime gating |
 | `PluginUiPolicy` | Chat/dialog/toast allowed; panel/status denied | UI effect surfaces |
-| `PluginPermissionPolicy` | All capabilities denied unless declared | Command/hook declarations |
-| `PluginInstallPolicy` | Env passthrough denied | Environment variable access |
-| `PluginRuntimePolicy` | Secrets denied; auth-hook requires high trust | Secret access, high-trust gating |
+| `PluginPermissionPolicy` | Secrets and env passthrough denied; auth hooks require high trust | Secret, env, and auth-hook gating |
+| `PluginInstallPolicy` | Path traversal rejected; removal outside the install dir refused; WASM outside the plugin dir warned | Install/removal path safety |
+| `PluginRuntimePolicy` | Process lifecycle hooks, undeclared capabilities, and unknown surfaces denied | Runtime capability gating |
 
 ### PolicyDecision
+
+`PolicyDecision` (`src/plugin/permission.rs`) is the result of a policy
+evaluation:
 
 ```rust
 pub enum PolicyDecision {
@@ -578,8 +620,8 @@ pub enum PolicyDecision {
 }
 ```
 
-Four check functions validate invocations:
-- `check_invocation_allowed` — command/hook must match a declared capability
+Four functions in `src/plugin/permission.rs` validate invocations:
+- `check_invocation_allowed` — command/tool/hook must match a declared capability
 - `check_ui_effect_allowed` — UI effects gated by output surface declarations
 - `check_lifecycle_hook_allowed` — hook type and trust class validated; auth hooks require high trust
 - `check_secret_access_allowed` — secret access must match declared permissions
@@ -605,7 +647,7 @@ engineering the protocol from `codegg-protocol`.
 | `examples/plugins/process-quota-text/` | Zero-SDK process plugin emitting plain text stdout (auto-detected as EmitChat). |
 | `examples/plugins/process-quota-json/` | Process plugin reading `PluginInvocation` JSON from stdin and emitting `PluginResponse` JSON with effects. |
 | `examples/plugins/wasm-command-table/` | WASM plugin using the modern `codegg_plugin_invoke` ABI; returns an OpenDialog with a Table. |
-| `examples/plugins/wasm-hook-message-transform/` | WASM observation hook via the `event_subscription` capability (low-risk, default-policy-permitted). |
+| `examples/plugins/wasm-hook-message-transform/` | WASM plugin declaring an `event_subscription` capability. |
 | `examples/plugins/wasm-status-widget/` | WASM plugin contributing an OpenPanel and an AddStatusItem. |
 | `examples/plugins/builtin-reference/` | Walk-through of the builtin pattern for codegg contributors (not for external plugin authors). |
 | `examples/plugins/sdk-python/` | Vendorable Python helper package (stdlib only): protocol I/O + builders. |
