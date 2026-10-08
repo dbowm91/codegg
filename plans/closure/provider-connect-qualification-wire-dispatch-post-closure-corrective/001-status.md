@@ -33,8 +33,8 @@ Hosted evidence:
 - [CI / verify run 37734112906](https://github.com/dbowm91/codegg/actions/runs/37734112906) — SHA `4b3bad5a`, green at the same `12386/12386`.
 - [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e4` (the implementation commit), attempt 2 green. All three C001 trajectory tests pass on the hosted runner here.
 - [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e4`, green.
-- [Desktop E2E run 37737818626](https://github.com/dbowm91/codegg/actions/runs/37737818626) — SHA `03c4c7e3` (the final tip), attempt 1 red on a pre-existing projection defect, **attempt 2 green** (`7 passing` in the m004 phase). This is the run that reflects the shipped tip; its first-attempt failure is diagnosed below and is not a C001 regression.
-- On this record's own tip `fcaad636`: Desktop E2E run 37779262255 is **green on the first attempt** (`7 passing`, including the m004 live turn), and CI/verify run 37779262171 was red on attempt 1 only for the unrelated `durable_jobs_phase4` wall-clock boundary flake described below.
+- [Desktop E2E run 37737818626](https://github.com/dbowm91/codegg/actions/runs/37737818626) — SHA `03c4c7e3`, attempt 1 red on a pre-existing projection defect, **attempt 2 green** (`7 passing` in the m004 phase). This is the run that reflects the shipped tip; its first-attempt failure is diagnosed below and is not a C001 regression.
+- On the revision that added this record's projection diagnosis, Desktop E2E run 37779262255 was **green on the first attempt** (`7 passing`, including the m004 live turn), and CI/verify run 37779262171 was red on attempt 1 only for the unrelated `durable_jobs_phase4` wall-clock boundary flake described below. Later revisions on this branch touch `plans/` documents only and cannot change either outcome.
 - PR [#105](https://github.com/dbowm91/codegg/pull/105) — opened solely to obtain the required hosted evidence (this repository's CI triggers on `pull_request` and pushes to `main`, not on branch pushes). **Not merged.** The branch is a clean fast-forward over `origin/main` (`d85ed67b`, 0 behind). Current check state: `verify` pass, `e2e` pass, GitGuardian pass — `MERGEABLE / CLEAN`.
 
 Every green SHA above differs from the next only in `plans/` documents — for
@@ -43,11 +43,11 @@ identical production/test tree. The two runs on `4a7567d4` are the simplest
 statement of the result: both hosted workflows, green on the closure revision
 itself.
 
-The branch tip has since advanced to `03c4c7e3` (a `plans/`-only commit, this
-record's own correction). Its hosted runs are `verify` 37737818615 green and
-Desktop E2E 37737818626 green on attempt 2. The tip therefore carries both
-workflows green as well, and the production/test tree is byte-identical to
-`4a7567d4` throughout.
+The branch tip has since advanced past `4a7567d4` with `plans/`-only
+commits (this record's own corrections). At `03c4c7e3` the hosted runs are
+`verify` 37737818615 green and Desktop E2E 37737818626 green on attempt 2, so
+both workflows are green there too, and the production/test tree is
+byte-identical to `4a7567d4` at every revision on this branch.
 
 ### Hosted first attempt — recorded, not hidden
 
@@ -106,7 +106,7 @@ unchanged desktop code is the signature of a flake.
 
 ### The fourth failure is a different, diagnosed defect — not one of the above
 
-A fourth Desktop E2E failure appeared on the final tip, in run
+A fourth Desktop E2E failure appeared on a later tip, in run
 [37737818626](https://github.com/dbowm91/codegg/actions/runs/37737818626)
 attempt 1 at SHA `03c4c7e3`. It is **not** the same defect as the three above
 and must not be filed with them:
@@ -456,7 +456,7 @@ message was permanently lost. `should_persist` excludes `TurnTextDelta`
 Full mechanism, file:line chain, and the two secondary paths are in "The fourth failure is a different, diagnosed defect".
 
 A fifth, diagnosed independently of the others, appeared in CI/verify run
-37779262171 attempt 1 on the record tip: `codegg::durable_jobs_phase4::
+37779262171 attempt 1 on a later tip: `codegg::durable_jobs_phase4::
 inmem_compute_next_run_alignment` panicked with `next run should be >= now
 (next=2026-10-08 13:00:00 UTC, now=2026-10-08 13:00:00.190389394 UTC)`. The
 cause is a granularity mismatch, not a logic error: `compute_next_run`
