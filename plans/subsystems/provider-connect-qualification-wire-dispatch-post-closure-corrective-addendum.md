@@ -1,8 +1,12 @@
 # Provider Connect Qualification / Multi-Surface Dispatch — Post-Closure Corrective Addendum
 
-Status: active
+Status: closed
+
+Closure record: `plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md`
 
 Repository baseline reviewed: `69221d6b4d33e08aecad7ad37edb5bc2da281bd1`
+
+Closure revision: `ce23b4e432884ba19b21609e2eb997e18f5d6f9c`
 
 Predecessor corrective:
 
@@ -106,4 +110,4 @@ The addendum closes when C001 has an accepted closure record proving:
 
 | Corrective | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| C001 terminal reconciliation and hosted qualification | ready | `plans/implementation/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-terminal-reconciliation-and-hosted-qualification.md` | pending | none |
+| C001 terminal reconciliation and hosted qualification | closed | `plans/implementation/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-terminal-reconciliation-and-hosted-qualification.md` | `plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md` | none |
