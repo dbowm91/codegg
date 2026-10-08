@@ -651,6 +651,37 @@ pub fn build_durable_provider(
     }
 }
 
+/// C001 test-support: construct the OpenCode Go durable provider with only the
+/// **capture origin** redirected, so a loopback capture server can observe the
+/// exact request the production origin would receive.
+///
+/// Credential-capability policy is identical to the `OpenCodeGoAffinity` arm of
+/// [`build_durable_provider`]; nothing else about the provider changes. The
+/// shared profile still owns the path, the per-surface auth shape, and the
+/// surface decision, so a captured path is the production path.
+///
+/// Compiled only under `cfg(test)` or the opt-in `capture-test-support`
+/// feature. It is not reachable from configuration, the protocol, an environment
+/// variable, or any CLI path.
+#[cfg(any(test, feature = "capture-test-support"))]
+pub fn build_opencode_go_with_capture_base(
+    provider_id: &str,
+    credential: Credential,
+    capture_base: &str,
+) -> Result<Box<dyn Provider>, ConnectionError> {
+    if let Some(definition) = setup_definition(provider_id) {
+        if !definition.credential_capability.accepts(credential.kind) {
+            return Err(ConnectionError::UnsupportedCredentialKind {
+                provider_id: provider_id.to_string(),
+                kind: credential.kind,
+            });
+        }
+    }
+    Ok(Box::new(
+        crate::opencode_go::OpenCodeGoProvider::new(credential).with_capture_base(capture_base),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

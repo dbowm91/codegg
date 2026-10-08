@@ -57,6 +57,10 @@ pub use eggpool::{
 };
 pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
 pub use opencode_go::{qualify_models, unresolved_models, OpenCodeGoProvider};
+// C001 capture seam. Only compiled under `cfg(test)` or the opt-in
+// `capture-test-support` feature; absent from the shipped binary.
+#[cfg(any(test, feature = "capture-test-support"))]
+pub use opencode_go::PROVIDER_ID as OPENCODE_GO_PROVIDER_ID;
 pub use provider_core::{
     assistant_text_content_value, builtin_registration_order, create_http_client,
     credential_capability_for, openai_tool_arguments_value, project_tool_call_history,

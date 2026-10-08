@@ -37,6 +37,9 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Provider-owned session-affinity header established by M008/M009.
 const SESSION_HEADER: &str = "x-opencode-session";
 
+/// Stable id of the single OpenCode Go connection identity.
+pub const PROVIDER_ID: &str = "opencode_go";
+
 /// Direct multi-surface provider for the OpenCode Go gateway.
 #[derive(Clone)]
 pub struct OpenCodeGoProvider {
@@ -52,9 +55,29 @@ pub struct OpenCodeGoProvider {
     /// closed rather than reaching for a CodeGG-local endpoint constant.
     discovery: Option<OpenAiCompatibleProvider>,
     /// Test-only origin redirection; see [`Self::with_capture_base`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "capture-test-support"))]
     capture_base: Option<String>,
 }
+
+// C001: the capture seam this file exposes.
+//
+// The shared profile fixes the OpenCode Go origin, so a cross-layer trajectory
+// test that resolves a *durable* connection through the real factory cannot
+// observe the request on a loopback socket without redirecting the origin.
+//
+// The seam is `with_capture_base`, a per-instance builder consumed by
+// `setup_catalog::build_opencode_go_with_capture_base` and exposed on
+// `ProviderConnectionFactory`. It is deliberately constrained:
+//
+//   * compiled only under `cfg(test)` or the opt-in `capture-test-support`
+//     feature, which no production target enables — the shipped binary links a
+//     `codegg-providers` without it;
+//   * never read from configuration, the protocol, an environment variable, or
+//     any CLI path; there is no production setter;
+//   * scoped to the constructed provider instance, so concurrent tests cannot
+//     observe each other's origin;
+//   * **origin only** — path, per-surface auth shape, and session header still
+//     come from the shared profile, so a captured path is the production path.
 
 impl OpenCodeGoProvider {
     /// Build the provider from the shared profile's base URL.
@@ -64,7 +87,7 @@ impl OpenCodeGoProvider {
     /// that fails every call with a contract error; it never silently reverts
     /// to a locally-owned endpoint.
     pub fn new(credential: Credential) -> Self {
-        let id = "opencode_go";
+        let id = PROVIDER_ID;
         let discovery = provider_profile::shared_base_url(id).map(|base_url| {
             OpenAiCompatibleProvider::simple_with_credential(
                 id,
@@ -80,19 +103,18 @@ impl OpenCodeGoProvider {
             session_header: HeaderName::from_static(SESSION_HEADER),
             client: create_http_client(),
             discovery,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "capture-test-support"))]
             capture_base: None,
         }
     }
 
     /// Redirect only the origin/base at a capture server.
     ///
-    /// The **path still comes from the shared profile**, so a capture test
-    /// observes exactly the endpoint the production path would request. This is
-    /// `#[cfg(test)]`-only and is not reachable from provider configuration, so
-    /// the shared profile remains the single owner of endpoint facts.
-    #[cfg(test)]
-    pub(crate) fn with_capture_base(mut self, base: &str) -> Self {
+    /// Test-only (`cfg(test)` or the opt-in `capture-test-support` feature) and
+    /// unreachable from provider configuration, so the shared profile remains
+    /// the single owner of endpoint facts. See the C001 note on this module.
+    #[cfg(any(test, feature = "capture-test-support"))]
+    pub fn with_capture_base(mut self, base: &str) -> Self {
         self.capture_base = Some(base.trim_end_matches('/').to_string());
         self
     }
@@ -107,14 +129,15 @@ impl OpenCodeGoProvider {
         self.apply_capture_base(route)
     }
 
-    /// No-op outside test builds; see [`Self::with_capture_base`].
-    #[cfg(not(test))]
+    /// No-op outside capture-capable test builds; see
+    /// [`Self::with_capture_base`].
+    #[cfg(not(any(test, feature = "capture-test-support")))]
     fn apply_capture_base(&self, route: SurfaceRoute) -> Result<SurfaceRoute, ProviderError> {
         Ok(route)
     }
 
     /// Redirect the origin while leaving the profile-owned path intact.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "capture-test-support"))]
     fn apply_capture_base(&self, mut route: SurfaceRoute) -> Result<SurfaceRoute, ProviderError> {
         if let Some(base) = &self.capture_base {
             let path = provider_profile::shared_base_url(&self.id)

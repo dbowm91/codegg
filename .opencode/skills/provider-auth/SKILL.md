@@ -117,9 +117,18 @@ python3 scripts/check_provider_multi_surface_dispatch.py    # one surface per re
 ```bash
 cargo test -p codegg-providers
 cargo test -p codegg --lib core::eggpool::tests   # qualification semantics
+cargo test -p codegg --test opencode_go_connection_trajectory  # durable -> wire end to end
 codegg providers          # against real config, not a static list
 codegg models -p openai
 ```
+
+The cross-layer trajectory redirects the OpenCode Go **origin** onto a loopback
+capture server so a real inference request can be observed. That redirect lives
+behind the `codegg-providers` `capture-test-support` feature, which the root
+crate enables through a **dev-dependency only**. If you touch endpoint ownership,
+keep it that way: path, per-surface auth shape, and the surface decision must
+still come from the shared provider profile. Never add a config- or
+env-reachable endpoint override to make a test pass.
 
 ## See Also
 

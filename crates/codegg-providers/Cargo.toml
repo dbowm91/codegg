@@ -51,3 +51,14 @@ tempfile.workspace = true
 
 [features]
 default = []
+
+# C001 test-support seam. Compiles the `OpenCodeGoProvider` origin-override hook
+# (`opencode_go::set_test_capture_base` / `CaptureBaseGuard`) so a cross-crate
+# test can redirect only the capture origin while still resolving the provider
+# through the real durable-connection factory path.
+#
+# Never enabled by a production target. The root crate turns it on through a
+# `[dev-dependencies]` entry, so it is absent from `cargo build` and from the
+# shipped binary, and it has no configuration, protocol, environment, or CLI
+# setter. It is never used for workspace sweeps that must not pull test support.
+capture-test-support = []

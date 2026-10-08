@@ -1,6 +1,11 @@
 # Provider Connections — Qualification and Multi-Surface Dispatch Corrective Addendum
 
-Status: active
+Status: closed (both milestones accepted)
+
+Closure records:
+
+- `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md`
+- `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/011-status.md`
 
 Repository baseline reviewed: `d85ed67bef970cfe99e320a7876e7a51373b7e37`
 
@@ -78,7 +83,8 @@ Dependencies:
 
 ### Milestone 011 — Shared provider-profile consumption and OpenCode Go multi-surface dispatch
 
-Status: blocked.
+Status: closed. Closure record:
+`plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/011-status.md`.
 
 Implementation plan:
 
@@ -122,24 +128,34 @@ Dependencies:
 ## 5. Dependency graph
 
 ```text
-CodeGG M010 — truthful connection qualification
+CodeGG M010 — truthful connection qualification   [closed]
         |
         +-----------------------------+
-                                      |
+                                      |  [satisfied]
 EggPool shared profile M001 ----------+
                                       v
-CodeGG M011 — profile consumption + OpenCode Go multi-surface execution
+CodeGG M011 — profile consumption + OpenCode Go multi-surface execution   [closed]
 ```
 
 M010 is intentionally independently ready so the misleading `/connect` semantics can be corrected without waiting for cross-repository extraction.
 
+All three prerequisites are now **historical and satisfied**: M010 closed, the EggPool shared-provider-profile M001 contract closed at immutable revision `9ac6a1318e8db3c034b5ab54987317752d5ffea6`, and the `eggpool-wire` interface was already consumed by the existing direct-provider codecs and stream decoders. Nothing in this roadmap is blocked.
+
 ## 6. Completion definition
 
 This corrective closes after M010 and M011 have accepted closure records: `/connect` no longer equates model enumeration with key validity, and every selectable OpenCode Go model has an explicit supported wire mapping that uses the correct endpoint/auth/codec path or is explicitly unresolved rather than misrouted.
+
+**Satisfied** by the two accepted closure records above. M010 delivered separate typed catalog/credential axes with durable revision-scoped inference feedback; M011 delivered single-surface resolution through the pinned shared profile with per-surface auth and a stable session header, failing closed on unknown models.
 
 ## 7. Corrective status
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M010 provider connection qualification semantics | closed | `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/010-provider-connection-qualification-semantics.md` | `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md` | none |
-| M011 shared provider profile + OpenCode Go multi-surface dispatch | closed | `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/011-shared-provider-profile-and-opencode-multi-surface-dispatch.md` | `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/011-status.md` | Blocker resolved 2026-10-07 (EggPool M001 closed at `9ac6a131`); WP-A additionally realigned CodeGG's `eggpool-wire` pin to the same rev, since the profile's path dependency would otherwise link two copies. Unresolved models fail closed locally rather than defaulting to Chat. |
+| M011 shared provider profile + OpenCode Go multi-surface dispatch | closed | `plans/implementation/provider-connect-qualification-wire-dispatch-corrective-addendum/011-shared-provider-profile-and-opencode-multi-surface-dispatch.md` | `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/011-status.md` | none — resolved 2026-10-07 (EggPool M001 closed at `9ac6a131`); WP-A additionally realigned CodeGG's `eggpool-wire` pin to the same rev, since the profile's path dependency would otherwise link two copies. Unresolved models fail closed locally rather than defaulting to Chat. |
+
+This roadmap is terminal. Post-closure reconciliation, the durable
+connection → selection → OpenCode inference trajectory, low-finding disposition,
+and hosted CI evidence are owned by the follow-on corrective
+`plans/subsystems/provider-connect-qualification-wire-dispatch-post-closure-corrective-addendum.md`
+(C001), which does not reopen M010 or M011 behavior.

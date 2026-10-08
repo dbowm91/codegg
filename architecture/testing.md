@@ -377,6 +377,36 @@ are not installed. CI does not install real servers.
 `verify.sh full` uses `--features server,plugins,lsp-test-support`
 instead of `--all-features` to avoid activating `lsp-real-server-tests`.
 
+### Test-support features and the provider capture seam
+
+| Feature | Crate | Enabled by | Why |
+|---|---|---|---|
+| `lsp-test-support` | `egglsp` | root feature flags | Fake-LSP harness; real-server tests stay out of default sweeps. |
+| `capture-test-support` | `codegg-providers` | root `[dev-dependencies]` **only** | Origin override for `tests/opencode_go_connection_trajectory.rs`. |
+
+`capture-test-support` is deliberately a **dev-dependency** feature rather than
+a root feature. Under resolver 2 that keeps it out of `cargo build`, out of the
+release binary, and out of `--features` sweeps, while still letting `cargo test`
+compile the seam for `tests/`. It is the same technique as `lsp-test-support`
+with a narrower blast radius.
+
+Consequences to preserve:
+
+- The seam has no production setter. Nothing in config, the protocol, an
+  environment variable, or a CLI path can enable it.
+- The redirect replaces the **origin only**. The shared profile still owns the
+  path and per-surface auth shape, so a captured request is the production
+  request.
+- Because it lives on a `ProviderConnectionFactory` instance, it is safe for
+  tests running concurrently in one process. Do not convert it into process or
+  environment global state.
+
+Run the trajectory with:
+
+```bash
+cargo test -p codegg --test opencode_go_connection_trajectory
+```
+
 ### Session projection transport closure
 
 ```bash

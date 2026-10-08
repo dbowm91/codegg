@@ -611,6 +611,33 @@ Guards: `scripts/check_provider_multi_surface_dispatch.py` (6 checks, wired into
 `verify.sh quick`, with `--self-test`), plus the extended
 `scripts/check_provider_wire_boundary.py`.
 
+### Cross-Layer Trajectory and the Capture Seam (C001)
+
+`tests/opencode_go_connection_trajectory.rs` proves the whole durable path in
+one test: persisted `other:opencode_go` connection with a real encrypted
+`CredentialStore` secret binding → persisted bounded model catalog →
+`session_selection::update_selection` → `durable_selected_runtime_model` →
+`ConnectionManager::resolve_with_runtime_reference` with the real
+`ProviderConnectionFactory` at the pinned revision → one inference request →
+M010's revision-scoped `ProviderConnectionCredentialReporter` → secret-absence
+across the database, the protocol DTO, the request, and the credential file.
+
+The shared profile pins the production origin, so observing the request needs a
+loopback capture server. That redirection is a **test-only seam**, and it is
+deliberately narrow:
+
+| Property | How it is enforced |
+|---|---|
+| Compiled out of production | `#[cfg(any(test, feature = "capture-test-support"))]`. No production target enables it; the root crate enables it through a `[dev-dependencies]` entry, so under resolver 2 it is absent from `cargo build` and from the shipped binary. |
+| Not reachable from config/protocol/env/CLI | There is no production setter. Only `ProviderConnectionFactory::with_test_capture_base` and `OpenCodeGoProvider::with_capture_base` exist, both cfg-gated. |
+| Origin only | Path, per-surface auth shape, and the surface decision still come from the shared profile, so a captured path is the production path. |
+| Instance-scoped | The base lives on one factory instance, so concurrent tests cannot observe each other's origin. |
+| Secret handling unchanged | Credential capability policy matches the production arm; no credential value is logged, echoed, or stored in clear. |
+
+Do not widen this seam. A production endpoint override, a config-reachable base
+URL, or an environment-variable origin would move endpoint ownership out of the
+shared profile and break the M011 invariant.
+
 ## Provider Implementations
 
 ### Shared wire kernel and provider cutover

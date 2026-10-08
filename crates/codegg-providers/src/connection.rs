@@ -400,15 +400,34 @@ pub trait ProviderFactory: Send + Sync {
 /// [`ProviderFactory::build`].
 pub struct ProviderConnectionFactory {
     resolver: Arc<dyn SecretResolver>,
+    /// C001 test-support origin override, applied per constructed provider
+    /// instance. `None` in every production build; see
+    /// [`crate::opencode_go`] for the seam's constraints.
+    #[cfg(any(test, feature = "capture-test-support"))]
+    capture_base: Option<String>,
 }
 
 impl ProviderConnectionFactory {
     pub fn new(resolver: Arc<dyn SecretResolver>) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            #[cfg(any(test, feature = "capture-test-support"))]
+            capture_base: None,
+        }
     }
 
     pub fn from_store(store: Arc<CredentialStore>) -> Self {
         Self::new(Arc::new(CredentialStoreAdapter::new(store)))
+    }
+
+    /// C001 test-support: redirect only the capture origin for providers this
+    /// factory constructs from here on. Scoped to this factory instance, so
+    /// concurrent tests cannot observe each other's origin, and absent from
+    /// production builds.
+    #[cfg(any(test, feature = "capture-test-support"))]
+    pub fn with_test_capture_base(mut self, base: &str) -> Self {
+        self.capture_base = Some(base.trim_end_matches('/').to_string());
+        self
     }
 }
 
@@ -425,6 +444,20 @@ impl ProviderFactory for ProviderConnectionFactory {
             .as_deref()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| descriptor.provider.default_name());
+
+        // C001 test-support: the only construction path that differs from the
+        // production one, and only in the capture origin.
+        #[cfg(any(test, feature = "capture-test-support"))]
+        if let Some(base) = &self.capture_base {
+            if provider_id == crate::opencode_go::PROVIDER_ID {
+                return crate::setup_catalog::build_opencode_go_with_capture_base(
+                    &provider_id,
+                    credential,
+                    base,
+                );
+            }
+        }
+
         // The setup catalog owns durable construction policy: native,
         // specialized (custom headers/requests), and generic compatible
         // builders all dispatch from one place so startup registration and

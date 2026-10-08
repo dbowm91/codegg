@@ -324,6 +324,13 @@ tempfile.workspace = true
 # per resolve graph). Production dependencies are unchanged.
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# C001 cross-layer trajectory test support. Enables `codegg-providers`'s
+# test-only capture-origin seam so `tests/` can redirect just the capture
+# origin while still resolving the provider through the real durable-connection
+# factory. Dev-dependency-only: under resolver = "2" the feature is absent from
+# `cargo build` and from the shipped binary, and it has no config, protocol,
+# environment, or CLI setter.
+codegg-providers = { workspace = true, features = ["capture-test-support"] }
 
 [features]
 default = ["arboard"]
