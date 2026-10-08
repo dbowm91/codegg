@@ -10,7 +10,19 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `ddfc6ce1311fdf82525e744a37c9a3a0cd13a5c8`
 
-Implementation commits: see §3.
+Implementation commits:
+
+- `d5442845` — implement shared provider profile and OpenCode Go multi-surface
+  dispatch (shared-profile pin + `eggpool-wire` realignment, adapter,
+  multi-surface provider, direct stateless Responses, catalog qualification,
+  guards, docs, this closure record)
+
+Verified upstream dependency revision (sibling repository, not a CodeGG
+commit): EggPool `eggpool-provider-profile` at
+**`9ac6a1318e8db3c034b5ab54987317752d5ffea6`** — the Shared Provider Profile
+Contract M001 closure revision published by
+`../gorouter` `plans/closure/shared-provider-profile-contract/001-status.md`,
+whose closure commit is `087366af`.
 
 ## 1. Executive finding
 
