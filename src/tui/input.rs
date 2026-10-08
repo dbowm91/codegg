@@ -521,10 +521,16 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::NONE, KeyCode::Char('g')),
         InputAction::GoToTop,
     );
+    // `Shift+G` used to be bound here, but `is_bare_char` only suppresses
+    // bindings carrying `KeyModifiers::NONE` — a `SHIFT` binding still matched,
+    // so capital `G` scrolled the viewport instead of being typed into the
+    // prompt. Any binding that would steal printable text moves to a CONTROL
+    // chord: `Ctrl+End` reaches the same action and leaves `G` typeable.
     map.insert(
-        (KeyModifiers::SHIFT, KeyCode::Char('G')),
+        (KeyModifiers::CONTROL, KeyCode::End),
         InputAction::GoToBottom,
     );
+    map.insert((KeyModifiers::CONTROL, KeyCode::Home), InputAction::GoToTop);
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('d')),
         InputAction::PageDown,
@@ -663,6 +669,13 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('g')),
         InputAction::GoToTop,
+    );
+    // Sidebar focus in Normal mode. The Insert map already binds `Space`, but
+    // the vim map did not, so sidebar focus was unreachable whenever
+    // `vim_mode=true` even though the help advertised it unconditionally.
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char(' ')),
+        InputAction::FocusSidebar,
     );
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
@@ -841,6 +854,18 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
+            key: "Ctrl+E",
+            action: "Open prompt in external editor",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+End",
+            action: "Go to bottom",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
             key: "Ctrl+K",
             action: "Clear session",
             condition: None,
@@ -998,9 +1023,15 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "Space / a",
+            key: "Space",
             action: "Focus sidebar (agent tree)",
             condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "a",
+            action: "Focus sidebar (agent tree)",
+            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1010,9 +1041,15 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "h/l or ←/→",
+            key: "←/→",
             action: "Collapse/expand sidebar row",
             condition: Some("sidebar focus"),
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "h/l",
+            action: "Collapse/expand sidebar row",
+            condition: Some("vim mode, sidebar focus"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1066,25 +1103,25 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "\\",
             action: "Open project picker",
-            condition: None,
+            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "}",
             action: "Next project tab",
-            condition: None,
+            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "{",
             action: "Previous project tab",
-            condition: None,
+            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Q",
             action: "Close project tab",
-            condition: None,
+            condition: Some("vim mode"),
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1422,10 +1459,13 @@ pub fn build_help_lines(vim_mode: bool, active_mode: HelpMode) -> Vec<String> {
             .iter()
             .filter(|e| e.mode == mode)
             .filter(|e| {
-                // Filter out vim-specific entries when vim mode is off
+                // Hide an entry only when its condition is unsatisfiable in
+                // the active configuration. A condition mentioning vim mode
+                // must match on the substring, because compound conditions
+                // such as "vim mode, sidebar focus" also gate on vim mode.
                 if !vim_mode {
                     if let Some(cond) = e.condition {
-                        return cond != "vim mode";
+                        return !cond.contains("vim mode");
                     }
                 }
                 true
@@ -1439,10 +1479,12 @@ pub fn build_help_lines(vim_mode: bool, active_mode: HelpMode) -> Vec<String> {
         lines.push(header.to_string());
         lines.push("".to_string());
         for entry in &entries {
+            // Surface every condition, not just the vim one. Dropping notes
+            // silently made entries such as "h/l ... (sidebar focus)" render
+            // as unconditional, so users applied them outside sidebar focus.
             let condition_note = match entry.condition {
-                Some("vim mode") => " (vim mode)",
-                Some(_) => "",
-                None => "",
+                Some(cond) if !cond.is_empty() => format!(" ({cond})"),
+                _ => String::new(),
             };
             lines.push(format!(
                 "  {:<16} {}{}",
@@ -1646,6 +1688,7 @@ fn handle_key_with_bindings(
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
+    use std::collections::BTreeSet;
 
     fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -1904,6 +1947,121 @@ mod tests {
                 && !descriptor.description.is_empty()
         }));
         assert!(!InputAction::Char('x').is_configurable());
+    }
+
+    /// `ActionKey::all()` is a hand-maintained list, so a new configurable
+    /// variant added to the enum but forgotten there would compile fine and
+    /// silently disappear from the keybind editor. Cross-check the list against
+    /// the serde round-trip of every action name the editor accepts.
+    #[test]
+    fn action_key_all_lists_every_configurable_action() {
+        let all = ActionKey::all();
+        let mut listed: BTreeSet<String> = BTreeSet::new();
+        for key in all {
+            assert!(
+                listed.insert(serde_json::to_string(key).expect("ActionKey serializes")),
+                "duplicate ActionKey in all(): {key:?}"
+            );
+        }
+        assert_eq!(listed.len(), all.len(), "ActionKey::all() has duplicates");
+
+        // Every configurable `InputAction` must appear in `all()`. Compare the
+        // number of distinct actions the list yields against the full set of
+        // descriptors, which is derived from the enum itself.
+        let from_all: BTreeSet<String> = all
+            .iter()
+            .map(|k| format!("{:?}", k.to_input_action()))
+            .collect();
+        assert_eq!(
+            from_all.len(),
+            ActionKey::descriptors().len(),
+            "ActionKey::all() does not cover every configurable action"
+        );
+    }
+
+    /// Regression: `Shift+G` was bound to `GoToBottom` in the Insert map, but
+    /// bare-char suppression only skips `KeyModifiers::NONE` bindings, so
+    /// capital `G` scrolled the viewport instead of reaching the prompt.
+    #[test]
+    fn shift_g_inserts_char_in_insert_mode() {
+        let key = make_key(KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Insert),
+            Some(InputAction::Char('G'))
+        );
+    }
+
+    /// `GoToBottom` must remain reachable after moving it off `Shift+G`.
+    #[test]
+    fn go_to_bottom_reachable_from_insert_map() {
+        let bindings = build_bindings(None, false);
+        assert!(
+            bindings.values().any(|a| *a == InputAction::GoToBottom),
+            "GoToBottom lost its default binding in the Insert map"
+        );
+    }
+
+    /// Regression: the in-TUI help advertised bare `\`, `}`, `{`, `Q` and the
+    /// sidebar `a`/`h`/`l` keys unconditionally, but they exist only in the vim
+    /// map. Under the default config (`vim_mode=false`) Normal mode consults the
+    /// Insert map, which never bound them, so those keys did nothing.
+    ///
+    /// Every entry that survives configuration gating must resolve through the
+    /// real key resolver in the mode it is documented under. Resolution goes
+    /// through `handle_key_with_bindings` rather than a direct map lookup so the
+    /// production `DEFAULT_BINDINGS` fallback is modelled correctly.
+    #[test]
+    fn documented_keys_resolve_in_the_active_map() {
+        for mode in [HelpMode::Normal, HelpMode::Insert] {
+            for vim_mode in [false, true] {
+                let active = build_bindings(None, vim_mode);
+                for entry in help_entries_for_mode(mode) {
+                    // Same gating `build_help_lines` applies: an entry whose
+                    // condition mentions vim mode cannot fire without it.
+                    if !vim_mode && entry.condition.is_some_and(|c| c.contains("vim mode")) {
+                        continue;
+                    }
+                    let Some((modifiers, code)) = parse_key(&entry.key.to_lowercase()) else {
+                        // Descriptive/compound labels ("j/k", "h/l or ...") are
+                        // not a single physical key and cannot be audited here.
+                        continue;
+                    };
+                    // Terminals differ in how they report an uppercase letter:
+                    // some send `Char('W')` with SHIFT, others `Char('w')` with
+                    // SHIFT, and the maps store either form. Try the plausible
+                    // spellings so this audits the binding table rather than
+                    // terminal trivia.
+                    let mut spellings: Vec<(KeyModifiers, KeyCode)> = vec![(modifiers, code)];
+                    if let KeyCode::Char(c) = code {
+                        if c.is_ascii_alphabetic() {
+                            let upper = KeyCode::Char(c.to_ascii_uppercase());
+                            spellings.push((modifiers, upper));
+                            if !modifiers.contains(KeyModifiers::SHIFT) {
+                                spellings.push((modifiers | KeyModifiers::SHIFT, upper));
+                            }
+                        }
+                    }
+                    let input_mode = match mode {
+                        HelpMode::Normal => InputMode::Normal,
+                        _ => InputMode::Insert,
+                    };
+                    let resolved = spellings.iter().any(|(mods, candidate)| {
+                        handle_key_with_bindings(
+                            KeyEvent::new(*candidate, *mods),
+                            Some(&active),
+                            input_mode,
+                        )
+                        .is_some()
+                    });
+                    assert!(
+                        resolved,
+                        "{mode:?} help advertises {:?} ({}) for vim_mode={vim_mode} \
+                         but it is unbound in the active map",
+                        entry.key, entry.action
+                    );
+                }
+            }
+        }
     }
 
     #[test]

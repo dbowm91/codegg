@@ -100,9 +100,12 @@ impl CommandPalette {
 
     pub fn render(&mut self, frame: &mut Frame, prompt_area: Rect, theme: &Arc<Theme>) {
         if self.filtered.is_empty() {
+            let compl_w = 50.min(prompt_area.width.saturating_sub(2));
+            if compl_w < 3 {
+                return;
+            }
             let max_h = 3u16;
             let compl_h = max_h + 2;
-            let compl_w = 50.min(prompt_area.width.saturating_sub(2));
             let compl_area = Rect {
                 x: prompt_area.x + 1,
                 y: prompt_area.y.saturating_sub(compl_h),
@@ -124,11 +127,46 @@ impl CommandPalette {
             return;
         }
 
-        let max_visible = self.visible_height;
-        let max_h = (max_visible as u16).min(self.filtered.len() as u16);
-        let hints_h = 1u16;
-        let compl_h = max_h + hints_h + 1;
+        // Rows reserved by each block's own borders. The list uses
+        // `Borders::ALL` (top + bottom) and the hint bar uses `Borders::TOP`,
+        // so those rows must be added *on top of* the interior rows we intend
+        // to display. Previously `list_height = max_h + 1` handed the border
+        // only one row, leaving `max_h - 1` usable rows: at a single exact
+        // match (`max_h == 1`) that is zero rows, so the one command the user
+        // had just fully typed was clipped away and the popup looked empty.
+        // The hint bar had the same off-by-one and rendered no text at all.
+        const LIST_BORDER_ROWS: u16 = 2;
+        const HINT_BORDER_ROWS: u16 = 1;
+        const HINT_INTERIOR_ROWS: u16 = 1;
+        const CHROME_ROWS: u16 = LIST_BORDER_ROWS + HINT_BORDER_ROWS + HINT_INTERIOR_ROWS;
+        const MIN_POPUP_WIDTH: u16 = 3;
+
         let compl_w = 50.min(prompt_area.width.saturating_sub(2));
+        if compl_w < MIN_POPUP_WIDTH {
+            return;
+        }
+
+        // The popup grows upward from the prompt, so the rows available for
+        // command entries are bounded by the space *above* the prompt rather
+        // than by the full screen height.
+        let max_item_rows = prompt_area
+            .y
+            .saturating_sub(CHROME_ROWS)
+            .min(self.visible_height as u16);
+        if max_item_rows == 0 {
+            return;
+        }
+
+        // `visible_height` doubles as the scroll clamp, so keep it in step with
+        // the number of rows actually rendered.
+        self.visible_height = max_item_rows as usize;
+        self.clamp_scroll();
+
+        let max_h = max_item_rows.min(self.filtered.len() as u16);
+        let list_height = max_h + LIST_BORDER_ROWS;
+        let hints_height = HINT_BORDER_ROWS + HINT_INTERIOR_ROWS;
+        let compl_h = list_height + hints_height;
+
         let compl_area = Rect {
             x: prompt_area.x + 1,
             y: prompt_area.y.saturating_sub(compl_h),
@@ -138,7 +176,6 @@ impl CommandPalette {
 
         frame.render_widget(ratatui::widgets::Clear, compl_area);
 
-        let list_height = max_h + 1;
         let list_area = Rect {
             x: compl_area.x,
             y: compl_area.y,
@@ -149,14 +186,14 @@ impl CommandPalette {
             x: compl_area.x,
             y: compl_area.y + list_height,
             width: compl_area.width,
-            height: hints_h,
+            height: hints_height,
         };
 
         let items: Vec<ListItem> = self
             .filtered
             .iter()
             .skip(self.scroll)
-            .take(max_visible)
+            .take(max_h as usize)
             .enumerate()
             .map(|(i, cmd)| {
                 let is_selected = (i + self.scroll) == self.cursor;

@@ -19,6 +19,7 @@ use codegg::tui::components::messages::SearchMatch;
 use codegg::tui::route::Route;
 use codegg::tui::theme::Theme;
 use codegg::tui::Dialog;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
@@ -2213,5 +2214,136 @@ fn info_dialog_reopen_updates_focus_stack_content() {
         app.focus_manager.active_dialog_type(),
         DialogType::DoctorReport,
         "focus stack should still report DoctorReport"
+    );
+}
+
+/// Regression: the slash-command palette sized its list at `max_h + 1` while
+/// drawing a `Borders::ALL` block, which consumes two rows. That left
+/// `max_h - 1` usable rows, so a single exact match (`max_h == 1`) rendered
+/// zero rows and the command the user had just typed vanished from the popup.
+/// The hint bar had the same off-by-one and rendered no text at all.
+/// Extract only the text rendered *above* the prompt row band, so assertions
+/// about popups cannot be satisfied by the prompt's own echoed input.
+fn text_above_prompt(buffer: &Buffer, prompt_top: u16) -> String {
+    let mut text = String::new();
+    for y in 0..prompt_top.min(buffer.area.height) {
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, y)];
+            text.push(cell.symbol().chars().next().unwrap_or(' '));
+        }
+        text.push('\n');
+    }
+    text
+}
+
+#[test]
+fn command_palette_shows_single_exact_match() {
+    let mut app = test_app();
+    app.ui_state.command_mode = true;
+    // Drive the real key path so this exercises the same transition the user
+    // hits, then narrow to exactly one result — the `max_h == 1` state that
+    // previously rendered zero rows. `fuzzy_score` matches subsequences, so no
+    // short query collapses to one result on its own; truncating reproduces the
+    // exact-match state deterministically.
+    for c in "/plugin-doctor".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.dialog_state.command_palette.filtered.truncate(1);
+    app.dialog_state.command_palette.cursor = 0;
+    app.dialog_state.command_palette.scroll = 0;
+    assert_eq!(
+        app.dialog_state.command_palette.filtered.len(),
+        1,
+        "fixture must produce exactly one match to exercise the off-by-one"
+    );
+    let expected = app.dialog_state.command_palette.filtered[0].name.clone();
+
+    let buf = assert_render_ok(&mut app, 100, 32);
+    // Assert above the prompt band only: the prompt echoes the typed query, so
+    // a whole-buffer search would pass even when the popup renders nothing.
+    let prompt_top = app.prompt_area.map(|a| a.y).unwrap_or(buf.area.height);
+    let above = text_above_prompt(&buf, prompt_top);
+    assert!(
+        above.to_lowercase().contains(&expected.to_lowercase()),
+        "the single exact match {expected:?} must be rendered in the popup; \
+         rows above the prompt were {:?}",
+        above
+    );
+}
+
+#[test]
+fn command_palette_renders_navigation_hint() {
+    let mut app = test_app();
+    app.ui_state.command_mode = true;
+    app.dialog_state.command_palette.set_query("/connect");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        buffer_contains(&buf, "navigate"),
+        "the palette hint bar must render; got {:?}",
+        text_in_buffer(&buf)
+    );
+}
+
+/// The palette grows upward from the prompt, so it must never claim rows it
+/// does not have, and it must stay inside the prompt column.
+#[test]
+fn command_palette_respects_small_terminals() {
+    for &(w, h) in &[(60u16, 12u16), (40, 8), (30, 6)] {
+        let mut app = test_app();
+        app.ui_state.command_mode = true;
+        app.dialog_state.command_palette.set_query("/");
+        let buf = assert_render_ok(&mut app, w, h);
+        assert!(
+            !buffer_contains(&buf, "Rendering Error"),
+            "command palette must not error at {w}x{h}"
+        );
+    }
+}
+
+/// Regression: with inline completions open, `handle_completion_key` pushed
+/// typed characters into `completion_filter` and returned `true`, which made
+/// `on_key` return before `TuiMsg::CharInput` could reach `on_char`. The
+/// character never entered the prompt widget, so the prompt froze after the
+/// trigger character and the filter drifted away from the visible text.
+#[test]
+fn prompt_still_accepts_characters_while_completions_are_open() {
+    let mut app = test_app();
+    // `@` opens agent/file completions without entering command mode, which is
+    // the state that used to swallow every subsequent keystroke.
+    for c in "@re".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    assert!(
+        app.prompt_state.show_completions,
+        "fixture must have completions open"
+    );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "@re",
+        "typed characters must reach the prompt while completions are open"
+    );
+    assert_eq!(
+        app.prompt_state.completion_filter, "@re",
+        "the derived filter must track the prompt text, not drift from it"
+    );
+}
+
+/// The mirror case: Backspace used to pop only the filter, desynchronising it
+/// from the prompt text and leaving both permanently out of step.
+#[test]
+fn backspace_updates_prompt_and_filter_together_while_completions_open() {
+    let mut app = test_app();
+    for c in "@re".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "@r",
+        "backspace must edit the prompt"
+    );
+    assert_eq!(
+        app.prompt_state.completion_filter, "@r",
+        "the derived filter must follow the prompt after backspace"
     );
 }

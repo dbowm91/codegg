@@ -3230,14 +3230,47 @@ impl App {
                 self.prompt_state.show_completions = false;
                 true
             }
+            // Editing while completions are open must mutate the prompt itself, not the
+            // `completion_filter` mirror. `completion_filter` is derived state
+            // recomputed by `update_completions()`; mutating it directly left
+            // the prompt frozen (characters never reached the widget) and
+            // desynced the filter from the text after the first trigger
+            // character. Routing through `on_char`/`backspace` + a recompute
+            // keeps both sides derived from the single source of truth.
             Some(InputAction::Char(c)) => {
-                self.prompt_state.completion_filter.push(c);
-                self.prompt_state.completion_sel = 0;
+                self.on_char(c);
                 true
             }
             Some(InputAction::Backspace) => {
-                self.prompt_state.completion_filter.pop();
-                self.prompt_state.completion_sel = 0;
+                self.prompt_state.prompt.backspace();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::Delete) => {
+                self.prompt_state.prompt.delete();
+                self.update_completions();
+                true
+            }
+            // Cursor movement changes which text precedes the cursor, which is
+            // exactly what the trigger scan in `update_completions()` reads.
+            Some(InputAction::Left) => {
+                self.prompt_state.prompt.cursor_left();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::Right) => {
+                self.prompt_state.prompt.cursor_right();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::Home) => {
+                self.prompt_state.prompt.cursor_home();
+                self.update_completions();
+                true
+            }
+            Some(InputAction::End) => {
+                self.prompt_state.prompt.cursor_end();
+                self.update_completions();
                 true
             }
             _ => false,

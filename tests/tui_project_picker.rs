@@ -259,39 +259,30 @@ fn input_action_new_variants_exist() {
 
 #[test]
 fn keybinding_collision_audit_default_bindings() {
-    use codegg::tui::input::{build_bindings, InputAction};
-    use std::collections::HashSet;
+    use codegg::tui::input::build_bindings;
+    use std::collections::{BTreeMap, BTreeSet};
 
-    let bindings = build_bindings(None, false);
-    let seen: HashSet<(String, String)> = HashSet::new();
-    let collisions: Vec<(String, String, InputAction, InputAction)> = Vec::new();
-    for ((modifiers, keycode), action) in &bindings {
-        let key_str = format!("{:?}+{:?}", modifiers, keycode);
-        let action_str = format!("{:?}", action);
-        if let Some(prev) = seen.get(&(key_str.clone(), action_str.clone())) {
-            // Same (key, action) is fine — that's a re-insertion.
-            let _ = prev;
+    // A `HashMap<(modifiers, keycode), action>` cannot hold the same key twice,
+    // so the only meaningful collision this audit can catch is *two distinct
+    // actions for one key*. Group by the physical key across both maps and
+    // assert every key resolves to exactly one action per map.
+    //
+    // The previous version grouped by `(key, action)`, which made the
+    // `len() > 1` branch unreachable and its panic dead code.
+    for (label, vim_mode) in [("insert", false), ("vim", true)] {
+        let bindings = build_bindings(None, vim_mode);
+        let mut per_key: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for ((modifiers, keycode), action) in &bindings {
+            per_key
+                .entry(format!("{:?}+{:?}", modifiers, keycode))
+                .or_default()
+                .insert(format!("{:?}", action));
         }
-        // Two different actions mapping to the same key is a collision.
-        // Detect by counting all bindings per key.
-        let _ = collisions;
-    }
-    // Count bindings per (key) — must all be unique.
-    let mut per_key: std::collections::HashMap<String, Vec<InputAction>> =
-        std::collections::HashMap::new();
-    for ((modifiers, keycode), action) in &bindings {
-        let key_str = format!("{:?}+{:?}", modifiers, keycode);
-        per_key.entry(key_str).or_default().push(action.clone());
-    }
-    for (key, actions) in per_key {
-        if actions.len() > 1 {
-            // All bindings in this file are produced by map.insert() in
-            // build_bindings. A duplicate key with different actions is a
-            // collision we want to catch.
-            let unique: HashSet<String> = actions.iter().map(|a| format!("{:?}", a)).collect();
-            if unique.len() > 1 {
-                panic!("keybinding collision at {}: {:?}", key, actions);
-            }
+        for (key, actions) in per_key {
+            assert!(
+                actions.len() <= 1,
+                "{label} map: {key} resolves to multiple actions: {actions:?}"
+            );
         }
     }
 }
