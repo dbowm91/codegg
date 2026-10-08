@@ -34,6 +34,7 @@ Hosted evidence:
 - [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e4` (the implementation commit), attempt 2 green. All three C001 trajectory tests pass on the hosted runner here.
 - [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e4`, green.
 - [Desktop E2E run 37737818626](https://github.com/dbowm91/codegg/actions/runs/37737818626) — SHA `03c4c7e3` (the final tip), attempt 1 red on a pre-existing projection defect, **attempt 2 green** (`7 passing` in the m004 phase). This is the run that reflects the shipped tip; its first-attempt failure is diagnosed below and is not a C001 regression.
+- On this record's own tip `fcaad636`: Desktop E2E run 37779262255 is **green on the first attempt** (`7 passing`, including the m004 live turn), and CI/verify run 37779262171 was red on attempt 1 only for the unrelated `durable_jobs_phase4` wall-clock boundary flake described below.
 - PR [#105](https://github.com/dbowm91/codegg/pull/105) — opened solely to obtain the required hosted evidence (this repository's CI triggers on `pull_request` and pushes to `main`, not on branch pushes). **Not merged.** The branch is a clean fast-forward over `origin/main` (`d85ed67b`, 0 behind). Current check state: `verify` pass, `e2e` pass, GitGuardian pass — `MERGEABLE / CLEAN`.
 
 Every green SHA above differs from the next only in `plans/` documents — for
@@ -454,7 +455,26 @@ message was permanently lost. `should_persist` excludes `TurnTextDelta`
 (`src/core/event_log.rs:44-47`), so the dropped events can never be replayed.
 Full mechanism, file:line chain, and the two secondary paths are in "The fourth failure is a different, diagnosed defect".
 
-All four are outside this corrective's blast radius and none is on a provider
+A fifth, diagnosed independently of the others, appeared in CI/verify run
+37779262171 attempt 1 on the record tip: `codegg::durable_jobs_phase4::
+inmem_compute_next_run_alignment` panicked with `next run should be >= now
+(next=2026-10-08 13:00:00 UTC, now=2026-10-08 13:00:00.190389394 UTC)`. The
+cause is a granularity mismatch, not a logic error: `compute_next_run`
+(`crates/codegg-core/src/jobs/schedule.rs:350-375`) deliberately works in whole
+seconds — it reads `now.timestamp()`, which truncates, and returns
+`from_timestamp(next, 0)`, which zeroes sub-second precision — so it can return
+an instant up to ~1 second *before* the true wall clock. The test
+(`tests/durable_jobs_phase4.rs:1590-1610`) asserts `next >= now` against a
+nanosecond-precision `now`, comparing across granularities. The failure window
+is therefore roughly one second per hour (~0.03%), which is why it is
+infrequent and why the CI timestamp lands exactly on `13:00:00`. It passes
+locally away from the boundary. `tests/durable_jobs_phase4.rs` is untouched by
+every commit on this branch. Whether to relax the assertion or tighten
+`compute_next_run` is a scheduling-subsystem semantic decision — changing it
+here would silently pick an answer that belongs to that subsystem's owner, and
+would widen a closed corrective, so it is left for separate triage.
+
+All five are outside this corrective's blast radius and none is on a provider
 decision path. They are **not** claimed as fixed and **not** silently dropped.
 Each warrants separate triage by the owning subsystem — the projection one most
 of all, since unlike the flakes it is a deterministic *design* gap that will
