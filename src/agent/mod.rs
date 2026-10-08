@@ -33,6 +33,7 @@ pub mod policy;
 pub mod processor;
 pub mod progress_recovery;
 pub mod prompt;
+pub mod provider_qualification;
 mod provider_turn;
 pub mod registry;
 mod request_preparation;

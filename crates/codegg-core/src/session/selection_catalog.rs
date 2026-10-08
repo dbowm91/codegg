@@ -14,7 +14,17 @@ use codegg_protocol::provider::ConnectionHealthDto;
 pub type ModelRow = (String, String, u64, Option<u64>, bool, bool);
 
 /// Read-side row type for the connection health table.
-pub type HealthRow = (String, Option<String>, i64, i64, Option<String>);
+/// `(status, reason_code, checked_at, duration_ms, catalog_revision, credential_status)`.
+/// The trailing `credential_status` is the separate credential-verification axis
+/// (M010) and is `None` for rows written by peers that predate it.
+pub type HealthRow = (
+    String,
+    Option<String>,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+);
 
 /// Load the bounded model catalog at the connection's current revision.
 /// Rows are returned in `model_id` order to match the protocol contract.
@@ -111,7 +121,7 @@ pub async fn health_for(
 ) -> Result<Option<HealthRow>, StorageError> {
     let pool = store.pool().clone();
     let row: Option<HealthRow> = sqlx::query_as(
-        "SELECT status, reason_code, checked_at, duration_ms, catalog_revision \
+        "SELECT status, reason_code, checked_at, duration_ms, catalog_revision, credential_status \
          FROM provider_connection_health WHERE connection_id = ?",
     )
     .bind(connection_id.as_str())
@@ -125,11 +135,12 @@ pub async fn health_for(
 /// `catalog_revision` is dropped here; callers surface it through
 /// `ProviderConnectionSummaryDto` separately.
 pub fn health_row_to_dto(row: HealthRow) -> ConnectionHealthDto {
-    let (status, reason_code, checked_at, duration_ms, _catalog_revision) = row;
+    let (status, reason_code, checked_at, duration_ms, _catalog_revision, credential_status) = row;
     ConnectionHealthDto {
         status,
         reason_code,
         checked_at,
         duration_ms: duration_ms as u64,
+        credential_status,
     }
 }

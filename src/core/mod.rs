@@ -36,6 +36,7 @@ pub mod lsp_diagnostics_store;
 pub mod notification;
 pub mod project_activation;
 pub mod provider_connections;
+pub mod provider_qualification;
 pub mod runtime_deps;
 pub mod session_runtime;
 pub mod session_selection;

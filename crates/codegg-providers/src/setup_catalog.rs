@@ -44,6 +44,14 @@ pub const GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com";
 pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
 pub const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/anthropic";
+/// Durable-connection mirror of the OpenCode Go base URL.
+///
+/// The **authoritative** value is the shared EggPool provider-profile contract
+/// (`crate::provider_profile::shared_base_url("opencode_go")`), which is what
+/// the runtime provider actually resolves against. This constant exists only
+/// because `SetupEndpointPolicy::Fixed` stores a `&'static str` for the durable
+/// connection record, and it must never drift from the shared profile.
+/// `opencode_go_base_url_mirrors_the_shared_profile` pins the two together.
 pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 
 /// Default port for the Eggpool local/shared proxy preset.
@@ -73,17 +81,49 @@ pub enum SetupEndpointPolicy {
     ProxyPreset { default_port: u16 },
 }
 
-/// How a provisioned connection is validated and how its model catalog is
-/// discovered.
+/// How a provisioned connection discovers its model catalog.
+///
+/// This type describes **catalog discovery only**. It is not, and must never
+/// become, a credential-verification contract: whether a successful probe is
+/// allowed to prove the credential is stated separately by
+/// [`Self::credential_evidence`], and the two live in different types so the
+/// distinction cannot be lost. See [`crate::qualification`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupProbeStrategy {
     /// Construct the provider through the canonical builder and call
     /// `Provider::models()` behind the operation cancellation/timeout
     /// boundary, normalizing the result into the bounded connection catalog.
-    DirectModels,
+    ///
+    /// This is a **catalog** strategy. `Provider::models()` is not a
+    /// credential contract: several providers return a local/static array with
+    /// no network I/O, generic OpenAI-compatible discovery is deliberately
+    /// best-effort and falls back rather than proving auth, and some provider
+    /// `/models` endpoints are publicly readable. A successful probe here
+    /// therefore always leaves the credential
+    /// [`crate::qualification::CredentialVerification::Unverified`].
+    ProviderCatalog,
     /// Use the strict OpenAI-compatible `/models` probe (redirect, body,
     /// and model-count bounds) shared with the Eggpool preset.
-    CompatibleProbe,
+    ///
+    /// Unlike [`Self::ProviderCatalog`] this is a genuinely authenticated,
+    /// non-billable metadata request: the upstream evaluates the presented
+    /// credential and a 2xx response is proof it was accepted.
+    AuthenticatedCompatibleCatalog,
+}
+
+impl SetupProbeStrategy {
+    /// What a successful probe of this strategy is permitted to prove about the
+    /// credential. [`Self::ProviderCatalog`] deliberately yields
+    /// [`CredentialEvidence::CatalogOnly`].
+    pub const fn credential_evidence(self) -> crate::qualification::CredentialEvidence {
+        use crate::qualification::CredentialEvidence;
+        match self {
+            // `Provider::models()` success is catalog evidence only.
+            Self::ProviderCatalog => CredentialEvidence::CatalogOnly,
+            // The strict probe authenticates the credential upstream.
+            Self::AuthenticatedCompatibleCatalog => CredentialEvidence::Authenticated,
+        }
+    }
 }
 
 /// Which provider implementation a durable connection must be built with.
@@ -203,7 +243,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 default_base_url: Some(ANTHROPIC_BASE_URL),
             },
             SetupConstruction::AnthropicNative,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("ANTHROPIC_API_KEY"),
             "Anthropic Claude API",
         ),
@@ -215,7 +255,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 default_base_url: Some(OPENAI_BASE_URL),
             },
             SetupConstruction::OpenAiNative,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("OPENAI_API_KEY"),
             "OpenAI API",
         ),
@@ -227,7 +267,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: GOOGLE_ENDPOINT,
             },
             SetupConstruction::GoogleNative,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("GOOGLE_API_KEY"),
             "Google Gemini API",
         ),
@@ -239,7 +279,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: OPENROUTER_ENDPOINT,
             },
             SetupConstruction::OpenRouterNative,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("OPENROUTER_API_KEY"),
             "OpenRouter unified gateway",
         ),
@@ -251,7 +291,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: OPENCODE_ZEN_BASE_URL,
             },
             SetupConstruction::ZenNative,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("OPENCODE_ZEN_API_KEY"),
             "Codegg Zen gateway",
         ),
@@ -263,7 +303,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: MISTRAL_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("MISTRAL_API_KEY"),
             "Mistral API (OpenAI-compatible)",
         ),
@@ -275,7 +315,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: GROQ_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("GROQ_API_KEY"),
             "Groq API (OpenAI-compatible)",
         ),
@@ -287,7 +327,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: DEEPINFRA_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("DEEPINFRA_API_KEY"),
             "DeepInfra API (OpenAI-compatible)",
         ),
@@ -299,7 +339,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: CEREBRAS_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("CEREBRAS_API_KEY"),
             "Cerebras API (OpenAI-compatible)",
         ),
@@ -311,7 +351,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: COHERE_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("COHERE_API_KEY"),
             "Cohere API (OpenAI-compatible)",
         ),
@@ -323,7 +363,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: TOGETHER_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("TOGETHERAI_API_KEY"),
             "Together AI API (OpenAI-compatible)",
         ),
@@ -335,7 +375,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: PERPLEXITY_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("PERPLEXITY_API_KEY"),
             "Perplexity API (OpenAI-compatible)",
         ),
@@ -347,7 +387,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: XAI_BASE_URL,
             },
             SetupConstruction::XaiCustom,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("XAI_API_KEY"),
             "xAI API (OpenAI-compatible)",
         ),
@@ -359,7 +399,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: VENICE_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("VENICE_API_KEY"),
             "Venice API (OpenAI-compatible)",
         ),
@@ -371,7 +411,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: MINIMAX_BASE_URL,
             },
             SetupConstruction::MinimaxAnthropic,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("MINIMAX_API_KEY"),
             "MiniMax API (Anthropic-compatible)",
         ),
@@ -383,7 +423,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: OPENCODE_GO_BASE_URL,
             },
             SetupConstruction::OpenCodeGoAffinity,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("OPENCODE_GO_API_KEY"),
             "OpenCode Go gateway (OpenAI-compatible)",
         ),
@@ -395,7 +435,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 base_url: GENERALCOMPUTE_BASE_URL,
             },
             SetupConstruction::OpenAiCompatibleFixed,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             Some("GENERALCOMPUTE_API_KEY"),
             "GeneralCompute API (OpenAI-compatible)",
         ),
@@ -407,7 +447,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
                 default_port: EGGPOOL_PRESET_DEFAULT_PORT,
             },
             SetupConstruction::CompatibleProxy,
-            SetupProbeStrategy::CompatibleProbe,
+            SetupProbeStrategy::AuthenticatedCompatibleCatalog,
             None,
             "Eggpool local/shared proxy (OpenAI-compatible)",
         ),
@@ -417,7 +457,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
             ApiKeyOrBearer,
             SetupEndpointPolicy::RequiredEndpoint,
             SetupConstruction::CustomCompatible,
-            SetupProbeStrategy::CompatibleProbe,
+            SetupProbeStrategy::AuthenticatedCompatibleCatalog,
             None,
             "Any OpenAI-compatible upstream with an endpoint",
         ),
@@ -427,7 +467,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
             ApiKeyOnly,
             SetupEndpointPolicy::RequiredEndpoint,
             SetupConstruction::AzureNative,
-            SetupProbeStrategy::DirectModels,
+            SetupProbeStrategy::ProviderCatalog,
             None,
             "Azure OpenAI deployment endpoint",
         ),
@@ -611,6 +651,37 @@ pub fn build_durable_provider(
     }
 }
 
+/// C001 test-support: construct the OpenCode Go durable provider with only the
+/// **capture origin** redirected, so a loopback capture server can observe the
+/// exact request the production origin would receive.
+///
+/// Credential-capability policy is identical to the `OpenCodeGoAffinity` arm of
+/// [`build_durable_provider`]; nothing else about the provider changes. The
+/// shared profile still owns the path, the per-surface auth shape, and the
+/// surface decision, so a captured path is the production path.
+///
+/// Compiled only under `cfg(test)` or the opt-in `capture-test-support`
+/// feature. It is not reachable from configuration, the protocol, an environment
+/// variable, or any CLI path.
+#[cfg(any(test, feature = "capture-test-support"))]
+pub fn build_opencode_go_with_capture_base(
+    provider_id: &str,
+    credential: Credential,
+    capture_base: &str,
+) -> Result<Box<dyn Provider>, ConnectionError> {
+    if let Some(definition) = setup_definition(provider_id) {
+        if !definition.credential_capability.accepts(credential.kind) {
+            return Err(ConnectionError::UnsupportedCredentialKind {
+                provider_id: provider_id.to_string(),
+                kind: credential.kind,
+            });
+        }
+    }
+    Ok(Box::new(
+        crate::opencode_go::OpenCodeGoProvider::new(credential).with_capture_base(capture_base),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,6 +748,70 @@ mod tests {
             assert_eq!(
                 definition.credential_capability, *capability,
                 "capability changed for '{provider_id}'"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_discovery_never_implies_credential_verification() {
+        // Structural guard for the M010 invariant: a successful catalog probe
+        // may only produce `Verified` when the strategy is a genuinely
+        // authenticated metadata request. `Provider::models()` success is
+        // catalog evidence only — several built-ins return local/static model
+        // arrays with no network I/O, generic compatible discovery falls back
+        // instead of proving auth, and some provider `/models` endpoints are
+        // publicly readable.
+        use crate::qualification::{CatalogOutcome, CredentialEvidence, CredentialVerification};
+        let catalog_available = CatalogOutcome::available(4, "digest", 1);
+        for definition in provider_setup_catalog() {
+            let strategy = definition.probe_strategy;
+            let evidence = strategy.credential_evidence();
+            let classified =
+                CredentialVerification::from_probe(evidence, &catalog_available, false);
+            match strategy {
+                SetupProbeStrategy::ProviderCatalog => {
+                    assert_eq!(
+                        evidence,
+                        CredentialEvidence::CatalogOnly,
+                        "'{}' must not claim authenticated evidence from Provider::models()",
+                        definition.id
+                    );
+                    assert_eq!(
+                        classified,
+                        CredentialVerification::Unverified,
+                        "'{}' reported a credential as verified from catalog discovery alone",
+                        definition.id
+                    );
+                }
+                SetupProbeStrategy::AuthenticatedCompatibleCatalog => {
+                    assert_eq!(
+                        classified,
+                        CredentialVerification::Verified,
+                        "'{}' uses the strict authenticated probe and must verify",
+                        definition.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_provider_uses_model_enumeration_as_an_auth_contract() {
+        // Every built-in that has a non-empty static/local `models()` array
+        // must be on the catalog-only strategy. This is the durable form of
+        // "a static model list can never validate a key".
+        for definition in provider_setup_catalog() {
+            if matches!(
+                definition.probe_strategy,
+                SetupProbeStrategy::ProviderCatalog
+            ) {
+                continue;
+            }
+            assert!(
+                !matches!(definition.construction, SetupConstruction::OpenAiNative),
+                "'{}' reaches an authenticated probe through a construction \
+                 that returns static models",
+                definition.id
             );
         }
     }
@@ -817,6 +952,21 @@ mod tests {
             assert!(!definition.display_name.trim().is_empty());
             assert!(!definition.description.trim().is_empty());
         }
+    }
+
+    #[test]
+    fn opencode_go_base_url_mirrors_the_shared_profile() {
+        // The shared provider-profile contract owns the endpoint. The durable
+        // connection record mirrors it because SetupEndpointPolicy::Fixed
+        // stores a &'static str; if these ever diverge, a stored connection
+        // would name a base URL the runtime provider does not use.
+        let shared = crate::provider_profile::shared_base_url("opencode_go")
+            .expect("shared profile owns the OpenCode Go base URL");
+        assert_eq!(OPENCODE_GO_BASE_URL, shared);
+        assert_eq!(
+            crate::opencode_go::shared_base_url().as_deref(),
+            Some(shared.as_str())
+        );
     }
 
     #[test]

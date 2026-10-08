@@ -30,6 +30,27 @@ This is the registration order CodeGG uses internally. The convention is
 `{PROVIDER_UPPER}_API_KEY`, with one exception worth memorizing: `together`
 uses `TOGETHERAI_API_KEY`.
 
+### OpenCode Go uses three endpoint families
+
+`opencode_go` is a single connection that can serve a model over three
+different wire endpoints, and CodeGG picks the right one per model from a
+reviewed, shared model-to-wire table:
+
+| Endpoint | Auth header | Example models |
+|---|---|---|
+| `/chat/completions` | `Authorization: Bearer …` | GLM, Kimi, DeepSeek, MiMo, LongCat |
+| `/responses` | `Authorization: Bearer …` | `gpt-6-luna`, `gpt-5.6-luna`, Grok 4.6/4.7, Muse contributor models |
+| `/messages` | `x-api-key` | MiniMax, Qwen |
+
+You do not configure this. The model you pick determines the endpoint and the
+credential header.
+
+A model that appears in the provider's `/models` list but has no reviewed
+mapping is shown as unresolved and is not selectable — CodeGG will not guess an
+endpoint from the model's name and will not silently fall back to
+`/chat/completions`. If a model you expect is missing, the shared mapping table
+needs updating; no CodeGG change is required once it does.
+
 ## Checking what is actually available
 
 These commands reflect **your** resolved configuration, not a static catalog:
@@ -229,6 +250,34 @@ request.
 
 In other words: use `/connect` to add a provider connection, `/connections` to
 switch the current session between the ones you already added.
+
+### What "connected" does and does not mean
+
+A successful `/connect` proves two separate things, and the confirmation toast
+tells you which of them actually happened:
+
+| Toast | Meaning |
+|---|---|
+| `credential verified` | The provider itself accepted the credential during a non-billable metadata request. |
+| `no credential required` | The provider needs no credential. |
+| `catalog loaded … credential not yet verified` | The model catalog was loaded, but nothing has authenticated the credential yet. |
+
+The third case is the common one and is not a warning. Most providers expose a
+model catalog that does not require — or even check — your API key: some
+return a fixed built-in list without touching the network at all, and some
+serve `/models` publicly. Listing models therefore cannot prove a key is
+valid. For those providers the credential is confirmed by the first real
+request, and the connection's status updates to `verified` once a request
+succeeds.
+
+If your key is actually wrong, you will see it in two ways: `/connect` fails
+immediately for providers whose catalog endpoint authenticates, and otherwise
+the first real request fails with an authentication error. Either way the
+connection is marked as having a rejected credential rather than silently
+looking healthy.
+
+`/connections` shows each connection's health (catalog reachable or not)
+alongside its credential status, so the two can be read independently.
 
 ## Choosing a model
 

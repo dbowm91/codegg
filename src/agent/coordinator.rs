@@ -43,6 +43,12 @@ pub(super) type ToolDefCache = (
 /// fields that can be initialized or replaced piecemeal.
 pub(super) struct AgentLoopServices {
     pub(super) provider: Box<dyn Provider>,
+    /// Optional runtime inference feedback for provider connection
+    /// qualification (M010). Present only when this turn is bound to a
+    /// concrete durable provider connection revision; `None` for turns that
+    /// are not, in which case nothing is inferred and nothing is written.
+    pub(super) credential_observer:
+        Option<super::provider_qualification::SharedProviderCredentialObserver>,
     pub(super) permission_checker: PermissionChecker,
     pub(super) tool_registry: crate::tool::ToolRegistry,
     pub(super) hook_registry: Option<Arc<crate::hooks::HookRegistry>>,

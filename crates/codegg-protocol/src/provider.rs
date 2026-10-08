@@ -228,10 +228,19 @@ pub struct ProviderModelDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionHealthDto {
+    /// Catalog/health reachability axis (`healthy` | `unhealthy`). Says the
+    /// provider catalog was or was not usable at `checked_at`.
     pub status: String,
     pub reason_code: Option<String>,
     pub checked_at: i64,
     pub duration_ms: u64,
+    /// Credential-verification axis, separate from `status`.
+    /// `verified` | `unverified` | `authentication_failed` |
+    /// `no_credential_required`. Additive and optional so clients that do not
+    /// know this field keep working unchanged; `None` means the peer predates
+    /// the axis, which reads as "not established".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

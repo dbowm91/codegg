@@ -153,6 +153,12 @@ pub struct TurnRunInput {
     pub approval_mode: Option<codegg_core::approval::ApprovalMode>,
     /// M003: sandbox profile preference, separate from approval mode.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// M010: runtime inference feedback bound to one concrete durable provider
+    /// connection revision. `None` when the turn is not bound to a durable
+    /// connection, in which case no credential verdict is inferred or
+    /// written.
+    pub credential_observer:
+        Option<crate::agent::provider_qualification::SharedProviderCredentialObserver>,
 }
 
 /// Minimal output from a turn execution.
@@ -227,6 +233,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             asset_pin,
             approval_mode,
             sandbox_profile,
+            credential_observer,
         } = input;
 
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
@@ -721,6 +728,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             notification_service: Some(notification_service),
             approval_mode,
             sandbox_profile,
+            credential_observer,
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());

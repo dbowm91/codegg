@@ -96,6 +96,7 @@ impl CoreDaemon {
                 // A durable session selection is authoritative for new
                 // turns. Never silently route around a selected connection
                 // that has entered a non-active lifecycle state.
+                let mut selected_connection = None;
                 if let Some(selection_service) = self.selection_service.as_ref() {
                     if let Ok(crate::protocol::provider::SessionSelectionDto::Selected {
                         connection,
@@ -111,6 +112,10 @@ impl CoreDaemon {
                                 ),
                             });
                         }
+                        // M010: remember the exact selected revision so the
+                        // turn's terminal inference outcome can feed
+                        // revision-scoped connection credential qualification.
+                        selected_connection = Some(connection);
                     }
                 }
                 // Validate the provider exists before delegating to the turn
@@ -405,6 +410,20 @@ impl CoreDaemon {
                         }
                     }
                 };
+                let credential_observer = selected_connection.as_ref().and_then(|connection| {
+                    // M010: bind this turn's terminal inference outcome to the
+                    // exact selected connection revision. A turn that is not
+                    // bound to a durable connection produces no verdict.
+                    self.pool.as_ref().map(|pool| {
+                        std::sync::Arc::new(
+                            crate::core::provider_qualification::ProviderConnectionCredentialReporter::new(
+                                pool.clone(),
+                                std::sync::Arc::from(connection.id.as_str()),
+                                connection.revision,
+                            ),
+                        ) as crate::agent::provider_qualification::SharedProviderCredentialObserver
+                    })
+                });
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,
@@ -435,6 +454,7 @@ impl CoreDaemon {
                     asset_pin,
                     approval_mode,
                     sandbox_profile,
+                    credential_observer,
                 };
                 let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 

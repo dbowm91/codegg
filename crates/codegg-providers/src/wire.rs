@@ -223,6 +223,81 @@ pub fn encode_openai_chat(
     Ok(body)
 }
 
+/// Encode the common OpenAI Responses request grammar through the shared
+/// kernel, for a direct **stateless** provider request.
+///
+/// This is deliberately the ordinary provider surface supplied by
+/// `eggpool-wire`. It is not CodeGG's hosted/stateful Responses program
+/// subsystem (`crate::responses_api`), which owns a different contract and is
+/// explicitly out of scope for multi-surface dispatch.
+pub fn encode_openai_responses(
+    request: &ChatRequest,
+    include_stream_usage: bool,
+) -> Result<Value, ProviderError> {
+    let mut canonical = canonical_request(request, None);
+    if request.tools.is_none() {
+        // The shared codec validates that a selected tool choice has a tool
+        // collection; without a tools field there is nothing to select from.
+        canonical.tool_choice = None;
+    }
+    encode(
+        &canonical,
+        WireSurface::OpenaiResponses,
+        include_stream_usage,
+    )
+}
+
+/// Adapt a direct stateless Responses SSE byte stream through the shared
+/// kernel. Cancellation and chunk-deadline policy remain CodeGG transport
+/// concerns and are supplied by the caller.
+pub fn openai_responses_stream<S, B, E>(
+    stream: S,
+    chunk_timeout: Option<Duration>,
+    policy: Option<std::sync::Arc<crate::ProviderWirePolicy>>,
+) -> crate::EventStream
+where
+    S: Stream<Item = Result<B, E>> + Send + Unpin + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: Display + Send + 'static,
+{
+    shared_stream(
+        stream,
+        eggpool_wire::codec::StreamAdapterKind::OpenaiResponsesSse,
+        chunk_timeout,
+        policy,
+    )
+}
+
+/// Encode the Anthropic Messages request grammar for a **direct** provider.
+///
+/// This is a shared codec helper, deliberately not a provider identity. A
+/// provider whose models resolve to the Messages surface (for example OpenCode
+/// Go) reuses this encoding without inheriting the dedicated Anthropic
+/// provider's base-URL or `anthropic-version` assumptions; those are transport
+/// concerns the caller owns.
+pub fn encode_anthropic_messages(request: &ChatRequest) -> Result<Value, ProviderError> {
+    let mut canonical = canonical_request(request, None);
+    if let Some(system) = request.system.as_deref().filter(|_| {
+        !canonical
+            .messages
+            .iter()
+            .any(|message| message.role == eggpool_wire::ir::CanonicalRole::System)
+    }) {
+        canonical.messages.insert(0, system_message(system));
+    }
+    let mut body = encode(&canonical, WireSurface::AnthropicMessages, false)?;
+    // CodeGG's established Messages contract always represents message content
+    // as typed blocks, even when the shared codec can compact text.
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            if let Some(text) = message.get("content").and_then(Value::as_str) {
+                message["content"] = serde_json::json!([{ "type": "text", "text": text }]);
+            }
+        }
+    }
+    Ok(body)
+}
+
 /// Preserve a provider's previously qualified OpenAI-compatible omission
 /// contract for optional fields it does not accept.
 pub fn omit_openai_fields(body: &mut Value, fields: &[&str]) {
@@ -1209,5 +1284,228 @@ mod tests {
         let mut decoder = SharedStreamDecoder::new(post_terminal.adapter);
         decoder.push(post_terminal.bytes).unwrap();
         assert!(decoder.finish().is_err());
+    }
+}
+
+/// Direct stateless OpenAI Responses surface (M011 WP-B).
+///
+/// These tests pin the *shared-kernel* grammar and stream projection for a
+/// direct provider request. They deliberately exercise `encode_openai_responses`
+/// and `openai_responses_stream` rather than the hosted/stateful Responses
+/// program subsystem, which is a different contract and out of scope here.
+#[cfg(test)]
+mod responses_surface_tests {
+    use super::*;
+    use crate::{ChatEvent, ChatRequest, ContentPart, Message, ToolDefinition};
+    use futures_util::StreamExt;
+
+    fn responses_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            }],
+            model: "gpt-6-luna".to_string(),
+            tools: None,
+            system: Some("be brief".to_string()),
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(256),
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: crate::ProviderRequestContext::default(),
+        }
+    }
+
+    #[test]
+    fn responses_body_uses_input_grammar_not_chat_messages() {
+        let body = encode_openai_responses(&responses_request(), true).unwrap();
+        let input = body
+            .get("input")
+            .and_then(Value::as_array)
+            .expect("Responses uses `input`, not `messages`");
+        assert!(body.get("messages").is_none());
+        let user = input
+            .iter()
+            .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+            .expect("user message present");
+        let block = &user["content"][0];
+        assert_eq!(block["type"], "input_text");
+        assert_eq!(block["text"], "hello");
+    }
+
+    #[test]
+    fn responses_body_is_stateless_and_never_uses_the_hosted_program_path() {
+        let body = encode_openai_responses(&responses_request(), true).unwrap();
+        // `store: false` is what makes this a direct stateless request rather
+        // than a server-side stored program.
+        assert_eq!(body["store"], Value::Bool(false));
+        // Hosted-program-only fields must not leak into the direct surface.
+        for hosted_only in ["previous_response_id", "conversation", "background"] {
+            assert!(
+                body.get(hosted_only).is_none(),
+                "hosted-only field {hosted_only} must not be sent on the direct surface"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_keeps_its_own_token_field_spelling() {
+        let body = encode_openai_responses(&responses_request(), false).unwrap();
+        // The Chat-only `max_completion_tokens` -> `max_tokens` correction must
+        // not be applied to the Responses surface.
+        assert_eq!(body["max_output_tokens"], 256);
+        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn responses_preserves_tools_in_responses_grammar() {
+        let mut request = responses_request();
+        request.tools = Some(vec![ToolDefinition {
+            name: "read_file".to_string(),
+            description: "read a file".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+            }),
+            defer_loading: None,
+        }]);
+        let body = encode_openai_responses(&request, false).unwrap();
+        let tools = body.get("tools").and_then(Value::as_array).expect("tools");
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["name"], "read_file");
+    }
+
+    const RESPONSES_TEXT_STREAM: &str = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-6-luna\"}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",",
+        "\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n",
+    );
+
+    #[tokio::test]
+    async fn responses_text_stream_projects_text_usage_and_finish() {
+        let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
+            RESPONSES_TEXT_STREAM.as_bytes().to_vec(),
+        )]);
+        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        assert!(output.iter().all(Result::is_ok), "{output:?}");
+
+        let text: String = output
+            .iter()
+            .filter_map(|event| match event {
+                Ok(ChatEvent::TextDelta(text)) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Hello world");
+
+        let Some(Ok(ChatEvent::Finish { usage, .. })) = output.last() else {
+            panic!("Responses stream must finish, got {:?}", output.last());
+        };
+        assert_eq!(usage.input_tokens, 2);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.total_tokens, 5);
+    }
+
+    const RESPONSES_TOOL_STREAM: &str = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",",
+        "\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\"}}\n\n",
+        "event: response.function_call_arguments.delta\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",",
+        "\"delta\":\"{\\\"path\\\":\"}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",",
+        "\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",",
+        "\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",",
+        "\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+    );
+
+    #[tokio::test]
+    async fn responses_tool_stream_accumulates_a_completed_tool_call() {
+        let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
+            RESPONSES_TOOL_STREAM.as_bytes().to_vec(),
+        )]);
+        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        assert!(output.iter().all(Result::is_ok), "{output:?}");
+
+        let completed = output.iter().find_map(|event| match event {
+            Ok(ChatEvent::ToolCall(call)) => {
+                Some((call.name.to_string(), call.arguments.to_string()))
+            }
+            _ => None,
+        });
+        let (name, arguments) = completed.expect("a completed tool call must be accumulated");
+        assert_eq!(name, "read_file");
+        assert!(arguments.contains("a.txt"), "arguments were {arguments:?}");
+    }
+
+    #[tokio::test]
+    async fn responses_stream_split_across_arbitrary_chunk_boundaries_is_stable() {
+        // SSE framing must not depend on how the transport slices bytes.
+        let bytes = RESPONSES_TEXT_STREAM.as_bytes();
+        for split in 1..bytes.len() {
+            let chunks = vec![
+                Ok::<_, std::io::Error>(bytes[..split].to_vec()),
+                Ok(bytes[split..].to_vec()),
+            ];
+            let output: Vec<_> =
+                openai_responses_stream(futures_util::stream::iter(chunks), None, None)
+                    .collect()
+                    .await;
+            assert!(
+                output.iter().all(Result::is_ok),
+                "split {split}: {output:?}"
+            );
+            let text: String = output
+                .iter()
+                .filter_map(|event| match event {
+                    Ok(ChatEvent::TextDelta(text)) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(text, "Hello world", "split {split}");
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_stream_eof_before_completion_is_an_error() {
+        // An upstream that stops before a terminal event must not be reported
+        // as a successful completion.
+        let truncated = "event: response.output_text.delta\n\
+                          data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+        let stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(truncated.as_bytes().to_vec())]);
+        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        assert!(
+            output.iter().any(Result::is_err),
+            "unterminated Responses stream must fail, got {output:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_provider_error_event_surfaces_an_error() {
+        let failed = concat!(
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"message\":\"boom\",\"code\":\"server_error\"}}\n\n",
+        );
+        let stream =
+            futures_util::stream::iter([Ok::<_, std::io::Error>(failed.as_bytes().to_vec())]);
+        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        assert!(
+            output.iter().any(Result::is_err),
+            "Responses error event must surface, got {output:?}"
+        );
     }
 }

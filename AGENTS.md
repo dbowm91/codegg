@@ -54,7 +54,11 @@ are allowed in tests (`clippy.toml`).
   `decision-runtime-sdm` (optional local SDM decision runtime, gates
   `src/decision_sdm.rs`; default builds exclude it),
   `lsp-test-support` (fake-LSP harness), `lsp-real-server-tests` (needs installed
-  servers — never in default sweeps), `arboard` (default). Never `--all-features` for
+  servers — never in default sweeps), `arboard` (default). `codegg-providers`
+  additionally has a dev-only `capture-test-support` feature (the OpenCode Go
+  origin override for the capture trajectory) enabled through a
+  `[dev-dependencies]` entry, so it is absent from `cargo build` and from the
+  shipped binary. Never `--all-features` for
   workspace sweeps; it drags in real-server tests. `verify.sh full` uses
   `--features server,plugins,lsp-test-support` instead.
 

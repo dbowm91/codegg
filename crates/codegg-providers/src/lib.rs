@@ -25,8 +25,11 @@ pub mod google;
 pub mod models;
 pub mod openai;
 pub mod openai_compatible;
+pub mod opencode_go;
 pub mod opencode_zen;
 pub mod openrouter;
+pub mod provider_profile;
+pub mod qualification;
 pub mod responses_api;
 pub mod retry;
 pub mod setup_catalog;
@@ -53,6 +56,11 @@ pub use eggpool::{
     EGGPOOL_DEFAULT_PORT,
 };
 pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
+pub use opencode_go::{qualify_models, unresolved_models, OpenCodeGoProvider};
+// C001 capture seam. Only compiled under `cfg(test)` or the opt-in
+// `capture-test-support` feature; absent from the shipped binary.
+#[cfg(any(test, feature = "capture-test-support"))]
+pub use opencode_go::PROVIDER_ID as OPENCODE_GO_PROVIDER_ID;
 pub use provider_core::{
     assistant_text_content_value, builtin_registration_order, create_http_client,
     credential_capability_for, openai_tool_arguments_value, project_tool_call_history,
@@ -61,6 +69,14 @@ pub use provider_core::{
     ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ProviderWirePolicy,
     ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
     MAX_REASONING_BYTES,
+};
+pub use provider_profile::{
+    adapted_provider_ids, is_wire_resolved, resolve_route, shared_base_url, shared_provider_id,
+    wire_resolved_models, ProfileError, RouteAuth, SurfaceRoute,
+};
+pub use qualification::{
+    catalog_outcome_for_error, CatalogOutcome, CatalogRejected, CatalogUnavailable,
+    CredentialEvidence, CredentialVerification, ProbeQualification,
 };
 pub use responses_api::{
     filter_artifacts_for_provider, validate_arguments, validate_call_count, validate_result_size,

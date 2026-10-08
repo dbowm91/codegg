@@ -50,35 +50,11 @@ impl AnthropicProvider {
     }
 
     fn try_build_body(&self, req: &ChatRequest) -> Result<serde_json::Value, ProviderError> {
-        let mut canonical = crate::wire::canonical_request(req, None);
-        if let Some(system) = req.system.as_deref().filter(|_| {
-            !canonical
-                .messages
-                .iter()
-                .any(|message| message.role == eggpool_wire::ir::CanonicalRole::System)
-        }) {
-            canonical
-                .messages
-                .insert(0, crate::wire::system_message(system));
-        }
-        let mut body = crate::wire::encode(
-            &canonical,
-            eggpool_wire::profile::WireSurface::AnthropicMessages,
-            false,
-        )?;
-        // CodeGG's established Messages contract always represents message
-        // content as typed blocks, even when the shared codec can compact text.
-        if let Some(messages) = body
-            .get_mut("messages")
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            for message in messages {
-                if let Some(text) = message.get("content").and_then(serde_json::Value::as_str) {
-                    message["content"] = serde_json::json!([{"type":"text", "text":text}]);
-                }
-            }
-        }
-        Ok(body)
+        // Shared codec helper. This provider owns its base URL, the
+        // `anthropic-version` header, and transport; the Messages request
+        // grammar itself belongs to the shared kernel so providers that merely
+        // resolve models to this surface reuse one encoding.
+        crate::wire::encode_anthropic_messages(req)
     }
 }
 

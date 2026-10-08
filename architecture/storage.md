@@ -128,8 +128,8 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **68**, defined by
-`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:39`), and must track the
+The current layout version is **69**, defined by
+`storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:41`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
@@ -143,6 +143,12 @@ adds the `edit_checkpoint` table for durable per-batch pre/post file states
 scoped to workspace/session/turn/batch, reusing snapshot size/symlink bounds.
 Migration 47 adds the `edit_restore_operation` audit table for checked
 Undo/Reapply lineage, conflict/partial evidence, and restart durability.
+Migration 69 adds `provider_connection_health.credential_status` as the
+separate provider credential-verification axis (additive
+`ALTER TABLE ... ADD COLUMN` with a CHECK constraint mirroring
+`codegg_providers::qualification::CredentialVerification`), defaulting every
+pre-existing row to `'unverified'` because no prior schema recorded
+authenticated evidence.
 Migration 49 adds `agent_convergence` and `agent_convergence_cycle` for the
 M001 durable convergence foundation. The tables retain the exact bounded
 objective/criteria specification and owner identity, plus cycle references
