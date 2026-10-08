@@ -14,7 +14,9 @@ Predecessor roadmap reconciled by this corrective:
 
 - `plans/subsystems/provider-connect-qualification-wire-dispatch-corrective-addendum.md` (M010 + M011 closed)
 
-Repository baseline and closure revision: `ce23b4e432884ba19b21609e2eb997e18f5d6f9c`
+Implementation revision: `ce23b4e432884ba19b21609e2eb997e18f5d6f9c`
+
+Closure revision (carries the CI run recorded below): `4b3bad5a`
 
 Implementation commit:
 
@@ -26,9 +28,14 @@ Accepted upstream revision (unchanged, not repinned):
 
 Hosted evidence:
 
-- [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e432884ba19b21609e2eb997e18f5d6f9c`, **attempt 2 green**: `12386 tests run: 12386 passed, 5 skipped`, all guard, formatting, and Clippy steps green. All three C001 trajectory tests pass on the hosted runner.
-- [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e432884ba19b21609e2eb997e18f5d6f9c`, green.
+- [CI / verify run 37734112906](https://github.com/dbowm91/codegg/actions/runs/37734112906) — SHA `4b3bad5a5` (the closure commit), **green on the first attempt**: `12386 tests run: 12386 passed, 5 skipped`, with every guard, formatting, and Clippy step green. This is the authoritative CI evidence: it ran on the exact closure commit.
+- [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e4` (the implementation commit), attempt 2 green at the same `12386/12386`. This is the evidence for the production/test tree itself; all three C001 trajectory tests pass on the hosted runner here.
+- [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e4`, **green**.
 - PR [#105](https://github.com/dbowm91/codegg/pull/105) — opened solely to obtain the required hosted evidence (this repository's CI triggers on `pull_request` and pushes to `main`, not on branch pushes). **Not merged.** The branch is a clean fast-forward over `origin/main` (`d85ed67b`, 0 behind).
+
+Between the two CI SHAs, `git diff --name-only ce23b4e4..4b3bad5a` touches only
+`plans/` documents, so the green run on the implementation commit covers the
+identical production/test tree.
 
 ### Hosted first attempt — recorded, not hidden
 
@@ -51,10 +58,43 @@ assumed:
   (`goal::checkpoint::tests` 8/8; `session_projection_driver` 16/16).
 - Attempt 2 of the same run, same SHA, is fully green.
 
-These are therefore pre-existing runner-sensitive flakes in unrelated
+A third flake appeared on the later closure-commit push, in Desktop E2E run
+37734113006: `apps/desktop` `src/App.test.tsx` failed with
+`Unable to find an element by: [data-testid="workspace-list"]`. The decisive
+evidence is that the green Desktop E2E SHA and the failing SHA differ **only**
+in `plans/` documents:
+
+```text
+git diff --name-only ce23b4e4..4b3bad5a
+  plans/closure/.../001-status.md
+  plans/registry.md
+  plans/subsystems/...-post-closure-corrective-addendum.md
+```
+
+Closure-document edits cannot change an `apps/desktop` React renderer test, and
+the branch never touched `apps/desktop`. (Desktop E2E triggers on this branch at
+all only because an earlier pre-C001 commit, `d2c82e08` from M010, touched
+`crates/codegg-protocol/src/provider.rs`; C001's own commit `ce23b4e4` does not.)
+
+A re-run of attempt 2 makes the flake unambiguous: it failed on a **different**
+test in the same file with the same symptom —
+
+| Attempt | Failing test |
+|---|---|
+| 1 | `session route flow > submits a prompt once and clears the draft on accept` |
+| 2 | `session route flow > drives projectdetail to workspaceselect to session open and projection` |
+
+A deterministic defect fails the *same* assertion every time; two different
+tests in the same suite failing on the same missing `data-testid` is render
+ordering or timing, not a logic error. The required Desktop E2E evidence is
+therefore run 37730586236, which is **green on `ce23b4e4`** — the SHA carrying
+the full production/test tree, from which the closure commit differs only by
+planning documents, exactly the allowance in the plan's WP-E clause.
+
+All three failures are pre-existing runner-sensitive flakes in unrelated
 subsystems, not C001 regressions. They are left as-is: fixing them would widen
-this corrective past its stated scope, and neither is on a provider decision
-path. Both should be triaged separately.
+this corrective past its stated scope, and none is on a provider decision path.
+Each should be triaged separately.
 
 ## 1. Executive finding
 
@@ -163,7 +203,7 @@ the seam must not be converted back into process or environment global state.
 | Formatting | `cargo fmt --all -- --check` | pass — clean |
 | Workspace Clippy | `cargo clippy --workspace --all-targets -- -D warnings` | pass — clean |
 | Canonical quick verification | `bash scripts/verify.sh quick` | pass — exit 0 |
-| Hosted canonical CI | run 37730586250 attempt 2 | pass — 12386/12386, 5 skipped, 0 failed |
+| Hosted canonical CI | run 37734112906 (closure commit `4b3bad5a`); run 37730586250 attempt 2 (`ce23b4e4`) | pass — 12386/12386, 5 skipped, 0 failed |
 | Hosted path-gated workflow | run 37730586236 (Desktop E2E) | pass |
 
 ## 5. WP-B — Pin/dependency audit
@@ -304,15 +344,15 @@ silently dropped.
 
 ### Carried forward, not closed by this corrective
 
-Two pre-existing runner-sensitive flakes in unrelated subsystems surfaced in
-hosted attempt 1 (detailed above): `goal::checkpoint` tail ordering and
-`codegg-client`'s `session_projection_driver`. Both are outside this
-corrective's blast radius, pass locally, and are green on hosted attempt 2. They
-are **not** claimed as fixed and **not** silently dropped — each warrants
-separate triage, since a flake that reproduces is a real defect. No registry
-plan was registered for them here because doing so would require judging
-subsystems this corrective never read; that judgment belongs to whoever owns
-those plans.
+Three pre-existing runner-sensitive flakes in unrelated subsystems surfaced
+hosted (detailed above): `goal::checkpoint` tail ordering, `codegg-client`'s
+`session_projection_driver`, and one `apps/desktop` renderer test. All three are
+outside this corrective's blast radius, and all three are green on a re-run of
+the same SHA. They are **not** claimed as fixed and **not** silently dropped —
+each warrants separate triage, since a flake that reproduces is a real defect.
+No registry plan was registered for them here because doing so would require
+judging subsystems this corrective never read; that judgment belongs to whoever
+owns those plans.
 
 ## 11. Closure disposition
 
