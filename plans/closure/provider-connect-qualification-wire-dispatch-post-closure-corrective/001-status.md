@@ -16,7 +16,7 @@ Predecessor roadmap reconciled by this corrective:
 
 Implementation revision: `ce23b4e432884ba19b21609e2eb997e18f5d6f9c`
 
-Closure revision (carries the CI run recorded below): `4b3bad5a`
+Closure revision (branch tip, carries the runs recorded below): `4a7567d4`
 
 Implementation commit:
 
@@ -28,14 +28,18 @@ Accepted upstream revision (unchanged, not repinned):
 
 Hosted evidence:
 
-- [CI / verify run 37734112906](https://github.com/dbowm91/codegg/actions/runs/37734112906) — SHA `4b3bad5a5` (the closure commit), **green on the first attempt**: `12386 tests run: 12386 passed, 5 skipped`, with every guard, formatting, and Clippy step green. This is the authoritative CI evidence: it ran on the exact closure commit.
-- [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e4` (the implementation commit), attempt 2 green at the same `12386/12386`. This is the evidence for the production/test tree itself; all three C001 trajectory tests pass on the hosted runner here.
-- [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e4`, **green**.
+- [CI / verify run 37736136266](https://github.com/dbowm91/codegg/actions/runs/37736136266) — SHA `4a7567d4` (**the branch tip and closure revision**), **green on the first attempt**: `12386 tests run: 12386 passed, 5 skipped`, with every guard, formatting, and Clippy step green. Authoritative.
+- [Desktop E2E run 37736136595](https://github.com/dbowm91/codegg/actions/runs/37736136595) — SHA `4a7567d4`, **green on the first attempt**. Authoritative.
+- [CI / verify run 37734112906](https://github.com/dbowm91/codegg/actions/runs/37734112906) — SHA `4b3bad5a`, green at the same `12386/12386`.
+- [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e4` (the implementation commit), attempt 2 green. All three C001 trajectory tests pass on the hosted runner here.
+- [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e4`, green.
 - PR [#105](https://github.com/dbowm91/codegg/pull/105) — opened solely to obtain the required hosted evidence (this repository's CI triggers on `pull_request` and pushes to `main`, not on branch pushes). **Not merged.** The branch is a clean fast-forward over `origin/main` (`d85ed67b`, 0 behind).
 
-Between the two CI SHAs, `git diff --name-only ce23b4e4..4b3bad5a` touches only
-`plans/` documents, so the green run on the implementation commit covers the
-identical production/test tree.
+Every green SHA above differs from the next only in `plans/` documents — for
+example `git diff --name-only ce23b4e4..4b3bad5a` — so all of them cover the
+identical production/test tree. The two runs on `4a7567d4` are the simplest
+statement of the result: both hosted workflows, green on the closure revision
+itself.
 
 ### Hosted first attempt — recorded, not hidden
 
@@ -86,10 +90,11 @@ test in the same file with the same symptom —
 
 A deterministic defect fails the *same* assertion every time; two different
 tests in the same suite failing on the same missing `data-testid` is render
-ordering or timing, not a logic error. The required Desktop E2E evidence is
-therefore run 37730586236, which is **green on `ce23b4e4`** — the SHA carrying
-the full production/test tree, from which the closure commit differs only by
-planning documents, exactly the allowance in the plan's WP-E clause.
+ordering or timing, not a logic error. The conclusion is now confirmed by a
+third run: Desktop E2E on `4a7567d4` (run 37736136595) is **green on the first
+attempt**, from a tree that differs from the failing `4b3bad5a` only in
+`plans/` documents. Two consecutive failures followed by a clean pass on
+unchanged desktop code is the signature of a flake.
 
 All three failures are pre-existing runner-sensitive flakes in unrelated
 subsystems, not C001 regressions. They are left as-is: fixing them would widen
@@ -203,8 +208,8 @@ the seam must not be converted back into process or environment global state.
 | Formatting | `cargo fmt --all -- --check` | pass — clean |
 | Workspace Clippy | `cargo clippy --workspace --all-targets -- -D warnings` | pass — clean |
 | Canonical quick verification | `bash scripts/verify.sh quick` | pass — exit 0 |
-| Hosted canonical CI | run 37734112906 (closure commit `4b3bad5a`); run 37730586250 attempt 2 (`ce23b4e4`) | pass — 12386/12386, 5 skipped, 0 failed |
-| Hosted path-gated workflow | run 37730586236 (Desktop E2E) | pass |
+| Hosted canonical CI | run 37736136266 (closure revision `4a7567d4`, first attempt); run 37734112906 (`4b3bad5a`); run 37730586250 attempt 2 (`ce23b4e4`) | pass — 12386/12386, 5 skipped, 0 failed |
+| Hosted path-gated workflow | run 37736136595 (Desktop E2E, `4a7567d4`, first attempt); run 37730586236 (`ce23b4e4`) | pass |
 
 ## 5. WP-B — Pin/dependency audit
 
