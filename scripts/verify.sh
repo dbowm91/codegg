@@ -97,6 +97,9 @@ run_quick() {
     echo "==> python3 scripts/check_provider_qualification.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_qualification.py)
 
+    echo "==> python3 scripts/check_provider_multi_surface_dispatch.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_provider_multi_surface_dispatch.py)
+
     echo "==> python3 scripts/check_openai_endpoint_composition.py"
     (cd "$REPO_ROOT" && python3 scripts/check_openai_endpoint_composition.py)
 

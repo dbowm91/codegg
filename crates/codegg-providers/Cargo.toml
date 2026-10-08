@@ -9,7 +9,13 @@ homepage.workspace = true
 description = "LLM provider implementations for codegg"
 
 [dependencies]
-eggpool-wire = { git = "https://github.com/eggstack/eggpool", rev = "f05b18b7358d9a4125d1e20c491151eec265e403" }
+# Pinned at the EggPool Shared Provider Profile Contract M001 closure revision
+# (9ac6a1318e8db3c034b5ab54987317752d5ffea6). `eggpool-provider-profile` declares
+# `eggpool-wire` as a path dependency, and Cargo resolves a git dependency's path
+# dependencies against the parent's revision, so BOTH pins must name the same rev or
+# two copies of `eggpool-wire` link and the workspace gains two `WireSurface` types.
+eggpool-wire = { git = "https://github.com/eggstack/eggpool", rev = "9ac6a1318e8db3c034b5ab54987317752d5ffea6" }
+eggpool-provider-profile = { git = "https://github.com/eggstack/eggpool", rev = "9ac6a1318e8db3c034b5ab54987317752d5ffea6" }
 codegg-config.workspace = true
 async-trait.workspace = true
 bytes = "1"

@@ -30,6 +30,27 @@ This is the registration order CodeGG uses internally. The convention is
 `{PROVIDER_UPPER}_API_KEY`, with one exception worth memorizing: `together`
 uses `TOGETHERAI_API_KEY`.
 
+### OpenCode Go uses three endpoint families
+
+`opencode_go` is a single connection that can serve a model over three
+different wire endpoints, and CodeGG picks the right one per model from a
+reviewed, shared model-to-wire table:
+
+| Endpoint | Auth header | Example models |
+|---|---|---|
+| `/chat/completions` | `Authorization: Bearer …` | GLM, Kimi, DeepSeek, MiMo, LongCat |
+| `/responses` | `Authorization: Bearer …` | `gpt-6-luna`, `gpt-5.6-luna`, Grok 4.6/4.7, Muse contributor models |
+| `/messages` | `x-api-key` | MiniMax, Qwen |
+
+You do not configure this. The model you pick determines the endpoint and the
+credential header.
+
+A model that appears in the provider's `/models` list but has no reviewed
+mapping is shown as unresolved and is not selectable — CodeGG will not guess an
+endpoint from the model's name and will not silently fall back to
+`/chat/completions`. If a model you expect is missing, the shared mapping table
+needs updating; no CodeGG change is required once it does.
+
 ## Checking what is actually available
 
 These commands reflect **your** resolved configuration, not a static catalog:

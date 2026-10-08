@@ -44,6 +44,14 @@ pub const GOOGLE_ENDPOINT: &str = "https://generativelanguage.googleapis.com";
 pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
 pub const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
 pub const MINIMAX_BASE_URL: &str = "https://api.minimax.io/anthropic";
+/// Durable-connection mirror of the OpenCode Go base URL.
+///
+/// The **authoritative** value is the shared EggPool provider-profile contract
+/// (`crate::provider_profile::shared_base_url("opencode_go")`), which is what
+/// the runtime provider actually resolves against. This constant exists only
+/// because `SetupEndpointPolicy::Fixed` stores a `&'static str` for the durable
+/// connection record, and it must never drift from the shared profile.
+/// `opencode_go_base_url_mirrors_the_shared_profile` pins the two together.
 pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 
 /// Default port for the Eggpool local/shared proxy preset.
@@ -913,6 +921,21 @@ mod tests {
             assert!(!definition.display_name.trim().is_empty());
             assert!(!definition.description.trim().is_empty());
         }
+    }
+
+    #[test]
+    fn opencode_go_base_url_mirrors_the_shared_profile() {
+        // The shared provider-profile contract owns the endpoint. The durable
+        // connection record mirrors it because SetupEndpointPolicy::Fixed
+        // stores a &'static str; if these ever diverge, a stored connection
+        // would name a base URL the runtime provider does not use.
+        let shared = crate::provider_profile::shared_base_url("opencode_go")
+            .expect("shared profile owns the OpenCode Go base URL");
+        assert_eq!(OPENCODE_GO_BASE_URL, shared);
+        assert_eq!(
+            crate::opencode_go::shared_base_url().as_deref(),
+            Some(shared.as_str())
+        );
     }
 
     #[test]

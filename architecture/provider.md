@@ -538,6 +538,79 @@ if registry is empty after all config-based attempts.
 SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
 `provider.<id>` config entries.
 
+### Shared Provider Profile and Multi-Surface Dispatch (M011)
+
+OpenCode Go serves **one provider identity across three wire surfaces**. Which
+surface a model uses is not discoverable from the public `/models` response —
+that response exposes model ids but no wire field — so CodeGG resolves it from
+the shared EggPool provider-profile contract instead of guessing.
+
+**Ownership.** The shared profile (`eggpool-provider-profile`, pinned at the
+EggPool M001 closure revision `9ac6a1318e8db3c034b5ab54987317752d5ffea6`) owns
+secret-free metadata only: base URL, per-surface paths, per-surface auth
+*shape*, and exact model-to-wire hints. CodeGG retains credentials, secret
+references, connection lifecycle, HTTP transport, cancellation, deadlines, and
+retry/error ownership. `eggpool-wire` remains the request-grammar and stream
+authority. The profile carries no secrets and never owns a credential.
+
+**Dependency pinning.** `eggpool-provider-profile` declares `eggpool-wire` as a
+*path* dependency, and Cargo resolves a git dependency's path dependencies
+against the **parent's** revision. Both pins must therefore name the same rev;
+otherwise Cargo links two copies of `eggpool-wire` 0.1.0 and the workspace ends
+up with two distinct `WireSurface` types, breaking the single wire-vocabulary
+invariant. `scripts/check_provider_wire_boundary.py` admits exactly
+`eggpool-wire` and `eggpool-provider-profile` and rejects every other
+`eggpool*` package, preserving the no-EggPool-runtime boundary.
+
+**The adapter** (`crates/codegg-providers/src/provider_profile.rs`) is a pure,
+narrow projection: no I/O, no environment reads, no state beyond the parsed
+embedded registry. It maps durable CodeGG ids to shared ids explicitly
+(`opencode_go` → `opencode-go`) rather than renaming stored records, and exposes
+`SurfaceRoute` (surface + absolute URL + auth shape + static headers).
+`resolve_route` is exact and **fails closed**: a model with no reviewed hint
+returns `ProfileError::WireUnresolved`. There is no Chat Completions default
+and no prefix/model-family inference anywhere in the path.
+
+**Per-surface credential application is deterministic.** Chat and Responses
+send `Authorization: Bearer …`; Messages sends `x-api-key`. A surface never
+receives the other's credential header. Profile-supplied static headers are
+checked against the transport-owned credential, session, and content-type
+headers before being attached (the M008 reserved-header rule). The stable
+`x-opencode-session` header is CodeGG-owned, taken from
+`ChatRequest.context.session_id`, and required on all three surfaces — a missing
+session is a local pre-network failure.
+
+**Exactly one surface per request.** `stream()` resolves model → surface →
+path/auth before any network I/O and never re-resolves, so there is no
+speculative retry from one surface to another after a request could have
+reached model execution. Real 401/403 responses are mapped with
+`ProviderError::from_http_status`, so they reach M010's credential axis. An
+unresolved wire mapping is *not* an authentication error: it maps to
+`ProviderError::ModelNotFound` (class `model_not_found`, permanent) so local
+metadata failures cannot corrupt credential qualification.
+
+**Direct stateless Responses.** `wire::encode_openai_responses` and
+`wire::openai_responses_stream` add the ordinary stateless Responses surface on
+top of the shared kernel (`WireSurface::OpenaiResponses`,
+`StreamAdapterKind::OpenaiResponsesSse`). This is deliberately *not* CodeGG's
+hosted/stateful Responses program subsystem in `responses_api.rs`, which is a
+separate contract. `wire::encode_anthropic_messages` is shared the same way, so
+a provider whose models resolve to Messages reuses one codec encoding instead of
+instantiating the dedicated Anthropic provider and inheriting its base-URL or
+`anthropic-version` assumptions.
+
+**Catalog qualification.** `Provider::models()` uses the upstream `/models`
+response as the availability source but keeps only wire-resolved models
+selectable (`opencode_go::qualify_models`); unresolved ids are retained only for
+diagnostics via `unresolved_models`. A later shared-profile update makes a new
+model selectable with no CodeGG source change, and a previously selectable model
+that stops resolving fails locally with an actionable diagnostic instead of
+silently switching surfaces.
+
+Guards: `scripts/check_provider_multi_surface_dispatch.py` (6 checks, wired into
+`verify.sh quick`, with `--self-test`), plus the extended
+`scripts/check_provider_wire_boundary.py`.
+
 ## Provider Implementations
 
 ### Shared wire kernel and provider cutover
@@ -628,7 +701,9 @@ affinity headers. 30-second chunk timeout. Dynamic model discovery via
 `/models`. OpenCode Go explicitly enables a required `x-opencode-session`
 affinity policy; it reads only `ChatRequest.context.session_id`, so missing or
 invalid context fails before network I/O. Other OpenAI-compatible providers do
-not emit this header by default.
+not emit this header by default. **OpenCode Go no longer routes through this
+provider** — it has its own multi-surface implementation (see Shared Provider
+Profile and Multi-Surface Dispatch (M011)).
 
 ### Additional Factories (`additional.rs`)
 
@@ -649,7 +724,7 @@ not emit this header by default.
 | `create_zenmux` | zenmux | (config-only) | String |
 | `create_kilo` | kilo | (config-only) | String |
 | `create_vercel_ai_gateway` | vercel_ai_gateway | (config-only) | String |
-| `create_opencode_go` | opencode_go | https://opencode.ai/zen/go/v1 | Credential |
+| `create_opencode_go` | opencode_go | shared-profile-owned (`https://opencode.ai/zen/go/v1`) | Credential |
 
 `create_minimax` takes `String` because the MiniMax endpoint is
 Anthropic-compatible and uses a different auth header.

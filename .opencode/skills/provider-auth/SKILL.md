@@ -22,7 +22,7 @@ to violate.
 |-------|----------|------|
 | Trait + registry | `crates/codegg-providers/src/provider_core.rs` | `Provider` trait, `ProviderRegistry`, `register_builtin`, `register_builtin_with_config`, `credential_capability_for`; derive current provider totals from the registry rather than pinning them here |
 | Setup catalog + durable builders | `crates/codegg-providers/src/setup_catalog.rs` | Pre-credential `ProviderDefinition` catalog (endpoint policy, capability, construction/probe strategy); `build_durable_provider` shared by `ProviderConnectionFactory` and the generic provisioner; Eggpool is a `ProxyPreset`, `custom` the generic compatible entry |
-| Backends | `anthropic.rs`, `openai.rs`, `google.rs`, `openrouter.rs`, `opencode_zen.rs`, `additional.rs`, `openai_compatible.rs`, `azure.rs`, `vertex.rs`, `bedrock.rs`, `copilot.rs`, `cloudflare.rs`, `gitlab.rs`, `eggpool.rs` | Per-provider request/stream/models mapping |
+| Backends | `anthropic.rs`, `openai.rs`, `google.rs`, `openrouter.rs`, `opencode_zen.rs`, `opencode_go.rs`, `provider_profile.rs`, `additional.rs`, `openai_compatible.rs`, `azure.rs`, `vertex.rs`, `bedrock.rs`, `copilot.rs`, `cloudflare.rs`, `gitlab.rs`, `eggpool.rs` | Per-provider request/stream/models mapping; `provider_profile.rs` owns the shared-profile adapter and `opencode_go.rs` the multi-surface dispatch |
 | Auth types | `crates/codegg-providers/src/auth_types.rs` | `AuthConfig`, `Credential`, `CredentialKind`, `CredentialCapability`, `CredentialStore`, `AuthResolver`, `AuthError`; `ExternalCommand` unsupported |
 | Auth CLI | `src/auth/cli.rs`, `src/auth/mod.rs` | `codegg auth set-key/status/logout`; the clap `AuthSubcommand` enum lives in `src/main.rs:508`, the handlers are `AuthCli` (`status`/`set_key`/`logout`, `cli.rs:93`,`:124`,`:161`) in `src/auth/cli.rs`; `src/auth` re-exports providers types |
 | Crypto | `crates/codegg-providers/src/crypto.rs`, `codegg_config::encryption` | AES-256-GCM + Argon2id; master key via `get_master_key()` (`CODEGG_MASTER_KEY`) |
@@ -90,6 +90,17 @@ to violate.
    connection revision; transient failures write nothing, and a verdict for a
    rotated-away revision must be discarded rather than applied to the new
    credential.
+9. **An unresolved wire mapping is not an authentication failure.** When a
+   model has no reviewed model-to-wire hint in the shared provider profile,
+   resolution fails closed with a local, zero-network error. Never default such
+   a model to Chat Completions, never infer a surface from a model prefix or
+   family, and never label the failure `auth` — that would corrupt the M010
+   credential axis, which real 401/403 inference feedback owns.
+10. **Per-surface credential headers are owned by the resolved surface.**
+    Chat and Responses send `Authorization: Bearer …`; Messages sends
+    `x-api-key`. A surface never receives the other's credential header, and
+    profile-supplied static headers may not collide with the transport-owned
+    credential, session, or content-type headers.
 
 ## Static Guards
 
@@ -97,6 +108,8 @@ to violate.
 bash scripts/check_provider_connections_m4_coverage.sh      # connection lifecycle coverage
 bash scripts/check_provider_connections_tombstone_compat.sh  # tombstone compat
 python3 scripts/check_provider_qualification.py             # catalog != credential verification
+python3 scripts/check_provider_wire_boundary.py             # only neutral eggpool contracts
+python3 scripts/check_provider_multi_surface_dispatch.py    # one surface per request, fails closed
 ```
 
 ## Testing

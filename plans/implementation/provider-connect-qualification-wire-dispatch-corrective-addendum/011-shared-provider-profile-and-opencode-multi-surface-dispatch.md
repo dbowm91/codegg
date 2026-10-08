@@ -1,17 +1,24 @@
 # Provider Connections Milestone 011 — Shared Provider Profile and OpenCode Go Multi-Surface Dispatch
 
-Status: blocked
+Status: implemented (closed at `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/011-status.md`)
 
-Blocker status 2026-10-07: hard dependency 1 (CodeGG M010) is **discharged** —
-closed at
+Blocker status 2026-10-07 (superseded): both hard dependencies were **discharged**.
+Hard dependency 1 (CodeGG M010) closed at
 `plans/closure/provider-connect-qualification-wire-dispatch-corrective-addendum/010-status.md`.
-Hard dependency 2 remains outstanding: the sibling EggPool Shared Provider
-Profile Contract M001 has no accepted closure revision (its registry lists M001
-`ready`, `plans/closure/` has no `shared-provider-profile-contract/` record,
-`eggpool-provider-profile` 0.1.0 is unpublished, and the work sits on the
-unmerged `codex/plan-shared-provider-profile-contract` branch). Because this
-plan consumes only the accepted closure revision and forbids copying the
-planning-branch implementation, no CodeGG-side preparatory work is authorized.
+Hard dependency 2 is satisfied: EggPool Shared Provider Profile Contract M001 closed at
+`../gorouter` `plans/closure/shared-provider-profile-contract/001-status.md`, its closure
+commit `087366af` is an ancestor of `main` and pushed, and the sibling registry publishes
+immutable downstream revision **`9ac6a1318e8db3c034b5ab54987317752d5ffea6`** for consumer
+use. This plan consumes only that accepted closure revision — never the planning branch.
+
+Pinning constraint found while verifying the dependency (not stated in the original plan):
+`eggpool-provider-profile` declares `eggpool-wire` as a **path** dependency, and Cargo
+resolves a git dependency's path dependencies against the *parent's* revision. CodeGG pins
+`eggpool-wire` at `f05b18b`, so adding the profile at `9ac6a131` without changing that pin
+links **two copies** of `eggpool-wire` 0.1.0 and yields two distinct `WireSurface` types,
+violating §4's "no second wire-surface vocabulary". WP-A must therefore add the profile and
+realign `eggpool-wire` to `9ac6a131` in the same change. `eggpool-model-routing` (`d70b5963`)
+depends only on `sha2` and is unaffected.
 
 Repository baseline: `d85ed67bef970cfe99e320a7876e7a51373b7e37`
 

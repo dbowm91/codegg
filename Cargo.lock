@@ -1024,6 +1024,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "eggfetch-core",
+ "eggpool-provider-profile",
  "eggpool-wire",
  "futures-util",
  "hex",
@@ -1757,9 +1758,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "eggpool-provider-profile"
+version = "0.1.0"
+source = "git+https://github.com/eggstack/eggpool?rev=9ac6a1318e8db3c034b5ab54987317752d5ffea6#9ac6a1318e8db3c034b5ab54987317752d5ffea6"
+dependencies = [
+ "eggpool-wire",
+ "serde",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "eggpool-wire"
 version = "0.1.0"
-source = "git+https://github.com/eggstack/eggpool?rev=f05b18b7358d9a4125d1e20c491151eec265e403#f05b18b7358d9a4125d1e20c491151eec265e403"
+source = "git+https://github.com/eggstack/eggpool?rev=9ac6a1318e8db3c034b5ab54987317752d5ffea6#9ac6a1318e8db3c034b5ab54987317752d5ffea6"
 dependencies = [
  "serde",
  "serde_json",
