@@ -33,13 +33,20 @@ Hosted evidence:
 - [CI / verify run 37734112906](https://github.com/dbowm91/codegg/actions/runs/37734112906) — SHA `4b3bad5a`, green at the same `12386/12386`.
 - [CI / verify run 37730586250](https://github.com/dbowm91/codegg/actions/runs/37730586250) — SHA `ce23b4e4` (the implementation commit), attempt 2 green. All three C001 trajectory tests pass on the hosted runner here.
 - [Desktop E2E run 37730586236](https://github.com/dbowm91/codegg/actions/runs/37730586236) — SHA `ce23b4e4`, green.
-- PR [#105](https://github.com/dbowm91/codegg/pull/105) — opened solely to obtain the required hosted evidence (this repository's CI triggers on `pull_request` and pushes to `main`, not on branch pushes). **Not merged.** The branch is a clean fast-forward over `origin/main` (`d85ed67b`, 0 behind).
+- [Desktop E2E run 37737818626](https://github.com/dbowm91/codegg/actions/runs/37737818626) — SHA `03c4c7e3` (the final tip), attempt 1 red on a pre-existing projection defect, **attempt 2 green** (`7 passing` in the m004 phase). This is the run that reflects the shipped tip; its first-attempt failure is diagnosed below and is not a C001 regression.
+- PR [#105](https://github.com/dbowm91/codegg/pull/105) — opened solely to obtain the required hosted evidence (this repository's CI triggers on `pull_request` and pushes to `main`, not on branch pushes). **Not merged.** The branch is a clean fast-forward over `origin/main` (`d85ed67b`, 0 behind). Current check state: `verify` pass, `e2e` pass, GitGuardian pass — `MERGEABLE / CLEAN`.
 
 Every green SHA above differs from the next only in `plans/` documents — for
 example `git diff --name-only ce23b4e4..4b3bad5a` — so all of them cover the
 identical production/test tree. The two runs on `4a7567d4` are the simplest
 statement of the result: both hosted workflows, green on the closure revision
 itself.
+
+The branch tip has since advanced to `03c4c7e3` (a `plans/`-only commit, this
+record's own correction). Its hosted runs are `verify` 37737818615 green and
+Desktop E2E 37737818626 green on attempt 2. The tip therefore carries both
+workflows green as well, and the production/test tree is byte-identical to
+`4a7567d4` throughout.
 
 ### Hosted first attempt — recorded, not hidden
 
@@ -96,10 +103,95 @@ attempt**, from a tree that differs from the failing `4b3bad5a` only in
 `plans/` documents. Two consecutive failures followed by a clean pass on
 unchanged desktop code is the signature of a flake.
 
-All three failures are pre-existing runner-sensitive flakes in unrelated
-subsystems, not C001 regressions. They are left as-is: fixing them would widen
-this corrective past its stated scope, and none is on a provider decision path.
-Each should be triaged separately.
+### The fourth failure is a different, diagnosed defect — not one of the above
+
+A fourth Desktop E2E failure appeared on the final tip, in run
+[37737818626](https://github.com/dbowm91/codegg/actions/runs/37737818626)
+attempt 1 at SHA `03c4c7e3`. It is **not** the same defect as the three above
+and must not be filed with them:
+
+| | |
+|---|---|
+| Failing test | `M004 ... > runs a deterministic live turn: assistant text, denied write, completion` (`apps/desktop/e2e/specs/m004-session.e2e.ts:183`) |
+| Symptom | `completed assistant transcript never rendered` |
+| Not | a React renderer-ordering / `data-testid` timing issue |
+
+Attempt 2 of the identical SHA is **green**, and the specific test passes
+(`7 passing`), so the failure is nondeterministic. The WebDriver logs in the
+run artifact localize it precisely:
+
+- `[data-testid="message-list"]` was polled **600 times over 60 seconds** and
+  returned `assistantE2E deterministic turn complete.assistantE2E deterministic
+  turn complete.` on **every** poll.
+- The substring `Examining your request.` appeared **zero times** in the whole
+  log. In the green run both texts are present on the *first* poll.
+- The turn still reached `completed` ~200 ms after the permission denial, and
+  `truncated-messages` was never rendered, so the projection's bounded window is
+  not implicated.
+
+So the first assistant message — the one carrying the tool call — was absent
+from the projection the daemon produced, while the final one arrived intact.
+
+**Root cause (traced, high confidence).** Assistant text reaches the projection
+only as `TurnTextDelta` → `MessageAppended`
+(`src/agent/provider_turn.rs:468-476` → `src/core/mod.rs:428-436` →
+`crates/codegg-core/src/projection_replay/publication.rs:63-81`), and
+`should_persist` (`src/core/event_log.rs:44-47`) deliberately **excludes**
+`TurnTextDelta`. Streamed assistant text is therefore *never durable*. The loss
+happens when a mid-turn resync installs a snapshot that cannot contain it:
+
+1. The permission round-trip stalls the driver long enough for a live history
+   gap (`crates/codegg-protocol/src/projection/consumer.rs:440-444`); a full
+   subscription channel flips to `ResyncRequired`
+   (`crates/codegg-core/src/projection_replay/subscription.rs:206-212`).
+2. `driver.rs:187-228` (`converge`) then issues a fresh `ProjectionSubscribe`.
+3. That path installs a **durable-only** snapshot built at
+   `src/core/daemon_refresh.rs:45-166`, which populates runs/worktrees/run-groups
+   but never `active_turn`/`messages`.
+4. `consumer.rs:494-513` (`accept_replay`) replaces the snapshot wholesale and
+   advances the cursor to `high_water_seq`
+   (`src/core/daemon_projection.rs:333-337`).
+
+Because the cursor is already past those sequences and the events were never
+durable, the `MessageAppended` envelopes already folded into `active_turn` are
+discarded and **can never be replayed**. The turn still completes, because
+`TurnCompleted` and the final delta arrive on the new subscription — which is
+exactly the observed shape. `apps/desktop/src-tauri/src/present.rs:230-243`
+renders messages solely from `snapshot.active_turn`.
+
+Two secondary paths reach the same symptom and are not excluded:
+`reducer.rs:357-366` (`TurnStarted` installs a fresh empty turn, discarding
+accumulated messages) and the `orphan_message` drop at `reducer.rs:369-376`
+(a `MessageAppended` arriving with no `active_turn`).
+
+**This is pre-existing and outside this corrective.** The failing and green
+revisions differ only in `plans/` documents:
+
+```text
+git diff --name-only 4a7567d4..03c4c7e3
+  plans/closure/provider-connect-qualification-wire-dispatch-post-closure-corrective/001-status.md
+  plans/registry.md
+```
+
+No provider decision path is involved: the M010 credential observer acts on the
+already-terminal `Result` of `stream_with_retry`
+(`src/agent/provider_turn.rs:72-105`) and is explicitly non-blocking
+(`src/core/provider_qualification.rs:98-110` spawns the write). It cannot
+reorder or drop envelopes already published upstream. It is, however, *bound* in
+this fixture — `selectMockModel` (`apps/desktop/e2e/fixture-client.ts:214`)
+creates a real `openai` provider connection — so the observer does run here; it
+simply cannot cause this.
+
+The spec's own comment is also inaccurate and is worth correcting in the owning
+subsystem: it says the assistant tool-call message "may not be committed to the
+session projection until the tool result is recorded". Messages are appended as
+each delta streams, not at tool-result time; the real hazard is that they are
+projection-only and unreplayable.
+
+The three earlier flakes and this defect are all pre-existing and in unrelated
+subsystems. None is on a provider decision path, so fixing them would widen this
+corrective past its stated scope. Each — and this one with the mechanism above —
+warrants separate triage by the owning subsystem.
 
 ## 1. Executive finding
 
@@ -209,7 +301,7 @@ the seam must not be converted back into process or environment global state.
 | Workspace Clippy | `cargo clippy --workspace --all-targets -- -D warnings` | pass — clean |
 | Canonical quick verification | `bash scripts/verify.sh quick` | pass — exit 0 |
 | Hosted canonical CI | run 37736136266 (closure revision `4a7567d4`, first attempt); run 37734112906 (`4b3bad5a`); run 37730586250 attempt 2 (`ce23b4e4`) | pass — 12386/12386, 5 skipped, 0 failed |
-| Hosted path-gated workflow | run 37736136595 (Desktop E2E, `4a7567d4`, first attempt); run 37730586236 (`ce23b4e4`) | pass |
+| Hosted path-gated workflow | run 37736136595 (Desktop E2E, `4a7567d4`, first attempt); run 37730586236 (`ce23b4e4`); run 37737818626 attempt 2 (Desktop E2E, tip `03c4c7e3`, after attempt 1 hit the projection defect diagnosed in "The fourth failure is a different, diagnosed defect") | pass |
 
 ## 5. WP-B — Pin/dependency audit
 
@@ -349,15 +441,26 @@ silently dropped.
 
 ### Carried forward, not closed by this corrective
 
-Three pre-existing runner-sensitive flakes in unrelated subsystems surfaced
-hosted (detailed above): `goal::checkpoint` tail ordering, `codegg-client`'s
-`session_projection_driver`, and one `apps/desktop` renderer test. All three are
-outside this corrective's blast radius, and all three are green on a re-run of
-the same SHA. They are **not** claimed as fixed and **not** silently dropped —
-each warrants separate triage, since a flake that reproduces is a real defect.
-No registry plan was registered for them here because doing so would require
-judging subsystems this corrective never read; that judgment belongs to whoever
-owns those plans.
+Four pre-existing hosted failures in unrelated subsystems surfaced. Three are
+runner-sensitive flakes: `goal::checkpoint` tail ordering, `codegg-client`'s
+`session_projection_driver`, and one `apps/desktop` renderer test (detailed
+above). All three are green on a re-run of the same SHA.
+
+The fourth is a **diagnosed projection defect**, not a flake of the same kind:
+in Desktop E2E run 37737818626 attempt 1, a mid-turn resync replaced the
+client snapshot with a durable-only one and advanced the cursor past
+never-durable `TurnTextDelta` envelopes, so an already-rendered assistant
+message was permanently lost. `should_persist` excludes `TurnTextDelta`
+(`src/core/event_log.rs:44-47`), so the dropped events can never be replayed.
+Full mechanism, file:line chain, and the two secondary paths are in "The fourth failure is a different, diagnosed defect".
+
+All four are outside this corrective's blast radius and none is on a provider
+decision path. They are **not** claimed as fixed and **not** silently dropped.
+Each warrants separate triage by the owning subsystem — the projection one most
+of all, since unlike the flakes it is a deterministic *design* gap that will
+recur whenever a resync lands mid-turn. No registry plan was registered here
+because doing so would require judging subsystems this corrective never read;
+that judgment belongs to whoever owns those plans.
 
 ## 11. Closure disposition
 
