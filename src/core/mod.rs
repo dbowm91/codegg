@@ -63,6 +63,26 @@ pub trait CoreClient: Send + Sync {
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError>;
     fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>>;
+    /// Narrow this connection to a session-scoped event filter.
+    ///
+    /// The handshake subscription uses `session_id: None`, which the daemon
+    /// treats as *global only* — it matches just the events that carry no
+    /// session id. Turn lifecycle events always carry one, so without this a
+    /// client never receives `TurnStarted`/`TurnCompleted` and cannot tell a
+    /// finished turn from a running one.
+    ///
+    /// Filters accumulate per connection, so calling this narrows delivery
+    /// without disturbing anything already subscribed.
+    async fn subscribe_session_events(
+        &self,
+        _session_id: String,
+        _from_event_seq: Option<u64>,
+    ) -> Result<(), AppError> {
+        // Clients whose transport does not model session-scoped filters (and
+        // in-process cores that deliver through the local bus) keep their
+        // existing behaviour.
+        Ok(())
+    }
 }
 
 /// In-process core client. Now delegates to CoreDaemon.

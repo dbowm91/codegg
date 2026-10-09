@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -465,7 +464,16 @@ pub struct ModelInfo {
 }
 
 pub struct ProviderRegistry {
-    providers: HashMap<String, Box<dyn Provider>>,
+    /// Keyed by provider id in **sorted** order.
+    ///
+    /// `ProviderRegistry::list()` feeds the model catalog, so its order decides
+    /// which provider's models come first — and consumers fall back to
+    /// `models[0]` when they have no explicit selection. A `HashMap` iterates
+    /// in `RandomState` order, which is reseeded per process, so the "first"
+    /// provider changed on every launch. That silently picked a different
+    /// provider (and a different model) each run, which in turn routed turns to
+    /// whichever backend hashed first. Sorted keys make the catalog stable.
+    providers: BTreeMap<String, Box<dyn Provider>>,
 }
 
 impl Default for ProviderRegistry {
@@ -477,7 +485,7 @@ impl Default for ProviderRegistry {
 impl ProviderRegistry {
     pub fn new() -> Self {
         Self {
-            providers: HashMap::new(),
+            providers: BTreeMap::new(),
         }
     }
 
@@ -1687,6 +1695,69 @@ mod tests {
         }
         async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
             Ok(vec![])
+        }
+    }
+
+    struct NamedProvider(&'static str);
+
+    #[async_trait]
+    impl Provider for NamedProvider {
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn name(&self) -> &str {
+            "Named"
+        }
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(NamedProvider(self.0))
+        }
+        async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+        async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+            Ok(vec![])
+        }
+    }
+
+    /// Regression: `list()` orders the model catalog, and consumers that have
+    /// no explicit selection fall back to `models[0]`. Backed by a `HashMap`,
+    /// it iterated in `RandomState` order — reseeded per process — so the
+    /// "first" provider, and therefore the model a session silently got,
+    /// changed between launches.
+    #[test]
+    fn provider_list_order_is_sorted_and_stable_across_constructions() {
+        const IDS: [&str; 6] = [
+            "openai",
+            "anthropic",
+            "opencode_go",
+            "generalcompute",
+            "groq",
+            "cerebras",
+        ];
+        let mut expected: Vec<String> = IDS.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+
+        let mut first_seen: Option<Vec<String>> = None;
+        for _ in 0..32 {
+            let mut registry = ProviderRegistry::new();
+            // Register in a deliberately non-sorted order.
+            for id in IDS.iter().rev() {
+                registry.register(NamedProvider(id));
+            }
+            let listed: Vec<String> = registry.list().iter().map(|p| p.id().to_string()).collect();
+            assert_eq!(
+                listed, expected,
+                "list() must return providers sorted by id, regardless of registration order"
+            );
+            match &first_seen {
+                None => first_seen = Some(listed),
+                Some(previous) => {
+                    assert_eq!(
+                        &listed, previous,
+                        "provider order must not vary between registries"
+                    )
+                }
+            }
         }
     }
 

@@ -218,6 +218,10 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
 
     // Materialize lightweight tabs.
     let heavy_target = apply_restore_plan(&mut app.project_tabs, &plan);
+    // The restored tab carries the user's persisted `provider/model` choice;
+    // adopt it as the active model so the next catalog refresh cannot decide
+    // the session's model on the frontend's behalf.
+    app.adopt_persisted_tab_model();
     app.refresh_project_command_registry();
 
     // Persist the normalized manifest. The TUI's existing save

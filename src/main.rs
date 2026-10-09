@@ -2839,15 +2839,12 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             lsp_service.clone(),
         ))
     };
-    // Subscribe to the daemon event stream before any turn can start. In
+    // as one unit so the subscription can never be skipped. In
     // socket mode the agent loop runs inside the daemon, so streaming text,
     // turn completion, and turn failure only ever reach this process over
     // this subscription. Without it the TUI optimistically showed "working"
     // forever, even when the turn had already failed.
-    if let Some(client) = app.core_client.clone() {
-        app.set_core_event_rx(client.subscribe());
-    }
-    app.set_core_client(core_client);
+    app.attach_core_client(core_client);
 
     // Top-level --approval-mode/--sandbox/--yolo seed the
     // daemon-owned preference once at startup through the single shared
@@ -3034,6 +3031,12 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // event loop. The completion lands as a `ProjectCatalogRefreshed`
     // TuiCommand and is ignored on older daemons (capability not
     // advertised).
+    // The frontend command channel has to exist before anything is enqueued on
+    // it. `run_event_loop` only installed one once it was already running, so
+    // the catalog refresh and manifest restore below used to find a `None`
+    // sender and drop their work without a diagnostic.
+    app.ensure_tui_cmd_channel();
+
     if let (Some(_), true) = (app.core_client.as_ref(), !cli.no_session) {
         app.refresh_project_catalog();
     }

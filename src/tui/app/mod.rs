@@ -111,6 +111,12 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 /// mistaken for a stall.
 pub const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Capacity of the frontend command channel.
+///
+/// Owned by [`App::ensure_tui_cmd_channel`] so startup can enqueue before the
+/// event loop is running; `run_event_loop` reuses the same channel.
+pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
+
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
 /// default. Bodies that exceed this limit are omitted so the snapshot
@@ -281,6 +287,13 @@ pub struct App {
     pub context_hint: String,
     pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
+    /// Receiver half of the frontend command channel.
+    ///
+    /// Held so startup work that needs to enqueue [`TuiCommand`]s can run
+    /// *before* the event loop starts. Previously the channel was created
+    /// inside `run_event_loop`, so anything enqueued beforehand — the
+    /// manifest restore, the project catalog refresh — was dropped silently.
+    pub tui_cmd_rx: Option<mpsc::Receiver<TuiCommand>>,
     pub remote_event_rx: Option<mpsc::Receiver<serde_json::Value>>,
     pub remote_send_tx: Option<mpsc::Sender<RemoteTuiMessage>>,
     /// Daemon event stream in socket mode.
@@ -832,6 +845,7 @@ impl App {
             context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
+            tui_cmd_rx: None,
             remote_event_rx: None,
             remote_send_tx: None,
             core_event_rx: None,
@@ -1348,6 +1362,7 @@ impl App {
             context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
+            tui_cmd_rx: None,
             remote_event_rx: None,
             remote_send_tx: None,
             core_event_rx: None,
@@ -1605,6 +1620,59 @@ impl App {
         self.core_client = Some(client);
     }
 
+    /// Create the frontend command channel if it does not exist yet.
+    ///
+    /// Call this before enqueuing startup work. `run_event_loop` installs a
+    /// channel only once it is already running, so a caller that enqueued
+    /// earlier found `tui_cmd_tx == None` and the work was dropped without a
+    /// diagnostic — which is how the persisted manifest (tabs, model, agent)
+    /// silently stopped being restored.
+    pub fn ensure_tui_cmd_channel(&mut self) {
+        if self.tui_cmd_tx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel(TUI_CMD_CHANNEL_CAPACITY);
+        self.tui_cmd_tx = Some(tx);
+        self.tui_cmd_rx = Some(rx);
+    }
+
+    /// Attach the core client together with its event stream.
+    ///
+    /// The TUI learns turn outcomes *only* through `core_event_rx`. Reading the
+    /// client back off the app after storing it silently skips the
+    /// subscription, because the field is still `None` at that point — the
+    /// frontend then stays pinned on `Working` after the turn has already
+    /// finished in the daemon. Binding both together makes that ordering
+    /// unrepresentable.
+    pub fn attach_core_client(&mut self, client: Arc<dyn CoreClient>) {
+        let events = client.subscribe();
+        self.set_core_event_rx(events);
+        self.set_core_client(client);
+    }
+
+    /// Narrow the daemon's event filter to `session_id` for this connection.
+    ///
+    /// The client's handshake subscription is global-only *by design* and so
+    /// never matches session-scoped events. Filters accumulate per connection,
+    /// therefore this adds delivery without disturbing the existing stream.
+    /// Safe to call repeatedly: the daemon simply appends another filter.
+    pub fn ensure_session_event_stream(&self, session_id: &str) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        // Session binding is exercised by synchronous tests that have no
+        // runtime; the socket frame can only be written from inside one.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let session_id = session_id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = client.subscribe_session_events(session_id, None).await {
+                tracing::warn!(%error, "failed to narrow the event stream to the active session");
+            }
+        });
+    }
+
     /// Store the latest completed security review receipt. Subsequent
     /// calls overwrite the previous one. The user can reopen the result
     /// panel via `/security-review-show`.
@@ -1784,10 +1852,14 @@ impl App {
     }
 
     fn send_remote_message(&self, msg: RemoteTuiMessage) {
-        if let Some(ref tx) = self.remote_send_tx {
-            if let Err(error) = tx.try_send(msg) {
-                tracing::warn!(?error, "remote TUI outbound queue is full or closed");
-            }
+        let Some(ref tx) = self.remote_send_tx else {
+            // Previously a silent no-op that dropped the prompt on the floor
+            // and left the session spinning. Never let this fail quietly.
+            tracing::warn!("remote TUI outbound channel is not configured; dropping message");
+            return;
+        };
+        if let Err(error) = tx.try_send(msg) {
+            tracing::warn!(?error, "remote TUI outbound queue is full or closed");
         }
     }
 
@@ -1798,6 +1870,11 @@ impl App {
         let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
             return;
         };
+        // Belt and braces: make sure the session filter is registered before
+        // the turn starts, even when the session was bound through a path that
+        // does not go through `set_session`. A turn whose events never reach
+        // this connection looks identical to a turn that never ends.
+        self.ensure_session_event_stream(&session_id);
         let messages = self.build_provider_context();
         let agents =
             match crate::protocol_conversions::agents_to_dtos(self.agent_state.agents.clone()) {
@@ -9821,6 +9898,7 @@ impl App {
         };
         let workspace_id = sess.workspace_id.clone();
         self.session_state.session = Some(sess);
+        self.ensure_session_event_stream(&sess_id);
         self.ui_state
             .routes
             .navigate_to(Route::Session(sess_id.clone()));
@@ -10840,9 +10918,51 @@ impl App {
             .position(|m| m == &self.agent_state.current_model)
         {
             self.agent_state.model_idx = idx;
-        } else if !self.agent_state.models.is_empty() {
+        } else if self.agent_state.current_model.is_empty() && !self.agent_state.models.is_empty() {
+            // Only adopt a catalog entry when there is genuinely no selection.
+            //
+            // This used to fire whenever the current model was merely absent
+            // from a refreshed catalog, silently replacing it with
+            // `models[0]`. Which entry that is depends on provider iteration
+            // order, so an unchanged and still-valid selection could turn into
+            // a different provider on the next launch. A selection the
+            // catalog does not know about is left alone; the daemon resolves
+            // the durable selection authoritatively for the session.
             self.agent_state.current_model = self.agent_state.models[0].clone();
             self.agent_state.model_idx = 0;
+        }
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+    }
+
+    /// Adopt the persisted per-tab model selection as the active model.
+    ///
+    /// The tab manifest stores the user's choice as a qualified
+    /// `provider/model` id. Nothing else copied it into
+    /// `agent_state.current_model`, so a restored tab kept the compile-time
+    /// placeholder and the next catalog refresh decided the model instead.
+    pub fn adopt_persisted_tab_model(&mut self) {
+        let persisted = self
+            .project_tabs
+            .active()
+            .map(|tab| tab.model.trim().to_string())
+            .filter(|model| !model.is_empty());
+        let Some(model) = persisted else {
+            return;
+        };
+        if self.agent_state.current_model == model {
+            return;
+        }
+        tracing::debug!(target: "codegg::tui::app", %model, "adopted persisted tab model");
+        self.agent_state.current_model = model;
+        if let Some(idx) = self
+            .agent_state
+            .models
+            .iter()
+            .position(|m| m == &self.agent_state.current_model)
+        {
+            self.agent_state.model_idx = idx;
         }
         self.dialog_state
             .model_dialog

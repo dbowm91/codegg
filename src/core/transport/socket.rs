@@ -102,6 +102,17 @@ impl CoreClient for SocketCoreClient {
     fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
         self.inner.subscribe()
     }
+
+    async fn subscribe_session_events(
+        &self,
+        session_id: String,
+        from_event_seq: Option<u64>,
+    ) -> Result<(), AppError> {
+        self.inner
+            .subscribe_session_events(session_id, from_event_seq)
+            .await
+            .map_err(client_error)
+    }
 }
 
 #[cfg(test)]

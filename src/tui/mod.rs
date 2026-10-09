@@ -1637,6 +1637,253 @@ mod async_cmd_tests {
         assert!(!app.check_turn_stall());
     }
 
+    // --- Prompt transport selection (socket-daemon mode) ----------------
+    //
+    // Regression: the socket-daemon frontend sets `AppMode::RemoteCore` but
+    // never installs a `remote_send_tx` — only the WebSocket attach path owns
+    // one. `send_prompt` branched on the mode alone and pushed every prompt
+    // into the absent channel: a silent no-op that pinned the session on
+    // `Working` forever, for every model and provider.
+
+    #[test]
+    fn socket_daemon_mode_never_takes_the_remote_input_path() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "unix:///tmp/core.sock".into(),
+        };
+        // The socket path owns a core client, never a remote TUI channel.
+        assert!(app.remote_send_tx.is_none());
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        // With no session bound there is nothing to submit into, and the
+        // composer must say so instead of spinning.
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a prompt with no bound session must not stay pinned on Working"
+        );
+        assert!(
+            !app.prompt_state.pending_send,
+            "a dropped prompt must not leave pending_send latched"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("not submitted")),
+            "the dropped prompt must be visible, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn attach_mode_with_a_remote_channel_still_uses_the_remote_input_path() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Working,
+            "the remote attach path owns the prompt once a channel exists"
+        );
+        assert!(!app.prompt_state.pending_send);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            !toasts.iter().any(|t| t.contains("not submitted")),
+            "the attach path must not be treated as socket-daemon, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn attaching_the_core_client_always_establishes_an_event_stream() {
+        struct StubClient;
+
+        #[async_trait::async_trait]
+        impl crate::core::CoreClient for StubClient {
+            async fn request(
+                &self,
+                _request: crate::protocol::core::RequestEnvelope<
+                    crate::protocol::core::CoreRequest,
+                >,
+            ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+                Ok(crate::protocol::core::CoreResponse::Error {
+                    code: "stub".into(),
+                    message: "stub".into(),
+                })
+            }
+
+            fn subscribe(
+                &self,
+            ) -> tokio::sync::mpsc::Receiver<
+                crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+            > {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            }
+        }
+
+        let mut app = make_test_app();
+        assert!(
+            app.core_event_rx.is_none(),
+            "precondition: the app starts with no event stream"
+        );
+
+        app.attach_core_client(std::sync::Arc::new(StubClient));
+
+        assert!(app.core_client.is_some());
+        assert!(
+            app.core_event_rx.is_some(),
+            "a client attached without an event stream leaves the TUI blind to turn \
+             outcomes, so a finished turn stays pinned on Working"
+        );
+    }
+
+    #[tokio::test]
+    async fn narrowing_the_event_stream_reaches_the_client_with_the_session_id() {
+        struct RecordingClient(tokio::sync::mpsc::UnboundedSender<String>);
+
+        #[async_trait::async_trait]
+        impl crate::core::CoreClient for RecordingClient {
+            async fn request(
+                &self,
+                _request: crate::protocol::core::RequestEnvelope<
+                    crate::protocol::core::CoreRequest,
+                >,
+            ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+                Ok(crate::protocol::core::CoreResponse::Error {
+                    code: "stub".into(),
+                    message: "stub".into(),
+                })
+            }
+
+            fn subscribe(
+                &self,
+            ) -> tokio::sync::mpsc::Receiver<
+                crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+            > {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            }
+
+            async fn subscribe_session_events(
+                &self,
+                session_id: String,
+                _from_event_seq: Option<u64>,
+            ) -> Result<(), crate::error::AppError> {
+                let _ = self.0.send(session_id);
+                Ok(())
+            }
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = make_test_app();
+        app.attach_core_client(std::sync::Arc::new(RecordingClient(tx)));
+
+        app.ensure_session_event_stream("s-42");
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the client must be asked to narrow the filter")
+            .expect("the channel must stay open");
+        assert_eq!(
+            got, "s-42",
+            "the daemon filter must name the session whose events the TUI needs"
+        );
+    }
+
+    // A refreshed catalog that does not know the current model must not
+    // silently replace it. Adopting `models[0]` made the session's model a
+    // function of provider iteration order, which differed per process.
+    #[test]
+    fn refreshing_models_does_not_discard_an_existing_selection() {
+        let mut app = make_test_app();
+        app.agent_state.current_model = "opencode_go/space-bunny".to_string();
+
+        app.set_models(vec![
+            "generalcompute/deepseek-v3.1".to_string(),
+            "openai/gpt-4.1".to_string(),
+        ]);
+
+        assert_eq!(
+            app.agent_state.current_model, "opencode_go/space-bunny",
+            "a selection missing from a refreshed catalog must be preserved"
+        );
+    }
+
+    #[test]
+    fn refreshing_models_adopts_a_catalog_entry_when_none_is_selected() {
+        let mut app = make_test_app();
+        app.agent_state.current_model = String::new();
+
+        app.set_models(vec![
+            "generalcompute/deepseek-v3.1".to_string(),
+            "openai/gpt-4.1".to_string(),
+        ]);
+
+        assert_eq!(
+            app.agent_state.current_model, "generalcompute/deepseek-v3.1",
+            "with no selection at all the first catalog entry is the only choice"
+        );
+    }
+
+    #[test]
+    fn restoring_a_tab_adopts_its_persisted_model() {
+        let mut app = make_test_app();
+        app.agent_state.current_model = "opencode_zen/big-pickle".to_string();
+
+        let mut tab = crate::tui::app::state::project_tabs::ProjectTabState::empty(
+            crate::tui::app::state::project_tabs::ProjectTabId::new(),
+            "codegg".to_string(),
+        );
+        tab.model = "opencode_go/space-bunny".to_string();
+        let tab_id = app.project_tabs.add_tab(tab);
+        app.project_tabs.set_active(&tab_id);
+
+        app.adopt_persisted_tab_model();
+
+        assert_eq!(
+            app.agent_state.current_model, "opencode_go/space-bunny",
+            "the persisted per-tab choice must become the active model"
+        );
+    }
+
+    #[test]
+    fn the_command_channel_exists_before_the_event_loop_runs() {
+        let mut app = make_test_app();
+        assert!(app.tui_cmd_tx.is_none(), "precondition: not wired yet");
+
+        app.ensure_tui_cmd_channel();
+
+        assert!(
+            app.tui_cmd_tx.is_some() && app.tui_cmd_rx.is_some(),
+            "startup work enqueued before run_event_loop must have a channel to land on"
+        );
+        // Idempotent: the event loop reuses this channel rather than replacing
+        // it, so anything queued during startup is still delivered.
+        let first = app.tui_cmd_tx.clone().expect("sender");
+        app.ensure_tui_cmd_channel();
+        assert!(
+            app.tui_cmd_tx.as_ref().map(|tx| tx.same_channel(&first)) == Some(true),
+            "a second call must reuse the existing channel"
+        );
+    }
+
     #[test]
     fn turn_completed_returns_to_idle() {
         let mut app = make_test_app();

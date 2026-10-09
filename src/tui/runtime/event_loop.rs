@@ -41,11 +41,18 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
     let mut terminal = create_terminal()?;
     let mut reader = EventStream::new();
     let mut bus_rx = GlobalEventBus::subscribe();
-    let (cmd_tx, mut cmd_rx) = mpsc::channel(100);
-    if app.tui_cmd_tx.is_none() {
-        tracing::warn!("No TUI command sender available in app, using new channel");
-    }
-    app.tui_cmd_tx = Some(cmd_tx);
+    // Reuse the channel created during startup when there is one, so work
+    // enqueued before the loop started (manifest restore, project catalog
+    // refresh) is actually delivered instead of dropped.
+    let mut cmd_rx = match app.tui_cmd_rx.take() {
+        Some(rx) => rx,
+        None => {
+            tracing::warn!("No TUI command channel prepared in app, creating one now");
+            let (tx, rx) = mpsc::channel(app::TUI_CMD_CHANNEL_CAPACITY);
+            app.tui_cmd_tx = Some(tx);
+            rx
+        }
+    };
 
     let mut last_render: Option<Instant> = None;
     let mut needs_render = true;

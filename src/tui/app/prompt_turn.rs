@@ -255,11 +255,37 @@ impl App {
         }
         self.prompt_state.prompt.clear();
         self.prompt_state.show_completions = false;
-        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+        // Transport selection follows what the app actually holds, not
+        // `AppMode` alone. `RemoteCore` covers two different frontends: the
+        // WebSocket attach path (a TUI served over `/tui`, which owns
+        // `remote_send_tx`) and the socket-daemon path, which owns only
+        // `core_client` and leaves `remote_send_tx` unset. Treating the latter
+        // as "remote" pushed the prompt into an absent channel — a silent
+        // no-op that pinned the session in `Working` forever, for every model
+        // and provider.
+        let remote_transport = matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
+            && self.remote_send_tx.is_some();
+        let socket_daemon = matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
+            && self.remote_send_tx.is_none();
+        if remote_transport {
             self.send_remote_message(RemoteTuiMessage::Input {
                 text: text.trim().to_string(),
             });
             self.prompt_state.pending_send = false;
+        } else if socket_daemon {
+            if self.session_state.session.is_some() {
+                self.dispatch_turn_submit_request(trimmed_text.clone());
+                self.prompt_state.pending_send = false;
+            } else {
+                // Nothing can carry this prompt. Surface the failure instead of
+                // leaving the composer spinning.
+                self.prompt_state.pending_send = false;
+                self.set_session_status(SessionStatus::Error);
+                self.messages_state
+                    .toasts
+                    .error("No session bound to the daemon connection; prompt was not submitted");
+                return;
+            }
         } else {
             self.prompt_state.pending_send = true;
             if let Some((context, route, request_id)) = pending_session_route {
