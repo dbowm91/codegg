@@ -98,8 +98,18 @@ use std::collections::HashMap;
 #[allow(unused_imports)]
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, RwLock};
+
+/// How long a `Working` turn may go without any event before the TUI calls it
+/// stalled.
+///
+/// The TUI enters `Working` optimistically on submit and only a terminal turn
+/// event clears it, so without a bound the spinner runs indefinitely with no
+/// error text. The threshold sits above the core's own silence guards (90s
+/// provider idle, 120s provider setup) so an ordinary slow turn is never
+/// mistaken for a stall.
+pub const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
@@ -664,6 +674,7 @@ impl App {
             session_state: SessionState {
                 session: None,
                 session_status: SessionStatus::Idle,
+                working_since: None,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1179,6 +1190,7 @@ impl App {
             session_state: SessionState {
                 session: None,
                 session_status: SessionStatus::Idle,
+                working_since: None,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1424,6 +1436,47 @@ impl App {
         self.core_event_rx = Some(rx);
     }
 
+    /// Set the session status, arming or disarming the stall watchdog.
+    ///
+    /// `Working` is entered optimistically on submit and is only cleared by a
+    /// terminal turn event, so every production writer goes through here rather
+    /// than assigning `session_status` directly.
+    pub fn set_session_status(&mut self, status: SessionStatus) {
+        if status == SessionStatus::Working {
+            if !matches!(self.session_state.session_status, SessionStatus::Working) {
+                self.session_state.working_since = Some(Instant::now());
+            }
+        } else {
+            self.session_state.working_since = None;
+        }
+        self.session_state.session_status = status;
+    }
+
+    /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
+    ///
+    /// Returns `true` when the watchdog fired and the caller should redraw. The
+    /// turn is reported as failed and the status leaves `Working`, so a stalled
+    /// turn surfaces as an error instead of an indefinite spinner.
+    pub fn check_turn_stall(&mut self) -> bool {
+        if !matches!(self.session_state.session_status, SessionStatus::Working) {
+            return false;
+        }
+        let Some(since) = self.session_state.working_since else {
+            self.session_state.working_since = Some(Instant::now());
+            return false;
+        };
+        if since.elapsed() < TURN_STALL_TIMEOUT {
+            return false;
+        }
+        self.session_state.working_since = None;
+        self.session_state.session_status = SessionStatus::Error;
+        self.messages_state.toasts.error(
+            "turn stalled: the core produced no event for over 5 minutes. \
+             The turn may still be running — press esc to cancel it.",
+        );
+        true
+    }
+
     /// Apply one daemon `CoreEvent`.
     ///
     /// This is the socket-mode counterpart of the in-process `AppEvent` path.
@@ -1434,6 +1487,10 @@ impl App {
     /// Returns `true` when the event changed visible state, so the caller can
     /// request a redraw.
     pub fn apply_core_event(&mut self, event: crate::protocol::core::CoreEvent) -> bool {
+        // Any turn event is proof the turn is alive, so it rearms the watchdog.
+        if matches!(self.session_state.session_status, SessionStatus::Working) {
+            self.session_state.working_since = Some(Instant::now());
+        }
         use crate::protocol::core::CoreEvent as E;
         match event {
             E::TurnStarted { .. } => {
@@ -3570,7 +3627,7 @@ impl App {
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 self.reset_live_token_estimate();
-                self.session_state.session_status = SessionStatus::Working;
+                self.set_session_status(SessionStatus::Working);
                 if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
                     self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
                     self.prompt_state.pending_send = false;
@@ -11143,7 +11200,7 @@ impl App {
         self.dialog_state.question_dialog = Some(QuestionDialog::new(questions));
         self.dialog_state.question_session_id = Some(session_id);
         self.open_dialog(Dialog::Question);
-        self.session_state.session_status = SessionStatus::Working;
+        self.set_session_status(SessionStatus::Working);
     }
 
     pub fn submit_question_answers(&mut self) {

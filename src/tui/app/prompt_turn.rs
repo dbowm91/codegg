@@ -273,7 +273,7 @@ impl App {
                 self.prompt_state.prompt.set_waiting(true);
             }
         }
-        self.session_state.session_status = SessionStatus::Working;
+        self.set_session_status(SessionStatus::Working);
         self.reset_live_token_estimate();
 
         // Navigate to session view when user sends a prompt

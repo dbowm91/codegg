@@ -375,6 +375,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                         needs_render = true;
                     }
                 }
+                if app.check_turn_stall() {
+                    needs_render = true;
+                }
                 if app.streaming_active
                     || matches!(app.session_state.session_status, SessionStatus::Working)
                     || !app.messages_state.toasts.is_empty()

@@ -71,6 +71,16 @@ pub struct ChangedFile {
 pub struct SessionState {
     pub session: Option<Session>,
     pub session_status: SessionStatus,
+    /// When the current `Working` status was entered, and when the TUI last saw
+    /// any turn event for it.
+    ///
+    /// The TUI enters `Working` optimistically when a prompt is submitted, so
+    /// only a `TurnCompleted` / `TurnFailed` / `Error` event clears it. If the
+    /// daemon never delivers a terminal event — a turn that stalls upstream, or
+    /// a core that goes away mid-turn — nothing else ever clears the status and
+    /// the spinner runs forever with no error text anywhere. This timestamp is
+    /// the stall watchdog's input; it is refreshed by every incoming turn event.
+    pub working_since: Option<std::time::Instant>,
     pub token_in: u64,
     pub token_out: u64,
     pub live_output_tokens: u64,

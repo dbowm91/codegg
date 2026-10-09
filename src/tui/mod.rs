@@ -1592,6 +1592,52 @@ mod async_cmd_tests {
     }
 
     #[test]
+    fn a_turn_that_stops_emitting_events_leaves_working_instead_of_spinning_forever() {
+        let mut app = make_test_app();
+        app.set_session_status(SessionStatus::Working);
+
+        // A turn that has just started is not stalled yet.
+        assert!(!app.check_turn_stall());
+
+        // Any incoming event proves the turn is alive, so the watchdog rearms.
+        app.apply_core_event(CoreEvent::TurnTextDelta {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            delta: "thinking".into(),
+        });
+        assert!(!app.check_turn_stall());
+
+        // Simulate the core going silent for longer than the bound.
+        app.session_state.working_since = Some(
+            std::time::Instant::now()
+                - crate::tui::app::TURN_STALL_TIMEOUT
+                - std::time::Duration::from_secs(1),
+        );
+
+        assert!(
+            app.check_turn_stall(),
+            "a turn silent past the bound must be reported"
+        );
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a stalled turn must not stay pinned on Working"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("stalled")),
+            "the stall must be visible, got {toasts:?}"
+        );
+        // The watchdog disarms so it cannot re-fire on every tick.
+        assert!(!app.check_turn_stall());
+    }
+
+    #[test]
     fn turn_completed_returns_to_idle() {
         let mut app = make_test_app();
         app.session_state.session_status = SessionStatus::Working;

@@ -15,7 +15,11 @@ use eggpool_wire::{
 };
 use futures_util::{stream::unfold, Stream, StreamExt};
 use serde_json::{Map, Value};
-use std::{collections::VecDeque, fmt::Display, time::Duration};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fmt::Display,
+    time::Duration,
+};
 
 use crate::openai_compatible::ToolChoice;
 use crate::{
@@ -513,6 +517,12 @@ pub fn push_event(
             ) =>
             {
                 let _ = err;
+                // The shared accumulator latches `terminal` on *any* push error and
+                // drops its in-flight calls, including the benign dialects tolerated
+                // above. Swallowing the error while leaving that state behind would let
+                // one tolerated event reject every genuine tool call still to come, so
+                // rebuild the accumulator and let the rest of the stream decode.
+                *accumulator = CanonicalToolCallAccumulator::new();
                 Vec::new()
             }
             Err(err) => {
@@ -567,6 +577,13 @@ pub struct SharedStreamDecoder {
     terminal: bool,
     finish_reason: Option<String>,
     usage: Option<eggpool_wire::ir::CanonicalUsage>,
+    /// Content-block indices that opened a tool call in this stream.
+    ///
+    /// An Anthropic stream closes *every* content block with one `ContentStop`
+    /// event, text and reasoning blocks included. Only the boundary of a block
+    /// that opened a tool call describes a tool call, so the decoder records
+    /// which indices actually opened one and routes only those.
+    tool_call_indices: BTreeSet<usize>,
 }
 
 impl SharedStreamDecoder {
@@ -580,6 +597,7 @@ impl SharedStreamDecoder {
             terminal: false,
             finish_reason: None,
             usage: None,
+            tool_call_indices: BTreeSet::new(),
         }
     }
 
@@ -666,7 +684,30 @@ impl SharedStreamDecoder {
             // one, which is what flushes completed tool calls.
             let duplicate_terminator =
                 event.event_type == CanonicalEventType::ResponseComplete && self.terminal;
-            if !duplicate_terminator {
+            if event.event_type == CanonicalEventType::ToolCallStart {
+                if let Some(index) = event.index {
+                    self.tool_call_indices.insert(index);
+                }
+            }
+            // An Anthropic stream closes every content block with `ContentStop`, text
+            // and reasoning blocks included, but only a boundary for a block that opened
+            // a tool call describes one. A text block's index has no tool-call identity,
+            // so handing it to the accumulator answers `MissingIdentity` — and the shared
+            // accumulator latches `terminal` on *any* push error, which poisons every
+            // later tool call in the same turn with "canonical events arrived after
+            // terminal completion". In practice that failed every OpenCode Go turn whose
+            // model narrates before it calls a tool, because the narration block closed
+            // first. Route only genuine tool-call boundaries into the accumulator.
+            let closes_a_tool_call = match event.event_type {
+                CanonicalEventType::ContentStop => {
+                    event.call_id.is_some()
+                        || event
+                            .index
+                            .is_some_and(|index| self.tool_call_indices.contains(&index))
+                }
+                _ => true,
+            };
+            if !duplicate_terminator && closes_a_tool_call {
                 output.extend(push_event(&mut self.calls, event)?);
             }
             if event.event_type == CanonicalEventType::ResponseComplete {
@@ -1250,6 +1291,94 @@ mod tests {
         assert_eq!(mapped.total_tokens, 10);
         assert_eq!(mapped.cached_tokens, Some(3));
         assert_eq!(mapped.reasoning_tokens, 2);
+    }
+
+    /// Byte-exact shape OpenCode Go returns on its Anthropic-compatible
+    /// `/messages` surface when a model narrates and then calls a tool:
+    /// a text block closes before the tool block opens.
+    ///
+    /// The text block's `content_block_stop` describes no tool call, so it must
+    /// not reach the shared tool-call accumulator. It used to: the accumulator
+    /// answered `MissingIdentity` for the text block's index and latched
+    /// `terminal` on that push error, which turned every later tool call in the
+    /// same turn into "canonical events arrived after terminal completion" and
+    /// failed every OpenCode Go turn that narrates before acting.
+    const OPENCODE_GO_ANTHROPIC_NARRATE_THEN_ACT: &str = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",",
+        "\"role\":\"assistant\",\"stop_reason\":null,\"content\":[],\"usage\":",
+        "{\"input_tokens\":264,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":",
+        "{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":",
+        "{\"type\":\"text_delta\",\"text\":\"I'll check that.\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":",
+        "{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":",
+        "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":",
+        "{\"input_tokens\":264,\"output_tokens\":36}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+
+    #[test]
+    fn anthropic_text_block_closing_before_a_tool_call_does_not_fail_the_turn() {
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::AnthropicMessagesSse);
+        let mut output = decoder
+            .push(OPENCODE_GO_ANTHROPIC_NARRATE_THEN_ACT.as_bytes())
+            .unwrap();
+        output.extend(decoder.finish().unwrap());
+
+        assert!(
+            output
+                .iter()
+                .any(|event| matches!(event, ChatEvent::TextDelta(_))),
+            "narration must still reach the turn: {output:?}"
+        );
+        let call = output
+            .iter()
+            .find_map(|event| match event {
+                ChatEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .expect("tool call survives a preceding text block");
+        assert_eq!(call.name.as_str(), "get_weather");
+        assert_eq!(call.arguments["city"], "Paris");
+        assert!(
+            matches!(output.last(), Some(ChatEvent::Finish { .. })),
+            "turn must still terminate: {output:?}"
+        );
+    }
+
+    #[test]
+    fn anthropic_text_block_then_tool_call_is_chunk_boundary_independent() {
+        let bytes = OPENCODE_GO_ANTHROPIC_NARRATE_THEN_ACT.as_bytes();
+        let mut expected: Option<Vec<String>> = None;
+        for split in eggpool_wire::sse_split_points(bytes.len()) {
+            let mut decoder = SharedStreamDecoder::new(
+                eggpool_wire::codec::StreamAdapterKind::AnthropicMessagesSse,
+            );
+            let mut output = decoder.push(&bytes[..split]).unwrap();
+            output.extend(decoder.push(&bytes[split..]).unwrap());
+            output.extend(decoder.finish().unwrap());
+            let rendered: Vec<_> = output.iter().map(|event| format!("{event:?}")).collect();
+            if let Some(previous) = &expected {
+                assert_eq!(previous, &rendered);
+            } else {
+                expected = Some(rendered);
+            }
+        }
     }
 
     #[test]
