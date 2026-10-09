@@ -1061,6 +1061,23 @@ pub enum TuiCommand {
         channel_id: String,
         message_id: String,
     },
+    /// Request a refresh of the cached one-line LSP status shown in the
+    /// footer. The status is computed from the live LSP service, so it must
+    /// be fetched off the render path: the completion carries the rendered
+    /// string and the render pass only reads the cache.
+    LspStatusRefreshRequested,
+    /// Completion of an [`TuiCommand::LspStatusRefreshRequested`] round
+    /// trip. `status` is `None` when no LSP server is connected.
+    LspStatusRefreshed {
+        status: Option<String>,
+    },
+    /// Request the multi-line LSP detail summary for the `/lsp-status`
+    /// toast. Awaiting the LSP service is off the render path.
+    LspStatusDetailRequested,
+    /// Completion of a [`TuiCommand::LspStatusDetailRequested`] round trip.
+    LspStatusDetailLoaded {
+        detail: Option<String>,
+    },
     /// M007: request a daemon-resolved policy snapshot
     /// (`ApprovalPreferenceGet` + `ExecutionPolicyGet`). The completion
     /// carries daemon DTOs only; the TUI never invents effective state.

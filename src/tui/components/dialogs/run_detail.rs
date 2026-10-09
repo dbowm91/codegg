@@ -86,26 +86,26 @@ impl RunDetailDialog {
         let cell = &self.detail.cell;
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Run ID: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Run ID: ", Style::default().fg(self.theme.muted)),
                 Span::raw(cell.run_id.to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Title: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Title: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&cell.title),
             ]),
             Line::from(vec![
-                Span::styled("Kind: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Kind: ", Style::default().fg(self.theme.muted)),
                 Span::raw(format!("{:?}", cell.kind)),
             ]),
             Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Status: ", Style::default().fg(self.theme.muted)),
                 Span::styled(
                     format!("{:?}", cell.status),
                     Self::status_style(&cell.status),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Backend: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Backend: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&cell.backend_label),
             ]),
         ];
@@ -113,19 +113,19 @@ impl RunDetailDialog {
         if let Some(duration) = cell.duration {
             let secs = duration.num_seconds();
             lines.push(Line::from(vec![
-                Span::styled("Duration: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Duration: ", Style::default().fg(self.theme.muted)),
                 Span::raw(format!("{}s", secs)),
             ]));
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Risk: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Risk: ", Style::default().fg(self.theme.muted)),
             Span::raw(&cell.risk_label),
         ]));
 
         if let Some(ref sandbox) = cell.sandbox_label {
             lines.push(Line::from(vec![
-                Span::styled("Sandbox: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Sandbox: ", Style::default().fg(self.theme.muted)),
                 Span::raw(sandbox),
             ]));
         }
@@ -138,14 +138,14 @@ impl RunDetailDialog {
 
         if cell.changed_file_count > 0 {
             lines.push(Line::from(vec![
-                Span::styled("Changed files: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Changed files: ", Style::default().fg(self.theme.muted)),
                 Span::raw(cell.changed_file_count.to_string()),
             ]));
         }
 
         // Context promotion state
         let ctx_color = match &cell.context_state {
-            codegg_core::run_store::ContextPromotionState::LocalOnly => Color::DarkGray,
+            codegg_core::run_store::ContextPromotionState::LocalOnly => self.theme.muted,
             codegg_core::run_store::ContextPromotionState::ProjectionIncluded => Color::Green,
             codegg_core::run_store::ContextPromotionState::ArtifactRangeIncluded { .. } => {
                 Color::Cyan
@@ -165,7 +165,7 @@ impl RunDetailDialog {
             codegg_core::run_store::ContextPromotionState::Excluded => "Excluded",
         };
         lines.push(Line::from(vec![
-            Span::styled("Context: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Context: ", Style::default().fg(self.theme.muted)),
             Span::styled(ctx_label, Style::default().fg(ctx_color)),
         ]));
 
@@ -180,26 +180,26 @@ impl RunDetailDialog {
         let inv = &self.detail.invocation;
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Command: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Command: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&inv.command),
             ]),
             Line::from(vec![
-                Span::styled("CWD: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("CWD: ", Style::default().fg(self.theme.muted)),
                 Span::raw(inv.cwd.display().to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Workspace: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Workspace: ", Style::default().fg(self.theme.muted)),
                 Span::raw(inv.workspace_root.display().to_string()),
             ]),
             Line::from(vec![
-                Span::styled("Backend: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Backend: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&inv.backend_family),
             ]),
         ];
 
         if let Some(ref detail) = inv.backend_detail {
             lines.push(Line::from(vec![
-                Span::styled("Backend detail: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Backend detail: ", Style::default().fg(self.theme.muted)),
                 Span::raw(detail),
             ]));
         }
@@ -208,7 +208,7 @@ impl RunDetailDialog {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "argv:",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.theme.muted),
             )));
             for arg in argv {
                 lines.push(Line::from(format!("  {}", arg)));
@@ -217,7 +217,7 @@ impl RunDetailDialog {
 
         if let Some(ref hash) = inv.script_hash {
             lines.push(Line::from(vec![
-                Span::styled("Script hash: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Script hash: ", Style::default().fg(self.theme.muted)),
                 Span::raw(hash),
             ]));
         }
@@ -249,7 +249,7 @@ impl RunDetailDialog {
                 Style::default()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{} ", i + 1), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{} ", i + 1), Style::default().fg(self.theme.muted)),
                 Span::styled(format!("{:?}", artifact.kind), style),
                 Span::styled(
                     format!(
@@ -297,7 +297,7 @@ impl RunDetailDialog {
                 Line::from(vec![
                     Span::styled(
                         format!("[{}] ", c.kind),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(self.theme.muted),
                     ),
                     Span::raw(c.path.display().to_string()),
                 ])
@@ -315,19 +315,19 @@ impl RunDetailDialog {
         let policy = &self.detail.policy;
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Risk: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Risk: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&policy.risk_level),
             ]),
             Line::from(vec![
-                Span::styled("Subprocess: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Subprocess: ", Style::default().fg(self.theme.muted)),
                 Span::raw(if policy.has_subprocess { "yes" } else { "no" }),
             ]),
             Line::from(vec![
-                Span::styled("Git mutation: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Git mutation: ", Style::default().fg(self.theme.muted)),
                 Span::raw(if policy.has_git_mutation { "yes" } else { "no" }),
             ]),
             Line::from(vec![
-                Span::styled("Destructive: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Destructive: ", Style::default().fg(self.theme.muted)),
                 Span::raw(if policy.has_destructive_mutation {
                     "yes"
                 } else {
@@ -336,11 +336,11 @@ impl RunDetailDialog {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("OS isolation: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("OS isolation: ", Style::default().fg(self.theme.muted)),
                 Span::raw(if policy.os_isolation { "yes" } else { "no" }),
             ]),
             Line::from(vec![
-                Span::styled("Network isolation: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Network isolation: ", Style::default().fg(self.theme.muted)),
                 Span::raw(if policy.network_isolation {
                     "yes"
                 } else {
@@ -352,7 +352,7 @@ impl RunDetailDialog {
         if !policy.read_roots.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Read roots:",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.theme.muted),
             )));
             for root in &policy.read_roots {
                 lines.push(Line::from(format!("  {}", root.display())));
@@ -362,7 +362,7 @@ impl RunDetailDialog {
         if !policy.write_roots.is_empty() {
             lines.push(Line::from(Span::styled(
                 "Write roots:",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.theme.muted),
             )));
             for root in &policy.write_roots {
                 lines.push(Line::from(format!("  {}", root.display())));
@@ -380,7 +380,7 @@ impl RunDetailDialog {
         let state = &self.detail.cell.context_state;
         let (state_label, state_color) = match state {
             codegg_core::run_store::ContextPromotionState::LocalOnly => {
-                ("Local only (not in context)", Color::DarkGray)
+                ("Local only (not in context)", self.theme.muted)
             }
             codegg_core::run_store::ContextPromotionState::ProjectionIncluded => {
                 ("Projection included in context", Color::Green)
@@ -398,7 +398,7 @@ impl RunDetailDialog {
 
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("State: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("State: ", Style::default().fg(self.theme.muted)),
                 Span::styled(state_label, Style::default().fg(state_color)),
             ]),
             Line::from(""),
@@ -408,11 +408,11 @@ impl RunDetailDialog {
         let total_artifact_bytes: u64 = self.detail.artifacts.iter().map(|a| a.byte_length).sum();
         let est_tokens = total_artifact_bytes / 4; // rough estimate
         lines.push(Line::from(vec![
-            Span::styled("Estimated tokens: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Estimated tokens: ", Style::default().fg(self.theme.muted)),
             Span::raw(format!("~{}", est_tokens)),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("Artifact bytes: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Artifact bytes: ", Style::default().fg(self.theme.muted)),
             Span::raw(Self::format_bytes(total_artifact_bytes)),
         ]));
 
@@ -421,19 +421,19 @@ impl RunDetailDialog {
             codegg_core::run_store::ContextPromotionState::LocalOnly => {
                 lines.push(Line::from(Span::styled(
                     "Press [p] to promote to context",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(self.theme.muted),
                 )));
             }
             codegg_core::run_store::ContextPromotionState::Pinned => {
                 lines.push(Line::from(Span::styled(
                     "Press [u] to unpin from context",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(self.theme.muted),
                 )));
             }
             _ => {
                 lines.push(Line::from(Span::styled(
                     "Press [p] to change promotion state",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(self.theme.muted),
                 )));
             }
         }
@@ -453,11 +453,11 @@ impl RunDetailDialog {
 
         if let Some(proj) = proj {
             lines.push(Line::from(vec![
-                Span::styled("Projector: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Projector: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&proj.projector),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("Exactness: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Exactness: ", Style::default().fg(self.theme.muted)),
                 Span::raw(&proj.exactness),
             ]));
             if !proj.omitted_ranges.is_empty() {
@@ -479,7 +479,7 @@ impl RunDetailDialog {
         if let Some(stdout) = stdout {
             lines.push(Line::from(Span::styled(
                 "stdout:",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.theme.muted),
             )));
             lines.push(Line::from(format!(
                 "  {} ({})",
@@ -490,7 +490,7 @@ impl RunDetailDialog {
         if let Some(stderr) = stderr {
             lines.push(Line::from(Span::styled(
                 "stderr:",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.theme.muted),
             )));
             lines.push(Line::from(format!(
                 "  {} ({})",
@@ -506,7 +506,7 @@ impl RunDetailDialog {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Press [Enter] to view artifact content",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(self.theme.muted),
         )));
 
         let paragraph = Paragraph::new(lines)
@@ -617,7 +617,7 @@ impl Component for RunDetailDialog {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(self.theme.muted)
                 };
                 Line::from(Span::styled(tab.label(), style))
             })

@@ -254,6 +254,10 @@ pub struct App {
     pub prompt_area: Option<Rect>,
     pub dialog_area: Option<Rect>,
     pub completion_area: Option<Rect>,
+    /// Visible popup rows for the current completion, set by the render
+    /// pass from the *filtered* row list so mouse hit-testing cannot size
+    /// itself from the unfiltered catalog.
+    pub completion_visible_rows: usize,
     pub sidebar_area: Option<Rect>,
     /// 1-column strip reserved for the TUI's outer left border.
     pub left_border_area: Option<Rect>,
@@ -297,6 +301,14 @@ pub struct App {
     /// LSP-backed operations.  Created once at startup in local
     /// (non-socket) mode; `None` in remote/socket mode.
     pub lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
+    /// Cached one-line LSP status for the footer, refreshed by
+    /// [`TuiCommand::LspStatusRefreshRequested`]. The render pass only
+    /// reads this field: computing the status requires awaiting the live
+    /// LSP service, which must never happen inside `render`.
+    pub lsp_status_cache: Option<String>,
+    /// Monotonic clock of the last LSP status refresh request, so the
+    /// event loop can throttle refreshes instead of asking every frame.
+    pub lsp_status_requested_at: Option<std::time::Instant>,
     /// Reentrancy guard for the `/security-review` slash command.
     /// `Some(task_state)` while a background review is in flight;
     /// `None` when idle. Carries the `tokio::task::AbortHandle` so the
@@ -785,6 +797,7 @@ impl App {
             prompt_area: None,
             dialog_area: None,
             completion_area: None,
+            completion_visible_rows: 0,
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
@@ -817,6 +830,8 @@ impl App {
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
             lsp_tool: None,
+            lsp_status_cache: None,
+            lsp_status_requested_at: None,
             security_review_running: None,
             latest_security_review: None,
             shell_store: cfg
@@ -1296,6 +1311,7 @@ impl App {
             prompt_area: None,
             dialog_area: None,
             completion_area: None,
+            completion_visible_rows: 0,
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
@@ -1324,6 +1340,8 @@ impl App {
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
             lsp_tool: None,
+            lsp_status_cache: None,
+            lsp_status_requested_at: None,
             security_review_running: None,
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
@@ -3329,30 +3347,7 @@ impl App {
                 true
             }
             Some(InputAction::NavigateDown) => {
-                let max_sel = match self.prompt_state.completion_type {
-                    CompletionType::Slash => {
-                        let filter = self.prompt_state.completion_filter.trim_start_matches('/');
-                        if filter.is_empty() {
-                            self.prompt_state.slash_completions.len().saturating_sub(1)
-                        } else {
-                            self.prompt_state
-                                .slash_completions
-                                .iter()
-                                .filter(|item| {
-                                    let item_name = item.label.trim_start_matches('/');
-                                    fuzzy_score(filter, item_name) > 0
-                                })
-                                .count()
-                                .saturating_sub(1)
-                        }
-                    }
-                    CompletionType::File => {
-                        self.prompt_state.file_completions.len().saturating_sub(1)
-                    }
-                    CompletionType::Agent => {
-                        self.prompt_state.agent_completions.len().saturating_sub(1)
-                    }
-                };
+                let max_sel = self.completion_rows().len().saturating_sub(1);
                 if self.prompt_state.completion_sel < max_sel {
                     self.prompt_state.completion_sel += 1;
                 }
@@ -4355,8 +4350,12 @@ impl App {
                 }
             }
             B::Unshare => {
-                if self.session_state.session.is_some() {
-                    self.messages_state.toasts.info("Session unshared");
+                // Dispatch a real unshare round-trip. This used to only
+                // toast "Session unshared", leaving the share URL live
+                // server-side while reporting success.
+                if let Some(session) = self.session_state.session.as_ref() {
+                    let session_id = session.id.clone();
+                    self.enqueue_tui_command(TuiCommand::UnshareSession { session_id });
                 } else {
                     self.messages_state.toasts.info("No active session");
                 }
@@ -4389,10 +4388,14 @@ impl App {
                     .unwrap_or("");
                 if sub == "handoff" {
                     self.export_handoff();
+                } else if let Some(session) = self.session_state.session.as_ref() {
+                    // Dispatch a real export round-trip. This used to
+                    // only toast "Exporting session - copy to clipboard"
+                    // without copying anything.
+                    let session_id = session.id.clone();
+                    self.enqueue_tui_command(TuiCommand::ExportSession { session_id });
                 } else {
-                    self.messages_state
-                        .toasts
-                        .info("Exporting session - copy to clipboard");
+                    self.messages_state.toasts.info("No active session");
                 }
             }
             B::Import => {
@@ -5247,14 +5250,8 @@ impl App {
             }
             B::LspStatus => {
                 self.ui_state.command_mode = false;
-                if let Some(ref lsp_tool) = self.lsp_tool {
-                    let handle = tokio::runtime::Handle::current();
-                    let detail = handle.block_on(lsp_tool.lsp_summary_detail());
-                    if let Some(text) = detail {
-                        self.messages_state.toasts.info(&text);
-                    } else {
-                        self.messages_state.toasts.info("No LSP server connected");
-                    }
+                if self.lsp_tool.is_some() {
+                    self.enqueue_tui_command(TuiCommand::LspStatusDetailRequested);
                 } else {
                     self.messages_state.toasts.info("LSP not available");
                 }
@@ -6885,22 +6882,11 @@ impl App {
             ClickTarget::Completion => {
                 if let Some(ref area) = self.completion_area {
                     let rel_y = y.saturating_sub(area.y);
-                    if rel_y > 0 && rel_y < area.height.saturating_sub(1) {
-                        let idx = (rel_y as usize).saturating_sub(1);
-                        let max_idx = match self.prompt_state.completion_type {
-                            CompletionType::Slash => {
-                                self.prompt_state.slash_completions.len().saturating_sub(1)
-                            }
-                            CompletionType::File => {
-                                self.prompt_state.file_completions.len().saturating_sub(1)
-                            }
-                            CompletionType::Agent => {
-                                self.prompt_state.agent_completions.len().saturating_sub(1)
-                            }
-                        };
-                        if idx <= max_idx {
-                            self.prompt_state.completion_sel = idx;
-                        }
+                    // Row 0 is the top border, so the first entry is at
+                    // `rel_y == 1`.
+                    let idx = rel_y.saturating_sub(1) as usize;
+                    if idx < self.completion_visible_rows {
+                        self.prompt_state.completion_sel = idx;
                     }
                 }
             }
@@ -7015,17 +7001,7 @@ impl App {
                 }
             }
             ClickTarget::Completion => {
-                let max_sel = match self.prompt_state.completion_type {
-                    CompletionType::Slash => {
-                        self.prompt_state.slash_completions.len().saturating_sub(1)
-                    }
-                    CompletionType::File => {
-                        self.prompt_state.file_completions.len().saturating_sub(1)
-                    }
-                    CompletionType::Agent => {
-                        self.prompt_state.agent_completions.len().saturating_sub(1)
-                    }
-                };
+                let max_sel = self.completion_rows().len().saturating_sub(1);
                 if self.prompt_state.completion_sel < max_sel {
                     self.prompt_state.completion_sel += 1;
                 }
@@ -7445,7 +7421,7 @@ impl App {
     /// `TrySendError::Full` or `TrySendError::Closed`, surface a toast
     /// and return `false` so the caller can avoid mutating UI state
     /// that assumes the command ran (e.g. delete undo banners).
-    fn enqueue_tui_command(&mut self, cmd: TuiCommand) -> bool {
+    pub(crate) fn enqueue_tui_command(&mut self, cmd: TuiCommand) -> bool {
         let Some(tx) = self.tui_cmd_tx.as_ref() else {
             self.messages_state
                 .toasts
@@ -9626,26 +9602,52 @@ impl App {
             .collect();
     }
 
+    /// The completion rows currently visible, in popup order.
+    ///
+    /// This is the single ordering used by the popup renderer, keyboard
+    /// navigation bounds, mouse hit-testing, and [`Self::accept_completion`].
+    /// Deriving each of those independently is what let the popup show
+    /// fuzzy-ranked matches while Tab accepted a different entry: the renderer
+    /// sorted by fuzzy score, the accept path filtered by prefix in catalog
+    /// order, and the click hit-test sized itself from the unfiltered list.
+    fn completion_rows(&self) -> Vec<&crate::tui::components::completion_overlay::CompletionItem> {
+        use crate::tui::components::completion_overlay::CompletionItem;
+        match self.prompt_state.completion_type {
+            CompletionType::Slash => {
+                let filter = self.prompt_state.completion_filter.trim_start_matches('/');
+                let mut scored: Vec<(&CompletionItem, usize)> = self
+                    .prompt_state
+                    .slash_completions
+                    .iter()
+                    .filter_map(|item| {
+                        let item_name = item.label.trim_start_matches('/');
+                        let score = if filter.is_empty() {
+                            usize::MAX
+                        } else {
+                            crate::util::fuzzy::fuzzy_score(filter, item_name)
+                        };
+                        if filter.is_empty() || score > 0 {
+                            Some((item, score))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !filter.is_empty() {
+                    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
+                }
+                scored.into_iter().map(|(item, _)| item).collect()
+            }
+            CompletionType::File => self.prompt_state.file_completions.iter().collect(),
+            CompletionType::Agent => self.prompt_state.agent_completions.iter().collect(),
+        }
+    }
+
     fn accept_completion(&mut self) {
-        let selected = match self.prompt_state.completion_type {
-            CompletionType::Slash => self
-                .prompt_state
-                .slash_completions
-                .iter()
-                .filter(|c| c.label.starts_with(&self.prompt_state.completion_filter))
-                .nth(self.prompt_state.completion_sel)
-                .map(|c| c.label.clone()),
-            CompletionType::File => self
-                .prompt_state
-                .file_completions
-                .get(self.prompt_state.completion_sel)
-                .map(|c| c.label.clone()),
-            CompletionType::Agent => self
-                .prompt_state
-                .agent_completions
-                .get(self.prompt_state.completion_sel)
-                .map(|c| c.label.clone()),
-        };
+        let selected = self
+            .completion_rows()
+            .get(self.prompt_state.completion_sel)
+            .map(|c| c.label.clone());
         if let Some(sel) = selected {
             let text = self.prompt_state.prompt.get_text();
             let cursor = self.prompt_state.prompt.cursor_pos();
@@ -11542,6 +11544,13 @@ impl App {
 
         frame.render_widget(Clear, timeline_area);
         frame.render_widget(paragraph, timeline_area);
+
+        // The nav hint and position readout are pinned to the last row.
+        // A zero-height area has no last row, so skip them instead of
+        // underflowing the subtraction below.
+        if timeline_area.height == 0 {
+            return;
+        }
 
         let nav_hint = Line::from(Span::styled(
             " ↑/↓ navigate  Enter: jump  Esc: close ",

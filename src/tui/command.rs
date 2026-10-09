@@ -1,7 +1,7 @@
 use crate::plugin::registry::{PluginCommandRegistration, PluginRegistry};
 use crate::tui::app::Dialog;
 use crate::util::fuzzy::fuzzy_score;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -565,7 +565,7 @@ impl CommandRegistry {
                 .with_description("View token usage and cost"),
             Command::new("/usage", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Usage))
                 .with_description("View rate limits and quota"),
-            Command::new("/stats", CommandCategory::Session, CommandAction::Dialog(Dialog::Stats))
+            Command::new("/stats", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::TuiStats))
                 .with_description("View session analytics and cost breakdown"),
             Command::new("/tui", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tui))
                 .with_aliases(&["fullscreen"])
@@ -666,7 +666,8 @@ impl CommandRegistry {
             Command::new("/lsp-preview-apply", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviewApply))
                 .with_aliases(&["/preview-apply"])
                 .with_description("Apply LSP preview patches to disk with hash revalidation (args: <id>)"),
-            Command::new("/review", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Review))
+            Command::new("/review-change", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Review))
+                .with_aliases(&["/preview-review"])
                 .with_description("Review a pending agent change before applying it (args: <preview-id>)"),
             Command::new("/lsp-servers", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspServers))
                 .with_aliases(&["/lsp-detail"])
@@ -1010,8 +1011,15 @@ impl CommandRegistry {
     /// Validate the declarative catalog before a discovery surface consumes
     /// it.  A repeated alias belonging to the same command is harmless, but
     /// a name/alias collision across commands is rejected deterministically.
+    ///
+    /// A command colliding with *itself* is also rejected: `all_names()`
+    /// yields the command name plus its aliases, so a repeated alias is
+    /// benign, but a duplicate command name is not — `find_by_name_or_alias`
+    /// returns the first match, which silently shadows the second command
+    /// and leaves its action unreachable.
     pub fn validate(&self) -> Result<(), String> {
         let mut names: HashMap<String, String> = HashMap::new();
+        let mut seen_this_command: HashSet<String> = HashSet::new();
         for command in &self.commands {
             if command.name.trim().is_empty() || command.description.trim().is_empty() {
                 return Err(format!(
@@ -1019,17 +1027,29 @@ impl CommandRegistry {
                     command.name
                 ));
             }
+            seen_this_command.clear();
             for name in command.all_names() {
                 let normalized = Self::normalize_name(name);
-                if let Some(owner) = names.get(&normalized) {
-                    if owner != &command.name {
+                // The command's own name may appear once; any further
+                // occurrence within the same command is a repeated alias.
+                if !seen_this_command.insert(normalized.clone()) {
+                    continue;
+                }
+                match names.get(&normalized) {
+                    Some(owner) if owner != &command.name => {
                         return Err(format!(
                             "command name/alias collision: {name:?} belongs to {owner} and {}",
                             command.name
                         ));
                     }
-                } else {
-                    names.insert(normalized, command.name.clone());
+                    Some(owner) => {
+                        return Err(format!(
+                            "duplicate command name {name:?}: registered twice as {owner}"
+                        ));
+                    }
+                    None => {
+                        names.insert(normalized, command.name.clone());
+                    }
                 }
             }
         }
@@ -1103,6 +1123,116 @@ mod tests {
     #[test]
     fn built_in_command_count_matches_release_docs() {
         assert_eq!(CommandRegistry::built_in_commands().len(), 153);
+    }
+
+    #[test]
+    fn built_in_catalog_passes_validation() {
+        // Every built-in must resolve without a name/alias collision.
+        // A duplicate name used to pass validation and silently shadow the
+        // second command's action.
+        let commands = CommandRegistry::built_in_commands();
+        let registry = CommandRegistry {
+            commands: commands.clone(),
+        };
+        if let Err(err) = registry.validate() {
+            panic!("built-in command catalog must validate, got: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_command_names() {
+        let registry = CommandRegistry {
+            commands: vec![
+                Command::new(
+                    "/review",
+                    CommandCategory::Session,
+                    CommandAction::Dialog(Dialog::Review),
+                )
+                .with_description("Review changed files"),
+                Command::new(
+                    "/review",
+                    CommandCategory::System,
+                    CommandAction::Builtin(BuiltinSlashAction::Review),
+                )
+                .with_description("Review a pending agent change"),
+            ],
+        };
+        let err = registry
+            .validate()
+            .expect_err("a same-name duplicate must be rejected");
+        assert!(
+            err.contains("duplicate command name"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_allows_repeated_alias_within_one_command() {
+        // Re-declaring the same alias on one command is harmless and must
+        // stay allowed.
+        let registry = CommandRegistry {
+            commands: vec![Command::new(
+                "/tui",
+                CommandCategory::System,
+                CommandAction::Builtin(BuiltinSlashAction::Tui),
+            )
+            .with_aliases(&["fullscreen", "/tui", "fullscreen"])
+            .with_description("Toggle fullscreen mode")],
+        };
+        assert!(registry.validate().is_ok());
+    }
+
+    #[test]
+    fn slash_commands_have_unique_names() {
+        // `find_by_name_or_alias` returns the first match, so a repeated
+        // name makes the later command unreachable.
+        let mut seen = std::collections::HashSet::new();
+        for command in CommandRegistry::built_in_commands() {
+            let normalized = CommandRegistry::normalize_name(&command.name);
+            assert!(
+                seen.insert(normalized.clone()),
+                "duplicate built-in command name: {normalized}"
+            );
+        }
+    }
+
+    #[test]
+    fn stats_command_reaches_a_mountable_action() {
+        // `/stats` used to be registered as `Dialog(Stats)`, which
+        // `open_dialog` has no arm for, so the frame never rendered and
+        // the stale `ui_state.dialog` swallowed the next keypress.
+        let commands = CommandRegistry::built_in_commands();
+        let stats = commands
+            .iter()
+            .find(|c| CommandRegistry::normalize_name(&c.name) == "stats")
+            .expect("/stats must be registered");
+        assert!(
+            matches!(stats.action, CommandAction::Builtin(_)),
+            "/stats must resolve to a built-in action, got {:?}",
+            stats.action
+        );
+    }
+
+    #[test]
+    fn agent_change_review_command_is_reachable_by_a_distinct_name() {
+        // The LSP preview review previously shared the name `/review`,
+        // which the changed-files dialog shadowed.
+        let commands = CommandRegistry::built_in_commands();
+        let preview_review = commands
+            .iter()
+            .find(|c| c.action == CommandAction::Builtin(BuiltinSlashAction::Review))
+            .expect("preview review must be registered");
+        let registry = CommandRegistry {
+            commands: commands.clone(),
+        };
+        let by_name = registry
+            .find_by_name_or_alias(&preview_review.name)
+            .expect("preview review must resolve");
+        assert_eq!(
+            by_name.action,
+            CommandAction::Builtin(BuiltinSlashAction::Review),
+            "preview review resolves to a different action — it is shadowed"
+        );
     }
 
     #[test]
@@ -1463,8 +1593,12 @@ mod tests {
     #[test]
     fn dialog_template_process_actions_bypass_builtin_switch() {
         let registry = CommandRegistry::new();
-        // Dialog authorities.
-        for name in ["/models", "/mcps", "/keybinds", "/stats", "/review"] {
+        // Dialog authorities. `/stats` is deliberately absent: it was
+        // registered as `Dialog(Stats)`, but `open_dialog` has no
+        // `Stats` arm, so the frame never rendered and the stale
+        // `ui_state.dialog` swallowed the next keypress. It now routes to
+        // the built-in action — see `stats_command_reaches_a_mountable_action`.
+        for name in ["/models", "/mcps", "/keybinds", "/review"] {
             let cmd = registry.find_by_name_or_alias(name).unwrap();
             assert!(
                 matches!(cmd.action, CommandAction::Dialog(_)),

@@ -100,6 +100,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
             needs_render = true;
         }
 
+        // Refresh the cached footer LSP status off the render path, at
+        // most once per `LSP_STATUS_REFRESH_INTERVAL`. The render pass
+        // only reads `app.lsp_status_cache`; it never awaits the LSP
+        // service. A refresh that enqueues work does not itself dirty
+        // the frame — the completion is what triggers a redraw.
+        if app.lsp_tool.is_some() {
+            crate::tui::commands::diagnostics::maybe_refresh_lsp_status(app);
+        }
+
         let render_interval = if app.streaming_active {
             STREAM_RENDER_INTERVAL
         } else {

@@ -2347,3 +2347,98 @@ fn backspace_updates_prompt_and_filter_together_while_completions_open() {
         "the derived filter must follow the prompt after backspace"
     );
 }
+
+/// The popup, keyboard navigation, mouse hit-testing, and Tab-accept each
+/// used to derive their own ordering. The popup rendered fuzzy-ranked
+/// matches, `accept_completion` resolved through a prefix filter in catalog
+/// order, and the hit-test rect was sized from the unfiltered list — so
+/// selecting a highlighted entry could insert a different command.
+///
+/// This asserts the invariant directly: whatever the popup draws first is
+/// what accepting that row inserts.
+#[test]
+fn completion_popup_order_matches_tab_accept_order() {
+    let mut app = test_app();
+    for label in ["/preview-apply", "/preview-show", "/preview-clear"] {
+        app.prompt_state.slash_completions.push(CompletionItem {
+            label: label.into(),
+            description: None,
+            kind: CompletionItemKind::File,
+        });
+    }
+    app.prompt_state.completion_type = CompletionType::Slash;
+    app.prompt_state.completion_filter = "preview".into();
+    app.prompt_state.show_completions = true;
+    app.prompt_state.prompt.set_text("/preview".into());
+    app.prompt_state
+        .prompt
+        .set_cursor_at_column(0, "/preview".len());
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("render completions");
+
+    let area = app
+        .completion_area
+        .expect("completion overlay should publish its rect");
+    // Row 0 is the popup border, so the first entry is at `area.y + 1`.
+    let drawn_first = {
+        let buf = terminal.backend().buffer();
+        (area.x..area.x + area.width)
+            .map(|x| buf[(x, area.y + 1)].symbol().to_string())
+            .collect::<String>()
+    };
+    let expected = ["/preview-apply", "/preview-show", "/preview-clear"]
+        .into_iter()
+        .find(|label| drawn_first.contains(label))
+        .unwrap_or_else(|| panic!("no completion row drawn: {drawn_first:?}"));
+
+    // Enter is the accept key (`InputAction::Send`).
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.prompt_state.prompt.get_text().contains(expected),
+        "accepting the first drawn row ({expected}) must insert that command, got {:?}",
+        app.prompt_state.prompt.get_text()
+    );
+}
+
+/// A filtered completion list must not size its click target from the
+/// unfiltered catalog: clicks landing below the drawn rows previously
+/// selected entries that were never rendered.
+#[test]
+fn completion_hit_rect_covers_only_drawn_rows() {
+    let mut app = test_app();
+    for i in 0..40 {
+        app.prompt_state.slash_completions.push(CompletionItem {
+            label: format!("/zz-command-{i}"),
+            description: None,
+            kind: CompletionItemKind::File,
+        });
+    }
+    app.prompt_state.completion_type = CompletionType::Slash;
+    app.prompt_state.completion_filter = "zz-command-1".into();
+    app.prompt_state.show_completions = true;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("render with filtered completions");
+
+    let area = app
+        .completion_area
+        .expect("completion overlay should publish its rect");
+    assert_eq!(
+        area.height as usize - 2,
+        app.completion_visible_rows,
+        "hit rect must match the rows actually drawn"
+    );
+    assert!(
+        app.completion_visible_rows <= 8,
+        "popup is capped at 8 rows, got {}",
+        app.completion_visible_rows
+    );
+}
