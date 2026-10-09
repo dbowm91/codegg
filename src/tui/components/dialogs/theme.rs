@@ -41,7 +41,7 @@ impl ThemePickerDialog {
         let themes = super::super::super::theme::all_themes();
         let default_idx = themes
             .iter()
-            .position(|t| t.name == crate::theme::registry::DEFAULT_THEME_ID)
+            .position(|t| t.id == crate::theme::registry::DEFAULT_THEME_ID)
             .unwrap_or(0);
         Self {
             theme,
@@ -60,11 +60,11 @@ impl ThemePickerDialog {
     pub fn with_themes(theme: Arc<Theme>, themes: Vec<Theme>) -> Self {
         let default_idx = themes
             .iter()
-            .position(|t| t.name == theme.name)
+            .position(|t| t.id == theme.id)
             .or_else(|| {
                 themes
                     .iter()
-                    .position(|t| t.name == crate::theme::registry::DEFAULT_THEME_ID)
+                    .position(|t| t.id == crate::theme::registry::DEFAULT_THEME_ID)
             })
             .unwrap_or(0);
         let preview = themes.get(default_idx).cloned().unwrap_or_else(Theme::dark);
@@ -88,7 +88,7 @@ impl ThemePickerDialog {
     }
 
     pub fn initialize_selection(&mut self) {
-        if let Some(idx) = self.themes.iter().position(|t| t.name == self.theme.name) {
+        if let Some(idx) = self.themes.iter().position(|t| t.id == self.theme.id) {
             self.selected = idx;
             self.preview_theme = self.themes[idx].clone();
             let visible_themes = self.count_visible_themes(0);
@@ -166,10 +166,10 @@ impl ThemePickerDialog {
         if self.themes.is_empty() {
             return None;
         }
-        let new_id = self.themes[self.selected].name.clone();
+        let new_id = self.themes[self.selected].id.clone();
         if matches!(self.preview_state, PreviewState::Inactive) {
             self.preview_state = PreviewState::Previewing {
-                original_id: self.theme.name.clone(),
+                original_id: self.theme.id.clone(),
             };
         }
         Some(new_id)
@@ -336,7 +336,7 @@ impl Component for ThemePickerDialog {
             crossterm::event::KeyCode::Enter => {
                 if let Some(theme) = self.selected_theme() {
                     Some(TuiMsg::ThemeCommit {
-                        theme_id: theme.name.clone(),
+                        theme_id: theme.id.clone(),
                     })
                 } else {
                     Some(TuiMsg::CloseDialog)
@@ -415,7 +415,22 @@ mod tests {
         names
             .iter()
             .map(|n| Theme {
+                id: (*n).to_string(),
                 name: (*n).to_string(),
+                ..Theme::dark()
+            })
+            .collect()
+    }
+
+    /// Build themes whose display name deliberately differs from their id,
+    /// mirroring the bundled Halloy gallery (id `cyber-red`, display
+    /// `Cyber Red`). Every picker message must carry the *id*.
+    fn make_display_named_themes(pairs: &[(&str, &str)]) -> Vec<Theme> {
+        pairs
+            .iter()
+            .map(|(id, name)| Theme {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
                 ..Theme::dark()
             })
             .collect()
@@ -518,7 +533,8 @@ mod tests {
         // the *next* theme rather than jumping to "Cyber Red".
         let picker = ThemePickerDialog::with_themes(
             Arc::new(Theme {
-                name: "dracula".into(),
+                id: "dracula".into(),
+                name: "Dracula".into(),
                 ..Theme::dark()
             }),
             make_themes(&["dark", "dracula", "midnight", "cyber-red"]),
@@ -526,5 +542,68 @@ mod tests {
         let names: Vec<&str> = picker.themes.iter().map(|t| t.name.as_str()).collect();
         let highlighted = &names[picker.selected];
         assert_eq!(*highlighted, "dracula");
+    }
+
+    #[test]
+    fn preview_and_commit_emit_ids_not_display_names() {
+        // Regression: the picker used to put `Theme.name` ("Catppuccin
+        // Mocha") into the `theme_id` field, but the registry is keyed by
+        // id, so every bundled theme whose display name differed from its
+        // id silently failed to apply.
+        let themes = make_display_named_themes(&[
+            ("cyber-red", "Cyber Red"),
+            ("catppuccin-mocha", "Catppuccin Mocha"),
+            ("dracula", "Dracula"),
+        ]);
+        let mut picker = ThemePickerDialog::with_themes(Arc::new(themes[0].clone()), themes);
+        assert_eq!(picker.selected, 0, "active theme is highlighted on open");
+
+        // Navigation previews the *next* theme, addressed by id.
+        let preview_id = picker.select_down().expect("navigation yields an id");
+        assert_eq!(preview_id, "catppuccin-mocha");
+        assert_eq!(picker.preview_theme.id, "catppuccin-mocha");
+
+        let msg = picker.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(msg, Some(TuiMsg::ThemeCommit { ref theme_id }) if theme_id == "catppuccin-mocha"),
+            "Enter must commit the id, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn revert_captures_the_original_id_not_the_display_name() {
+        // Regression: `original_id` used to be captured from `Theme.name`,
+        // so Esc could not resolve it and left the previewed theme active.
+        let themes = make_display_named_themes(&[("nord", "Nord"), ("gruvbox", "Gruvbox")]);
+        let mut picker = ThemePickerDialog::with_themes(Arc::new(themes[0].clone()), themes);
+        let _ = picker.select_down();
+        assert_eq!(picker.preview_original_id().as_deref(), Some("nord"));
+    }
+
+    #[test]
+    fn selection_matches_by_id_when_display_names_collide() {
+        // Two entries sharing a display name but not an id: the id decides.
+        let themes =
+            make_display_named_themes(&[("cyber-red", "Cyber Red"), ("custom-red", "Cyber Red")]);
+        let active = themes[1].clone();
+        let mut picker = ThemePickerDialog::with_themes(Arc::new(active), themes);
+        picker.initialize_selection();
+        assert_eq!(picker.themes[picker.selected].id, "custom-red");
+    }
+
+    #[test]
+    fn default_highlight_falls_back_to_the_default_theme_id() {
+        // Regression: this compared `Theme.name` against `DEFAULT_THEME_ID`
+        // ("cyber-red"), which can never match a display name ("Cyber
+        // Red"), so the fallback was dead code.
+        let themes = make_display_named_themes(&[("nord", "Nord"), ("cyber-red", "Cyber Red")]);
+        // An active theme that is not in the list forces the fallback.
+        let active = Theme {
+            id: "not-listed".into(),
+            name: "Not Listed".into(),
+            ..Theme::dark()
+        };
+        let picker = ThemePickerDialog::with_themes(Arc::new(active), themes);
+        assert_eq!(picker.themes[picker.selected].id, "cyber-red");
     }
 }
