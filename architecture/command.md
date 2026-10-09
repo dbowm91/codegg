@@ -311,7 +311,8 @@ Representative built-ins:
 | `/issue` | `bugs`, `features` | GitHub issues |
 | `/lsp-servers` | `/lsp-detail` | List active LSP servers |
 | `/lsp-preview` | `/preview-show` | Show LSP preview detail |
-| `/review` | | M006-E: review a pending agent change before applying it (`<preview-id>`); `[a]pply or `Esc` to reject |
+| `/review` | | Review changed files |
+| `/review-change` | `/preview-review` | M006-E: review a pending agent change before applying it (`<preview-id>`); `[a]pply or `Esc` to reject |
 | `/tool-backends` | `/tools`, `/backends` | Show resolved tool backends |
 | `/security-review` | | Security review of changed files |
 | `/shell-list` | | List recent shell commands |

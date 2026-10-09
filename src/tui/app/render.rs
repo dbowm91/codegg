@@ -96,7 +96,19 @@ impl App {
 
         // Dialog — failures close only that dialog
         if !self.focus_manager.is_empty() {
-            let popup_area = centered_rect(60, 50, area);
+            // The hit-test rect must be the rect the dialog actually
+            // draws into. The project picker uses its own bounded
+            // geometry rather than the shared 60x50 popup, so deriving
+            // the stored rect from the same helper keeps mouse selection
+            // aligned with the rendered rows.
+            let popup_area = match self.focus_manager.active_dialog_type() {
+                DialogType::ProjectPicker => {
+                    crate::tui::components::dialogs::project_picker::ProjectPickerDialog::picker_area(
+                        area,
+                    )
+                }
+                _ => centered_rect(60, 50, area),
+            };
             self.dialog_area = Some(popup_area);
             let dialog_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
@@ -121,17 +133,8 @@ impl App {
 
         // Completion overlay — failures hide completions
         if self.prompt_state.show_completions {
-            let prompt_area = session_chunks[2];
-            let max_h = 8.min(self.prompt_state.slash_completions.len() as u16);
-            let compl_h = max_h + 2;
-            let compl_w = 40.min(prompt_area.width.saturating_sub(2));
-            let compl_area = Rect {
-                x: prompt_area.x + 1,
-                y: prompt_area.y.saturating_sub(compl_h),
-                width: compl_w,
-                height: compl_h,
-            };
-            self.completion_area = Some(compl_area);
+            self.completion_area = None;
+            self.completion_visible_rows = 0;
             let compl_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                     if self.render_panic_injection.completions {
@@ -147,9 +150,12 @@ impl App {
                     .diagnostics
                     .record_component_render_panic("completions");
                 self.prompt_state.show_completions = false;
+                self.completion_area = None;
+                self.completion_visible_rows = 0;
             }
         } else {
             self.completion_area = None;
+            self.completion_visible_rows = 0;
         }
 
         // Timeline
@@ -278,7 +284,14 @@ impl App {
     }
 
     fn render_header_content(&mut self, frame: &mut Frame, area: Rect) {
-        let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
+        // `render_header` is one of the few render surfaces without a
+        // `catch_unwind` net, so this index must not be able to panic.
+        let agent_name = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|a| a.name.as_str())
+            .unwrap_or("unknown");
         let model_short = self
             .agent_state
             .current_model
@@ -1017,13 +1030,13 @@ impl App {
         self.status_bar
             .set_policy_status(self.policy_ui.status_line());
 
-        if let Some(ref lsp_tool) = self.lsp_tool {
-            let handle = tokio::runtime::Handle::current();
-            let lsp_status = handle.block_on(lsp_tool.lsp_status_line());
-            self.status_bar.set_lsp_status(lsp_status);
-        } else {
-            self.status_bar.set_lsp_status(None);
-        }
+        // The LSP status is a cache: computing it awaits the live LSP
+        // service, which cannot happen here (the render pass runs inside
+        // the event loop's runtime context, where `Handle::block_on`
+        // panics). `maybe_refresh_lsp_status` refreshes it off the render
+        // path and `LspStatusRefreshed` fills this cache.
+        self.status_bar
+            .set_lsp_status(self.lsp_status_cache.clone());
 
         frame.render_widget(&self.status_bar, area);
     }
@@ -1461,62 +1474,45 @@ impl App {
         }
     }
 
-    fn render_completions(&self, frame: &mut Frame, prompt_area: Rect) {
-        use crate::tui::components::completion_overlay::CompletionItem;
+    fn render_completions(&mut self, frame: &mut Frame, prompt_area: Rect) {
+        let rows = self.completion_rows();
+        let sel = self.prompt_state.completion_sel;
+        // Popup inner width, so descriptions get an ellipsis instead of
+        // being cut mid-word by the widget's hard clip.
+        let compl_w = 40.min(prompt_area.width.saturating_sub(2));
+        let inner_w = (compl_w as usize).saturating_sub(2);
         let items: Vec<ListItem> = match self.prompt_state.completion_type {
-            CompletionType::Slash => {
-                let filter = self.prompt_state.completion_filter.trim_start_matches('/');
-                let mut scored: Vec<(&CompletionItem, usize)> = self
-                    .prompt_state
-                    .slash_completions
-                    .iter()
-                    .filter_map(|item| {
-                        let item_name = item.label.trim_start_matches('/');
-                        let score = if filter.is_empty() {
-                            usize::MAX
-                        } else {
-                            fuzzy_score(filter, item_name)
-                        };
-                        if filter.is_empty() || score > 0 {
-                            Some((item, score))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if !filter.is_empty() {
-                    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
-                }
-                scored
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (c, _))| {
-                        let style = if i == self.prompt_state.completion_sel {
-                            Style::default()
-                                .bg(self.ui_state.theme.selection)
-                                .fg(self.ui_state.theme.primary)
-                        } else {
-                            Style::default().fg(self.ui_state.theme.foreground)
-                        };
-                        let content = if let Some(ref desc) = c.description {
-                            Text::from(vec![Line::from(vec![
-                                Span::styled(format!("{} ", c.label), style),
-                                Span::styled(desc, Style::default().fg(self.ui_state.theme.muted)),
-                            ])])
-                        } else {
-                            Text::from(Span::styled(&c.label, style))
-                        };
-                        ListItem::new(content)
-                    })
-                    .collect()
-            }
-            CompletionType::File => self
-                .prompt_state
-                .file_completions
+            CompletionType::Slash => rows
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let style = if i == self.prompt_state.completion_sel {
+                    let style = if i == sel {
+                        Style::default()
+                            .bg(self.ui_state.theme.selection)
+                            .fg(self.ui_state.theme.primary)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let content = if let Some(ref desc) = c.description {
+                        let budget = inner_w.saturating_sub(c.label.chars().count() + 1);
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("{} ", c.label), style),
+                            Span::styled(
+                                crate::tui::components::sidebar::clean_inline_text(desc, budget),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                        ])])
+                    } else {
+                        Text::from(Span::styled(&c.label, style))
+                    };
+                    ListItem::new(content)
+                })
+                .collect(),
+            CompletionType::File => rows
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if i == sel {
                         Style::default()
                             .bg(self.ui_state.theme.selection)
                             .fg(self.ui_state.theme.primary)
@@ -1538,13 +1534,11 @@ impl App {
                     ListItem::new(content)
                 })
                 .collect(),
-            CompletionType::Agent => self
-                .prompt_state
-                .agent_completions
+            CompletionType::Agent => rows
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
-                    let style = if i == self.prompt_state.completion_sel {
+                    let style = if i == sel {
                         Style::default()
                             .bg(self.ui_state.theme.selection)
                             .fg(self.ui_state.theme.primary)
@@ -1568,7 +1562,6 @@ impl App {
         }
         let max_h = 8.min(items.len() as u16);
         let compl_h = max_h + 2;
-        let compl_w = 40.min(prompt_area.width.saturating_sub(2));
         let compl_area = Rect {
             x: prompt_area.x + 1,
             y: prompt_area.y.saturating_sub(compl_h),
@@ -1582,5 +1575,9 @@ impl App {
             .style(Style::default().bg(self.ui_state.theme.background));
         let list = List::new(items).block(block);
         frame.render_widget(list, compl_area);
+        // The visible rows are the *filtered* set, which the popup sizes
+        // itself from. Click hit-testing must use the same count.
+        self.completion_area = Some(compl_area);
+        self.completion_visible_rows = max_h as usize;
     }
 }

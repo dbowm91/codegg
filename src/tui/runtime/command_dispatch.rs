@@ -140,6 +140,19 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ForkSession { session_id } => {
             start_fork_session(app, session_id);
         }
+        TuiCommand::LspStatusRefreshRequested => {
+            crate::tui::commands::diagnostics::refresh_lsp_status(app);
+        }
+        TuiCommand::LspStatusRefreshed { status } => {
+            app.lsp_status_cache = status;
+        }
+        TuiCommand::LspStatusDetailRequested => {
+            crate::tui::commands::diagnostics::request_lsp_status_detail(app);
+        }
+        TuiCommand::LspStatusDetailLoaded { detail } => match detail {
+            Some(text) => app.messages_state.toasts.info(&text),
+            None => app.messages_state.toasts.info("No LSP server connected"),
+        },
         TuiCommand::ShareSession { session_id } => {
             start_share_session(app, session_id);
         }

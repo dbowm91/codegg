@@ -5,6 +5,70 @@ use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
+/// How long the cached footer LSP status is reused before the event loop
+/// asks for another refresh.
+pub const LSP_STATUS_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Enqueue an LSP status refresh when the cached value has aged out.
+///
+/// The status is derived from the live LSP service, so computing it awaits
+/// that service. Doing that from `render` would require `Handle::block_on`,
+/// which panics inside the event loop's runtime context, so the fetch runs
+/// as a registered background task and the render pass reads the cache.
+pub(crate) fn maybe_refresh_lsp_status(app: &mut App) {
+    if app.lsp_tool.is_none() {
+        return;
+    }
+    let due = app
+        .lsp_status_requested_at
+        .map(|at| at.elapsed() >= LSP_STATUS_REFRESH_INTERVAL)
+        .unwrap_or(true);
+    if !due {
+        return;
+    }
+    app.lsp_status_requested_at = Some(std::time::Instant::now());
+    app.enqueue_tui_command(TuiCommand::LspStatusRefreshRequested);
+}
+
+/// Start the off-render-path LSP status fetch.
+pub(crate) fn refresh_lsp_status(app: &mut App) {
+    let Some(lsp_tool) = app.lsp_tool.clone() else {
+        app.lsp_status_cache = None;
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "lsp_status",
+        async move {
+            let status = lsp_tool.lsp_status_line().await;
+            Some(TuiCommand::LspStatusRefreshed { status })
+        },
+    );
+}
+
+/// Start the off-render-path fetch of the multi-line LSP detail summary
+/// shown as a toast by `/lsp-status`.
+pub(crate) fn request_lsp_status_detail(app: &mut App) {
+    let Some(lsp_tool) = app.lsp_tool.clone() else {
+        app.messages_state.toasts.info("LSP not available");
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "lsp_status_detail",
+        async move {
+            let detail = lsp_tool.lsp_summary_detail().await;
+            Some(TuiCommand::LspStatusDetailLoaded { detail })
+        },
+    );
+}
+
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_run_doctor(app: &mut App) {

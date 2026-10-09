@@ -145,9 +145,11 @@ impl ToastManager {
             };
 
             // Calculate height needed for the wrapped message
-            // Subtract 2 for borders
-            let inner_width = (max_width as usize).saturating_sub(2);
-            let wrap_lines = toast.message.len().div_ceil(inner_width);
+            // Subtract 2 for borders. A toast narrower than 3 columns has
+            // no usable inner width — `div_ceil(0)` panics — so clamp to
+            // 1 column rather than dividing by zero.
+            let inner_width = (max_width as usize).saturating_sub(2).max(1);
+            let wrap_lines = toast.message.chars().count().div_ceil(inner_width);
             // Total height: title line (inside border) + wrap_lines + progress bar + 2 for top/bottom borders
             // Actually Paragraph with wrap does this, but we need to know the height for Layout
             // Title is in the block, so we need 1 for message lines + 1 for progress bar + 2 for borders
@@ -171,9 +173,13 @@ impl ToastManager {
             } else {
                 remaining.as_secs_f64() / toast.duration.as_secs_f64()
             };
-            let bar_len = (progress * (max_width as f64 - 4.0)) as usize;
-            let bar =
-                "█".repeat(bar_len) + &"░".repeat((max_width as usize - 4).saturating_sub(bar_len));
+            let bar_len = (progress * (max_width as f64 - 4.0).max(0.0)) as usize;
+            let bar = "█".repeat(bar_len)
+                + &"░".repeat(
+                    (max_width as usize)
+                        .saturating_sub(4)
+                        .saturating_sub(bar_len),
+                );
 
             let lines = vec![
                 Line::from(Span::styled(
