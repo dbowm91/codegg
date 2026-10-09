@@ -117,23 +117,91 @@ impl BrokerCallback for FixtureBroker {
 /// Validates the program payload, loads and verifies IR, creates a
 /// [`MeteredInterpreter`], and runs it with cancellation support.
 pub struct ToolProgramExecutor {
-    broker: Arc<ToolBroker>,
-    registry: Arc<ToolRegistry>,
+    /// Catalog supplied by an embedder through
+    /// [`ToolProgramExecutor::new`]. It may carry a bespoke tool set that
+    /// cannot be reconstructed from options, so when present it is used
+    /// verbatim for dispatch and the embedder owns its workspace binding.
+    /// Production constructs this executor with [`Default`] and leaves it
+    /// unset.
+    injected: Option<ToolCatalog>,
+    /// Static contract catalog used by `validate` and by frozen contract
+    /// snapshot resolution. Both only read [`ToolContract`] metadata through
+    /// `lookup_contract` and never dispatch a tool call, so the default
+    /// instance is materialized lazily instead of at daemon startup: the
+    /// daemon is routinely started with no frontend attached, so a registry
+    /// built then would be workspace-less by construction.
+    catalog: std::sync::OnceLock<ToolCatalog>,
     submission: Option<Arc<crate::scheduler::submission::JobSubmissionService>>,
     notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
     artifact_store: Option<Arc<dyn crate::context::ContextArtifactStore>>,
 }
 
+/// Broker/registry pair. `ToolBroker` copies the contract catalog out of the
+/// registry it is built from, so the registry is retained only to keep an
+/// embedder's bespoke tools dispatchable.
+struct ToolCatalog {
+    broker: Arc<ToolBroker>,
+    registry: Arc<ToolRegistry>,
+}
+
 impl ToolProgramExecutor {
     pub fn new(broker: Arc<ToolBroker>, registry: Arc<ToolRegistry>) -> Self {
         Self {
-            broker,
-            registry,
+            injected: Some(ToolCatalog { broker, registry }),
+            catalog: std::sync::OnceLock::new(),
             submission: None,
             notification_service: None,
             artifact_store: None,
         }
+    }
+
+    /// Materialize the default contract catalog on first use.
+    fn catalog(&self) -> &ToolCatalog {
+        self.catalog.get_or_init(|| {
+            let registry = Arc::new(ToolRegistry::with_defaults());
+            ToolCatalog {
+                broker: Arc::new(ToolBroker::new(&registry)),
+                registry,
+            }
+        })
+    }
+
+    /// Build the registry and broker that dispatch one Tool Program job.
+    ///
+    /// The daemon owns this executor for its whole lifetime and is frequently
+    /// started with no frontend attached, so no session-derived workspace root
+    /// exists when the executor is constructed. Binding here — from the
+    /// scheduler-owned lease root that
+    /// [`JobExecutionContext`](crate::scheduler::executor::JobExecutionContext)
+    /// carries — keeps every workspace-bounded tool (`read`, `glob`, `grep`,
+    /// `list`) inside the job's own workspace instead of falling back to the
+    /// daemon process's working directory.
+    ///
+    /// `WorkspaceWrite` is the conservative ceiling the daemon applies to
+    /// scheduler-owned work, matching the subagent executor. It is never
+    /// chosen by the submitting frontend, and it cannot widen authority here
+    /// in any case: Tool Program manifests admit only read-only,
+    /// non-`DirectOnly` tools
+    /// ([`resolve_manifest`](crate::tool::program_manifest::resolve_manifest)),
+    /// so `bash` is unreachable through this registry.
+    fn job_tool_context(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> (Arc<ToolBroker>, Arc<ToolRegistry>) {
+        if let Some(catalog) = self.injected.as_ref() {
+            return (catalog.broker.clone(), catalog.registry.clone());
+        }
+        let registry = Arc::new(ToolRegistry::with_options(
+            crate::tool::ToolRegistryOptions {
+                workspace_root: Some(workspace_root.to_path_buf()),
+                sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+                submission: self.submission.clone(),
+                ..crate::tool::ToolRegistryOptions::default()
+            },
+        ));
+        let broker = Arc::new(ToolBroker::new(&registry));
+        (broker, registry)
     }
 
     pub fn with_submission(
@@ -163,12 +231,14 @@ impl ToolProgramExecutor {
 
 impl Default for ToolProgramExecutor {
     fn default() -> Self {
-        // Default creates with a minimal setup - only used in tests
-        let registry = Arc::new(ToolRegistry::with_defaults());
-        let broker = Arc::new(ToolBroker::new(&registry));
+        // Builds nothing eagerly. Production registers this executor during
+        // `CoreDaemon` construction, which happens before any frontend
+        // connects, so there is no session workspace root to bind against
+        // here. Dispatch-time binding lives in `job_tool_context`, and the
+        // contract catalog is materialized on first use by `catalog`.
         Self {
-            broker,
-            registry,
+            injected: None,
+            catalog: std::sync::OnceLock::new(),
             submission: None,
             notification_service: None,
             artifact_store: None,
@@ -1107,8 +1177,10 @@ impl JobExecutor for ToolProgramExecutor {
                         "authority_grant_json".into(),
                     ));
                 }
-                let manifest =
-                    crate::tool::program_manifest::resolve_manifest(&self.broker, allowed_tools);
+                let manifest = crate::tool::program_manifest::resolve_manifest(
+                    &self.catalog().broker,
+                    allowed_tools,
+                );
                 if !crate::tool::program_manifest::manifest_is_valid(&manifest) {
                     return Err(ExecutorValidationError::InvalidPayload(format!(
                         "tool-program manifest rejected: {}",
@@ -1519,6 +1591,11 @@ impl JobExecutor for ToolProgramExecutor {
                 },
             };
         }
+        // Bind this attempt's tool surface to the scheduler-owned lease root.
+        // Done once per job so the workspace-bounded tools dispatched below
+        // are confined to `ctx.workspace_root` rather than to whatever the
+        // daemon process happened to start in.
+        let (job_broker, job_registry) = self.job_tool_context(&ctx.workspace_root);
         let frozen_contracts: Vec<crate::tool::tool_program_context::ContractEntry> =
             match serde_json::from_str::<serde_json::Value>(&grant.contract_snapshot_json)
                 .ok()
@@ -1539,7 +1616,7 @@ impl JobExecutor for ToolProgramExecutor {
                 }
             };
         let current_contracts = match crate::tool::tool_program_context::resolve_contract_snapshot(
-            &self.broker,
+            &job_broker,
             &allowed_tools,
         ) {
             Ok(contracts) => contracts,
@@ -1613,16 +1690,11 @@ impl JobExecutor for ToolProgramExecutor {
             self.artifact_store.clone().unwrap_or_else(|| {
                 Arc::new(crate::context::FileArtifactStore::new(&ctx.workspace_root))
             });
-        let workspace_broker = self
-            .broker
-            .for_workspace_artifacts(canonical_artifact_store.clone());
+        let workspace_broker = job_broker.for_workspace_artifacts(canonical_artifact_store.clone());
 
         // Create real broker adapter
-        let mut broker_adapter = BrokerAdapter::new(
-            Arc::new(workspace_broker),
-            self.registry.clone(),
-            program_id.clone(),
-        );
+        let mut broker_adapter =
+            BrokerAdapter::new(Arc::new(workspace_broker), job_registry, program_id.clone());
         if let Some(ref submission) = self.submission {
             broker_adapter = broker_adapter.with_submission(submission.clone());
         }
@@ -2112,6 +2184,109 @@ mod tests {
     fn executor_kind_is_tool_program() {
         let exec = ToolProgramExecutor::default();
         assert_eq!(exec.kind(), ExecutorKind::ToolProgram);
+    }
+
+    /// The daemon registers this executor before any frontend connects, so it
+    /// must not hold a workspace-bound registry built from startup state.
+    /// Regression guard for the daemon-startup warning
+    /// "sandbox profile requested without a workspace root": constructing the
+    /// executor used to build exactly such a registry.
+    #[test]
+    fn default_construction_defers_registry_building() {
+        let exec = ToolProgramExecutor::default();
+        assert!(
+            exec.catalog.get().is_none(),
+            "default construction must not eagerly build a workspace-less registry"
+        );
+    }
+
+    /// Dispatch-time binding: the registry handed to `BrokerAdapter` must
+    /// confine workspace-bounded tools to the job's own lease root rather than
+    /// the daemon process's working directory.
+    #[tokio::test]
+    async fn job_tool_context_confines_reads_to_the_job_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let inside = workspace.path().join("inside.txt");
+        std::fs::write(&inside, "in-workspace").unwrap();
+
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside = outside_dir.path().join("outside.txt");
+        std::fs::write(&outside, "out-of-workspace").unwrap();
+
+        let exec = ToolProgramExecutor::default();
+        let (_broker, registry) = exec.job_tool_context(workspace.path());
+
+        assert_eq!(
+            registry.sandbox_profile(),
+            codegg_core::approval::SandboxProfile::WorkspaceWrite
+        );
+
+        let read = registry.get("read").expect("read tool is registered");
+
+        let allowed = read
+            .execute(serde_json::json!({ "path": inside.to_string_lossy() }))
+            .await
+            .expect("reads inside the job workspace are allowed");
+        assert!(allowed.contains("in-workspace"));
+
+        assert!(
+            read.execute(serde_json::json!({ "path": outside.to_string_lossy() }))
+                .await
+                .is_err(),
+            "reads outside the job workspace must be denied"
+        );
+    }
+
+    /// A catalog-only registry answers `lookup_contract` for the static
+    /// tool catalog without ever being used to dispatch a call.
+    #[test]
+    fn catalog_is_materialized_lazily_for_contract_lookup() {
+        let exec = ToolProgramExecutor::default();
+        assert!(exec.catalog.get().is_none());
+        let contract = exec
+            .catalog()
+            .broker
+            .lookup_contract("read")
+            .expect("read is in the static tool catalog");
+        assert_eq!(contract.name, "read");
+    }
+
+    /// An embedder-injected catalog carries a bespoke tool set that cannot be
+    /// rebuilt from options, so dispatch must keep using it verbatim rather
+    /// than swapping in a default workspace-bound registry.
+    #[test]
+    fn injected_catalog_is_dispatched_verbatim() {
+        struct BespokeTool;
+        #[async_trait::async_trait]
+        impl crate::tool::Tool for BespokeTool {
+            fn name(&self) -> &str {
+                "bespoke_fixture_tool"
+            }
+            fn description(&self) -> &str {
+                "embedder-registered tool"
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object", "properties": {} })
+            }
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+            ) -> Result<String, codegg_core::error::ToolError> {
+                Ok("ok".into())
+            }
+        }
+
+        let mut registry = ToolRegistry::with_defaults();
+        registry.register(BespokeTool);
+        let registry = Arc::new(registry);
+        let broker = Arc::new(ToolBroker::new(&registry));
+
+        let exec = ToolProgramExecutor::new(broker, registry.clone());
+        let (_, dispatched) = exec.job_tool_context(std::path::Path::new("/nonexistent"));
+        assert!(
+            dispatched.contains("bespoke_fixture_tool"),
+            "an injected catalog must remain dispatchable"
+        );
     }
 
     #[test]

@@ -314,6 +314,11 @@ impl CoreDaemon {
         // for nested child jobs. Install it only after the scheduler exists,
         // but before the scheduler loop is spawned, so production execution
         // cannot fall back to an executor with no child-job authority.
+        //
+        // `default()` builds no registry here on purpose: at daemon startup no
+        // frontend session exists, so there is no workspace root to bind
+        // against. `ToolProgramExecutor::job_tool_context` binds the dispatch
+        // registry per job from the scheduler-owned lease root.
         if scheduler_config.enabled {
             let notification_service = Arc::new(match deps.pool.clone() {
                 Some(pool) => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(pool),
