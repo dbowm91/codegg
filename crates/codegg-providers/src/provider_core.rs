@@ -700,7 +700,62 @@ pub(crate) fn resolve_provider_credential(
         },
         codegg_config::schema::AuthConfig::None => crate::auth_types::AuthConfig::None,
     });
-    resolver.resolve(auth_ref.as_ref(), &ctx)
+    if let Some(resolved) = resolver.resolve(auth_ref.as_ref(), &ctx)? {
+        return Ok(Some(resolved));
+    }
+
+    // Credential-store fallback.
+    //
+    // A credential added through the TUI `/connect` flow is written to the
+    // credential store under the provider id and appears in neither config nor
+    // the environment. Without this fallback the resolver returns `None`, the
+    // provider is skipped during registration (`NO KEY for provider ...`), and
+    // it therefore contributes no models — so connecting a provider through
+    // the TUI appeared to have no effect at all: `/connect` reported success
+    // while `/models` stayed empty.
+    //
+    // Config and env keep priority; this only supplies the missing case, and an
+    // empty/expired record is treated as absent rather than as a bad key.
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let records = store.list();
+    let chosen = records
+        .iter()
+        .find(|record| record.provider_id == provider_id && record.account_id.is_some())
+        .or_else(|| {
+            records
+                .iter()
+                .find(|record| record.provider_id == provider_id)
+        });
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    if chosen
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+    {
+        return Ok(None);
+    }
+    let Ok(Some(secret)) = store.get_plaintext(provider_id, chosen.account_id.as_deref(), |_| true)
+    else {
+        return Ok(None);
+    };
+    if secret.is_empty() {
+        return Ok(None);
+    }
+    tracing::debug!(
+        "resolve_provider_credential: provider '{}' resolved from the credential store",
+        provider_id
+    );
+    Ok(Some(ResolvedAuth {
+        credential: crate::auth_types::Credential {
+            kind: chosen.kind.clone(),
+            secret,
+            expires_at: chosen.expires_at,
+        },
+        source: crate::auth_types::ResolvedAuthSource::UserStore,
+    }))
 }
 
 /// Convert a [`ResolvedAuth`] into a [`Credential::api_key`] credential,
@@ -1722,6 +1777,93 @@ mod tests {
             std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
         } else {
             std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+        }
+    }
+
+    #[test]
+    fn resolve_provider_credential_falls_back_to_store_without_config_entry() {
+        // Regression: a credential added through the TUI `/connect` flow is
+        // written only to the credential store — there is no `[provider.*]`
+        // config entry and no env var. Without the store fallback the resolver
+        // returned `None`, the provider was skipped at registration
+        // ("NO KEY for provider ..."), and it contributed no models, so
+        // `/connect` reported success while `/models` stayed empty.
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "connect-fallback-test-master");
+        std::env::remove_var("CONNECT_FALLBACK_TEST_API_KEY");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let store =
+            Arc::new(CredentialStore::at_path(tmp.path().join("credentials.json")).expect("store"));
+        store
+            .put(
+                "connect_fallback_test",
+                Some("conn-1"),
+                CredentialKind::ApiKey,
+                "connect-added-key",
+                None,
+                vec![],
+            )
+            .expect("put");
+
+        // No config entry at all — exactly what `/connect` leaves behind.
+        let resolved =
+            resolve_provider_credential("connect_fallback_test", None, None, Some(&store))
+                .expect("ok")
+                .expect("the stored credential must be found without config or env");
+        assert_eq!(resolved.credential.secret, "connect-added-key");
+        assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+    }
+
+    #[test]
+    fn env_still_wins_over_the_store_fallback() {
+        // The fallback must not displace the existing precedence: an explicit
+        // env var continues to beat a stored credential.
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        let prev_env = std::env::var("CONNECT_PRECEDENCE_TEST_API_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "connect-precedence-test-master");
+        std::env::set_var("CONNECT_PRECEDENCE_TEST_API_KEY", "env-key");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let store =
+            Arc::new(CredentialStore::at_path(tmp.path().join("credentials.json")).expect("store"));
+        store
+            .put(
+                "connect_precedence_test",
+                Some("conn-1"),
+                CredentialKind::ApiKey,
+                "stored-key",
+                None,
+                vec![],
+            )
+            .expect("put");
+
+        let resolved = resolve_provider_credential(
+            "connect_precedence_test",
+            None,
+            Some("CONNECT_PRECEDENCE_TEST_API_KEY"),
+            Some(&store),
+        )
+        .expect("ok")
+        .expect("env must resolve");
+        assert_eq!(resolved.credential.secret, "env-key");
+
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+        match prev_env {
+            Some(v) => std::env::set_var("CONNECT_PRECEDENCE_TEST_API_KEY", v),
+            None => std::env::remove_var("CONNECT_PRECEDENCE_TEST_API_KEY"),
         }
     }
 

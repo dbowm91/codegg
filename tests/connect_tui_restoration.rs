@@ -49,6 +49,9 @@ struct FakeConnectDaemon {
     creates: Mutex<Vec<String>>,
     cancels: Mutex<Vec<String>>,
     request_debugs: Mutex<Vec<String>>,
+    /// Plaintext credentials as received, so a test can assert the daemon
+    /// got exactly the value the user pasted. Synthetic test keys only.
+    received_credentials: Mutex<Vec<String>>,
 }
 
 fn catalog_dtos() -> Vec<ProviderSetupEntryDto> {
@@ -262,6 +265,10 @@ impl CoreClient for FakeConnectDaemon {
                     .lock()
                     .unwrap()
                     .push(request.provider_id.clone());
+                self.received_credentials
+                    .lock()
+                    .unwrap()
+                    .push(request.credential.expose().to_string());
                 self.connections
                     .lock()
                     .unwrap()
@@ -361,6 +368,15 @@ fn paste_form_text(app: &mut App, text: &str) {
         .dialog_mut::<ConnectDialog>(codegg::tui::components::component::DialogType::Connect)
         .expect("connect dialog is mounted")
         .handle_paste(text.to_string());
+}
+
+fn live_form_input(app: &App) -> String {
+    app.focus_manager
+        .with_dialog::<ConnectDialog, _>(
+            codegg::tui::components::component::DialogType::Connect,
+            |live| live.form_input.clone(),
+        )
+        .expect("connect dialog is mounted")
 }
 
 fn dispatch_connect(app: &mut App) {
@@ -762,4 +778,81 @@ async fn connect_tui_restoration_keyboard_mouse_cancel_and_secrecy() {
     // SecretInput itself never round-trips through Debug in plaintext.
     let probe = SecretInput::new(ORDINARY_SECRET).expect("secret input");
     assert!(!format!("{probe:?}").contains(ORDINARY_SECRET));
+}
+
+/// Regression: a credential pasted together with the source line's trailing
+/// newline used to be rejected by the TUI's own secret-envelope check before
+/// any request left the client. The user saw a misleading "API key is
+/// invalid" for a key that was in fact correct.
+///
+/// The same flow also pins the two neighbouring defects: the vim movement
+/// keys must be typeable on the display-name step, and OpenCode Go — which
+/// admits both credential kinds — must reach its choice step and then the
+/// secret step.
+#[tokio::test(flavor = "current_thread")]
+async fn connect_pasted_key_with_trailing_newline_reaches_the_daemon_intact() {
+    use crossterm::event::KeyCode;
+
+    for var in [
+        "CODEGG_MASTER_KEY",
+        "CODEGG_ENCRYPTION_KEY",
+        "OPENCODE_ENCRYPTION_KEY",
+    ] {
+        std::env::remove_var(var);
+    }
+    let project_dir = tempfile::tempdir().expect("project tempdir");
+    let mut app = App::new_for_testing(project_dir.path().to_string_lossy().to_string());
+    let daemon = Arc::new(FakeConnectDaemon::default());
+    app.core_client = Some(daemon.clone());
+    let (tx, mut rx) = mpsc::channel(64);
+    app.tui_cmd_tx = Some(tx);
+
+    dispatch_connect(&mut app);
+    let providers = recv_setup(&mut rx).await;
+    apply_setup_loaded(&mut app, &providers);
+
+    let go_idx = index_of(&app, "opencode_go");
+    move_selection_to(&mut app, go_idx);
+    assert_eq!(live_selected_id(&app), "opencode_go");
+
+    // OpenCode Go admits both credential kinds, so the choice step is real.
+    press_key(&mut app, KeyCode::Enter);
+    assert_eq!(live_step(&app), ConnectStep::SelectCredentialKind);
+    press_key(&mut app, KeyCode::Enter);
+    assert_eq!(live_step(&app), ConnectStep::EnterApiKey);
+
+    // A terminal paste hands over the source line's newline with the key.
+    paste_secret(&mut app, &format!("{ORDINARY_SECRET}\n"));
+    press_key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        live_step(&app),
+        ConnectStep::EnterDisplayName,
+        "the pasted key must be accepted and advance the form"
+    );
+
+    // A display name containing the vim movement keys.
+    for c in "jack".chars() {
+        press_key(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(
+        live_form_input(&app),
+        "jack",
+        "j/k must be ordinary characters on a text-input step"
+    );
+    press_key(&mut app, KeyCode::Enter);
+    press_key(&mut app, KeyCode::Enter);
+    assert_eq!(live_step(&app), ConnectStep::Review);
+    press_key(&mut app, KeyCode::Enter);
+
+    let created = recv_finished(&mut rx)
+        .await
+        .expect("create succeeds: the pasted key was accepted");
+    assert_eq!(created.connection.provider_kind, "opencode_go");
+
+    let received = daemon.received_credentials.lock().unwrap().clone();
+    assert_eq!(
+        received,
+        vec![ORDINARY_SECRET.to_string()],
+        "daemon must receive exactly the pasted key, without the trailing newline"
+    );
 }

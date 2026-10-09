@@ -1692,6 +1692,103 @@ pub(crate) fn apply_session_messages_loaded(
     }
 }
 
+/// Start a user-initiated new session (Ctrl+N, `/new`).
+///
+/// This is the fix for "Ctrl+N does nothing": the old handler only cleared
+/// `session_state.session`, which left the TUI with no session at all and made
+/// every session-scoped surface (`/models`, `/sessions`, tree) unusable until a
+/// prompt happened to create one implicitly. Creating the session eagerly is
+/// what makes those surfaces work from the first keystroke.
+pub(crate) fn start_new_session(app: &mut App) {
+    let request_id = app.dialog_state.new_session_request.begin();
+    let Some(core_client) = app.core_client.clone() else {
+        // No daemon: there is nothing to create a session against. Say so
+        // instead of leaving the user on a dead key.
+        app.messages_state
+            .toasts
+            .error("Cannot start a new session: the codegg core is unavailable. Check /doctor.");
+        let _ = app
+            .dialog_state
+            .new_session_request
+            .fail(request_id, "core client unavailable".to_string());
+        return;
+    };
+    let project_dir = app
+        .active_workspace_root()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let project_id = app.active_project_key();
+    let workspace_id = app.active_workspace_id().map(|id| id.to_string());
+
+    spawn_registered_tui_task(
+        app.tui_cmd_tx.clone(),
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "new_session",
+        async move {
+            let request = crate::core::new_request(
+                format!("session-create-new-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionCreate {
+                    directory: project_dir.to_string_lossy().into_owned(),
+                    title: None,
+                    project_id,
+                    workspace_id,
+                },
+            );
+            let (session, error) = match core_client.request(request).await {
+                Ok(CoreResponse::Session { session }) => (Some(session), None),
+                Ok(CoreResponse::Error { code, message }) => {
+                    (None, Some(format!("{code}: {message}")))
+                }
+                Ok(other) => (None, Some(format!("unexpected core response: {other:?}"))),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Some(TuiCommand::NewSessionCreated {
+                request_id,
+                session,
+                error,
+            })
+        },
+    );
+}
+
+/// Apply a `NewSessionCreated` completion. Stale completions (mismatched
+/// request id) are ignored so a slow creation cannot clobber a newer session.
+pub(crate) fn apply_new_session_created(
+    app: &mut App,
+    request_id: u64,
+    session: Option<crate::protocol::dto::Session>,
+    error: Option<String>,
+) {
+    if let Some(err) = error {
+        if !app
+            .dialog_state
+            .new_session_request
+            .fail(request_id, err.clone())
+        {
+            return;
+        }
+        app.messages_state
+            .toasts
+            .error(&format!("Failed to start a new session: {err}"));
+        return;
+    }
+    if !app.dialog_state.new_session_request.finish(request_id) {
+        return;
+    }
+    let Some(session) = session else {
+        return;
+    };
+    // `set_session` navigates to the session route and mirrors the selection
+    // into the active tab, which is exactly what a fresh session needs.
+    if let Ok(session) = crate::protocol_conversions::dto_to_session(session) {
+        app.set_session(session);
+    } else {
+        app.messages_state
+            .toasts
+            .error("Failed to start a new session: could not read the created session");
+    }
+}
+
 pub(crate) fn start_create_from_template(
     app: &mut App,
     _key: String,

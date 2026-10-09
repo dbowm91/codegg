@@ -302,12 +302,19 @@ impl QuestionDialog {
 impl Component for QuestionDialog {
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         match key.code {
-            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+            crossterm::event::KeyCode::Up => {
                 self.select_up();
             }
-            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+            crossterm::event::KeyCode::Down => {
                 self.select_down();
             }
+            // Unlike a filterable list, this dialog has no selection list:
+            // `select_up`/`select_down` only move between questions, which
+            // Up/Down already do unambiguously. `j`/`k` therefore stay
+            // ordinary characters here so a free-form answer remains fully
+            // typeable — including a leading j or k.
+            crossterm::event::KeyCode::Char('k') => self.set_answer('k'),
+            crossterm::event::KeyCode::Char('j') => self.set_answer('j'),
             crossterm::event::KeyCode::Char(ch) => {
                 self.set_answer(ch);
             }
@@ -429,5 +436,75 @@ impl Component for QuestionDialog {
 
     fn dialog_type(&self) -> DialogType {
         DialogType::Question
+    }
+}
+
+#[cfg(test)]
+mod vim_key_tests {
+    use super::*;
+    use crate::tui::components::component::Component;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn dialog(selected: usize, input: &str) -> QuestionDialog {
+        QuestionDialog {
+            questions: Vec::new(),
+            answers: vec![String::new(), "second".to_string()],
+            selected_question: selected,
+            current_input: input.to_string(),
+            cursor_pos: input.len(),
+        }
+    }
+
+    #[test]
+    fn vim_keys_type_into_a_non_empty_answer() {
+        // j/k must reach the answer box once the user has started typing.
+        let mut d = dialog(1, "jack");
+        d.handle_key(key('j'));
+        assert_eq!(
+            d.current_input, "jackj",
+            "j must be typeable into an answer that already has content"
+        );
+        assert_eq!(
+            d.selected_question, 1,
+            "typing must not move between questions"
+        );
+    }
+
+    #[test]
+    fn vim_keys_type_into_an_empty_answer() {
+        // A leading j/k must be typeable too. There is no selection list
+        // here for the letters to navigate, so they must never be captured.
+        let mut d = dialog(0, "");
+        d.handle_key(key('j'));
+        assert_eq!(
+            d.current_input, "j",
+            "j must be typeable when starting an answer"
+        );
+        d.handle_key(key('k'));
+        assert_eq!(d.current_input, "jk");
+    }
+
+    fn spec(question: &str) -> QuestionSpec {
+        QuestionSpec {
+            question: question.to_string(),
+            options: None,
+            initial: None,
+        }
+    }
+
+    #[test]
+    fn arrow_keys_still_move_between_questions() {
+        // Up/Down remain the unambiguous way to change question, which is
+        // exactly what j/k used to duplicate in this dialog.
+        let mut d = QuestionDialog::new(vec![spec("first"), spec("second")]);
+        d.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            d.selected_question, 1,
+            "Down must still move between questions"
+        );
     }
 }

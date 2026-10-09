@@ -780,6 +780,63 @@ fn test_paste_add_model_field() {
 }
 
 #[test]
+fn test_vim_keys_type_into_add_model_fields() {
+    // j/k move the model selection, but the add-model form captures text:
+    // a model name or API key may legitimately contain them.
+    let key = |c: char| {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    };
+    let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+    dialog.tab = ModelDialogTab::Configure;
+    dialog.models = vec!["openai/gpt4".to_string(), "openai/gpt5".to_string()];
+    dialog.start_adding_model();
+
+    dialog.field_index = 0; // name field
+    for c in "kimi".chars() {
+        dialog.handle_key(key(c));
+    }
+    assert_eq!(
+        dialog.new_model_name, "kimi",
+        "j/k must be typeable in the model-name field"
+    );
+
+    dialog.field_index = 2; // api key field
+    for c in "sk-jk-123".chars() {
+        dialog.handle_key(key(c));
+    }
+    assert_eq!(
+        dialog.new_model_api_key, "sk-jk-123",
+        "j/k must be typeable in the API-key field"
+    );
+}
+
+#[test]
+fn test_vim_keys_still_move_selection_outside_the_add_model_form() {
+    let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+    dialog.models = vec!["openai/gpt4".to_string(), "openai/gpt5".to_string()];
+    dialog.update_cache();
+    assert_eq!(dialog.selected, 0);
+
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(
+        dialog.selected, 1,
+        "j must still navigate the model list outside the form"
+    );
+
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('k'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(dialog.selected, 0);
+}
+
+#[test]
 fn test_enter_no_match_does_nothing() {
     let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
     dialog.tab = ModelDialogTab::SelectModel;
@@ -812,10 +869,19 @@ impl Component for ModelDialog {
                     self.prev_add_model_field();
                 }
             }
-            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+            crossterm::event::KeyCode::Up => {
                 self.select_up();
             }
-            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+            crossterm::event::KeyCode::Down => {
+                self.select_down();
+            }
+            // `j`/`k` move the model selection, but while the add-model form
+            // is capturing text they are ordinary characters — a model name
+            // or API key may legitimately contain them.
+            crossterm::event::KeyCode::Char('k') if !self.adding_model => {
+                self.select_up();
+            }
+            crossterm::event::KeyCode::Char('j') if !self.adding_model => {
                 self.select_down();
             }
             crossterm::event::KeyCode::Char(c) => {
@@ -1012,8 +1078,13 @@ impl Component for ModelDialog {
                 }
 
                 if is_empty {
+                    // An unfiltered empty list almost always means "no provider
+                    // is connected", not "you filtered everything out". The
+                    // old text (`(no models available)`) left the user with no
+                    // idea what to do next, which is why switching models read
+                    // as a broken dialog on a fresh install.
                     let message = if self.filter.is_empty() {
-                        "  (no models available)"
+                        "  No models — connect a provider first (/connect), then /models-refresh"
                     } else {
                         "  (no matches)"
                     };

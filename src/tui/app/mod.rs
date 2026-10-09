@@ -741,6 +741,7 @@ impl App {
                 task_view: crate::tui::app::state::TaskViewState::default(),
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                new_session_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1250,6 +1251,7 @@ impl App {
                 task_view: crate::tui::app::state::TaskViewState::default(),
                 worktree_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 template_create_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                new_session_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -3650,7 +3652,11 @@ impl App {
                 }
             }
             B::New => {
-                self.clear_session();
+                // `/new` (alias `/clear`) previously only cleared the message
+                // list, which left the TUI attached to the old session and
+                // never actually created a new one. Route it through the same
+                // path as Ctrl+N so both produce a real new session.
+                self.new_session();
             }
             B::Compact => {
                 self.messages_state
@@ -7533,10 +7539,19 @@ impl App {
             KeyCode::Esc => {
                 self.close_dialog();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 picker.select_up(filtered_len);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
+                picker.select_down(filtered_len);
+            }
+            // `j`/`k` move the catalog list only while the search query is
+            // empty; once the user is typing a query they are ordinary
+            // characters and must reach `picker.query` below.
+            KeyCode::Char('k') if picker.query.is_empty() => {
+                picker.select_up(filtered_len);
+            }
+            KeyCode::Char('j') if picker.query.is_empty() => {
                 picker.select_down(filtered_len);
             }
             KeyCode::Backspace => {
@@ -7918,6 +7933,14 @@ impl App {
         self.session_state.context_tokens = 0;
     }
 
+    /// Start a brand-new session (Ctrl+N, `/new`).
+    ///
+    /// This previously only did `session_state.session = None`, which read as
+    /// "nothing happened": the TUI had no session, and with no session
+    /// `/models` could not switch models, `/sessions` had nothing to bind to,
+    /// and pressing Ctrl+N again was a no-op on an already-empty state. A new
+    /// session is now actually created through the core so the session-scoped
+    /// surfaces work immediately.
     fn new_session(&mut self) {
         // Refresh the cached consolidation flag at session start so the
         // per-turn handler does not re-parse the config TOML.
@@ -7938,6 +7961,10 @@ impl App {
         }
 
         self.invalidate_pending_session_submit(false);
+        // Clear the view immediately so the user sees a fresh composer, then
+        // create the backing session. Creating it (rather than leaving
+        // `session` as None) is what makes /models, /sessions and every other
+        // session-scoped surface usable before the first prompt.
         self.session_state.session = None;
         self.messages_state.messages.clear();
         self.session_state.token_in = 0;
@@ -7946,6 +7973,7 @@ impl App {
         self.session_state.session_status = SessionStatus::Idle;
         self.prompt_state.pending_send = false;
         self.ui_state.routes.navigate_to(Route::Home);
+        crate::tui::commands::sessions::start_new_session(self);
     }
 
     fn apply_template(&mut self, key: String, template: SessionTemplate) {
@@ -9201,7 +9229,13 @@ impl App {
                 codegg_protocol::provider::ProviderCredentialKind::Bearer => "Bearer token",
                 codegg_protocol::provider::ProviderCredentialKind::ApiKey => "API key",
             };
-            let message = format!("{label} is invalid");
+            // `SecretInput::new` rejects control characters, so a value
+            // carrying a stray line break lands here. Name that cause
+            // instead of implying the credential itself was rejected.
+            let message = format!(
+                "{label} is invalid — remove any line breaks (a pasted key often \
+                 carries a trailing newline)"
+            );
             if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
                 dialog.set_error(message.clone());
             }

@@ -42,7 +42,7 @@ impl Provider for OpencodeZenProvider {
     }
 
     fn name(&self) -> &str {
-        "Codegg Zen"
+        "OpenCode Zen"
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventStream, ProviderError> {
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn test_provider_name() {
         let provider = OpencodeZenProvider::new("test-key".to_string());
-        assert_eq!(provider.name(), "Codegg Zen");
+        assert_eq!(provider.name(), "OpenCode Zen");
     }
 
     #[test]

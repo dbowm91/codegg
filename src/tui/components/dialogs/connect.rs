@@ -459,18 +459,9 @@ impl ConnectDialog {
                 self.move_to_endpoint_step();
             }
             ConnectFormKind::Fixed => {
-                if entry.needs_credential_choice() {
-                    self.move_to_credential_kind_step();
-                } else {
-                    // Pin the single admitted kind so the create request
-                    // cannot inherit a stale bearer/api-key selection.
-                    if entry.credential_kinds.iter().any(|k| k == "bearer") {
-                        self.credential_kind = ProviderCredentialKind::Bearer;
-                    } else {
-                        self.credential_kind = ProviderCredentialKind::ApiKey;
-                    }
-                    self.move_to_api_key_step();
-                }
+                // Single admitted kind advances straight into secret entry;
+                // only a genuine two-kind catalog row costs a choice step.
+                self.advance_to_credential_step(&entry);
             }
         }
         true
@@ -493,16 +484,7 @@ impl ConnectDialog {
         }
         self.endpoint = trimmed;
         self.error_message = None;
-        if entry.needs_credential_choice() {
-            self.move_to_credential_kind_step();
-        } else {
-            if entry.credential_kinds.iter().any(|k| k == "bearer") {
-                self.credential_kind = ProviderCredentialKind::Bearer;
-            } else {
-                self.credential_kind = ProviderCredentialKind::ApiKey;
-            }
-            self.move_to_api_key_step();
-        }
+        self.advance_to_credential_step(&entry);
         true
     }
 
@@ -745,12 +727,72 @@ impl ConnectDialog {
         }
     }
 
+    /// Credential kind pinned for an entry that admits exactly one kind.
+    /// Entries admitting no kind at all fall back to API key, the only
+    /// kind the create request can carry.
+    fn pin_unambiguous_credential_kind(&mut self, entry: &ProviderInfo) {
+        self.credential_kind = if entry.credential_kinds.iter().any(|k| k == "bearer") {
+            ProviderCredentialKind::Bearer
+        } else {
+            ProviderCredentialKind::ApiKey
+        };
+    }
+
+    /// Step reached after the endpoint/host/TLS phases: the credential-kind
+    /// choice only when the catalog admits more than one kind, otherwise
+    /// straight into secret entry. A provider with a single admitted kind
+    /// must never cost the user an extra Enter.
+    fn advance_to_credential_step(&mut self, entry: &ProviderInfo) {
+        if entry.needs_credential_choice() {
+            self.move_to_credential_kind_step();
+        } else {
+            self.pin_unambiguous_credential_kind(entry);
+            self.move_to_api_key_step();
+        }
+    }
+
+    /// Paste boundary for the single-line form fields.
+    ///
+    /// A terminal paste carries whatever the source line carried, commonly a
+    /// trailing newline. Those bytes are never valid input: `SecretInput::new`
+    /// rejects any control character, so a credential pasted with its trailing
+    /// `\n` failed submission with a misleading "API key is invalid" even
+    /// though the key itself was correct. Strip control characters and
+    /// surrounding whitespace here so the field holds exactly what the user
+    /// copied.
+    fn sanitize_paste(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_control())
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    }
+
     pub fn set_error(&mut self, error: String) {
         self.error_message = Some(error);
     }
 
     pub fn clear_error(&mut self) {
         self.error_message = None;
+    }
+
+    /// Move the active selection one row on the list/choice steps. Steps
+    /// with no selection — every text-input step, and `Review` — leave
+    /// state untouched.
+    fn navigate(&mut self, forward: bool) {
+        match self.step {
+            ConnectStep::SelectProvider => {
+                if forward {
+                    self.cursor_down();
+                } else {
+                    self.cursor_up();
+                }
+            }
+            ConnectStep::SelectTls => self.cycle_tls_policy(forward),
+            ConnectStep::SelectCredentialKind => self.cycle_credential_kind(forward),
+            ConnectStep::SelectScope => self.scope_personal = !self.scope_personal,
+            _ => {}
+        }
     }
 }
 
@@ -1132,24 +1174,24 @@ impl Component for ConnectDialog {
                     Some(TuiMsg::CloseDialog)
                 }
             }
-            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                if self.step == ConnectStep::SelectProvider {
-                    self.cursor_up();
-                } else if self.step == ConnectStep::SelectTls {
-                    self.cycle_tls_policy(false);
-                } else if self.step == ConnectStep::SelectCredentialKind {
-                    self.cycle_credential_kind(false);
-                }
+            crossterm::event::KeyCode::Up => {
+                self.navigate(false);
                 None
             }
-            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                if self.step == ConnectStep::SelectProvider {
-                    self.cursor_down();
-                } else if self.step == ConnectStep::SelectTls {
-                    self.cycle_tls_policy(true);
-                } else if self.step == ConnectStep::SelectCredentialKind {
-                    self.cycle_credential_kind(true);
-                }
+            crossterm::event::KeyCode::Down => {
+                self.navigate(true);
+                None
+            }
+            // `j`/`k` are vim-style movement on the *selection* steps only.
+            // On a text-input step they are ordinary characters — a display
+            // name or host may legitimately contain them — so they must fall
+            // through to `insert_char` instead of being swallowed here.
+            crossterm::event::KeyCode::Char('k') if !self.is_text_input_step() => {
+                self.navigate(false);
+                None
+            }
+            crossterm::event::KeyCode::Char('j') if !self.is_text_input_step() => {
+                self.navigate(true);
                 None
             }
             crossterm::event::KeyCode::Enter => match self.step {
@@ -1201,13 +1243,9 @@ impl Component for ConnectDialog {
                 ConnectStep::SelectTls => {
                     // Eggpool-class presets with both credential kinds choose
                     // explicitly; single-kind presets continue directly.
-                    let needs_choice = self
-                        .selected_entry()
-                        .is_some_and(|entry| entry.needs_credential_choice());
-                    if needs_choice {
-                        self.move_to_credential_kind_step();
-                    } else {
-                        self.move_to_api_key_step();
+                    match self.selected_entry().cloned() {
+                        Some(entry) => self.advance_to_credential_step(&entry),
+                        None => self.move_to_api_key_step(),
                     }
                     None
                 }
@@ -1257,13 +1295,16 @@ impl Component for ConnectDialog {
 
     fn handle_paste(&mut self, text: String) -> Option<TuiMsg> {
         if self.is_text_input_step() {
-            let input = if self.is_secret_input_step() {
-                &mut self.api_key_input
-            } else {
-                &mut self.form_input
-            };
-            input.insert_str(self.cursor_pos, &text);
-            self.cursor_pos += text.len();
+            let cleaned = Self::sanitize_paste(&text);
+            if !cleaned.is_empty() {
+                let input = if self.is_secret_input_step() {
+                    &mut self.api_key_input
+                } else {
+                    &mut self.form_input
+                };
+                input.insert_str(self.cursor_pos, &cleaned);
+                self.cursor_pos += cleaned.len();
+            }
         }
         None
     }

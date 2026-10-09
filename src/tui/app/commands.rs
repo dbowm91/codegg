@@ -599,6 +599,18 @@ pub enum TuiCommand {
         template_name: String,
         error: Option<String>,
     },
+    /// Completion of a user-initiated new session (Ctrl+N, `/new`).
+    ///
+    /// `NewSession` used to only clear `session_state.session`, which left the
+    /// TUI permanently session-less: `/models`, `/sessions` and every
+    /// session-scoped command were unusable and Ctrl+N looked like a dead key.
+    /// Creating the session eagerly is what makes those surfaces work before
+    /// the first prompt.
+    NewSessionCreated {
+        request_id: u64,
+        session: Option<crate::protocol::dto::Session>,
+        error: Option<String>,
+    },
     /// Completion of the nonblocking session creation required by a prompt
     /// submitted before a session existed.  The route and prompt are carried
     /// in the completion so apply never consults mutable current prompt state.

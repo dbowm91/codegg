@@ -1179,6 +1179,15 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::NewSessionCreated {
+            request_id,
+            session,
+            error,
+        } => {
+            super::super::commands::sessions::apply_new_session_created(
+                app, request_id, session, error,
+            );
+        }
         TuiCommand::PromptSessionCreated {
             request_id,
             route,

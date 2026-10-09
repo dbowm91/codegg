@@ -20,6 +20,15 @@ use crate::theme::native::parse_native_theme;
 use crate::theme::schema::{SemanticTheme, ThemeSource};
 use crate::theme::validate::{validate_theme, ThemeDiagnostic};
 
+/// Minimum WCAG contrast an imported accent must reach against the theme
+/// background before it is used as `ui.accent_primary`.
+///
+/// The TUI draws the accent as foreground text on top of surfaces, so a value
+/// below this threshold is not a stylistic choice — it is unreadable. 3.0 is
+/// the WCAG large-text threshold, which is the right bar for accents that
+/// appear on selection highlights and borders rather than body copy.
+const MIN_ACCENT_CONTRAST: f64 = 3.0;
+
 /// Halloy text style values can be either a plain color string or a table
 /// containing a `color` plus optional `font_style`.
 #[derive(Debug, Clone, Deserialize)]
@@ -244,25 +253,92 @@ pub fn parse_halloy_theme(
         theme.ui.title_background = c;
     }
 
-    // Accent primary: prefer buttons.primary.background_selected, fall back to
-    // general.highlight_indicator, then unread_indicator, then fallback.
-    let accent_primary = file
-        .buttons
-        .primary
-        .as_ref()
-        .and_then(|b| b.background_selected.clone())
-        .or_else(|| file.general.highlight_indicator.clone())
-        .or_else(|| file.general.unread_indicator.clone());
-    if let Some(c) = parse_color(&accent_primary, &mut diagnostics, &id, "accent_primary") {
-        theme.ui.accent_primary = c;
+    // Accent primary. The TUI paints `accent_primary` as *foreground* text —
+    // selection labels, focused borders, active tabs — so it must contrast
+    // against the surface it sits on. Halloy's
+    // `buttons.primary.background_selected` is a widget *fill*, and every
+    // bundled theme sets it to a shade at or below its own background
+    // (zenburn's is #383838 on a #383838 background), so mapping it straight
+    // through produced an accent that was invisible or unreadable in most of
+    // the gallery. `general.unread_indicator` is the theme author's actual
+    // accent and is present in all 50 bundled themes, so it leads. The button
+    // fill is still consulted as a fallback, and any candidate too close to
+    // the background to read as foreground is rejected rather than shipped.
+    let accent_candidates = [
+        (
+            "general.unread_indicator",
+            file.general.unread_indicator.clone(),
+        ),
+        (
+            "general.highlight_indicator",
+            file.general.highlight_indicator.clone(),
+        ),
+        (
+            "buttons.primary.background_selected",
+            file.buttons
+                .primary
+                .as_ref()
+                .and_then(|b| b.background_selected.clone()),
+        ),
+        // Muted/secondary text is the readable accent on light themes, whose
+        // `unread_indicator` is a warm mid-tone that fails the contrast bar.
+        (
+            "text.secondary",
+            file.text.secondary.as_ref().map(|s| s.color().to_owned()),
+        ),
+        (
+            "buffer.url",
+            file.buffer.url.as_ref().map(|s| s.color().to_owned()),
+        ),
+        // Last theme-faithful resort: the theme's own body-text color is
+        // guaranteed to read against its background, so a muted palette still
+        // looks like itself rather than falling through to a hardcoded blue.
+        (
+            "text.primary",
+            file.text
+                .primary
+                .as_ref()
+                .map(|style| style.color().to_owned()),
+        ),
+    ];
+    let background = theme.base.background;
+    let mut accent_primary = None;
+    for (field, candidate) in accent_candidates {
+        let Some(raw) = candidate else { continue };
+        let Some(color) = parse_color(&Some(raw.clone()), &mut diagnostics, &id, field) else {
+            continue;
+        };
+        // Only promote a candidate that is actually distinguishable from the
+        // background it will be drawn over. A dim accent is worse than the
+        // neutral fallback: it reads as a rendering bug.
+        if color.contrast_ratio(background) < MIN_ACCENT_CONTRAST {
+            diagnostics.push(ThemeDiagnostic::warn(
+                &id,
+                Some("ui.accent_primary"),
+                format!(
+                    "{field} ({}) is indistinguishable from the background; \
+                     skipping it as an accent",
+                    raw
+                ),
+            ));
+            continue;
+        }
+        accent_primary = Some(color);
+        break;
+    }
+    if let Some(color) = accent_primary {
+        theme.ui.accent_primary = color;
     } else {
         diagnostics.push(ThemeDiagnostic::warn(
             &id,
             Some("ui.accent_primary"),
-            "no Halloy source mapped; using fallback",
+            "no Halloy source mapped to a readable accent; using fallback",
         ));
     }
 
+    // Secondary accent: same foreground-legibility rule as the primary. The
+    // Halloy source is a widget fill, so it is only accepted when it actually
+    // reads against the background.
     if let Some(b) = file.buttons.secondary.as_ref() {
         if let Some(c) = parse_color(
             &b.background_selected,
@@ -270,7 +346,19 @@ pub fn parse_halloy_theme(
             &id,
             "buttons.secondary.background_selected",
         ) {
-            theme.ui.accent_secondary = c;
+            if c.contrast_ratio(background) >= MIN_ACCENT_CONTRAST {
+                theme.ui.accent_secondary = c;
+            } else {
+                diagnostics.push(ThemeDiagnostic::warn(
+                    &id,
+                    Some("ui.accent_secondary"),
+                    format!(
+                        "buttons.secondary.background_selected ({}) is indistinguishable \
+                         from the background; keeping the fallback",
+                        c.to_hex()
+                    ),
+                ));
+            }
         }
     }
 

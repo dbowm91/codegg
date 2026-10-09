@@ -416,11 +416,22 @@ impl Component for SessionDialog {
                     Some(TuiMsg::CloseDialog)
                 }
             }
-            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+            crossterm::event::KeyCode::Up => {
                 self.select_up();
                 None
             }
-            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+            crossterm::event::KeyCode::Down => {
+                self.select_down();
+                None
+            }
+            // `j`/`k` move the session list only while the filter is empty;
+            // once the user is typing a query they are ordinary characters,
+            // exactly as `d`/`a` below already yield to the filter.
+            crossterm::event::KeyCode::Char('k') if self.filter.is_empty() => {
+                self.select_up();
+                None
+            }
+            crossterm::event::KeyCode::Char('j') if self.filter.is_empty() => {
                 self.select_down();
                 None
             }
@@ -708,5 +719,42 @@ impl Component for SessionDialog {
 
     fn dialog_type(&self) -> DialogType {
         DialogType::Session
+    }
+}
+
+#[cfg(test)]
+mod vim_key_tests {
+    use super::*;
+    use crate::tui::components::component::Component;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn dialog() -> SessionDialog {
+        SessionDialog::new(Arc::new(Theme::default()))
+    }
+
+    #[test]
+    fn vim_keys_extend_an_active_filter() {
+        // j/k yield to the filter exactly as the guarded `d`/`a` actions
+        // in the same handler already do.
+        let mut d = dialog();
+        d.set_filter('a');
+        d.handle_key(key('j'));
+        d.handle_key(key('k'));
+        assert_eq!(
+            d.filter, "ajk",
+            "j/k must be ordinary characters once a filter is being typed"
+        );
+    }
+
+    #[test]
+    fn vim_keys_do_not_type_while_the_filter_is_empty() {
+        let mut d = dialog();
+        d.handle_key(key('j'));
+        d.handle_key(key('k'));
+        assert_eq!(d.filter, "", "j/k must not open the filter");
     }
 }

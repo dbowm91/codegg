@@ -285,7 +285,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
         ),
         definition(
             "opencode_zen",
-            "Codegg Zen",
+            "OpenCode Zen",
             ApiKeyOnly,
             SetupEndpointPolicy::Fixed {
                 base_url: OPENCODE_ZEN_BASE_URL,
@@ -293,7 +293,7 @@ pub fn provider_setup_catalog() -> &'static [ProviderDefinition] {
             SetupConstruction::ZenNative,
             SetupProbeStrategy::ProviderCatalog,
             Some("OPENCODE_ZEN_API_KEY"),
-            "Codegg Zen gateway",
+            "OpenCode Zen gateway",
         ),
         definition(
             "mistral",

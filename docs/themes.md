@@ -258,8 +258,8 @@ GUI-specific fields that codegg has no equivalent for. We map:
 | `[general].background` | `base.background` |
 | `[general].border` | `ui.border` |
 | `[general].horizontal_rule` | `ui.border` (only if `border` absent) |
-| `[general].highlight_indicator` | `ui.accent_primary` (fallback) |
-| `[general].unread_indicator` | `ui.accent_primary` (final fallback) |
+| `[general].unread_indicator` | `ui.accent_primary` (1st choice; see below) |
+| `[general].highlight_indicator` | `ui.accent_primary` (2nd choice) |
 | `[text].primary` | `base.foreground` |
 | `[text].secondary` | `text.muted` |
 | `[text].tertiary` | `conversation.assistant` |
@@ -283,8 +283,32 @@ GUI-specific fields that codegg has no equivalent for. We map:
 | `[buffer].nickname` | `conversation.user` |
 | `[buffer].highlight` | `agents.coder` |
 | `[buffer.server_messages].default` | `status.info` |
-| `[buttons.primary].background_selected` | `ui.accent_primary` (preferred) |
-| `[buttons.secondary].background_selected` | `ui.accent_secondary` |
+| `[buttons.primary].background_selected` | `ui.accent_primary` (3rd choice) |
+| `[buttons.secondary].background_selected` | `ui.accent_secondary` (contrast-checked) |
+
+`ui.accent_primary` is drawn as *foreground* text (selection labels, focused
+borders, active tabs), so it must contrast against the theme background. The
+Halloy sources are tried in this order, and each candidate is rejected if its
+WCAG contrast against `[general].background` is below **3.0**:
+
+1. `[general].unread_indicator` — the theme author's actual accent, present in
+   all 50 bundled themes.
+2. `[general].highlight_indicator`.
+3. `[buttons.primary].background_selected`.
+4. `[text].secondary`, then `[buffer].url` — the readable accent on light
+   themes, whose indicator is a warm mid-tone.
+5. `[text].primary` — last theme-faithful resort.
+
+If every candidate is rejected, the neutral fallback is used and a `warn`
+diagnostic is recorded (visible via `/theme diagnostics`). Every bundled theme
+currently resolves to a theme-faithful accent; this is enforced by
+`every_builtin_accent_is_readable_against_its_background` and
+`builtin_accents_are_distinct_from_backgrounds` in `src/theme/registry.rs`.
+
+Mapping a Halloy button *fill* straight to a foreground accent is what made
+most of the gallery unusable: every bundled theme sets
+`buttons.primary.background_selected` at or below its own background (zenburn's
+is `#383838` on a `#383838` background), which rendered as invisible text.
 
 `ui.selection_dim` is derived by pulling the selection a quarter of the way
 back toward the background (it subtracts a quarter of the background↔selection

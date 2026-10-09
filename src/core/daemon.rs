@@ -4148,7 +4148,8 @@ pub(crate) fn eggpool_error_message(error: &crate::core::eggpool::EggpoolError) 
             "Credential-store key unavailable; restore the CODEGG_MASTER_KEY that encrypted it"
         }
         crate::core::eggpool::EggpoolError::Conflict => {
-            "An equivalent connection or provisioning operation already exists"
+            "This provider is already connected. Open /connections and press \
+             'd' to remove the existing connection first, then run /connect again"
         }
         crate::core::eggpool::EggpoolError::Cancelled => "Connection provisioning was cancelled",
         crate::core::eggpool::EggpoolError::Probe(reason) => match reason {

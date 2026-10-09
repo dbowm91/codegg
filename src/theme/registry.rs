@@ -768,6 +768,54 @@ mod tests {
     }
 
     #[test]
+    fn every_builtin_accent_is_readable_against_its_background() {
+        // The TUI paints `accent_primary` as foreground text. Halloy's
+        // `buttons.primary.background_selected` is a widget *fill* and every
+        // bundled theme sets it at or below its own background, so mapping it
+        // straight through produced accents that were invisible (zenburn's was
+        // #383838 on a #383838 background) across most of the gallery. Every
+        // bundled theme must ship an accent a user can actually read.
+        const MIN_ACCENT_CONTRAST: f64 = 3.0;
+        let registry = ThemeRegistry::load_builtins();
+        let mut offenders = Vec::new();
+        for id in registry.names() {
+            let theme = registry
+                .get(&id)
+                .unwrap_or_else(|| panic!("{id} is listed but not resolvable"));
+            let contrast = theme
+                .ui
+                .accent_primary
+                .contrast_ratio(theme.base.background);
+            if contrast < MIN_ACCENT_CONTRAST {
+                offenders.push(format!(
+                    "{id}: accent {} on background {} has contrast {contrast:.2}",
+                    theme.ui.accent_primary.to_hex(),
+                    theme.base.background.to_hex(),
+                ));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "bundled themes with an unreadable accent:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn builtin_accents_are_distinct_from_backgrounds() {
+        // Guards the specific regression where the accent was mapped 1:1 onto
+        // the background, which passes no contrast check but is plainly wrong.
+        let registry = ThemeRegistry::load_builtins();
+        for id in registry.names() {
+            let theme = registry.get(&id).expect("listed theme resolves");
+            assert_ne!(
+                theme.ui.accent_primary, theme.base.background,
+                "{id} accent is identical to its background"
+            );
+        }
+    }
+
+    #[test]
     fn resolve_with_fallback() {
         let registry = ThemeRegistry::load_builtins();
         let cfg = ThemeResolutionConfig {

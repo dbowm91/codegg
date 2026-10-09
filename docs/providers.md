@@ -12,7 +12,7 @@ this list.
 | `openai` | OpenAI | `OPENAI_API_KEY` |
 | `google` | Google | `GOOGLE_API_KEY` |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
-| `opencode_zen` | Codegg Zen | `OPENCODE_ZEN_API_KEY` |
+| `opencode_zen` | OpenCode Zen | `OPENCODE_ZEN_API_KEY` |
 | `mistral` | Mistral | `MISTRAL_API_KEY` |
 | `groq` | Groq | `GROQ_API_KEY` |
 | `deepinfra` | DeepInfra | `DEEPINFRA_API_KEY` |

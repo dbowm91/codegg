@@ -27,7 +27,7 @@ in `src/lib.rs`.
 | `crates/codegg-providers/src/copilot.rs` | GitHub Copilot |
 | `crates/codegg-providers/src/cloudflare.rs` | Cloudflare Workers AI |
 | `crates/codegg-providers/src/gitlab.rs` | GitLab AI gateway |
-| `crates/codegg-providers/src/opencode_zen.rs` | Codegg Zen service |
+| `crates/codegg-providers/src/opencode_zen.rs` | OpenCode Zen service |
 | `crates/codegg-providers/src/additional.rs` | Factory functions for OpenAI-compat providers |
 | `crates/codegg-providers/src/wire.rs` | Canonical bridge, shared family codecs, stream decoding, and completed tool-call accumulation |
 | `crates/codegg-providers/src/fallback.rs` | FallbackProvider with circuit breaker |
@@ -106,6 +106,20 @@ transport. Resolution order:
 5. User-level `CredentialStore` lookup (by `account_id`)
 6. Legacy `api_key` / `encrypted_api_key` fields
 
+**Store fallback (steps 1–6 all miss).** When the resolver returns `None`,
+`resolve_provider_credential` makes one final attempt against the
+`CredentialStore` by provider id — preferring an account-scoped record, then
+any record for that provider. An expired or empty record is treated as absent
+rather than as a bad key. This exists because a credential added through the
+TUI `/connect` flow is written *only* to the credential store: it appears in
+neither config nor the environment. Without the fallback such a provider
+resolved to `None`, was skipped at registration (`NO KEY for provider ...`),
+and contributed no models — so `/connect` reported success while `/models`
+stayed empty. The fallback never displaces the precedence above: config and env
+still win whenever they resolve. Covered by
+`resolve_provider_credential_falls_back_to_store_without_config_entry` and
+`env_still_wins_over_the_store_fallback` in `provider_core.rs`.
+
 `ExternalCommand` and `OAuthDevice` auth modes are parsed but return
 `AuthError::Unsupported`. The previous `std::process::Command` shell-out
 path has been removed.
@@ -130,6 +144,54 @@ sequence: validate/normalize → staged journal → operation-owned protected
 credential write → bounded probe/model discovery → one final transaction
 publishing connection, health, catalog, and committed provisioning state.
 No network I/O happens inside the final transaction.
+
+#### Duplicate-guard semantics (M002)
+
+Two independent guards govern a duplicate attempt, and they own different
+concerns:
+
+- **Active connection → replacement.** Re-running `/connect` for a provider that
+  is already connected *replaces* that connection rather than refusing. This
+  is the normal credential-rotation path (a new key, a changed plan), and
+  refusing forced the user to discover `/connections`, tombstone the connection
+  by hand, and only then re-add the very provider they were updating.
+
+  Replacement is decided before the probe but executed after it. The existing
+  connection is recorded as *superseded* and carried through provisioning; the
+  tombstone and the new row are published in the **same transaction** in
+  `finalize`, which is only reached once the new credential probes
+  successfully. So a bad key fails without destroying a working configuration —
+  `a_failed_replacement_leaves_the_previous_connection_intact` pins this.
+
+  The superseded row follows the same projection as
+  `ProviderConnectionStore::delete`: the legacy `provider_connections.state`
+  CHECK only admits `active`/`disabled`/`credential_missing`, so the row moves
+  to `disabled` while the authoritative tombstone is recorded in
+  `provider_connection_lifecycle` (+ `provider_connection_tombstones` and a
+  `replace:superseded` audit event). Its credential binding is dropped after
+  commit: leaving it would leave two records for one provider, and provider
+  resolution picks a single record per provider — the stale key could win and
+  silently undo the rotation.
+- **In-flight operation** — a `provider_provisioning` row in a *non-terminal*
+  state (`staged`, `probing`) for the same idempotency key means an equivalent
+  operation is already running, and returns `Conflict`.
+
+Terminal journal states (`committed`, `failed`, `cancelled`) must **not** count
+as duplicates. `idempotency_key` is `UNIQUE` for the lifetime of the row, so
+counting a terminal row would make the very first successful connect block
+every later attempt at that provider — the user saw
+`connection_conflict: an equivalent connection or provisioning operation
+already exists` on every `/connect` attempt and could add no providers at all.
+Superseded terminal rows are therefore retired (deleted) before the new
+operation is staged, so the new attempt owns the key. `reconcile_once` still
+fails genuinely abandoned `staged`/`probing` rows on daemon restart; that
+crash-recovery path is unchanged and is what keeps a real stuck attempt from
+being mistaken for concurrency.
+
+Covered by `tests/provider_reconnect_e2e.rs` (reconnect after removal, retry
+after rejection, and live-duplicate rejection) and by
+`committed_provisioning_row_does_not_block_reconnecting_same_provider` /
+`concurrent_equivalent_provisioning_still_conflicts` in `src/core/eggpool.rs`.
 
 - The setup definition selects the endpoint policy (`Fixed`,
   `OptionalOverride`, `RequiredEndpoint`, `ProxyPreset`), the credential
@@ -756,7 +818,7 @@ Profile and Multi-Surface Dispatch (M011)).
 `create_minimax` takes `String` because the MiniMax endpoint is
 Anthropic-compatible and uses a different auth header.
 
-### Codegg Zen (`opencode_zen.rs`)
+### OpenCode Zen (`opencode_zen.rs`)
 
 - Base URL: `https://opencode.ai/zen/v1`
 - Implements `discover_models()` to fetch from `/models`
@@ -804,7 +866,9 @@ application-level deadlines remain the correctness bound for provider streams.
 - **Single resolution path**: `resolve_provider_credential` is the only
   credential resolver. No helper reads `cfg.api_key` directly. Capability
   selection is centralized in `credential_capability_for`; helpers must not
-  branch per-provider store lookups.
+  branch per-provider store lookups. The credential-store fallback documented
+  above lives inside this one function, so no registration helper grows its own
+  lookup path.
 - **Per-provider config independence**: Adding `anthropic` via config does
   NOT suppress `openai` env-var registration. Only if the registry is empty
   after all config-based registrations does `register_builtin()` run.

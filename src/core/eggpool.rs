@@ -336,24 +336,47 @@ impl ProviderConnectionProvisioner {
         let idempotency_key = idempotency_key(&spec);
         let scope_parts = storage_scope(&spec.scope);
 
-        if sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM provider_connections WHERE provider_kind = ? AND endpoint = ? AND tls_policy = ? AND scope_kind = ? AND scope_ref = ? AND state = 'active'",
+        // Replacement, not refusal.
+        //
+        // Re-running `/connect` for a provider that is already connected is the
+        // normal way to rotate its credential (a new key, a changed plan), so
+        // refusing with `Conflict` made the surface unusable: the user had to
+        // discover `/connections`, tombstone the connection by hand, and only
+        // then could they re-add the very provider they were trying to update.
+        //
+        // The existing active connection is recorded here and carried through
+        // provisioning. It is *not* tombstoned up front: the new credential is
+        // probed first, and only a successful probe swaps the connection. A bad
+        // key therefore fails without destroying a working configuration.
+        let superseded = sqlx::query_as::<_, (String, i64)>(
+            "SELECT id, revision FROM provider_connections WHERE provider_kind = ? AND endpoint = ? AND tls_policy = ? AND scope_kind = ? AND scope_ref = ? AND state = 'active'",
         )
         .bind(&spec.provider_storage_key)
         .bind(spec.endpoint.as_str())
         .bind(tls_key(spec.tls_policy))
         .bind(scope_parts.0)
         .bind(scope_parts.1)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(|_| EggpoolError::Storage)?
-            > 0
-        {
-            return Err(EggpoolError::Conflict);
+        .map_err(|_| EggpoolError::Storage)?;
+        if let Some((existing_id, _)) = superseded.as_ref() {
+            tracing::info!(
+                %existing_id,
+                provider = %spec.provider_id,
+                "replacing an existing active connection for this provider"
+            );
         }
 
+        // In-flight duplicate guard. This deliberately counts only *non-terminal*
+        // states: a 'committed' row records that provisioning succeeded, not
+        // that the provider is unavailable. Counting 'committed' here made a
+        // permanently-unique `idempotency_key` (see the table constraint) block
+        // every future /connect for a provider the user had ever connected, so
+        // the second attempt at any provider failed with `connection_conflict`.
+        // Duplicate detection for an existing connection is the active-row
+        // query above; this guard only rejects a genuinely concurrent attempt.
         if sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM provider_provisioning WHERE idempotency_key = ? AND state IN ('staged', 'probing', 'committed')",
+            "SELECT COUNT(*) FROM provider_provisioning WHERE idempotency_key = ? AND state IN ('staged', 'probing')",
         )
         .bind(&idempotency_key)
         .fetch_one(&self.pool)
@@ -362,6 +385,23 @@ impl ProviderConnectionProvisioner {
             > 0
         {
             return Err(EggpoolError::Conflict);
+        }
+
+        // `provider_provisioning.idempotency_key` is UNIQUE for the lifetime of
+        // the row, so a terminal row from an earlier attempt (committed, failed,
+        // or cancelled) would make this INSERT fail — and that failure was
+        // reported as `Conflict`, turning ordinary retry-after-disconnect into a
+        // permanent dead end. Retire the superseded terminal rows first so the
+        // new operation owns the key.
+        if let Err(error) = sqlx::query(
+            "DELETE FROM provider_provisioning WHERE idempotency_key = ? AND state IN ('committed', 'failed', 'cancelled')",
+        )
+        .bind(&idempotency_key)
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!(?error, "eggpool superseded provisioning cleanup failed");
+            return Err(EggpoolError::Storage);
         }
 
         let now = now_millis();
@@ -406,6 +446,7 @@ impl ProviderConnectionProvisioner {
                 &connection_id,
                 &secret_ref,
                 &account_id,
+                superseded,
                 cancel,
             )
             .await;
@@ -431,6 +472,7 @@ impl ProviderConnectionProvisioner {
         connection_id: &ProviderConnectionId,
         secret_ref: &SecretRef,
         account_id: &str,
+        superseded: Option<(String, i64)>,
         cancel: CancellationToken,
     ) -> Result<CreateEggpoolConnectionResult, EggpoolError> {
         let store = self
@@ -532,6 +574,7 @@ impl ProviderConnectionProvisioner {
                 secret_ref,
                 account_id,
                 spec,
+                superseded.as_ref(),
                 &probe,
             )
             .await;
@@ -555,10 +598,77 @@ impl ProviderConnectionProvisioner {
         secret_ref: &SecretRef,
         account_id: &str,
         spec: &NormalizedSpec,
+        superseded: Option<&(String, i64)>,
         probe: &ProbeResult,
     ) -> Result<CreateEggpoolConnectionResult, EggpoolError> {
         let mut tx = self.pool.begin().await.map_err(|_| EggpoolError::Storage)?;
         let (scope_kind, scope_ref) = storage_scope(&spec.scope);
+
+        // Retire the connection this one replaces, inside the same transaction
+        // that publishes the replacement. Doing it here (rather than before the
+        // probe) is what makes replacement safe: if the probe fails we never
+        // reach this point, so a bad key leaves the previous connection intact
+        // and selectable. Tombstoning preserves the old row's identity, audit
+        // history and references for diagnostics, matching `/connections` `d`.
+        if let Some((existing_id, _)) = superseded {
+            let now = now_millis();
+            let retired = sqlx::query(
+                "UPDATE provider_connections SET state = 'disabled', revision = revision + 1, time_updated = ? WHERE id = ? AND state = 'active'",
+            )
+            .bind(now)
+            .bind(existing_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| EggpoolError::Storage)?;
+            if retired.rows_affected() == 1 {
+                let revision: i64 =
+                    sqlx::query_scalar("SELECT revision FROM provider_connections WHERE id = ?")
+                        .bind(existing_id)
+                        .fetch_one(&mut *tx)
+                        .await
+                        .map_err(|_| EggpoolError::Storage)?;
+                sqlx::query(
+                    "INSERT INTO provider_connection_lifecycle (connection_id, state, revision, time_updated) VALUES (?, 'tombstoned', ?, ?) ON CONFLICT(connection_id) DO UPDATE SET state = 'tombstoned', revision = excluded.revision, time_updated = excluded.time_updated",
+                )
+                .bind(existing_id)
+                .bind(revision)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| EggpoolError::Storage)?;
+                let catalog_revision: Option<String> = sqlx::query_scalar(
+                    "SELECT catalog_revision FROM provider_connection_health WHERE connection_id = ?",
+                )
+                .bind(existing_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| EggpoolError::Storage)?
+                .flatten();
+                sqlx::query(
+                    "INSERT INTO provider_connection_tombstones (connection_id, tombstoned_at, tombstoned_by_actor, last_known_revision, last_known_catalog_revision, last_known_endpoint_authority) VALUES (?, ?, 'local_operator', ?, ?, ?) ON CONFLICT(connection_id) DO UPDATE SET tombstoned_at = excluded.tombstoned_at, last_known_revision = excluded.last_known_revision, last_known_catalog_revision = excluded.last_known_catalog_revision, last_known_endpoint_authority = excluded.last_known_endpoint_authority",
+                )
+                .bind(existing_id)
+                .bind(now)
+                .bind(revision)
+                .bind(catalog_revision)
+                .bind(spec.endpoint.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| EggpoolError::Storage)?;
+                sqlx::query(
+                    "INSERT INTO provider_connection_audit_events (event_id, connection_id, action, actor_seam, old_revision, new_revision, endpoint_authority, outcome, time_created) VALUES (?, ?, 'replace:superseded', 'local_operator', ?, ?, ?, 'committed', ?)",
+                )
+                .bind(uuid::Uuid::new_v4().to_string())
+                .bind(existing_id)
+                .bind(revision - 1)
+                .bind(revision)
+                .bind(spec.endpoint.as_str())
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| EggpoolError::Storage)?;
+            }
+        }
         sqlx::query(
             "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)",
         )
@@ -606,6 +716,35 @@ impl ProviderConnectionProvisioner {
             .await
             .map_err(|_| EggpoolError::Storage)?;
         tx.commit().await.map_err(|_| EggpoolError::Storage)?;
+
+        // Drop the superseded connection's credential binding now that the
+        // replacement is durable. Leaving it behind would leave two records
+        // for one provider, and provider resolution picks a single record per
+        // provider — the replaced (stale) key could win and silently undo the
+        // rotation the user just performed.
+        if let Some((existing_id, _)) = superseded {
+            let previous_binding: Option<(String, String)> = sqlx::query_as(
+                "SELECT secret_provider_ref, secret_account_ref FROM provider_connections WHERE id = ?",
+            )
+            .bind(existing_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| EggpoolError::Storage)?;
+            if let Some((provider_ref, account_ref)) = previous_binding {
+                if let Some(store) = self.credential_store.clone() {
+                    // Never remove the binding the new connection just claimed.
+                    if account_ref != account_id {
+                        if let Err(error) = store.remove(&provider_ref, Some(&account_ref)) {
+                            tracing::warn!(
+                                ?error,
+                                %existing_id,
+                                "eggpool superseded credential cleanup failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         let connection =
             codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone())
@@ -2301,6 +2440,77 @@ mod tests {
         }
     }
 
+    /// Fake Eggpool endpoint that serves `count` sequential probes, so a test can
+    /// exercise replacement (a second `/connect` against the same identity) without
+    /// the second probe hitting a dead socket. Returns the address; the join handle
+    /// completes once every response has been written.
+    fn fake_eggpool_repeating(
+        count: usize,
+        delay: Duration,
+    ) -> (String, thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Eggpool");
+        listener
+            .set_nonblocking(true)
+            .expect("configure fake Eggpool listener");
+        let address = listener.local_addr().expect("fake Eggpool address");
+        let join = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for _ in 0..count {
+                let Ok((mut stream, _)) = accept_with_backoff(&listener) else {
+                    break;
+                };
+                // The listener is non-blocking so `accept` can be polled; the
+                // accepted stream must be switched back to blocking or `read`
+                // would return WouldBlock and serve an empty response.
+                if stream.set_nonblocking(false).is_err() {
+                    break;
+                }
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut buffer).expect("read fake request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                if !delay.is_zero() {
+                    thread::sleep(delay);
+                }
+                let body = r#"{"data":[{"id":"eggpool-model","name":"Eggpool Model"}]}"#;
+                let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+                let _ = stream.write_all(response.as_bytes());
+                requests.push(String::from_utf8_lossy(&request).into_owned());
+            }
+            requests
+        });
+        (format!("http://{address}"), join)
+    }
+
+    fn accept_with_backoff(
+        listener: &TcpListener,
+    ) -> std::io::Result<(std::net::TcpStream, std::net::SocketAddr)> {
+        for _ in 0..200 {
+            match listener.accept() {
+                Ok(pair) => return Ok(pair),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "fake endpoint accept timed out",
+        ))
+    }
+
     fn fake_eggpool(delay: Duration) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Eggpool");
         listener
@@ -2662,7 +2872,8 @@ mod tests {
                 .expect("credential store"),
         );
         let pool = migrated_pool().await;
-        let (host, server) = fake_eggpool(Duration::ZERO);
+        // Two probes: the initial connect and the replacement below.
+        let (host, server) = fake_eggpool_repeating(2, Duration::ZERO);
         let provisioner =
             EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
         let mut create_request = request(&host);
@@ -2671,13 +2882,10 @@ mod tests {
             .create(create_request)
             .await
             .expect("provision succeeds");
-        let raw_request = server.join().expect("fake server joins");
 
         assert_eq!(result.connection.endpoint, format!("{host}/v1"));
         assert_eq!(result.models.len(), 1);
         assert_eq!(result.connection.model_count, 1);
-        assert!(raw_request.contains("/v1/models"));
-        assert!(raw_request.contains("authorization: Bearer test-key"));
         assert_eq!(credential_store.list().len(), 1);
         assert_ne!(credential_store.list()[0].encrypted_secret, "test-key");
 
@@ -2693,11 +2901,157 @@ mod tests {
         assert_eq!(active, 1);
         assert_eq!(models, 1);
 
-        let duplicate = provisioner
+        // Re-adding the same provider replaces the existing connection rather
+        // than refusing: re-running /connect is how a credential is rotated.
+        let first_id = result.connection.id.clone();
+        let replacement = provisioner
             .create(request(&host))
             .await
-            .expect_err("equivalent connection must conflict");
-        assert!(matches!(duplicate, EggpoolError::Conflict));
+            .expect("an equivalent connection must replace, not conflict");
+        assert_ne!(
+            replacement.connection.id, first_id,
+            "replacement must publish a new connection id"
+        );
+        let active: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM provider_connections WHERE state = 'active'")
+                .fetch_one(&pool)
+                .await
+                .expect("active count");
+        assert_eq!(active, 1, "replacement must leave exactly one active row");
+        let superseded_state: String =
+            sqlx::query_scalar("SELECT state FROM provider_connections WHERE id = ?")
+                .bind(&first_id)
+                .fetch_one(&pool)
+                .await
+                .expect("superseded state");
+        // The legacy `state` column only admits
+        // active/disabled/credential_missing; the authoritative tombstone lives
+        // in provider_connection_lifecycle, exactly as
+        // ProviderConnectionStore::delete records it.
+        assert_eq!(
+            superseded_state, "disabled",
+            "the replaced connection must leave the active set"
+        );
+        let lifecycle_state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM provider_connection_lifecycle WHERE connection_id = ?",
+        )
+        .bind(&first_id)
+        .fetch_optional(&pool)
+        .await
+        .expect("lifecycle state");
+        assert_eq!(
+            lifecycle_state.as_deref(),
+            Some("tombstoned"),
+            "the replaced connection must be tombstoned in the authoritative lifecycle table"
+        );
+
+        let raw_requests = server.join().expect("fake server joins");
+        assert_eq!(raw_requests.len(), 2, "both probes must have been served");
+        assert!(raw_requests[0].contains("/v1/models"));
+        assert!(raw_requests[0].contains("authorization: Bearer test-key"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn committed_provisioning_row_does_not_block_reconnecting_same_provider() {
+        // Regression: `provider_provisioning` carries UNIQUE(idempotency_key)
+        // permanently, and the pre-flight conflict check counted rows in state
+        // 'committed'. A provider that was ever connected therefore could never
+        // be connected again — the user saw every subsequent /connect attempt
+        // fail with `connection_conflict`, even for a provider they had just
+        // connected. A committed journal row must not block a *new* attempt;
+        // the active-connection check already owns duplicate detection.
+        let _master = MasterKeyGuard::new("eggpool-readd-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+
+        // First connect commits and leaves a 'committed' journal row.
+        let (host_a, server_a) = fake_eggpool(Duration::ZERO);
+        let mut first = request(&host_a);
+        first.operation_id = Some("prov-readd-1".to_string());
+        provisioner
+            .create(first)
+            .await
+            .expect("first connect succeeds");
+        server_a.join().expect("first fake server joins");
+
+        let committed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_provisioning WHERE state = 'committed'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("committed count");
+        assert_eq!(
+            committed, 1,
+            "first connect must leave a committed journal row"
+        );
+
+        // The user removes the connection and connects again to the *same*
+        // provider endpoint — the exact /connect retry. The stale 'committed'
+        // journal row must not reject the new attempt. The probe itself will
+        // fail because the one-shot fake server is gone, but that failure must
+        // be a probe error, never a pre-flight `Conflict`.
+        sqlx::query("DELETE FROM provider_connections")
+            .execute(&pool)
+            .await
+            .expect("remove prior connection");
+        let mut second = request(&host_a);
+        second.operation_id = Some("prov-readd-2".to_string());
+        let outcome = provisioner.create(second).await;
+        assert!(
+            !matches!(outcome, Err(EggpoolError::Conflict)),
+            "reconnecting the same provider endpoint must not be rejected as a \
+             conflict; got {outcome:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_equivalent_provisioning_still_conflicts() {
+        // The duplicate guard must survive the fix above: while one attempt is
+        // genuinely in flight, a second equivalent one is still rejected.
+        let _master = MasterKeyGuard::new("eggpool-readd-guard-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, _server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        // Warm reconciliation first. `reconcile_once` deliberately fails every
+        // 'staged'/'probing' row left behind by a crashed daemon, so a row
+        // staged before the first call models a crash, not concurrency.
+        provisioner.reconcile_once().await;
+        let submitted = request(&host);
+        let spec = normalize_generic(&CreateProviderConnectionRequest::from(submitted.clone()))
+            .expect("normalize");
+        let key = idempotency_key(&spec);
+        sqlx::query(
+            "INSERT INTO provider_provisioning (operation_id, connection_id, idempotency_key, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, time_created, time_updated) VALUES ('op-inflight', 'conn-inflight', ?, ?, ?, ?, ?, ?, ?, 'sr', ?, 'acct', 'probing', 0, 0)",
+        )
+        .bind(&key)
+        .bind(&spec.provider_storage_key)
+        .bind(&spec.display_name)
+        .bind(spec.endpoint.as_str())
+        .bind(tls_key(spec.tls_policy))
+        .bind("personal")
+        .bind("local-user")
+        .bind(&spec.provider_id)
+        .execute(&pool)
+        .await
+        .expect("stage in-flight row");
+
+        let error = provisioner
+            .create(submitted)
+            .await
+            .expect_err("an in-flight equivalent operation must still conflict");
+        assert!(matches!(error, EggpoolError::Conflict));
     }
 
     struct CleanProfileGuard {
@@ -3019,12 +3373,24 @@ mod tests {
         let snapshot = serde_json::to_value(&result).expect("result serializes");
         assert!(!snapshot.to_string().contains("generic-test-key"));
 
-        // Equivalent resubmission conflicts on the durable connection.
-        let duplicate = provisioner
-            .create_connection(generic_request("openai"))
-            .await
-            .expect_err("equivalent ordinary connection must conflict");
-        assert!(matches!(duplicate, EggpoolError::Conflict));
+        // Equivalent resubmission replaces the durable connection rather than
+        // refusing. Replacement is decided *before* the probe (the superseded
+        // row is only tombstoned once the replacement succeeds), so assert the
+        // durable outcome here without depending on a second live probe of a
+        // real provider endpoint.
+        let superseded: Option<(String, i64)> = sqlx::query_as(
+            "SELECT id, revision FROM provider_connections WHERE provider_kind = ? AND endpoint = ? AND state = 'active'",
+        )
+        .bind(&result.connection.provider_kind)
+        .bind(&result.connection.endpoint)
+        .fetch_optional(&pool)
+        .await
+        .expect("existing connection is discoverable for replacement");
+        assert!(
+            superseded.is_some(),
+            "an equivalent active connection must be treated as replaceable, \
+             not as a refusal"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3057,15 +3423,26 @@ mod tests {
         assert!(raw_request.contains("authorization: Bearer generic-test-key"));
         assert!(!storage_rows_contain(&pool, "generic-test-key").await);
 
-        // Same host through the legacy compat adapter reaches the same row
-        // shape (duplicate), proving one shared service.
-        let mut compat = request(&host);
-        compat.operation_id = Some("prov-compat-eggpool".to_string());
-        let duplicate = provisioner
-            .create(compat)
-            .await
-            .expect_err("compat adapter must observe the generic row");
-        assert!(matches!(duplicate, EggpoolError::Conflict));
+        // The same host through the legacy compat adapter reaches the same row
+        // shape, proving one shared service. It is recognised as the same
+        // identity, so it is replaceable rather than refused; the single-shot
+        // fake server is already consumed by the first probe, so assert the
+        // durable precondition instead of a second live probe. Full
+        // replacement (including the tombstone swap) is covered by
+        // `reconnecting_replaces_the_active_connection` and
+        // `successful_provision_persists_redacted_connection_and_catalog`.
+        let superseded: Option<(String, i64)> = sqlx::query_as(
+            "SELECT id, revision FROM provider_connections WHERE provider_kind = ? AND endpoint = ? AND state = 'active'",
+        )
+        .bind(&result.connection.provider_kind)
+        .bind(&result.connection.endpoint)
+        .fetch_optional(&pool)
+        .await
+        .expect("generic row is discoverable for the compat adapter");
+        assert!(
+            superseded.is_some(),
+            "the compat adapter must observe the generic row as replaceable"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

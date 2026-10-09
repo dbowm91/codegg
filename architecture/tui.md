@@ -1109,6 +1109,27 @@ root routing.
 `OpenProjectPicker`, `NextProjectTab`, `PreviousProjectTab`,
 `CloseProjectTab`, `ToggleComposerMode`, `OpenWorkspaceDashboard`.
 
+### New session (`Ctrl+N`, `/new`)
+
+`NewSession` and `/new` (alias `/clear`) both route through
+`App::new_session` (`src/tui/app/mod.rs`), which clears the composer view and
+then calls `sessions::start_new_session`. That spawns a registered
+`TuiTaskKind::Command` task issuing `CoreRequest::SessionCreate`, guarded by
+`dialog_state.new_session_request` and completed by
+`TuiCommand::NewSessionCreated` → `apply_new_session_created`, which attaches
+the new session via `set_session` and ignores stale request ids.
+
+The session is created eagerly rather than left implicit. Clearing
+`session_state.session` without creating a replacement left the TUI with no
+session at all: `/models`, `/sessions` and the session tree had nothing to bind
+to, and `Ctrl+N` looked like a dead key because pressing it again was a no-op on
+already-empty state. Creating the session is what makes those surfaces work
+before the first prompt.
+
+With no core client available (daemon unreachable) the action reports an error
+toast instead of silently doing nothing; a failed creation never fabricates a
+session. Covered by `apply_new_session_created_*` in `src/tui/mod.rs`.
+
 ## Directory Structure
 
 ```

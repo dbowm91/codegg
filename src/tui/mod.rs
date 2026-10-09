@@ -683,8 +683,8 @@ mod async_cmd_tests {
     use crate::tui::commands::memory::apply_memory_result;
     use crate::tui::commands::research::apply_research_run_loaded;
     use crate::tui::commands::sessions::{
-        apply_session_messages_loaded, apply_session_mutation_finished, apply_sessions_reloaded,
-        apply_template_session_created,
+        apply_new_session_created, apply_session_messages_loaded, apply_session_mutation_finished,
+        apply_sessions_reloaded, apply_template_session_created,
     };
     use crate::tui::commands::tasks::{
         apply_task_operation_finished, apply_tasks_listed, apply_worktree_listed,
@@ -1476,6 +1476,81 @@ mod async_cmd_tests {
             None,
         );
         assert!(!app.dialog_state.template_create_request.is_loading());
+    }
+
+    #[test]
+    fn apply_new_session_created_attaches_the_session() {
+        // Regression: Ctrl+N used to leave `session_state.session` as None,
+        // so the TUI had no session and session-scoped surfaces (/models,
+        // /sessions) were unusable. A successful completion must attach.
+        let mut app = make_test_app();
+        assert!(app.session_state.session.is_none());
+        let id = app.dialog_state.new_session_request.begin();
+
+        let mut session = empty_session_dto();
+        session.id = "new-session-1".into();
+        apply_new_session_created(&mut app, id, Some(session), None);
+
+        assert!(
+            !app.dialog_state.new_session_request.is_loading(),
+            "the request must be settled"
+        );
+        assert!(
+            app.session_state.session.is_some(),
+            "a new session must actually be attached, not left as None"
+        );
+        assert_eq!(
+            app.session_state.session.as_ref().map(|s| s.id.clone()),
+            Some("new-session-1".to_string())
+        );
+    }
+
+    #[test]
+    fn apply_new_session_created_stale_is_ignored() {
+        // A slow completion from a superseded Ctrl+N must not clobber the
+        // session the user is now in.
+        let mut app = make_test_app();
+        let id_a = app.dialog_state.new_session_request.begin();
+        let id_b = app.dialog_state.new_session_request.begin();
+
+        let mut session_a = empty_session_dto();
+        session_a.id = "session-a".into();
+        apply_new_session_created(&mut app, id_a, Some(session_a), None);
+        assert!(
+            app.session_state.session.is_none(),
+            "stale completion must not attach a session"
+        );
+
+        let mut session_b = empty_session_dto();
+        session_b.id = "session-b".into();
+        apply_new_session_created(&mut app, id_b, Some(session_b), None);
+        assert_eq!(
+            app.session_state.session.as_ref().map(|s| s.id.clone()),
+            Some("session-b".to_string())
+        );
+    }
+
+    #[test]
+    fn apply_new_session_created_failure_surfaces_error() {
+        let mut app = make_test_app();
+        let id = app.dialog_state.new_session_request.begin();
+        apply_new_session_created(&mut app, id, None, Some("daemon unavailable".into()));
+
+        assert!(!app.dialog_state.new_session_request.is_loading());
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("daemon unavailable")),
+            "the failure must be visible to the user, got {toasts:?}"
+        );
+        assert!(
+            app.session_state.session.is_none(),
+            "a failed creation must not fabricate a session"
+        );
     }
 }
 pub mod document_session;

@@ -134,6 +134,9 @@ pub struct DialogState {
     pub worktree_list_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for template creation operations.
     pub template_create_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for user-initiated new-session creation (Ctrl+N,
+    /// `/new`). Stale completions with a mismatched id are ignored.
+    pub new_session_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for session mutation requests. Stale completions
     /// with a mismatched id are silently ignored.
     pub session_mutation_request: crate::tui::app::state::AsyncUiRequestState,
