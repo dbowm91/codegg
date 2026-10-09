@@ -116,6 +116,19 @@ constructed for new execution. Child sandboxes narrow via
 `resolve_child_sandbox()` and a worktree child's writable root is its
 leased worktree. Guard: `scripts/check_sandbox_policy_wiring.py`.
 
+**Scheduler-owned Tool Program binding:** `ToolProgramExecutor` is registered
+during `CoreDaemon` construction, which routinely happens before any frontend
+connects, so no session workspace root exists at that point. It therefore holds
+no dispatch registry at construction: `job_tool_context()` builds the registry
+and broker once per job from the scheduler-owned lease root on
+`JobExecutionContext`, and applies the same conservative `WorkspaceWrite` ceiling
+the subagent executor uses — never a frontend-selected profile. The static
+contract catalog used by `validate` and frozen contract snapshots is
+materialized lazily and only ever answers `lookup_contract`. Because Tool Program
+manifests admit only read-only, non-`DirectOnly` tools, `bash` is unreachable
+through this registry regardless of profile. Guards: `job_tool_context_confines_reads_to_the_job_workspace`,
+`default_construction_defers_registry_building`.
+
 **Platform outcomes:**
 - Linux with Landlock ABI: `Enforced { abi }` (ABI V1 minimum)
 - Non-Linux or no Landlock: constrained requests report
