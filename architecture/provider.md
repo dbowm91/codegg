@@ -88,6 +88,18 @@ registration produces zero results does the pure env-var path run.
 The `disabled_providers` config list is checked per-provider in each helper;
 matching providers are skipped.
 
+**Legacy `provider/model` ambiguity** (`session/legacy_resolution.rs`).
+Ambiguity is decided **only among connections the caller could actually
+select** (`ProviderConnectionState::Active`). Tombstoned, disabled,
+credential-missing, errored, and stale rows are not selectable, so they must
+not make a healthy provider look ambiguous. This matters because the `/connect`
+replacement path retires the superseded row in place rather than deleting it
+(`state = 'disabled'` projection + authoritative `tombstoned` in
+`provider_connection_lifecycle` + a tombstone row), so every provider that had a
+connection replaced would otherwise become permanently unresolvable through the
+legacy string. With no selectable row, the first matching row is still classified
+so the caller gets an actionable state instead of a silent pick.
+
 ### Credential Resolution
 
 `resolve_provider_credential(provider_id, cfg, env_var, store)`
@@ -660,6 +672,35 @@ separate contract. `wire::encode_anthropic_messages` is shared the same way, so
 a provider whose models resolve to Messages reuses one codec encoding instead of
 instantiating the dedicated Anthropic provider and inheriting its base-URL or
 `anthropic-version` assumptions.
+
+**Stream decoding bounds (`wire.rs`).** Three decoder invariants are owned by
+CodeGG at the call site rather than by the shared crate, because CodeGG is what
+knows the wire surface it is decoding:
+
+- **SSE frame bound** — `MAX_SSE_FRAME_BYTES` is raised to 8 MiB via
+  `StreamEventDecoder::with_limit`. The shared 64 KiB default is safe for
+  incremental text deltas but not for Responses streams, which terminate with a
+  single `response.completed` frame embedding the whole response (including
+  full tool-call arguments). At the default, an ordinary turn failed with
+  `provider stream framing or decoding failed: SSE frame exceeded 65536 bytes`.
+- **Content-terminal events are not tool-call state** — `ContentStop`,
+  `ResponseComplete`, `ResponseIncomplete`, and `Error` describe the *stream*.
+  On a text-only reply they carry no `call_id` and no `index`, so the shared
+  accumulator's `MissingIdentity` is expected rather than corruption. Those
+  events are still forwarded (they flush completed tool calls) but a missing
+  identity is tolerated. Genuine `ToolCallStart`/`ArgumentsDelta`/`ToolCallStop`
+  keep failing closed on a missing identity.
+- **Duplicate terminator** — an Anthropic upstream closes with `message_delta`
+  and then `message_stop`, and the shared decoder decodes both to a single
+  canonical `ResponseComplete`. The accumulator treats the second terminal event
+  as post-terminal corruption, so `SharedStreamDecoder::consume_events` folds
+  the duplicate and keeps the first non-empty `finish_reason`.
+
+**Decoder errors are never collapsed.** `SharedStreamDecoder::push` and the
+tool-call accumulation path embed the underlying `eggpool_wire` error in the
+`ProviderError` message. Mapping every failure to one opaque string made these
+provider bugs undiagnosable in the field — an oversized frame, an early EOF,
+and a malformed event all reported identically.
 
 **Catalog qualification.** `Provider::models()` uses the upstream `/models`
 response as the availability source but keeps only wire-resolved models

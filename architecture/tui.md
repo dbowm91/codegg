@@ -21,6 +21,36 @@ The TUI routes session, history, task, memory, and worktree actions through
 `CoreClient` so the same logic can run in-process, over stdio, or over a
 socket transport.
 
+### Daemon event stream (socket mode)
+
+`CoreClient::subscribe()` is the TUI's only view of daemon-pushed state. In
+socket mode the agent loop runs inside the daemon, so the in-process
+`GlobalEventBus` carries nothing: streaming text, turn completion, and turn
+failure exist **only** on this stream.
+
+`main.rs` subscribes once during startup (`App::set_core_event_rx`) and
+`runtime/event_loop.rs` selects on it alongside the other inputs.
+`App::apply_core_event` translates the daemon events into view state:
+
+| `CoreEvent` | Effect |
+|---|---|
+| `TurnStarted` | finalize any streaming message |
+| `TurnTextDelta` / `TurnReasoningDelta` | append to the visible transcript |
+| `ToolStarted` / `ToolCompleted` | add / finalize a tool-call row |
+| `TurnCompleted` | `Idle`, or `Error` when `stop_reason == "error"` |
+| `TurnFailed` | `Error` + the daemon message as a toast |
+| `Error` | `Error` + `code: message` as a toast |
+| `PermissionPending` / `QuestionPending` | open the matching dialog |
+
+Anything else returns `false` (no redraw) and is ignored, so a newer daemon
+cannot break an older TUI. `TurnFailed` is the load-bearing arm: the TUI sets
+`SessionStatus::Working` optimistically at submit time, so without a terminal
+event a failed turn looks like an eternal "working" with no error anywhere.
+There is no polling fallback — `SessionMessagesLoad` is user-triggered.
+
+`remote_event_rx` (`handle_remote_event`, `RemoteTuiMessage`) is the separate
+**server/WS** path and is `None` in local socket mode.
+
 ### Project execution context
 
 Project-scoped TUI actions resolve `ProjectExecutionContext` from the active
@@ -191,10 +221,15 @@ holds `root`, `branch`, `dirty`, `staged_count`, `unstaged_count`,
 `last_refreshed`, `loading`, `error`, and `generation: u64`.
 
 **Refresh pipeline**:
-1. `start_refresh_git_sidebar(app)` bumps generation via
-   `git_sidebar.begin_refresh()`, spawns registered task.
+1. `start_refresh_git_sidebar(app)` resolves a **filesystem directory** —
+   `session.directory`, else `App::active_workspace_root()` — bumps generation
+   via `git_sidebar.begin_refresh()`, spawns a registered task.
+   It must not use `session.project_id`: that is a stable string identity (a
+   UUID), not a directory, so walking up from it could never find `.git` and
+   the sidebar reported "not a git repo" inside a real repository.
 2. Probe runs `egggit::status::repo_status` inside
-   `tokio::time::timeout` (3s).
+   `tokio::time::timeout` (3s). A path that is not in a repository produces a
+   named error (`no git repository at or above <path>`), never an empty one.
 3. Probe posts `TuiCommand::GitSidebarRefreshFinished`.
 4. `apply_git_sidebar_refresh` calls `git_sidebar.apply_refresh(...)` or
    `apply_refresh_error(...)`. Both return `false` for stale generations.

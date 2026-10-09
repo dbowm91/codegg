@@ -108,3 +108,30 @@ default-feature policy:
   0.7 comes from `eggsact`; and `strum` 0.26 is the root crate's direct
   pin while 0.28 arrives through Ratatui (`ratatui-core`,
   `ratatui-widgets`). Each is retained with evidence, not patched.
+
+## External Egg-stack dependency status
+
+Checked against crates.io / the upstream repositories on 2026-10-09.
+
+| Dependency | Pinned | Latest | Status |
+|---|---|---|---|
+| `eggfetch-core` | `0.2.2` | `0.2.2` | current |
+| `eggserve-core` | `0.2.0` | `0.4.0` | **cannot adopt** (see below) |
+| `egggress` | not used | — | no dependency anywhere in the workspace |
+| `eggup-core` / `eggup-acquisition` | git `66813b3b` | git `70ec4e63` | behind; immutable-pin policy owned by `codegg upgrade` |
+| `eggpool-*` (wire + provider-profile) | git `9ac6a131` | git `eed0d58f` | behind; M001 closure revision, pinned deliberately |
+| `eggplan-*` | git `0dd33b76` | git `37ad290c` | behind |
+| `eggwork-client` / `eggwork-core` | git `e6a5d82e` | git `17ff53fc` | behind |
+
+**Why `eggserve-core` stays at 0.2.0.** `eggserve-core` 0.4.0 pulls in
+`landlock`, which is Linux-only: it references `libc::SYS_landlock_create_ruleset`,
+`libc::O_PATH`, and `libc::prctl`, none of which exist on `darwin`, so the
+dependency cannot compile on macOS. This affects only
+`crates/eggwork-test-node`, which is **excluded** from the workspace
+(`exclude = [...]`, own lockfile) and is therefore already unbuildable on macOS
+at its pinned version. Adopting 0.4.0 needs upstream feature gating of the
+sandbox dependency, not a CodeGG-side change.
+
+The remaining git pins are behind their upstreams. They are reviewed closure
+revisions rather than floating branches, and moving them is a deliberate
+dependency-review step, not a maintenance patch.

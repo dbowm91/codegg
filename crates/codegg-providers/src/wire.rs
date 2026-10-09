@@ -487,12 +487,41 @@ pub fn push_event(
             | CanonicalEventType::ResponseIncomplete
             | CanonicalEventType::Error
     ) {
-        accumulator.push(event).map_err(|_| {
-            ProviderError::api(
-                "provider_stream",
-                "provider stream tool-call state was invalid",
-            )
-        })?
+        match accumulator.push(event) {
+            Ok(completed) => completed,
+            // `ContentStop` / `ResponseComplete` / `ResponseIncomplete` /
+            // `Error` describe the *stream*, not a tool call, and upstreams
+            // close with more than one terminator shape: an Anthropic reply
+            // sends `message_delta` and then `message_stop`, both of which the
+            // shared decoder turns into `ResponseComplete`, so the accumulator
+            // sees a second terminal event and reports post-terminal
+            // corruption. Both failures below are expected dialect, not
+            // corruption: a stream-terminating event with no identity has
+            // nothing to flush, and a repeated terminator is already
+            // terminal. Genuine `ToolCallStart`/`ArgumentsDelta`/`ToolCallStop`
+            // keep failing closed, so real tool-call corruption is still
+            // caught.
+            Err(
+                err @ (eggpool_wire::tool_calls::ToolCallAccumulatorError::MissingIdentity
+                | eggpool_wire::tool_calls::ToolCallAccumulatorError::PostTerminalData),
+            ) if matches!(
+                event.event_type,
+                CanonicalEventType::ContentStop
+                    | CanonicalEventType::ResponseComplete
+                    | CanonicalEventType::ResponseIncomplete
+                    | CanonicalEventType::Error
+            ) =>
+            {
+                let _ = err;
+                Vec::new()
+            }
+            Err(err) => {
+                return Err(ProviderError::api(
+                    "provider_stream",
+                    format!("provider stream tool-call state was invalid: {err}"),
+                ));
+            }
+        }
     } else {
         Vec::new()
     };
@@ -515,6 +544,21 @@ pub fn push_event(
     Ok(output)
 }
 
+/// Per-SSE-frame byte bound for the shared stream decoder.
+///
+/// The shared default (`eggpool_wire::stream::MAX_SSE_FRAME_BYTES`) is 64 KiB.
+/// That is a fine bound for incremental text deltas, but OpenAI-compatible
+/// Responses streams terminate with a single `response.completed` frame that
+/// embeds the entire response object — including full tool-call arguments and
+/// output — so a perfectly normal turn trips the default limit and the whole
+/// turn fails with "SSE frame exceeded 65536 bytes".
+///
+/// 8 MiB keeps the decoder's memory bounded (it is a guard, not a budget) while
+/// comfortably covering a large completed response. It is applied here rather
+/// than by editing the shared crate so the bound is owned by the caller that
+/// knows which wire surface it is decoding.
+const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
 /// Per-stream adapter that keeps SSE framing, canonical decoding, and bounded
 /// completed-call accumulation in one request-owned value.
 pub struct SharedStreamDecoder {
@@ -528,7 +572,10 @@ pub struct SharedStreamDecoder {
 impl SharedStreamDecoder {
     pub fn new(adapter: eggpool_wire::codec::StreamAdapterKind) -> Self {
         Self {
-            decoder: eggpool_wire::stream::StreamEventDecoder::new(adapter),
+            decoder: eggpool_wire::stream::StreamEventDecoder::with_limit(
+                adapter,
+                MAX_SSE_FRAME_BYTES,
+            ),
             calls: CanonicalToolCallAccumulator::new(),
             terminal: false,
             finish_reason: None,
@@ -537,10 +584,14 @@ impl SharedStreamDecoder {
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<ChatEvent>, ProviderError> {
-        let events = self.decoder.push(bytes).map_err(|_| {
+        // Preserve the decoder's own reason. Collapsing every failure mode into
+        // one opaque string made provider stream bugs undiagnosable in the
+        // field — an oversized SSE frame, an early EOF, and a malformed event
+        // all reported identically.
+        let events = self.decoder.push(bytes).map_err(|e| {
             ProviderError::api(
                 "provider_stream",
-                "provider stream framing or decoding failed",
+                format!("provider stream framing or decoding failed: {e}"),
             )
         })?;
         self.consume_events(&events)
@@ -606,10 +657,25 @@ impl SharedStreamDecoder {
                 }
                 continue;
             }
-            output.extend(push_event(&mut self.calls, event)?);
+            // An Anthropic upstream closes with `message_delta` and then `message_stop`,
+            // and the shared decoder decodes BOTH to a single canonical `ResponseComplete`.
+            // The tool-call accumulator treats a second terminal event as post-terminal
+            // corruption ("canonical events arrived after terminal completion"), so a
+            // perfectly normal Anthropic turn failed at the very end of every stream.
+            // Fold the duplicate terminator here; the accumulator still sees the first
+            // one, which is what flushes completed tool calls.
+            let duplicate_terminator =
+                event.event_type == CanonicalEventType::ResponseComplete && self.terminal;
+            if !duplicate_terminator {
+                output.extend(push_event(&mut self.calls, event)?);
+            }
             if event.event_type == CanonicalEventType::ResponseComplete {
                 self.terminal = true;
-                self.finish_reason = event.finish_reason.clone();
+                // Keep the first non-empty stop reason: the trailing
+                // `message_stop`-derived event carries none.
+                if event.finish_reason.is_some() {
+                    self.finish_reason = event.finish_reason.clone();
+                }
             }
         }
         Ok(output)

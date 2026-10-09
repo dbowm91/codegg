@@ -269,6 +269,15 @@ pub struct App {
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
     pub remote_event_rx: Option<mpsc::Receiver<serde_json::Value>>,
     pub remote_send_tx: Option<mpsc::Sender<RemoteTuiMessage>>,
+    /// Daemon event stream in socket mode.
+    ///
+    /// Without this the TUI performs request/response only: streaming text
+    /// never arrives, and neither turn completion nor turn failure can ever
+    /// clear the optimistic `Working` status, so a failed turn looked like an
+    /// eternal "working" with no error text.
+    pub core_event_rx: Option<
+        mpsc::Receiver<crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>>,
+    >,
     pub core_client: Option<Arc<dyn CoreClient>>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub theme_registry: Arc<crate::theme::ThemeRegistry>,
@@ -788,6 +797,7 @@ impl App {
             tui_cmd_tx: None,
             remote_event_rx: None,
             remote_send_tx: None,
+            core_event_rx: None,
             core_client: None,
             run_store,
             config_watcher: Some(
@@ -1298,6 +1308,7 @@ impl App {
             tui_cmd_tx: None,
             remote_event_rx: None,
             remote_send_tx: None,
+            core_event_rx: None,
             core_client: None,
             run_store: None,
             config_watcher: None, // No config watcher for tests
@@ -1369,6 +1380,130 @@ impl App {
 
     pub fn set_remote_event_rx(&mut self, rx: mpsc::Receiver<serde_json::Value>) {
         self.remote_event_rx = Some(rx);
+    }
+
+    /// Install the daemon event stream (socket mode).
+    pub fn set_core_event_rx(
+        &mut self,
+        rx: mpsc::Receiver<crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>>,
+    ) {
+        self.core_event_rx = Some(rx);
+    }
+
+    /// Apply one daemon `CoreEvent`.
+    ///
+    /// This is the socket-mode counterpart of the in-process `AppEvent` path.
+    /// Only turn-lifecycle and content events are handled here; everything
+    /// else is deliberately ignored rather than treated as an error, so a new
+    /// daemon event cannot break an older TUI.
+    ///
+    /// Returns `true` when the event changed visible state, so the caller can
+    /// request a redraw.
+    pub fn apply_core_event(&mut self, event: crate::protocol::core::CoreEvent) -> bool {
+        use crate::protocol::core::CoreEvent as E;
+        match event {
+            E::TurnStarted { .. } => {
+                self.messages_state.messages.finalize_streaming();
+                true
+            }
+            E::TurnTextDelta { delta, .. } => {
+                self.add_live_output_delta(&delta);
+                self.messages_state.messages.add_assistant_text(delta);
+                true
+            }
+            E::TurnReasoningDelta { delta, .. } => {
+                self.messages_state.messages.add_assistant_text(delta);
+                true
+            }
+            E::ToolStarted {
+                tool_id,
+                tool_name,
+                arguments,
+                ..
+            } => {
+                self.messages_state.messages.finalize_streaming();
+                let args = serde_json::from_str::<serde_json::Value>(&arguments)
+                    .unwrap_or(serde_json::Value::Null);
+                self.messages_state
+                    .messages
+                    .add_tool_call(tool_id.clone(), tool_name, args);
+                self.messages_state
+                    .messages
+                    .mark_tool_call_running(&tool_id);
+                true
+            }
+            E::ToolCompleted {
+                tool_id,
+                output,
+                success,
+                ..
+            } => {
+                let status = if success {
+                    crate::session::message::ToolStatus::Completed
+                } else {
+                    crate::session::message::ToolStatus::Error
+                };
+                self.messages_state
+                    .messages
+                    .update_tool_call(&tool_id, output, status, None, None, None);
+                true
+            }
+            E::TurnCompleted { stop_reason, .. } => {
+                self.messages_state.messages.finalize_streaming();
+                self.session_state.session_status = if stop_reason == "error" {
+                    SessionStatus::Error
+                } else {
+                    SessionStatus::Idle
+                };
+                self.status_bar.set_thinking(false, None);
+                true
+            }
+            E::TurnFailed { message, .. } => {
+                // The single most important arm: without it a failed turn
+                // left the status pinned on "working" with no explanation.
+                self.messages_state.messages.finalize_streaming();
+                self.session_state.session_status = SessionStatus::Error;
+                self.status_bar.set_thinking(false, None);
+                self.messages_state.toasts.error(&message);
+                true
+            }
+            E::Error { code, message, .. } => {
+                self.session_state.session_status = SessionStatus::Error;
+                self.status_bar.set_thinking(false, None);
+                self.messages_state
+                    .toasts
+                    .error(&format!("{code}: {message}"));
+                true
+            }
+            E::PermissionPending { id, tool, path, .. } => {
+                self.show_permission_dialog(
+                    id,
+                    PermissionRequest {
+                        tool,
+                        path,
+                        args: None,
+                    },
+                );
+                true
+            }
+            E::QuestionPending { id, questions, .. } => {
+                // `questions` is opaque on the wire; decode into the same spec
+                // type the dialog consumes. An undecodable payload must not
+                // strand the session in a pending-question state, so fall back
+                // to a single question carrying the raw payload.
+                let questions: Vec<QuestionSpec> = serde_json::from_value(questions)
+                    .unwrap_or_else(|_| {
+                        vec![QuestionSpec {
+                            question: "The daemon asked a question".to_string(),
+                            options: None,
+                            initial: None,
+                        }]
+                    });
+                self.show_question_dialog(questions, id);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {

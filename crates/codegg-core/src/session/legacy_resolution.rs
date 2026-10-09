@@ -59,11 +59,32 @@ pub async fn resolve_legacy_model_string(
         .filter(|c| provider_kind_matches(&c.provider_kind, provider_kind))
         .collect::<Vec<_>>();
 
-    match candidates.as_slice() {
-        [] => Ok(LegacyResolution::UnresolvedLegacyProvider {
-            provider_kind: provider_kind.to_string(),
-        }),
+    // Ambiguity is only meaningful between connections the caller could
+    // actually select. A tombstoned, disabled, credential-missing, errored, or
+    // stale row is not selectable, so it must not make a healthy provider look
+    // ambiguous — otherwise every provider that had a connection replaced (the
+    // `/connect` replacement path tombstones the old row in place) would stay
+    // permanently unresolvable via the legacy `provider/model` string.
+    let selectable = candidates
+        .iter()
+        .filter(|c| c.state == ProviderConnectionState::Active)
+        .collect::<Vec<_>>();
+
+    match selectable.as_slice() {
+        // Exactly one selectable connection wins outright; any remaining rows
+        // are non-selectable history for this provider.
         [single] => classify_single(single, model_id),
+        // Nothing selectable: preserve the diagnostic that names *why* the
+        // matching connections cannot be used.
+        [] => match candidates.as_slice() {
+            [] => Ok(LegacyResolution::UnresolvedLegacyProvider {
+                provider_kind: provider_kind.to_string(),
+            }),
+            // Several non-selectable rows and no live one: report the first so
+            // the caller still gets an actionable state, never a silent pick.
+            [only, ..] => classify_single(only, model_id),
+        },
+        // Two or more live connections genuinely require an explicit choice.
         many => Ok(LegacyResolution::AmbiguousLegacyProvider {
             provider_kind: provider_kind.to_string(),
             candidates: many.iter().map(|c| c.id.as_str().to_string()).collect(),
@@ -302,6 +323,70 @@ mod tests {
                 assert_eq!(candidates.len(), 2);
             }
             other => panic!("expected AmbiguousLegacyProvider, got {other:?}"),
+        }
+    }
+
+    /// Regression: the `/connect` replacement path tombstones the superseded row
+    /// in place rather than deleting it. A tombstoned row must not make the
+    /// provider look ambiguous, otherwise every replaced provider becomes
+    /// permanently unresolvable through the legacy `provider/model` string.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tombstoned_connection_does_not_make_provider_ambiguous() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database.clone());
+        let project = ProjectId::new();
+        let old_id =
+            seed_connection(&store, ProviderKind::OpenAi, project.clone(), "account-old").await;
+        let live_id = seed_connection(&store, ProviderKind::OpenAi, project, "account-new").await;
+
+        // Retire the superseded connection exactly as provisioning does.
+        let old = store.get(&old_id).await.unwrap().unwrap();
+        store
+            .transition(&old_id, old.revision, ProviderConnectionState::Tombstoned)
+            .await
+            .expect("tombstone superseded connection");
+
+        let result = resolve_legacy_model_string(&store, Some("openai/gpt-4o"))
+            .await
+            .unwrap();
+        match result {
+            LegacyResolution::Resolved {
+                connection_id,
+                model_id,
+                ..
+            } => {
+                assert_eq!(connection_id, live_id.as_str());
+                assert_eq!(model_id.as_deref(), Some("gpt-4o"));
+            }
+            other => panic!("expected Resolved for the live connection, got {other:?}"),
+        }
+    }
+
+    /// A disabled row alone is still reported as disabled (not silently
+    /// resolved), preserving the diagnostic contract.
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_connection_alongside_active_resolves_the_active_one() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database.clone());
+        let project = ProjectId::new();
+        let old_id =
+            seed_connection(&store, ProviderKind::OpenAi, project.clone(), "account-old").await;
+        let live_id = seed_connection(&store, ProviderKind::OpenAi, project, "account-new").await;
+
+        let old = store.get(&old_id).await.unwrap().unwrap();
+        store
+            .disable(&old_id, old.revision)
+            .await
+            .expect("disable superseded connection");
+
+        let result = resolve_legacy_model_string(&store, Some("openai/gpt-4o"))
+            .await
+            .unwrap();
+        match result {
+            LegacyResolution::Resolved { connection_id, .. } => {
+                assert_eq!(connection_id, live_id.as_str());
+            }
+            other => panic!("expected Resolved for the live connection, got {other:?}"),
         }
     }
 

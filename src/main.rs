@@ -2839,6 +2839,14 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             lsp_service.clone(),
         ))
     };
+    // Subscribe to the daemon event stream before any turn can start. In
+    // socket mode the agent loop runs inside the daemon, so streaming text,
+    // turn completion, and turn failure only ever reach this process over
+    // this subscription. Without it the TUI optimistically showed "working"
+    // forever, even when the turn had already failed.
+    if let Some(client) = app.core_client.clone() {
+        app.set_core_event_rx(client.subscribe());
+    }
     app.set_core_client(core_client);
 
     // Top-level --approval-mode/--sandbox/--yolo seed the

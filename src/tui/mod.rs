@@ -677,7 +677,9 @@ mod shell_dispatch_tests {
 #[cfg(test)]
 mod async_cmd_tests {
     use super::*;
+    use crate::protocol::core::CoreEvent;
     use crate::tui::app::App;
+    use crate::tui::app::SessionStatus;
     use crate::tui::commands::diagnostics::apply_doctor_result;
     use crate::tui::commands::import::apply_import_preview_loaded;
     use crate::tui::commands::memory::apply_memory_result;
@@ -1551,6 +1553,126 @@ mod async_cmd_tests {
             app.session_state.session.is_none(),
             "a failed creation must not fabricate a session"
         );
+    }
+
+    // --- Daemon event bridge (socket mode) -------------------------------
+    //
+    // Regression: in socket mode the agent loop runs inside the daemon, so
+    // turn outcomes only ever reach the TUI through the core event stream.
+    // When that stream was ignored, a failed turn left the optimistic
+    // `Working` status pinned forever with no error text anywhere.
+
+    #[test]
+    fn turn_failed_clears_working_and_surfaces_the_error() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        let changed = app.apply_core_event(CoreEvent::TurnFailed {
+            session_id: "s1".into(),
+            turn_id: Some("t1".into()),
+            message: "provider stream framing or decoding failed".into(),
+        });
+
+        assert!(changed, "a turn failure must trigger a redraw");
+        assert_eq!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a failed turn must not stay pinned on Working"
+        );
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("provider stream")),
+            "the failure message must be visible, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn turn_completed_returns_to_idle() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "completed".into(),
+        });
+
+        assert_eq!(app.session_state.session_status, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn turn_completed_with_error_stop_reason_is_an_error() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "error".into(),
+        });
+
+        assert_eq!(app.session_state.session_status, SessionStatus::Error);
+    }
+
+    #[test]
+    fn core_error_event_is_surfaced() {
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+
+        app.apply_core_event(CoreEvent::Error {
+            code: "ambiguous_provider".into(),
+            message: "Multiple connections match".into(),
+        });
+
+        assert_eq!(app.session_state.session_status, SessionStatus::Error);
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|t| t.contains("ambiguous_provider")),
+            "the error code must be visible, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn text_delta_is_appended_to_the_visible_transcript() {
+        let mut app = make_test_app();
+
+        app.apply_core_event(CoreEvent::TurnTextDelta {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            delta: "pong".into(),
+        });
+
+        assert!(
+            app.messages_state
+                .messages
+                .messages
+                .iter()
+                .any(|m| format!("{:?}", m.parts).contains("pong")),
+            "streamed text must reach the visible transcript"
+        );
+    }
+
+    #[test]
+    fn unknown_core_events_are_ignored_without_error() {
+        // A newer daemon may emit events an older TUI does not know. That must
+        // not panic or mark the turn failed.
+        let mut app = make_test_app();
+        app.session_state.session_status = SessionStatus::Working;
+        let changed = app.apply_core_event(CoreEvent::PresenceUpdated {
+            project_id: "p1".into(),
+        });
+        assert!(!changed);
+        assert_eq!(app.session_state.session_status, SessionStatus::Working);
     }
 }
 pub mod document_session;

@@ -391,6 +391,32 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 needs_render = true;
             }
 
+            core_event = async {
+                if let Some(ref mut rx) = app.core_event_rx {
+                    rx.recv().await
+                } else {
+                    futures_util::future::pending().await
+                }
+            } => {
+                match core_event {
+                    Some(envelope) => {
+                        tracing::debug!(
+                            target: "codegg::tui::events",
+                            event_seq = envelope.event_seq,
+                            "processing core event"
+                        );
+                        if app.apply_core_event(envelope.payload) {
+                            needs_render = true;
+                        }
+                    }
+                    // Daemon event stream closed: stop selecting on it rather
+                    // than spinning forever on a closed channel.
+                    None => {
+                        app.core_event_rx = None;
+                    }
+                }
+            }
+
             else => {}
         }
     }

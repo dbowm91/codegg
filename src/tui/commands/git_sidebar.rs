@@ -17,12 +17,22 @@ const GIT_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// generation counter is bumped before the task is spawned; stale
 /// completions are dropped at apply time.
 pub(crate) fn start_refresh_git_sidebar(app: &mut App) {
-    let Some(project_dir) = app
+    // The probe must start from a real filesystem path. `session.project_id`
+    // is a stable string identity (a UUID), not a directory — walking up from
+    // it could never find `.git`, so the sidebar reported "not a git repo"
+    // even inside a repository. Prefer the session's own workspace root, then
+    // the active tab's root, and only then the legacy directory projection.
+    let start_dir = app
         .session_state
         .session
         .as_ref()
-        .map(|s| s.project_id.clone())
-    else {
+        .map(|s| s.directory.clone())
+        .filter(|d| !d.trim().is_empty())
+        .or_else(|| {
+            app.active_workspace_root()
+                .map(|root| root.to_string_lossy().into_owned())
+        });
+    let Some(project_dir) = start_dir else {
         return;
     };
 
@@ -111,7 +121,10 @@ impl GitProbeInfo {
 
 async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<GitProbeInfo> {
     let Some(root) = crate::worktree::find_git_root(&project_dir) else {
-        return Ok(GitProbeInfo::error(String::new()));
+        return Ok(GitProbeInfo::error(format!(
+            "no git repository at or above {}",
+            project_dir.display()
+        )));
     };
     let status = egggit::status_v2::rich_repo_status(&root)
         .await
