@@ -57,6 +57,42 @@ requested name → fallback name → "cyber-red" (default) → any theme → pla
 **Duplicate handling**: User themes override built-ins with the same ID.
 A diagnostic warning is emitted.
 
+**Ordering**: `themes` is a `BTreeMap` keyed by id, so `names()`,
+`all_tui_themes()`, and the display-name fallback in `lookup` are all in id
+order and therefore deterministic. Never change this back to `HashMap` — a
+random iteration order makes "pick a theme by name" and "pick any theme as a
+last resort" non-reproducible.
+
+### The id / display-name contract
+
+`SemanticTheme` carries two distinct strings:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `id` | `catppuccin-mocha` | Registry key, config value, persisted value |
+| `name` | `Catppuccin Mocha` | Display only, shown in the picker |
+
+**33 of the 50 bundled themes have a `name` that is not their `id`.** Every
+lookup surface therefore accepts either spelling. `ThemeRegistry::lookup`
+tries, in order:
+
+1. an exact id (`"cyber-red"`),
+2. any spelling that normalizes to an id via `SemanticTheme::normalize_id`
+   (`"Cyber Red"`, `"CATPPUCCIN-MOCHA"`, `"Catppuccin_Mocha"`),
+3. a case-insensitive `name` match, resolved in id order.
+
+All three of these go through `lookup` and must keep doing so:
+
+- `ThemeRegistry::get` / `get_tui` — the picker, `/theme use <name>`
+- `ThemeRegistry::resolve` — `[theme].name` in config
+- `App::apply_persisted_preferences` — the persisted `theme.active` row
+
+The ratatui projection carries both (`Theme { id, name, .. }`), so the picker
+emits `ThemeCommit { theme_id }` / `ThemePreviewChanged { theme_id }` and
+captures `original_id` from **`Theme::id`**. Never put `Theme::name` into a
+field named `*_id`: the registry is id-keyed, so that silently fails for every
+bundled theme whose display name differs from its id.
+
 ## Key Types & APIs
 
 ### SemanticTheme (`src/theme/schema.rs:17`)
@@ -121,7 +157,8 @@ Key functions:
 ### Frontend Projection (`src/theme/target.rs`)
 
 `SemanticTheme` → `ratatui::Theme` via `Theme::from(&SemanticTheme)`.
-The ratatui `Theme` type is what the TUI uses for rendering.
+The ratatui `Theme` type is what the TUI uses for rendering. It carries both
+`id` and `name`; see the id / display-name contract above.
 
 Syntect theme selection falls back based on background luminance to
 avoid dark-on-dark or light-on-light syntax highlighting.
@@ -189,9 +226,16 @@ the last-resort placeholder.
 - **Importers must not project**: Importers decode to `SemanticTheme`
   only. Frontend projections consume it. Never mix the two.
 - **50 bundled themes**: The `BUILTIN_THEME_FILES` constant embeds all
-  50 Halloy themes. Count tested implicitly by registry loading.
+  50 Halloy themes, one `include_str!` each.
+  `builtins_load` asserts the exact count so a dropped or renamed asset
+  fails loudly; `every_builtin_display_name_resolves` asserts all 50 are
+  reachable by the name the picker renders.
 - **Syntect theme luminance fallback**: Dark/light code theme is
   selected based on background luminance, not user preference.
+- **Persistence is downstream of a successful apply**:
+  `persist_theme_selection` (SQLite `theme.active` + a `config.toml`
+  mirror) only runs inside the success branch of `ThemeCommit`, so a
+  lookup miss means the choice is not saved. Fix the lookup first.
 
 ## Integration
 
@@ -200,7 +244,10 @@ the last-resort placeholder.
 - Resolved `Arc<Theme>` stored in `UiState::theme`
 - TUI renders using the ratatui `Theme` projection
 - Theme diagnostics logged at startup
-- Theme picker dialog accessible via `/themes` command
+- Theme picker dialog accessible via `/themes` command (`/theme`,
+  with `list` / `use <name>` / `reload` / `diagnostics`)
+- `/theme reload` re-resolves the active theme by `Theme::id`; it must not
+  reset to `DEFAULT_THEME_ID` for a theme that is still registered
 
 ## Testing
 
@@ -217,7 +264,7 @@ cargo test -p codegg -- theme    # Theme module tests
 
 Verified 2026-10-06 against `src/theme/` (10 source files, as stated) and
 `assets/themes/halloy/`: 50 bundled themes, all Halloy-format, embedded via
-52 `include_str!` calls in `BUILTIN_THEME_FILES`
+50 `include_str!` calls in `BUILTIN_THEME_FILES`
 (`registry.rs:36`); `DEFAULT_THEME_ID = "cyber-red"` (`registry.rs:652`);
 `SemanticTheme` (`schema.rs:17`) and all 11 of its fields; `ThemeSource`
 (`schema.rs:32`); every color group field list (`BaseColors` 2,

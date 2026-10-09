@@ -52,6 +52,7 @@ fn select_code_theme(theme: &SemanticTheme) -> String {
 impl From<&SemanticTheme> for Theme {
     fn from(s: &SemanticTheme) -> Self {
         Theme {
+            id: s.id.clone(),
             name: s.name.clone(),
             background: rgb(s.base.background),
             foreground: rgb(s.base.foreground),

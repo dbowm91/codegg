@@ -34,6 +34,13 @@ use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
+    /// Stable lookup key (lowercase kebab-case slug), e.g. `"cyber-red"`.
+    /// This is the registry key and the only value that may be persisted or
+    /// sent across the `TuiMsg` boundary. Never key behavior off `name`.
+    pub id: String,
+    /// Case-preserved display label shown in the theme picker, e.g.
+    /// `"Cyber Red"`. Display only — not guaranteed unique and not a
+    /// lookup key.
     pub name: String,
     pub background: Color,
     pub foreground: Color,
@@ -74,6 +81,9 @@ struct ThemeData {
 impl ThemeData {
     fn to_theme(&self) -> Theme {
         Theme {
+            // The legacy static list has no separate id table; the name is
+            // already a lowercase slug, so it doubles as the id.
+            id: self.name.to_string(),
             name: self.name.to_string(),
             background: Color::Rgb(self.background.0, self.background.1, self.background.2),
             foreground: Color::Rgb(self.foreground.0, self.foreground.1, self.foreground.2),

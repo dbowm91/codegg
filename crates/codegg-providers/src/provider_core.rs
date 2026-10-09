@@ -750,7 +750,7 @@ pub(crate) fn resolve_provider_credential(
     );
     Ok(Some(ResolvedAuth {
         credential: crate::auth_types::Credential {
-            kind: chosen.kind.clone(),
+            kind: chosen.kind,
             secret,
             expires_at: chosen.expires_at,
         },

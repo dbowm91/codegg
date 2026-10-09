@@ -227,6 +227,19 @@ pub type EggpoolProvisioner = ProviderConnectionProvisioner;
 /// Provider-neutral name for the provisioning failure type.
 pub type ProviderProvisionError = EggpoolError;
 
+/// Identity of the connection currently being provisioned.
+///
+/// These four scalars are always threaded together through the provisioning
+/// path and are meaningless apart from each other, so they travel as one
+/// value rather than as a long positional argument list.
+#[derive(Clone, Copy)]
+struct ProvisioningTarget<'a> {
+    operation_id: &'a str,
+    connection_id: &'a ProviderConnectionId,
+    secret_ref: &'a SecretRef,
+    account_id: &'a str,
+}
+
 impl ProviderConnectionProvisioner {
     pub fn new(pool: sqlx::SqlitePool) -> Self {
         let credential_store = codegg_providers::CredentialStore::at_default_location()
@@ -442,10 +455,12 @@ impl ProviderConnectionProvisioner {
             .create_inner(
                 request.credential.expose(),
                 &spec,
-                &operation_id,
-                &connection_id,
-                &secret_ref,
-                &account_id,
+                ProvisioningTarget {
+                    operation_id: &operation_id,
+                    connection_id: &connection_id,
+                    secret_ref: &secret_ref,
+                    account_id: &account_id,
+                },
                 superseded,
                 cancel,
             )
@@ -468,13 +483,16 @@ impl ProviderConnectionProvisioner {
         &self,
         secret: &str,
         spec: &NormalizedSpec,
-        operation_id: &str,
-        connection_id: &ProviderConnectionId,
-        secret_ref: &SecretRef,
-        account_id: &str,
+        target: ProvisioningTarget<'_>,
         superseded: Option<(String, i64)>,
         cancel: CancellationToken,
     ) -> Result<CreateEggpoolConnectionResult, EggpoolError> {
+        let ProvisioningTarget {
+            operation_id,
+            connection_id,
+            secret_ref,
+            account_id,
+        } = target;
         let store = self
             .credential_store
             .clone()

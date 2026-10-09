@@ -281,6 +281,19 @@ pub struct App {
     pub core_client: Option<Arc<dyn CoreClient>>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub theme_registry: Arc<crate::theme::ThemeRegistry>,
+    /// Whether `persist_theme_selection` may mirror the active theme id into
+    /// the on-disk config file.
+    ///
+    /// The SQLite `theme.active` row is the authoritative store. The config
+    /// mirror exists so external tooling — and the TUI before the DB pool is
+    /// available, as in socket mode — can still read the choice, so it stays
+    /// on in production.
+    ///
+    /// Tests must not enable it: `Config::save()` resolves a real path from
+    /// the working directory and the user's config dir, so an enabled mirror
+    /// would rewrite a developer's actual `codegg.json` as a test side
+    /// effect. `new_for_testing` leaves this `false`.
+    pub persist_theme_to_config: bool,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub undo_session_id: Option<String>,
     pub streaming_active: bool,
@@ -806,6 +819,7 @@ impl App {
                     .unwrap_or_default(),
             ),
             theme_registry,
+            persist_theme_to_config: true,
             preferences: None,
             subagent_pool: None,
             undo_session_id: None,
@@ -1313,6 +1327,8 @@ impl App {
             run_store: None,
             config_watcher: None, // No config watcher for tests
             theme_registry: Arc::new(crate::theme::ThemeRegistry::load_builtins()),
+            // Never let a test write a real codegg.json. See the field doc.
+            persist_theme_to_config: false,
             preferences: None,
             subagent_pool: None,
             undo_session_id: None,
@@ -1609,6 +1625,9 @@ impl App {
 
         // Mirror the value into config.toml so external tooling (and the
         // TUI before the DB is available) can still see it.
+        if !self.persist_theme_to_config {
+            return;
+        }
         let mut config = match crate::config::schema::Config::load() {
             Ok(c) => c,
             Err(e) => {
@@ -8182,7 +8201,10 @@ impl App {
                 }
             }
             "reload" => {
-                let current = self.ui_state.theme.name.clone();
+                // Re-resolve by id, not by display name: the registry is
+                // keyed by id and the display name is not guaranteed to
+                // normalize back to it.
+                let current = self.ui_state.theme.id.clone();
                 let config = crate::config::schema::Config::load_or_default();
                 let new_registry = std::sync::Arc::new(
                     crate::theme::ThemeRegistry::load_with_config(config.theme.as_ref()),
@@ -12127,6 +12149,18 @@ mod goal_status_line_tests {
 mod theme_integration_tests {
     use super::*;
 
+    /// FNV-1a over `bytes`. Only ever used to compare two snapshots of a
+    /// file that may hold credentials, so a failing assertion reports a
+    /// number rather than the contents.
+    fn config_digest(bytes: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
     #[test]
     fn app_with_config_loads_theme_registry() {
         let app = App::new_for_testing("/tmp".to_string());
@@ -12170,6 +12204,194 @@ mod theme_integration_tests {
         app.handle_theme_command(Some("/theme use nope"));
         // Theme should remain the default.
         assert_eq!(app.ui_state.theme.name, before);
+    }
+
+    #[test]
+    fn apply_theme_accepts_a_display_name() {
+        // Regression: lookups were id-only, so a reference the user can see
+        // on screen (`Nord`) failed to resolve (`nord` is the id).
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("Nord"));
+        assert_eq!(app.ui_state.theme.id, "nord");
+        assert!(app.apply_theme("Catppuccin Mocha"));
+        assert_eq!(app.ui_state.theme.id, "catppuccin-mocha");
+        assert!(app.apply_theme("Dracula"));
+        assert_eq!(app.ui_state.theme.id, "dracula");
+    }
+
+    #[test]
+    fn every_bundled_theme_is_reachable_from_the_registry() {
+        // The picker renders every entry of `all_tui_themes`; each one must
+        // be resolvable through the same lookup the picker uses.
+        let app = App::new_for_testing("/tmp".to_string());
+        for theme in app.theme_registry.all_tui_themes() {
+            let resolved = app
+                .theme_registry
+                .get_tui(&theme.id)
+                .unwrap_or_else(|| panic!("id {:?} must resolve", theme.id));
+            assert_eq!(resolved.id, theme.id);
+            assert_eq!(resolved.name, theme.name);
+        }
+    }
+
+    #[test]
+    fn picker_commit_message_resolves_to_the_selected_theme() {
+        // End-to-end guard on the exact regression: the picker used to emit
+        // the display name in the `theme_id` field, which the registry could
+        // not resolve, so 33 of the 50 bundled themes silently did nothing.
+        use crate::tui::components::dialogs::theme::ThemePickerDialog;
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("cyber-red"));
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::clone(&app.ui_state.theme),
+            app.theme_registry.all_tui_themes(),
+        );
+
+        // Park the selection on a bundled theme whose display name is not
+        // its id, then read back what the picker would commit.
+        let target_idx = picker
+            .themes
+            .iter()
+            .position(|t| t.name != t.id)
+            .expect("the bundled gallery has themes whose name is not their id");
+        picker.selected = target_idx;
+        let target = picker.themes[target_idx].clone();
+
+        let committed_id = picker
+            .selected_theme()
+            .map(|t| t.id.clone())
+            .expect("a theme is selected");
+        assert_ne!(committed_id, target.name, "the picker must emit the id");
+
+        let resolved = app
+            .theme_registry
+            .get_tui(&committed_id)
+            .unwrap_or_else(|| panic!("committed id {committed_id:?} must resolve"));
+        assert_eq!(resolved.id, target.id);
+        assert_eq!(resolved.name, target.name);
+    }
+
+    #[test]
+    fn picker_original_id_resolves_for_revert() {
+        // Esc restores `original_id`; it has to be a resolvable id.
+        use crate::tui::components::dialogs::theme::ThemePickerDialog;
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("catppuccin-mocha"));
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::clone(&app.ui_state.theme),
+            app.theme_registry.all_tui_themes(),
+        );
+        picker.select_down().expect("navigation yields an id");
+        let original = picker
+            .preview_original_id()
+            .expect("first navigation captures the original");
+        let resolved = app
+            .theme_registry
+            .get_tui(&original)
+            .unwrap_or_else(|| panic!("revert target {original:?} must resolve"));
+        assert_eq!(resolved.id, "catppuccin-mocha");
+    }
+
+    #[test]
+    fn handle_theme_command_reload_keeps_the_current_theme() {
+        // Regression: reload re-resolved `Theme.name` through an id-keyed
+        // registry, so every theme whose display name differed from its id
+        // silently fell back to the default (Cyber Red).
+        let mut app = App::new_for_testing("/tmp".to_string());
+        for id in ["catppuccin-mocha", "nord", "gruvbox", "vesper"] {
+            assert!(app.apply_theme(id), "{id} should apply");
+            app.handle_theme_command(Some("/theme reload"));
+            assert_eq!(
+                app.ui_state.theme.id, id,
+                "/theme reload must preserve the active theme"
+            );
+        }
+    }
+
+    #[test]
+    fn theme_commit_in_tests_never_touches_a_real_config_file() {
+        // Regression: `persist_theme_selection` mirrors the active theme id
+        // into the on-disk config. `Config::save()` resolves a real path
+        // from the working directory and the user's config dir, so an
+        // unguarded mirror rewrites a developer's actual `codegg.json`
+        // whenever a test exercises the commit path. The field has no
+        // `Default`, so every constructor is forced to choose explicitly.
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(
+            !app.persist_theme_to_config,
+            "test apps must never write a real config file"
+        );
+
+        // Resolve exactly where an unguarded mirror would write, and
+        // snapshot it. Snapshot the mtime *and* a digest: rewriting an
+        // already-matching config can produce byte-identical output, so
+        // content alone does not prove the file was untouched.
+        //
+        // The config holds credentials, so only a digest is ever compared —
+        // never the bytes — or a failing assert would spill the whole file,
+        // secrets included, into test output.
+        let target = crate::config::paths::find_project_config()
+            .or_else(crate::config::paths::global_config_path);
+        let existed_before = target.as_ref().is_some_and(|p| p.exists());
+        let mtime_before = target
+            .as_ref()
+            .and_then(|p| p.metadata().ok())
+            .and_then(|m| m.modified().ok());
+        let digest_before = target
+            .as_ref()
+            .and_then(|p| std::fs::read(p).ok())
+            .map(|bytes| config_digest(&bytes));
+
+        app.handle_theme_command(Some("/theme use catppuccin-latte"));
+
+        // The theme still applies — only the config mirror is suppressed.
+        assert_eq!(app.ui_state.theme.id, "catppuccin-latte");
+
+        assert_eq!(
+            digest_before,
+            target
+                .as_ref()
+                .and_then(|p| std::fs::read(p).ok())
+                .map(|bytes| config_digest(&bytes)),
+            "the theme commit rewrote {} — tests must not write a real config",
+            target
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+        assert_eq!(
+            mtime_before,
+            target
+                .as_ref()
+                .and_then(|p| p.metadata().ok())
+                .and_then(|m| m.modified().ok()),
+            "the theme commit touched {} — tests must not write a real config",
+            target
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
+        assert_eq!(
+            existed_before,
+            target.as_ref().is_some_and(|p| p.exists()),
+            "the theme commit created a config file — tests must not write one"
+        );
+
+        // A config load/save failure toast means the guard regressed and the
+        // commit path reached the filesystem again.
+        let config_toasts: Vec<&str> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.as_str())
+            .filter(|m| m.to_ascii_lowercase().contains("config"))
+            .collect();
+        assert!(
+            config_toasts.is_empty(),
+            "theme commit must not attempt a config write in tests: {config_toasts:?}"
+        );
     }
 
     #[test]

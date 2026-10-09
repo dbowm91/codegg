@@ -7,7 +7,7 @@
 //!   additional directories configured in `[theme].directories`
 //! - Diagnostics accumulated during loading and validation
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -341,7 +341,10 @@ impl ThemeResolutionConfig {
 }
 
 pub struct ThemeRegistry {
-    themes: HashMap<String, SemanticTheme>,
+    /// Keyed by theme id. `BTreeMap` (not `HashMap`) so iteration order is
+    /// the id order: `names()`, `all_tui_themes()` and the display-name
+    /// fallback in `lookup` are all deterministic.
+    themes: BTreeMap<String, SemanticTheme>,
     diagnostics: Vec<ThemeDiagnostic>,
 }
 
@@ -354,7 +357,7 @@ impl Default for ThemeRegistry {
 impl ThemeRegistry {
     pub fn new() -> Self {
         Self {
-            themes: HashMap::new(),
+            themes: BTreeMap::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -559,13 +562,39 @@ impl ThemeRegistry {
         self.themes.insert(theme.id.clone(), theme);
     }
 
+    /// Resolve a user-supplied theme reference to a theme.
+    ///
+    /// Accepts, in order:
+    /// 1. an exact id (`"cyber-red"`),
+    /// 2. any spelling that normalizes to an id (`"Cyber Red"`,
+    ///    `"Catppuccin Mocha"`, `"CYBER-RED"`),
+    /// 3. a case-insensitive display-name match.
+    ///
+    /// Every lookup surface (`/theme use`, `[theme].name`, the picker, and
+    /// the persisted `theme.active` row) goes through here, so a reference
+    /// that a user can see on screen always resolves. Falls back to (3) in
+    /// id order, so the result is deterministic when two themes share a
+    /// display name.
+    fn lookup(&self, reference: &str) -> Option<&SemanticTheme> {
+        if let Some(theme) = self.themes.get(reference) {
+            return Some(theme);
+        }
+        let normalized = SemanticTheme::normalize_id(reference);
+        if let Some(theme) = self.themes.get(&normalized) {
+            return Some(theme);
+        }
+        self.themes
+            .values()
+            .find(|theme| theme.name.eq_ignore_ascii_case(reference))
+    }
+
     pub fn get(&self, name: &str) -> Option<&SemanticTheme> {
-        self.themes.get(name)
+        self.lookup(name)
     }
 
     /// Convenience: project to the ratatui-facing `Theme` type.
     pub fn get_tui(&self, name: &str) -> Option<Theme> {
-        self.themes.get(name).map(Theme::from)
+        self.lookup(name).map(Theme::from)
     }
 
     /// Convenience: project to `Arc<Theme>` for `UiState::theme`.
@@ -599,10 +628,10 @@ impl ThemeRegistry {
     pub fn resolve(&self, cfg: &ThemeResolutionConfig) -> SemanticTheme {
         let requested = cfg.name.as_deref().unwrap_or(DEFAULT_THEME_ID);
         let fallback = cfg.fallback.as_deref().unwrap_or(DEFAULT_THEME_ID);
-        if let Some(theme) = self.themes.get(requested) {
+        if let Some(theme) = self.lookup(requested) {
             return theme.clone();
         }
-        if let Some(theme) = self.themes.get(fallback) {
+        if let Some(theme) = self.lookup(fallback) {
             return theme.clone();
         }
         if let Some(theme) = self.themes.get(DEFAULT_THEME_ID) {
@@ -764,7 +793,104 @@ mod tests {
         assert!(registry.themes.contains_key("cyber-red"));
         assert!(registry.themes.contains_key("catppuccin-mocha"));
         assert!(registry.themes.contains_key("midnight"));
-        assert!(registry.themes.len() >= 40, "got {}", registry.themes.len());
+        assert_eq!(
+            registry.themes.len(),
+            BUILTIN_THEME_FILES.len(),
+            "every bundled theme must load; got {} of {}",
+            registry.themes.len(),
+            BUILTIN_THEME_FILES.len()
+        );
+    }
+
+    #[test]
+    fn every_builtin_display_name_resolves() {
+        // Regression guard for the picker: 33 of the 50 bundled themes have
+        // a display name that is not their id (`Catppuccin Mocha` vs
+        // `catppuccin-mocha`). Anything the picker renders must be something
+        // the user can also resolve, otherwise selecting it silently fails.
+        let registry = ThemeRegistry::load_builtins();
+        let unresolved: Vec<String> = BUILTIN_THEME_FILES
+            .iter()
+            .filter(|entry| registry.get(entry.name).is_none())
+            .map(|entry| format!("{} (id: {})", entry.name, entry.id))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "display names that do not resolve:\n{}",
+            unresolved.join("\n")
+        );
+    }
+
+    #[test]
+    fn every_builtin_display_name_resolves_to_its_own_id() {
+        // Guards the looser name matching against cross-wiring two themes
+        // whose display names collide under normalization or casing.
+        let registry = ThemeRegistry::load_builtins();
+        for entry in BUILTIN_THEME_FILES {
+            let theme = registry
+                .get(entry.name)
+                .unwrap_or_else(|| panic!("display name {:?} must resolve", entry.name));
+            assert_eq!(
+                &theme.id, entry.id,
+                "{:?} resolved to the wrong theme",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn get_tui_accepts_display_names_for_every_builtin() {
+        // Regression: `get_tui` used to hit `self.themes` directly instead of
+        // going through `get`, so the tolerant lookup never applied on the
+        // one path the picker and `/theme use` actually take.
+        let registry = ThemeRegistry::load_builtins();
+        for entry in BUILTIN_THEME_FILES {
+            let theme = registry
+                .get_tui(entry.name)
+                .unwrap_or_else(|| panic!("get_tui({:?}) must resolve", entry.name));
+            assert_eq!(theme.id, entry.id);
+        }
+    }
+
+    #[test]
+    fn lookup_tolerates_casing_and_separator_drift() {
+        let registry = ThemeRegistry::load_builtins();
+        for reference in [
+            "catppuccin-mocha",
+            "Catppuccin Mocha",
+            "CATPPUCCIN-MOCHA",
+            "Catppuccin_Mocha",
+            "catppuccin mocha",
+        ] {
+            assert_eq!(
+                registry.get(reference).map(|t| t.id.as_str()),
+                Some("catppuccin-mocha"),
+                "{reference:?} should resolve to catppuccin-mocha"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_references_still_return_none() {
+        // The tolerant lookup must not turn every miss into a match.
+        let registry = ThemeRegistry::load_builtins();
+        for reference in ["", "   ", "no-such-theme", "!!", "zzzz"] {
+            assert!(
+                registry.get(reference).is_none(),
+                "{reference:?} must not resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_accepts_a_display_name() {
+        // `[theme].name` is user-authored; a display name has to work too.
+        let registry = ThemeRegistry::load_builtins();
+        let cfg = ThemeResolutionConfig {
+            name: Some("Catppuccin Mocha".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(registry.resolve(&cfg).id, "catppuccin-mocha");
     }
 
     #[test]
