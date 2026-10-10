@@ -1133,6 +1133,8 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
+        // 156th built-in is `/logs` (daemon log viewer); keep
+        // `architecture/command.md` counts in sync when adding more.
         assert_eq!(CommandRegistry::built_in_commands().len(), 156);
     }
 
