@@ -332,7 +332,7 @@ mod tests {
         let repo = TempDir::new().unwrap();
         let nested = repo.path().join("packages/app");
         fs::create_dir_all(repo.path().join(".git")).unwrap();
-        fs::create_dir_all(nested).unwrap();
+        fs::create_dir_all(&nested).unwrap();
         let parent_skill = repo.path().join(".agents/skills/shared/SKILL.md");
         fs::create_dir_all(parent_skill.parent().unwrap()).unwrap();
         fs::write(

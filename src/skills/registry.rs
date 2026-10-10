@@ -1010,7 +1010,7 @@ mod tests {
             registry.get("home-skill").unwrap().source_kind,
             SourceKind::ClaudeGlobal
         );
-        for (relative, name, kind) in [
+        for (relative, name, _kind) in [
             (
                 ".agents/skills/codex/SKILL.md",
                 "codex",
