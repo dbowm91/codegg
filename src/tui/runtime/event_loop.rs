@@ -349,6 +349,26 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                             .as_ref()
                             .map(|h| h.confirm_dangerous())
                             .unwrap_or(true);
+                        app.shell_enabled = config
+                            .human_shell
+                            .as_ref()
+                            .map(|h| h.enabled())
+                            .unwrap_or(true);
+                        app.shell_default_timeout_secs = config
+                            .human_shell
+                            .as_ref()
+                            .map(|h| h.default_timeout_secs())
+                            .unwrap_or(crate::shell::DEFAULT_TIMEOUT_SECS);
+                        app.shell_auto_promote_bangbang = config
+                            .human_shell
+                            .as_ref()
+                            .map(|h| h.auto_promote_bangbang())
+                            .unwrap_or(true);
+                        app.shell_ansi = config
+                            .human_shell
+                            .as_ref()
+                            .map(|h| h.ansi())
+                            .unwrap_or_default();
                         app.shell_output_config = config
                             .shell
                             .as_ref()
@@ -379,6 +399,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                     if debounce_start.elapsed() >= RESIZE_DEBOUNCE {
                         app.ui_state.resize_debounce = None;
                         app.on_resize();
+                        crate::tui::commands::interactive_terminal::resize_terminal_to_viewport(
+                            app,
+                        );
                         needs_render = true;
                     }
                 }

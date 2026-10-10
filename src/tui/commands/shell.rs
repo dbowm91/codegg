@@ -16,6 +16,13 @@ pub(crate) fn handle_run_human_shell(
 ) {
     use crate::shell::policy::evaluate_command;
 
+    if !app.shell_enabled {
+        app.messages_state
+            .toasts
+            .error("Human shell is disabled by configuration");
+        return;
+    }
+
     let policy = evaluate_command(&command);
     match policy {
         crate::shell::policy::HumanShellPolicyDecision::Block { reason } => {
@@ -55,6 +62,8 @@ pub(crate) fn spawn_human_shell(
 ) {
     use crate::shell::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin, ShellRequest};
 
+    let promote_after = promote_after && app.shell_auto_promote_bangbang;
+
     let id = app.shell_store.alloc_id();
     let capture_policy = if promote_after {
         ShellCapturePolicy::StoreAndPromote
@@ -66,11 +75,12 @@ pub(crate) fn spawn_human_shell(
         origin: ShellOrigin::HumanEphemeral,
         command: command.clone(),
         cwd: cwd.clone(),
-        timeout: std::time::Duration::from_secs(crate::shell::DEFAULT_TIMEOUT_SECS),
+        timeout: std::time::Duration::from_secs(app.shell_default_timeout_secs),
         capture_policy,
         env_policy: ShellEnvPolicy::Inherit,
     };
     app.shell_store.insert_started(&req);
+    capture_shell_binding(app, id.0);
 
     app.messages_state
         .messages
@@ -113,6 +123,41 @@ pub(crate) fn spawn_human_shell(
         });
 }
 
+fn current_shell_binding(app: &app::App) -> (Option<String>, Option<String>) {
+    let session_id = app.active_session_id().map(str::to_owned).or_else(|| {
+        app.session_state
+            .session
+            .as_ref()
+            .map(|session| session.id.clone())
+    });
+    let workspace_id = app.active_workspace_id().map(str::to_owned).or_else(|| {
+        app.session_state
+            .session
+            .as_ref()
+            .and_then(|session| session.workspace_id.clone())
+    });
+    (session_id, workspace_id)
+}
+
+pub(crate) fn capture_shell_binding(app: &mut app::App, id: u64) {
+    let binding = current_shell_binding(app);
+    app.shell_command_bindings.insert(id, binding);
+    let retained: std::collections::HashSet<u64> = app
+        .shell_store
+        .list_recent(usize::MAX)
+        .iter()
+        .map(|entry| entry.id.0)
+        .collect();
+    app.shell_command_bindings
+        .retain(|run_id, _| retained.contains(run_id));
+}
+
+fn shell_binding_matches_current(app: &app::App, id: u64) -> bool {
+    app.shell_command_bindings
+        .get(&id)
+        .is_some_and(|binding| binding == &current_shell_binding(app))
+}
+
 pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellEvent) {
     // Mirror the event into the durable command-run store used by the
     // Phase 1 projection pipeline. This must happen for every event
@@ -131,7 +176,9 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         crate::shell::ShellEvent::Stdout { id, bytes } => {
             app.shell_store.append_stdout(*id, bytes);
             let entry = app.shell_store.get(*id);
-            let preview = entry.map(|e| e.stdout.head_str_lossy()).unwrap_or_default();
+            let preview = entry
+                .map(|e| crate::shell::sanitize_ansi(&e.stdout.head_str_lossy(), app.shell_ansi))
+                .unwrap_or_default();
             let preview_lines: Vec<&str> = preview.lines().rev().take(8).collect();
             let stdout_preview: Vec<&str> = preview_lines.into_iter().rev().collect();
             let stdout_preview = stdout_preview.join("\n");
@@ -144,7 +191,9 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         crate::shell::ShellEvent::Stderr { id, bytes } => {
             app.shell_store.append_stderr(*id, bytes);
             let entry = app.shell_store.get(*id);
-            let preview = entry.map(|e| e.stderr.head_str_lossy()).unwrap_or_default();
+            let preview = entry
+                .map(|e| crate::shell::sanitize_ansi(&e.stderr.head_str_lossy(), app.shell_ansi))
+                .unwrap_or_default();
             let preview_lines: Vec<&str> = preview.lines().rev().take(8).collect();
             let stderr_preview: Vec<&str> = preview_lines.into_iter().rev().collect();
             let stderr_preview = stderr_preview.join("\n");
@@ -169,8 +218,12 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
             let exit_code = *status;
             let status_str = "exited".to_string();
             let entry = app.shell_store.get(*id);
-            let stdout_preview = entry.map(|e| e.stdout.head_str_lossy()).unwrap_or_default();
-            let stderr_preview = entry.map(|e| e.stderr.head_str_lossy()).unwrap_or_default();
+            let stdout_preview = entry
+                .map(|e| crate::shell::sanitize_ansi(&e.stdout.head_str_lossy(), app.shell_ansi))
+                .unwrap_or_default();
+            let stderr_preview = entry
+                .map(|e| crate::shell::sanitize_ansi(&e.stderr.head_str_lossy(), app.shell_ansi))
+                .unwrap_or_default();
             let truncated = entry.map(|e| e.stdout.omitted_bytes > 0).unwrap_or(false);
             let command = entry.map(|e| e.command.clone()).unwrap_or_default();
             let _cwd = entry
@@ -253,13 +306,36 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                             )
                         }
                     };
-                    app.messages_state
-                        .messages
-                        .add_user_message(include_text, Some(false));
-                    app.shell_store.mark_promoted(*id);
-                    app.messages_state
-                        .toasts
-                        .info("Shell output auto-promoted to context");
+                    if app.session_state.session.is_none() {
+                        app.messages_state.toasts.warning(
+                            "Shell output remains private because no session is bound; select a session before promoting it",
+                        );
+                        return;
+                    }
+                    if !shell_binding_matches_current(app, id.0) {
+                        app.messages_state.toasts.warning(
+                            "Shell output stayed private because the active session or workspace changed",
+                        );
+                        return;
+                    }
+                    match project_for_model(&include_text) {
+                        Ok(include_text) => {
+                            if !stage_remote_shell_projection(app, include_text.clone()) {
+                                app.messages_state
+                                    .messages
+                                    .add_user_message(include_text.clone(), Some(false));
+                                app.pending_shell_promotions.push((
+                                    id.0,
+                                    include_text,
+                                    uuid::Uuid::new_v4(),
+                                ));
+                                app.messages_state.toasts.info(
+                                    "Redacted shell output staged for the next submitted turn",
+                                );
+                            }
+                        }
+                        Err(error) => app.messages_state.toasts.error(&error),
+                    }
                 }
             }
         }
@@ -290,8 +366,32 @@ pub(crate) fn handle_shell_include(
 ) {
     use crate::shell::types::{ShellCommandId, ShellPromotionMode};
 
+    if app.observer.blocks_prompt_submit() {
+        app.messages_state
+            .toasts
+            .warning("Observer sessions cannot promote shell output into model context");
+        return;
+    }
+    if app.session_state.session.is_none() {
+        app.messages_state
+            .toasts
+            .warning("Select a session before promoting shell output; the output remains private");
+        return;
+    }
     let cmd_id = ShellCommandId(id);
     if let Some(entry) = app.shell_store.get(cmd_id) {
+        if !shell_binding_matches_current(app, id) {
+            app.messages_state
+                .toasts
+                .warning("Shell output cannot be promoted into a different session or workspace");
+            return;
+        }
+        if entry.status != crate::shell::types::ShellStatus::Exited {
+            app.messages_state
+                .toasts
+                .error("Shell output can only be promoted after the command exits");
+            return;
+        }
         let command = entry.command.clone();
         let cwd = entry.cwd.clone();
         let exit_code = entry.exit_code;
@@ -406,13 +506,22 @@ pub(crate) fn handle_shell_include(
                 }
             }
         };
-        app.shell_store.mark_promoted(cmd_id);
-        app.messages_state
-            .messages
-            .add_user_message(include_text, Some(false));
-        app.messages_state
-            .toasts
-            .info("Shell output included in context");
+        match project_for_model(&include_text) {
+            Ok(include_text) => {
+                if stage_remote_shell_projection(app, include_text.clone()) {
+                    return;
+                }
+                app.messages_state
+                    .messages
+                    .add_user_message(include_text.clone(), Some(false));
+                app.pending_shell_promotions
+                    .push((id, include_text, uuid::Uuid::new_v4()));
+                app.messages_state
+                    .toasts
+                    .info("Redacted shell output staged for the next submitted turn");
+            }
+            Err(error) => app.messages_state.toasts.error(&error),
+        }
     } else {
         app.messages_state
             .toasts
@@ -423,8 +532,26 @@ pub(crate) fn handle_shell_include(
 pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
     use crate::shell::types::ShellCommandId;
 
+    if app.observer.blocks_prompt_submit() {
+        app.messages_state
+            .toasts
+            .warning("Observer sessions cannot submit shell output to a model");
+        return;
+    }
     let cmd_id = ShellCommandId(id);
     if let Some(entry) = app.shell_store.get(cmd_id) {
+        if app.session_state.session.is_some() && !shell_binding_matches_current(app, id) {
+            app.messages_state
+                .toasts
+                .warning("Shell output cannot be submitted from a different session or workspace");
+            return;
+        }
+        if entry.status != crate::shell::types::ShellStatus::Exited {
+            app.messages_state
+                .toasts
+                .error("Shell output can only be promoted after the command exits");
+            return;
+        }
         let command = entry.command.clone();
         let cwd = entry.cwd.clone();
         let exit_code = entry.exit_code;
@@ -443,17 +570,219 @@ pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
             question,
             digest.render()
         );
-        app.shell_store.mark_promoted(cmd_id);
-        app.messages_state
-            .messages
-            .add_user_message(include_text, Some(false));
-        app.messages_state
-            .toasts
-            .info("Shell output and question included in context");
+        match project_for_model(&include_text) {
+            Ok(include_text) => {
+                submit_shell_ask(app, id, include_text);
+            }
+            Err(error) => app.messages_state.toasts.error(&error),
+        }
     } else {
         app.messages_state
             .toasts
             .error(&format!("Shell command {} not found", id));
+    }
+}
+
+fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+
+    if let Some(client) = app.core_client.clone() {
+        let Some(session_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) else {
+            app.prompt_state.prompt.set_text(text);
+            app.messages_state
+                .toasts
+                .warning("Select a session before asking about shell output; evidence remains in the composer");
+            return;
+        };
+        let Some(tx) = app.tui_cmd_tx.clone() else {
+            app.prompt_state.prompt.set_text(text);
+            app.messages_state
+                .toasts
+                .error("Cannot submit shell question: TUI command channel is unavailable");
+            return;
+        };
+        let submitted_text = text.clone();
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionPromptSubmit {
+                session_id,
+                text,
+                plan_mode: app.agent_state.plan_mode,
+            },
+        );
+        app.task_registry
+            .spawn(TuiTaskKind::Command, "shell_ask_submit", async move {
+                let error = match client.request(request).await {
+                    Ok(CoreResponse::Ack) => None,
+                    Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
+                    Ok(_) => Some("unexpected response to shell question".to_string()),
+                    Err(error) => Some(error.to_string()),
+                };
+                let _ = send_tui(
+                    &tx,
+                    app::TuiCommand::ShellAskSubmitted {
+                        id,
+                        text: submitted_text,
+                        error,
+                    },
+                );
+            });
+        return;
+    }
+
+    if let Some(tx) = app.remote_send_tx.as_ref() {
+        match tx.try_send(crate::protocol::tui::TuiMessage::Input { text }) {
+            Ok(()) => {
+                let _ = id;
+                app.messages_state
+                    .toasts
+                    .info("Redacted shell question sent; remote session acceptance is pending");
+            }
+            Err(error) => {
+                app.messages_state.toasts.error(&format!(
+                    "Shell question was not submitted; retry when the remote connection is ready: {error}"
+                ));
+            }
+        }
+        return;
+    }
+
+    app.prompt_state.prompt.set_text(text);
+    app.messages_state
+        .toasts
+        .error("Cannot submit shell question without a session connection; evidence remains in the composer");
+}
+
+pub(crate) fn apply_shell_ask_submitted(
+    app: &mut app::App,
+    id: u64,
+    text: String,
+    error: Option<String>,
+) {
+    if let Some(error) = error {
+        if app.prompt_state.prompt.get_text().is_empty() {
+            app.prompt_state.prompt.set_text(text);
+        }
+        app.messages_state
+            .toasts
+            .error(&format!("Shell question was not accepted: {error}"));
+        return;
+    }
+    app.shell_store
+        .mark_promoted(crate::shell::types::ShellCommandId(id));
+    if app.prompt_state.prompt.get_text() == text {
+        app.prompt_state.prompt.clear();
+    }
+    app.messages_state
+        .toasts
+        .info("Redacted shell output and question accepted for the session");
+}
+
+/// Apply the canonical model-target redaction hook to every human-shell
+/// promotion mode. Human promotion fails closed when the hook cannot produce
+/// an applied state, regardless of the general shell-output redaction setting.
+fn project_for_model(text: &str) -> Result<String, String> {
+    use crate::shell::projection::RedactionState;
+    use crate::shell::projector::{
+        apply_redaction_hook, ProjectionKind, ProjectionResult, ProjectionTarget,
+    };
+
+    const MAX_PROMOTION_BYTES: usize = 32 * 1024;
+    const TRUNCATION_MARKER: &str = "\n[human-shell promotion truncated]";
+    const MAX_SOURCE_BYTES: usize = 2 * 1024 * 1024;
+    if text.len() > MAX_SOURCE_BYTES {
+        return Err(
+            "Shell output was not promoted because its source exceeded the safe projection limit"
+                .to_string(),
+        );
+    }
+    let sanitized = crate::shell::sanitize_ansi(text, crate::config::schema::AnsiMode::Strip);
+    if sanitized.len() > MAX_SOURCE_BYTES {
+        return Err(
+            "Shell output was not promoted because its source exceeded the safe projection limit"
+                .to_string(),
+        );
+    }
+    let mut projection = ProjectionResult::empty("human-shell-promotion", ProjectionKind::Raw);
+    // Redact the complete bounded source before applying the smaller model
+    // budget. This prevents a secret that straddles the output boundary from
+    // escaping as a truncated, unmatched prefix.
+    projection.text = sanitized;
+    projection.output_bytes = projection.text.len();
+    apply_redaction_hook(&mut projection, ProjectionTarget::ModelContext);
+    if !matches!(
+        projection.redaction,
+        RedactionState::Applied { .. } | RedactionState::AppliedNoMatches
+    ) {
+        return Err("Shell output was not promoted because model redaction failed".to_string());
+    }
+    if projection.text.len() > MAX_PROMOTION_BYTES {
+        let mut end = MAX_PROMOTION_BYTES - TRUNCATION_MARKER.len();
+        while !projection.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        projection.text.truncate(end);
+        projection.text.push_str(TRUNCATION_MARKER);
+    }
+    Ok(projection.text)
+}
+
+/// The WebSocket TUI protocol accepts only a prompt string, not a separate
+/// staged-context DTO. Put approved shell evidence in the composer so the
+/// user's next remote input actually carries it; never represent the outbound
+/// queue write as owner acknowledgement or mark the run promoted here.
+fn stage_remote_shell_projection(app: &mut app::App, text: String) -> bool {
+    let remote_tui = matches!(
+        app.ui_state.mode,
+        crate::tui::app::state::AppMode::RemoteCore { .. }
+    ) && app.remote_send_tx.is_some();
+    if !remote_tui {
+        return false;
+    }
+    if app.prompt_state.prompt.get_text().is_empty() {
+        app.prompt_state.prompt.set_text(text);
+        app.messages_state.toasts.info(
+            "Redacted shell evidence is in the composer; submit it to send it to the remote session",
+        );
+    } else {
+        app.messages_state.toasts.warning(
+            "Remote session cannot stage shell context separately; existing composer text was kept",
+        );
+    }
+    true
+}
+
+#[cfg(test)]
+mod promotion_tests {
+    use super::project_for_model;
+
+    #[test]
+    fn human_promotion_redacts_credentials_before_context_insertion() {
+        let projected = project_for_model(
+            "command output: Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+        )
+        .unwrap();
+        assert!(projected.contains("[REDACTED:bearer-token]"));
+        assert!(!projected.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
+    }
+
+    #[test]
+    fn human_promotion_is_bounded() {
+        let projected = project_for_model(&"x".repeat(64 * 1024)).unwrap();
+        assert!(projected.len() <= 32 * 1024);
+        assert!(projected.ends_with("[human-shell promotion truncated]"));
+    }
+
+    #[test]
+    fn human_promotion_redacts_secret_straddling_model_limit() {
+        let secret = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let text = format!(
+            "{} Authorization: Bearer {} trailing",
+            "x".repeat(32 * 1024 - 40),
+            secret
+        );
+        let projected = project_for_model(&text).unwrap();
+        assert!(!projected.contains(secret));
     }
 }
 

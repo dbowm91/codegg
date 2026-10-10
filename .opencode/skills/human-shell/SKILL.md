@@ -31,11 +31,12 @@ land; the output projection modules below do not imply either capability.
 | Input | Meaning |
 |-------|---------|
 | `!command` | Run command, store output ephemerally (model never sees it) |
-| `!!command` | Run command, auto-promote output into conversation |
+| `!!command` | Run command, stage bounded/redacted output for the next submitted turn when configured |
 | `\!command` | Escape hatch — becomes literal chat text starting with `!`, never runs (`src/shell/types.rs:127`) |
 | `/shell-list` | Show recent shell commands with status |
 | `/shell-show <id\|last>` | Show stored output for a command |
-| `/shell-include <id\|last> [--tail N\|--stdout\|--stderr\|--summary\|all]` | Promote a stored command's output into context |
+| `/shell-include <id\|last> [--tail N\|--stdout\|--stderr\|--summary\|all]` | Stage bounded/redacted output for the next submitted turn |
+| `/shell-ask <id\|last> <question>` | Submit one question and redacted evidence to the bound session |
 | `/shell-expand <id\|last> stdout\|stderr [start..end]` | Expand a byte/line region of a stored output |
 | `/shell-rerun <id\|last>` | Re-execute a previous command |
 | `/shell-kill <id\|last>` | Abort a running command |
@@ -53,13 +54,15 @@ land; the output projection modules below do not imply either capability.
    where `<status>` is `done exit=N X.Xs`, `running X.Xs`, `timeout Xs`,
    `killed X.Xs`, or `failed`, plus a ` [promoted]` marker once the entry has
    been promoted (`src/tui/commands/shell.rs:567-574`)
-9. Output is NOT added to the model's context
+9. `!` output is NOT added to model context. Explicit promotions use the shared
+   redactor, are capped at 32 KiB, and are sent only with a user-submitted turn.
 
 ## Promotion Model
 
 - `!cmd` → `ShellCapturePolicy::StoreEphemeral`
-- `!!cmd` → `ShellCapturePolicy::StoreAndPromote`
-- `/shell-include <id>` → Promotes an existing ephemeral entry into context
+- `!!cmd` → `ShellCapturePolicy::StoreAndPromote` when
+  `human_shell.auto_promote_bangbang` is enabled; otherwise the output stays private
+- `/shell-include <id>` → Stages an existing ephemeral entry for the next turn
 
 **Both keep `origin: ShellOrigin::HumanEphemeral`**
 (`src/tui/commands/shell.rs:66`). `promote_after` only selects the capture
@@ -144,12 +147,14 @@ streamed length. The head/tail split is not a 3-way split of the budget.
 `default_timeout_secs` defaults to 300 (`DEFAULT_TIMEOUT_SECS`,
 `src/shell/types.rs:104`) and is capped at 1 hour by config validation.
 
-`auto_promote_bangbang` is currently **inert**: it is parsed and defaults to
-`true` (`crates/codegg-config/src/schema.rs:2995`), but nothing reads it.
-`!!` promotion is unconditional — `promote_after` is fixed by
-`classify_prompt_submission` at parse time and threaded straight to
-`spawn_human_shell`. Do not assume setting it to `false` disables `!!`
-promotion; wire it up in `src/tui/app/prompt_turn.rs` first.
+`enabled`, `default_timeout_secs`, `confirm_dangerous`, `ansi`, and
+`auto_promote_bangbang` are resolved by the TUI at construction and config
+reload. Human model-context output always strips ANSI, applies the shared
+redactor, and is capped at 32 KiB. `!!` and `/shell-include` stage a user
+message for the next local turn; only the daemon's `Ack` changes the history
+entry's `promoted` flag. `/shell-ask` uses the session-scoped prompt-submit
+request and marks success only after its `Ack`. A remote TUI outbound queue
+does not itself prove server acceptance.
 
 ## Command Routing (agent bash, not human shell)
 
@@ -206,3 +211,18 @@ were removed rather than guessed. The earlier bounded-storage correction
 stands: `BoundedOutput` retains 512 KiB of head+tail, not the full 1 MB
 budget; the middle is dropped and counted in `omitted_bytes`, and eviction
 is oldest-first via `VecDeque::pop_front` (`src/shell/store.rs:253-255`).
+
+Re-verified 2026-10-10 against the human execution corrective work: the TUI
+now reads `enabled`, `default_timeout_secs`, `auto_promote_bangbang`, and
+`ansi` during construction and config reload. `!!` stages only after a
+successful, redacted projection; an accepted turn submit marks it promoted.
+Promotion requires a bound non-observer session; shell-cell command and output
+previews are excluded from provider context.
+`/shell-ask` uses `SessionPromptSubmit` only when a session is bound. Remote
+queue acceptance is explicitly not represented as session acceptance.
+Human-shell promotion always applies the shared redactor and a 32 KiB bound;
+the general projection `redact_model_visible_output = "off"` setting cannot
+disable it. A pending staged message currently lives in the active TUI until
+the next accepted turn. WebSocket TUI transport places approved evidence in
+an empty composer because it has no separate staged-context request; it
+preserves existing draft text and does not treat queue delivery as acceptance.

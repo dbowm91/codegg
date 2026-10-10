@@ -1687,6 +1687,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellAsk { id, question } => {
             handle_shell_ask(app, id, question);
         }
+        TuiCommand::ShellAskSubmitted { id, text, error } => {
+            crate::tui::commands::shell::apply_shell_ask_submitted(app, id, text, error);
+        }
+        TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
+            app.apply_shell_promotions_submitted(&promotions, error);
+        }
         TuiCommand::ShellExpand { id, stream, range } => {
             handle_shell_expand(app, id, stream, range);
         }

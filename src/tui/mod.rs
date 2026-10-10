@@ -132,15 +132,81 @@ mod shell_dispatch_tests {
         ShellCapturePolicy, ShellCommandId, ShellEnvPolicy, ShellOrigin, ShellRequest,
     };
     use crate::tui::app::App;
+    use crate::tui::app::TuiCommand;
     use crate::tui::commands::shell::{
-        handle_shell_ask, handle_shell_include, handle_shell_kill, handle_shell_list,
-        handle_shell_show,
+        handle_run_human_shell, handle_shell_ask, handle_shell_include, handle_shell_kill,
+        handle_shell_list, handle_shell_show,
     };
     use crate::tui::components::messages::MessageRole;
     use std::time::Duration;
 
+    struct CapturingTurnClient(
+        tokio::sync::mpsc::UnboundedSender<crate::protocol::core::CoreRequest>,
+    );
+
+    #[async_trait::async_trait]
+    impl crate::core::CoreClient for CapturingTurnClient {
+        async fn request(
+            &self,
+            request: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
+        ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+            let _ = self.0.send(request.payload);
+            Ok(crate::protocol::core::CoreResponse::Ack)
+        }
+
+        fn subscribe(
+            &self,
+        ) -> tokio::sync::mpsc::Receiver<
+            crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+        > {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
     fn make_test_app() -> App {
-        App::new_for_testing("/tmp".into())
+        let mut app = App::new_for_testing("/tmp".into());
+        app.session_state.session = Some(crate::session::Session {
+            id: "shell-test-session".into(),
+            project_id: "/tmp".into(),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+        app
+    }
+
+    #[test]
+    fn disabled_human_shell_refuses_direct_run_command() {
+        let mut app = make_test_app();
+        app.shell_enabled = false;
+        handle_run_human_shell(
+            &mut app,
+            "echo must-not-run".to_string(),
+            false,
+            std::env::temp_dir(),
+        );
+        assert!(app.shell_store.list_recent(1).is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("disabled by configuration")));
+    }
+
+    #[test]
+    fn private_shell_cell_previews_never_enter_provider_context() {
+        let mut app = make_test_app();
+        app.messages_state
+            .messages
+            .add_shell_cell(1, "printf secret", "/tmp");
+        app.messages_state.messages.update_shell_cell(1, |update| {
+            update.stdout_preview = Some("private-output-secret".into());
+            update.stderr_preview = Some("private-stderr-secret".into());
+            update.status = Some("exited".into());
+        });
+
+        let provider_context = format!("{:?}", app.build_provider_context());
+        assert!(!provider_context.contains("printf secret"));
+        assert!(!provider_context.contains("private-output-secret"));
+        assert!(!provider_context.contains("private-stderr-secret"));
     }
 
     fn insert_completed_entry(
@@ -167,6 +233,7 @@ mod shell_dispatch_tests {
         let exit = exit_code.unwrap_or(0);
         app.shell_store
             .mark_exited(cmd_id, Some(exit), Duration::from_secs(1));
+        crate::tui::commands::shell::capture_shell_binding(app, id);
     }
 
     fn get_toasts(app: &App) -> Vec<String> {
@@ -228,6 +295,36 @@ mod shell_dispatch_tests {
     }
 
     #[test]
+    fn shell_include_without_session_keeps_output_private() {
+        let mut app = make_test_app();
+        app.session_state.session = None;
+        insert_completed_entry(&mut app, 1, "echo private", b"private", b"", Some(0));
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+
+        assert!(get_user_messages(&app).is_empty());
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("session before promoting")));
+    }
+
+    #[test]
+    fn shell_include_after_session_switch_keeps_output_private() {
+        let mut app = make_test_app();
+        insert_completed_entry(&mut app, 1, "echo old session", b"old-output", b"", Some(0));
+        app.session_state.session.as_mut().unwrap().id = "new-session".into();
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+
+        assert!(get_user_messages(&app).is_empty());
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("different session")));
+    }
+
+    #[test]
     fn shell_include_full_mode_promotes_output() {
         let mut app = make_test_app();
         insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
@@ -241,13 +338,153 @@ mod shell_dispatch_tests {
             msgs.iter().any(|m| m.contains("hello")),
             "should include stdout in promoted message, got: {msgs:?}"
         );
+        let provider_context = app.build_provider_context();
+        let staged_user_text: Vec<&str> = provider_context
+            .iter()
+            .flat_map(|message| match message {
+                crate::provider::Message::User { content } => content
+                    .iter()
+                    .filter_map(|part| match part {
+                        crate::provider::ContentPart::Text { text } if text.contains("hello") => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(
+            staged_user_text.len(),
+            1,
+            "the staged output appears exactly once in provider-facing context"
+        );
         let toasts = get_toasts(&app);
         assert!(
-            toasts.iter().any(|t| t.contains("included")),
-            "should show success toast, got: {toasts:?}"
+            toasts.iter().any(|t| t.contains("staged")),
+            "should show staging toast, got: {toasts:?}"
         );
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
-        assert!(entry.promoted, "entry should be marked as promoted");
+        assert!(!entry.promoted, "staging is not daemon acceptance");
+        assert_eq!(app.pending_shell_promotions.len(), 1);
+        assert_eq!(app.pending_shell_promotions[0].0, 1);
+        let receipt = (app.pending_shell_promotions[0].2, 1);
+        app.apply_shell_promotions_submitted(&[receipt], Some("busy".into()));
+        assert!(!app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+        assert_eq!(app.pending_shell_promotions.len(), 1);
+        app.apply_shell_promotions_submitted(&[receipt], None);
+        assert!(app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+        assert!(app.pending_shell_promotions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn accepted_turn_carries_one_redacted_shell_projection_to_provider_context() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            1,
+            "echo accepted",
+            b"provider-shell-marker Authorization: Bearer secret-value-1234567890\n",
+            b"",
+            Some(0),
+        );
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
+        let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
+        app.tui_cmd_tx = Some(tui_tx);
+
+        app.dispatch_turn_submit_request("next user turn".into());
+
+        let request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("turn request arrives")
+            .expect("captured request");
+        let wire = serde_json::to_string(&request).expect("serialize provider-facing request");
+        assert_eq!(wire.matches("provider-shell-marker").count(), 1);
+        assert!(wire.contains("[REDACTED:bearer-token]"));
+        assert!(!wire.contains("secret-value-1234567890"));
+        assert!(matches!(
+            request,
+            crate::protocol::core::CoreRequest::TurnSubmit { .. }
+        ));
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("acceptance completion arrives")
+            .expect("completion command")
+        {
+            TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
+                assert!(error.is_none());
+                app.apply_shell_promotions_submitted(&promotions, error);
+            }
+            other => panic!("unexpected completion command: {other:?}"),
+        }
+        assert!(app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
+    }
+
+    #[tokio::test]
+    async fn shell_ask_submits_one_question_turn_with_redacted_evidence() {
+        let mut app = make_test_app();
+        insert_completed_entry(
+            &mut app,
+            2,
+            "echo ask",
+            b"ask-shell-marker Authorization: Bearer ask-secret-value-1234567890\n",
+            b"",
+            Some(0),
+        );
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
+        let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
+        app.tui_cmd_tx = Some(tui_tx);
+
+        handle_shell_ask(&mut app, 2, "explain this result".into());
+
+        let request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("ask request arrives")
+            .expect("captured request");
+        let text = match request {
+            crate::protocol::core::CoreRequest::SessionPromptSubmit { text, .. } => text,
+            other => panic!("expected one session prompt submit, got {other:?}"),
+        };
+        assert_eq!(text.matches("ask-shell-marker").count(), 1);
+        assert!(text.contains("explain this result"));
+        assert!(text.contains("[REDACTED:bearer-token]"));
+        assert!(!text.contains("ask-secret-value-1234567890"));
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("acceptance completion arrives")
+            .expect("completion command")
+        {
+            TuiCommand::ShellAskSubmitted { id: 2, text, error } => {
+                assert!(error.is_none());
+                crate::tui::commands::shell::apply_shell_ask_submitted(&mut app, 2, text, error);
+            }
+            other => panic!("unexpected completion command: {other:?}"),
+        }
+        assert!(app.shell_store.get(ShellCommandId(2)).unwrap().promoted);
+    }
+
+    #[test]
+    fn remote_shell_include_places_evidence_in_composer_without_claiming_acceptance() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        insert_completed_entry(&mut app, 1, "echo remote", b"remote-output\n", b"", Some(0));
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+
+        let composer = app.prompt_state.prompt.get_text();
+        assert!(composer.contains("remote-output"));
+        assert!(get_user_messages(&app)
+            .iter()
+            .all(|message| !message.contains("remote-output")));
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(!app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
     }
 
     #[test]
@@ -336,17 +573,11 @@ mod shell_dispatch_tests {
             Some(101),
         );
         handle_shell_ask(&mut app, 1, "why did this fail?".to_string());
-        let msgs = get_user_messages(&app);
-        assert!(
-            msgs.iter().any(|m| m.contains("why did this fail?")),
-            "should include question, got: {msgs:?}"
-        );
-        assert!(
-            msgs.iter().any(|m| m.contains("cargo test")),
-            "should include command, got: {msgs:?}"
-        );
+        let prompt = app.prompt_state.prompt.get_text();
+        assert!(prompt.contains("why did this fail?"), "prompt: {prompt}");
+        assert!(prompt.contains("cargo test"), "prompt: {prompt}");
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
-        assert!(entry.promoted, "entry should be marked as promoted");
+        assert!(!entry.promoted, "failed submit must not claim promotion");
     }
 
     #[test]
@@ -405,7 +636,12 @@ mod shell_dispatch_tests {
             "each /shell-include creates a new message"
         );
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
-        assert!(entry.promoted, "entry should remain promoted");
+        assert!(!entry.promoted, "entry awaits turn acceptance");
+        assert_eq!(app.pending_shell_promotions.len(), 2);
+        assert!(app
+            .pending_shell_promotions
+            .iter()
+            .all(|(id, _, _)| *id == 1));
     }
 
     #[test]
@@ -487,11 +723,13 @@ mod shell_dispatch_tests {
         );
         handle_shell_ask(&mut app, 1, "fix this error".to_string());
         let msgs = get_user_messages(&app);
-        let included = msgs.iter().find(|m| m.contains("fix this error")).unwrap();
+        assert!(msgs.iter().all(|m| !m.contains("fix this error")));
+        let included = app.prompt_state.prompt.get_text();
         assert!(
             included.contains("Exit code: 1"),
-            "should show actual exit code 1, got: {included}"
+            "unbound ask should retain actual exit code 1 in composer, got: {included}"
         );
+        assert!(included.contains("fix this error"));
     }
 
     #[test]

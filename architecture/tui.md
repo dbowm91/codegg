@@ -435,13 +435,19 @@ through the TUI `CoreClient`.
   `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
   `/terminal-remove [handle]`.
 - **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
-  to the process), `Esc` unfocuses, `Esc` again closes with detach.
-  The raw `Esc` byte is never forwarded and a prompt is never submitted
-  from terminal focus (`classify_key`).
-- **Bounds**: 64 KiB scrollback window per view (matches the M002
+  to the process), `Ctrl-]` leaves focus, and `Esc` closes with detach
+  while viewing. Literal `Esc` is forwarded while focused; focused keys
+  never submit a prompt.
+- **Bounds**: 64 KiB retained transport history per view (matches the M002
   default read), ≤16 views (matches the per-client attachment cap),
-  32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
-  constants). Rapid input coalesces; rapid resize is last-wins.
+  32 KiB per input write, and an interpreted 300×120 VT screen. Rapid
+  input coalesces; rapid resize is last-wins and follows the outer TUI
+  viewport.
+- **Screen rendering**: incremental `vt100` state interprets cursor
+  movement, erasure, SGR, CR/LF, wrapping and alternate screens. Only
+  bounded cell text/styles reach Ratatui; child escape sequences never
+  reach the host terminal. A sequence gap resets VT state and labels the
+  screen incomplete until the view is removed.
 - **Reconnect/exit**: transport reconnect marks live views
   reconnecting with scrollback retained (`on_projection_reconnect`);
   re-attach resumes from the last cursor. Process exit renders the
@@ -743,7 +749,9 @@ The `Terminal` dialog renders one interactive terminal view (M003): an
 projection of the M002 protocol, not a PTY widget: headers describe
 link/focus/size/cursor state, output shows the newest bounded lines,
 and keyboard bytes reach the process only under explicit focus
-(`i` focuses, `Esc` unfocuses, `Esc` again closes with detach).
+(`i` focuses, `Ctrl-]` unfocuses, literal `Esc` reaches the PTY, and `Esc`
+while viewing closes with detach). VT controls are interpreted into a
+bounded 300×120 screen; raw escape bytes are never passed to Ratatui.
 
 ### DialogType (`src/tui/components/component.rs:22`)
 
@@ -1497,3 +1505,9 @@ arms), `TuiCommand` (203) and `InputAction` (50) counts, the 46-variant
 (`check_tui_project_authority.py` scanning `session_state.project_dir` and
 `std::env::current_dir()`; `check_tui_editor_text_authority.py` rejecting
 second text buffers and direct filesystem reads).
+
+Re-verified 2026-10-10 for C003 against `src/tui/interactive_terminal.rs`,
+`src/tui/commands/interactive_terminal.rs`, and the `Terminal` dialog:
+focused Esc is forwarded, Ctrl-] exits focus, the local VT screen is bounded
+to 300x120 and styled through Ratatui, and the dialog viewport drives PTY
+resize. History gaps reset the screen and display a degraded-state notice.

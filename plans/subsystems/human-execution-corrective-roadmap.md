@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C001 and C003 ready; C002 blocked on C001)
+Status: active (C003 closed; C001 corrective pass required; C002 blocked on C001)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -81,6 +81,7 @@ C001–C003 each need an independent closure record including user-visible end-t
 
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
-| C001 | ready | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | pending |
-| C002 | blocked (C001) | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | pending |
-| C003 | ready | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | pending |
+| C001 | corrective pass required | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | `plans/closure/human-execution-corrective/001-status.md`; follow-up C004 |
+| C002 | blocked (C001) | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | pending; C001 authoritative staging contract is incomplete |
+| C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
+| C004 | ready | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Corrective follow-up for C001; C002 remains blocked until C004 closes and C001 is accepted |

@@ -33,6 +33,7 @@ pub enum InfoType {
 pub struct InfoDialog {
     info_type: InfoType,
     lines: Vec<String>,
+    styled_lines: Option<Vec<Line<'static>>>,
     theme: Arc<Theme>,
     scroll: usize,
     custom_footer: Option<String>,
@@ -43,6 +44,7 @@ impl InfoDialog {
         Self {
             info_type,
             lines,
+            styled_lines: None,
             theme,
             scroll: 0,
             custom_footer: None,
@@ -51,6 +53,15 @@ impl InfoDialog {
 
     pub fn set_content(&mut self, lines: Vec<String>) {
         self.lines = lines;
+        self.styled_lines = None;
+        self.scroll = 0;
+    }
+
+    /// Set trusted, already interpreted presentation lines such as the local
+    /// VT screen. This accepts ratatui styles, never raw terminal escapes.
+    pub fn set_styled_content(&mut self, lines: Vec<Line<'static>>) {
+        self.lines.clear();
+        self.styled_lines = Some(lines);
         self.scroll = 0;
     }
 
@@ -166,27 +177,37 @@ impl Component for InfoDialog {
         // viewport from the actual content chunk so scrolling reaches the
         // last line instead of overestimating the available rows.
         let visible_lines = (chunks[1].height as usize).saturating_sub(2);
-        let total_lines = self.lines.len();
+        let total_lines = self
+            .styled_lines
+            .as_ref()
+            .map(Vec::len)
+            .unwrap_or(self.lines.len());
         let max_scroll = total_lines.saturating_sub(visible_lines);
 
         let start_idx = self.scroll.min(max_scroll);
         let end_idx = (start_idx + visible_lines).min(total_lines);
 
-        let display_lines: Vec<Line> = self.lines[start_idx..end_idx]
-            .iter()
-            .map(|s| {
-                Line::from(Span::styled(
-                    s.as_str(),
-                    Style::default().fg(theme.foreground),
-                ))
-            })
-            .collect();
+        let display_lines: Vec<Line> = if let Some(styled_lines) = &self.styled_lines {
+            styled_lines[start_idx..end_idx].to_vec()
+        } else {
+            self.lines[start_idx..end_idx]
+                .iter()
+                .map(|s| {
+                    Line::from(Span::styled(
+                        s.as_str(),
+                        Style::default().fg(theme.foreground),
+                    ))
+                })
+                .collect()
+        };
 
-        let content_para = Paragraph::new(display_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
+        let content_para = Paragraph::new(display_lines)
+            .style(Style::default().fg(theme.foreground))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border)),
+            );
 
         let scroll_indicator = if total_lines > visible_lines {
             format!("Showing {}-{} of {}", start_idx + 1, end_idx, total_lines)
