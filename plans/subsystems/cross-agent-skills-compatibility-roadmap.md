@@ -1,6 +1,6 @@
 # Cross-Agent Skill Compatibility Roadmap
 
-Status: active; M001–M005 implementation and closure review in progress
+Status: closed; M001–M005 closed
 
 Repository research baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09)
 
@@ -61,19 +61,19 @@ A portable core parses standard frontmatter; vendor adapters may provide narrowl
 closed Runtime Assets M001–M004 + Plugin Ecosystem passive contributions
         |
         v
-M001 truthful activation + parser/contract baseline (ready)
+M001 truthful activation + parser/contract baseline (closed)
         |
         v
-M002 cross-agent paths + canonical deduplication (blocked on M001)
+M002 cross-agent paths + canonical deduplication (closed after M001)
         |
         v
-M003 metadata, missing-name and nested resource compatibility (blocked on M002)
+M003 metadata, missing-name and nested resource compatibility (closed after M002)
         |
         v
-M004 scoped discovery + /skills diagnostics (blocked on M003)
+M004 scoped discovery + /skills diagnostics (closed after M003)
         |
         v
-M005 maintenance skills + lightweight conformance guard (blocked on M004)
+M005 maintenance skills + lightweight conformance guard (closed after M004)
 ~~~
 
 Dependencies are **hard** within this sequence for handoff/closure discipline; repository initialization M001 can research/draft independently, while its M002 publication qualification consumes the stabilized effective-asset refresh interface.
@@ -110,8 +110,8 @@ All five milestone closure records accepted; source roots and behavior documente
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | active | `plans/implementation/cross-agent-skills-compatibility/001-activation-parser-contract.md` | future `plans/closure/cross-agent-skills-compatibility/001-status.md` | closed Runtime Assets only |
-| M002 | blocked | `plans/implementation/cross-agent-skills-compatibility/002-source-roots-and-deduplication.md` | future 002 | hard M001 |
-| M003 | blocked | `plans/implementation/cross-agent-skills-compatibility/003-package-metadata-and-resources.md` | future 003 | hard M002 |
-| M004 | blocked | `plans/implementation/cross-agent-skills-compatibility/004-scoped-discovery-and-inspection.md` | future 004 | hard M003 |
-| M005 | blocked | `plans/implementation/cross-agent-skills-compatibility/005-maintenance-skills-and-validation.md` | future 005 | hard M004 |
+| M001 | closed | `plans/implementation/cross-agent-skills-compatibility/001-activation-parser-contract.md` | `plans/closure/cross-agent-skills-compatibility/001-status.md` | Closed Runtime Assets only; M002 unblocked after accepted closure. |
+| M002 | closed | `plans/implementation/cross-agent-skills-compatibility/002-source-roots-and-deduplication.md` | `plans/closure/cross-agent-skills-compatibility/002-status.md` | Hard M001 satisfied; M003 unblocked after accepted closure. |
+| M003 | closed | `plans/implementation/cross-agent-skills-compatibility/003-package-metadata-and-resources.md` | `plans/closure/cross-agent-skills-compatibility/003-status.md` | Hard M002 satisfied; M004 unblocked after accepted closure. |
+| M004 | closed | `plans/implementation/cross-agent-skills-compatibility/004-scoped-discovery-and-inspection.md` | `plans/closure/cross-agent-skills-compatibility/004-status.md` | Hard M003 satisfied; M005 unblocked after accepted closure. |
+| M005 | closed | `plans/implementation/cross-agent-skills-compatibility/005-maintenance-skills-and-validation.md` | `plans/closure/cross-agent-skills-compatibility/005-status.md` | Hard M004 satisfied; terminal milestone. |

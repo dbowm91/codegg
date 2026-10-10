@@ -1,8 +1,9 @@
 # Cross-Agent Skill Compatibility Milestone 004 — Scoped workspace discovery and skill inspection
 
-Status: blocked (hard prerequisite: prior milestone closure)
+Status: closed
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09; re-audit before execution)
 Source roadmap: `plans/subsystems/cross-agent-skills-compatibility-roadmap.md`, M004
+Closure: `plans/closure/cross-agent-skills-compatibility/004-status.md`
 Long-term references: `plans/000-long-term-specification.md#12-repository-asset-and-harness-interoperability`, `plans/001-terminology-and-domain-model.md`, `plans/003-planning-process.md`
 Applicable ADRs: existing Runtime Assets contracts; ADR required only if public authority boundary changes.
 Primary class: capability
