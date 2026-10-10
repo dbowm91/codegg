@@ -1,7 +1,7 @@
 //! M002: daemon authority for bounded `/init` drafts and guarded publication.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use super::daemon::CoreDaemon;
@@ -303,7 +303,36 @@ fn read_observed_target(
             Err("AGENTS.md exceeds the preview size limit".into())
         }
         Ok(_) => {
-            let bytes = fs::read(target).map_err(|_| "AGENTS.md could not be read for preview")?;
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // FILE_FLAG_OPEN_REPARSE_POINT prevents following a final
+                // symlink/junction after the metadata check above.
+                options.custom_flags(0x0020_0000);
+            }
+            let file = options
+                .open(target)
+                .map_err(|_| "AGENTS.md changed or could not be opened safely")?;
+            let opened_meta = file
+                .metadata()
+                .map_err(|_| "AGENTS.md metadata could not be verified")?;
+            if !opened_meta.is_file() || opened_meta.len() > MAX_TARGET_BYTES {
+                return Err("AGENTS.md is no longer a regular file".into());
+            }
+            let mut bytes = Vec::with_capacity(opened_meta.len() as usize);
+            file.take(MAX_TARGET_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "AGENTS.md could not be read for preview")?;
+            if bytes.len() as u64 > MAX_TARGET_BYTES {
+                return Err("AGENTS.md exceeds the preview size limit".into());
+            }
             let actual = digest(&bytes);
             if Some(actual.as_str()) != expected_digest {
                 return Err("AGENTS.md changed after analysis; regenerate the preview".into());
