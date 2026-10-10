@@ -442,11 +442,22 @@ impl SandboxConfig {
         read_paths.push(target.clone());
         // Tool-compatible read allowances: without these a sandboxed command
         // cannot resolve a hostname, read its own toolchain, or find its
-        // package cache, and every invocation fails. See `policy`.
-        read_paths.extend(policy::tool_read_allowances());
+        // package cache, and every invocation fails. See `policy`. Only
+        // existing paths are kept: the curated sets name locations for both
+        // platforms (`/private/etc` on macOS, `/proc` on Linux), and a rule
+        // naming a missing path is a hard Landlock setup error.
+        read_paths.extend(
+            policy::tool_read_allowances()
+                .into_iter()
+                .filter(|path| path.exists()),
+        );
         let write_paths = if self.mode.is_writable() {
             let mut writes = write_roots;
-            writes.extend(policy::tool_write_allowances());
+            writes.extend(
+                policy::tool_write_allowances()
+                    .into_iter()
+                    .filter(|path| path.exists()),
+            );
             writes
         } else {
             Vec::new()
@@ -454,8 +465,13 @@ impl SandboxConfig {
         // Device nodes are writable under every profile, including
         // ReadOnly: they hold no persistent state, and without them every
         // `> /dev/null` and `2>&1` fails. See `policy::device_write_allowances`.
+        // Same existence filter: e.g. `/dev/console` may not exist on Linux.
         let mut write_paths = write_paths;
-        write_paths.extend(policy::device_write_allowances());
+        write_paths.extend(
+            policy::device_write_allowances()
+                .into_iter()
+                .filter(|path| path.exists()),
+        );
         // Operator-declared denies are config strings; the backend's own
         // sensitive-path set is paths. Both land in one list.
         //
