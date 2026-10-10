@@ -128,7 +128,7 @@ impl SkillIndex {
         }
 
         let mut prompt = String::from("## Available Skills\n\n");
-        prompt.push_str("The following skills are available. Use /skill:<name> to activate a specific skill.\n\n");
+        prompt.push_str("The following skills are available. Activate one with the `skill` tool using `{\"name\": \"<skill-name>\"}`.\n\n");
 
         for skill in &self.skills {
             prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));

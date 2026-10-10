@@ -21,6 +21,11 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 
 **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
 
+The current UI path is a one-shot local shell command. It does not provide an
+interactive PTY or daemon-owned remote execution locality. Treat those as
+separate planned corrective work until their implementation and qualification
+land; the output projection modules below do not imply either capability.
+
 ## Syntax
 
 | Input | Meaning |
@@ -182,6 +187,8 @@ disables one family.
 
 - `architecture/human_shell.md` — full module contract (10-phase projection pipeline: `projection.rs`, `projector.rs`, `redactor.rs`, `rtk.rs`, `projection_bridge.rs`)
 - `.opencode/skills/tui/SKILL.md` — TUI command registration and async dispatch rules
+- `.opencode/skills/tool-execution/SKILL.md` — broker, scheduler, and execution ownership
+- `.opencode/skills/security-hardening/SKILL.md` — containment and authority review
 
 ## Source verification
 

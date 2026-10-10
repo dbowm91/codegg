@@ -20,7 +20,24 @@ impl AssetRegistry {
         project_root: &Path,
         global_roots: &[PathBuf],
     ) -> Self {
-        Self::build_with_plugin_sources(config, project_root, global_roots, &[])
+        Self::build_with_scoped_roots(config, &[project_root.to_path_buf()], global_roots, &[])
+    }
+
+    pub fn build_with_project_roots(
+        config: &AssetDiscoveryConfig,
+        project_roots: &[PathBuf],
+        global_roots: &[PathBuf],
+    ) -> Self {
+        Self::build_with_scoped_roots(config, project_roots, global_roots, &[])
+    }
+
+    pub fn build_for_workspace_scope(
+        config: &AssetDiscoveryConfig,
+        workspace_root: &Path,
+        global_roots: &[PathBuf],
+    ) -> Self {
+        let roots = workspace_skill_roots(workspace_root);
+        Self::build_with_project_roots(config, &roots, global_roots)
     }
 
     pub fn build_with_plugin_sources(
@@ -29,11 +46,58 @@ impl AssetRegistry {
         global_roots: &[PathBuf],
         plugin_sources: &[crate::plugin::PluginAssetPath],
     ) -> Self {
+        Self::build_with_scoped_roots(
+            config,
+            &[project_root.to_path_buf()],
+            global_roots,
+            plugin_sources,
+        )
+    }
+
+    pub fn build_with_project_roots_and_plugins(
+        config: &AssetDiscoveryConfig,
+        project_roots: &[PathBuf],
+        global_roots: &[PathBuf],
+        plugin_sources: &[crate::plugin::PluginAssetPath],
+    ) -> Self {
+        Self::build_with_scoped_roots(config, project_roots, global_roots, plugin_sources)
+    }
+
+    fn build_with_scoped_roots(
+        config: &AssetDiscoveryConfig,
+        project_roots: &[PathBuf],
+        global_roots: &[PathBuf],
+        plugin_sources: &[crate::plugin::PluginAssetPath],
+    ) -> Self {
         let mut all_candidates: Vec<SkillCandidate> = Vec::new();
         let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
         let mut source_summaries: Vec<SourceSummary> = Vec::new();
 
-        let source_roots = resolve_source_roots(config, project_root, global_roots);
+        let mut source_roots = Vec::new();
+        for (scope_rank, root) in project_roots.iter().enumerate() {
+            for mut source_root in resolve_source_roots(config, root, &[]) {
+                if source_root.kind.is_project_local() {
+                    source_root.scope_rank = scope_rank as u32;
+                    source_roots.push(source_root);
+                }
+            }
+        }
+        let global_start = source_roots.len();
+        source_roots.extend(
+            resolve_source_roots(
+                config,
+                project_roots
+                    .first()
+                    .map_or(Path::new(std::path::MAIN_SEPARATOR_STR), PathBuf::as_path),
+                global_roots,
+            )
+            .into_iter()
+            .filter(|root| !root.kind.is_project_local()),
+        );
+        for root in &mut source_roots[global_start..] {
+            root.scope_rank = 100;
+        }
+        source_roots = deduplicate_source_roots(source_roots);
         let mut plugin_roots = Vec::new();
         for source in plugin_sources {
             let path = source
@@ -54,6 +118,8 @@ impl AssetRegistry {
                     canonical_path: root_path,
                     display_path: path,
                     plugin_id: Some(source.plugin_id.clone()),
+                    scope_rank: 0,
+                    alias_paths: Vec::new(),
                 },
                 single_file,
             ));
@@ -66,6 +132,11 @@ impl AssetRegistry {
 
         for source_root in &source_roots {
             let (candidates, diagnostics) = discover_in_root(source_root, config, None);
+            let mut candidates = candidates;
+            for candidate in &mut candidates {
+                candidate.precedence_rank =
+                    source_root.scope_rank * 1000 + source_root.kind.precedence_rank();
+            }
             let discovered = candidates.len()
                 + diagnostics
                     .iter()
@@ -82,6 +153,7 @@ impl AssetRegistry {
                 discovered_count: discovered,
                 valid_count: valid,
                 invalid_count: invalid,
+                alias_paths: source_root.alias_paths.clone(),
             });
             all_candidates.extend(candidates);
             all_diagnostics.extend(diagnostics);
@@ -104,6 +176,7 @@ impl AssetRegistry {
                     .iter()
                     .filter(|d| d.severity == super::diagnostic::Severity::Error)
                     .count(),
+                alias_paths: source_root.alias_paths.clone(),
             });
             all_candidates.extend(candidates);
             all_diagnostics.extend(diagnostics);
@@ -151,9 +224,7 @@ impl AssetRegistry {
             return String::new();
         }
         let mut prompt = String::from("## Available Skills\n\n");
-        prompt.push_str(
-            "The following skills are available. Use /skill:<name> to activate a specific skill.\n\n",
-        );
+        prompt.push_str("The following skills are available. Activate one with the `skill` tool using `{\"name\": \"<skill-name>\"}`.\n\n");
         for skill in &self.effective {
             prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
         }
@@ -181,6 +252,26 @@ impl AssetRegistry {
     }
 }
 
+pub(crate) fn workspace_skill_roots(workspace_root: &Path) -> Vec<PathBuf> {
+    const MAX_ANCESTORS: usize = 16;
+    let Ok(canonical) = workspace_root.canonicalize() else {
+        return vec![workspace_root.to_path_buf()];
+    };
+    let mut roots = Vec::new();
+    let mut current = Some(canonical.as_path());
+    let mut depth = 0;
+    while let Some(path) = current {
+        roots.push(path.to_path_buf());
+        let has_git_boundary = path.join(".git").exists();
+        if has_git_boundary || depth + 1 >= MAX_ANCESTORS {
+            break;
+        }
+        current = path.parent();
+        depth += 1;
+    }
+    roots
+}
+
 fn resolve_source_roots(
     config: &AssetDiscoveryConfig,
     project_root: &Path,
@@ -197,6 +288,8 @@ fn resolve_source_roots(
                     display_path: path,
                     canonical_path: canonical,
                     plugin_id: None,
+                    scope_rank: 0,
+                    alias_paths: Vec::new(),
                 });
             }
         }
@@ -211,6 +304,8 @@ fn resolve_source_roots(
                     display_path: path,
                     canonical_path: canonical,
                     plugin_id: None,
+                    scope_rank: 0,
+                    alias_paths: Vec::new(),
                 });
             }
         }
@@ -228,6 +323,8 @@ fn resolve_source_roots(
                     display_path: path,
                     canonical_path: canonical,
                     plugin_id: None,
+                    scope_rank: 0,
+                    alias_paths: Vec::new(),
                 });
             }
         }
@@ -242,8 +339,21 @@ fn resolve_source_roots(
                     display_path: path,
                     canonical_path: canonical,
                     plugin_id: None,
+                    scope_rank: 0,
+                    alias_paths: Vec::new(),
                 });
             }
+        }
+    }
+
+    for (kind, relative) in [
+        (SourceKind::CursorProject, ".cursor/skills"),
+        (SourceKind::GeminiProject, ".gemini/skills"),
+        (SourceKind::CopilotProject, ".github/skills"),
+        (SourceKind::CodexProject, ".codex/skills"),
+    ] {
+        if config.enabled_sources.contains(&kind) {
+            push_source_root(&mut roots, kind, project_root.join(relative));
         }
     }
 
@@ -257,6 +367,8 @@ fn resolve_source_roots(
                         display_path: path,
                         canonical_path: canonical,
                         plugin_id: None,
+                        scope_rank: 0,
+                        alias_paths: Vec::new(),
                     });
                 }
             }
@@ -270,6 +382,8 @@ fn resolve_source_roots(
                         display_path: path,
                         canonical_path: canonical,
                         plugin_id: None,
+                        scope_rank: 0,
+                        alias_paths: Vec::new(),
                     });
                 }
             }
@@ -283,6 +397,8 @@ fn resolve_source_roots(
                         display_path: path,
                         canonical_path: canonical,
                         plugin_id: None,
+                        scope_rank: 0,
+                        alias_paths: Vec::new(),
                     });
                 }
             }
@@ -296,9 +412,43 @@ fn resolve_source_roots(
                         display_path: path,
                         canonical_path: canonical,
                         plugin_id: None,
+                        scope_rank: 0,
+                        alias_paths: Vec::new(),
                     });
                 }
             }
+        }
+        for (kind, relative) in [
+            (SourceKind::CursorGlobal, ".cursor/skills"),
+            (SourceKind::GeminiGlobal, ".gemini/skills"),
+            (SourceKind::CodexGlobal, ".codex/skills"),
+            (SourceKind::CopilotGlobal, ".copilot/skills"),
+        ] {
+            if config.enabled_sources.contains(&kind) {
+                push_source_root(&mut roots, kind, global_root.join(relative));
+            }
+        }
+        // OpenCode's documented XDG location is ~/.config/opencode/skills.
+        if config.enabled_sources.contains(&SourceKind::OpenCodeGlobal) {
+            push_source_root(
+                &mut roots,
+                SourceKind::OpenCodeGlobal,
+                global_root.join(".config/opencode/skills"),
+            );
+        }
+        if config.enabled_sources.contains(&SourceKind::AgentsGlobal) {
+            push_source_root(
+                &mut roots,
+                SourceKind::AgentsGlobal,
+                global_root.join(".agents/skills"),
+            );
+        }
+        if config.enabled_sources.contains(&SourceKind::ClaudeGlobal) {
+            push_source_root(
+                &mut roots,
+                SourceKind::ClaudeGlobal,
+                global_root.join(".claude/skills"),
+            );
         }
     }
 
@@ -315,13 +465,49 @@ fn resolve_source_roots(
                         display_path: root.clone(),
                         canonical_path: canonical,
                         plugin_id: None,
+                        scope_rank: 0,
+                        alias_paths: Vec::new(),
                     });
                 }
             }
         }
     }
 
-    roots
+    deduplicate_source_roots(roots)
+}
+
+fn deduplicate_source_roots(roots: Vec<SourceRoot>) -> Vec<SourceRoot> {
+    let mut unique: Vec<SourceRoot> = Vec::new();
+    let mut positions = HashMap::new();
+    for root in roots {
+        if let Some(index) = positions.get(&root.canonical_path).copied() {
+            let existing: &mut SourceRoot = &mut unique[index];
+            if existing.display_path != root.display_path {
+                existing.alias_paths.push(root.display_path);
+            }
+            existing.alias_paths.extend(root.alias_paths);
+        } else {
+            positions.insert(root.canonical_path.clone(), unique.len());
+            unique.push(root);
+        }
+    }
+    unique
+}
+
+fn push_source_root(roots: &mut Vec<SourceRoot>, kind: SourceKind, path: PathBuf) {
+    if !path.is_dir() {
+        return;
+    }
+    if let Ok(canonical_path) = path.canonicalize() {
+        roots.push(SourceRoot {
+            kind,
+            display_path: path,
+            canonical_path,
+            plugin_id: None,
+            scope_rank: 0,
+            alias_paths: Vec::new(),
+        });
+    }
 }
 
 fn discover_in_root(
@@ -332,6 +518,7 @@ fn discover_in_root(
     let mut candidates = Vec::new();
     let mut diagnostics = Vec::new();
     let mut skill_count = 0;
+    let mut seen_skill_files = std::collections::HashSet::new();
 
     let entries = match std::fs::read_dir(&source_root.canonical_path) {
         Ok(e) => e,
@@ -377,6 +564,12 @@ fn discover_in_root(
                         continue;
                     }
                 }
+                let Ok(canonical_file) = skill_file.canonicalize() else {
+                    continue;
+                };
+                if !seen_skill_files.insert(canonical_file) {
+                    continue;
+                }
                 match parser::parse_candidate(&skill_file, source_kind, config) {
                     Ok(mut candidate) => {
                         namespace_plugin_candidate(&mut candidate, source_root);
@@ -399,6 +592,12 @@ fn discover_in_root(
                     diagnostics.push(diag);
                     continue;
                 }
+            }
+            let Ok(canonical_file) = path.canonicalize() else {
+                continue;
+            };
+            if !seen_skill_files.insert(canonical_file) {
+                continue;
             }
             let compat_kind = if source_kind == SourceKind::CodeGGProject {
                 SourceKind::CodeGGNativeCompat
@@ -481,7 +680,7 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
     let mut effective = Vec::new();
 
     for (_name, mut group) in by_name {
-        group.sort_by_key(|c| c.source_kind.precedence_rank());
+        group.sort_by_key(|c| c.precedence_rank);
 
         let valid_candidates: Vec<_> = group
             .iter()
@@ -544,7 +743,7 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
             metadata: winner.metadata.clone(),
             resources: winner.resources.clone(),
             body: winner.body.clone(),
-            precedence_rank: winner.source_kind.precedence_rank(),
+            precedence_rank: winner.precedence_rank,
             shadowed_alternatives: shadowed,
         });
     }
@@ -762,6 +961,237 @@ mod tests {
     }
 
     #[test]
+    fn discovers_cursor_gemini_copilot_and_home_global_roots_once() {
+        let project = TempDir::new().unwrap();
+        for (relative, name, kind) in [
+            (
+                ".cursor/skills/cursor/SKILL.md",
+                "cursor",
+                SourceKind::CursorProject,
+            ),
+            (
+                ".gemini/skills/gemini/SKILL.md",
+                "gemini",
+                SourceKind::GeminiProject,
+            ),
+            (
+                ".github/skills/copilot/SKILL.md",
+                "copilot",
+                SourceKind::CopilotProject,
+            ),
+            (
+                ".codex/skills/codex/SKILL.md",
+                "codex",
+                SourceKind::CodexProject,
+            ),
+        ] {
+            let path = project.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                format!("---\nname: {name}\ndescription: fixture\n---\nBody"),
+            )
+            .unwrap();
+            let registry = AssetRegistry::build(&test_config(), project.path(), &[]);
+            assert_eq!(registry.get(name).unwrap().source_kind, kind);
+        }
+
+        let home = TempDir::new().unwrap();
+        let claude = home.path().join(".claude/skills/home-skill/SKILL.md");
+        fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        fs::write(
+            &claude,
+            "---\nname: home-skill\ndescription: home\n---\nBody",
+        )
+        .unwrap();
+        let registry =
+            AssetRegistry::build(&test_config(), project.path(), &[home.path().to_path_buf()]);
+        assert_eq!(
+            registry.get("home-skill").unwrap().source_kind,
+            SourceKind::ClaudeGlobal
+        );
+        for (relative, name, kind) in [
+            (
+                ".agents/skills/codex/SKILL.md",
+                "codex",
+                SourceKind::AgentsGlobal,
+            ),
+            (
+                ".config/opencode/skills/opencode/SKILL.md",
+                "opencode",
+                SourceKind::OpenCodeGlobal,
+            ),
+            (
+                ".codex/skills/codex-user/SKILL.md",
+                "codex-user",
+                SourceKind::CodexGlobal,
+            ),
+            (
+                ".copilot/skills/copilot-user/SKILL.md",
+                "copilot-user",
+                SourceKind::CopilotGlobal,
+            ),
+            (
+                ".cursor/skills/cursor-user/SKILL.md",
+                "cursor-user",
+                SourceKind::CursorGlobal,
+            ),
+            (
+                ".gemini/skills/gemini-user/SKILL.md",
+                "gemini-user",
+                SourceKind::GeminiGlobal,
+            ),
+        ] {
+            let path = home.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                format!("---\nname: {name}\ndescription: home\n---\nBody"),
+            )
+            .unwrap();
+        }
+        let registry =
+            AssetRegistry::build(&test_config(), project.path(), &[home.path().to_path_buf()]);
+        assert_eq!(
+            registry.get("codex").unwrap().source_kind,
+            SourceKind::AgentsGlobal
+        );
+        assert_eq!(
+            registry.get("opencode").unwrap().source_kind,
+            SourceKind::OpenCodeGlobal
+        );
+        assert_eq!(
+            registry.get("codex-user").unwrap().source_kind,
+            SourceKind::CodexGlobal
+        );
+        assert_eq!(
+            registry.get("copilot-user").unwrap().source_kind,
+            SourceKind::CopilotGlobal
+        );
+        assert_eq!(
+            registry.get("cursor-user").unwrap().source_kind,
+            SourceKind::CursorGlobal
+        );
+        assert_eq!(
+            registry.get("gemini-user").unwrap().source_kind,
+            SourceKind::GeminiGlobal
+        );
+    }
+
+    #[test]
+    fn nearest_scoped_project_wins_and_sibling_roots_are_not_loaded() {
+        let repo = TempDir::new().unwrap();
+        let nested = repo.path().join("packages/app");
+        fs::create_dir_all(nested.join(".claude/skills/shared")).unwrap();
+        fs::create_dir_all(repo.path().join(".codegg/skills/shared")).unwrap();
+        fs::create_dir_all(repo.path().join("packages/other/.codegg/skills/sibling")).unwrap();
+        fs::write(
+            nested.join(".claude/skills/shared/SKILL.md"),
+            "---\nname: shared\ndescription: nested\n---\nNested",
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join(".codegg/skills/shared/SKILL.md"),
+            "---\nname: shared\ndescription: parent\n---\nParent",
+        )
+        .unwrap();
+        fs::write(
+            repo.path()
+                .join("packages/other/.codegg/skills/sibling/SKILL.md"),
+            "---\nname: sibling\ndescription: sibling\n---\nSibling",
+        )
+        .unwrap();
+        let registry = AssetRegistry::build_with_project_roots(
+            &test_config(),
+            &[nested.clone(), repo.path().to_path_buf()],
+            &[],
+        );
+        assert_eq!(registry.get("shared").unwrap().body.trim(), "Nested");
+        assert!(registry.get("sibling").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn physical_skill_file_alias_is_parsed_once() {
+        let project = TempDir::new().unwrap();
+        let skills = project.path().join(".codegg/skills");
+        let package = skills.join("original");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("SKILL.md"),
+            "---\nname: original\ndescription: once\n---\nBody",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(package.join("SKILL.md"), skills.join("z-alias.md")).unwrap();
+        let registry = AssetRegistry::build(&test_config(), project.path(), &[]);
+        let skill = registry.get("original").unwrap();
+        assert_eq!(skill.source_kind, SourceKind::CodeGGProject);
+        assert!(skill.shadowed_alternatives.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_source_alias_is_reported_without_duplicate_shadow() {
+        let project = TempDir::new().unwrap();
+        let opencode = project.path().join(".opencode");
+        let package = opencode.join("skills/shared");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("SKILL.md"),
+            "---\nname: shared\ndescription: one physical source\n---\nBody",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&opencode, project.path().join(".agents")).unwrap();
+        let registry = AssetRegistry::build(&test_config(), project.path(), &[]);
+        assert!(registry
+            .get("shared")
+            .unwrap()
+            .shadowed_alternatives
+            .is_empty());
+        assert!(registry.sources.iter().any(|source| {
+            source.kind == SourceKind::AgentsProject && source.alias_paths.len() == 1
+        }));
+    }
+
+    #[test]
+    fn nested_resources_open_through_the_contained_handle() {
+        let project = TempDir::new().unwrap();
+        let package = project.path().join(".agents/skills/nested");
+        fs::create_dir_all(package.join("references")).unwrap();
+        fs::write(
+            package.join("SKILL.md"),
+            "---\nname: nested\ndescription: nested resource\n---\nBody",
+        )
+        .unwrap();
+        fs::write(package.join("references/API.md"), "bounded reference").unwrap();
+        let registry = AssetRegistry::build(&test_config(), project.path(), &[]);
+        let resource = registry
+            .get("nested")
+            .unwrap()
+            .resource_handle("references/API.md", ResourceReadLimits::default())
+            .unwrap();
+        assert_eq!(resource.read_text().unwrap(), "bounded reference");
+    }
+
+    #[test]
+    fn workspace_scope_stops_at_git_boundary_and_is_bounded_without_git() {
+        let repo = TempDir::new().unwrap();
+        let selected = repo.path().join("a/b/c");
+        fs::create_dir_all(&selected).unwrap();
+        fs::create_dir(repo.path().join(".git")).unwrap();
+        let roots = workspace_skill_roots(&selected);
+        assert_eq!(roots.last().unwrap(), repo.path());
+        assert_eq!(roots.len(), 4);
+
+        let no_git = TempDir::new().unwrap();
+        let deep = no_git
+            .path()
+            .join("0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16");
+        fs::create_dir_all(&deep).unwrap();
+        assert_eq!(workspace_skill_roots(&deep).len(), 16);
+    }
+
+    #[test]
     fn already_joined_global_root_discovers_nothing() {
         // Regression guard: `AssetRegistry::build` appends `<vendor>/skills`
         // to each root, so handing it an already-joined `…/codegg/skills`
@@ -913,6 +1343,9 @@ mod tests {
         let registry = AssetRegistry::build(&config, dir.path(), &[]);
         let prompt = registry.build_system_prompt();
         assert!(prompt.contains("prompt"));
+        assert!(prompt.contains("`skill` tool"));
+        assert!(prompt.contains("{\"name\": \"<skill-name>\"}"));
+        assert!(!prompt.contains("/skill:"));
     }
 
     #[test]

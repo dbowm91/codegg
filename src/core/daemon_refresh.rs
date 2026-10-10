@@ -187,9 +187,8 @@ impl CoreDaemon {
         // AssetRegistry expects the configuration directory as the parent of
         // the global CodeGG/foreign-harness roots. The path is configuration
         // data, never an identity or a secret-bearing report field.
-        if let Some(config_dir) = dirs::config_dir() {
-            builder = builder.with_global_root(config_dir);
-        }
+        builder = builder
+            .with_global_roots(crate::agent::asset_context::default_global_discovery_roots());
         builder
             .build()
             .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))
@@ -374,9 +373,8 @@ impl CoreDaemon {
             .with_project_id(project_id)
             .with_workspace_root(runtime.workspace_root.clone())
             .with_session_id(session_id);
-        if let Some(config_dir) = dirs::config_dir() {
-            builder = builder.with_global_root(config_dir);
-        }
+        builder = builder
+            .with_global_roots(crate::agent::asset_context::default_global_discovery_roots());
         let context = builder
             .build()
             .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;

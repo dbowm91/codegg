@@ -130,10 +130,12 @@ impl Tool for SkillProposalTool {
         if proposal.status == crate::skills::promotion::SkillProposalStatus::Validated {
             let config = crate::skills::AssetDiscoveryConfig::default();
             let global_roots: Vec<std::path::PathBuf> =
-                crate::agent::asset_context::default_global_discovery_root()
-                    .into_iter()
-                    .collect();
-            let registry = crate::skills::AssetRegistry::build(&config, &ctx.cwd, &global_roots);
+                crate::agent::asset_context::default_global_discovery_roots();
+            let registry = crate::skills::AssetRegistry::build_for_workspace_scope(
+                &config,
+                &ctx.cwd,
+                &global_roots,
+            );
             let collisions = collision_diagnostics(&registry, &proposal.name.to_lowercase());
             if !collisions.is_empty() {
                 store

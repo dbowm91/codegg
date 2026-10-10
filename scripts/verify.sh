@@ -56,6 +56,9 @@ run_quick() {
     echo "==> python3 scripts/generate_builtin_agents.py --check"
     (cd "$REPO_ROOT" && python3 scripts/generate_builtin_agents.py --check)
 
+    echo "==> python3 scripts/check_skill_guides.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_skill_guides.py)
+
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
     echo "==> ./scripts/check-client-boundary.sh"

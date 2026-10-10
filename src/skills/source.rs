@@ -8,6 +8,10 @@ pub enum SourceKind {
     AgentsProject = 10,
     OpenCodeProject = 20,
     ClaudeProject = 30,
+    CursorProject = 31,
+    GeminiProject = 32,
+    CopilotProject = 33,
+    CodexProject = 34,
     /// Installed plugin contribution; project-native sources outrank it.
     Plugin = 35,
     CodeGGGlobal = 40,
@@ -22,6 +26,10 @@ pub enum SourceKind {
     /// well-known root's skill name; shadowed alternatives are still
     /// recorded for diagnostics.
     Configured = 90,
+    CursorGlobal = 71,
+    GeminiGlobal = 72,
+    CodexGlobal = 73,
+    CopilotGlobal = 74,
 }
 
 impl SourceKind {
@@ -36,6 +44,10 @@ impl SourceKind {
                 | SourceKind::AgentsProject
                 | SourceKind::OpenCodeProject
                 | SourceKind::ClaudeProject
+                | SourceKind::CursorProject
+                | SourceKind::GeminiProject
+                | SourceKind::CopilotProject
+                | SourceKind::CodexProject
                 | SourceKind::Plugin
                 | SourceKind::CodeGGNativeCompat
         )
@@ -48,6 +60,10 @@ impl SourceKind {
                 | SourceKind::AgentsGlobal
                 | SourceKind::OpenCodeGlobal
                 | SourceKind::ClaudeGlobal
+                | SourceKind::CursorGlobal
+                | SourceKind::GeminiGlobal
+                | SourceKind::CodexGlobal
+                | SourceKind::CopilotGlobal
         )
     }
 
@@ -59,6 +75,11 @@ impl SourceKind {
             SourceKind::AgentsProject | SourceKind::AgentsGlobal => "agents",
             SourceKind::OpenCodeProject | SourceKind::OpenCodeGlobal => "opencode",
             SourceKind::ClaudeProject | SourceKind::ClaudeGlobal => "claude",
+            SourceKind::CursorProject | SourceKind::CursorGlobal => "cursor",
+            SourceKind::GeminiProject | SourceKind::GeminiGlobal => "gemini",
+            SourceKind::CopilotProject => "copilot",
+            SourceKind::CodexProject | SourceKind::CodexGlobal => "codex",
+            SourceKind::CopilotGlobal => "copilot",
             SourceKind::Plugin => "plugin",
             // A configured root has no vendor directory name; it is used as-is.
             SourceKind::Configured => "configured",
@@ -74,6 +95,14 @@ impl SourceKind {
                 | SourceKind::OpenCodeGlobal
                 | SourceKind::ClaudeProject
                 | SourceKind::ClaudeGlobal
+                | SourceKind::CursorProject
+                | SourceKind::GeminiProject
+                | SourceKind::CopilotProject
+                | SourceKind::CodexProject
+                | SourceKind::CursorGlobal
+                | SourceKind::GeminiGlobal
+                | SourceKind::CodexGlobal
+                | SourceKind::CopilotGlobal
         )
     }
 }
@@ -85,6 +114,10 @@ pub struct SourceRoot {
     pub display_path: PathBuf,
     #[serde(default)]
     pub plugin_id: Option<String>,
+    #[serde(default)]
+    pub scope_rank: u32,
+    #[serde(default)]
+    pub alias_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +127,8 @@ pub struct SourceSummary {
     pub discovered_count: usize,
     pub valid_count: usize,
     pub invalid_count: usize,
+    #[serde(default)]
+    pub alias_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,10 +152,22 @@ impl Default for AssetDiscoveryConfig {
         enabled_sources.insert(SourceKind::AgentsProject);
         enabled_sources.insert(SourceKind::OpenCodeProject);
         enabled_sources.insert(SourceKind::ClaudeProject);
+        enabled_sources.extend([
+            SourceKind::CursorProject,
+            SourceKind::GeminiProject,
+            SourceKind::CopilotProject,
+            SourceKind::CodexProject,
+        ]);
         enabled_sources.insert(SourceKind::CodeGGGlobal);
         enabled_sources.insert(SourceKind::AgentsGlobal);
         enabled_sources.insert(SourceKind::OpenCodeGlobal);
         enabled_sources.insert(SourceKind::ClaudeGlobal);
+        enabled_sources.extend([
+            SourceKind::CursorGlobal,
+            SourceKind::GeminiGlobal,
+            SourceKind::CodexGlobal,
+            SourceKind::CopilotGlobal,
+        ]);
         enabled_sources.insert(SourceKind::CodeGGNativeCompat);
         enabled_sources.insert(SourceKind::Configured);
 

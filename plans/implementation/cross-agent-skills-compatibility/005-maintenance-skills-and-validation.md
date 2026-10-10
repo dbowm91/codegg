@@ -17,7 +17,7 @@ Hard dependency: M004 accepted closure; the inspector must expose honest package
 
 ## 3. Current implementation evidence
 
-Repository already owns 23 specialized maintenance skills in `.opencode/skills/*/SKILL.md`, aliased through `.agents/skills`, and indexes them in `AGENTS.md`. Important underrepresented disciplines include `scripts/verify.sh`/CI and test qualification, `ToolBroker`/scheduler tool execution ownership, and deterministic sandbox/security-hardening contracts. Existing `human-shell` describes several aspirational fields that should be distinguished from the currently implemented TUI shell; the separate human-shell implementation plans retain ownership of functional changes.
+Repository owns 22 specialized maintenance skills in `.opencode/skills/*/SKILL.md` at this branch baseline, aliased through `.agents/skills`, and indexes them in `AGENTS.md`. Important underrepresented disciplines include `scripts/verify.sh`/CI and test qualification, `ToolBroker`/scheduler tool execution ownership, and deterministic sandbox/security-hardening contracts. Existing `human-shell` describes aspirational locality and PTY capabilities that must be distinguished from the currently implemented one-shot local shell; the separate human-shell implementation plans retain ownership of functional changes.
 
 ## 4. Invariants that must not regress
 

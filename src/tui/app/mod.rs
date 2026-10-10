@@ -4811,9 +4811,7 @@ impl App {
                 let app_config = crate::config::schema::Config::load_or_default();
                 let config = crate::agent::asset_context::asset_discovery_config_from(&app_config);
                 let global_roots: Vec<std::path::PathBuf> =
-                    crate::agent::asset_context::default_global_discovery_root()
-                        .into_iter()
-                        .collect();
+                    crate::agent::asset_context::default_global_discovery_roots();
                 let registry = crate::skills::AssetRegistry::build(
                     &config,
                     project_dir.as_path(),
@@ -4885,6 +4883,85 @@ impl App {
                         .toasts
                         .warning(&format!("Could not load skill proposals: {error}")),
                 }
+            }
+            B::Skills => {
+                let project_dir = self.active_workspace_root().unwrap_or_default();
+                let Some(snapshot) = self.agent_state.snapshot.as_ref() else {
+                    self.messages_state.toasts.info("Skill snapshot is not available yet. Use /reload skills after project assets load.");
+                    return;
+                };
+                if snapshot.context.workspace_root() != project_dir.as_path() {
+                    self.messages_state.toasts.warning("Skill snapshot belongs to another workspace. Refresh project assets before inspecting skills.");
+                    return;
+                }
+                let registry = &snapshot.skills;
+                let query = raw_input
+                    .and_then(|input| input.trim().strip_prefix("/skills"))
+                    .unwrap_or("")
+                    .trim();
+                let mut lines = vec![format!(
+                    "Skills for {}",
+                    project_dir
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                )];
+                let shown = registry.effective.iter().filter(|skill| {
+                    query.is_empty() || skill.normalized_name.contains(&query.to_lowercase())
+                });
+                let matched = registry.effective.iter().any(|skill| {
+                    query.is_empty() || skill.normalized_name.contains(&query.to_lowercase())
+                });
+                if !matched {
+                    lines.push("No effective skills found.".to_string());
+                }
+                for skill in shown {
+                    lines.push(format!(
+                        "- {} [{}] — {}",
+                        skill.name,
+                        skill.source_kind.directory_name(),
+                        skill.description
+                    ));
+                    if !query.is_empty() {
+                        lines.push(format!(
+                            "  digest: {}  precedence: {}",
+                            skill.content_digest.chars().take(12).collect::<String>(),
+                            skill.precedence_rank
+                        ));
+                        for resource in &skill.resources {
+                            lines.push(format!(
+                                "  resource: {} ({} bytes)",
+                                resource.relative_path, resource.size
+                            ));
+                        }
+                    }
+                    for shadow in &skill.shadowed_alternatives {
+                        lines.push(format!(
+                            "  shadowed source: {}",
+                            shadow.source_kind.directory_name()
+                        ));
+                    }
+                }
+                for source in &registry.sources {
+                    if !source.alias_paths.is_empty() {
+                        lines.push(format!(
+                            "{} source root has {} canonical alias(es)",
+                            source.kind.directory_name(),
+                            source.alias_paths.len()
+                        ));
+                    }
+                }
+                for diagnostic in registry.diagnostics.iter().take(64) {
+                    lines.push(format!(
+                        "- {:?}: {}",
+                        diagnostic.severity, diagnostic.reason
+                    ));
+                }
+                lines.push("Use /reload skills to refresh the next asset generation.".to_string());
+                self.open_info_dialog(
+                    crate::tui::components::dialogs::info::InfoType::MemoryResults,
+                    lines,
+                );
             }
             B::SkillProposal => {
                 let argument = raw_input
@@ -4974,9 +5051,7 @@ impl App {
                                 &app_config,
                             );
                             let global_roots: Vec<std::path::PathBuf> =
-                                crate::agent::asset_context::default_global_discovery_root()
-                                    .into_iter()
-                                    .collect();
+                                crate::agent::asset_context::default_global_discovery_roots();
                             let registry = crate::skills::AssetRegistry::build(
                                 &config,
                                 std::path::Path::new(&project_dir),

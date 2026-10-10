@@ -35,9 +35,7 @@ impl SkillIndexCompat {
         // the root is the configuration directory itself — not the
         // already-joined `…/codegg/skills` path, which would double-join.
         let global_roots: Vec<PathBuf> =
-            crate::agent::asset_context::default_global_discovery_root()
-                .into_iter()
-                .collect();
+            crate::agent::asset_context::default_global_discovery_roots();
 
         let app_config = crate::config::schema::Config::load_or_default();
         let config = crate::agent::asset_context::asset_discovery_config_from(&app_config);

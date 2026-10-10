@@ -185,6 +185,7 @@ pub enum BuiltinSlashAction {
     SkillPromote,
     SkillProposals,
     SkillProposal,
+    Skills,
     Goal,
     Plan,
     State,
@@ -612,6 +613,8 @@ impl CommandRegistry {
                 .with_description("Draft one skill proposal from a ready habit (args: habit id)"),
             Command::new("/skill-proposals", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::SkillProposals))
                 .with_description("List skill proposals"),
+            Command::new("/skills", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Skills))
+                .with_description("Inspect effective, shadowed, and invalid project skills"),
             Command::new("/skill-proposal", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::SkillProposal))
                 .with_description("Preview, publish, or reject a skill proposal (args: id | publish id [project|global] | reject id)"),
             Command::new("/goal", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Goal))
@@ -1122,7 +1125,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 153);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 154);
     }
 
     #[test]
@@ -1347,6 +1350,7 @@ mod tests {
             B::SkillPromote,
             B::SkillProposals,
             B::SkillProposal,
+            B::Skills,
             B::Goal,
             B::Plan,
             B::State,

@@ -95,9 +95,10 @@ impl ProjectAssetSnapshotBuilder {
             .flat_map(|plugin| plugin.skills.iter())
             .cloned()
             .collect::<Vec<_>>();
-        let registry = AssetRegistry::build_with_plugin_sources(
+        let scoped_roots = crate::skills::registry::workspace_skill_roots(ctx.workspace_root());
+        let registry = AssetRegistry::build_with_project_roots_and_plugins(
             &crate::agent::asset_context::asset_discovery_config_from(&self.config_doc),
-            ctx.workspace_root(),
+            &scoped_roots,
             &global_root_refs,
             &plugin_sources,
         );

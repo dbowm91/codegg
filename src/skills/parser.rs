@@ -17,6 +17,8 @@ pub(crate) struct PortableFrontmatter {
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(rename = "allowed-tools")]
     pub allowed_tools: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub extension_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -124,13 +126,34 @@ pub fn parse_candidate(
             (name, description, meta)
         }
         _ => {
-            let parsed = validate_portable_document(&raw_content, config)?;
+            let portable_input = if source_kind == SourceKind::ClaudeProject
+                || source_kind == SourceKind::ClaudeGlobal
+            {
+                claude_name_fallback(&raw_content, skill_file)
+                    .unwrap_or_else(|| raw_content.clone())
+            } else {
+                raw_content.clone()
+            };
+            let parsed = validate_portable_document(&portable_input, config)?;
             diagnostics.extend(parsed.diagnostics.clone());
             (parsed.name, parsed.description, parsed.metadata)
         }
     };
 
     let normalized_name = normalize_name(&name, config)?;
+    if source_kind.is_foreign() {
+        let directory_name = skill_file
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if directory_name.to_lowercase() != normalized_name {
+            return Err(Diagnostic::error(
+                "portable skill name must match its package directory",
+                location,
+            ));
+        }
+    }
 
     if description.len() > config.max_description_length {
         diagnostics.push(Diagnostic::warning(
@@ -145,13 +168,14 @@ pub fn parse_candidate(
     let package_root = determine_package_root(skill_file, source_kind);
     let resources = inventory_resources(&package_root, config, &location, &mut diagnostics)?;
 
-    let content_digest = compute_digest(&frontmatter_str, &body);
+    let content_digest = compute_package_digest(&frontmatter_str, &body, &resources);
 
     Ok(SkillCandidate {
         name,
         normalized_name,
         description,
         source_kind,
+        precedence_rank: source_kind.precedence_rank(),
         source_path: skill_file.to_path_buf(),
         package_root,
         content_digest,
@@ -161,6 +185,18 @@ pub fn parse_candidate(
         resources,
         diagnostics,
     })
+}
+
+fn claude_name_fallback(source: &str, skill_file: &Path) -> Option<String> {
+    let (frontmatter, body) = parse_frontmatter(source)?;
+    let raw: RawFrontmatter =
+        codegg_config::parse_yaml("skill frontmatter", frontmatter.as_bytes()).ok()?;
+    if raw.inner.contains_key("name") || !raw.inner.contains_key("description") {
+        return None;
+    }
+    let folder = skill_file.parent()?.file_name()?.to_string_lossy();
+    let quoted = serde_json::to_string(folder.as_ref()).ok()?;
+    Some(format!("---\nname: {quoted}\n{frontmatter}\n---{body}"))
 }
 
 /// Parse and validate a portable skill document in memory.
@@ -207,12 +243,22 @@ pub fn validate_portable_document(
     let name = fm
         .name
         .ok_or_else(|| Diagnostic::error("missing required field: name", location.clone()))?;
+    validate_portable_name(&name).map_err(|reason| Diagnostic::error(reason, location.clone()))?;
     let description = fm.description.ok_or_else(|| {
         Diagnostic::error("missing required field: description", location.clone())
     })?;
     let normalized_name = normalize_name(&name, config)?;
     let mut metadata = fm.metadata;
     let mut diagnostics = Vec::new();
+    let mut extension_fields = fm.extension_fields.into_iter().collect::<Vec<_>>();
+    extension_fields.sort_by(|a, b| a.0.cmp(&b.0));
+    for (key, value) in extension_fields.into_iter().take(32) {
+        diagnostics.push(Diagnostic::warning(
+            format!("unrecognized vendor metadata '{key}' is retained as inert data"),
+            location.clone(),
+        ));
+        metadata.insert(key, value);
+    }
     if let Some(license) = fm.license {
         metadata.insert("license".to_string(), serde_json::Value::String(license));
     }
@@ -247,6 +293,29 @@ pub fn validate_portable_document(
         metadata,
         diagnostics,
     })
+}
+
+fn validate_portable_name(name: &str) -> Result<(), &'static str> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return Err("portable skill name must be 1 to 64 characters");
+    }
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return Err("portable skill name must start with a lowercase letter or digit");
+    }
+    if !bytes[bytes.len() - 1].is_ascii_lowercase() && !bytes[bytes.len() - 1].is_ascii_digit() {
+        return Err("portable skill name must end with a lowercase letter or digit");
+    }
+    if bytes
+        .iter()
+        .any(|b| !b.is_ascii_lowercase() && !b.is_ascii_digit() && *b != b'-')
+    {
+        return Err("portable skill name may contain only lowercase letters, digits, and hyphens");
+    }
+    if name.contains("--") {
+        return Err("portable skill name must not contain consecutive hyphens");
+    }
+    Ok(())
 }
 
 fn has_portable_fields(frontmatter: &str) -> bool {
@@ -327,50 +396,75 @@ fn inventory_resources(
         return Ok(resources);
     }
 
-    let entries = std::fs::read_dir(package_root).map_err(|e| {
-        Diagnostic::error(
-            format!("failed to read package directory: {e}"),
-            location.to_string(),
-        )
-    })?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if name == "SKILL.md" {
-            continue;
-        }
-        if resources.len() >= config.max_resources_per_skill {
-            diagnostics.push(Diagnostic::warning(
-                format!(
-                    "resource inventory truncated at {} items",
-                    config.max_resources_per_skill
-                ),
+    let mut pending = vec![(package_root.to_path_buf(), 0usize)];
+    let mut visited_entries = 0usize;
+    const MAX_DEPTH: usize = 8;
+    const MAX_ENTRIES: usize = 1024;
+    while let Some((directory, depth)) = pending.pop() {
+        let entries = std::fs::read_dir(&directory).map_err(|e| {
+            Diagnostic::warning(
+                format!("failed to read resource directory: {e}"),
                 location.to_string(),
-            ));
-            break;
+            )
+        })?;
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            visited_entries += 1;
+            if visited_entries > MAX_ENTRIES || resources.len() >= config.max_resources_per_skill {
+                diagnostics.push(Diagnostic::warning(
+                    "resource inventory reached its entry limit",
+                    location.to_string(),
+                ));
+                pending.clear();
+                break;
+            }
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if depth >= MAX_DEPTH {
+                    diagnostics.push(Diagnostic::warning(
+                        "resource inventory depth limit reached",
+                        location.to_string(),
+                    ));
+                } else {
+                    pending.push((path, depth + 1));
+                }
+                continue;
+            }
+            if !file_type.is_file() || path.file_name().is_some_and(|name| name == "SKILL.md") {
+                continue;
+            }
+            let name = match path.strip_prefix(package_root).ok().and_then(Path::to_str) {
+                Some(n) => n.replace('\\', "/"),
+                None => continue,
+            };
+            let metadata = entry.metadata().ok();
+            let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
+            let modified_unix_nanos = metadata
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            resources.push(ResourceDescriptor {
+                name,
+                relative_path: path
+                    .strip_prefix(package_root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                size,
+                modified_unix_nanos,
+            });
         }
-        let meta = std::fs::metadata(&path).ok();
-        let size = meta.map(|m| m.len()).unwrap_or(0);
-        let relative = path
-            .strip_prefix(package_root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .to_string();
-        resources.push(ResourceDescriptor {
-            name,
-            relative_path: relative,
-            size,
-        });
     }
-
-    resources.sort_by(|a, b| a.name.cmp(&b.name));
+    resources.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     Ok(resources)
 }
 
@@ -382,6 +476,22 @@ pub fn compute_digest(frontmatter: &str, body: &str) -> String {
     hasher.update(normalized_body.as_bytes());
     let result = hasher.finalize();
     hex::encode(result)
+}
+
+fn compute_package_digest(
+    frontmatter: &str,
+    body: &str,
+    resources: &[ResourceDescriptor],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(compute_digest(frontmatter, body).as_bytes());
+    for resource in resources {
+        hasher.update(resource.relative_path.as_bytes());
+        hasher.update([0]);
+        hasher.update(resource.size.to_le_bytes());
+        hasher.update(resource.modified_unix_nanos.to_le_bytes());
+    }
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
@@ -424,6 +534,26 @@ mod tests {
         let d1 = compute_digest(fm, body_lf);
         let d2 = compute_digest(fm, body_crlf);
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn package_digest_tracks_resource_inventory_changes() {
+        let one = vec![ResourceDescriptor {
+            name: "a.md".into(),
+            relative_path: "references/a.md".into(),
+            size: 10,
+            modified_unix_nanos: 1,
+        }];
+        let changed = vec![ResourceDescriptor {
+            name: "a.md".into(),
+            relative_path: "references/a.md".into(),
+            size: 10,
+            modified_unix_nanos: 2,
+        }];
+        assert_ne!(
+            compute_package_digest("name: x", "Body", &one),
+            compute_package_digest("name: x", "Body", &changed)
+        );
     }
 
     #[test]
@@ -476,7 +606,9 @@ mod tests {
     #[test]
     fn parse_candidate_portable() {
         let dir = TempDir::new().unwrap();
-        let skill_file = dir.path().join("SKILL.md");
+        let skill_dir = dir.path().join("portable-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
         fs::write(
             &skill_file,
             "---\nname: portable-skill\ndescription: A portable skill\nlicense: MIT\n---\nBody",
@@ -487,6 +619,23 @@ mod tests {
         let candidate = parse_candidate(&skill_file, SourceKind::AgentsProject, &config).unwrap();
         assert_eq!(candidate.name, "portable-skill");
         assert!(candidate.metadata.contains_key("license"));
+    }
+
+    #[test]
+    fn portable_validation_rejects_nonconforming_names_but_native_remains_compatible() {
+        let config = test_config();
+        for name in ["Upper", "bad_name", "-edge", "double--dash", "a/../b"] {
+            let source = format!("---\nname: {name:?}\ndescription: portable\n---\nBody");
+            assert!(
+                validate_portable_document(&source, &config).is_err(),
+                "{name}"
+            );
+        }
+        let source = "---\nname: Upper_Native\nversion: 1\n---\nBody";
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("SKILL.md");
+        fs::write(&path, source).unwrap();
+        assert!(parse_candidate(&path, SourceKind::CodeGGNativeCompat, &config).is_ok());
     }
 
     #[test]
@@ -540,7 +689,7 @@ mod tests {
     #[test]
     fn parse_candidate_resources_inventoried() {
         let dir = TempDir::new().unwrap();
-        let skill_dir = dir.path().join("myskill");
+        let skill_dir = dir.path().join("rsrc");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -563,9 +712,62 @@ mod tests {
     }
 
     #[test]
+    fn nested_resources_are_inventoried_and_vendor_hints_stay_data() {
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("nested");
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: nested\ndescription: Nested\ncustom-mode: execute\n---\nBody",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("references/API.md"), "Reference").unwrap();
+        fs::write(skill_dir.join("scripts/run.sh"), "echo inert").unwrap();
+        let candidate = parse_candidate(
+            &skill_dir.join("SKILL.md"),
+            SourceKind::AgentsProject,
+            &test_config(),
+        )
+        .unwrap();
+        assert!(candidate
+            .resources
+            .iter()
+            .any(|resource| resource.relative_path == "references/API.md"));
+        assert!(candidate
+            .resources
+            .iter()
+            .any(|resource| resource.relative_path == "scripts/run.sh"));
+        assert_eq!(
+            candidate
+                .metadata
+                .get("custom-mode")
+                .and_then(serde_json::Value::as_str),
+            Some("execute")
+        );
+        assert!(candidate.diagnostics.iter().any(|diagnostic| {
+            diagnostic.reason.contains("custom-mode") && diagnostic.reason.contains("inert")
+        }));
+    }
+
+    #[test]
+    fn claude_may_derive_name_from_its_package_directory() {
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("claude-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join("SKILL.md");
+        fs::write(&path, "---\ndescription: Claude skill\n---\nBody").unwrap();
+        let candidate = parse_candidate(&path, SourceKind::ClaudeProject, &test_config()).unwrap();
+        assert_eq!(candidate.name, "claude-skill");
+        assert!(parse_candidate(&path, SourceKind::AgentsProject, &test_config()).is_err());
+    }
+
+    #[test]
     fn parse_candidate_allowed_tools_preserved_as_metadata() {
         let dir = TempDir::new().unwrap();
-        let skill_file = dir.path().join("SKILL.md");
+        let skill_dir = dir.path().join("tool-user");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
         fs::write(
             &skill_file,
             "---\nname: tool-user\ndescription: uses tools\nallowed-tools:\n  - bash\n  - read\n---\nBody",

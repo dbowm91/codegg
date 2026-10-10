@@ -236,9 +236,13 @@ Project roots, all optional and all relative to the project:
 <project>/.agents/skills
 <project>/.opencode/skills
 <project>/.claude/skills
+<project>/.cursor/skills
+<project>/.gemini/skills
+<project>/.github/skills
 ```
 
-Global roots:
+Global roots include the vendor directories below the platform configuration
+directory, plus documented home-scoped locations:
 
 ```text
 <config dir>/<vendor>/skills
@@ -249,7 +253,9 @@ CodeGG one is `~/.config/codegg/skills`, and on macOS it is
 `~/Library/Application Support/codegg/skills`. (The global root is the config
 directory itself and `<vendor>/skills` is appended once; the doubled form
 `~/.config/codegg/codegg/skills` is the silent double-join failure described in
-`architecture/skills.md`.)
+`architecture/skills.md`. Home-scoped discovery also recognizes `~/.agents/skills`,
+`~/.claude/skills`, `~/.config/opencode/skills`, `~/.cursor/skills`, and
+`~/.gemini/skills`. Canonical directory aliases are scanned once.)
 
 You can add your own directories with the `skills.paths` config key. Each entry
 is used as a skills directory **directly**, so `"paths": ["/opt/skills"]`
@@ -274,18 +280,19 @@ Each skill is `<root>/<name>/SKILL.md`.
 
 ### Name fallback
 
-For the portable form, both `name` and `description` are required and a skill
-missing either is reported as an error.
+For the portable form, `name` and `description` are required. Portable names
+use 1–64 lowercase ASCII letters, digits, and single hyphen separators, and a
+missing or invalid field is reported as an error.
 
 The native compatibility form is more forgiving, but only under the CodeGG
 roots. When the frontmatter does not carry both portable fields there, CodeGG
 falls back to the native shape, where a missing `name` is taken from the file
 stem and a missing `description` defaults to empty. That is why a directory
 named `release-checklist` holding `SKILL.md` can resolve to the name `SKILL` if
-its frontmatter omits `name` entirely. Under the `.agents`, `.opencode`, and
-`.claude` roots the portable path is the only one, so a skill missing `name` or
-`description` is an error there. Give portable skills an explicit `name` and
-`description` and you avoid the ambiguity either way.
+its frontmatter omits `name` entirely. Under `.agents`, `.opencode`, `.cursor`,
+`.gemini`, and `.github`, both portable fields are required. Claude skills may
+omit `name`; the package directory supplies it, while `description` remains
+required.
 
 ### Discovery bounds
 
@@ -294,7 +301,9 @@ root, a maximum `SKILL.md` size, a maximum frontmatter size, and a recommended
 maximum description length. Exceeding a size bound is an error; exceeding the
 recommended description length is a warning. The caps live in
 `AssetDiscoveryConfig` (`src/skills/source.rs`) and are currently fixed at their
-built-in defaults; they are not configurable from the config file.
+built-in defaults; they are not configurable from the config file. Nested
+resources are listed to a fixed depth and entry limit, symlinks are not
+traversed, and resource contents remain lazy bounded reads.
 
 ## Working with skills
 
@@ -309,6 +318,7 @@ The slash commands in this area are about authoring:
 - `/skill-promote <habit id>` — draft one skill proposal from a ready workflow
   habit.
 - `/skill-proposals` — list proposals.
+- `/skills` — inspect effective and shadowed skills and bounded parser diagnostics.
 - `/skill-proposal <id>` — preview, publish, or reject a proposal. Publishing
   targets `project` or `global` scope.
 

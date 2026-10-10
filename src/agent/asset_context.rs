@@ -267,6 +267,21 @@ pub fn default_global_discovery_root() -> Option<PathBuf> {
     dirs::config_dir()
 }
 
+/// Platform roots whose known vendor subdirectories may contain global skills.
+/// The list is finite and never traversed recursively.
+pub fn default_global_discovery_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(config) = dirs::config_dir() {
+        roots.push(config);
+    }
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home);
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// Build the [`AssetDiscoveryConfig`] for a given [`Config`].
 ///
 /// `skills.enabled = false` clears every source, which disables skill

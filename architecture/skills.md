@@ -2,7 +2,7 @@
 
 Source-aware skill discovery, portable SKILL.md package parsing,
 precedence resolution, and bounded resource access for on-demand
-skill activation via `/skill:<name>` commands.
+skill activation through the `skill` model tool.
 
 ## Purpose
 
@@ -50,22 +50,34 @@ Lower rank wins. Project-local always beats global.
 | 10 | `AgentsProject` | `<project>/.agents/skills/<name>/SKILL.md` |
 | 20 | `OpenCodeProject` | `<project>/.opencode/skills/<name>/SKILL.md` |
 | 30 | `ClaudeProject` | `<project>/.claude/skills/<name>/SKILL.md` |
+| 31 | `CursorProject` | `<project>/.cursor/skills/<name>/SKILL.md` |
+| 32 | `GeminiProject` | `<project>/.gemini/skills/<name>/SKILL.md` |
+| 33 | `CopilotProject` | `<project>/.github/skills/<name>/SKILL.md` |
+| 34 | `CodexProject` | `<project>/.codex/skills/<name>/SKILL.md` |
 | 35 | `Plugin` | Plugin contribution (project-native sources outrank) |
 | 40 | `CodeGGGlobal` | `<config>/codegg/skills/<name>/SKILL.md` |
-| 50 | `AgentsGlobal` | `<config>/agents/skills/<name>/SKILL.md` |
-| 60 | `OpenCodeGlobal` | `<config>/opencode/skills/<name>/SKILL.md` |
-| 70 | `ClaudeGlobal` | `<config>/claude/skills/<name>/SKILL.md` |
+| 50 | `AgentsGlobal` | `<config>/agents/skills/<name>/SKILL.md` or `~/.agents/skills` |
+| 60 | `OpenCodeGlobal` | `<config>/opencode/skills/<name>/SKILL.md` or `~/.config/opencode/skills` |
+| 70 | `ClaudeGlobal` | `<config>/claude/skills/<name>/SKILL.md` or `~/.claude/skills` |
+| 71 | `CursorGlobal` | `~/.cursor/skills/<name>/SKILL.md` |
+| 72 | `GeminiGlobal` | `~/.gemini/skills/<name>/SKILL.md` |
+| 73 | `CodexGlobal` | `~/.codex/skills/<name>/SKILL.md` |
+| 74 | `CopilotGlobal` | `~/.copilot/skills/<name>/SKILL.md` |
 | 80 | `CodeGGNativeCompat` | `<project>/.codegg/skills/*.md` (direct markdown) |
 | 90 | `Configured` | Each entry of `skills.paths`, used as a skills directory directly |
 
+Cursor and Gemini also recognize their documented home directories (`~/.cursor/skills`
+and `~/.gemini/skills`). Codex and Copilot recognize `~/.codex/skills` and
+`~/.copilot/skills`. Cline, Pi, Roo, Factory, Windsurf,
+and Devin layouts remain unsupported until their skill package paths and
+scope are confirmed against maintained vendor documentation.
+
 `<config>` is the platform configuration directory (`dirs::config_dir()`, e.g.
-`~/.config` on Linux and `~/Library/Application Support` on macOS). The
-foreign-harness global roots are config-dir-relative, **not** `$HOME`-relative:
-`AssetRegistry::build` takes each global root as the *parent* and appends
-`<vendor>/skills` (`src/skills/registry.rs:250-303`), and callers pass
-`default_global_discovery_root()` — exactly `dirs::config_dir()`
-(`src/agent/asset_context.rs`) as that parent. The daemon does so at
-`src/core/daemon_refresh.rs:187-191`.
+`~/.config` on Linux and `~/Library/Application Support` on macOS). The finite
+global candidate table includes config-relative vendor directories and
+documented home locations; callers pass only the config and home directories
+from `default_global_discovery_roots()`. The resolver never scans either
+directory recursively.
 
 ### Configured roots (`skills.paths`)
 
@@ -135,6 +147,10 @@ allowed-tools:
 **Required**: `name`, `description`.
 **Optional**: `license`, `compatibility`, `metadata`, `allowed-tools`
 (preserved as metadata only, never expanded into permissions).
+Portable names use 1–64 lowercase ASCII letters and digits with single hyphens
+as separators. Claude packages may omit `name`; their directory name is used.
+Unknown vendor fields are retained as inert metadata under the frontmatter size
+bound.
 
 ### Native compat
 
@@ -149,8 +165,9 @@ normalization. Format-stable across platforms.
 
 ### Resource access (resource.rs)
 
-`ResourceHandle` provides lazy, bounded reads of files inside a
-skill package:
+`ResourceHandle` provides lazy, bounded reads of inventoried files inside a
+skill package. Inventory includes nested package files to fixed depth and
+entry limits; symlink entries are not followed.
 
 - Accepts relative paths only (no `..`, no absolute, no backslash)
 - Canonicalizes at construction AND read time
@@ -195,7 +212,7 @@ pub struct EffectiveSkill {
 
 ### SourceKind (source.rs:6)
 
-Enum with 10 variants. Methods: `precedence_rank`, `is_project_local`,
+Enum with 19 variants. Methods: `precedence_rank`, `is_project_local`,
 `is_global`, `directory_name`, `is_foreign`.
 
 ### AssetDiscoveryConfig (source.rs:91)
@@ -322,7 +339,7 @@ cargo test --test skills_registry          # AssetRegistry integration tests
 cargo test --test skill_publication        # approved publication safety/precedence tests
 ```
 
-`tests/skills_registry.rs` covers: empty project, all 4 project source
+`tests/skills_registry.rs` covers: empty project, all supported project source
 kinds, global skills, precedence (project over global), native compat
 direct .md, invalid fallback, disabled sources, get/list/find_matching,
 build_system_prompt, activate, symlink escape rejection, oversized
@@ -331,7 +348,7 @@ warning, digest stability, digest CRLF normalization, name validation.
 
 ## Related Docs
 
-- [tool.md](tool.md) — `/skill:` tool
+- [tool.md](tool.md) — model-facing `skill` tool
 - `src/skills/` — Runtime implementation
 - `.opencode/skills/*/SKILL.md` — Canonical developer skill-guide location;
   `.skills` and `.agents/skills` are repository symlinks to it (harness
@@ -341,45 +358,16 @@ warning, digest stability, digest CRLF normalization, name validation.
 
 ## Source verification
 
-Re-verified 2026-10-06 against all 10 files in `src/skills/`
-(`mod.rs`, `registry.rs`, `source.rs`, `parser.rs`, `candidate.rs`,
-`promotion.rs`, `publish.rs`, `resource.rs`, `diagnostic.rs`, `compat.rs`),
-`src/agent/asset_context.rs`, and the three named test files. Corrected the
-global-root contract: the doc recorded only the daemon's correct behavior,
-while five other construction sites passed an already-joined
-`<config>/codegg/skills` path. `AssetRegistry::build` appends
-`<vendor>/skills` to each root, so those sites resolved to
-`<config>/codegg/skills/codegg/skills`, which does not exist, and
-`resolve_source_roots` skips a missing root without a diagnostic — global
-skills were silently dropped everywhere except the daemon. `src/skills/compat.rs`
-was subtly different: it took `.parent()` of the already-joined path, landing on
-`<config>/codegg` and still double-joining. `default_global_skills_root()` is now
-`default_global_discovery_root()` (exactly `dirs::config_dir()`), all six sites
-pass the parent directory, and two regression tests pin both halves of the
-contract. Added the construction-site table, since the daemon was previously
-documented as if it were the only registry builder.
-
-Corrected 4 items in the earlier pass: the digest ref
-`parser.rs:308` → `:377` (`compute_digest`; the CRLF-normalization and
-stability tests are at `:411` and `:420`), the symlink-containment ref
-`registry.rs:328` → `validate_symlink_boundary` at `:419` (called from
-`discover_in_root` at `:354` and `:377`; `:328` is only the per-root
-truncation diagnostic), and the addition of the undocumented
-`AssetRegistry::build_with_plugin_sources` (`registry.rs:26`) to the method
-list. Added call-site refs for the discovery pipeline
-(`discover_in_root` `:308`, `resolve` `:450`, `parse_candidate`
-`parser.rs:51`).
-Confirmed correct as written: every struct/enum line ref
-(`AssetRegistry` `registry.rs:11`, `EffectiveSkill` `candidate.rs:33`,
-`SourceKind` `source.rs:6`, `AssetDiscoveryConfig` `source.rs:91`,
-`ResourceHandle` `resource.rs:44`, `ResourceReadLimits` `resource.rs:8`,
-`SkillIndexCompat` `compat.rs:11`, `Diagnostic` `diagnostic.rs:22`), the
-exact 11 `SourceKind` variants with their literal discriminants
-`0/10/20/30/35/40/50/60/70/80/90`, the 12-field `EffectiveSkill` listing, the
-5 `SourceKind` methods, the 7 `ResourceHandle` methods, the
-`AssetDiscoveryConfig` defaults (256 KiB / 64 KiB / 256 / 64 / 128 / 2048,
-`source.rs:115-120`), the `ResourceReadLimits` defaults (1 MiB / 64 KiB,
-`resource.rs:16-17`), `resource.rs:89` for relative-path validation, and the
-M002/M003 symbols (`validate_portable_document` `parser.rs:171`,
-`SkillPromotionStore::submit` `promotion.rs:429`,
-`SkillPublicationService` `publish.rs:71`, `reconcile` `publish.rs:133`).
+Verified against the current `src/skills/` implementation, asset snapshot
+builder, all registry construction sites, and `tests/skills_registry.rs`.
+Project discovery supports CodeGG, Agent Skills, OpenCode, Claude, Cursor,
+Gemini CLI, and GitHub Copilot project roots. Global candidates are limited to
+platform config/home roots and a fixed vendor path table; canonical roots are
+deduplicated before parsing. `AssetRegistry::build_for_workspace_scope` and
+the snapshot builder walk at most 16 explicit ancestors, stopping at the
+nearest `.git` boundary. Claude alone may derive a missing portable `name`
+from its package directory. Portable names are validated separately from the
+CodeGG native compatibility parser. Resource inventory is recursive but
+bounded by depth, entry, and per-skill count limits, and does not follow
+symlinks. `/skills` is a registered read-only TUI report and redacts physical
+source paths. The actual model activation surface remains the `skill` tool.

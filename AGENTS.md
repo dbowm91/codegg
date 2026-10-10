@@ -208,6 +208,9 @@ changing; each names its authoritative `architecture/` doc in its intro and
 | `server` | `architecture/server.md`, `architecture/client.md` |
 | `session-storage` | `architecture/session.md`, `architecture/storage.md` |
 | `skills` | `architecture/skills.md` |
+| `testing-ci` | `architecture/testing.md`, `scripts/verify.sh` |
+| `tool-execution` | `architecture/agent.md`, `architecture/jobs.md`, `architecture/scheduler.md` |
+| `security-hardening` | `architecture/security.md`, `architecture/permission.md`, `architecture/authorization.md` |
 | `tool-program-harness` | `architecture/tool_programs.md` |
 | `tui` | `architecture/tui.md` |
 | `upgrade` | `architecture/upgrade.md` |

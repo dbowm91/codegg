@@ -279,7 +279,7 @@ Counts below were re-measured against the current tree on **2026-10-06**.
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
 | Authorized operations | 226 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 17 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 153 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 154 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 27 (28 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |

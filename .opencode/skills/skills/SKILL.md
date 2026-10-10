@@ -1,6 +1,6 @@
 ---
 name: skills
-description: Skills module for specialized capabilities activated via /skill: commands
+description: Skills module for specialized capabilities activated through the skill tool
 version: 2.2.0
 tags:
   - skills
@@ -16,12 +16,12 @@ This skill covers the skills system in codegg for discovering, loading, and acti
 ## Overview
 
 The `skills` module (`src/skills/`) provides:
-- Source-aware skill discovery from CodeGG, `.agents`, OpenCode, and Claude-compatible harness locations (project and global)
+- Source-aware skill discovery from CodeGG, Agent Skills, OpenCode, Claude, Cursor, Gemini CLI, and GitHub Copilot locations
 - Portable `SKILL.md` package parsing with YAML frontmatter
 - Deterministic precedence and duplicate/shadow resolution
 - Content digests for change detection
 - Security-bounded discovery (symlink escape, path traversal, bounded sizes)
-- Skill activation via `/skill:<name>` commands and the `skill` model tool
+- Skill activation via the `skill` model tool with a `name` argument
 - System prompt augmentation with skill content
 
 This repository also keeps agent-facing maintenance copies of its own skill docs in `.opencode/skills/` (`.skills` and `.agents/skills` are symlinks to it). Keep those aligned with runtime behavior documented here.
@@ -33,7 +33,7 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | `mod.rs` | Legacy `Skill`, `SkillIndex` facade + re-exports |
 | `registry.rs` | `AssetRegistry` — primary public type; builds an immutable source-aware snapshot (`effective`, `diagnostics`, `sources`) |
 | `candidate.rs` | `SkillCandidate`, `EffectiveSkill`, `ResourceDescriptor`, `ShadowedAlternative` |
-| `source.rs` | `SourceKind` (10 variants), `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
+| `source.rs` | `SourceKind` (19 variants), `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
 | `parser.rs` | Frontmatter/package parsing, SHA-256 digests, `validate_portable_document` shared proposal seam |
 | `resource.rs` | `ResourceHandle`, `ResourceReadLimits`, bounded resource reads |
 | `compat.rs` | `SkillIndexCompat` — backward-compatible bridge to the legacy `SkillIndex` API |
@@ -43,7 +43,7 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 
 ## Discovery Sources and Precedence
 
-`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). There are 10 variants. The four global kinds resolve under the single config-directory root the daemon registers (`<config>/…`), not under `$HOME`:
+`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). It covers project and global locations, native CodeGG compatibility, plugins, and configured paths:
 
 | Rank | Source |
 |------|--------|
@@ -51,11 +51,19 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | 10 | `.agents/skills/` (project) |
 | 20 | `.opencode/skills/` (project) |
 | 30 | `.claude/skills/` (project) |
+| 31 | `.cursor/skills/` (project) |
+| 32 | `.gemini/skills/` (project) |
+| 33 | `.github/skills/` (project) |
+| 34 | `.codex/skills/` (project) |
 | 35 | `Plugin` contributions (project-native sources outrank) |
 | 40 | CodeGG global (`<config>/codegg/skills/`) |
 | 50 | Agents global (`<config>/agents/skills/`) |
 | 60 | OpenCode global (`<config>/opencode/skills/`) |
 | 70 | Claude global (`<config>/claude/skills/`) |
+| 71 | Cursor global (`~/.cursor/skills/`) |
+| 72 | Gemini global (`~/.gemini/skills/`) |
+| 73 | Codex global (`~/.codex/skills/`) |
+| 74 | Copilot global (`~/.copilot/skills/`) |
 | 80 | CodeGG native compat (direct `.md` files in `.codegg/skills/`) |
 | 90 | `Configured` — each `skills.paths` entry, used as a skills directory directly |
 
@@ -63,10 +71,10 @@ Discovery is bounded by `AssetDiscoveryConfig` (max file size 256 KiB, max front
 
 ### Global roots are parent directories
 
-`resolve_source_roots` (`registry.rs:250-303`) appends `<vendor>/skills` to every
-global root it is given, so a global root is the **config directory itself**,
-not the skills directory. Pass `default_global_discovery_root()`
-(`src/agent/asset_context.rs`), which is exactly `dirs::config_dir()`.
+`resolve_source_roots` appends only known vendor paths to each supplied global
+parent. `default_global_discovery_roots()` (`src/agent/asset_context.rs`)
+returns the platform config and home directories. Discovery does not recurse
+through either directory.
 
 Passing an already-joined path silently discovers nothing: the root resolves to
 `<config>/codegg/skills/codegg/skills`, which does not exist, and
@@ -222,7 +230,7 @@ honor the parent-directory contract above.
 
 ## Skills vs System Prompts
 
-- **Skills**: Loaded on-demand via `/skill:` command or `skill` tool; contain specialized instructions
+- **Skills**: Loaded on-demand via the `skill` tool with `{"name":"<skill-name>"}`; contain specialized instructions
 - **System Prompts**: Agent-level instructions baked into `Agent.system_prompt`
 - **Instructions**: Global instructions from `config.instructions` applied to all agents
 
@@ -236,6 +244,9 @@ See `architecture/skills.md` for the authoritative module contract.
 
 ## Source verification
 
-Re-verified 2026-10-06 against `src/skills/{mod,registry,parser,source,publish,promotion,compat}.rs`, `src/agent/asset_context.rs`, `src/core/daemon_refresh.rs:187-191`, `src/tool/skill.rs`, `src/tool/skill_proposal.rs`, `src/tui/app/mod.rs:4482-4489,4641-4652`, and `ls -la .skills .agents/skills`. Corrected: the global-root contract, which was documented only for the daemon path — `AssetRegistry::build` appends `<vendor>/skills` to each root (`registry.rs:250-303`), but `src/tui/app/mod.rs` (two sites), `src/tool/skill.rs`, `src/tool/skill_proposal.rs`, and `src/skills/compat.rs` each passed an already-joined `…/codegg/skills` path, resolving to `…/codegg/skills/codegg/skills`. Because `resolve_source_roots` skips missing directories silently, global skills were dropped with no diagnostic in every one of those paths. `default_global_skills_root()` was replaced by `default_global_discovery_root()` (exactly `dirs::config_dir()`) and all five call sites now pass the parent directory; `already_joined_global_root_discovers_nothing` and `global_discovery_root_is_the_unjoined_config_dir` pin both halves of the contract. Note `src/skills/compat.rs` previously took `.parent()` of the already-joined path, landing on `<config>/codegg` and still double-joining. The integration-points table previously listed only the daemon, tool, and snapshot call sites and omitted these four.
-
-Also corrected earlier and still confirmed: the Agents/OpenCode/Claude global roots resolve under the daemon-registered config directory rather than `$HOME`; the daemon integration path is `src/core/daemon_refresh.rs`, not `src/core/daemon.rs`; and the native `.md` fallback name is the file stem (`parser.rs:105-110`), not the directory name. Claims without a traceable source were removed rather than guessed.
+Current source contract is summarized in `architecture/skills.md`. Discovery
+uses a finite vendor path table and explicit config/home roots; portable
+validation, Claude directory-name fallback, bounded nested inventory, and
+workspace scoping are covered by focused registry/parser tests. Resource
+scripts and vendor metadata remain inert. The TUI `/skills` report reads the
+same registry and omits physical source paths.

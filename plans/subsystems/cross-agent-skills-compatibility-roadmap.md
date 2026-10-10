@@ -1,6 +1,6 @@
 # Cross-Agent Skill Compatibility Roadmap
 
-Status: active; M001 ready, later milestones dependency-gated
+Status: active; M001–M005 implementation and closure review in progress
 
 Repository research baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09)
 
@@ -110,7 +110,7 @@ All five milestone closure records accepted; source roots and behavior documente
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/cross-agent-skills-compatibility/001-activation-parser-contract.md` | future `plans/closure/cross-agent-skills-compatibility/001-status.md` | closed Runtime Assets only |
+| M001 | active | `plans/implementation/cross-agent-skills-compatibility/001-activation-parser-contract.md` | future `plans/closure/cross-agent-skills-compatibility/001-status.md` | closed Runtime Assets only |
 | M002 | blocked | `plans/implementation/cross-agent-skills-compatibility/002-source-roots-and-deduplication.md` | future 002 | hard M001 |
 | M003 | blocked | `plans/implementation/cross-agent-skills-compatibility/003-package-metadata-and-resources.md` | future 003 | hard M002 |
 | M004 | blocked | `plans/implementation/cross-agent-skills-compatibility/004-scoped-discovery-and-inspection.md` | future 004 | hard M003 |

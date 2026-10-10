@@ -11,6 +11,8 @@ pub struct ResourceDescriptor {
     pub name: String,
     pub relative_path: String,
     pub size: u64,
+    #[serde(default)]
+    pub modified_unix_nanos: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +21,8 @@ pub struct SkillCandidate {
     pub normalized_name: String,
     pub description: String,
     pub source_kind: SourceKind,
+    #[serde(default)]
+    pub precedence_rank: u32,
     pub source_path: PathBuf,
     pub package_root: PathBuf,
     pub content_digest: String,

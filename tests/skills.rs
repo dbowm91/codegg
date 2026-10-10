@@ -43,6 +43,24 @@ async fn test_skill_index_load_empty_dir() {
     assert_eq!(index.list().len(), 0);
 }
 
+#[tokio::test]
+async fn legacy_prompt_uses_the_real_skill_tool_contract() {
+    let mut index = SkillIndex::new();
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let skill_dir = temp_dir.path().join(".codegg/skills/example");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Example\n---\nBody",
+    )
+    .unwrap();
+    index.load(temp_dir.path().to_str().unwrap()).await.unwrap();
+    let prompt = index.build_system_prompt();
+    assert!(prompt.contains("`skill` tool"));
+    assert!(prompt.contains("{\"name\": \"<skill-name>\"}"));
+    assert!(!prompt.contains("/skill:"));
+}
+
 #[test]
 fn test_skill_struct_creation() {
     let skill = Skill {
