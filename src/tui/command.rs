@@ -1129,6 +1129,23 @@ mod tests {
     }
 
     #[test]
+    fn skills_command_resolves_to_the_snapshot_inspection_dispatch() {
+        let registry = CommandRegistry {
+            commands: CommandRegistry::built_in_commands(),
+        };
+        let command = registry
+            .find_by_name_or_alias("/skills")
+            .expect("/skills is present in the built-in command palette");
+        assert_eq!(
+            command.action,
+            CommandAction::Builtin(BuiltinSlashAction::Skills)
+        );
+        assert!(command
+            .description
+            .contains("effective, shadowed, and invalid"));
+    }
+
+    #[test]
     fn built_in_catalog_passes_validation() {
         // Every built-in must resolve without a name/alias collision.
         // A duplicate name used to pass validation and silently shadow the
