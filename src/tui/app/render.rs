@@ -5,11 +5,63 @@
 //! filesystem, daemon, network, process, or other blocking work.
 
 use super::*;
+use ratatui::style::Color;
+
+/// Maximum display width of the agent name shown beside the input-mode badge.
+const MAX_AGENT_BADGE_WIDTH: usize = 20;
+
+/// Pick a foreground that stays legible on `background`.
+///
+/// Theme palettes are authored independently, so a slot that reads well
+/// against the window background can be invisible against a different fill —
+/// a completion row's `selection` background is the common case, because
+/// themes set it from a widget-specific slot rather than deriving it from
+/// the background. Walk `candidates` (most-preferred first) and return the
+/// first whose WCAG contrast against `background` clears the legibility bar,
+/// falling back to the highest-contrast candidate so the result is always
+/// the best available rather than an arbitrary first pick.
+fn readable_on(
+    preferred: Color,
+    background: Color,
+    candidates: impl IntoIterator<Item = Color>,
+) -> Color {
+    const MIN_CONTRAST: f64 = 3.0;
+    let to_rgb = |c: Color| match c {
+        Color::Rgb(r, g, b) => crate::theme::Rgb::new(r, g, b),
+        // Indexed / named / reset colors carry no measurable luminance here;
+        // treat them as opaque so we never reject a palette we cannot
+        // actually evaluate.
+        _ => crate::theme::Rgb::new(128, 128, 128),
+    };
+    let bg = to_rgb(background);
+
+    let mut best: Option<(Color, f64)> = None;
+    for candidate in candidates {
+        let ratio = to_rgb(candidate).contrast_ratio(bg);
+        if ratio >= MIN_CONTRAST {
+            return candidate;
+        }
+        if best.as_ref().is_none_or(|(_, r)| ratio > *r) {
+            best = Some((candidate, ratio));
+        }
+    }
+    // `preferred` is what the caller asked for; it is only overridden when
+    // every candidate failed the bar, in which case the best-scoring one
+    // still beats rendering text that is indistinguishable from the fill.
+    let preferred_ratio = to_rgb(preferred).contrast_ratio(bg);
+    match best {
+        Some((color, ratio)) if ratio > preferred_ratio => color,
+        _ => preferred,
+    }
+}
 
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let main_chunks = self.ui_state.layout.split(area);
+        let main_chunks = self
+            .ui_state
+            .layout
+            .split(area, self.ui_state.sidebar_visible);
         let main_area = main_chunks[0];
 
         // Reserve a 1-column strip on the left of the main area for the
@@ -24,15 +76,57 @@ impl App {
         let main_area_inner = bordered[1];
         self.left_border_area = Some(bordered[0]);
 
+        // Reserve the main pane's last row for the outer bottom border
+        // *before* the session layout runs. `footer_height` is 1, so
+        // anchoring the edge on the footer's own last row painted the
+        // status line over: `StatusBar` takes its border-less early path
+        // at height 1, and `finish_render` then drew a `Borders::BOTTOM`
+        // block across the only row the status line ever had. Carving the
+        // row off first gives the footer a row of its own and leaves the
+        // edge underneath it.
+        let (pane_area, border_area) = if main_area_inner.height > 0 {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(1)])
+                .split(main_area_inner);
+            let usable = main_area_inner.width > 0 && split[0].height > 0;
+            (split[0], if usable { Some(split[1]) } else { None })
+        } else {
+            (main_area_inner, None)
+        };
+        self.bottom_border_area = border_area;
+
+        let todo_rows = self.todo_strip_height();
         let max_prompt_height = (area.height * 40 / 100).max(3);
-        let prompt_height = self.prompt_state.prompt.needed_height(max_prompt_height);
+        // Reserve the strip's rows *inside* the prompt allocation so the
+        // input box keeps the height it asked for and the chat viewport
+        // absorbs the difference. Carving them back out of the prompt chunk
+        // instead would silently shrink the input by up to
+        // `MAX_TODO_STRIP_TASKS` rows every time the list was expanded.
+        let prompt_height = self
+            .prompt_state
+            .prompt
+            .needed_height(max_prompt_height)
+            .saturating_add(todo_rows);
         let session_chunks = self
             .ui_state
             .layout
-            .session_layout(main_area_inner, Some(prompt_height));
+            .session_layout(pane_area, Some(prompt_height));
 
+        // Carve the todo strip off the top of the prompt chunk so it sits
+        // directly above the input.
+        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && session_chunks[2].height > todo_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
+                .split(session_chunks[2]);
+            (split[1], Some(split[0]))
+        } else {
+            (session_chunks[2], None)
+        };
+        self.todo_area = todo_chunk;
         self.viewport_area = Some(session_chunks[1]);
-        self.prompt_area = Some(session_chunks[2]);
+        self.prompt_area = Some(prompt_chunk);
 
         // Outer TUI frame: paint the left border on the reserved strip
         // and the four corner cells that connect it with the header's
@@ -42,7 +136,7 @@ impl App {
         self.render_outer_borders(
             frame,
             bordered[0],
-            main_area_inner,
+            pane_area,
             session_chunks[0],
             session_chunks[3],
         );
@@ -68,7 +162,8 @@ impl App {
             self.render_component_fallback(frame, session_chunks[1], "Messages render error");
         }
 
-        self.render_prompt(frame, session_chunks[2]);
+        self.render_todo_strip(frame, todo_chunk);
+        self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
 
         // Sidebar — dynamic content can trigger panics
@@ -188,6 +283,46 @@ impl App {
             self.messages_state
                 .toasts
                 .render(frame, toast_area, &self.ui_state.theme);
+        }
+
+        self.finish_render(frame);
+    }
+
+    /// Apply the live text selection over the finished frame, then retain
+    /// the frame so a drag can later be resolved to real text.
+    ///
+    /// This runs last, after every overlay (dialogs, completions, toasts),
+    /// so a selection reads as a single continuous band over the whole
+    /// window rather than being partially overpainted. Mutating the buffer
+    /// directly — instead of re-rendering the widgets — is what keeps the
+    /// selected text byte-identical to what was already drawn.
+    fn finish_render(&mut self, frame: &mut Frame) {
+        // Close the bottom edge last so nothing overwrites it.
+        if let Some(area) = self.bottom_border_area {
+            let bottom_block = Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(self.ui_state.theme.border))
+                .style(Style::default().bg(self.ui_state.theme.background));
+            frame.render_widget(bottom_block, area);
+        }
+        if let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) {
+            let selection = crate::tui::selection::TextSelection::new(anchor, focus);
+            let buffer_area = frame.area();
+            let highlight = ratatui::style::Style::default()
+                .bg(self.ui_state.theme.selection)
+                .fg(self.ui_state.theme.foreground)
+                .add_modifier(Modifier::REVERSED);
+            let buffer = frame.buffer_mut();
+            for y in buffer_area.y..buffer_area.y + buffer_area.height {
+                for x in buffer_area.x..buffer_area.x + buffer_area.width {
+                    if selection.contains((x, y)) {
+                        buffer[(x, y)].set_style(highlight);
+                    }
+                }
+            }
+            self.last_frame_buffer = Some(buffer.clone());
+        } else {
+            self.last_frame_buffer = Some(frame.buffer_mut().clone());
         }
     }
 
@@ -476,15 +611,16 @@ impl App {
             .style(bg_style);
         frame.render_widget(left_block, left_area);
 
-        if footer_area.height > 0 {
-            let footer_bottom_y = footer_area.y + footer_area.height - 1;
-            self.bottom_border_area = Some(Rect::new(
-                footer_area.x,
-                footer_bottom_y,
-                footer_area.width,
-                1,
-            ));
-        }
+        // The footer/status bar draws its own `Borders::TOP |
+        // Borders::BOTTOM` only when it has more than one row to spend
+        // (`status_bar.rs` takes an early, border-less path at height 1).
+        // The configured `footer_height` is 1, so in practice nothing
+        // painted the bottom edge of the main pane and it read as an
+        // open-ended window next to the sidebar, which does draw a full
+        // `Borders::ALL`. The edge therefore lives on its own reserved
+        // row, carved off `main_area_inner` by `render` before the session
+        // layout ran, and is painted in `finish_render`. This function
+        // only owns the corner glyphs that connect it to the side edges.
         if header_area.height > 0 && footer_area.height > 0 && content_area.width > 0 {
             // Corner cells: top-left, top-right, bottom-left, bottom-right.
             // Drawn after the header and footer widgets (which supply the
@@ -872,19 +1008,83 @@ impl App {
         }
     }
 
+    /// Draw the todo strip directly above the input box.
+    ///
+    /// Compact form is a single `n/m completed` progress line. Expanded form
+    /// adds one status-bubbled row per task, bounded by
+    /// `MAX_TODO_STRIP_TASKS`; task titles are ellipsized to the available
+    /// width rather than wrapped, so a long title can never push the input
+    /// off screen or change the layout height.
+    fn render_todo_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if area.width == 0 || area.height == 0 || self.todos.is_empty() {
+            return;
+        }
+
+        let total = self.todos.len();
+        let done = self.todos_completed();
+        let remaining = total.saturating_sub(done);
+        let theme = self.ui_state.theme.clone();
+
+        let mut lines: Vec<Line> = Vec::new();
+        if self.todo_expanded {
+            lines.push(Line::from(Span::styled(
+                format!(" Todo list {done}/{total} · {remaining} remaining · Ctrl+T compact "),
+                Style::default().fg(theme.muted),
+            )));
+            for todo in self
+                .todos
+                .iter()
+                .take(crate::tui::app::MAX_TODO_STRIP_TASKS)
+            {
+                let bubble = format!(" {} ", Self::todo_bubble(&todo.status));
+                // 3 columns of leading indent, minus the bubble and its spaces.
+                let budget = (area.width as usize)
+                    .saturating_sub(3 + unicode_width::UnicodeWidthStr::width(bubble.as_str()));
+                let title = crate::tui::wrap::ellipsize_to_width(&todo.content, budget);
+                lines.push(Line::from(vec![
+                    Span::styled("   ", Style::default()),
+                    Span::styled(bubble, Style::default().fg(theme.primary)),
+                    Span::styled(title, Style::default().fg(theme.foreground)),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!(" Todo list: {done}/{total} completed · Ctrl+T expand "),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
         frame.render_widget(bg_block, area);
 
+        // The active agent rides alongside the input-mode badge (`[INS]
+        // [build]`) so the mode a prompt will actually run under is visible
+        // without opening the agent picker. Bounded so a long agent name
+        // cannot crowd out the prompt's own prefix row.
+        let agent_badge = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|agent| {
+                let name = crate::tui::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
+                format!(" [{name}]")
+            })
+            .unwrap_or_default();
         let mode_indicator = match self.ui_state.input_mode {
             InputMode::Insert => Span::styled(
-                "[INS] ",
+                format!("[INS]{agent_badge} "),
                 Style::default()
                     .fg(self.ui_state.theme.secondary)
                     .add_modifier(Modifier::BOLD),
             ),
             InputMode::Normal => Span::styled(
-                "[NOR]",
+                format!("[NOR]{agent_badge}"),
                 Style::default()
                     .fg(self.ui_state.theme.primary)
                     .add_modifier(Modifier::BOLD),
@@ -929,11 +1129,17 @@ impl App {
             .ensure_cursor_visible_with_width(visible_lines, area.width as usize);
         frame.render_widget(&self.prompt_state.prompt, area);
 
-        if self.ui_state.command_mode {
-            self.dialog_state
-                .command_palette
-                .render(frame, area, &self.ui_state.theme);
-        }
+        // Command mode deliberately does NOT draw `dialog_state.command_palette`
+        // over the prompt any more. That widget is a second, independent
+        // slash-command popup: 50 columns instead of 110, a raw
+        // `selection`-on-`primary` highlight that themes render as an
+        // unreadable solid block, and its own fuzzy ordering. Because
+        // `update_completions` used to leave `show_completions` false in
+        // command mode, typing `/logs` showed that box, while backspacing to
+        // a bare `/` cleared command mode and showed `render_completions`
+        // instead — one interaction, two boxes. `render_completions` is now
+        // the only popup, and it is driven by `show_completions` in every
+        // mode.
     }
 
     fn render_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
@@ -1258,6 +1464,8 @@ impl App {
                 .root
                 .clone()
                 .or_else(|| Some(sess.project_id.clone()));
+            self.sidebar
+                .set_git_status(cached.loading, cached.error.clone());
             self.sidebar.set_git_info(GitSidebarInfo {
                 root: display_root,
                 branch: cached.branch.clone(),
@@ -1273,6 +1481,7 @@ impl App {
                 conflicted_paths: cached.conflicted_paths.clone(),
             });
         } else {
+            self.sidebar.set_git_status(false, None);
             self.sidebar.set_git_info(GitSidebarInfo::default());
         }
 
@@ -1479,19 +1688,66 @@ impl App {
         let sel = self.prompt_state.completion_sel;
         // Popup inner width, so descriptions get an ellipsis instead of
         // being cut mid-word by the widget's hard clip.
-        let compl_w = 40.min(prompt_area.width.saturating_sub(2));
+        //
+        // The popup used to be pinned to 40 columns, which clipped almost
+        // every command description ("Show the aggregated token/cost usage
+        // breakdown for this session" became "Show the aggregated …"). Size
+        // it against the prompt area instead, capped so it still reads as a
+        // popup anchored to the composer rather than a full-screen overlay.
+        const MAX_COMPLETION_WIDTH: u16 = 110;
+        // Rendered on the popup's top border row, so it costs no content
+        // height. The retired command palette advertised its keys this way and
+        // the single popup now needs to stand on its own.
+        const COMPLETION_HINT: &str =
+            " \u{2191}\u{2193} navigate \u{b7} Enter run \u{b7} Esc cancel ";
+        let compl_w = MAX_COMPLETION_WIDTH.min(prompt_area.width.saturating_sub(2));
         let inner_w = (compl_w as usize).saturating_sub(2);
+        // The selected row is painted with an explicit background, so its
+        // colors have to be resolved against *that* background rather than
+        // the popup's. Themes are free to pick a `selection` and an accent
+        // that sit at the same luminance, which renders the highlighted row
+        // as a solid block of one color — unreadable, and indistinguishable
+        // from the surrounding background. Resolve both foregrounds against
+        // the selection fill by contrast so the highlighted row is legible
+        // under every theme, including the 50 bundled Halloy imports.
+        let sel_bg = self.ui_state.theme.selection;
+        let sel_label_fg = readable_on(
+            self.ui_state.theme.primary,
+            sel_bg,
+            [
+                self.ui_state.theme.primary,
+                self.ui_state.theme.foreground,
+                self.ui_state.theme.secondary,
+                self.ui_state.theme.link,
+            ],
+        );
+        let sel_desc_fg = readable_on(
+            self.ui_state.theme.muted,
+            sel_bg,
+            [
+                self.ui_state.theme.foreground,
+                self.ui_state.theme.primary,
+                self.ui_state.theme.secondary,
+                self.ui_state.theme.muted,
+            ],
+        );
         let items: Vec<ListItem> = match self.prompt_state.completion_type {
             CompletionType::Slash => rows
                 .iter()
                 .enumerate()
                 .map(|(i, c)| {
                     let style = if i == sel {
-                        Style::default()
-                            .bg(self.ui_state.theme.selection)
-                            .fg(self.ui_state.theme.primary)
+                        Style::default().bg(sel_bg).fg(sel_label_fg)
                     } else {
                         Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    // The description shares the label's background on the
+                    // selected row; without this it kept the popup fill and
+                    // the highlight bar visibly stopped mid-line.
+                    let desc_style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_desc_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.muted)
                     };
                     let content = if let Some(ref desc) = c.description {
                         let budget = inner_w.saturating_sub(c.label.chars().count() + 1);
@@ -1499,7 +1755,7 @@ impl App {
                             Span::styled(format!("{} ", c.label), style),
                             Span::styled(
                                 crate::tui::components::sidebar::clean_inline_text(desc, budget),
-                                Style::default().fg(self.ui_state.theme.muted),
+                                desc_style,
                             ),
                         ])])
                     } else {
@@ -1513,17 +1769,20 @@ impl App {
                 .enumerate()
                 .map(|(i, c)| {
                     let style = if i == sel {
-                        Style::default()
-                            .bg(self.ui_state.theme.selection)
-                            .fg(self.ui_state.theme.primary)
+                        Style::default().bg(sel_bg).fg(sel_label_fg)
                     } else {
                         Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let desc_style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_desc_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.muted)
                     };
                     let content = if let Some(ref desc) = c.description {
                         Text::from(vec![Line::from(vec![
                             Span::styled(format!("{} ", c.icon()), style),
                             Span::styled(format!("{} ", c.label), style),
-                            Span::styled(desc, Style::default().fg(self.ui_state.theme.muted)),
+                            Span::styled(desc, desc_style),
                         ])])
                     } else {
                         Text::from(vec![Line::from(vec![
@@ -1539,16 +1798,19 @@ impl App {
                 .enumerate()
                 .map(|(i, c)| {
                     let style = if i == sel {
-                        Style::default()
-                            .bg(self.ui_state.theme.selection)
-                            .fg(self.ui_state.theme.primary)
+                        Style::default().bg(sel_bg).fg(sel_label_fg)
                     } else {
                         Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let desc_style = if i == sel {
+                        Style::default().bg(sel_bg).fg(sel_desc_fg)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.muted)
                     };
                     let content = if let Some(ref desc) = c.description {
                         Text::from(vec![Line::from(vec![
                             Span::styled(format!("@{} ", c.label), style),
-                            Span::styled(desc, Style::default().fg(self.ui_state.theme.muted)),
+                            Span::styled(desc, desc_style),
                         ])])
                     } else {
                         Text::from(Span::styled(format!("@{}", c.label), style))
@@ -1558,10 +1820,49 @@ impl App {
                 .collect(),
         };
         if items.is_empty() {
+            // A trigger is active but nothing matched. Say so instead of
+            // leaving the user looking at an unchanged screen; the old
+            // command-palette popup rendered a " No results " row here and
+            // this is the one popup now serving that path.
+            let compl_h = 3u16;
+            let empty_area = Rect {
+                x: prompt_area.x + 1,
+                y: prompt_area.y.saturating_sub(compl_h),
+                width: compl_w,
+                height: compl_h,
+            };
+            frame.render_widget(Clear, empty_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(COMPLETION_HINT)
+                .title_style(Style::default().fg(self.ui_state.theme.muted))
+                .border_style(Style::default().fg(self.ui_state.theme.border))
+                .style(Style::default().bg(self.ui_state.theme.background));
+            frame.render_widget(
+                Paragraph::new(" No results ")
+                    .block(block)
+                    .alignment(ratatui::layout::Alignment::Center),
+                empty_area,
+            );
+            self.completion_area = None;
+            self.completion_visible_rows = 0;
+            self.completion_scroll_offset = 0;
             return;
         }
         let max_h = 8.min(items.len() as u16);
         let compl_h = max_h + 2;
+        // Scroll the list so the selection is always on screen. Without this
+        // the popup was a fixed 8-row window over the whole result set, so
+        // arrowing past row 8 highlighted an entry that was not drawn — the
+        // selection silently vanished. `completion_sel` is reset to 0 on
+        // every filter change (`update_completions`), so anchoring the
+        // window so the selection sits on its last row keeps navigation
+        // monotonic without carrying a second piece of scroll state that
+        // could drift out of sync with the filter.
+        let visible = max_h as usize;
+        let total = items.len();
+        let sel = sel.min(total.saturating_sub(1));
+        let start = sel.saturating_sub(visible.saturating_sub(1));
         let compl_area = Rect {
             x: prompt_area.x + 1,
             y: prompt_area.y.saturating_sub(compl_h),
@@ -1571,13 +1872,17 @@ impl App {
         frame.render_widget(Clear, compl_area);
         let block = Block::default()
             .borders(Borders::ALL)
+            .title(COMPLETION_HINT)
+            .title_style(Style::default().fg(self.ui_state.theme.muted))
             .border_style(Style::default().fg(self.ui_state.theme.border))
             .style(Style::default().bg(self.ui_state.theme.background));
-        let list = List::new(items).block(block);
+        let list = List::new(items[start..(start + visible).min(total)].to_vec()).block(block);
         frame.render_widget(list, compl_area);
         // The visible rows are the *filtered* set, which the popup sizes
-        // itself from. Click hit-testing must use the same count.
+        // itself from. Click hit-testing must use the same count, offset by
+        // the scroll window or every click would select the wrong row.
         self.completion_area = Some(compl_area);
-        self.completion_visible_rows = max_h as usize;
+        self.completion_visible_rows = visible;
+        self.completion_scroll_offset = start;
     }
 }

@@ -187,6 +187,9 @@ impl CoreClient for InprocCoreClient {
                         Ok(event) => {
                             if let Some(core_event) = map_app_event_to_core_event(event) {
                                 let (env_session_id, env_turn_id) = match &core_event {
+                                    CoreEvent::TodoListUpdated { session_id, .. } => {
+                                        (Some(session_id.clone()), None)
+                                    }
                                     CoreEvent::PermissionPending {
                                         session_id,
                                         turn_id,
@@ -292,6 +295,7 @@ pub(crate) fn core_event_metadata(
             turn_id,
             ..
         } => (Some(session_id.clone()), turn_id.clone()),
+        CoreEvent::TodoListUpdated { session_id, .. } => (Some(session_id.clone()), None),
         CoreEvent::PermissionPending {
             session_id,
             turn_id,
@@ -419,6 +423,7 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::TurnFailed { .. } => "turn_failed",
         CoreEvent::ToolStarted { .. } => "tool_started",
         CoreEvent::ToolCompleted { .. } => "tool_completed",
+        CoreEvent::TodoListUpdated { .. } => "todo_list_updated",
         CoreEvent::PermissionPending { .. } => "permission_pending",
         CoreEvent::QuestionPending { .. } => "question_pending",
         CoreEvent::SessionUpdated { .. } => "session_updated",
@@ -518,6 +523,28 @@ pub(crate) fn map_app_event_to_core_event(
             session_id,
             turn_id,
             questions: serde_json::from_str(&questions).unwrap_or(serde_json::Value::Null),
+        }),
+        // `TodoUpdated` is published on the process-local `GlobalEventBus`,
+        // so a TUI connected to the daemon never observes it. Forwarding it
+        // as a CoreEvent is what makes the todo strip live in daemon mode.
+        crate::bus::events::AppEvent::TodoUpdated {
+            session_id,
+            revision,
+            items,
+        } => Some(CoreEvent::TodoListUpdated {
+            session_id,
+            revision,
+            items: items
+                .into_iter()
+                .map(|item| {
+                    serde_json::json!({
+                        "id": item.id,
+                        "content": item.content,
+                        "status": item.status,
+                        "priority": item.priority,
+                    })
+                })
+                .collect(),
         }),
         // AgentFinished is intentionally NOT mapped to a CoreEvent here.
         // The TurnSubmit spawned task publishes `CoreEvent::TurnCompleted`

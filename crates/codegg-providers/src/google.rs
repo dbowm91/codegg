@@ -2,6 +2,10 @@ use crate::error::ProviderError;
 use crate::{create_http_client, ChatRequest, EventStream, ModelInfo, Provider};
 use async_trait::async_trait;
 
+/// Native Gemini API origin. The discovery **path** is owned by the shared
+/// provider profile; this is only the origin the provider already talks to.
+const GEMINI_NATIVE_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+
 #[derive(Clone)]
 pub struct GoogleProvider {
     api_key: String,
@@ -58,7 +62,7 @@ impl Provider for GoogleProvider {
         let client = self.client.clone();
 
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
+            "{GEMINI_NATIVE_BASE}/models/{}:streamGenerateContent?alt=sse",
             model
         );
 
@@ -98,39 +102,112 @@ impl Provider for GoogleProvider {
         ))
     }
 
+    /// Discover models from the native Gemini `/models` endpoint.
+    ///
+    /// The path comes from the shared provider profile rather than a CodeGG
+    /// local constant. There is no compiled-in catalog: an unreachable or empty
+    /// response yields an empty catalog rather than fiction.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![
-            ModelInfo {
-                id: "gemini-2.5-pro".to_string(),
-                name: "Gemini 2.5 Pro".to_string(),
-                provider: "google".to_string(),
-                context_window: 1_000_000,
-                max_output_tokens: Some(65_536),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "gemini-2.5-flash".to_string(),
-                name: "Gemini 2.5 Flash".to_string(),
-                provider: "google".to_string(),
-                context_window: 1_000_000,
-                max_output_tokens: Some(65_536),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "gemini-2.0-flash".to_string(),
-                name: "Gemini 2.0 Flash".to_string(),
-                provider: "google".to_string(),
-                context_window: 1_000_000,
-                max_output_tokens: Some(8_192),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-        ])
+        let endpoint =
+            crate::provider_profile::resolved_models_endpoint(self.id()).map_err(|error| {
+                ProviderError::api(
+                    "provider_profile_contract",
+                    format!("shared provider profile could not resolve discovery: {error}"),
+                )
+            })?;
+        let options = crate::eggpool::EggpoolProbeOptions::default();
+
+        let url = format!(
+            "{GEMINI_NATIVE_BASE}{}{}",
+            endpoint.path,
+            crate::openai_compatible::encode_query(&endpoint.query)
+        );
+
+        let mut response = match self
+            .client
+            .get(&url)
+            .map_err(ProviderError::from)?
+            .timeout(crate::provider_core::non_streaming_timeout())
+            .max_decoded_body_size(options.response_byte_limit)
+            .header("x-goog-api-key", &self.api_key)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!("google discovery failed: {}", error);
+                return Ok(Vec::new());
+            }
+        };
+
+        if !response.status().is_success() {
+            tracing::warn!("google discovery returned HTTP {}", response.status());
+            return Ok(Vec::new());
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > options.response_byte_limit as u64)
+        {
+            return Ok(Vec::new());
+        }
+
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return Ok(Vec::new());
+        };
+        let Some(entries) = value.get("models").and_then(|m| m.as_array()) else {
+            return Ok(Vec::new());
+        };
+        if entries.len() > options.model_count_limit {
+            return Ok(Vec::new());
+        }
+
+        let mut models = Vec::with_capacity(entries.len());
+        for entry in entries {
+            // Gemini reports ids as `models/<id>`; the wire path and the model
+            // selector both use the bare id.
+            let Some(id) = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .and_then(|name| name.strip_prefix("models/"))
+            else {
+                continue;
+            };
+            if id.is_empty() || id.chars().count() > options.model_string_limit {
+                continue;
+            }
+            let name = entry
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id);
+            // Gemini genuinely advertises its context window, so it is read
+            // rather than invented. Capability booleans are not advertised at
+            // all and stay false, meaning "unknown", never "in capable".
+            let context_window = entry
+                .get("inputTokenLimit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let max_output_tokens = entry
+                .get("outputTokenLimit")
+                .and_then(|v| v.as_u64())
+                .map(|value| value as usize);
+            models.push(ModelInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                provider: self.id().to_string(),
+                context_window,
+                max_output_tokens,
+                supports_tools: false,
+                supports_vision: false,
+                variants: Vec::new(),
+            });
+        }
+
+        Ok(models)
     }
 
     fn clone_box(&self) -> Box<dyn Provider> {

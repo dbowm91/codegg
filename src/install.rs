@@ -344,10 +344,10 @@ impl InstallationReport {
             SiblingState::Missing { .. } | SiblingState::Invalid { .. } => (None, None),
         };
         let sandbox_available = crate::security::sandbox::SandboxConfig::is_available();
-        let sandbox_probe = match crate::security::sandbox::probe_landlock() {
-            Ok(()) => "landlock probe: available".to_string(),
-            Err(e) => format!("landlock probe: unavailable ({e})"),
-        };
+        // Report whatever backend this host actually has, not a probe of one
+        // named mechanism: on macOS the answer is Seatbelt, and a
+        // Landlock-only line would misreport a contained host as degraded.
+        let sandbox_probe = crate::security::sandbox::platform_sandbox_capability().describe();
         Self {
             codegg_path,
             codegg_version: env!("CARGO_PKG_VERSION").to_string(),

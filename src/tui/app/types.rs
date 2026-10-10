@@ -35,6 +35,10 @@ pub enum Dialog {
     GoalShow,
     MemoryResults,
     DoctorReport,
+    /// Read-only `/logs` window: bounded daemon log tail plus retained
+    /// toast notifications. Own variant so `ui_state.dialog` reports
+    /// what is actually on screen.
+    Logs,
     Plugin,
     RunDetail,
     ProjectPicker,
@@ -100,6 +104,7 @@ impl Dialog {
                 | Self::GoalShow
                 | Self::MemoryResults
                 | Self::DoctorReport
+                | Self::Logs
                 | Self::Plugin
                 | Self::RunDetail
                 | Self::ProjectPicker
@@ -150,6 +155,7 @@ pub enum TuiMsg {
     SubmitConnect,
     CloseDialog,
     ToggleSidebar,
+    ToggleTodoList,
     ToggleFullscreen,
     ToggleReasoning,
     ToggleTts,

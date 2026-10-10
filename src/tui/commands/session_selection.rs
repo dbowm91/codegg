@@ -274,3 +274,43 @@ fn envelope(payload: CoreRequest) -> RequestEnvelope<CoreRequest> {
         payload,
     }
 }
+
+/// Persist a model chosen in the `/model` dialog to the daemon.
+///
+/// The daemon resolves every turn from its durable `SessionSelection`,
+/// so a choice made in the UI is inert until it is stored there.
+/// `ModelSelect` is the compatibility adapter that maps a
+/// `provider/model` catalog id onto the explicit connection + model the
+/// durable service stores; it performs the same authorization and audit
+/// as a `SessionSelectionUpdate`.
+pub(crate) fn start_model_select_persist(app: &mut App, session_id: String, model: String) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let Some(core_client) = core_client else {
+        // No daemon attached: the choice is still recorded in the tab
+        // manifest and applied when a session binds. Nothing to persist.
+        return;
+    };
+    let model_for_reply = model.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "model_select_persist",
+        async move {
+            let outcome = match core_client
+                .request(envelope(CoreRequest::ModelSelect { session_id, model }))
+                .await
+            {
+                Ok(CoreResponse::Ack) | Ok(CoreResponse::ModelsSnapshot { .. }) => None,
+                Ok(CoreResponse::Error { message, .. }) => Some(message),
+                Ok(other) => Some(format!("unexpected response: {other:?}")),
+                Err(e) => Some(format!("selection could not be saved: {e}")),
+            };
+            Some(TuiCommand::ModelSelectPersisted {
+                model: model_for_reply,
+                error: outcome,
+            })
+        },
+    );
+}

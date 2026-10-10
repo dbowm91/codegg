@@ -143,6 +143,11 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // the events never carry credentials or device secrets.
         CoreEvent::SessionControlChanged { .. } => SafePublicationClass::Safe,
         CoreEvent::SessionControlRequested { .. } => SafePublicationClass::Safe,
+        // Todo snapshot hints carry the session id, a monotonic revision, and
+        // the list itself. That list is task text the user authored through
+        // the tool surface and already reads back through the authorized
+        // todo path, so it is classified Safe rather than Internal.
+        CoreEvent::TodoListUpdated { .. } => SafePublicationClass::Safe,
     }
 }
 

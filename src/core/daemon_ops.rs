@@ -703,15 +703,14 @@ fn execution_snapshot_to_dto(
     // `summary`/filesystem/network but never choose a stronger profile
     // without a daemon-authorized mode update.
     let enforcement = {
-        let supported = crate::security::sandbox::SandboxConfig::is_available();
-        let reason = if supported {
-            None
-        } else {
-            Some(crate::security::sandbox::probe_landlock().unwrap_err())
-        };
+        // The host's real capability, over every registered backend. Naming
+        // one backend's probe here would report "Landlock is Linux-only" on a
+        // macOS host that is in fact fully contained.
+        let capability = crate::security::sandbox::platform_sandbox_capability();
+        let reason = capability.reason().map(str::to_string);
         crate::protocol::core::SandboxEnforcementDto::for_profile_on_host(
             sandbox_profile,
-            supported,
+            capability.is_available(),
             reason,
         )
     };

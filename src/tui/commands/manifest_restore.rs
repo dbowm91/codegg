@@ -31,11 +31,23 @@ use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 use crate::tui::TuiCommand;
 
-/// Maximum number of concurrent `ProjectGet` requests during
-/// restore. The bounded list machinery already enforces a
-/// per-request cap; this is the additional concurrency cap on the
-/// restore pipeline.
-pub const RESTORE_CONCURRENCY: usize = 4;
+/// Re-drive the restore after new daemon evidence lands.
+///
+/// Safe and idempotent: it re-reads the manifest, rebuilds the
+/// snapshot from the catalog plus accumulated project details,
+/// spawns `ProjectGet` only for projects with no detail yet, and
+/// re-applies the resulting plan. Called when the project catalog
+/// completes, since the initial restore request is dispatched before
+/// that round-trip can return.
+pub(crate) fn replay_manifest_restore(app: &mut App) {
+    if app.manifest_restore_announced {
+        // A plan already opened at least one tab; the remaining
+        // evidence only refines it, and re-running would reset live
+        // tab state the operator may already be looking at.
+        return;
+    }
+    apply_manifest_restore(app);
+}
 
 /// Apply the manifest restore. Idempotent: subsequent calls after a
 /// successful restore are no-ops. Logs the outcome to the operator
@@ -78,21 +90,21 @@ pub(crate) fn apply_manifest_restore(app: &mut App) {
 
     // 2. Build the daemon snapshot. The fast-path uses the cached
     // catalog when available; per-project detail lookups fall back
-    // to `ProjectGet`.
-    let mut snapshot = DaemonLookupSnapshot::default();
-    if let Some(client) = app.core_client.as_ref() {
-        // The TUI keeps a ProjectCatalogState; mirror its summaries
-        // into the snapshot. The catalog is bounded and never
-        // contains credentials.
-        let entries = app.project_catalog.entries.clone();
-        snapshot.catalog = entries
-            .into_iter()
-            .map(|e| CatalogEntry {
-                project_id: e.project_id,
-                archived: e.archived_at.is_some(),
-            })
-            .collect();
-        let _ = client; // explicit reference for clarity
+    // to `ProjectGet` results accumulated on `App`.
+    let mut snapshot = build_daemon_snapshot(app);
+
+    // The catalog is filled asynchronously by `refresh_project_catalog`.
+    // On the very first pass it is still empty, and every persisted tab
+    // would classify as `project_missing` — which drops the tab and
+    // wipes `project_tabs` on a verdict the daemon had not actually
+    // made yet. Wait for evidence instead: `ProjectCatalogRefreshed`
+    // and the `ProjectGet` completions both re-drive the restore.
+    if snapshot.catalog.is_empty() && snapshot.project_details.is_empty() {
+        tracing::debug!(
+            target: "codegg::tui::manifest",
+            "daemon snapshot not populated yet; deferring restore until catalog or project detail arrives"
+        );
+        return;
     }
 
     // 3. Spawn per-project ProjectGet tasks for any project we
@@ -106,6 +118,30 @@ pub(crate) fn apply_manifest_restore(app: &mut App) {
     // trigger a refresh.
     let plan = snapshot.build_restore_plan(&manifest);
     apply_plan(app, plan);
+}
+
+/// Assemble the daemon lookup snapshot the restore planner needs from
+/// the catalog the TUI has cached plus every `ProjectGet` result that
+/// has landed so far.
+///
+/// The detail map lives on `App` rather than being rebuilt per call:
+/// each `ProjectGet` completion used to reconstruct the snapshot from
+/// scratch and insert only its own project, so with several persisted
+/// tabs every completion erased the evidence gathered by the previous
+/// ones and the last one to land won.
+fn build_daemon_snapshot(app: &App) -> DaemonLookupSnapshot {
+    DaemonLookupSnapshot {
+        catalog: app
+            .project_catalog
+            .entries
+            .iter()
+            .map(|e| CatalogEntry {
+                project_id: e.project_id.clone(),
+                archived: e.archived_at.is_some(),
+            })
+            .collect(),
+        project_details: app.restore_project_details.clone(),
+    }
 }
 
 /// Spawn bounded `ProjectGet` requests for any persisted project
@@ -142,10 +178,11 @@ fn spawn_restore_project_gets(
         Some(t) => t,
         None => return,
     };
-    // Cap the in-flight count by RESTORE_CONCURRENCY.
-    let concurrency = RESTORE_CONCURRENCY.min(needed.len());
-    let chunked: Vec<String> = needed.into_iter().take(concurrency).collect();
-    for pid in chunked {
+    // Every needed project is requested. The previous code truncated
+    // the list with `.take(RESTORE_CONCURRENCY)` and never fetched a
+    // fifth project, so any manifest with more tabs than the cap
+    // silently lost the tail to `project_missing`.
+    for pid in needed {
         let client = core_client.clone();
         spawn_registered_tui_task(
             Some(tx.clone()),
@@ -256,9 +293,13 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
     }
 
     // Surface the plan in a toast so the user can see what was
-    // restored (bounded to 3 entries).
+    // restored. The restore is re-driven as catalog and project
+    // details arrive, so this fires only on the first apply that
+    // actually opened a tab; later passes would otherwise repeat
+    // the same message once per round-trip.
     let restored_count = plan.entries.iter().filter(|e| e.opens_tab()).count();
-    if restored_count > 0 {
+    if restored_count > 0 && !app.manifest_restore_announced {
+        app.manifest_restore_announced = true;
         let msg = format!(
             "Restored {} tab{} from previous session",
             restored_count,
@@ -269,8 +310,7 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
 }
 
 /// Apply a `ManifestRestoreProjectGetLoaded` completion. Updates
-/// the in-memory snapshot and, if all in-flight requests for the
-/// manifest have settled, re-applies the plan.
+/// the accumulated per-project detail map and re-applies the plan.
 pub(crate) fn apply_manifest_project_get_loaded(
     app: &mut App,
     _request_id: u64,
@@ -293,12 +333,11 @@ pub(crate) fn apply_manifest_project_get_loaded(
 
     // Build a per-project detail snapshot for the restore module.
     // `ProjectDetailsDto` does not embed a session list (only
-    // session_count); the restore coordinator therefore treats the
-    // per-session Rebound detection as best-effort: the bound
-    // session is preserved unless the persisted session is missing
-    // from the catalog. Wire-up to per-session lookup is owned by
-    // the SessionSelection/Milestone 3 project-correct event
-    // routing and is not part of the manifest restore surface.
+    // session_count), so `sessions_known` stays `false`: the
+    // coordinator must treat the session binding as unverifiable
+    // rather than absent, otherwise a live session is dropped on
+    // every restore. Per-session Rebound detection is owned by the
+    // SessionSelection/Milestone 3 project-correct event routing.
     let archived = details.project.archived_at.is_some();
     let detail = ProjectDetailSnapshot {
         project_id: details.project.project_id.clone(),
@@ -318,25 +357,14 @@ pub(crate) fn apply_manifest_project_get_loaded(
             })
             .collect(),
         sessions: Vec::new(),
+        sessions_known: false,
     };
 
-    // Re-run the restore plan with the new detail. We do not have a
-    // direct handle to the prior snapshot, so we rebuild from the
-    // catalog and the new detail.
-    let mut snapshot = DaemonLookupSnapshot::default();
-    if let Some(client) = app.core_client.as_ref() {
-        let entries = app.project_catalog.entries.clone();
-        snapshot.catalog = entries
-            .into_iter()
-            .map(|e| CatalogEntry {
-                project_id: e.project_id,
-                archived: e.archived_at.is_some(),
-            })
-            .collect();
-        let _ = client;
-    }
-    snapshot
-        .project_details
+    // Merge into the accumulated map instead of rebuilding the
+    // snapshot from scratch. Rebuilding dropped every previously
+    // fetched sibling, so only the last completion to land survived
+    // and the other tabs regressed to `project_missing`.
+    app.restore_project_details
         .insert(detail.project_id.clone(), detail);
 
     let outcome = app.load_manifest();
@@ -345,6 +373,6 @@ pub(crate) fn apply_manifest_project_get_loaded(
         _ => return,
     };
 
-    let plan = snapshot.build_restore_plan(&manifest);
+    let plan = build_daemon_snapshot(app).build_restore_plan(&manifest);
     apply_plan(app, plan);
 }

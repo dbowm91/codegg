@@ -282,7 +282,7 @@ pub struct CatalogEntry {
 
 /// Minimal per-project metadata used by the restore coordinator.
 /// The TUI adapts `ProjectDetailsDto` into this shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectDetailSnapshot {
     pub project_id: String,
     pub archived: bool,
@@ -296,6 +296,18 @@ pub struct ProjectDetailSnapshot {
     /// tagged with the canonical project binding. Used to detect
     /// `Rebound` and `Missing`.
     pub sessions: Vec<SessionBinding>,
+    /// Whether `sessions` is an authoritative enumeration of the
+    /// project's sessions, as opposed to "the daemon did not tell
+    /// us".
+    ///
+    /// `ProjectDetailsDto` carries only a `session_count`, never the
+    /// session list, so the TUI adapter always leaves this `false`.
+    /// An empty `sessions` vec therefore means *unknown*, not *none*:
+    /// treating it as an enumeration made every restored tab emit a
+    /// spurious `session_missing` diagnostic and silently drop a
+    /// session that still existed. Session binding validation runs
+    /// only when this is `true`.
+    pub sessions_known: bool,
 }
 
 /// Per-session binding used by the restore coordinator. The
@@ -400,9 +412,17 @@ impl DaemonLookupSnapshot {
         let catalog_match = self.catalog.iter().find(|e| e.project_id == pid);
 
         // Fall back to a per-project detail lookup.
-        let detail = catalog_match
-            .map(|_| ())
-            .and_then(|_| self.project_details.get(pid));
+        //
+        // This lookup MUST NOT be gated on `catalog_match`: the TUI
+        // deliberately issues `ProjectGet` for exactly those projects
+        // the catalog has not reported yet, so the detail snapshot is
+        // the only evidence available for them. Gating it on the
+        // catalog match made every such fetch useless — the freshly
+        // loaded detail was fetched, handed to the coordinator, and
+        // then ignored, so the entry was classified `project_missing`
+        // and the tab was dropped even though the daemon had just
+        // confirmed the project exists.
+        let detail = self.project_details.get(pid);
 
         if catalog_match.is_none() && detail.is_none() {
             diagnostics.push(RestoreDiagnostic {
@@ -483,7 +503,17 @@ impl DaemonLookupSnapshot {
             // Validate session binding. If the session is now bound
             // to a different canonical project, mark as Rebound and
             // drop the session binding.
-            if let Some(sid) = persisted.session_id.as_deref() {
+            //
+            // Only runs when the detail snapshot actually enumerates
+            // the project's sessions. When the daemon only reported a
+            // session count, the persisted binding is preserved
+            // untouched — an unenumerated list is not evidence that
+            // the session is gone.
+            if let Some(sid) = persisted
+                .session_id
+                .as_deref()
+                .filter(|_| detail.sessions_known)
+            {
                 match detail.sessions.iter().find(|s| s.session_id == sid) {
                     Some(s) if s.canonical_project_id == pid => {
                         // Valid binding.
@@ -514,26 +544,16 @@ impl DaemonLookupSnapshot {
         }
 
         // Determine final status.
-        let status = if resolved_session_id.is_none() && persisted.session_id.is_some() {
-            if resolved_project_id.is_some()
-                && !persisted.session_id.as_deref().is_some_and(|sid| {
-                    detail.is_some_and(|d| {
-                        d.sessions
-                            .iter()
-                            .any(|s| s.session_id == sid && s.canonical_project_id == pid)
-                    })
-                })
-            {
-                // Session was dropped (rebound or missing) but the
-                // project remains valid — surface as a partial
-                // restore with the project identity only.
-                RestoreEntryStatus::Valid
-            } else {
-                RestoreEntryStatus::Valid
-            }
-        } else {
-            RestoreEntryStatus::Valid
-        };
+        //
+        // A project that resolved keeps its tab regardless of whether
+        // the session binding survived validation; only the binding
+        // itself is affected, and that is already reflected in
+        // `resolved_session_id`. Every arm below therefore collapsed
+        // to `Valid`, so the status is stated directly. A tab is
+        // opened whenever the project identity resolved, and the
+        // session binding is dropped only by the explicit validation
+        // arms above.
+        let status = RestoreEntryStatus::Valid;
 
         let _ = diagnostic;
 
@@ -731,6 +751,142 @@ mod tests {
         assert!(!plan.entries[0].opens_tab());
     }
 
+    /// A project the catalog has NOT reported yet, but for which a
+    /// `ProjectGet` detail landed, must restore.
+    ///
+    /// The TUI issues `ProjectGet` precisely for projects missing from
+    /// the catalog, so gating the detail lookup on a catalog match made
+    /// the freshly fetched evidence unusable: the entry was classified
+    /// `project_missing` and the tab was dropped even though the daemon
+    /// had just confirmed the project exists.
+    #[test]
+    fn project_detail_resolves_a_project_absent_from_the_catalog() {
+        let mut snap = snapshot();
+        // Catalog intentionally empty — this is the startup race.
+        assert!(snap.catalog.is_empty());
+        snap.project_details.insert(
+            "p1".to_string(),
+            ProjectDetailSnapshot {
+                project_id: "p1".into(),
+                archived: false,
+                workspaces: vec![],
+                workspace_roots: HashMap::new(),
+                sessions: vec![],
+                sessions_known: false,
+            },
+        );
+        let mut m = TuiWorkspaceManifest::default();
+        m.ordered_tabs.push(tab_with_project("p1"));
+        m.active_project_id = Some("p1".into());
+
+        let plan = snap.build_restore_plan(&m);
+        assert_eq!(plan.entries[0].status, RestoreEntryStatus::Valid);
+        assert_eq!(plan.entries[0].resolved_project_id.as_deref(), Some("p1"));
+        assert!(
+            plan.entries[0].opens_tab(),
+            "detail alone must open the tab"
+        );
+        assert!(
+            plan.diagnostics.is_empty(),
+            "a project proven by ProjectGet must not emit project_missing: {:?}",
+            plan.diagnostics
+        );
+        assert!(plan.active_tab_id.is_some());
+    }
+
+    /// `ProjectDetailsDto` carries only a session *count*, so the TUI
+    /// adapter always reports the session list as unenumerated. An
+    /// unenumerated list must not be read as "the session is gone".
+    #[test]
+    fn an_unenumerated_session_list_preserves_the_persisted_binding() {
+        let mut snap = snapshot();
+        snap.catalog.push(CatalogEntry {
+            project_id: "p1".into(),
+            archived: false,
+        });
+        snap.project_details.insert(
+            "p1".to_string(),
+            ProjectDetailSnapshot {
+                project_id: "p1".into(),
+                archived: false,
+                workspaces: vec![],
+                workspace_roots: HashMap::new(),
+                sessions: vec![],
+                sessions_known: false,
+            },
+        );
+        let mut m = TuiWorkspaceManifest::default();
+        m.ordered_tabs.push(tab_with_session("p1", "s1"));
+        m.active_project_id = Some("p1".into());
+
+        let plan = snap.build_restore_plan(&m);
+        assert_eq!(
+            plan.entries[0].resolved_session_id.as_deref(),
+            Some("s1"),
+            "a live session must survive a restore that could not enumerate sessions"
+        );
+        assert!(plan.entries[0].has_heavy_session());
+        assert!(
+            !plan.diagnostics.iter().any(|d| d.code == "session_missing"),
+            "unknown session list must not emit session_missing: {:?}",
+            plan.diagnostics
+        );
+    }
+
+    /// An *enumerated* list that lacks the session is authoritative and
+    /// must still drop the binding.
+    #[test]
+    fn an_enumerated_session_list_without_the_session_still_drops_it() {
+        let mut snap = snapshot();
+        snap.catalog.push(CatalogEntry {
+            project_id: "p1".into(),
+            archived: false,
+        });
+        snap.project_details.insert(
+            "p1".to_string(),
+            ProjectDetailSnapshot {
+                project_id: "p1".into(),
+                archived: false,
+                workspaces: vec![],
+                workspace_roots: HashMap::new(),
+                sessions: vec![],
+                sessions_known: true,
+            },
+        );
+        let mut m = TuiWorkspaceManifest::default();
+        m.ordered_tabs.push(tab_with_session("p1", "ghost"));
+
+        let plan = snap.build_restore_plan(&m);
+        assert!(plan.entries[0].opens_tab());
+        assert_eq!(plan.entries[0].resolved_session_id, None);
+        assert!(!plan.entries[0].has_heavy_session());
+        assert!(plan.diagnostics.iter().any(|d| d.code == "session_missing"));
+    }
+
+    /// An archived project is still skipped even when only a detail
+    /// proves it — the catalog fast path is not the only evidence.
+    #[test]
+    fn archived_project_found_only_via_detail_is_still_skipped() {
+        let mut snap = snapshot();
+        snap.project_details.insert(
+            "p1".to_string(),
+            ProjectDetailSnapshot {
+                project_id: "p1".into(),
+                archived: true,
+                workspaces: vec![],
+                workspace_roots: HashMap::new(),
+                sessions: vec![],
+                sessions_known: false,
+            },
+        );
+        let mut m = TuiWorkspaceManifest::default();
+        m.ordered_tabs.push(tab_with_project("p1"));
+
+        let plan = snap.build_restore_plan(&m);
+        assert_eq!(plan.entries[0].status, RestoreEntryStatus::Archived);
+        assert!(!plan.entries[0].opens_tab());
+    }
+
     #[test]
     fn archived_project_classified_as_archived() {
         let mut snap = snapshot();
@@ -778,6 +934,7 @@ mod tests {
                     session_id: "s1".into(),
                     canonical_project_id: "p1".into(),
                 }],
+                sessions_known: true,
             },
         );
         snap.project_details = details;
@@ -808,6 +965,7 @@ mod tests {
                     session_id: "s1".into(),
                     canonical_project_id: "p-other".into(),
                 }],
+                sessions_known: true,
             },
         );
         snap.project_details = details;
@@ -835,6 +993,7 @@ mod tests {
                 workspaces: vec![],
                 workspace_roots: HashMap::new(),
                 sessions: vec![],
+                sessions_known: true,
             },
         );
         snap.project_details = details;
@@ -862,6 +1021,7 @@ mod tests {
                 workspaces: vec!["w-known".into()],
                 workspace_roots: HashMap::new(),
                 sessions: vec![],
+                sessions_known: true,
             },
         );
         snap.project_details = details;
@@ -897,6 +1057,7 @@ mod tests {
                 workspaces: vec!["workspace-b".into()],
                 workspace_roots,
                 sessions: vec![],
+                sessions_known: true,
             },
         );
         let mut manifest = TuiWorkspaceManifest {

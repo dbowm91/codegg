@@ -26,7 +26,7 @@ to violate.
 | Auth types | `crates/codegg-providers/src/auth_types.rs` | `AuthConfig`, `Credential`, `CredentialKind`, `CredentialCapability`, `CredentialStore`, `AuthResolver`, `AuthError`; `ExternalCommand` unsupported |
 | Auth CLI | `src/auth/cli.rs`, `src/auth/mod.rs` | `codegg auth set-key/status/logout`; the clap `AuthSubcommand` enum lives in `src/main.rs:508`, the handlers are `AuthCli` (`status`/`set_key`/`logout`, `cli.rs:93`,`:124`,`:161`) in `src/auth/cli.rs`; `src/auth` re-exports providers types |
 | Crypto | `crates/codegg-providers/src/crypto.rs`, `codegg_config::encryption` | AES-256-GCM + Argon2id; master key via `get_master_key()` (`CODEGG_MASTER_KEY`) |
-| Resilience | `circuit.rs`, `fallback.rs`, `cache.rs`, `catalog.rs`, `discovery.rs`, `models.rs` | `CircuitBreaker`, `FallbackProvider`, response cache, live catalog + SQLite discovery cache, embedded free-tier defs |
+| Resilience | `circuit.rs`, `fallback.rs`, `cache.rs`, `discovery.rs`, `provider_profile.rs` | `CircuitBreaker`, `FallbackProvider`, response cache, SQLite discovery cache, profile-driven models endpoint. **No shipped model catalog** — `models.rs`/`catalog.rs` were removed; see `architecture/provider.md` "Model discovery authority" |
 | Streaming | `wire.rs`, `responses_api.rs`, `text_tool_parser.rs` | Shared `eggpool-wire` kernel bridge (canonical request encode + stream decode), Responses API adapter, bounded textual tool-call repair |
 | Connection qualification | `crates/codegg-providers/src/qualification.rs`, `src/core/provider_qualification.rs`, `src/agent/provider_qualification.rs` | `CatalogOutcome` (transport/catalog axis) vs `CredentialVerification` (credential axis); `SetupProbeStrategy::credential_evidence()`; revision-scoped inference-feedback writer |
 
@@ -145,9 +145,8 @@ Verified 2026-10-06 against `architecture/provider.md`,
 `crates/codegg-providers/src/setup_catalog.rs`,
 `crates/codegg-providers/src/wire.rs`, `crates/codegg-providers/src/circuit.rs`,
 `crates/codegg-providers/src/fallback.rs`, `crates/codegg-providers/src/cache.rs`,
-`crates/codegg-providers/src/catalog.rs`,
 `crates/codegg-providers/src/discovery.rs`,
-`crates/codegg-providers/src/models.rs`,
+`crates/codegg-providers/src/provider_profile.rs`,
 `crates/codegg-config/src/encryption.rs`, `src/auth/cli.rs`, `src/auth/mod.rs`,
 `src/main.rs`, and `scripts/`. Corrected the streaming row (`sse_parser.rs`
 was retired; the shared `eggpool-wire` kernel bridge `wire.rs` now owns

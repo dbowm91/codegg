@@ -16,7 +16,11 @@ review that never mutates files.
 | Artifact | Location |
 |----------|----------|
 | SSRF protection (`is_internal_ip`, `validate_url_host`, etc.) | `src/security/ssrf.rs` |
-| Landlock sandboxing, `SandboxConfig`, `SandboxLaunchSpec` | `src/security/sandbox.rs` |
+| Containment policy + allowance sets | `src/security/sandbox/policy.rs` |
+| Backend registry (`BackendId`, `SandboxBackend`, `BACKENDS`) | `src/security/sandbox/backend.rs` |
+| Landlock backend (Linux) | `src/security/sandbox/landlock.rs` |
+| Seatbelt backend (macOS) | `src/security/sandbox/seatbelt.rs` |
+| `SandboxConfig`, `SandboxLaunchSpec`, capability, status protocol | `src/security/sandbox.rs` |
 | Security policy (`action_for_command`, `action_for_findings`) | `src/security/policy.rs` |
 | High-level `SecurityService` facade | `src/security/service.rs` |
 | Security review workflow (diff parsing, evidence synthesis) | `src/security/workflow/` |
@@ -25,7 +29,7 @@ review that never mutates files.
 | Sensitive path matching | `src/security/mod.rs` (`matches_sensitive_path`) |
 | Re-exports of eggsentry types for backward compat | `src/security/mod.rs` |
 | Deterministic security scanning (secrets, commands, deps) | `crates/eggsentry/src/` |
-| `codegg-sandbox-helper` binary (Linux Landlock enforcement) | `src/bin/codegg-sandbox-helper/` |
+| `codegg-sandbox-helper` binary (backend dispatch + Seatbelt FFI) | `src/bin/codegg-sandbox-helper/` |
 
 ## How It Works
 
@@ -58,11 +62,27 @@ Used by:
   eggsearch subprocess; Codegg only does basic URL validation
   (`validate_fetch_url`) on the adapter path.
 
-### Landlock Sandboxing (`sandbox.rs`)
+### Filesystem containment (`sandbox/`)
 
-Linux enforcement is via the maintained `landlock` crate, performed
-**only** by the private one-shot `codegg-sandbox-helper` process. The
-daemon never calls `restrict_self()`.
+Enforcement is performed **only** by the private one-shot
+`codegg-sandbox-helper` process. The daemon never restricts itself.
+
+The module is split into a platform-neutral half and a platform-specific
+half:
+
+| Layer | File | Owns |
+|---|---|---|
+| Policy | `src/security/sandbox/policy.rs` | `BackendPolicy` — readable roots, writable roots, denied roots, plus the curated tool-compatible allowance sets |
+| Registry | `src/security/sandbox/backend.rs` | `BackendId`, `SandboxBackend`, the `BACKENDS` table, preference-ordered `select()` |
+| Backends | `src/security/sandbox/landlock.rs`, `seatbelt.rs` | Compiling a `BackendPolicy` into an LSM ruleset / SBPL profile |
+| Facade | `src/security/sandbox.rs` | Profiles, `SandboxConfig`, capability, enforcement, execution path, helper status protocol |
+
+**Adding a backend** is one `SandboxBackend` entry in `BACKENDS` plus its
+`probe`/`apply` functions. Capability probing, enforcement descriptors,
+the execution path, the helper, the audit token, and the operator text all
+read backend identity out of the registry, so none of them change.
+
+Linux enforcement uses the maintained `landlock` crate.
 
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the
@@ -85,7 +105,7 @@ pub struct SandboxConfig {
     pub enabled: bool,
     pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
-    pub deny_paths: Vec<String>,  // retained for compat, not enforced as zero-access rule
+    pub deny_paths: Vec<String>,  // operator-declared; merged with policy::sensitive_deny_paths()
 }
 
 pub struct SandboxLaunchSpec {
@@ -93,8 +113,12 @@ pub struct SandboxLaunchSpec {
     pub args: Vec<String>,
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
+    pub deny_paths: Vec<PathBuf>,  // never readable/writable, regardless of profile
 }
 ```
+
+`SandboxLaunchSpec` names **paths, not a mechanism**, so the same spec
+serves every backend.
 
 `SandboxConfig::enforce()` refuses to restrict the calling process —
 callers must use the child launch path.
@@ -130,11 +154,52 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 `default_construction_defers_registry_building`.
 
 **Platform outcomes:**
-- Linux with Landlock ABI: `Enforced { abi }` (ABI V1 minimum)
-- Non-Linux or no Landlock: constrained requests report
+- Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
+- macOS: `Enforced { backend: seatbelt, abi: None, .. }`
+- Any host with no registered backend: constrained requests report
   `FilesystemEnforcement::Unavailable` (fail closed, never `FullHost`);
   Python portable fallback with sanitized environment,
   workspace-contained cwd, snapshot-based post-exec checks
+
+`SandboxLaunchOutcome::Enforced` carries `guarantees` and `limits` alongside
+the backend id. Those lists are the honest boundary of each mechanism and
+are asserted in `tests/sandbox_containment.rs`, so a backend can never be
+read as stronger than it is:
+
+| Backend | Guarantees | Limits |
+|---|---|---|
+| landlock | deny-first allowlist, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
+| seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; pre-open fds remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
+
+**Seatbelt (`src/security/sandbox/seatbelt.rs`).** `sandbox_init` accepts an
+arbitrary SBPL string **in-process** and is available on macOS 26.6.2
+(verified: a `deny file-read*` subpath rule blocks reads, rules are
+last-rule-wins, and restrictions survive `exec`). No `sandbox-exec` wrapper
+is needed; the helper calls `sandbox_init` and then `exec()`s the target,
+exactly as it does for Landlock. The `sandbox.h` header is deprecated in
+favour of App Sandbox, which is entitlement-gated and meaningless for a CLI
+— deprecated-but-shipped Seatbelt is the only OS-provided, non-entitlement
+filesystem confinement a terminal process can get, and it is what Claude Code
+and the OpenAI Codex CLI ship.
+
+The `sandbox_init` FFI is `unsafe` and the root library denies
+`unsafe_code`, so the helper installs it through
+`seatbelt::install_apply_hook` at startup. An uninstalled hook is a hard
+error, never a fallback to an uncontained exec.
+
+**Tool compatibility is a deliberate trade-off, not an oversight.** A
+deny-first allowlist exposing only the workspace plus a few library
+directories is nominally stronger and practically useless: `git` cannot read
+`/etc/gitconfig`, `cargo` cannot read `~/.cargo`, `gh` cannot read
+`~/.config/gh`, and nothing can resolve a hostname without `/etc/resolv.conf`.
+So `policy.rs` grants read to the system and tool-cache locations real
+tooling needs and confines **writes** — the operation that damages a host —
+to the workspace plus scratch space, while denying credential material
+(including CodeGG's own store) on every backend.
+
+Every path is canonicalized before it reaches a policy: Seatbelt matches
+`subpath` against the *resolved* path, so an allowance naming `/tmp` does not
+cover `/private/tmp` on macOS.
 
 **CANONICAL_PATHS_CACHE:** Static cache with 300s TTL and 100-entry
 cap (`sandbox.rs:568`-`:573`: `CACHE_TTL = 300s`, `MAX_CACHE_ENTRIES = 100`).
@@ -292,8 +357,10 @@ CodeGG-owned generic chunk accumulator remains.
   `crate::install` sibling rule (canonical exe dir, no PATH/cwd/env; :290)
 - `validate_path_safety(path, allowed_paths)` — symlink check +
   canonicalization (:509)
-- `probe_landlock()` — checks Landlock ABI availability (:350)
-- `apply_landlock(spec)` — applies Landlock rules (Linux only) (:367)
+- `platform_sandbox_capability()` — probes every registered backend
+- `apply_backend(spec)` — dispatches to the host's backend (helper only)
+- `probe_landlock()` / `apply_landlock(spec)` — Landlock specifically
+  (install doctor, mechanism-specific callers)
 
 ### Policy (`policy.rs`)
 
@@ -386,9 +453,13 @@ fallback_to_native = true  # only for mcp backend
    owner-domain body-limit error.
 6. **eggsentry is deterministic.** No network calls, no file mutations.
    Regex-based scanning with `LazyLock` compiled patterns.
-7. **Landlock ABI V1 minimum.** The helper requires `FullyEnforced` +
-  `no_new_privs`; partial enforcement is rejected.
-8. **Local daemon endpoints are not principals.** Unix socket permissions and
+7. **Backends report obtained facts, not claims.** `SandboxLaunchOutcome::
+   Enforced` carries the backend id plus `guarantees`/`limits`. Seatbelt
+   cannot claim Landlock's `no_new_privs` drop, and does not. A backend with
+   an empty `limits` list fails `tests/sandbox_containment.rs`.
+8. **Landlock ABI V1 minimum.** The helper requires `FullyEnforced` +
+   `no_new_privs`; partial enforcement is rejected.
+9. **Local daemon endpoints are not principals.** Unix socket permissions and
    the Windows pipe DACL restrict transport admission; endpoint names do not
    authorize CoreFrame requests. The Windows pipe uses an explicit protected
    DACL for the current user and LocalSystem, rejects remote clients, and
@@ -401,8 +472,12 @@ fallback_to_native = true  # only for mcp backend
 # SSRF tests
 cargo test -p codegg --lib security::ssrf
 
-# Sandbox tests (includes Landlock-specific tests on Linux)
+# Sandbox tests (backend registry, policy, profile generation)
 cargo test -p codegg --lib security::sandbox
+
+# End-to-end containment: runs the real helper and asserts observed
+# enforcement on whichever backend this host provides
+cargo test -p codegg --test sandbox_containment
 
 # Policy tests
 cargo test -p codegg --lib security::policy

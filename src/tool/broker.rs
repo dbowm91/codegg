@@ -279,20 +279,42 @@ impl BrokerAuthority {
             ));
         }
 
-        // M013-C-06: Effect class match against tool contract
-        let contract_effect = match contract.effect_class {
-            ToolEffectClass::ReadOnly => "read_only",
-            ToolEffectClass::ReadValidate => "read_validate",
-            ToolEffectClass::SafeRepeat => "safe_repeat",
-            ToolEffectClass::IdempotentMutating => "idempotent_mutating",
-            ToolEffectClass::NonIdempotent => "non_idempotent",
-            ToolEffectClass::ProcessExec => "process_exec",
+        // M013-C-06: Effect class ceiling against the tool contract.
+        //
+        // `allowed_effect_class` names the *most* side-effecting class
+        // the grant admits — it is a ceiling, not an exact-match label.
+        // An earlier exact-equality check here denied every read-side
+        // tool (`read`, `grep`, `glob`, `list` are all `read_only`)
+        // whenever the execution context carried its default
+        // `non_idempotent` ceiling, because `read_only != non_idempotent`.
+        // That made the read-only tool palette unusable from the agent
+        // loop. The comparison is `tool <= ceiling`: it authorizes only
+        // calls that are *at or below* what was granted, and still
+        // denies anything strictly more dangerous than the ceiling.
+        const ANY_EFFECT_CLASS: &str = "any";
+        let contract_effect = contract.effect_class;
+        let ceiling = match grant.allowed_effect_class.as_str() {
+            ANY_EFFECT_CLASS => None,
+            other => match ToolEffectClass::from_authority_str(other) {
+                Some(class) => Some(class),
+                // Fail closed: an empty or unrecognized ceiling must
+                // never be read as "unrestricted".
+                None => {
+                    return Err(format!(
+                        "unrecognized grant effect class: {}",
+                        if other.is_empty() { "<empty>" } else { other }
+                    ))
+                }
+            },
         };
-        if grant.allowed_effect_class != contract_effect && grant.allowed_effect_class != "any" {
-            return Err(format!(
-                "effect class mismatch: grant={}, tool={}",
-                grant.allowed_effect_class, contract_effect
-            ));
+        if let Some(ceiling) = ceiling {
+            if !contract_effect.is_within_ceiling(ceiling) {
+                return Err(format!(
+                    "effect class mismatch: grant ceiling={}, tool={}",
+                    grant.allowed_effect_class,
+                    contract_effect.as_str()
+                ));
+            }
         }
 
         // M013-C-06: Session binding — the grant must be bound to the
@@ -1549,5 +1571,177 @@ mod tests {
         threaded.apply_audit_emitter(ctx.audit_emitter().expect("emitter"));
         assert!(threaded.audit_emitter().is_some());
         assert!(threaded.live_audit_hook().is_none());
+    }
+
+    // ── Effect-class ceiling (M013-C-06) ──────────────────────────
+    //
+    // Regression cover for the live failure where the agent loop's
+    // default `non_idempotent` ceiling denied every read-only tool
+    // (`read`, `grep`, `glob`, `list`) with "effect class mismatch".
+
+    /// Build an invocation context whose grant carries `ceiling` as its
+    /// `allowed_effect_class`. Every other grant dimension is held at
+    /// the passing baseline from `make_ctx`, so a returned `Err` can
+    /// only come from the effect-class comparison.
+    fn ctx_with_ceiling(ceiling: &str) -> BrokerInvocationContext {
+        let mut ctx = make_ctx();
+        let grant = ctx
+            .authority
+            .grant()
+            .expect("make_ctx grants Verified authority")
+            .clone();
+        let grant = codegg_core::jobs::ToolAuthorityGrant {
+            allowed_effect_class: ceiling.to_owned(),
+            decision_digest: String::new(),
+            ..grant
+        };
+        let grant = codegg_core::jobs::ToolAuthorityGrant {
+            decision_digest: grant.compute_digest(),
+            ..grant
+        };
+        ctx.authority = BrokerAuthority::from_grant(grant);
+        ctx
+    }
+
+    fn contract_with_effect(name: &str, effect: ToolEffectClass) -> ToolContract {
+        let mut contract = ToolContract::legacy(name, serde_json::json!({"type": "object"}));
+        contract.effect_class = effect;
+        contract
+    }
+
+    fn verify(ceiling: &str, effect: ToolEffectClass) -> Result<(), String> {
+        let ctx = ctx_with_ceiling(ceiling);
+        let contract = contract_with_effect("probe", effect);
+        ctx.authority.verify_grant_scope("probe", &contract, &ctx)
+    }
+
+    #[test]
+    fn a_non_idempotent_ceiling_admits_a_read_only_tool() {
+        // The live regression: this exact pair was denied.
+        assert_eq!(verify("non_idempotent", ToolEffectClass::ReadOnly), Ok(()));
+    }
+
+    #[test]
+    fn a_non_idempotent_ceiling_admits_every_at_or_below_class() {
+        for effect in [
+            ToolEffectClass::ReadOnly,
+            ToolEffectClass::ReadValidate,
+            ToolEffectClass::SafeRepeat,
+            ToolEffectClass::IdempotentMutating,
+            ToolEffectClass::NonIdempotent,
+        ] {
+            assert_eq!(
+                verify("non_idempotent", effect),
+                Ok(()),
+                "{:?} must be admissible under a non_idempotent ceiling",
+                effect
+            );
+        }
+    }
+
+    #[test]
+    fn a_ceiling_never_admits_a_strictly_more_dangerous_class() {
+        // The ceiling is a bound, not a blanket allow: widening the
+        // check must not have widened authority upward.
+        for (ceiling, effect) in [
+            ("read_only", ToolEffectClass::ReadValidate),
+            ("read_only", ToolEffectClass::SafeRepeat),
+            ("read_only", ToolEffectClass::IdempotentMutating),
+            ("read_only", ToolEffectClass::NonIdempotent),
+            ("read_only", ToolEffectClass::ProcessExec),
+            ("non_idempotent", ToolEffectClass::ProcessExec),
+        ] {
+            let err = verify(ceiling, effect).expect_err("must stay denied");
+            assert!(
+                err.contains("effect class mismatch"),
+                "expected an effect-class denial, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ceiling_admits_its_own_class() {
+        // Every class is admissible under a ceiling of its own rank,
+        // including the top of the lattice.
+        for effect in [
+            ToolEffectClass::ReadOnly,
+            ToolEffectClass::ReadValidate,
+            ToolEffectClass::SafeRepeat,
+            ToolEffectClass::IdempotentMutating,
+            ToolEffectClass::NonIdempotent,
+            ToolEffectClass::ProcessExec,
+        ] {
+            assert_eq!(
+                verify(effect.as_str(), effect),
+                Ok(()),
+                "{:?} must be admissible under its own ceiling",
+                effect
+            );
+        }
+    }
+
+    #[test]
+    fn an_any_ceiling_admits_every_class() {
+        for effect in [
+            ToolEffectClass::ReadOnly,
+            ToolEffectClass::ReadValidate,
+            ToolEffectClass::SafeRepeat,
+            ToolEffectClass::IdempotentMutating,
+            ToolEffectClass::NonIdempotent,
+            ToolEffectClass::ProcessExec,
+        ] {
+            assert_eq!(verify("any", effect), Ok(()), "{:?}", effect);
+        }
+    }
+
+    #[test]
+    fn an_empty_or_unrecognized_ceiling_fails_closed() {
+        for ceiling in ["", "  ", "READ_ONLY", "totally-bogus"] {
+            let err = verify(ceiling, ToolEffectClass::ReadOnly)
+                .expect_err("an unusable ceiling must not authorize anything");
+            assert!(
+                err.contains("unrecognized grant effect class"),
+                "expected a fail-closed rejection for {ceiling:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn effect_class_severity_is_strictly_ordered() {
+        let ordered = [
+            ToolEffectClass::ReadOnly,
+            ToolEffectClass::ReadValidate,
+            ToolEffectClass::SafeRepeat,
+            ToolEffectClass::IdempotentMutating,
+            ToolEffectClass::NonIdempotent,
+            ToolEffectClass::ProcessExec,
+        ];
+        for pair in ordered.windows(2) {
+            assert!(
+                pair[0].severity() < pair[1].severity(),
+                "{:?} must rank below {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn effect_class_authority_round_trips() {
+        for effect in [
+            ToolEffectClass::ReadOnly,
+            ToolEffectClass::ReadValidate,
+            ToolEffectClass::SafeRepeat,
+            ToolEffectClass::IdempotentMutating,
+            ToolEffectClass::NonIdempotent,
+            ToolEffectClass::ProcessExec,
+        ] {
+            assert_eq!(
+                ToolEffectClass::from_authority_str(effect.as_str()),
+                Some(effect)
+            );
+        }
+        assert_eq!(ToolEffectClass::from_authority_str("any"), None);
+        assert_eq!(ToolEffectClass::from_authority_str(""), None);
     }
 }

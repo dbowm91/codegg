@@ -19,6 +19,12 @@ const SPINNER_RENDER_INTERVAL: Duration = Duration::from_millis(80);
 const TOAST_RENDER_INTERVAL: Duration = Duration::from_millis(250);
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
+/// Maximum queued daemon envelopes applied in a single loop iteration.
+///
+/// Bounded so clearing a large backlog cannot starve terminal input; the
+/// remainder is picked up on the next pass.
+const CORE_EVENT_DRAIN_LIMIT: usize = 64;
+
 fn render_app(
     terminal: &mut AppTerminal,
     app: &mut app::App,
@@ -447,7 +453,31 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                             event_seq = envelope.event_seq,
                             "processing core event"
                         );
-                        if app.apply_core_event(envelope.payload) {
+                        let mut changed = app.apply_core_event(envelope.payload);
+                        // Drain the already-queued envelopes before going
+                        // back to `select!`. This branch is last under
+                        // `biased`, so applying one envelope per iteration let
+                        // a backlog build up whenever deltas arrived faster
+                        // than one event per loop pass — output was produced
+                        // all along but only became visible in a burst, and
+                        // queued permission prompts arrived too late to be
+                        // answered. The drain is bounded so a deep backlog is
+                        // cleared across several iterations and terminal
+                        // input stays responsive.
+                        let mut drained = 0usize;
+                        while let Some(rx) = app.core_event_rx.as_mut() {
+                            match rx.try_recv() {
+                                Ok(envelope) => {
+                                    changed |= app.apply_core_event(envelope.payload);
+                                    drained += 1;
+                                    if drained >= CORE_EVENT_DRAIN_LIMIT {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        if changed || drained > 0 {
                             needs_render = true;
                         }
                     }

@@ -191,6 +191,9 @@ pub enum BuiltinSlashAction {
     State,
     Search,
     Doctor,
+    /// Read-only window over recent daemon log lines and the retained
+    /// toast history.
+    Logs,
     ToolContracts,
     LspStatus,
     LspPreviews,
@@ -652,6 +655,8 @@ impl CommandRegistry {
                 .with_description("Search session transcript"),
             Command::new("/doctor", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Doctor))
                 .with_description("Run diagnostics (search backend, MCP, providers)"),
+            Command::new("/logs", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Logs))
+                .with_description("Show recent daemon log lines and past notifications"),
             Command::new("/lsp-status", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspStatus))
                 .with_description("Show LSP server status and diagnostics"),
             Command::new("/lsp-previews", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::LspPreviews))
@@ -1373,6 +1378,7 @@ mod tests {
             B::State,
             B::Search,
             B::Doctor,
+            B::Logs,
             B::ToolContracts,
             B::LspStatus,
             B::LspPreviews,

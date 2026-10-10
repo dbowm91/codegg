@@ -185,39 +185,17 @@ impl Provider for OpenAiProvider {
         ))
     }
 
+    /// Discover models upstream. There is no compiled-in catalog: the shared
+    /// compatible provider owns the bounded, profile-driven discovery call, and
+    /// an unreachable `/models` yields an empty catalog rather than fiction.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![
-            ModelInfo {
-                id: "gpt-4.1".to_string(),
-                name: "GPT-4.1".to_string(),
-                provider: self.cfg.provider_id.clone(),
-                context_window: 1_047_576,
-                max_output_tokens: Some(32_768),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "gpt-4.1-mini".to_string(),
-                name: "GPT-4.1 Mini".to_string(),
-                provider: self.cfg.provider_id.clone(),
-                context_window: 1_047_576,
-                max_output_tokens: Some(32_768),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "gpt-4o".to_string(),
-                name: "GPT-4o".to_string(),
-                provider: self.cfg.provider_id.clone(),
-                context_window: 128_000,
-                max_output_tokens: Some(16_384),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-        ])
+        let discovery = crate::openai_compatible::OpenAiCompatibleProvider::simple_with_credential(
+            &self.cfg.provider_id,
+            &self.cfg.provider_name,
+            crate::auth_types::Credential::api_key(self.cfg.api_key.clone()),
+            &self.cfg.base_url,
+        );
+        discovery.models().await
     }
 
     fn clone_box(&self) -> Box<dyn Provider> {

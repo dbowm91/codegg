@@ -117,6 +117,13 @@ This ensures existing tools work without modification.
    session binding, permission mode, principal, and path policy
    (9 dimensions). Manifest, contract snapshot, and policy revision
    are verified conditionally for programmatic callers.
+   `allowed_effect_class` is a **ceiling**, not an exact-match label:
+   the check is `tool_class.severity() <= grant_ceiling.severity()`,
+   ordered `read_only < read_validate < safe_repeat < idempotent_mutating
+   < non_idempotent < process_exec` (`ToolEffectClass::severity`,
+   `src/tool/contract.rs`). `process_exec` outranks every mutation class
+   so process execution never rides in on a mutation-classed grant, and
+   an empty or unrecognized ceiling fails closed. `"any"` is unrestricted.
 4. **Programmatic failure mapping**: `into_programmatic_outcome()`
    maps terminal statuses — only `Success` becomes a `CompletedCall`.
 5. **Program-capable caller policies**: `resolve_manifest` admits

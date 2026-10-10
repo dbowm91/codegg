@@ -199,6 +199,16 @@ impl SessionDialog {
         self.sorted_sessions().get(self.selected).copied()
     }
 
+    /// Number of sessions currently loaded into this dialog.
+    ///
+    /// Exposed so the reload path can assert that the *painted* instance
+    /// (the focus-manager clone) received the rows, not just the App-owned
+    /// field — filling only the latter is exactly the defect that left
+    /// `/sessions` showing an empty list.
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
     fn update_cache(&self) {
         let mut sessions: Vec<&Session> = if self.filter.is_empty() {
             self.sessions.iter().collect()

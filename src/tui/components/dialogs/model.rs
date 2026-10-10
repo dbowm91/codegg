@@ -47,7 +47,7 @@ pub struct ModelDialog {
     pub field_index: usize,
     visible_height: usize,
     #[allow(clippy::type_complexity)]
-    flat_cache: RefCell<Option<(String, Vec<(String, String)>)>>,
+    flat_cache: RefCell<Option<(String, Vec<(String, String, String)>)>>,
 }
 
 impl Clone for ModelDialog {
@@ -141,22 +141,24 @@ impl ModelDialog {
     }
 
     pub fn initialize_selection(&mut self) {
-        let flat = self.flat_filtered();
+        let flat = self.flat_filtered_full();
         if !flat.is_empty() {
             if !self.current.is_empty() {
-                if let Some(idx) = flat
-                    .iter()
-                    .position(|(p, n)| format!("{}/{}", p, n) == self.current)
-                {
+                // Match on the original model string, not a re-joined
+                // `provider/name` reconstruction, so a selection that
+                // round-trips through this dialog always lands on the
+                // same model it started from.
+                if let Some(idx) = flat.iter().position(|(_, _, id)| *id == self.current) {
                     self.selected = idx;
                     let visible_models = self.count_visible_models(0);
                     self.scroll.clamp(self.selected, flat.len(), visible_models);
                 }
-            } else if let Some(idx) = flat.iter().position(|(p, _)| p == "opencode_zen") {
-                self.selected = idx;
-                let visible_models = self.count_visible_models(0);
-                self.scroll.clamp(self.selected, flat.len(), visible_models);
             } else {
+                // No current selection: start at the top of the
+                // provider-sorted list. There is deliberately no
+                // provider-specific bias — preferring a hardcoded
+                // provider silently pointed the cursor at a shipped
+                // default rather than the operator's catalog.
                 self.selected = 0;
                 let visible_models = self.count_visible_models(0);
                 self.scroll.clamp(self.selected, flat.len(), visible_models);
@@ -166,10 +168,12 @@ impl ModelDialog {
         }
     }
 
+    /// The model the operator is selecting, as the exact id string that
+    /// was discovered or configured.
     pub fn selected(&self) -> Option<String> {
-        let flat = self.flat_filtered();
-        flat.get(self.selected)
-            .map(|(provider, name)| format!("{}/{}", provider, name))
+        self.flat_filtered_full()
+            .get(self.selected)
+            .map(|(_, _, id)| id.clone())
     }
 
     /// Map a rendered row (relative to dialog area, EXCLUDING borders) to a model index in flat_filtered().
@@ -358,7 +362,7 @@ impl ModelDialog {
             for model in models {
                 if model.to_lowercase().contains(&filter_lower) {
                     let name = model.split('/').next_back().unwrap_or(model).to_string();
-                    result.push((provider.clone(), name));
+                    result.push((provider.clone(), name, model.clone()));
                 }
             }
         }
@@ -494,6 +498,22 @@ impl ModelDialog {
     }
 
     pub fn flat_filtered(&self) -> Vec<(String, String)> {
+        self.flat_filtered_full()
+            .into_iter()
+            .map(|(provider, name, _id)| (provider, name))
+            .collect()
+    }
+
+    /// The filtered, display-ordered model list carrying the ORIGINAL
+    /// model string alongside the rendered `(provider, name)` pair.
+    ///
+    /// The third element is the authoritative selection value. Callers
+    /// must select with it rather than re-joining the provider and the
+    /// last path segment: a model id may itself contain `/`, and
+    /// reconstructing it from the first and last segments silently
+    /// rewrites the id (`a/b/c` would be sent as `a/c`), producing a
+    /// request for a model the operator never picked.
+    pub fn flat_filtered_full(&self) -> Vec<(String, String, String)> {
         if let Some((ref cache_filter, ref cache_result)) = self.flat_cache.borrow().as_ref() {
             if cache_filter == &self.filter {
                 return cache_result.clone();
@@ -506,7 +526,7 @@ impl ModelDialog {
             for model in models {
                 if filter_lower.is_empty() || model.to_lowercase().contains(&filter_lower) {
                     let name = model.split('/').next_back().unwrap_or(model).to_string();
-                    result.push((provider.clone(), name));
+                    result.push((provider.clone(), name, model.clone()));
                 }
             }
         }
@@ -526,6 +546,72 @@ impl Default for ModelDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model id that itself contains `/` must be selectable verbatim.
+    ///
+    /// Reconstructing the id from the first and last path segments
+    /// rewrote `vendor/org/model` into `vendor/model`, so the dialog
+    /// committed a selection for a model the operator never chose.
+    #[test]
+    fn selection_preserves_a_model_id_that_contains_slashes() {
+        let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+        dialog.models = vec![
+            "opencode_go/vendor/org/model-a".to_string(),
+            "opencode_go/other-model".to_string(),
+        ];
+        dialog.update_cache();
+
+        dialog.selected = 0;
+        assert_eq!(
+            dialog.selected().as_deref(),
+            Some("opencode_go/vendor/org/model-a")
+        );
+
+        dialog.selected = 1;
+        assert_eq!(
+            dialog.selected().as_deref(),
+            Some("opencode_go/other-model")
+        );
+    }
+
+    /// The dialog must land back on the exact model it was given, not
+    /// on a re-joined approximation of it.
+    #[test]
+    fn initialize_selection_matches_the_original_id() {
+        let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+        dialog.models = vec![
+            "opencode_go/first".to_string(),
+            "opencode_go/vendor/org/model-b".to_string(),
+            "opencode_go/last".to_string(),
+        ];
+        dialog.update_cache();
+        dialog.set_current("opencode_go/vendor/org/model-b");
+
+        dialog.initialize_selection();
+        assert_eq!(
+            dialog.selected().as_deref(),
+            Some("opencode_go/vendor/org/model-b"),
+            "initialize_selection must resolve the current model by its exact id"
+        );
+    }
+
+    /// With no current selection the dialog starts at the top of the
+    /// provider-sorted list. There is no provider-specific bias.
+    #[test]
+    fn initialize_selection_without_a_current_model_starts_at_the_top() {
+        let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+        dialog.models = vec![
+            "zzz_provider/model".to_string(),
+            "aaa_provider/model".to_string(),
+        ];
+        dialog.update_cache();
+        dialog.current = String::new();
+
+        dialog.initialize_selection();
+        assert_eq!(dialog.selected, 0);
+        // Groups sort case-insensitively, so `aaa_provider` leads.
+        assert_eq!(dialog.selected().as_deref(), Some("aaa_provider/model"));
+    }
 
     #[test]
     fn test_select_down() {

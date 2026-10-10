@@ -12,6 +12,19 @@ codegg validate                        # auto-detected config
 codegg validate --config ./my.jsonc    # a specific file
 ```
 
+To change one in your editor instead:
+
+```bash
+codegg edit                            # $VISUAL/$EDITOR, creating it if missing
+codegg edit --config ./my.jsonc        # a specific file
+codegg edit --project                  # the project-local config
+codegg edit --editor hx                # override $VISUAL/$EDITOR
+```
+
+`edit` resolves the editor from `--editor`, then `$VISUAL`, then `$EDITOR`,
+then the first of `hx`, `vim`, `vi`, `nano` on `PATH`, and re-checks the file
+once the editor exits. See [`cli.md`](cli.md#edit) for the full contract.
+
 `validate` exits 0 and prints `Configuration is valid: <path>` for the file you
 passed to `--config`, and exits 1 with a message otherwise. With no `--config`
 it validates the auto-detected config and prints `Configuration is valid.`

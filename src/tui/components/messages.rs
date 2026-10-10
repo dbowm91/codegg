@@ -241,6 +241,48 @@ pub enum MessageRole {
     Assistant,
 }
 
+/// Live one-line indicator describing what the agent is doing right now.
+///
+/// Rendered at the tail of the chat area while `MessagesWidget::activity`
+/// is `Some`. The spinner glyph is derived from elapsed whole seconds
+/// rather than a per-frame counter so the animation is frame-rate
+/// independent and reproducible under a `TestBackend`.
+#[derive(Debug, Clone)]
+pub struct ActivityIndicator {
+    /// What the agent is doing, e.g. `"thinking"`, `"running bash"`.
+    pub label: String,
+    /// Monotonic start of the current activity.
+    pub started: std::time::Instant,
+}
+
+impl ActivityIndicator {
+    /// Elapsed whole seconds since this activity began.
+    pub fn elapsed_secs(&self) -> u64 {
+        self.started.elapsed().as_secs()
+    }
+
+    /// The rendered one-line form, e.g. `⠋ thinking 3s`.
+    pub fn line(&self) -> String {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let secs = self.elapsed_secs();
+        let glyph = FRAMES[(secs as usize) % FRAMES.len()];
+        format!("{glyph} {} {secs}s", self.label)
+    }
+}
+
+/// Render a millisecond duration the way the chat area reports thinking
+/// time: sub-second precision under 10s (`3.2s`), whole seconds above,
+/// and `m:ss` past a minute.
+pub fn format_duration_ms(ms: u128) -> String {
+    if ms < 10_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else if ms < 60_000 {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+
 pub struct MessagesWidget {
     pub messages: Vec<UIMessage>,
     pub scroll: usize,
@@ -252,6 +294,16 @@ pub struct MessagesWidget {
     pub undo_stack: VecDeque<UIMessage>,
     pub streaming_tokens: String,
     pub assistant_is_thinking: bool,
+    /// Live "what the model is doing" line, or `None` when idle.
+    pub activity: Option<ActivityIndicator>,
+    /// Wall-clock duration of each finished reasoning block, keyed by
+    /// message index, so the collapsed header can read "Thought for 3.2s".
+    /// Held beside the messages rather than inside `MsgPart` because that
+    /// enum is rebuilt on every streaming delta and carrying timing in it
+    /// would put a `SystemTime` read on the hot path.
+    pub reasoning_durations: std::collections::HashMap<usize, u128>,
+    /// Start of the reasoning block currently streaming, if any.
+    pub reasoning_started_at: Option<std::time::Instant>,
     pub search_query: Option<String>,
     pub search_matches: Vec<SearchMatch>,
     pub search_current: usize,
@@ -270,16 +322,9 @@ struct LastRenderCache {
     lines: Vec<Line<'static>>,
 }
 
-/// Return the number of visual lines produced by [`wrap_to_strings`]. Keeping
-/// estimation on the rendering path prevents scroll/layout drift when display
-/// width differs from the number of Unicode scalar values.
-fn wrap_count(s: &str, width: u16) -> usize {
-    wrap_to_strings(s, width).len()
-}
-
 /// Split a string into wrapped lines of at most `width` display columns each.
 /// Returns one entry per visual line (preserves explicit newlines as line
-/// breaks). Matches the line-counting semantics of [`wrap_count`].
+/// breaks).
 ///
 /// Word-wrap is greedy: words that fit on the current line stay there; a
 /// word that would overflow the current line starts a new line. Words
@@ -287,99 +332,7 @@ fn wrap_count(s: &str, width: u16) -> usize {
 /// boundaries to avoid overflowing the render area. Trailing whitespace is
 /// trimmed from each output line so the wrap doesn't double-space between
 /// words or leave stray spaces at line ends.
-fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
-    let width = width as usize;
-    if width == 0 || s.is_empty() {
-        return vec![s.to_string()];
-    }
-    fn hard_break_word(word: &str, width: usize) -> Vec<String> {
-        let mut chunks = Vec::new();
-        let mut chunk = String::new();
-        let mut chunk_width = 0;
-        for ch in word.chars() {
-            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if ch_width > 0 && chunk_width + ch_width > width && !chunk.is_empty() {
-                chunks.push(std::mem::take(&mut chunk));
-                chunk_width = 0;
-            }
-            chunk.push(ch);
-            chunk_width += ch_width;
-        }
-        if !chunk.is_empty() || chunks.is_empty() {
-            chunks.push(chunk);
-        }
-        chunks
-    }
-
-    fn wrap_logical_line(line: &str, width: usize) -> Vec<String> {
-        let mut wrapped = Vec::new();
-        let mut current = String::new();
-        let mut current_width = 0;
-        let mut word = String::new();
-
-        let flush_word = |word: &mut String,
-                          current: &mut String,
-                          current_width: &mut usize,
-                          wrapped: &mut Vec<String>| {
-            if word.is_empty() {
-                return;
-            }
-            let chunks = hard_break_word(word, width);
-            let word_width = chunks
-                .first()
-                .map(|chunk| {
-                    chunk
-                        .chars()
-                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-                        .sum::<usize>()
-                })
-                .unwrap_or(0);
-            let is_hard_break = chunks.len() > 1;
-
-            if current.is_empty() {
-                // Start a new line below. The final chunk remains current so
-                // a following word can still share its line.
-            } else if !is_hard_break && *current_width + 1 + word_width <= width {
-                current.push(' ');
-                *current_width += 1;
-            } else {
-                wrapped.push(std::mem::take(current));
-                *current_width = 0;
-            }
-
-            for (idx, chunk) in chunks.iter().enumerate() {
-                if idx + 1 == chunks.len() {
-                    current.push_str(chunk);
-                    *current_width += chunk
-                        .chars()
-                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
-                        .sum::<usize>();
-                } else {
-                    wrapped.push(chunk.clone());
-                }
-            }
-            word.clear();
-        };
-
-        for ch in line.chars() {
-            if ch.is_whitespace() {
-                flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
-            } else {
-                word.push(ch);
-            }
-        }
-        flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
-        wrapped.push(current);
-        wrapped
-    }
-
-    let mut lines = Vec::new();
-    let logical_lines = s.strip_suffix('\n').unwrap_or(s).split('\n');
-    for logical_line in logical_lines {
-        lines.extend(wrap_logical_line(logical_line, width));
-    }
-    lines
-}
+use crate::tui::wrap::{wrap_count, wrap_to_strings};
 
 fn extract_tool_target(name: &str, input: &str) -> String {
     if input.is_empty() {
@@ -609,6 +562,9 @@ impl MessagesWidget {
             undo_stack: VecDeque::new(),
             streaming_tokens: String::new(),
             assistant_is_thinking: false,
+            activity: None,
+            reasoning_durations: std::collections::HashMap::new(),
+            reasoning_started_at: None,
             search_query: None,
             search_matches: Vec::new(),
             search_current: 0,
@@ -1015,6 +971,63 @@ impl MessagesWidget {
         }
     }
 
+    /// Mark the start of (or a change to) the agent's current activity.
+    ///
+    /// `label` is the human phrase shown next to the spinner, e.g.
+    /// `"thinking"` or `"running bash"`. Calling this again restarts the
+    /// timer, which is what a label change should do: the elapsed seconds
+    /// belong to the current activity, not the whole turn.
+    pub fn begin_activity(&mut self, label: impl Into<String>) {
+        let label = label.into();
+        match &self.activity {
+            Some(existing) if existing.label == label => {
+                // Same activity still running — keep the original start so the
+                // counter reflects how long it has genuinely been running.
+            }
+            _ => {
+                self.activity = Some(ActivityIndicator {
+                    label,
+                    started: std::time::Instant::now(),
+                });
+            }
+        }
+    }
+
+    /// Clear the live activity indicator (the agent went idle).
+    pub fn end_activity(&mut self) {
+        self.activity = None;
+    }
+
+    /// Start timing a reasoning block. Safe to call repeatedly; the first
+    /// call of a block wins so the duration measures the whole block.
+    pub fn begin_reasoning(&mut self) {
+        if self.reasoning_started_at.is_none() {
+            self.reasoning_started_at = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Finish timing a reasoning block and record its duration against the
+    /// last message, so its collapsed header can report "Thought for 3.2s".
+    pub fn end_reasoning(&mut self) {
+        let Some(started) = self.reasoning_started_at.take() else {
+            return;
+        };
+        let Some(last_idx) = self.messages.len().checked_sub(1) else {
+            return;
+        };
+        let has_reasoning = self.messages[last_idx]
+            .parts
+            .iter()
+            .any(|p| matches!(p, MsgPart::Reasoning { .. }));
+        if !has_reasoning {
+            return;
+        }
+        let ms = started.elapsed().as_millis();
+        self.reasoning_durations.insert(last_idx, ms);
+        self.invalidate_layout_cache();
+        self.invalidate_render_cache();
+    }
+
     pub fn toggle_reasoning(&mut self, msg_idx: usize) {
         if let Some(msg) = self.messages.get_mut(msg_idx) {
             for part in &mut msg.parts {
@@ -1025,6 +1038,14 @@ impl MessagesWidget {
         }
         self.invalidate_layout_cache();
         self.invalidate_render_cache();
+    }
+
+    pub fn message_has_reasoning(&self, msg_idx: usize) -> bool {
+        self.messages.get(msg_idx).is_some_and(|msg| {
+            msg.parts
+                .iter()
+                .any(|p| matches!(p, MsgPart::Reasoning { .. }))
+        })
     }
 
     pub fn toggle_tool_output(&mut self, msg_idx: usize) -> bool {
@@ -1656,7 +1677,7 @@ impl Widget for &MessagesWidget {
                 if let Some(cached) = self.get_cached_last_assistant_parts(msg) {
                     lines.extend(cached.iter().cloned());
                 } else {
-                    let built = self.build_assistant_parts_lines(msg, current_match, match_bg);
+                    let built = self.build_assistant_parts_lines(msg, idx, current_match, match_bg);
                     self.store_cached_last_assistant_parts(msg, built.clone());
                     lines.extend(built);
                 }
@@ -1688,9 +1709,27 @@ impl Widget for &MessagesWidget {
                     lines.extend(self.build_user_lines(msg, idx, match_bg));
                 }
                 MessageRole::Assistant => {
-                    lines.extend(self.build_assistant_parts_lines(msg, current_match, match_bg));
+                    lines.extend(self.build_assistant_parts_lines(
+                        msg,
+                        idx,
+                        current_match,
+                        match_bg,
+                    ));
                 }
             }
+        }
+
+        // Live activity line. Appended after the message loop so it always
+        // trails the newest output — while the user is scrolled to the
+        // bottom (the auto-scroll default) this is the last row on
+        // screen. It deliberately sits OUTSIDE the layout cache, which
+        // counts only message lines; the line is always at the tail, so
+        // adding it never shifts the cached offsets for anything above.
+        if let Some(activity) = &self.activity {
+            lines.push(Line::from(Span::styled(
+                activity.line(),
+                Style::default().fg(self.theme.primary),
+            )));
         }
 
         // Collapse consecutive blank lines on the FULL visible message range
@@ -1864,6 +1903,7 @@ impl MessagesWidget {
     fn build_assistant_parts_lines(
         &self,
         msg: &UIMessage,
+        msg_idx: usize,
         current_match: Option<&SearchMatch>,
         _match_bg: Option<ratatui::style::Color>,
     ) -> Vec<Line<'static>> {
@@ -1898,14 +1938,23 @@ impl MessagesWidget {
                 }
                 MsgPart::Reasoning { content, collapsed } => {
                     if !prev_was_reasoning {
+                        // A finished block reports how long it ran; a block
+                        // that is still streaming has no duration yet and
+                        // keeps the plain "Thinking" header (the live
+                        // "thinking Ns" line at the tail of the chat area
+                        // carries the running count).
+                        let header = match self.reasoning_durations.get(&msg_idx) {
+                            Some(ms) => format!("Thought for {}", format_duration_ms(*ms)),
+                            None => "Thinking".to_string(),
+                        };
                         if *collapsed || !self.show_thinking {
                             lines.push(Line::from(Span::styled(
-                                "Thinking",
+                                header,
                                 Style::default().fg(self.theme.primary),
                             )));
                         } else {
                             lines.push(Line::from(Span::styled(
-                                "Thinking",
+                                header,
                                 Style::default()
                                     .fg(self.theme.primary)
                                     .add_modifier(Modifier::BOLD),
@@ -3746,7 +3795,7 @@ mod tests {
             is_plan_mode: None,
         };
 
-        let rendered = widget.build_assistant_parts_lines(&msg, None, None);
+        let rendered = widget.build_assistant_parts_lines(&msg, 0, None, None);
 
         assert!(
             rendered
@@ -3844,5 +3893,91 @@ mod tests {
             cached2.is_none(),
             "cache should be invalidated after width change"
         );
+    }
+
+    /// Long assistant output must be pre-wrapped to the widget width. The
+    /// widget paints its lines with no `Paragraph::wrap`, so any rendered line
+    /// wider than the area is simply clipped at the right edge -- which is
+    /// what made model output look truncated mid-sentence.
+    #[test]
+    fn assistant_output_is_pre_wrapped_to_the_viewport_width() {
+        let width = 40u16;
+        let mut widget = MessagesWidget::default();
+        widget.set_width(width);
+
+        let body = "Investigate the request-direction stream event capture semantics end to                     end, then implement the comparative harness across both transports and                     report which one drops the trailing delta under sustained load.";
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text {
+                content: body.to_string(),
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+
+        let lines = widget.build_assistant_parts_lines(&msg, 0, None, None);
+        assert!(lines.len() > 1, "a 240-column body must occupy many rows");
+        for line in &lines {
+            let w = unicode_width::UnicodeWidthStr::width(line.to_string().as_str());
+            assert!(
+                w <= width as usize,
+                "rendered assistant line of width {w} exceeds viewport width {width}: {line:?}"
+            );
+        }
+    }
+
+    /// A single token longer than the viewport (a URL, a long path) must be
+    /// hard-broken rather than allowed to run off the edge and be clipped.
+    #[test]
+    fn assistant_output_hard_breaks_overlong_tokens() {
+        let width = 24u16;
+        let mut widget = MessagesWidget::default();
+        widget.set_width(width);
+
+        let url = format!("https://example.invalid/{}", "segment".repeat(12));
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text {
+                content: url.clone(),
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+
+        let lines = widget.build_assistant_parts_lines(&msg, 0, None, None);
+
+        // A URL is auto-linked into an OSC-8 hyperlink, so the rendered spans
+        // carry `ESC ]8;;<target>` markers (and a `BEL` terminator when the
+        // link is re-opened across a wrap). Those are C0 control characters:
+        // they occupy no terminal columns, so they are dropped before
+        // measuring display width. Dropping them by control class rather than
+        // by parsing the escape sequence keeps this correct even when the
+        // marker itself is split across a wrapped line.
+        let visible_text = |line: &Line<'static>| -> String {
+            line.to_string()
+                .chars()
+                .filter(|c| {
+                    let v = *c as u32;
+                    v >= 0x20 && v != 0x7f
+                })
+                .collect::<String>()
+        };
+
+        for line in &lines {
+            let w = unicode_width::UnicodeWidthStr::width(visible_text(line).as_str());
+            assert!(
+                w <= width as usize,
+                "overlong token was not broken (display width {w}): {line:?}"
+            );
+        }
+
+        let rejoined: String = lines.iter().map(visible_text).collect();
+        // Hard-breaking may drop separators, but the payload must survive.
+        for segment in url.split('/').filter(|s| !s.is_empty()) {
+            assert!(
+                rejoined.contains(segment),
+                "lost content while hard-breaking an overlong token"
+            );
+        }
     }
 }

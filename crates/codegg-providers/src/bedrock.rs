@@ -321,39 +321,117 @@ Ok::<_, ProviderError>(format!(
         )))
     }
 
+    /// Discover models through the real Bedrock `ListFoundationModels` control
+    /// plane API, signed with SigV4 exactly as the runtime call is.
+    ///
+    /// The control plane is a different host and service from the runtime, so
+    /// it cannot be derived from [`Self::endpoint`]. There is no compiled-in
+    /// catalog: a failed or empty listing yields an empty catalog.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![
-            ModelInfo {
-                id: "anthropic.claude-sonnet-4-20250514-v1:0".to_string(),
-                name: "Claude Sonnet 4 (Bedrock)".to_string(),
-                provider: "bedrock".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(64_000),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "anthropic.claude-3-5-sonnet-20241022-v2:0".to_string(),
-                name: "Claude 3.5 Sonnet (Bedrock)".to_string(),
-                provider: "bedrock".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(8_192),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "meta.llama3-1-405b-instruct-v1:0".to_string(),
-                name: "Llama 3.1 405B (Bedrock)".to_string(),
-                provider: "bedrock".to_string(),
-                context_window: 128_000,
-                max_output_tokens: Some(4_096),
-                supports_tools: true,
+        let host = format!("bedrock.{}.amazonaws.com", self.region);
+        let url = format!("https://{host}/foundation-models");
+
+        let now = chrono::Utc::now();
+        let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+        let date_stamp = now.format("%Y%m%d").to_string();
+        let region = self.region.clone();
+        let secret_key = self.secret_key.clone();
+        let access_key = self.access_key.clone();
+        let amz_date_for_req = amz_date.clone();
+
+        let authorization = tokio::task::spawn_blocking(move || {
+            let credential_scope = format!("{date_stamp}/{region}/bedrock/aws4_request");
+            // GET carries no payload, so the canonical hash is the empty body.
+            let payload_hash = hex::encode(Sha256::digest([]));
+            let canonical_headers =
+                format!("host:{host}\nx-amz-date:{amz_date}\n");
+            let signed_headers = "host;x-amz-date";
+            let canonical_request = format!(
+                "GET\n/foundation-models\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+            );
+
+            let string_to_sign = format!(
+                "AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{}",
+                hex::encode(Sha256::digest(canonical_request.as_bytes()))
+            );
+
+            let signing_key = derive_signing_key(&secret_key, &date_stamp, &region, "bedrock");
+            let mut mac = Hmac::<Sha256>::new_from_slice(&signing_key)
+                .map_err(|e| ProviderError::from(e.to_string()))?;
+            mac.update(string_to_sign.as_bytes());
+            let signature = hex::encode(mac.finalize().into_bytes());
+
+            Ok::<_, ProviderError>(format!(
+                "AWS4-HMAC-SHA256 Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+            ))
+        })
+        .await
+        .map_err(|e| ProviderError::from(e.to_string()))??;
+
+        let mut request = self
+            .client
+            .get(&url)
+            .map_err(ProviderError::from)?
+            .timeout(crate::provider_core::non_streaming_timeout())
+            .header("x-amz-date", &amz_date_for_req)
+            .header("authorization", &authorization);
+        if let Some(ref token) = self.session_token {
+            request = request.header("x-amz-security-token", token);
+        }
+
+        let mut response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!("bedrock discovery failed: {}", error);
+                return Ok(Vec::new());
+            }
+        };
+
+        if !response.status().is_success() {
+            tracing::warn!("bedrock discovery returned HTTP {}", response.status());
+            return Ok(Vec::new());
+        }
+
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return Ok(Vec::new());
+        };
+        let Some(entries) = value.get("modelSummaries").and_then(|m| m.as_array()) else {
+            return Ok(Vec::new());
+        };
+
+        let mut models = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Some(id) = entry
+                .get("modelId")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            let name = entry
+                .get("modelName")
+                .and_then(|v| v.as_str())
+                .unwrap_or(id);
+            // Bedrock genuinely advertises neither context nor capability
+            // facts here, so they mean "unknown", never an invented limit.
+            models.push(ModelInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                provider: self.id().to_string(),
+                context_window: 0,
+                max_output_tokens: None,
+                supports_tools: false,
                 supports_vision: false,
-                variants: vec![],
-            },
-        ])
+                variants: Vec::new(),
+            });
+        }
+
+        Ok(models)
     }
 
     fn clone_box(&self) -> Box<dyn Provider> {

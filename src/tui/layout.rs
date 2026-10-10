@@ -71,8 +71,18 @@ impl TuiLayout {
         Self { config }
     }
 
-    pub fn split(&self, area: Rect) -> Vec<Rect> {
-        let has_sidebar = area.width > self.config.sidebar_width + self.config.min_main_width;
+    /// Split the frame into main pane + sidebar.
+    ///
+    /// `sidebar_visible` must be honored here rather than only at paint time:
+    /// reserving the sidebar columns unconditionally left a dead strip on the
+    /// right whenever the sidebar was toggled off, so the chat never regained
+    /// the full window width.
+    ///
+    /// Returns a single rect when the sidebar is hidden or when the terminal
+    /// is too narrow to host it without starving the main pane.
+    pub fn split(&self, area: Rect, sidebar_visible: bool) -> Vec<Rect> {
+        let has_sidebar =
+            sidebar_visible && area.width > self.config.sidebar_width + self.config.min_main_width;
 
         if has_sidebar {
             Layout::default()

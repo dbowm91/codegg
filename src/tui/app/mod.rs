@@ -117,6 +117,11 @@ pub const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// event loop is running; `run_event_loop` reuses the same channel.
 pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
 
+/// Maximum task rows drawn when the above-input todo list is expanded.
+/// Bounds the strip so a long list cannot crowd out the chat viewport; the
+/// header always reports the true total.
+pub const MAX_TODO_STRIP_TASKS: usize = 9;
+
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
 /// default. Bodies that exceed this limit are omitted so the snapshot
@@ -274,6 +279,20 @@ pub struct App {
     /// pass from the *filtered* row list so mouse hit-testing cannot size
     /// itself from the unfiltered catalog.
     pub completion_visible_rows: usize,
+    /// Index of the first row the completion popup actually drew. The popup
+    /// shows at most 8 rows and scrolls so `completion_sel` stays visible;
+    /// click hit-testing must add this offset or it selects the wrong row.
+    pub completion_scroll_offset: usize,
+    /// The session's current todo list, mirroring `sidebar.todos`.
+    ///
+    /// Held on `App` as well because the strip drawn directly above the input
+    /// is rendered by the app, not by the sidebar widget.
+    pub todos: Vec<TodoEntry>,
+    /// Whether the above-input todo strip shows the full list or only the
+    /// one-line `n/m completed` summary. Toggled with Ctrl+T.
+    pub todo_expanded: bool,
+    /// Rows the todo strip occupies on the last render pass.
+    pub todo_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
     /// 1-column strip reserved for the TUI's outer left border.
     pub left_border_area: Option<Rect>,
@@ -284,6 +303,18 @@ pub struct App {
     pub last_click_target: Option<ClickTarget>,
     pub hover_target: Option<ClickTarget>,
     pub hover_position: Option<(u16, u16)>,
+    /// Live text selection over rendered output.
+    ///
+    /// `anchor` is where the drag started, `focus` is the current (or
+    /// released) end. Both are `(column, row)` in frame-buffer
+    /// coordinates. `None` when nothing is selected.
+    pub selection_anchor: Option<(u16, u16)>,
+    pub selection_focus: Option<(u16, u16)>,
+    /// The most recently rendered frame, retained so a selection can be
+    /// resolved to the exact glyphs the user saw. Mouse reporting is on,
+    /// so the terminal's own drag-select is unavailable; this is the
+    /// replacement.
+    pub last_frame_buffer: Option<ratatui::buffer::Buffer>,
     pub context_hint: String,
     pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
@@ -445,6 +476,21 @@ pub struct App {
     /// was written by a different daemon instance. Diagnostic only;
     /// never authoritative.
     pub manifest_daemon_hint: Option<String>,
+    /// Per-project detail snapshots accumulated during the manifest
+    /// restore, keyed by `project_id`.
+    ///
+    /// `ProjectGet` completions land one project at a time and must
+    /// compose: the restore classifier needs every project it has
+    /// evidence for, not just the most recent one. Holds only
+    /// daemon-reported identity data — never credentials.
+    pub restore_project_details:
+        std::collections::HashMap<String, crate::tui::app::state::restore::ProjectDetailSnapshot>,
+    /// Whether a restore pass has already opened at least one tab.
+    ///
+    /// Gates the one-shot "Restored N tabs" operator toast and stops
+    /// later evidence (catalog refresh, further `ProjectGet`
+    /// completions) from re-driving a restore that already succeeded.
+    pub manifest_restore_announced: bool,
     /// Frontend projection client state (Session Projections M4).
     /// Owns the transport-neutral [`ProjectionClientController`], per-tab
     /// inactive summaries, cursor metadata, and artifact read lifecycle.
@@ -533,12 +579,13 @@ impl App {
         let focus_manager = crate::tui::components::component::FocusManager::new();
         let agents = builtin_agents();
         let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
-        let models = vec![
-            "opencode_zen/big-pickle".to_string(),
-            "opencode_zen/minimax-m2.5-free".to_string(),
-            "opencode_zen/nemotron-3-super-free".to_string(),
-        ];
-        let current_model = models[0].clone();
+        // No shipped model defaults. The model list starts empty and is
+        // populated only by real discovery (or by models the operator
+        // declares in config). Seeding it with a compiled-in catalog
+        // meant a failed discovery silently presented fiction as the
+        // user's available models.
+        let models: Vec<String> = Vec::new();
+        let current_model = String::new();
         let command_registry = crate::tui::command::CommandRegistry::new_for_workspace_root(
             std::path::Path::new(&project_dir),
         );
@@ -847,6 +894,10 @@ impl App {
             dialog_area: None,
             completion_area: None,
             completion_visible_rows: 0,
+            completion_scroll_offset: 0,
+            todos: Vec::new(),
+            todo_expanded: false,
+            todo_area: None,
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
@@ -854,6 +905,9 @@ impl App {
             last_click_target: None,
             hover_target: None,
             hover_position: None,
+            selection_anchor: None,
+            selection_focus: None,
+            last_frame_buffer: None,
             context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
@@ -939,6 +993,8 @@ impl App {
                 default_tui_state_root(),
             ),
             manifest_daemon_hint: None,
+            restore_project_details: std::collections::HashMap::new(),
+            manifest_restore_announced: false,
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
             presence: crate::tui::app::state::PresenceState::new(),
             observer: crate::tui::app::state::ObserverState::new(),
@@ -1160,12 +1216,10 @@ impl App {
         let focus_manager = crate::tui::components::component::FocusManager::new();
         let agents = builtin_agents();
         let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
-        let models = vec![
-            "opencode_zen/big-pickle".to_string(),
-            "opencode_zen/minimax-m2.5-free".to_string(),
-            "opencode_zen/nemotron-3-super-free".to_string(),
-        ];
-        let current_model = models[0].clone();
+        // Tests start with no models; they opt in explicitly via
+        // `set_models`. See `with_config` for why nothing is seeded.
+        let models: Vec<String> = Vec::new();
+        let current_model = String::new();
         let command_registry = crate::tui::command::CommandRegistry::new_for_workspace_root(
             std::path::Path::new(&project_dir),
         );
@@ -1386,6 +1440,10 @@ impl App {
             dialog_area: None,
             completion_area: None,
             completion_visible_rows: 0,
+            completion_scroll_offset: 0,
+            todos: Vec::new(),
+            todo_expanded: false,
+            todo_area: None,
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
@@ -1393,6 +1451,9 @@ impl App {
             last_click_target: None,
             hover_target: None,
             hover_position: None,
+            selection_anchor: None,
+            selection_focus: None,
+            last_frame_buffer: None,
             context_hint: String::new(),
             event_rx: None,
             tui_cmd_tx: None,
@@ -1448,6 +1509,8 @@ impl App {
                 default_tui_state_root(),
             ),
             manifest_daemon_hint: None,
+            restore_project_details: std::collections::HashMap::new(),
+            manifest_restore_announced: false,
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
             presence: crate::tui::app::state::PresenceState::new(),
             observer: crate::tui::app::state::ObserverState::new(),
@@ -1550,14 +1613,23 @@ impl App {
         match event {
             E::TurnStarted { .. } => {
                 self.messages_state.messages.finalize_streaming();
+                // Announce the turn in the chat tail. Everything below
+                // re-arms this on the next event, so the one-line
+                // indicator follows the agent's actual phase
+                // (thinking -> running <tool> -> thinking -> ...).
+                self.messages_state.messages.begin_activity("thinking");
+                self.messages_state.messages.begin_reasoning();
                 true
             }
             E::TurnTextDelta { delta, .. } => {
+                self.messages_state.messages.end_reasoning();
+                self.messages_state.messages.begin_activity("writing");
                 self.add_live_output_delta(&delta);
                 self.messages_state.messages.add_assistant_text(delta);
                 true
             }
             E::TurnReasoningDelta { delta, .. } => {
+                self.messages_state.messages.begin_activity("thinking");
                 self.messages_state.messages.add_assistant_text(delta);
                 true
             }
@@ -1567,6 +1639,13 @@ impl App {
                 arguments,
                 ..
             } => {
+                // A tool call means the reasoning block is over; close it
+                // so its header reports the real duration instead of
+                // staying "Thinking" for the rest of the turn.
+                self.messages_state.messages.end_reasoning();
+                self.messages_state
+                    .messages
+                    .begin_activity(format!("running {tool_name}"));
                 self.messages_state.messages.finalize_streaming();
                 let args = serde_json::from_str::<serde_json::Value>(&arguments)
                     .unwrap_or(serde_json::Value::Null);
@@ -1589,12 +1668,15 @@ impl App {
                 } else {
                     crate::session::message::ToolStatus::Error
                 };
+                self.messages_state.messages.end_activity();
                 self.messages_state
                     .messages
                     .update_tool_call(&tool_id, output, status, None, None, None);
                 true
             }
             E::TurnCompleted { stop_reason, .. } => {
+                self.messages_state.messages.end_reasoning();
+                self.messages_state.messages.end_activity();
                 self.messages_state.messages.finalize_streaming();
                 self.session_state.session_status = if stop_reason == "error" {
                     SessionStatus::Error
@@ -1619,6 +1701,32 @@ impl App {
                 self.messages_state
                     .toasts
                     .error(&format!("{code}: {message}"));
+                true
+            }
+            E::TodoListUpdated { items, .. } => {
+                // Items cross the wire as opaque JSON, so decode defensively:
+                // a malformed entry is skipped rather than discarding the
+                // whole list.
+                let entries: Vec<TodoEntry> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let content = item.get("content")?.as_str()?.to_string();
+                        Some(TodoEntry {
+                            content,
+                            status: item
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("pending")
+                                .to_string(),
+                            priority: item
+                                .get("priority")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("medium")
+                                .to_string(),
+                        })
+                    })
+                    .collect();
+                self.set_todos(entries);
                 true
             }
             E::PermissionPending { id, tool, path, .. } => {
@@ -1667,6 +1775,14 @@ impl App {
     /// earlier found `tui_cmd_tx == None` and the work was dropped without a
     /// diagnostic — which is how the persisted manifest (tabs, model, agent)
     /// silently stopped being restored.
+    ///
+    /// Also self-heals background work that was scheduled before the channel
+    /// existed. `set_session` ends with a git sidebar probe that spawns
+    /// through this channel; when the session was bound first, the probe
+    /// found a `None` sender, was dropped without a diagnostic, and the
+    /// sidebar stayed pinned to "not a git repo" for the life of the
+    /// process. Re-issuing the probe here makes that ordering mistake
+    /// self-correcting instead of permanent.
     pub fn ensure_tui_cmd_channel(&mut self) {
         if self.tui_cmd_tx.is_some() {
             return;
@@ -1674,6 +1790,9 @@ impl App {
         let (tx, rx) = mpsc::channel(TUI_CMD_CHANNEL_CAPACITY);
         self.tui_cmd_tx = Some(tx);
         self.tui_cmd_rx = Some(rx);
+        if self.session_state.session.is_some() {
+            crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
+        }
     }
 
     /// Attach the core client together with its event stream.
@@ -2504,6 +2623,7 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
         debug_log!(
             "on_key: dialog_open={}, dialog={:?}, command_mode={}, timeline_visible={}, show_completions={}, pending_send={}, key_code={:?}, key_modifiers={:?}",
             self.ui_state.dialog.is_open(),
@@ -2515,6 +2635,18 @@ impl App {
             key.code,
             key.modifiers
         );
+
+        // Ctrl+C copies a live text selection. The terminal's own
+        // Cmd/Ctrl+C copy never reaches us because the TUI owns the TTY in
+        // raw mode, so this is the only way to move selected output off
+        // the screen once a selection exists. With nothing selected the key
+        // falls through to its existing meaning.
+        if key.code == KeyCode::Char('c')
+            && key.modifiers == KeyModifiers::CONTROL
+            && self.try_copy_selection()
+        {
+            return;
+        }
 
         // Modal dialogs own input while they are active.
         if !self.focus_manager.is_empty() {
@@ -2668,6 +2800,9 @@ impl App {
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            Some(InputAction::ToggleTodoList) => {
+                self.toggle_todo_list();
+            }
             Some(InputAction::FocusSidebar) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
@@ -3646,21 +3781,58 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.dialog_state.command_palette.set_query("");
                 self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
             }
+            // Navigation and acceptance both run off `completion_rows()` —
+            // the same ordering the popup renders. Driving
+            // `CommandPalette::cursor` here instead left two independent
+            // orderings free to disagree (fuzzy-score over names here vs.
+            // fuzzy-score over names+description+domain+keywords there),
+            // which is how the second, differently-ordered popup appeared in
+            // the first place. The highlighted row is now always the row
+            // Enter executes.
             Some(InputAction::NavigateUp) => {
-                self.dialog_state.command_palette.cursor_up();
+                if self.prompt_state.completion_sel > 0 {
+                    self.prompt_state.completion_sel -= 1;
+                }
             }
             Some(InputAction::NavigateDown) => {
-                self.dialog_state.command_palette.cursor_down();
+                let max_sel = self.completion_rows().len().saturating_sub(1);
+                if self.prompt_state.completion_sel < max_sel {
+                    self.prompt_state.completion_sel += 1;
+                }
             }
             Some(InputAction::Send) => {
-                if let Some(cmd) = self.dialog_state.command_palette.selected().cloned() {
+                // Resolve from the popup when it has a row, so the executed
+                // command is always the highlighted one. The popup's filter is
+                // the whole query including its argument text, so
+                // `completion_rows()` cannot match `/agent build` — there is
+                // no way to fuzzy the longer query into the shorter label.
+                // Fall back to the leading token, which is how an argument
+                // form like `/agent build` or `/theme dark` is meant to read.
+                let query = self.prompt_state.prompt.get_text();
+                let label = self
+                    .completion_rows()
+                    .get(self.prompt_state.completion_sel)
+                    .map(|item| item.label.clone())
+                    .or_else(|| {
+                        query
+                            .split_whitespace()
+                            .next()
+                            .map(|token| token.to_string())
+                    });
+                let cmd = label
+                    .as_deref()
+                    .and_then(|name| self.command_registry.find_by_name_or_alias(name))
+                    .cloned();
+                if let Some(cmd) = cmd {
                     debug_log!("handle_command_key: executing command: {}", cmd.name);
-                    let command_query = self.dialog_state.command_palette.query.clone();
+                    let command_query = query;
                     self.execute_command(&cmd, Some(&command_query));
                     self.ui_state.command_mode = false;
                     self.dialog_state.command_palette.set_query("");
                     self.prompt_state.prompt.clear();
+                    self.prompt_state.show_completions = false;
                 } else {
                     debug_log!("handle_command_key: no matching command, exiting command mode and sending prompt");
                     self.ui_state.command_mode = false;
@@ -3672,6 +3844,7 @@ impl App {
                 self.prompt_state.prompt.insert_char(c);
                 let query = self.prompt_state.prompt.get_text();
                 self.dialog_state.command_palette.set_query(&query);
+                self.update_completions();
             }
             Some(InputAction::Backspace) => {
                 if self.prompt_state.prompt.cursor_pos() > 0 {
@@ -3683,6 +3856,7 @@ impl App {
                 } else {
                     self.dialog_state.command_palette.set_query(&query);
                 }
+                self.update_completions();
             }
             _ => {}
         }
@@ -5542,6 +5716,10 @@ impl App {
                         .info("doctor: not connected to a core client");
                 }
             }
+            B::Logs => {
+                self.ui_state.command_mode = false;
+                self.open_logs_window();
+            }
             B::ToolContracts => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::ToolContracts);
@@ -7020,6 +7198,40 @@ impl App {
 
         let target = self.clickable_area_at(event.column, event.row);
 
+        // Text selection takes priority over click-to-focus inside the
+        // message viewport. Mouse reporting suppresses the terminal's own
+        // drag-select, so without this the output of a tool call cannot be
+        // copied at all. Any other surface (sidebar, scrollbar, dialogs,
+        // completion popup, prompt) keeps its existing click behaviour.
+        let selecting = matches!(target, ClickTarget::Viewport)
+            && matches!(
+                event.kind,
+                MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_)
+            )
+            && event.column >= 1
+            && event.row >= 1;
+        if selecting {
+            match event.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.selection_anchor = Some((event.column, event.row));
+                    self.selection_focus = Some((event.column, event.row));
+                    self.last_click_time = None;
+                    self.last_click_target = None;
+                    return;
+                }
+                MouseEventKind::Drag(MouseButton::Left) if self.selection_anchor.is_some() => {
+                    self.selection_focus = Some((event.column, event.row));
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) if self.selection_anchor.is_some() => {
+                    self.selection_focus = Some((event.column, event.row));
+                    self.copy_selection_to_clipboard();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match event.kind {
             MouseEventKind::Down(btn) => {
                 let is_double_click = self
@@ -7115,6 +7327,71 @@ impl App {
         }
     }
 
+    /// Resolve the live selection against the last rendered frame and put
+    /// it on the system clipboard.
+    ///
+    /// The text is read back out of the frame buffer rather than
+    /// reconstructed from the message model, so what lands on the clipboard
+    /// is exactly what was on screen — including the wrapping and styling
+    /// decisions the renderer already made. A drag that ended on the same
+    /// cell it started on is treated as a cancelled selection, not as a
+    /// one-character copy, and any subsequent click elsewhere clears the
+    /// highlight.
+    pub fn copy_selection_to_clipboard(&mut self) {
+        let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) else {
+            return;
+        };
+        if anchor == focus {
+            self.clear_selection();
+            return;
+        }
+        let Some(buffer) = self.last_frame_buffer.as_ref() else {
+            self.clear_selection();
+            return;
+        };
+        let text = crate::tui::selection::extract(
+            buffer,
+            crate::tui::selection::TextSelection::new(anchor, focus),
+        );
+        let trimmed = text.trim_end().to_string();
+        if trimmed.is_empty() {
+            self.clear_selection();
+            return;
+        }
+        match crate::util::clipboard::copy_to_clipboard(&trimmed) {
+            Ok(()) => {
+                let lines = trimmed.lines().count();
+                let message = format!(
+                    "Copied selection to clipboard ({lines} line{})",
+                    if lines == 1 { "" } else { "s" }
+                );
+                self.messages_state.toasts.info(&message);
+            }
+            Err(err) => {
+                let message = format!("Clipboard unavailable: {err}");
+                self.messages_state.toasts.error(&message);
+            }
+        }
+        self.clear_selection();
+    }
+
+    /// Drop the current selection and its highlight.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+        self.selection_focus = None;
+    }
+
+    /// Copy the current selection if there is one. Returns whether a copy
+    /// was attempted, so a keybinding can fall through to its normal action
+    /// when nothing is selected.
+    pub fn try_copy_selection(&mut self) -> bool {
+        if self.selection_anchor.is_none() || self.selection_focus.is_none() {
+            return false;
+        }
+        self.copy_selection_to_clipboard();
+        true
+    }
+
     fn clickable_area_at(&self, x: u16, y: u16) -> ClickTarget {
         if let Some(ref area) = self.dialog_area {
             if Self::in_rect(x, y, *area) {
@@ -7165,7 +7442,14 @@ impl App {
                 if let Some(viewport) = self.viewport_area {
                     let row = y.saturating_sub(viewport.y) as usize;
                     if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
-                        if self.messages_state.messages.message_has_tool_output(idx) {
+                        // Clicking a message expands whichever detail the
+                        // message actually carries. Reasoning is checked
+                        // first: its collapsed header is the one-line
+                        // "Thought for 3.2s" line, and clicking that is how
+                        // the user opens the thinking text.
+                        if self.messages_state.messages.message_has_reasoning(idx) {
+                            self.messages_state.messages.toggle_reasoning(idx);
+                        } else if self.messages_state.messages.message_has_tool_output(idx) {
                             self.messages_state.messages.toggle_tool_output(idx);
                         }
                     } else {
@@ -7186,8 +7470,11 @@ impl App {
                 if let Some(ref area) = self.completion_area {
                     let rel_y = y.saturating_sub(area.y);
                     // Row 0 is the top border, so the first entry is at
-                    // `rel_y == 1`.
-                    let idx = rel_y.saturating_sub(1) as usize;
+                    // `rel_y == 1`. The popup scrolls to keep the selection
+                    // visible, so the drawn window starts at
+                    // `completion_scroll_offset`, not at row 0 of the
+                    // filtered set.
+                    let idx = self.completion_scroll_offset + rel_y.saturating_sub(1) as usize;
                     if idx < self.completion_visible_rows {
                         self.prompt_state.completion_sel = idx;
                     }
@@ -7228,8 +7515,19 @@ impl App {
                     if *track_height > 0 {
                         let max_scroll = self.messages_state.messages.max_scroll();
                         let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
-                        self.messages_state.messages.scroll = new_scroll;
-                        self.messages_state.messages.auto_scroll = false;
+                        // Landing on the last track row (or anywhere already at
+                        // the bottom) must resume following the stream. This
+                        // handler used to clear `auto_scroll` unconditionally,
+                        // so dragging the thumb to the bottom left the view
+                        // visibly pinned there while new output was produced
+                        // off-screen — the turn looked frozen and then
+                        // appeared all at once.
+                        if rel_y + 1 >= *track_height || new_scroll >= max_scroll {
+                            self.messages_state.messages.scroll_to_bottom();
+                        } else {
+                            self.messages_state.messages.scroll = new_scroll.min(max_scroll);
+                            self.messages_state.messages.auto_scroll = false;
+                        }
                     }
                 }
             }
@@ -9771,10 +10069,16 @@ impl App {
             if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
                 self.prompt_state.completion_filter = before_cursor[pos..].to_string();
                 self.prompt_state.completion_type = CompletionType::Slash;
-                if !self.ui_state.command_mode {
-                    self.prompt_state.show_completions = true;
-                    debug_log!("update_completions: slash completion - show_completions=true");
-                }
+                // `show_completions` used to stay false in command mode, which
+                // left `CommandPalette::render` as the only thing drawing the
+                // slash popup. That produced two different-looking boxes for
+                // the same interaction — a narrow one with an unreadable
+                // selection highlight on the first `/…`, and the wide one
+                // after the user backspaced to a bare `/` (which cleared
+                // command mode). The popup is now rendered from exactly one
+                // implementation in every mode, so command mode uses it too.
+                self.prompt_state.show_completions = true;
+                debug_log!("update_completions: slash completion - show_completions=true");
                 self.prompt_state.completion_sel = 0;
                 return;
             }
@@ -10047,6 +10351,13 @@ impl App {
             Some(sess.project_id.clone())
         };
         let workspace_id = sess.workspace_id.clone();
+        // Captured before `sess` is moved; see the adoption logic below.
+        let session_has_own_selection = !sess
+            .selected_model_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty();
         self.session_state.session = Some(sess);
         self.ensure_session_event_stream(&sess_id);
         self.ui_state
@@ -10097,9 +10408,39 @@ impl App {
             let _ = send_tui(
                 tx,
                 TuiCommand::RefreshSessionState {
-                    session_id: sess_id,
+                    session_id: sess_id.clone(),
                 },
             );
+            // Fetch the durable session selection on bind.
+            //
+            // The daemon resolves a turn's model from this selection, so
+            // it is the authority on what will actually run. It used to
+            // be fetched only when the connection dialog opened, leaving
+            // the status line showing a manifest-sourced model that could
+            // differ from the one the provider received.
+            let _ = send_tui(
+                tx,
+                TuiCommand::SessionSelectionLoad {
+                    session_id: sess_id.clone(),
+                },
+            );
+            // Adopt a model chosen *before* this session existed.
+            //
+            // A tab restored from the manifest, or a brand-new one, starts
+            // with `session_id: null`, so a `/model` choice made at that
+            // point has no durable row to write and is correctly a no-op
+            // at commit time. Without this the choice would survive only
+            // in the tab/preference and the first turn would fall back to
+            // the daemon's default — the same divergence, one step later.
+            //
+            // Gated on the session having no selection of its own, so an
+            // already-populated session is never overwritten on restore.
+            if !session_has_own_selection {
+                let pending = self.active_model().trim().to_string();
+                if !pending.is_empty() {
+                    self.persist_durable_model_selection(pending);
+                }
+            }
         }
         // Refresh sidebar git status for the new project so render
         // never blocks on git probing.
@@ -10165,6 +10506,49 @@ impl App {
         self.project_tabs
             .active()
             .and_then(|t| t.session_id.as_deref())
+    }
+
+    /// Persist a model chosen in the `/model` dialog to the daemon's
+    /// durable session selection.
+    ///
+    /// Without this the choice only changed local state, so the status
+    /// line advertised a model the next turn never ran. With no bound
+    /// session there is nothing durable to write yet; the selection is
+    /// recorded on the tab and applied when a session binds.
+    pub fn persist_durable_model_selection(&mut self, model: String) {
+        let Some(session_id) = self.active_session_id().map(str::to_owned) else {
+            return;
+        };
+        crate::tui::commands::session_selection::start_model_select_persist(
+            self, session_id, model,
+        );
+    }
+
+    /// Completion for [`Self::persist_model_selection`].
+    ///
+    /// The daemon's durable selection is what actually runs, so a refused
+    /// choice must not be left on screen as if it had been accepted. The
+    /// display is reverted to the durable value and the refusal is
+    /// reported.
+    pub fn apply_model_select_persisted(&mut self, model: String, error: Option<String>) {
+        let Some(error) = error else {
+            tracing::info!(
+                model = %model,
+                "model selection persisted to durable session selection"
+            );
+            return;
+        };
+        // The daemon's durable selection is what actually runs, so a refused
+        // choice must not be left on screen as if it had been accepted. Pull
+        // the authoritative value back and report the refusal. Deliberately
+        // *not* `adopt_persisted_tab_model`: that re-reads local tab state,
+        // which is exactly the value just rejected.
+        if let Some(session_id) = self.active_session_id().map(str::to_owned) {
+            crate::tui::commands::session_selection::start_selection_refresh(self, session_id);
+        }
+        self.messages_state
+            .toasts
+            .add(Toast::error(&format!("Model selection not saved: {error}")));
     }
 
     /// Selected model identifier for the active tab.
@@ -11119,6 +11503,59 @@ impl App {
             .set_current(&self.agent_state.current_model);
     }
 
+    /// Reconcile the displayed model with the daemon's durable
+    /// session selection.
+    ///
+    /// The daemon resolves the model for a turn from the durable
+    /// `SessionSelection`, so that is what actually runs. The TUI used
+    /// to display a *different* model sourced from the tab manifest:
+    /// `SessionSelectionLoaded` returned early whenever the connection
+    /// dialog was not open, so the authoritative selection was fetched
+    /// and then discarded. The two then diverged silently — the status
+    /// line showed one model while the provider received another, and
+    /// the only evidence was an upstream error naming a model the
+    /// operator never selected.
+    ///
+    /// Returns `true` when the durable selection was applied.
+    pub fn reconcile_durable_selection_model(&mut self, runtime_model: &str) -> bool {
+        // `runtime_model` is `<provider_kind>/<model_id>`, where
+        // provider_kind is connection-scoped (e.g. `other:opencode_go`).
+        // Catalog entries are `<provider>/<model_id>`, so match on the
+        // model segment rather than a whole-string compare.
+        let Some((_kind, model_id)) = runtime_model.split_once('/') else {
+            return false;
+        };
+        let Some(idx) = self.agent_state.models.iter().position(|entry| {
+            entry
+                .split_once('/')
+                .map(|(_, id)| id == model_id)
+                .unwrap_or(entry.as_str() == model_id)
+        }) else {
+            tracing::debug!(
+                target: "codegg::tui::app",
+                %runtime_model,
+                "durable selection is not in the current catalog; leaving the displayed model alone"
+            );
+            return false;
+        };
+        let resolved = self.agent_state.models[idx].clone();
+        if self.agent_state.current_model != resolved {
+            tracing::debug!(
+                target: "codegg::tui::app",
+                previous = %self.agent_state.current_model,
+                %resolved,
+                "adopted durable session selection as the displayed model"
+            );
+            self.agent_state.current_model = resolved.clone();
+            if let Some(tab) = self.active_tab_mut() {
+                tab.model = resolved.clone();
+            }
+        }
+        self.agent_state.model_idx = idx;
+        self.dialog_state.model_dialog.set_current(&resolved);
+        true
+    }
+
     pub fn refresh_models(&mut self) {
         self.messages_state
             .toasts
@@ -11176,12 +11613,33 @@ impl App {
         self.session_state.live_output_text.clear();
     }
 
+    /// Accumulate a streamed output delta into the live context meter.
+    ///
+    /// The running count is maintained *incrementally*: only the new delta is
+    /// tokenized and added to the total. Re-tokenizing the whole accumulated
+    /// buffer on every delta made the cost of a turn quadratic
+    /// (`estimate_tokens` performs a real `cl100k_base` BPE encode), and it ran
+    /// on the single event-loop thread — so the loop could not keep up with the
+    /// delta stream. Deltas therefore queued in `core_event_rx` and only became
+    /// visible in an implausible burst, and queued permission prompts arrived
+    /// too late to be answered.
+    ///
+    /// Summing per-chunk counts is not bit-identical to encoding the joined
+    /// text, because BPE can merge across a chunk boundary. That is acceptable
+    /// here: the value drives only the live output/context meters, never
+    /// accounting or persistence, and `reset_live_token_estimate` recomputes
+    /// from zero at each turn boundary.
     pub fn add_live_output_delta(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
         self.session_state.live_output_text.push_str(delta);
-        self.session_state.live_output_tokens =
-            crate::context::compaction::ContextTracker::estimate_tokens(
-                &self.session_state.live_output_text,
-            ) as u64;
+        let delta_tokens =
+            crate::context::compaction::ContextTracker::estimate_tokens(delta) as u64;
+        self.session_state.live_output_tokens = self
+            .session_state
+            .live_output_tokens
+            .saturating_add(delta_tokens);
     }
 
     pub fn set_context_info(&mut self, tokens: usize, limit: usize, compactions: usize) {
@@ -11450,7 +11908,63 @@ impl App {
     }
 
     pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
+        // Mirror onto the app: the sidebar owns its own copy for its section
+        // rendering, while the above-input strip is driven from the app.
+        self.todos = todos.clone();
         self.sidebar.set_todos(todos);
+    }
+
+    /// Toggle the expanded/compact form of the above-input todo strip.
+    fn toggle_todo_list(&mut self) {
+        if self.todos.is_empty() {
+            // Nothing to expand; still give feedback so the key is not
+            // silently dead.
+            self.messages_state
+                .toasts
+                .info("No todo list for this session yet.");
+            return;
+        }
+        self.todo_expanded = !self.todo_expanded;
+    }
+
+    /// Completed todo count. `TodoStatus::Completed` is the only status that
+    /// counts toward the `n/m` progress readout; cancelled items are not
+    /// "done work" and must not inflate the numerator.
+    pub fn todos_completed(&self) -> usize {
+        self.todos
+            .iter()
+            .filter(|t| t.status.eq_ignore_ascii_case("completed"))
+            .count()
+    }
+
+    /// Rows the above-input todo strip needs, including its header row.
+    /// Returns 0 when there is no todo list, so the input keeps the space.
+    pub fn todo_strip_height(&self) -> u16 {
+        if self.todos.is_empty() {
+            return 0;
+        }
+        if !self.todo_expanded {
+            return 1;
+        }
+        // Header + as many tasks as fit, bounded so a long list cannot eat
+        // the viewport. `Ctrl+T` still reports the true totals in the header.
+        let tasks = self.todos.len().min(MAX_TODO_STRIP_TASKS) as u16;
+        tasks.saturating_add(1)
+    }
+
+    /// The single-character status bubble for a todo entry.
+    pub fn todo_bubble(status: &str) -> &'static str {
+        if status.eq_ignore_ascii_case("completed") {
+            "\u{2714}"
+        } else if status.eq_ignore_ascii_case("in_progress") {
+            "\u{25cf}"
+        } else if status.eq_ignore_ascii_case("blocked") {
+            "\u{25c8}"
+        } else if status.eq_ignore_ascii_case("cancelled") {
+            "\u{2716}"
+        } else {
+            "\u{25cb}"
+        }
     }
 
     /// Update the active goal snapshot. The sidebar's `goal` field

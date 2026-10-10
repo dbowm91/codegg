@@ -24,28 +24,9 @@ impl GitLabProvider {
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
                     tool_choice: crate::openai_compatible::ToolChoice::None,
-                    models: vec![
-                        ModelInfo {
-                            id: "gitlab/claude-sonnet-4".to_string(),
-                            name: "Claude Sonnet 4 (GitLab)".to_string(),
-                            provider: "anthropic".to_string(),
-                            context_window: 200_000,
-                            max_output_tokens: Some(64_000),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                        ModelInfo {
-                            id: "gitlab/gpt-4o".to_string(),
-                            name: "GPT-4o (GitLab)".to_string(),
-                            provider: "openai".to_string(),
-                            context_window: 128_000,
-                            max_output_tokens: Some(16_384),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                    ],
+                    // No compiled-in seed list: this provider's models come from
+                    // discovery, or from an operator-declared additive config block.
+                    models: Vec::new(),
                 },
             ),
         }
@@ -62,28 +43,9 @@ impl GitLabProvider {
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
                     tool_choice: crate::openai_compatible::ToolChoice::None,
-                    models: vec![
-                        ModelInfo {
-                            id: "gitlab/claude-sonnet-4".to_string(),
-                            name: "Claude Sonnet 4 (GitLab)".to_string(),
-                            provider: "anthropic".to_string(),
-                            context_window: 200_000,
-                            max_output_tokens: Some(64_000),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                        ModelInfo {
-                            id: "gitlab/gpt-4o".to_string(),
-                            name: "GPT-4o (GitLab)".to_string(),
-                            provider: "openai".to_string(),
-                            context_window: 128_000,
-                            max_output_tokens: Some(16_384),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                    ],
+                    // No compiled-in seed list: this provider's models come from
+                    // discovery, or from an operator-declared additive config block.
+                    models: Vec::new(),
                 },
             ),
         }

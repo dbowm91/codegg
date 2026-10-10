@@ -100,49 +100,11 @@ impl Provider for OpencodeZenProvider {
         ))
     }
 
+    /// Discover models upstream. There is no compiled-in catalog: an
+    /// unreachable or empty `/models` response yields an empty catalog rather
+    /// than a fabricated model the gateway may not serve.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![
-            ModelInfo {
-                id: "big-pickle".to_string(),
-                name: "Big Pickle (Free)".to_string(),
-                provider: "opencode_zen".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(64_000),
-                supports_tools: true,
-                supports_vision: false,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "minimax-m2.5-free".to_string(),
-                name: "MiniMax M2.5 Free".to_string(),
-                provider: "opencode_zen".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(64_000),
-                supports_tools: true,
-                supports_vision: false,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "nemotron-3-super-free".to_string(),
-                name: "Nemotron 3 Super Free".to_string(),
-                provider: "opencode_zen".to_string(),
-                context_window: 128_000,
-                max_output_tokens: Some(32_000),
-                supports_tools: true,
-                supports_vision: false,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "qwen3.6-plus-free".to_string(),
-                name: "Qwen3.6 Plus Free".to_string(),
-                provider: "opencode_zen".to_string(),
-                context_window: 128_000,
-                max_output_tokens: Some(32_000),
-                supports_tools: true,
-                supports_vision: false,
-                variants: vec![],
-            },
-        ])
+        self.discover_models().await
     }
 
     async fn discover_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
@@ -184,10 +146,14 @@ impl Provider for OpencodeZenProvider {
                     entry.get("id").and_then(|v| v.as_str()),
                     entry.get("name").and_then(|v| v.as_str()),
                 ) {
+                    // Take capability and limit facts only when the upstream
+                    // entry actually states them. `ModelInfo` types these as
+                    // `bool`/`usize`, so 0/false encode "not advertised"
+                    // instead of an invented capability.
                     let context_window = entry
                         .get("context_window")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(128_000) as usize;
+                        .unwrap_or(0) as usize;
                     let max_output = entry
                         .get("max_output_tokens")
                         .and_then(|v| v.as_u64())
@@ -195,7 +161,7 @@ impl Provider for OpencodeZenProvider {
                     let supports_tools = entry
                         .get("supports_tools")
                         .and_then(|v| v.as_bool())
-                        .unwrap_or(true);
+                        .unwrap_or(false);
                     let supports_vision = entry
                         .get("supports_vision")
                         .and_then(|v| v.as_bool())
@@ -215,10 +181,9 @@ impl Provider for OpencodeZenProvider {
             }
         }
 
-        if models.is_empty() {
-            return self.models().await;
-        }
-
+        // An empty upstream list is the truthful answer. Falling back to a
+        // compiled-in catalog here is exactly how a stale placeholder model
+        // gets adopted as a session's model.
         Ok(models)
     }
 

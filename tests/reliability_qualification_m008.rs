@@ -868,11 +868,12 @@ fn m008_full_host_is_always_explicit_and_auditable() {
 fn m008_sandbox_helper_outcome_fixtures_fail_closed() {
     // Scenario class 11: helper unavailable/setup error/unsupported kernel
     // fixtures use the existing status-frame API; malformed streams fail closed.
-    let enforced = encode_sandbox_status(SandboxLaunchOutcome::Enforced { abi: 9 }).unwrap();
-    assert!(matches!(
-        decode_sandbox_status(&enforced),
-        Ok(SandboxLaunchOutcome::Enforced { abi: 9 })
-    ));
+    let expected = SandboxLaunchOutcome::enforced(
+        codegg::security::sandbox::BackendId::LANDLOCK,
+        codegg::security::sandbox::BackendEnforcement::new(Some(9), &["guarantee"], &["limit"]),
+    );
+    let enforced = encode_sandbox_status(expected.clone()).unwrap();
+    assert_eq!(decode_sandbox_status(&enforced), Ok(expected));
     for outcome in [
         SandboxLaunchOutcome::Unavailable {
             reason: "Landlock unavailable: test".into(),

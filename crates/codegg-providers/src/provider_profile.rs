@@ -24,7 +24,9 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use eggpool_provider_profile::{ProviderProfileRegistry, WireSurface};
+use eggpool_provider_profile::{
+    ProviderModelsEndpointProfile, ProviderProfileRegistry, WireSurface,
+};
 
 /// CodeGG provider id -> shared EggPool profile id.
 ///
@@ -33,6 +35,30 @@ use eggpool_provider_profile::{ProviderProfileRegistry, WireSurface};
 /// shared asset uses hyphens (`opencode-go`); this explicit map is the whole
 /// reconciliation. Ids absent from this map are deliberately not adapted.
 const SHARED_IDS: &[(&str, &str)] = &[("opencode_go", "opencode-go")];
+
+/// CodeGG provider id -> shared EggPool profile id, for **model discovery only**.
+///
+/// Deliberately a separate, weaker map than [`SHARED_IDS`]. Adapting a provider
+/// for *wire routing* asserts that CodeGG may execute a request against the
+/// resolved surface and path, so that map is intentionally narrow. Adapting a
+/// provider for *discovery* only asserts where the reviewed `/models` endpoint
+/// lives, which is a far smaller claim, and it is what lets CodeGG stop
+/// hardcoding `{base_url}/models` as a second owner for the same fact.
+///
+/// Keeping the two maps apart means widening discovery never silently widens
+/// routing authority.
+const DISCOVERY_IDS: &[(&str, &str)] = &[
+    ("opencode_go", "opencode-go"),
+    ("openai", "openai"),
+    ("anthropic", "anthropic"),
+    ("openrouter", "openrouter"),
+    // CodeGG's `google` provider serves the native `generateContent` surface at
+    // `https://generativelanguage.googleapis.com/v1beta`, which is exactly the
+    // shared `gemini-native` profile's base URL, wire surface, and `/models`
+    // endpoint. The shared asset spells this provider `gemini-native`, so the
+    // reconciliation is explicit rather than inferred.
+    ("google", "gemini-native"),
+];
 
 /// How the resolved surface carries the credential.
 ///
@@ -317,6 +343,42 @@ pub fn adapted_provider_ids() -> impl Iterator<Item = &'static str> {
     SHARED_IDS.iter().map(|(code, _)| *code)
 }
 
+/// Shared profile id for a CodeGG provider id, for discovery only.
+fn discovery_shared_id(provider_id: &str) -> Option<&'static str> {
+    DISCOVERY_IDS
+        .iter()
+        .find(|(code, _)| *code == provider_id)
+        .map(|(_, shared)| *shared)
+}
+
+/// The reviewed model-discovery endpoint for a CodeGG provider id.
+///
+/// Method, path, and query come from the shared profile's
+/// [`ProviderProfile::resolved_models_endpoint`], so a provider's discovery
+/// contract is data CodeGG consumes rather than a CodeGG-local URL constant.
+/// `required` reports whether the profile marks discovery as a precondition
+/// for the provider being usable.
+///
+/// Returns [`ProfileError::ProviderNotAdapted`] for ids outside
+/// [`DISCOVERY_IDS`]. Callers must treat that as "no reviewed discovery
+/// contract" rather than silently inventing one.
+pub fn resolved_models_endpoint(
+    provider_id: &str,
+) -> Result<ProviderModelsEndpointProfile, ProfileError> {
+    let shared_id =
+        discovery_shared_id(provider_id).ok_or_else(|| ProfileError::ProviderNotAdapted {
+            provider_id: provider_id.to_string(),
+        })?;
+    let profiles = registry()?;
+    let profile = profiles
+        .get(shared_id)
+        .ok_or_else(|| ProfileError::ProviderUnknown {
+            provider_id: provider_id.to_string(),
+            shared_id: shared_id.to_string(),
+        })?;
+    Ok(profile.resolved_models_endpoint())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,5 +502,45 @@ mod tests {
         assert!(ids.contains(&"opencode_go"));
         // Durable CodeGG spelling is preserved, never rewritten to the sibling's.
         assert!(!ids.contains(&"opencode-go"));
+    }
+
+    #[test]
+    fn discovery_endpoints_resolve_from_the_shared_profile() {
+        // Method/path/required are profile data, so a reviewed provider
+        // resolves without CodeGG owning a local URL constant.
+        let endpoint = resolved_models_endpoint("opencode_go").expect("reviewed provider resolves");
+        assert_eq!(endpoint.method, "GET");
+        assert_eq!(endpoint.path, "/models");
+        assert!(endpoint.required, "the Go profile marks discovery required");
+
+        let anthropic = resolved_models_endpoint("anthropic").expect("anthropic resolves");
+        assert_eq!(anthropic.path, "/models");
+        assert!(
+            !anthropic.required,
+            "the Anthropic profile marks discovery optional"
+        );
+    }
+
+    #[test]
+    fn unadapted_provider_has_no_reviewed_discovery_contract() {
+        // Failing closed is what lets a caller tell "no reviewed endpoint"
+        // apart from "endpoint is /models".
+        assert!(matches!(
+            resolved_models_endpoint("not-a-real-provider"),
+            Err(ProfileError::ProviderNotAdapted { .. })
+        ));
+    }
+
+    #[test]
+    fn discovery_adaptation_never_widens_wire_routing_authority() {
+        // Discovery is a much weaker claim than routing. A provider may have a
+        // reviewed `/models` endpoint while CodeGG still refuses to resolve its
+        // wire surface, so the two maps must stay independent.
+        assert!(discovery_shared_id("openai").is_some());
+        assert!(
+            shared_provider_id("openai").is_none(),
+            "adapting discovery must not adapt routing"
+        );
+        assert!(wire_resolved_models("openai").is_empty());
     }
 }

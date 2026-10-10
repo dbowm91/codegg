@@ -3823,7 +3823,15 @@ mod tests {
     #[test]
     fn remembered_task_model_falls_back_visibly_when_unknown() {
         let mut app = test_app_with_project();
-        // Fixture models do not include `gone-model`.
+        // Opt in to a model catalog explicitly: `App::new_for_testing`
+        // starts with none, because seeding a compiled-in list made a failed
+        // discovery present fiction as the user's available models.
+        app.set_models(vec![
+            "opencode_zen/big-pickle".to_string(),
+            "opencode_zen/minimax-m2.5-free".to_string(),
+        ]);
+        app.agent_state.current_model = "opencode_zen/big-pickle".to_string();
+        // The catalog above does not include `gone-model`.
         app.prompt_state.task_model_choice = Some(TaskModelChoice {
             connection: Some("conn-a".to_string()),
             model: Some("gone-model".to_string()),

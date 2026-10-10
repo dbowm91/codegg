@@ -229,6 +229,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 69 {
         migrate_and_record(pool, 69).await?;
     }
+    if current_version < 70 {
+        migrate_and_record(pool, 70).await?;
+    }
 
     Ok(())
 }
@@ -310,6 +313,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             67 => migrate_v67(&mut tx).await?,
             68 => migrate_v68(&mut tx).await?,
             69 => migrate_v69(&mut tx).await?,
+            70 => migrate_v70(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -666,14 +670,15 @@ async fn migrate_v3(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), 
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS cached_models (
-            id TEXT PRIMARY KEY,
+            id TEXT NOT NULL,
             provider TEXT NOT NULL,
             name TEXT NOT NULL,
             context_window INTEGER,
             max_output_tokens INTEGER,
             supports_tools INTEGER NOT NULL DEFAULT 1,
             supports_vision INTEGER NOT NULL DEFAULT 0,
-            fetched_at INTEGER NOT NULL
+            fetched_at INTEGER NOT NULL,
+            PRIMARY KEY (id, provider)
         )
         "#,
     )
@@ -2781,6 +2786,71 @@ async fn migrate_v69(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
+
+/// `cached_models` originally declared `id TEXT PRIMARY KEY`, but the
+/// table stores a **cross-provider** catalog: the same model id is
+/// legitimately advertised by several providers at once (`gpt-*` on
+/// OpenAI/Azure/OpenRouter, `claude-*` on Anthropic/Bedrock, `gemini-*`
+/// on Google/Vertex). A whole-batch insert therefore aborted on
+/// `UNIQUE constraint failed: cached_models.id`, and because the writer
+/// clears the table first, the cache was left permanently empty — every
+/// discovery refresh then re-hit the network.
+///
+/// Rebuild the table with the composite key `(id, provider)`, which is
+/// the real identity of a discovered model.
+async fn migrate_v70(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS cached_models_v70 (
+            id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            name TEXT NOT NULL,
+            context_window INTEGER,
+            max_output_tokens INTEGER,
+            supports_tools INTEGER NOT NULL DEFAULT 1,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
+            fetched_at INTEGER NOT NULL,
+            PRIMARY KEY (id, provider)
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    // Carry forward whatever the old single-key table managed to hold.
+    // `SELECT DISTINCT` keeps the rebuild safe even if the old table was
+    // written by an older build that tolerated duplicates.
+    sqlx::query(
+        "INSERT OR IGNORE INTO cached_models_v70 \
+         (id, provider, name, context_window, max_output_tokens, \
+          supports_tools, supports_vision, fetched_at) \
+         SELECT DISTINCT id, provider, name, context_window, \
+                max_output_tokens, supports_tools, supports_vision, fetched_at \
+         FROM cached_models",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("DROP TABLE IF EXISTS cached_models")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("ALTER TABLE cached_models_v70 RENAME TO cached_models")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS cached_models_provider_idx ON cached_models(provider)")
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
 /// Hot-path lookup indexes: `job_attempt.run_id` backs the
 /// `JobAttempt.run_id → RunStore` linkage query and `schedule_occurrence`
 /// status scans filter by status. Additive `IF NOT EXISTS`, safe on

@@ -70,6 +70,7 @@ until you either set `"model"` in config (see **Configuration** below) or pass
 
 ```bash
 codegg validate               # is the config valid?
+codegg edit                   # open the config in $EDITOR to change it
 codegg doctor                 # what is wired up and what is missing?
 ```
 

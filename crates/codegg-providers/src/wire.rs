@@ -234,6 +234,22 @@ pub fn encode_openai_chat(
 /// `eggpool-wire`. It is not CodeGG's hosted/stateful Responses program
 /// subsystem (`crate::responses_api`), which owns a different contract and is
 /// explicitly out of scope for multi-surface dispatch.
+///
+/// # `tool_choice` is clamped to `"auto"`
+///
+/// The OpenCode Go OpenAI-Responses gateway accepts `tool_choice: "auto"` and
+/// rejects every other value — including the object/named-function form — with
+/// a hard 400. Sending a constraint this gateway cannot honour would turn a
+/// request that merely *has* tools into a failed one, so a non-auto selection
+/// is dropped here instead of being forwarded.
+///
+/// This is a limitation of that one gateway, not of the Responses grammar:
+/// OpenAI's own Responses surface and the Chat surface both honour `required`,
+/// `none`, and the named-function form, and `encode_openai_chat` is
+/// deliberately left unclamped. `Auto` is the only value that survives here.
+///
+/// Dropping the selection *omits* the key rather than encoding `"none"`,
+/// leaving tool calling at the gateway's default. That is what the clamp means.
 pub fn encode_openai_responses(
     request: &ChatRequest,
     include_stream_usage: bool,
@@ -242,6 +258,16 @@ pub fn encode_openai_responses(
     if request.tools.is_none() {
         // The shared codec validates that a selected tool choice has a tool
         // collection; without a tools field there is nothing to select from.
+        canonical.tool_choice = None;
+    }
+    // Gateway clamp: only `auto` survives on this surface. Clearing the
+    // canonical selection is what removes the key — the shared codec emits
+    // `tool_choice` only for `Some`, exactly as the arm above relies on.
+    if canonical
+        .tool_choice
+        .as_ref()
+        .is_some_and(|choice| choice.mode != ToolChoiceMode::Auto)
+    {
         canonical.tool_choice = None;
     }
     encode(
@@ -1178,6 +1204,71 @@ mod tests {
             google.to_string().contains("AA=="),
             "Gemini image payload missing: {google}"
         );
+    }
+
+    /// Request with one tool and an explicit `wire_policy.tool_choice`, the
+    /// only way a Responses caller can reach a non-auto selection.
+    fn tool_choice_request(tool_choice: &str) -> ChatRequest {
+        let mut request = ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".into()),
+                }],
+            }],
+            model: "gpt-test".into(),
+            tools: Some(vec![crate::ToolDefinition {
+                name: "shell".into(),
+                description: "run shell".into(),
+                parameters: serde_json::json!({"type":"object","properties":{}}),
+                defer_loading: None,
+            }]),
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: Some(64),
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        };
+        request.context.wire_policy = Some(Arc::new(crate::ProviderWirePolicy {
+            tool_choice: Some(tool_choice.to_string()),
+            ..Default::default()
+        }));
+        request
+    }
+
+    #[test]
+    fn responses_surface_drops_a_tool_choice_the_opencode_gateway_rejects() {
+        let body = encode_openai_responses(&tool_choice_request("required"), false).unwrap();
+        // The gateway 400s on anything but "auto", so the key must be absent
+        // rather than forwarded.
+        assert!(body.get("tool_choice").is_none());
+        // The clamp is scoped to the selection, not to the tool collection.
+        assert_eq!(body["tools"][0]["name"], "shell");
+    }
+
+    #[test]
+    fn responses_surface_keeps_the_one_tool_choice_the_gateway_accepts() {
+        let body = encode_openai_responses(&tool_choice_request("auto"), false).unwrap();
+        // Pins that the clamp does not over-remove the accepted value.
+        assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn chat_surface_still_honours_a_non_auto_wire_policy_tool_choice() {
+        let body = encode_openai_chat(&tool_choice_request("required"), None, false).unwrap();
+        // Chat Completions accepts `required`; the Responses clamp must not
+        // leak across surfaces.
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    #[test]
+    fn responses_surface_omits_tool_choice_without_a_tools_field() {
+        let mut request = tool_choice_request("required");
+        request.tools = None;
+        let body = encode_openai_responses(&request, false).unwrap();
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]

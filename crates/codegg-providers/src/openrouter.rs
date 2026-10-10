@@ -101,39 +101,17 @@ impl Provider for OpenRouterProvider {
         ))
     }
 
+    /// Discover models upstream. OpenRouter speaks the OpenAI-compatible
+    /// `/models` contract, so the shared compatible provider owns the bounded,
+    /// profile-driven discovery call. No compiled-in catalog is shipped.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![
-            ModelInfo {
-                id: "anthropic/claude-sonnet-4".to_string(),
-                name: "Claude Sonnet 4 (via OpenRouter)".to_string(),
-                provider: "openrouter".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(64_000),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "openai/gpt-4.1".to_string(),
-                name: "GPT-4.1 (via OpenRouter)".to_string(),
-                provider: "openrouter".to_string(),
-                context_window: 1_047_576,
-                max_output_tokens: Some(32_768),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "google/gemini-2.5-pro".to_string(),
-                name: "Gemini 2.5 Pro (via OpenRouter)".to_string(),
-                provider: "openrouter".to_string(),
-                context_window: 1_000_000,
-                max_output_tokens: Some(65_536),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-        ])
+        let discovery = crate::openai_compatible::OpenAiCompatibleProvider::simple_with_credential(
+            "openrouter",
+            "OpenRouter",
+            crate::auth_types::Credential::api_key(self.api_key.clone()),
+            crate::setup_catalog::OPENROUTER_ENDPOINT,
+        );
+        discovery.models().await
     }
 
     fn clone_box(&self) -> Box<dyn Provider> {

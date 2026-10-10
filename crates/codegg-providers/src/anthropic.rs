@@ -115,51 +115,126 @@ impl Provider for AnthropicProvider {
         ))
     }
 
+    /// Discover models upstream, additively over any operator-declared models.
+    ///
+    /// For `anthropic` the endpoint comes from the shared profile. This
+    /// provider is also reused for Anthropic-compatible gateways under their own
+    /// ids (MiniMax, for example), and the profile's path for such a provider is
+    /// expressed against a different base than the one this provider talks to.
+    /// Rather than concatenate a mismatched path, a provider with no reviewed
+    /// discovery contract falls back to its operator-declared seeds — which is
+    /// exactly the escape hatch for a gateway that serves no catalog.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        if let Some(models) = &self.models_override {
-            return Ok(models.clone());
+        let mut models = self.models_override.clone().unwrap_or_default();
+        let endpoint = match crate::provider_profile::resolved_models_endpoint(self.id()) {
+            Ok(endpoint) => endpoint,
+            Err(crate::provider_profile::ProfileError::ProviderNotAdapted { .. }) => {
+                tracing::debug!(
+                    "no reviewed discovery contract for {}; using declared models only",
+                    self.id()
+                );
+                return Ok(models);
+            }
+            Err(error) => {
+                return Err(ProviderError::api(
+                    "provider_profile_contract",
+                    format!("shared provider profile could not resolve discovery: {error}"),
+                ));
+            }
+        };
+
+        let options = crate::eggpool::EggpoolProbeOptions::default();
+        let base = self.base_url.trim_end_matches('/');
+        let url = format!(
+            "{base}{}{}",
+            endpoint.path,
+            crate::openai_compatible::encode_query(&endpoint.query)
+        );
+
+        let mut response = match self
+            .client
+            .get(&url)
+            .map_err(ProviderError::from)?
+            .timeout(crate::provider_core::non_streaming_timeout())
+            .max_decoded_body_size(options.response_byte_limit)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!("anthropic discovery failed: {}", error);
+                return crate::openai_compatible::discovery_failed(
+                    self.id(),
+                    endpoint.required,
+                    models,
+                );
+            }
+        };
+
+        if !response.status().is_success() {
+            tracing::warn!("anthropic discovery returned HTTP {}", response.status());
+            return crate::openai_compatible::discovery_failed(
+                self.id(),
+                endpoint.required,
+                models,
+            );
         }
-        Ok(vec![
-            ModelInfo {
-                id: "claude-sonnet-4-20250514".to_string(),
-                name: "Claude Sonnet 4".to_string(),
-                provider: "anthropic".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(64_000),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "claude-opus-4-20250514".to_string(),
-                name: "Claude Opus 4".to_string(),
-                provider: "anthropic".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(32_000),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "claude-3-5-sonnet-20241022".to_string(),
-                name: "Claude 3.5 Sonnet".to_string(),
-                provider: "anthropic".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(8_192),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "claude-3-5-haiku-20241022".to_string(),
-                name: "Claude 3.5 Haiku".to_string(),
-                provider: "anthropic".to_string(),
-                context_window: 200_000,
-                max_output_tokens: Some(8_192),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-        ])
+
+        if response
+            .content_length()
+            .is_some_and(|length| length > options.response_byte_limit as u64)
+        {
+            return crate::openai_compatible::discovery_failed(
+                self.id(),
+                endpoint.required,
+                models,
+            );
+        }
+
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return crate::openai_compatible::discovery_failed(
+                    self.id(),
+                    endpoint.required,
+                    models,
+                )
+            }
+        };
+
+        // Anthropic's `/models` payload is the same bounded `data` array the
+        // shared compatible parser already accepts, so reuse it rather than
+        // adding a second parser. Capability and limit facts are taken only
+        // when the upstream entry states them; otherwise `false`/`0` mean "not
+        // advertised" rather than an invented capability.
+        let summaries = match crate::eggpool::parse_compatible_models_response(&body, &options) {
+            Ok(summaries) => summaries,
+            Err(_) => {
+                return crate::openai_compatible::discovery_failed(
+                    self.id(),
+                    endpoint.required,
+                    models,
+                )
+            }
+        };
+
+        for summary in summaries {
+            if !models.iter().any(|existing| existing.id == summary.id) {
+                models.push(ModelInfo {
+                    id: summary.id,
+                    name: summary.name,
+                    provider: self.id().to_string(),
+                    context_window: 0,
+                    max_output_tokens: None,
+                    supports_tools: false,
+                    supports_vision: false,
+                    variants: Vec::new(),
+                });
+            }
+        }
+
+        Ok(models)
     }
 }

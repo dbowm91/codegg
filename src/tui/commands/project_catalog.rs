@@ -150,4 +150,15 @@ pub(crate) fn apply_project_catalog_refreshed(
         // flag without recording an error.
         let _ = app.project_catalog.list_request.finish(request_id);
     }
+
+    // The manifest restore classifies persisted tabs against this
+    // catalog. It is dispatched at startup, before the catalog
+    // round-trip can have landed, and deliberately defers instead of
+    // classifying against an empty catalog — so this completion is
+    // what actually completes the restore. Re-drive it here.
+    //
+    // `manifest_restore_announced` is only set once a plan actually
+    // opened a tab, so an early project-only pass still gets the
+    // fuller snapshot applied later.
+    crate::tui::commands::manifest_restore::replay_manifest_restore(app);
 }

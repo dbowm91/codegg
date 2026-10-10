@@ -168,7 +168,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (146 variants, `src/tui/command.rs:112`).
+built-in executable operation (147 variants, `src/tui/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -313,6 +313,7 @@ Representative built-ins:
 | `/edit-reapply` | | Reapply the latest undone edit checkpoint |
 | `/edit-checkpoints` | `/checkpoints`, `/history` | List durable edit checkpoints |
 | `/tool-contracts` | | Show tool contract diagnostics |
+| `/logs` | | Show recent daemon log lines and past toast notifications |
 | `/worktree` | | List worktrees for the active workspace |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
@@ -411,12 +412,15 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 ## Source verification
 
-Verified against `src/tui/command.rs` and `src/command/mod.rs`:
-the command count guard asserts 154 and the documentation count guard
-matches the same 154 built-ins. `/skills` is a registered built-in action
-that reads the current workspace asset registry and reports bounded metadata.
+Verified 2026-10-06 against `src/tui/command.rs` and `src/command/mod.rs`:
+both count-guard tests pass by inspection — `built_in_command_count_matches_release_docs`
+(`command.rs:1104`) asserts 154, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 154 (the three
+former's matches are on lines 15, 22, and 250; the latter's on line 375).
 Also verified the 154 built-in registry length, `BuiltinSlashAction`
-(146 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+(147 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+and `/skills` as a registered built-in action that reads the current workspace
+asset registry and reports bounded metadata.
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:272`), the TUI `Command` struct fields
 (`command.rs:281`), `CommandRegistry` (`command.rs:458`), core `Command`

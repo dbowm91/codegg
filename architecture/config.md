@@ -258,6 +258,14 @@ pub struct ProviderConfig {
 }
 ```
 
+`models` is **additive**. It augments whatever model discovery returned
+for that provider; it never replaces it and never suppresses the
+discovery attempt. Discovery is always attempted and is the canonical
+way a model becomes usable. `models` exists for providers whose
+endpoint does not serve a catalog, so an operator can drive one
+manually. CodeGG ships no built-in catalogs — see "Model discovery
+authority" in `architecture/provider.md`.
+
 `api_key(&self, prefix)` checks `{PREFIX}_API_KEY` env var first, then
 inline `api_key` field.
 

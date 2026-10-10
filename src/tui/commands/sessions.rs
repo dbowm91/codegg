@@ -145,17 +145,31 @@ pub(crate) fn apply_sessions_reloaded(
     }
     app.dialog_state.session_dialog.set_loading(false);
 
-    app.dialog_state.session_dialog.load_sessions(
-        crate::protocol_conversions::dtos_to_sessions(sessions).unwrap_or_else(|e| {
-            tracing::error!(error = %e, "dtos_to_sessions conversion failed");
-            Default::default()
-        }),
-    );
-    for (id, count) in message_counts {
-        app.dialog_state
-            .session_dialog
-            .set_message_count(&id, count);
-    }
+    let sessions = crate::protocol_conversions::dtos_to_sessions(sessions).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "dtos_to_sessions conversion failed");
+        Default::default()
+    });
+    let counts: Vec<(String, usize)> = message_counts.into_iter().collect();
+
+    // `open_dialog(Dialog::Session)` pushes a *clone* of
+    // `dialog_state.session_dialog` onto the focus manager, and
+    // `render_dialog` draws whichever component the focus manager holds.
+    // Filling only the App-owned field therefore left the painted dialog on
+    // the empty clone captured at open time, so `/sessions` always listed
+    // nothing no matter how many rows the daemon returned. Fill the live
+    // focus-manager instance as well.
+    let apply = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
+        dialog.load_sessions(sessions.clone());
+        for (id, count) in &counts {
+            dialog.set_message_count(id, *count);
+        }
+    };
+    apply(&mut app.dialog_state.session_dialog);
+    app.focus_manager
+        .with_dialog_mut::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            apply,
+        );
 }
 
 pub(crate) fn next_session_mutation_id(app: &mut App) -> u64 {
@@ -2544,4 +2558,78 @@ pub(crate) async fn handle_undo_delete(app: &mut App, session_id: String) {
     }
     app.undo_session_id = None;
     app.undo_until = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `/sessions` painted nothing because `open_dialog` pushes a *clone*
+    /// of `dialog_state.session_dialog` onto the focus manager, while the
+    /// reload path only filled the App-owned field. `render_dialog` draws
+    /// whichever instance the focus manager holds, so the user always saw
+    /// the empty snapshot captured at open time. Both instances must
+    /// receive the rows.
+    #[test]
+    fn reload_fills_the_painted_focus_manager_instance() {
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        app.open_dialog(crate::tui::Dialog::Session);
+
+        let session = crate::protocol::dto::Session {
+            id: "session-under-test-0001".to_string(),
+            title: "ZZZ-unique-session-title".to_string(),
+            ..Default::default()
+        };
+        let mut counts = std::collections::HashMap::new();
+        counts.insert(session.id.clone(), 7usize);
+
+        let request_id = app.dialog_state.session_reload_request.begin();
+        apply_sessions_reloaded(&mut app, request_id, vec![session], counts, None);
+
+        assert_eq!(
+            app.dialog_state.session_dialog.session_count(),
+            1,
+            "App-owned dialog was not filled"
+        );
+
+        let painted = app
+            .focus_manager
+            .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+                crate::tui::components::component::DialogType::Session,
+                |dialog| dialog.session_count(),
+            )
+            .expect("session dialog is on the focus stack");
+        assert_eq!(
+            painted, 1,
+            "the painted focus-manager clone is empty; the user sees no sessions"
+        );
+    }
+
+    /// Reopening must not leave the previous rows visible under the
+    /// "loading" placeholder, and a second reload must replace rather than
+    /// accumulate.
+    #[test]
+    fn reload_is_idempotent_across_repeated_opens() {
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        for _ in 0..2 {
+            app.open_dialog(crate::tui::Dialog::Session);
+            let session = crate::protocol::dto::Session {
+                title: "t".into(),
+                ..Default::default()
+            };
+            let request_id = app.dialog_state.session_reload_request.begin();
+            apply_sessions_reloaded(
+                &mut app,
+                request_id,
+                vec![session],
+                Default::default(),
+                None,
+            );
+        }
+        assert_eq!(
+            app.dialog_state.session_dialog.session_count(),
+            1,
+            "a second reload must replace, not accumulate"
+        );
+    }
 }

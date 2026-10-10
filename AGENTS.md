@@ -8,7 +8,8 @@ Rust 1.89+, edition 2021.
 scripts/verify.sh quick   # canonical sanity: fmt, agent schema, core/client/desktop
                           # boundaries, sandbox, execution-ownership, TUI authority,
                           # http-route-disposition, audit-coverage, scheduler-bypass,
-                          # config-merge-coverage, provider wire/catalog/resilience +
+                          # config-merge-coverage, no-hardcoded-models, provider
+                          # wire/catalog/resilience +
                           # OpenAI endpoint, Eggwork target routing, cargo check workspace
 scripts/verify.sh full    # quick + clippy (-D warnings) + workspace tests +
                           # cargo test -p codegg --features server,plugins,lsp-test-support
@@ -101,7 +102,11 @@ change-triggered (`ls scripts/check_*` for the full list):
   to regenerate `src/agent/builtins/generated.rs` (never edit it); `--check` in CI
 - Git risk/policy → `check_git_forbidden_patterns.py`; storage layout →
   `check_project_catalog_invariants.py` (`STORAGE_LAYOUT_VERSION` must track the
-  highest migration in `crates/codegg-core/src/session/schema.rs`); projection
+  highest migration in `crates/codegg-core/src/session/schema.rs`); adding or
+  changing any model list → `check_no_hardcoded_models.py` (CodeGG ships **no**
+  compiled-in model catalog; discovery is canonical, config models are
+  additive — see `architecture/provider.md` "Model discovery authority");
+  projection
   transport → `check_projection_*.py` +
   `check_websocket_bounds.py`; provider lifecycle → `check_provider_connections_*.sh`
 

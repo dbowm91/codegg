@@ -177,6 +177,7 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
         | "mcp_resource_read"
         | "memory_search"
         | "memory_get"
+        | "context_read"
         | "extension_search" => ToolCategory::ReadOnly,
         "extension_install_request" => ToolCategory::SafeMutating,
         // Safe-mutating (in-app state only)
@@ -2089,6 +2090,7 @@ mod tests {
             "security",
             "skill",
             "tool_search",
+            "context_read",
             "plan_enter",
             "plan_exit",
         ] {

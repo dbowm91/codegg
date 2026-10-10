@@ -4967,6 +4967,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_models_serves_the_persisted_discovery_cache() {
+        // Regression: the handler used to build a fresh discovery service and
+        // call `refresh()` unconditionally, so every `SnapshotModels` request
+        // re-queried every provider and returned `[]` whenever one of them was
+        // slow — leaving the TUI model picker permanently empty. It now seeds
+        // from `cached_models` and only hits the network when the cache is
+        // missing or stale.
+        let daemon = test_daemon().await;
+        let pool = daemon.pool.clone().expect("test daemon pool");
+        sqlx::query(
+            "INSERT INTO cached_models \
+             (id, provider, name, context_window, max_output_tokens, \
+              supports_tools, supports_vision, fetched_at) \
+             VALUES ('mimo-v2.6-flash', 'opencode_go', 'MiMo v2.6 Flash', 0, NULL, 1, 0, ?)",
+        )
+        .bind(chrono::Utc::now().timestamp())
+        .execute(&pool)
+        .await
+        .expect("seed the discovery cache");
+
+        let req = crate::core::new_request("req-snap-cache".into(), CoreRequest::SnapshotModels);
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::ModelsSnapshot { models, .. } => {
+                assert!(
+                    models.iter().any(|m| m == "opencode_go/mimo-v2.6-flash"),
+                    "the cached model must be served, got {models:?}"
+                );
+            }
+            other => panic!("expected ModelsSnapshot, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn permission_respond_invalid_id_format() {
         let daemon = test_daemon().await;
         let req = crate::core::new_request(

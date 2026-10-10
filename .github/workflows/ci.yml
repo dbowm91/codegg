@@ -122,6 +122,9 @@ jobs:
       - name: Config merge coverage guard
         run: python3 scripts/check_config_merge_coverage.py
 
+      - name: No hardcoded model catalog guard
+        run: python3 scripts/check_no_hardcoded_models.py
+
       - name: Formatting
         run: cargo fmt --check --all
 

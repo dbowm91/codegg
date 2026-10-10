@@ -118,6 +118,91 @@ impl CoreDaemon {
                         selected_connection = Some(connection);
                     }
                 }
+                // M004: the durable selection is also the authority for two
+                // things the projected DTO cannot express — whether the
+                // pinned model still exists in the connection's bounded
+                // catalog, and which registry provider the connection-scoped
+                // provider kind names. `SessionSelectionDto::Selected`
+                // synthesises a zero-capability model row for a model the
+                // connection cannot serve, so a turn that trusts it ships a
+                // 404 to the user instead of naming the gone model.
+                let mut durable_provider: Option<String> = None;
+                if let Some(selection_service) = self.selection_service.as_ref() {
+                    // A classification that cannot be read is not authority:
+                    // it must not change this path's outcome, exactly as the
+                    // projection lookup above tolerates a failed read.
+                    match selection_service.classify_model(&session_id).await {
+                        Ok(crate::core::session_selection::DurableModelSelection::Live { .. }) => {
+                            match crate::core::session_selection::resolve_turn_provider(
+                                selection_service.connection_store.as_ref(),
+                                &model,
+                            )
+                            .await
+                            {
+                                Ok(provider) => durable_provider = Some(provider),
+                                Err(resolve_error) => {
+                                    return Ok(CoreResponse::Error {
+                                        code: resolve_error.code().to_string(),
+                                        message: resolve_error.message(),
+                                    });
+                                }
+                            }
+                        }
+                        Ok(crate::core::session_selection::DurableModelSelection::UnknownModel {
+                            connection_id,
+                            model_id,
+                        }) => {
+                            // Reuse the selection service's own wire shape.
+                            // An unavailable model is surfaced, never
+                            // replaced by a different one.
+                            let outcome = crate::core::session_selection::SelectionUpdateOutcome::UnknownModel { connection_id, model_id };
+                            return Ok(CoreResponse::Error {
+                                code: crate::core::session_selection::selection_outcome_code(
+                                    &outcome,
+                                )
+                                .to_string(),
+                                message: crate::core::session_selection::selection_outcome_message(
+                                    &outcome,
+                                ),
+                            });
+                        }
+                        Ok(crate::core::session_selection::DurableModelSelection::ConnectionNotSelectable {
+                            connection_id,
+                            state,
+                        }) => {
+                            return Ok(CoreResponse::Error {
+                                code: "connection_state".to_string(),
+                                message: format!(
+                                    "selected provider connection {} is {}",
+                                    connection_id, state
+                                ),
+                            });
+                        }
+                        // No durable selection, a connection row that is gone,
+                        // or a revision that moved past the pin: none of these
+                        // can speak for the model, so the client-supplied model
+                        // string stays the identity. A *present* connection with
+                        // a *missing* model is `UnknownModel` above and never
+                        // lands here.
+                        Ok(
+                            crate::core::session_selection::DurableModelSelection::Unselected
+                            | crate::core::session_selection::DurableModelSelection::ConnectionMissing {
+                                ..
+                            }
+                            | crate::core::session_selection::DurableModelSelection::RevisionMoved {
+                                ..
+                            },
+                        ) => {}
+                        Err(error) => {
+                            tracing::debug!(
+                                target: "codegg::core::daemon_turns",
+                                error = %error,
+                                %session_id,
+                                "durable model classification unavailable; falling back to the submitted model"
+                            );
+                        }
+                    }
+                }
                 // Validate the provider exists before delegating to the turn
                 // runtime. This preserves the existing `provider_not_found`
                 // response shape from the daemon layer. The turn runtime
@@ -143,20 +228,36 @@ impl CoreDaemon {
                         message: format!("Semantic model router not found: {}", model),
                     });
                 }
-                let provider_name = model.split('/').next().unwrap_or("openai").to_string();
-                if !is_virtual_model && registry.get(&provider_name).is_none() {
-                    crate::bus::global::GlobalEventBus::publish(
-                        crate::bus::events::AppEvent::Error {
-                            message: format!(
-                                "Provider '{}' not found. Please check your configuration.",
-                                provider_name
-                            ),
-                        },
-                    );
-                    return Ok(CoreResponse::Error {
-                        code: "provider_not_found".to_string(),
-                        message: format!("Provider not found: {}", provider_name),
-                    });
+                if !is_virtual_model {
+                    // The registry check runs against the *resolved*
+                    // provider. With a live durable selection that is the
+                    // connection's own provider kind — a durable model id is
+                    // `<connection-scoped kind>/<model>` (e.g.
+                    // `opencode_go/minimax-m3`, stored as `other:opencode_go`),
+                    // and neither the storage key nor a bare string split is a
+                    // registry id. Only a session with no durable authority
+                    // left falls back to the client-supplied segment.
+                    let provider_name = match durable_provider.as_deref() {
+                        Some(provider) => provider.to_owned(),
+                        None => {
+                            crate::core::session_selection::runtime_model_provider_segment(&model)
+                                .to_owned()
+                        }
+                    };
+                    if registry.get(&provider_name).is_none() {
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::Error {
+                                message: format!(
+                                    "Provider '{}' not found. Please check your configuration.",
+                                    provider_name
+                                ),
+                            },
+                        );
+                        return Ok(CoreResponse::Error {
+                            code: "provider_not_found".to_string(),
+                            message: format!("Provider not found: {}", provider_name),
+                        });
+                    }
                 }
 
                 let runtime = match self.bind_runtime_for_session(&session_id).await {
@@ -1147,11 +1248,23 @@ impl CoreDaemon {
                         std::path::PathBuf::new(),
                     )
                     .with_pool(pool);
-                    let models = discovery.refresh(&registry).await;
-                    models
-                        .iter()
-                        .map(|m| format!("{}/{}", m.provider, m.id))
-                        .collect()
+                    // Seed from the persisted cache, then hit the network only
+                    // when the cache is missing or stale. This used to call
+                    // `refresh()` unconditionally on a fresh service, so every
+                    // `SnapshotModels` request re-queried all providers and
+                    // returned `[]` whenever any of them was slow — the TUI
+                    // picker then rendered permanently empty. Mirrors the
+                    // standalone path in `src/main.rs`.
+                    discovery.initialize().await;
+                    if discovery.needs_refresh().await {
+                        let models = discovery.refresh(&registry).await;
+                        models
+                            .iter()
+                            .map(|m| format!("{}/{}", m.provider, m.id))
+                            .collect()
+                    } else {
+                        discovery.get_model_ids().await
+                    }
                 } else {
                     let mut ids = Vec::new();
                     for provider in registry.list() {
@@ -1302,5 +1415,549 @@ impl CoreDaemon {
             }],
         }];
         Ok((model, agents, messages))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Turn-path provider resolution and durable-model validation.
+    //!
+    //! These are in-crate tests because both entry points
+    //! (`classify_durable_model_selection`, `resolve_turn_provider`) are
+    //! `pub` crate-module seams that a `tests/` integration binary cannot
+    //! observe through the daemon's private plumbing.
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use codegg_core::identity::{PrincipalId, ProviderConnectionId};
+    use codegg_core::provider_connections::{
+        Endpoint, NewProviderConnection, ProviderConnectionStore, ProviderKind, ProviderScope,
+        SecretBindingLocator, SecretRef, TlsPolicy,
+    };
+    use codegg_core::session::{SessionStore, UpdateSession};
+    use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
+
+    use crate::core::daemon::CoreDaemon;
+    use crate::core::runtime_deps::CoreRuntimeDeps;
+    use crate::core::session_selection::{
+        classify_durable_model_selection, resolve_turn_provider, DurableModelSelection,
+    };
+
+    /// Records that the turn actually reached the injected runtime, so a
+    /// test can tell "accepted" from "rejected early" without a provider
+    /// call ever leaving the process.
+    struct RecordingTurnRuntime {
+        called: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::agent::turn_runtime::TurnRuntime for RecordingTurnRuntime {
+        async fn run_turn(
+            &self,
+            _input: crate::agent::turn_runtime::TurnRunInput,
+        ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
+            self.called.store(true, Ordering::SeqCst);
+            let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+            let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
+            Ok(crate::agent::turn_runtime::TurnRunOutput {
+                cancel_tx,
+                steer_tx,
+            })
+        }
+    }
+
+    async fn pool() -> sqlx::SqlitePool {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        let url = format!(
+            "file:turns_test_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let opts = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite options")
+            .create_if_missing(true)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
+    async fn daemon(pool: sqlx::SqlitePool) -> (CoreDaemon, Arc<RecordingTurnRuntime>) {
+        let runtime = Arc::new(RecordingTurnRuntime {
+            called: AtomicBool::new(false),
+        });
+        let deps = CoreRuntimeDeps::new(Some(pool), None, None)
+            .with_turn_runtime(
+                Arc::clone(&runtime) as Arc<dyn crate::agent::turn_runtime::TurnRuntime>
+            );
+        let daemon = CoreDaemon::with_deps(deps);
+        daemon.hydrate_workspace_registry().await.expect("hydrate");
+        (daemon, runtime)
+    }
+
+    /// Create a session bound to a real workspace root, the same way the
+    /// existing daemon turn tests do, and return its id.
+    async fn create_session(daemon: &CoreDaemon) -> String {
+        let workspace_dir = tempfile::tempdir().expect("workspace temp dir");
+        let workspace = daemon
+            .workspaces
+            .get_or_register(workspace_dir.path())
+            .await
+            .expect("register workspace");
+        let project = codegg_core::project_catalog::ProjectCatalog::new(
+            daemon.pool.clone().expect("daemon pool"),
+        )
+        .register_local_project(
+            codegg_core::project_catalog::RegisterLocalProject {
+                display_name: "Turns test project".to_string(),
+                description: None,
+                tags: Vec::new(),
+                primary_repository_id: None,
+            },
+            &workspace.id,
+            "turns-test",
+        )
+        .await
+        .expect("register project");
+        // Keep the temp dir alive for the lifetime of the session row.
+        let path = workspace_dir.path().to_path_buf();
+        std::mem::forget(workspace_dir);
+        let request = crate::core::new_request(
+            "req-create".into(),
+            CoreRequest::SessionCreate {
+                directory: path.to_string_lossy().into_owned(),
+                title: None,
+                project_id: Some(project.project_id.as_str().to_string()),
+                workspace_id: Some(workspace.id.as_str().to_string()),
+            },
+        );
+        match daemon
+            .handle_request(request)
+            .await
+            .expect("session create")
+        {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {other:?}"),
+        }
+    }
+
+    async fn seed_connection(pool: &sqlx::SqlitePool, kind: ProviderKind) -> ProviderConnectionId {
+        let store = ProviderConnectionStore::new(pool.clone());
+        let account = "turns-account";
+        store
+            .create(NewProviderConnection {
+                provider_kind: kind,
+                display_name: "Turns test connection".to_string(),
+                endpoint: Endpoint::new("https://example.test/v1", TlsPolicy::Required)
+                    .expect("endpoint"),
+                tls_policy: TlsPolicy::Required,
+                scope: ProviderScope::personal(
+                    PrincipalId::parse("turns-user").expect("principal"),
+                ),
+                secret_binding: Some(
+                    SecretBindingLocator::new(SecretRef::new(), "turns-test", account)
+                        .expect("secret binding"),
+                ),
+            })
+            .await
+            .expect("create connection")
+            .id
+    }
+
+    /// Persist the bounded catalog rows a successful probe would write, at
+    /// the connection's current revision.
+    async fn seed_catalog(
+        pool: &sqlx::SqlitePool,
+        connection_id: &ProviderConnectionId,
+        models: &[&str],
+    ) {
+        for model_id in models {
+            sqlx::query(
+                "INSERT INTO provider_connection_models \
+                 (connection_id, revision, model_id, model_name, context_window, \
+                  max_output_tokens, supports_tools, supports_vision) \
+                 VALUES (?, 1, ?, ?, 128000, 16384, 1, 1)",
+            )
+            .bind(connection_id.as_str())
+            .bind(model_id)
+            .bind(*model_id)
+            .execute(pool)
+            .await
+            .expect("seed model row");
+        }
+    }
+
+    /// Write a durable selection straight onto the session row. This is how
+    /// a *stale* selection — one whose model left the catalog — exists in
+    /// production: `update_selection` refuses to write one.
+    async fn write_durable_selection(
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+        connection_id: &ProviderConnectionId,
+        revision: u64,
+        model_id: &str,
+    ) {
+        SessionStore::new(pool.clone())
+            .update(
+                session_id,
+                UpdateSession {
+                    provider_connection_id: Some(Some(connection_id.as_str().to_string())),
+                    provider_connection_revision: Some(Some(revision)),
+                    model_catalog_revision: Some(Some("cat-1".to_string())),
+                    selected_model_id: Some(Some(model_id.to_string())),
+                    ..UpdateSession::default()
+                },
+            )
+            .await
+            .expect("write durable selection");
+    }
+
+    fn turn_request(session_id: &str, model: &str) -> RequestEnvelope<CoreRequest> {
+        let agent = crate::agent::Agent {
+            name: "test".into(),
+            description: "test agent".into(),
+            ..Default::default()
+        };
+        crate::core::new_request(
+            "req-submit".into(),
+            CoreRequest::TurnSubmit {
+                session_id: session_id.to_string(),
+                text: "hello".into(),
+                plan_mode: false,
+                model: model.to_string(),
+                agents: vec![crate::protocol_conversions::agent_to_dto(agent).expect("agent dto")],
+                current_agent_idx: 0,
+                messages: vec![],
+            },
+        )
+    }
+
+    fn error_of(response: &CoreResponse) -> (&str, &str) {
+        match response {
+            CoreResponse::Error { code, message } => (code.as_str(), message.as_str()),
+            other => panic!("expected CoreResponse::Error, got {other:?}"),
+        }
+    }
+
+    /// Drive one concrete model string for a session whose durable selection
+    /// is pinned to an `other:opencode_go` connection, and report the
+    /// daemon's answer. Each call owns its own daemon and session: a session
+    /// admits one turn at a time, so two submits would collide on the turn
+    /// controller.
+    async fn submit_with_scoped_opencode_go(model: &str) -> (CoreResponse, bool) {
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id =
+            seed_connection(&pool, ProviderKind::Other("opencode_go".to_string())).await;
+        seed_catalog(&pool, &connection_id, &["minimax-m3"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "minimax-m3",
+        )
+        .await;
+        let response = daemon
+            .handle_request(turn_request(&session_id, model))
+            .await
+            .expect("turn submit");
+        (response, runtime.called.load(Ordering::SeqCst))
+    }
+
+    /// `opencode_go` is stored as `other:opencode_go`, the storage-key form
+    /// of `ProviderKind::Other`. A durable model id therefore carries a
+    /// connection-scoped kind, and the daemon must resolve it to the
+    /// registry provider `opencode_go` instead of rejecting a perfectly
+    /// valid model as `provider_not_found`.
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn connection_scoped_provider_kind_resolves_to_the_registry_provider() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous = std::env::var("OPENCODE_GO_API_KEY").ok();
+        std::env::set_var("OPENCODE_GO_API_KEY", "test-key-not-used");
+
+        let pool = pool().await;
+        let connection_store = ProviderConnectionStore::new(pool.clone());
+        seed_connection(&pool, ProviderKind::Other("opencode_go".to_string())).await;
+        assert_eq!(
+            resolve_turn_provider(&connection_store, "opencode_go/minimax-m3")
+                .await
+                .expect("durable model resolves"),
+            "opencode_go",
+        );
+        assert_eq!(
+            resolve_turn_provider(&connection_store, "other:opencode_go/minimax-m3")
+                .await
+                .expect("storage-key form resolves"),
+            "opencode_go",
+        );
+
+        // The durable projection spells the provider with the bare registry
+        // id, but a connection-scoped kind also legitimately arrives in its
+        // storage-key form. Neither may read as `provider_not_found`, and a
+        // naive `split('/').next()` gets the storage-key form wrong because
+        // `other:opencode_go` is not a registry id.
+        for model in ["opencode_go/minimax-m3", "other:opencode_go/minimax-m3"] {
+            let (response, called) = submit_with_scoped_opencode_go(model).await;
+            assert!(
+                matches!(&response, CoreResponse::Ack),
+                "a connection-scoped kind ({model}) must not be reported as \
+                 provider_not_found: {response:?}",
+            );
+            assert!(
+                called,
+                "the turn must reach the runtime for {model} once the provider resolves",
+            );
+        }
+
+        if let Some(value) = previous {
+            std::env::set_var("OPENCODE_GO_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENCODE_GO_API_KEY");
+        }
+    }
+
+    /// A provider name that matches no connection is its own diagnostic.
+    /// `provider_not_found` means "no registered implementation", which is
+    /// a different user-facing failure, so the two must not collapse.
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn unknown_provider_gets_its_own_code_not_provider_not_found() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id = seed_connection(&pool, ProviderKind::OpenAi).await;
+        seed_catalog(&pool, &connection_id, &["gpt-4o"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "gpt-4o",
+        )
+        .await;
+
+        let response = daemon
+            .handle_request(turn_request(&session_id, "no_such_provider/some-model"))
+            .await
+            .expect("turn submit");
+        let (code, message) = error_of(&response);
+        assert_eq!(
+            code, "unknown_provider",
+            "an unresolvable provider must not be reported as provider_not_found ({message})",
+        );
+        assert!(
+            !runtime.called.load(Ordering::SeqCst),
+            "an unresolvable provider must be rejected before the turn runs",
+        );
+    }
+
+    /// A durable selection whose model left the catalog must surface as
+    /// `unknown_model`. Previously `get_selection` synthesised a fully
+    /// populated `Selected` DTO for it (`context_window: 0`), the turn
+    /// accepted it, and the provider 404'd.
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn stale_durable_model_is_rejected_as_unknown_model() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous = std::env::var("OPENAI_API_KEY").ok();
+        std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
+
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id = seed_connection(&pool, ProviderKind::OpenAi).await;
+        seed_catalog(&pool, &connection_id, &["gpt-4o"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "retired-model",
+        )
+        .await;
+
+        // The projection still reports a synthesised zero-capability model
+        // row; the turn path must not trust it.
+        let selection = daemon
+            .selection_service
+            .as_ref()
+            .expect("selection service")
+            .get(&session_id)
+            .await
+            .expect("selection lookup");
+        if let codegg_protocol::provider::SessionSelectionDto::Selected { model, .. } = &selection {
+            assert_eq!(
+                model.context_window, 0,
+                "precondition: the stale selection projects a synthesised row",
+            );
+        } else {
+            panic!("expected a synthesised Selected DTO, got {selection:?}");
+        }
+
+        let response = daemon
+            .handle_request(turn_request(&session_id, "openai/retired-model"))
+            .await
+            .expect("turn submit");
+        let (code, message) = error_of(&response);
+        assert_eq!(
+            code, "unknown_model",
+            "a model absent from the connection catalog must surface, got: {message}",
+        );
+        assert!(
+            message.contains("retired-model") && message.contains(connection_id.as_str()),
+            "the diagnostic must name the gone model and its connection: {message}",
+        );
+        assert!(
+            !runtime.called.load(Ordering::SeqCst),
+            "an unavailable model must never be replaced by another one",
+        );
+
+        if let Some(value) = previous {
+            std::env::set_var("OPENAI_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+    }
+
+    /// The counterpart guard: a durable selection whose model *is* in the
+    /// catalog is unchanged. This is what stops the previous fix from
+    /// becoming an over-rejection.
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn live_durable_selection_is_unchanged() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous = std::env::var("OPENAI_API_KEY").ok();
+        std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
+
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id = seed_connection(&pool, ProviderKind::OpenAi).await;
+        seed_catalog(&pool, &connection_id, &["gpt-4o"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "gpt-4o",
+        )
+        .await;
+
+        let classified = classify_durable_model_selection(
+            daemon
+                .selection_service
+                .as_ref()
+                .expect("service")
+                .session_store
+                .as_ref(),
+            daemon
+                .selection_service
+                .as_ref()
+                .expect("service")
+                .connection_store
+                .as_ref(),
+            &session_id,
+        )
+        .await
+        .expect("classify");
+        assert_eq!(
+            classified,
+            DurableModelSelection::Live {
+                connection_id: connection_id.as_str().to_string(),
+                model_id: "gpt-4o".to_string(),
+            },
+        );
+
+        let response = daemon
+            .handle_request(turn_request(&session_id, "openai/gpt-4o"))
+            .await
+            .expect("turn submit");
+        assert!(
+            matches!(&response, CoreResponse::Ack),
+            "a live durable selection must be accepted: {response:?}",
+        );
+        assert!(
+            runtime.called.load(Ordering::SeqCst),
+            "the turn must run for a live selection",
+        );
+
+        if let Some(value) = previous {
+            std::env::set_var("OPENAI_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
+    }
+
+    /// A *missing connection* is not a missing model. The two failures need
+    /// different diagnostics, so the classification must keep them apart.
+    #[tokio::test(flavor = "current_thread")]
+    async fn missing_connection_is_not_reported_as_an_unknown_model() {
+        let pool = pool().await;
+        let (daemon, _runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id = seed_connection(&pool, ProviderKind::OpenAi).await;
+        write_durable_selection(&pool, &session_id, &connection_id, 1, "gpt-4o").await;
+
+        sqlx::query("DELETE FROM provider_connections WHERE id = ?")
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("delete connection");
+
+        let classified = classify_durable_model_selection(
+            daemon
+                .selection_service
+                .as_ref()
+                .expect("service")
+                .session_store
+                .as_ref(),
+            daemon
+                .selection_service
+                .as_ref()
+                .expect("service")
+                .connection_store
+                .as_ref(),
+            &session_id,
+        )
+        .await
+        .expect("classify");
+        assert_eq!(
+            classified,
+            DurableModelSelection::ConnectionMissing {
+                connection_id: connection_id.as_str().to_string(),
+            },
+        );
     }
 }

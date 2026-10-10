@@ -296,6 +296,24 @@ pub enum TuiCommand {
     SessionSelectionLoad {
         session_id: String,
     },
+    /// Persist an explicit model choice made in the `/model` dialog to
+    /// the daemon's durable session selection.
+    ///
+    /// The dialog used to mutate `App::agent_state` only. Because the
+    /// daemon resolves each turn from its *durable* `SessionSelection`,
+    /// the displayed model and the model that actually ran diverged:
+    /// picking a model in the UI changed the status line and nothing
+    /// else, so the next turn still ran whatever the daemon had stored.
+    ModelSelectPersist {
+        session_id: String,
+        model: String,
+    },
+    /// Completion for [`TuiCommand::ModelSelectPersist`]. `error` is
+    /// `None` only when the daemon durably accepted the choice.
+    ModelSelectPersisted {
+        model: String,
+        error: Option<String>,
+    },
     ConnectionLifecycle {
         action: ConnectionLifecycleAction,
         connection_id: String,

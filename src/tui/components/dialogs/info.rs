@@ -27,6 +27,8 @@ pub enum InfoType {
     Team,
     Control,
     ProjectChat,
+    /// `/logs`: recent daemon log tail plus the in-memory toast history.
+    Logs,
 }
 
 #[derive(Clone)]
@@ -88,6 +90,7 @@ impl InfoDialog {
             InfoType::Team => " Team ",
             InfoType::Control => " Control ",
             InfoType::ProjectChat => " Project Chat ",
+            InfoType::Logs => " Logs ",
         }
     }
 
@@ -112,7 +115,20 @@ impl InfoDialog {
             // carries secrets, so sharing the slot is safe.
             InfoType::Control => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
+            InfoType::Logs => DialogType::Logs,
         }
+    }
+
+    /// Scroll to the last content line. Used by append-only windows
+    /// (`/logs`) whose newest entry is at the bottom.
+    pub fn scroll_to_end(&mut self) {
+        // Scroll offsets are counted in *wrapped rows*, so the end position is
+        // not derivable from `lines.len()` without the render width. The
+        // render pass clamps `scroll` to the real maximum, so the sentinel is
+        // the correct way to express "as far down as possible"; clamping
+        // against the logical line count here left the final line off-screen
+        // whenever an earlier line wrapped.
+        self.scroll = usize::MAX;
     }
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {
@@ -142,9 +158,13 @@ impl Component for InfoDialog {
                 None
             }
             crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                if self.scroll < self.lines.len().saturating_sub(1) {
-                    self.scroll += 1;
-                }
+                // No logical-line bound here: a line that wraps occupies
+                // several rows, so the reachable maximum is larger than
+                // `lines.len()` and clamping against it made the tail of
+                // wrapped content unreachable. The render pass clamps
+                // `scroll` to the true maximum, and `saturating_add` keeps
+                // the `usize::MAX` sentinel from wrapping on repeat.
+                self.scroll = self.scroll.saturating_add(1);
                 None
             }
             crossterm::event::KeyCode::Enter => Some(TuiMsg::CloseDialog),
@@ -177,31 +197,30 @@ impl Component for InfoDialog {
         // viewport from the actual content chunk so scrolling reaches the
         // last line instead of overestimating the available rows.
         let visible_lines = (chunks[1].height as usize).saturating_sub(2);
-        let total_lines = self
-            .styled_lines
-            .as_ref()
-            .map(Vec::len)
-            .unwrap_or(self.lines.len());
+        // Long log lines must wrap rather than run off the right edge. The
+        // rows are produced here instead of by `Paragraph::wrap` because
+        // `line_count` is behind ratatui's unstable `rendered-line-info`
+        // feature, so the scroll offset has to be counted against the same
+        // wrapping this code performs — otherwise a wrapped line occupies
+        // several rows while the offset advances by one.
+        let inner_width = chunks[1].width.saturating_sub(2);
+        let display_lines: Vec<Line<'static>> = if let Some(styled_lines) = &self.styled_lines {
+            styled_lines.clone()
+        } else {
+            self.lines
+                .iter()
+                .flat_map(|s| crate::tui::wrap::wrap_to_strings(s, inner_width))
+                .map(|row| Line::from(Span::styled(row, Style::default().fg(theme.foreground))))
+                .collect()
+        };
+        let total_lines = display_lines.len();
         let max_scroll = total_lines.saturating_sub(visible_lines);
 
         let start_idx = self.scroll.min(max_scroll);
         let end_idx = (start_idx + visible_lines).min(total_lines);
 
-        let display_lines: Vec<Line> = if let Some(styled_lines) = &self.styled_lines {
-            styled_lines[start_idx..end_idx].to_vec()
-        } else {
-            self.lines[start_idx..end_idx]
-                .iter()
-                .map(|s| {
-                    Line::from(Span::styled(
-                        s.as_str(),
-                        Style::default().fg(theme.foreground),
-                    ))
-                })
-                .collect()
-        };
-
-        let content_para = Paragraph::new(display_lines)
+        let visible: Vec<Line> = display_lines[start_idx..end_idx].to_vec();
+        let content_para = Paragraph::new(visible)
             .style(Style::default().fg(theme.foreground))
             .block(
                 Block::default()
@@ -244,5 +263,85 @@ impl Component for InfoDialog {
 
     fn dialog_type(&self) -> DialogType {
         self.dialog_type_for_info_type()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_lines(dialog: &InfoDialog, width: u16, height: u16) -> Vec<String> {
+        let theme = Arc::new(Theme::dark());
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                let mut d = dialog.clone();
+                d.render(frame, frame.area(), &theme);
+            })
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<Vec<_>>()
+            .chunks(width as usize)
+            .map(|row| row.concat())
+            .collect()
+    }
+
+    #[test]
+    fn long_log_line_wraps_instead_of_running_off_the_right_edge() {
+        // A single unbroken token wider than the dialog is the worst case:
+        // without wrapping it is clipped at the border and every row stops
+        // short of the right edge.
+        let dialog = InfoDialog::new(
+            Arc::new(Theme::dark()),
+            InfoType::Logs,
+            vec!["x".repeat(200)],
+        );
+        let (w, h) = (40u16, 12u16);
+        let rows = render_lines(&dialog, w, h);
+
+        // Geometry: title(3) + content + footer(3); the content box spends two
+        // more rows on its border and two more columns.
+        let inner_width = (w - 2) as usize;
+        let visible_rows = (h - 3 - 3 - 2) as usize;
+
+        // Wrapping, not clipping: every visible content row is filled edge to
+        // edge. Without wrapping only the first row would carry text.
+        let filled: usize = rows
+            .iter()
+            .map(|r| r.chars().filter(|c| *c == 'x').count())
+            .sum();
+        assert_eq!(
+            filled,
+            inner_width * visible_rows,
+            "content did not fill every visible row to the wrap width"
+        );
+
+        // No row may overflow the dialog.
+        for row in &rows {
+            assert!(
+                row.chars().count() <= w as usize,
+                "row overflowed the dialog: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_reaches_the_tail_after_wrapping() {
+        let lines = vec!["first".to_string(), "y".repeat(200), "last".to_string()];
+        let mut dialog = InfoDialog::new(Arc::new(Theme::dark()), InfoType::Logs, lines);
+        dialog.scroll = usize::MAX;
+        let rows = render_lines(&dialog, 40, 10);
+        assert!(
+            rows.concat().contains("last"),
+            "scrolled view must end at the last logical line"
+        );
     }
 }

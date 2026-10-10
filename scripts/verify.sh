@@ -109,6 +109,9 @@ run_quick() {
     echo "==> python3 scripts/check_provider_catalog_consistency.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_catalog_consistency.py)
 
+    echo "==> python3 scripts/check_no_hardcoded_models.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_no_hardcoded_models.py)
+
     echo "==> python3 scripts/check_provider_resilience_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_provider_resilience_ownership.py)
 

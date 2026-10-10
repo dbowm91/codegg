@@ -324,16 +324,15 @@ fn sandbox_helper_qualification_through_trusted_resolver() {
     assert!(resolved.is_file());
     // Status channel: Enforced setup decodes as enforcement (the exact
     // signal the helper emits after Landlock restriction on Linux).
-    let frame = codegg::security::sandbox::encode_sandbox_status(
-        codegg::security::sandbox::SandboxLaunchOutcome::Enforced { abi: 1 },
-    )
-    .expect("enforced frame encodes");
+    let enforced = codegg::security::sandbox::SandboxLaunchOutcome::enforced(
+        codegg::security::sandbox::BackendId::LANDLOCK,
+        codegg::security::sandbox::BackendEnforcement::new(Some(1), &["guarantee"], &["limit"]),
+    );
+    let frame =
+        codegg::security::sandbox::encode_sandbox_status(enforced.clone()).expect("frame encodes");
     let decoded =
         codegg::security::sandbox::decode_sandbox_status(&frame).expect("enforced frame decodes");
-    assert_eq!(
-        decoded,
-        codegg::security::sandbox::SandboxLaunchOutcome::Enforced { abi: 1 }
-    );
+    assert_eq!(decoded, enforced);
     // Platform distinction: unsupported kernel/platform is Unavailable
     // (fail-closed), never confused with a missing runfile above and never
     // silently FullHost.

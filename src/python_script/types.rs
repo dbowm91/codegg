@@ -181,8 +181,13 @@ impl PythonCapabilityProfile {
 /// Which enforcement backend is active for a given execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SandboxBackend {
-    /// Landlock filesystem sandbox (Linux only).
-    Landlock,
+    /// An OS filesystem backend applied containment. The identity is the
+    /// registry's [`BackendId`](codegg::security::sandbox::BackendId) name
+    /// so a new backend needs no change here — this is the variant that
+    /// keeps the python surface backend-neutral.
+    Os {
+        backend: crate::security::sandbox::BackendId,
+    },
     /// Portable fallback: cwd containment, env clearing, snapshots.
     PortableFallback,
     /// No sandboxing active.
@@ -192,7 +197,7 @@ pub enum SandboxBackend {
 impl std::fmt::Display for SandboxBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Landlock => write!(f, "landlock"),
+            Self::Os { backend } => write!(f, "{backend}"),
             Self::PortableFallback => write!(f, "portable_fallback"),
             Self::None => write!(f, "none"),
         }
@@ -205,7 +210,9 @@ impl std::fmt::Display for SandboxBackend {
 pub enum SandboxOutcome {
     Enforced {
         backend: SandboxBackend,
-        abi: u32,
+        /// Backend-reported policy version; `None` when the backend has
+        /// no versioned ABI (Seatbelt).
+        abi: Option<u32>,
     },
     Fallback {
         backend: SandboxBackend,

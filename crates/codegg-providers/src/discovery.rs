@@ -33,10 +33,15 @@ impl ModelDiscoveryService {
     }
 
     pub async fn initialize(&self) {
-        self.load_from_cache_or_embedded().await;
+        self.load_from_cache().await;
     }
 
-    async fn load_from_cache_or_embedded(&self) {
+    /// Seed the in-memory list from the persisted cache, if any.
+    ///
+    /// There is deliberately no shipped fallback. CodeGG compiles in no model
+    /// catalog, so an empty cache is the truthful initial state: the caller
+    /// runs discovery and sees exactly what the providers actually offer.
+    async fn load_from_cache(&self) {
         if let Some(ref pool) = self.pool {
             if let Ok(models) = self.load_from_db(pool).await {
                 if !models.is_empty() {
@@ -53,26 +58,9 @@ impl ModelDiscoveryService {
                                 ),
                         );
                     }
-                    return;
                 }
             }
         }
-
-        let mut models = self.models.write().await;
-        *models = crate::models::embedded_models()
-            .into_iter()
-            .map(|m| ModelInfoInternal {
-                id: m.id,
-                provider: m.provider,
-                name: m.name,
-                context_window: m.context_window,
-                max_output_tokens: m.max_output_tokens,
-                supports_tools: m.supports_tools,
-                supports_vision: m.supports_vision,
-                variants: m.variants,
-                fetched_at: now_secs(),
-            })
-            .collect();
     }
 
     async fn load_from_db(
@@ -145,10 +133,10 @@ impl ModelDiscoveryService {
             }
         }
 
-        if all_models.is_empty() {
-            all_models = crate::models::embedded_models();
-        }
-
+        // No shipped fallback. If discovery genuinely produced nothing across
+        // every provider, that is the truthful answer and is returned as an
+        // empty catalog so the caller can surface an honest empty state rather
+        // than a fabricated model that the upstream provider may not serve.
         let now = now_secs();
         let internal_models: Vec<ModelInfoInternal> = all_models
             .iter()
@@ -200,7 +188,7 @@ impl ModelDiscoveryService {
 
         use sqlx::query_builder::QueryBuilder;
         let mut query_builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
-            "INSERT INTO cached_models (id, provider, name, context_window, max_output_tokens, supports_tools, supports_vision, fetched_at) ",
+            "INSERT OR REPLACE INTO cached_models (id, provider, name, context_window, max_output_tokens, supports_tools, supports_vision, fetched_at) ",
         );
 
         query_builder.push_values(models, |mut b, model| {
@@ -313,5 +301,34 @@ mod tests {
         for id in ids {
             assert!(id.contains('/'));
         }
+    }
+
+    #[tokio::test]
+    async fn initialize_starts_empty_without_a_shipped_catalog() {
+        // No compiled-in catalog: an empty cache must yield an empty in-memory
+        // list, never a fabricated placeholder model.
+        let service = ModelDiscoveryService::default();
+        service.initialize().await;
+        assert!(
+            service.get_models().await.is_empty(),
+            "discovery must not seed a shipped model catalog"
+        );
+        assert!(service.get_model_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_with_no_providers_yields_an_empty_catalog() {
+        // A refresh that discovers nothing returns nothing. Backfilling a
+        // built-in list here is exactly how a stale model became a session's
+        // model.
+        let service = ModelDiscoveryService::default();
+        service.initialize().await;
+        let registry = crate::ProviderRegistry::new();
+        let models = service.refresh(&registry).await;
+        assert!(
+            models.is_empty(),
+            "a failed discovery must surface an empty catalog"
+        );
+        assert!(service.get_models().await.is_empty());
     }
 }

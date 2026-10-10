@@ -1058,6 +1058,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::SessionSelectionLoad { session_id } => {
             crate::tui::commands::session_selection::start_selection_refresh(app, session_id);
         }
+        TuiCommand::ModelSelectPersist { session_id, model } => {
+            crate::tui::commands::session_selection::start_model_select_persist(
+                app, session_id, model,
+            );
+        }
         TuiCommand::ConnectionLifecycle {
             action,
             connection_id,
@@ -1090,6 +1095,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
+        TuiCommand::ModelSelectPersisted { model, error } => {
+            app.apply_model_select_persisted(model, error);
+        }
         TuiCommand::SessionSelectionLoaded {
             session_id,
             selection,
@@ -1098,6 +1106,23 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             focused_connection_id,
             error,
         } => {
+            // The durable session selection is authoritative for what the
+            // daemon will actually run, so it must be reflected in the
+            // displayed model even when no dialog is open. Previously the
+            // handler returned early unless the connection dialog existed,
+            // so the fetched selection was discarded and the status line
+            // kept showing a manifest-sourced model — the UI and the
+            // provider could silently disagree.
+            if error.is_none() {
+                if let Some(selection) = selection.as_ref() {
+                    if let Some(runtime_model) =
+                        crate::core::session_selection::durable_selected_runtime_model(selection)
+                    {
+                        app.reconcile_durable_selection_model(&runtime_model);
+                    }
+                }
+            }
+
             let Some(dialog) = app.dialog_state.connection_selection_dialog.as_mut() else {
                 return;
             };
