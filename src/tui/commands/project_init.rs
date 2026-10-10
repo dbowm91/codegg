@@ -146,3 +146,160 @@ pub(crate) fn start_project_init_refresh(app: &mut App, project_id: String, work
         },
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{CoreClient, InprocCoreClient};
+    use crate::protocol::dto::ProjectRegisterRequestDto;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    async fn test_pool() -> sqlx::SqlitePool {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        let url = format!(
+            "file:tui_project_init_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let options = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn tui_approval_publishes_through_core_client_and_daemon() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("README.md"), "# TUI integration fixture\n").unwrap();
+        let pool = test_pool().await;
+        let client = Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            Some(pool),
+            crate::config::schema::Config::default(),
+            None,
+        ));
+        let workspace = match client
+            .request(crate::core::new_request(
+                "tui-init-register-workspace".into(),
+                CoreRequest::WorkspaceRegister {
+                    root: root.path().display().to_string(),
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::WorkspaceSnapshot { workspace } => workspace,
+            other => panic!("expected registered workspace, got {other:?}"),
+        };
+        let project = match client
+            .request(crate::core::new_request(
+                "tui-init-register-project".into(),
+                CoreRequest::ProjectRegister {
+                    request: ProjectRegisterRequestDto {
+                        workspace_id: workspace.workspace_id.clone(),
+                        display_name: "TUI init fixture".into(),
+                        description: None,
+                        tags: Vec::new(),
+                        repository_id: None,
+                        source: "test".into(),
+                    },
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::ProjectRegistered { project } => project,
+            other => panic!("expected registered project, got {other:?}"),
+        };
+
+        let mut app = App::new_for_testing(root.path().display().to_string());
+        let tab = app
+            .project_tabs
+            .active_mut()
+            .expect("test app has an active tab");
+        tab.project_id = Some(project.project_id.clone());
+        tab.workspace_id = Some(workspace.workspace_id.clone());
+        tab.workspace_root = Some(root.path().to_path_buf());
+        app.set_core_client(client);
+        app.ensure_tui_cmd_channel();
+        start_project_init_draft(&mut app);
+
+        let preview = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tui_cmd_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, preview).await;
+        assert!(
+            !root.path().join("AGENTS.md").exists(),
+            "preview has no write side effect"
+        );
+        app.process_msg(crate::tui::app::TuiMsg::CloseDialog);
+        assert!(
+            !root.path().join("AGENTS.md").exists(),
+            "cancel leaves the workspace unchanged"
+        );
+        assert!(
+            app.tui_cmd_rx.as_mut().unwrap().try_recv().is_err(),
+            "cancel queues no publish request"
+        );
+        start_project_init_draft(&mut app);
+        let preview = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tui_cmd_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, preview).await;
+        app.process_msg(crate::tui::app::TuiMsg::ProjectInitApprove);
+
+        let publish = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tui_cmd_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(publish, TuiCommand::ProjectInitPublish { .. }));
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, publish).await;
+        let completion = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tui_cmd_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            &completion,
+            TuiCommand::ProjectInitPublishFinished { error: None, .. }
+        ));
+        assert!(root.path().join("AGENTS.md").is_file());
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, completion).await;
+        let refresh = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tui_cmd_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            refresh,
+            TuiCommand::AssetRefreshFinished {
+                report: Some(_),
+                error: None
+            }
+        ));
+    }
+}

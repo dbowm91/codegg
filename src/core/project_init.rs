@@ -142,6 +142,16 @@ mod tests {
     }
 
     #[test]
+    fn daemon_restart_discards_unpublished_drafts() {
+        let (_, token) = registry();
+        let restarted = ProjectInitDraftRegistry::new();
+        assert!(matches!(
+            restarted.consume(&token, "client-a", "project-a", "workspace-a"),
+            Err(ConsumeDraftError::MissingOrExpired)
+        ));
+    }
+
+    #[test]
     fn wrong_scope_consumes_token_without_revealing_candidate() {
         let (registry, token) = registry();
         assert!(matches!(
