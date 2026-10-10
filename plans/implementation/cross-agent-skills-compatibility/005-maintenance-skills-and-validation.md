@@ -72,7 +72,9 @@ Select exact focused integration test binaries after inspecting current Cargo ta
 
 ## 13. Acceptance criteria
 
-- At least three source-verified maintenance guides close the highest-priority gaps without duplicating architecture docs.\n- Canonical docs/links are consistent; one bounded verification path catches high-impact drift.\n- No mandatory global skills installation or new runtime behavior is introduced.
+- At least three source-verified maintenance guides close the highest-priority gaps without duplicating architecture docs.
+- Canonical docs/links are consistent; one bounded verification path catches high-impact drift.
+- No mandatory global skills installation or new runtime behavior is introduced.
 
 ## 14. Stop conditions
 
