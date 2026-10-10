@@ -15045,3 +15045,54 @@ mod projection_adoption_tests {
         assert_eq!(app.projection_client.subscription_count(), 0);
     }
 }
+
+#[cfg(test)]
+mod skills_inspection_tests {
+    use super::*;
+    use crate::agent::asset_context::{AssetContextBuilder, ProjectId};
+    use crate::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder;
+    use crate::tui::components::dialogs::info::InfoDialog;
+    use std::fs;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    #[test]
+    fn skills_command_renders_the_cached_workspace_snapshot() {
+        let root = TempDir::new().unwrap();
+        let skill_dir = root.path().join(".agents/skills/sample");
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: sample\ndescription: cached sample\n---\nBody",
+        )
+        .unwrap();
+        fs::write(skill_dir.join("references/guide.md"), "Reference").unwrap();
+        let context = AssetContextBuilder::new()
+            .with_synthetic_project_id(ProjectId::new())
+            .with_workspace_root(root.path())
+            .build()
+            .unwrap();
+        let snapshot =
+            ProjectAssetSnapshotBuilder::new(Arc::new(crate::config::schema::Config::default()))
+                .build(&context)
+                .unwrap();
+        let mut app = App::new_for_testing(root.path().to_string_lossy().into_owned());
+        app.agent_state.snapshot = Some(Arc::new(snapshot));
+
+        app.dispatch_builtin_command(
+            crate::tui::command::BuiltinSlashAction::Skills,
+            Some("/skills sample"),
+        );
+
+        assert_eq!(app.ui_state.dialog, Dialog::MemoryResults);
+        let dialog = app
+            .focus_manager
+            .dialog_mut_any::<InfoDialog>()
+            .expect("the read-only report opens an info dialog");
+        let report = dialog.content_lines().join("\n");
+        assert!(report.contains("sample"));
+        assert!(report.contains("precedence:"));
+        assert!(report.contains("references/guide.md"));
+        assert!(report.contains("Use /reload skills"));
+    }
+}
