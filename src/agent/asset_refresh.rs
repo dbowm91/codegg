@@ -386,15 +386,20 @@ fn diff_snapshots(
         .skills
         .effective
         .iter()
-        .map(|skill| (skill.normalized_name.clone(), skill.content_digest.clone()))
+        .map(|skill| (skill.normalized_name.clone(), skill_refresh_identity(skill)))
         .collect();
     let new_skills: BTreeMap<_, _> = current
         .skills
         .effective
         .iter()
-        .map(|skill| (skill.normalized_name.clone(), skill.content_digest.clone()))
+        .map(|skill| (skill.normalized_name.clone(), skill_refresh_identity(skill)))
         .collect();
     compare_maps(&old_skills, &new_skills, "skill", &mut diff);
+    if skill_source_summary_identity(&previous.snapshot.skills)
+        != skill_source_summary_identity(&current.skills)
+    {
+        diff.changed.push("skill-sources".to_string());
+    }
     for skill in &current.skills.effective {
         if !skill.shadowed_alternatives.is_empty() {
             diff.shadowed
@@ -420,6 +425,53 @@ fn diff_snapshots(
         diff.removed.push(format!("instruction:{digest}"));
     }
     finish_diagnostics(diff, current)
+}
+
+fn skill_refresh_identity(skill: &crate::skills::EffectiveSkill) -> String {
+    let mut identity = format!(
+        "{}:{}:{}",
+        skill.source_kind.precedence_rank(),
+        skill.precedence_rank,
+        skill.content_digest
+    );
+    let mut alternatives = skill
+        .shadowed_alternatives
+        .iter()
+        .map(|alternative| {
+            (
+                alternative.source_kind.precedence_rank(),
+                alternative.content_digest.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    alternatives.sort_unstable();
+    for (kind, digest) in alternatives {
+        identity.push('|');
+        identity.push_str(&kind.to_string());
+        identity.push(':');
+        identity.push_str(digest);
+    }
+    identity
+}
+
+fn skill_source_summary_identity(
+    registry: &crate::skills::AssetRegistry,
+) -> Vec<(u32, usize, usize, usize, usize)> {
+    let mut identity = registry
+        .sources
+        .iter()
+        .map(|source| {
+            (
+                source.kind.precedence_rank(),
+                source.discovered_count,
+                source.valid_count,
+                source.invalid_count,
+                source.alias_paths.len(),
+            )
+        })
+        .collect::<Vec<_>>();
+    identity.sort_unstable();
+    identity
 }
 
 fn compare_maps(

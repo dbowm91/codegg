@@ -187,9 +187,9 @@ impl ProjectAssetSnapshot {
 /// Construct a stable fingerprint from a snapshot's resolved content.
 ///
 /// The fingerprint is derived from sorted, semantically meaningful fields
-/// only: agent digests, skill digests, instruction digests. It must not
-/// depend on wall-clock time, map iteration order, or absolute paths
-/// (paths live in provenance only).
+/// only: agent digests, skill content and precedence, bounded source-summary
+/// counts, and instruction digests. It must not depend on wall-clock time,
+/// map iteration order, or absolute paths (paths live in provenance only).
 pub fn compute_snapshot_fingerprint(
     agents: &BTreeMap<String, ResolvedAgent>,
     skills: &AssetRegistry,
@@ -208,6 +208,56 @@ pub fn compute_snapshot_fingerprint(
         hasher.update(skill.normalized_name.as_bytes());
         hasher.update(b":");
         hasher.update(skill.content_digest.as_bytes());
+        hasher.update(b":");
+        hasher.update((skill.source_kind as u32).to_le_bytes());
+        hasher.update(skill.precedence_rank.to_le_bytes());
+        let mut shadowed = skill
+            .shadowed_alternatives
+            .iter()
+            .map(|alternative| {
+                (
+                    alternative.source_kind as u32,
+                    alternative.content_digest.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        shadowed.sort_unstable();
+        for (kind, digest) in shadowed {
+            hasher.update(kind.to_le_bytes());
+            hasher.update(digest.as_bytes());
+        }
+        hasher.update(b"\n");
+    }
+    let mut sources = skills.sources.iter().collect::<Vec<_>>();
+    sources.sort_by_key(|source| {
+        (
+            source.kind.precedence_rank(),
+            source.discovered_count,
+            source.valid_count,
+            source.invalid_count,
+            source.alias_paths.len(),
+        )
+    });
+    hasher.update(b"skill-sources\n");
+    for source in sources {
+        hasher.update((source.kind as u32).to_le_bytes());
+        hasher.update((source.discovered_count as u64).to_le_bytes());
+        hasher.update((source.valid_count as u64).to_le_bytes());
+        hasher.update((source.invalid_count as u64).to_le_bytes());
+        hasher.update((source.alias_paths.len() as u64).to_le_bytes());
+        hasher.update(b"\n");
+    }
+    let mut diagnostics = skills
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.severity, diagnostic.reason.as_str()))
+        .collect::<Vec<_>>();
+    diagnostics.sort_unstable();
+    hasher.update(b"skill-diagnostics\n");
+    for (severity, reason) in diagnostics {
+        hasher.update(severity.to_string().as_bytes());
+        hasher.update(b":");
+        hasher.update(reason.as_bytes());
         hasher.update(b"\n");
     }
     hasher.update(b"instructions\n");
@@ -322,5 +372,37 @@ mod tests {
             Some("snapshot-fingerprint")
         );
         assert_eq!(provenance.activated_skill_digests, vec!["digest-1"]);
+    }
+
+    #[test]
+    fn source_summary_changes_refresh_identity_without_hashing_paths() {
+        fn fingerprint(canonical: &str, alias: Option<&str>) -> String {
+            let skills = AssetRegistry {
+                effective: Vec::new(),
+                diagnostics: Vec::new(),
+                sources: vec![crate::skills::SourceSummary {
+                    kind: crate::skills::SourceKind::AgentsProject,
+                    canonical_path: canonical.into(),
+                    discovered_count: 1,
+                    valid_count: 1,
+                    invalid_count: 0,
+                    alias_paths: alias.into_iter().map(Into::into).collect(),
+                }],
+            };
+            compute_snapshot_fingerprint(&BTreeMap::new(), &skills, &[])
+        }
+
+        assert_eq!(
+            fingerprint("/workspace/a", None),
+            fingerprint("/workspace/b", None)
+        );
+        assert_eq!(
+            fingerprint("/workspace/a", Some("/alias/a")),
+            fingerprint("/workspace/b", Some("/alias/b"))
+        );
+        assert_ne!(
+            fingerprint("/workspace/a", None),
+            fingerprint("/workspace/a", Some("/alias/a"))
+        );
     }
 }

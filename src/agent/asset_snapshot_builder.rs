@@ -326,4 +326,44 @@ mod tests {
         let snap2 = default_builder().build(&ctx).unwrap();
         assert_eq!(snap1.fingerprint, snap2.fingerprint);
     }
+
+    #[test]
+    fn skill_scope_precedence_changes_fingerprint_without_hashing_absolute_paths() {
+        let repo = TempDir::new().unwrap();
+        let nested = repo.path().join("packages/app");
+        fs::create_dir_all(repo.path().join(".git")).unwrap();
+        fs::create_dir_all(nested).unwrap();
+        let parent_skill = repo.path().join(".agents/skills/shared/SKILL.md");
+        fs::create_dir_all(parent_skill.parent().unwrap()).unwrap();
+        fs::write(
+            &parent_skill,
+            "---\nname: shared\ndescription: same package\n---\nSame body",
+        )
+        .unwrap();
+
+        let ctx = AssetContextBuilder::new()
+            .with_synthetic_project_id(ProjectId::new())
+            .with_workspace_root(&nested)
+            .build()
+            .unwrap();
+        let builder = default_builder();
+        let parent_snapshot = builder.build(&ctx).unwrap();
+        let parent_skill = parent_snapshot.skills.get("shared").unwrap();
+        let parent_digest = parent_skill.content_digest.clone();
+        assert!(parent_skill.precedence_rank > 0);
+
+        fs::remove_dir_all(repo.path().join(".agents")).unwrap();
+        let nested_skill = nested.join(".agents/skills/shared/SKILL.md");
+        fs::create_dir_all(nested_skill.parent().unwrap()).unwrap();
+        fs::write(
+            &nested_skill,
+            "---\nname: shared\ndescription: same package\n---\nSame body",
+        )
+        .unwrap();
+        let nested_snapshot = builder.build(&ctx).unwrap();
+        let nested_skill = nested_snapshot.skills.get("shared").unwrap();
+        assert_eq!(nested_skill.content_digest, parent_digest);
+        assert_eq!(nested_skill.precedence_rank, 10);
+        assert_ne!(nested_snapshot.fingerprint, parent_snapshot.fingerprint);
+    }
 }

@@ -9,7 +9,9 @@ skill activation through the `skill` model tool.
 Discovers skill packages from multiple harness-compatible locations
 (CodeGG, .agents, OpenCode, Claude), resolves name conflicts by
 precedence, computes content digests for change detection, and
-provides lazy, security-bounded resource access for skill assets.
+provides lazy, security-bounded resource access for skill assets. Workspace
+scope and effective source precedence are part of the snapshot fingerprint so
+refreshes publish provenance changes without hashing absolute paths.
 
 ## Where It Lives
 
@@ -291,6 +293,10 @@ The daemon refreshes the immutable asset snapshot on session lifecycle
 and through the native `/reload` command. Refresh reports are bounded
 to names, digests, counts, and diagnostics. A failed candidate leaves
 the previous generation published.
+The fingerprint includes each effective skill's source kind and scoped
+precedence, shadowed source identities, and path-free source/diagnostic
+summaries; changing those facts triggers a refresh while absolute locations
+remain provenance only.
 
 ## Proposal and publication boundary (M002–M003)
 
