@@ -86,16 +86,19 @@ fn resolve_enforcement_backend(
     }
     #[cfg(target_os = "linux")]
     {
-        if crate::security::sandbox::SandboxConfig::is_available() {
+        let capability = crate::security::sandbox::platform_sandbox_capability();
+        if let crate::security::sandbox::SandboxCapability::Available { backend } = capability {
             let mut warnings = Vec::new();
-            // Landlock handles filesystem but not network
+            // Every shipped backend is filesystem-only; none isolates the
+            // network. Named by backend so a future backend that *does*
+            // isolate it does not inherit a false warning.
             if profile.allow_network {
-                warnings.push(
-                    "network isolation not supported by Landlock; denying network capability"
-                        .to_string(),
-                );
+                warnings.push(format!(
+                    "network isolation not supported by the {} backend; denying network capability",
+                    backend
+                ));
             }
-            return (SandboxBackend::Landlock, true, false, warnings);
+            return (SandboxBackend::Os { backend }, true, false, warnings);
         }
     }
 
@@ -550,7 +553,7 @@ mod tests {
         let decision = resolve_policy(PythonExecutionMode::Analyze, "x = 1", &ws());
         // On any platform, should get a backend
         assert!(
-            decision.enforcement_backend == SandboxBackend::Landlock
+            matches!(decision.enforcement_backend, SandboxBackend::Os { .. })
                 || decision.enforcement_backend == SandboxBackend::PortableFallback
         );
     }

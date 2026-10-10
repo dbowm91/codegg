@@ -82,6 +82,60 @@ impl ToolEffectClass {
             Self::ReadOnly | Self::ReadValidate | Self::SafeRepeat | Self::IdempotentMutating
         )
     }
+
+    /// Canonical wire form. This is the spelling persisted in
+    /// `ToolAuthorityGrant::allowed_effect_class` and in audit records,
+    /// so it must stay stable.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::ReadValidate => "read_validate",
+            Self::SafeRepeat => "safe_repeat",
+            Self::IdempotentMutating => "idempotent_mutating",
+            Self::NonIdempotent => "non_idempotent",
+            Self::ProcessExec => "process_exec",
+        }
+    }
+
+    /// Parse the persisted wire form. Returns `None` for an empty or
+    /// unrecognized string so that authority checks can fail closed
+    /// rather than silently widening scope.
+    pub fn from_authority_str(s: &str) -> Option<Self> {
+        match s {
+            "read_only" => Some(Self::ReadOnly),
+            "read_validate" => Some(Self::ReadValidate),
+            "safe_repeat" => Some(Self::SafeRepeat),
+            "idempotent_mutating" => Some(Self::IdempotentMutating),
+            "non_idempotent" => Some(Self::NonIdempotent),
+            "process_exec" => Some(Self::ProcessExec),
+            _ => None,
+        }
+    }
+
+    /// Severity rank used for ceiling comparisons. Higher is more
+    /// side-effecting, so a grant naming class `G` admits a tool whose
+    /// class `T` satisfies `T.severity() <= G.severity()`.
+    ///
+    /// `ProcessExec` ranks above every mutation class because
+    /// spawning an external process can escape any narrower grant;
+    /// it therefore never rides in on a mutation-classed ceiling.
+    pub fn severity(self) -> u8 {
+        match self {
+            Self::ReadOnly => 0,
+            Self::ReadValidate => 1,
+            Self::SafeRepeat => 2,
+            Self::IdempotentMutating => 3,
+            Self::NonIdempotent => 4,
+            Self::ProcessExec => 5,
+        }
+    }
+
+    /// Whether this class is admissible under a grant whose ceiling is
+    /// `ceiling`. A *safer* class than the ceiling is authorized; a
+    /// strictly more dangerous one is not.
+    pub fn is_within_ceiling(self, ceiling: Self) -> bool {
+        self.severity() <= ceiling.severity()
+    }
 }
 
 // ─── Idempotency class ────────────────────────────────────────────

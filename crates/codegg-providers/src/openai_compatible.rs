@@ -28,6 +28,67 @@ pub struct OpenAiCompatibleConfig {
     pub tool_choice: ToolChoice,
 }
 
+/// A resolved model-discovery call target.
+struct ModelsEndpoint {
+    method: http::Method,
+    url: String,
+    /// Whether the reviewed profile marks discovery as a precondition for
+    /// this provider being usable.
+    required: bool,
+}
+
+/// Percent-encode a profile-declared query map into a `?a=b&c=d` suffix.
+///
+/// Returns an empty string when there is nothing to encode, so the common
+/// no-query case does not leave a bare `?` on the URL.
+pub(crate) fn encode_query(query: &std::collections::BTreeMap<String, String>) -> String {
+    if query.is_empty() {
+        return String::new();
+    }
+    let pairs = query
+        .iter()
+        .map(|(key, value)| format!("{}={}", encode_component(key), encode_component(value)))
+        .collect::<Vec<_>>();
+    format!("?{}", pairs.join("&"))
+}
+
+/// Encode one query key or value using the conservative RFC 3986 unreserved
+/// set, leaving nothing ambiguous about how the upstream parses the result.
+fn encode_component(raw: &str) -> String {
+    let mut encoded = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// Outcome for a discovery attempt that produced nothing.
+///
+/// There is no shipped catalog to fall back to. Config-declared seeds are
+/// returned whenever the operator supplied any, so a provider with no working
+/// discovery is still drivable from configuration. When the reviewed profile
+/// marks discovery as required *and* there is nothing else to report, the
+/// truthful answer is a failure: silently reporting an empty catalog would let
+/// a provider look ready when it is not.
+pub(crate) fn discovery_failed(
+    provider_id: &str,
+    required: bool,
+    seeds: Vec<ModelInfo>,
+) -> Result<Vec<ModelInfo>, ProviderError> {
+    if required && seeds.is_empty() {
+        return Err(ProviderError::api(
+            "discovery_required",
+            format!("{provider_id} declares model discovery required but none succeeded"),
+        ));
+    }
+    Ok(seeds)
+}
+
 #[derive(Clone)]
 pub struct OpenAiCompatibleProvider {
     pub id: String,
@@ -256,6 +317,61 @@ impl OpenAiCompatibleProvider {
         }
         apply_policy_aliases(&mut body, &adapter);
         Ok(body)
+    }
+
+    /// The discovery endpoint to call, and whether the profile requires it.
+    ///
+    /// Method, path, and query come from the shared provider profile when this
+    /// provider has a reviewed entry there, so a provider's discovery contract
+    /// is data CodeGG consumes rather than a CodeGG-local URL constant.
+    ///
+    /// A provider with no shared-profile entry — an operator-configured
+    /// gateway, for instance — uses the conventional OpenAI-compatible
+    /// `GET {base_url}/models` against the *operator's own* base URL. That is
+    /// operator configuration plus the widely-implemented convention, not a
+    /// compiled-in model catalog. See
+    /// [`crate::provider_profile::resolved_models_endpoint`].
+    fn discovery_endpoint(&self) -> Result<ModelsEndpoint, ProviderError> {
+        let base = self.config.base_url.trim_end_matches('/');
+        match crate::provider_profile::resolved_models_endpoint(&self.id) {
+            Ok(endpoint) => {
+                // A profile that declares a request body cannot be honoured
+                // without a TOML value in hand. No bundled profile declares
+                // one; if one ever does, fail the call rather than silently
+                // sending a request that is missing its declared body.
+                if endpoint.body.is_some() {
+                    return Err(ProviderError::api(
+                        "provider_profile_contract",
+                        "discovery endpoint declares a request body this transport cannot encode",
+                    ));
+                }
+                let method =
+                    http::Method::from_bytes(endpoint.method.as_bytes()).map_err(|_| {
+                        ProviderError::api(
+                            "provider_profile_contract",
+                            "discovery endpoint declares an invalid HTTP method",
+                        )
+                    })?;
+                Ok(ModelsEndpoint {
+                    method,
+                    url: format!("{base}{}{}", endpoint.path, encode_query(&endpoint.query)),
+                    required: endpoint.required,
+                })
+            }
+            Err(crate::provider_profile::ProfileError::ProviderNotAdapted { .. }) => {
+                Ok(ModelsEndpoint {
+                    method: http::Method::GET,
+                    url: format!("{base}/models"),
+                    required: false,
+                })
+            }
+            // A profile that exists but could not be read is a broken contract,
+            // not a licence to guess a local endpoint.
+            Err(error) => Err(ProviderError::api(
+                "provider_profile_contract",
+                format!("shared provider profile could not resolve discovery: {error}"),
+            )),
+        }
     }
 }
 
@@ -486,66 +602,81 @@ impl Provider for OpenAiCompatibleProvider {
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        // Config-declared models are additive seeds. Discovery is always
+        // attempted and its results are unioned on top of them; the seeds never
+        // suppress the attempt and never replace what discovery returns.
         let mut models = self.config.models.clone();
-
-        let url = format!("{}/models", self.config.base_url);
+        let endpoint = self.discovery_endpoint()?;
 
         // Shared bounded discovery core limits (same response-byte,
         // model-count, and string-length bounds as the strict provisioning
-        // probe). Best-effort policy: any transport/status/parse/bound
-        // failure returns the configured seeds unchanged.
+        // probe).
         let options = crate::eggpool::EggpoolProbeOptions::default();
 
-        let mut resp = match self
+        let request = self
             .client
-            .get(&url)
+            .request(endpoint.method.clone(), &endpoint.url)
             .map_err(ProviderError::from)?
             .timeout(crate::provider_core::non_streaming_timeout())
             .max_decoded_body_size(options.response_byte_limit)
             .header(
                 &self.config.auth_header,
                 &self.config.credential.authorization_header_value(),
-            )
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("discovery failed for {}: {}", self.name, e);
-                return Ok(models);
+            );
+
+        let mut response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!("discovery failed for {}: {}", self.name, error);
+                return discovery_failed(&self.id, endpoint.required, models);
             }
         };
 
-        if !resp.status().is_success() {
-            return Ok(models);
+        if !response.status().is_success() {
+            tracing::warn!(
+                "discovery for {} returned HTTP {}",
+                self.name,
+                response.status()
+            );
+            return discovery_failed(&self.id, endpoint.required, models);
         }
 
-        if resp
+        if response
             .content_length()
             .is_some_and(|length| length > options.response_byte_limit as u64)
         {
-            return Ok(models);
+            return discovery_failed(&self.id, endpoint.required, models);
         }
 
-        let body = match resp.bytes().await {
-            Ok(bytes) => bytes.to_vec(),
-            Err(_) => return Ok(models),
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(_) => return discovery_failed(&self.id, endpoint.required, models),
         };
 
         let discovered = match crate::eggpool::parse_compatible_models_response(&body, &options) {
             Ok(summaries) => summaries,
-            Err(_) => return Ok(models),
+            Err(_) => return discovery_failed(&self.id, endpoint.required, models),
         };
 
         for summary in discovered {
             if !models.iter().any(|m| m.id == summary.id) {
                 models.push(ModelInfo {
                     id: summary.id.clone(),
-                    name: summary.id.clone(),
+                    name: summary.name,
                     provider: self.id.clone(),
-                    context_window: 128_000,
+                    // A `/models` response advertises an id and a display name,
+                    // not capabilities. Every field below therefore means
+                    // "not advertised by discovery" rather than a capability
+                    // CodeGG invented. `ModelInfo` types these as `bool`/`usize`
+                    // rather than `Option`, so "unknown" cannot be expressed
+                    // directly; `false` and `0` are the honest encoding and match
+                    // the existing unknown-model placeholder used by session
+                    // selection. Nothing in the runtime gates tool definitions on
+                    // `supports_tools`, so these fields are display and
+                    // persistence metadata only.
+                    context_window: 0,
                     max_output_tokens: None,
-                    supports_tools: true,
+                    supports_tools: false,
                     supports_vision: false,
                     variants: Vec::new(),
                 });

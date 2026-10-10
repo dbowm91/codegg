@@ -49,6 +49,59 @@ use crate::command_outcome::ActualExecutor;
 use crate::config::schema::CommandIntentFamily;
 use crate::error::ToolError;
 
+/// Bytes of partial output carried into a timeout result.
+///
+/// The service already caps capture at `max_output_bytes`; this is a second,
+/// smaller bound so a timeout message cannot swamp the model's context with
+/// a runaway command's worth of output.
+const TIMEOUT_OUTPUT_BYTES: usize = 4000;
+
+/// Tail `data` to [`TIMEOUT_OUTPUT_BYTES`], marking that it was truncated.
+///
+/// The tail is kept rather than the head: on a timeout the most recent
+/// output is what identifies where the command actually stopped.
+fn tail_bounded(data: &str) -> (String, bool) {
+    if data.len() <= TIMEOUT_OUTPUT_BYTES {
+        return (data.to_string(), false);
+    }
+    let start = data.len() - TIMEOUT_OUTPUT_BYTES;
+    // Walk back to a char boundary so multi-byte output cannot panic.
+    let mut start = start;
+    while start < data.len() && !data.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut out = String::with_capacity(TIMEOUT_OUTPUT_BYTES + 64);
+    out.push_str("...[earlier output truncated]...\n");
+    out.push_str(&data[start..]);
+    (out, true)
+}
+
+/// Build the timeout result text for a killed child, keeping what it printed.
+///
+/// Returning the command name alone tells the model only that it ran too
+/// long. The captured streams are the evidence, and they are already
+/// bounded by the process service's output policy.
+fn partial_timeout_report(command: &str, stdout: &str, stderr: &str) -> String {
+    let mut msg = format!("`{command}` timed out and was terminated.");
+    let (out, out_trunc) = tail_bounded(stdout);
+    let (err, err_trunc) = tail_bounded(stderr);
+    if !out.trim().is_empty() {
+        msg.push_str("\n\n--- stdout before termination ---\n");
+        msg.push_str(&out);
+    }
+    if !err.trim().is_empty() {
+        msg.push_str("\n\n--- stderr before termination ---\n");
+        msg.push_str(&err);
+    }
+    if out_trunc || err_trunc {
+        msg.push_str("\n\n[partial output: tail retained, earlier bytes dropped]");
+    }
+    if out.trim().is_empty() && err.trim().is_empty() {
+        msg.push_str("\n\n[no output was produced before termination]");
+    }
+    msg
+}
+
 /// What a single dispatch returned: the result text, raw process output,
 /// the actual executor that ran it, and an optional `RunId` proving that
 /// a delegated subsystem owns a canonical RunStore record.
@@ -161,19 +214,40 @@ impl BashTool {
         let cwd = cwd_owned.clone().ok_or_else(|| {
             ToolError::Execution("managed shell cwd could not be resolved".into())
         })?;
-        let sandbox = if let Some(config) = self.landlock_sandbox.as_ref() {
-            if config.enabled {
+        // One place decides contained vs degraded vs unconstrained, from the
+        // real host capability. A constrained request on a host without OS
+        // containment must not fail every command, and must never be
+        // silently reported as containment or as FullHost.
+        let sandbox_path =
+            crate::security::sandbox::sandbox_execution_path(self.landlock_sandbox.as_ref());
+        let sandbox = match &sandbox_path {
+            crate::security::sandbox::SandboxExecutionPath::Unconstrained => {
+                crate::managed_process::SandboxRequest::Disabled
+            }
+            crate::security::sandbox::SandboxExecutionPath::Contained { .. } => {
+                let config = self
+                    .landlock_sandbox
+                    .as_ref()
+                    .expect("contained path requires an enabled config");
                 let args = vec!["-c".to_string(), command.to_string()];
                 crate::managed_process::SandboxRequest::Required(config.launch_spec(
                     "sh",
                     &args,
                     Some(&cwd),
                 )?)
-            } else {
-                crate::managed_process::SandboxRequest::Disabled
             }
-        } else {
-            crate::managed_process::SandboxRequest::Disabled
+            crate::security::sandbox::SandboxExecutionPath::DegradedUncontained { reason } => {
+                tracing::warn!(
+                    target: "codegg::security::sandbox",
+                    reason = %reason,
+                    command_len = command.len(),
+                    "requested sandbox containment is unavailable on this host; \
+                     running the shell command through the degraded uncontained path"
+                );
+                crate::managed_process::SandboxRequest::DegradedUncontained {
+                    reason: reason.clone(),
+                }
+            }
         };
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             vec!["sh".into(), "-c".into(), command.into()],
@@ -202,11 +276,34 @@ impl BashTool {
             managed.termination,
             crate::managed_process::TerminationReason::TimedOut
         ) {
-            return Err(ToolError::Timeout(command.to_string()));
+            // The child was killed but its pipes were already drained, so
+            // whatever it managed to print is available here. Discarding
+            // it would throw away the only clue about *why* a run went
+            // long — which half of a build failed, which test hung — and
+            // force the model to re-run blind to find out.
+            return Err(ToolError::Timeout(partial_timeout_report(
+                command,
+                &managed.stdout.to_string_lossy(),
+                &managed.stderr.to_string_lossy(),
+            )));
         }
         let stdout = managed.stdout.to_string_lossy();
         let stderr = managed.stderr.to_string_lossy();
         let mut result = String::new();
+        // Operator-visible sandbox report. A degraded (uncontained) run must
+        // say so in the transcript, not just in tracing: this text is what the
+        // reviewer reads next to the command output.
+        match &managed.sandbox {
+            crate::managed_process::SandboxExecutionOutcome::Uncontained { reason } => {
+                result.push_str(&format!(
+                    "[sandbox: UNCONTAINED - filesystem containment was requested but is \
+                     unavailable on this host ({reason}); this command ran without OS \
+                     filesystem containment]\n\n"
+                ));
+            }
+            crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
+            | crate::managed_process::SandboxExecutionOutcome::Disabled => {}
+        }
         if !stdout.is_empty() {
             result.push_str(&super::output::truncate_output(
                 &stdout,
@@ -1142,5 +1239,70 @@ mod tests {
         assert_eq!(output.status.code(), Some(0));
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"err");
+    }
+}
+
+#[cfg(test)]
+mod timeout_partial_output_tests {
+    use super::*;
+
+    /// The regression: a timed-out command used to report only its command
+    /// line, throwing away everything it had already printed. The model
+    /// then had to re-run blind to discover why it went long.
+    #[test]
+    fn a_timeout_keeps_what_the_command_had_printed() {
+        let msg = partial_timeout_report(
+            "cargo build --release",
+            "   Compiling codegg-core v0.1.0\nerror[E0433]: failed to resolve",
+            "warning: unused variable",
+        );
+        assert!(msg.contains("cargo build --release"));
+        assert!(
+            msg.contains("failed to resolve"),
+            "stdout must survive: {msg}"
+        );
+        assert!(
+            msg.contains("unused variable"),
+            "stderr must survive: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_timeout_with_no_output_says_so_instead_of_looking_empty() {
+        let msg = partial_timeout_report("sleep 600", "", "");
+        assert!(msg.contains("no output was produced"), "{msg}");
+        assert!(!msg.contains("stdout before termination"));
+    }
+
+    #[test]
+    fn a_timeout_does_not_swamp_the_context_with_runaway_output() {
+        let huge = "x".repeat(TIMEOUT_OUTPUT_BYTES * 3);
+        let msg = partial_timeout_report("yes | head -c 999999", &huge, "");
+        assert!(
+            msg.len() < TIMEOUT_OUTPUT_BYTES * 2,
+            "timeout text must stay bounded"
+        );
+        assert!(msg.contains("earlier output truncated"), "{msg}");
+    }
+
+    /// On a timeout the tail is the signal: it shows where the command
+    /// actually stopped, which the head of a long build log does not.
+    #[test]
+    fn a_truncated_timeout_keeps_the_tail() {
+        let mut data = "a".repeat(TIMEOUT_OUTPUT_BYTES);
+        data.push_str("FINAL-LINE-MARKER");
+        let (text, truncated) = tail_bounded(&data);
+        assert!(truncated);
+        assert!(
+            text.contains("FINAL-LINE-MARKER"),
+            "tail must be kept: {text}"
+        );
+    }
+
+    #[test]
+    fn short_output_is_returned_verbatim() {
+        let (text, truncated) = tail_bounded("all good");
+        assert_eq!(text, "all good");
+        assert!(!truncated);
     }
 }

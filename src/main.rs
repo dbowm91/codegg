@@ -329,6 +329,20 @@ enum Commands {
         #[arg(long)]
         config: Option<String>,
     },
+    /// Open the configuration file in $EDITOR (creating it if missing)
+    Edit {
+        /// Path to config file (default: the global config)
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Edit the project-local config (.codegg/codegg.jsonc) instead
+        #[arg(long, conflicts_with = "config")]
+        project: bool,
+
+        /// Override the editor instead of resolving $VISUAL/$EDITOR
+        #[arg(long)]
+        editor: Option<String>,
+    },
     /// Execute a prompt in non-interactive mode (CI/CD)
     Exec {
         /// JSON input with prompt, model, and agent
@@ -686,6 +700,205 @@ impl OutputFormat {
             }))
             .expect("serializing a CLI response string cannot fail"),
         }
+    }
+}
+
+#[cfg(test)]
+mod edit_command_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Build a throwaway directory tree containing executables named after
+    /// `names`, and return it joined with the given subdirectory as a PATH.
+    fn path_with_executables(dir: &Path, names: &[&str]) -> String {
+        for name in names {
+            let file = dir.join(name);
+            fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("codegg-edit-{}-{}", tag, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn split_editor_command_handles_quotes_and_separators() {
+        assert_eq!(split_editor_command("vim"), Some(vec!["vim".to_string()]));
+        assert_eq!(
+            split_editor_command("code --wait"),
+            Some(vec!["code".to_string(), "--wait".to_string()])
+        );
+        assert_eq!(
+            split_editor_command("  hx   -w  "),
+            Some(vec!["hx".to_string(), "-w".to_string()])
+        );
+        assert_eq!(
+            split_editor_command("\"/opt/My Editor/hx\""),
+            Some(vec!["/opt/My Editor/hx".to_string()])
+        );
+        assert_eq!(
+            split_editor_command("'/opt/My Editor/hx' --wait"),
+            Some(vec!["/opt/My Editor/hx".to_string(), "--wait".to_string()])
+        );
+    }
+
+    #[test]
+    fn split_editor_command_rejects_blank_values() {
+        assert_eq!(split_editor_command(""), None);
+        assert_eq!(split_editor_command("   \t\n "), None);
+    }
+
+    #[test]
+    fn split_editor_command_keeps_unbalanced_quotes_usable() {
+        // An unbalanced quote must still yield one runnable command rather
+        // than a mangled argv that fails as "no such file".
+        assert_eq!(
+            split_editor_command("\"/opt/My Editor/hx"),
+            Some(vec!["/opt/My Editor/hx".to_string()])
+        );
+    }
+
+    #[test]
+    fn find_on_path_resolves_only_executable_files() {
+        let dir = tmp_dir("which");
+        let sub = dir.join("bin");
+        fs::create_dir_all(&sub).unwrap();
+        let path_var = path_with_executables(&sub, &["hx", "vim"]);
+
+        assert_eq!(
+            find_on_path("hx", Some(&path_var)).map(|p| p.file_name().unwrap().to_owned()),
+            Some("hx".into())
+        );
+
+        // Present but not executable must not resolve.
+        fs::write(sub.join("nano"), "not executable").unwrap();
+        assert_eq!(find_on_path("nano", Some(&path_var)), None);
+
+        // Absent entirely.
+        assert_eq!(find_on_path("emacs", Some(&path_var)), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_editor_prefers_visual_then_editor_then_flag() {
+        let dir = tmp_dir("precedence");
+        let path_var = path_with_executables(&dir, &["hx", "vim"]);
+
+        // The explicit flag outranks both environment variables.
+        assert_eq!(
+            resolve_editor(Some("nano"), Some("emacs"), Some("ed"), Some(&path_var)),
+            Some(vec!["nano".to_string()])
+        );
+        // $VISUAL outranks $EDITOR.
+        assert_eq!(
+            resolve_editor(None, Some("emacs"), Some("ed"), Some(&path_var)),
+            Some(vec!["emacs".to_string()])
+        );
+        // $EDITOR is used when $VISUAL is absent or blank.
+        assert_eq!(
+            resolve_editor(None, None, Some("ed"), Some(&path_var)),
+            Some(vec!["ed".to_string()])
+        );
+        assert_eq!(
+            resolve_editor(None, Some("   "), Some("ed"), Some(&path_var)),
+            Some(vec!["ed".to_string()])
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_editor_falls_back_in_declared_order() {
+        let dir = tmp_dir("fallback");
+
+        // With every candidate present, the first in EDITOR_FALLBACKS wins.
+        let all = path_with_executables(&dir, &EDITOR_FALLBACKS);
+        assert_eq!(
+            resolve_editor(None, None, None, Some(&all)),
+            Some(vec![dir.join("hx").to_string_lossy().into_owned()])
+        );
+
+        // With `hx` and `vim` absent, resolution skips to the next present
+        // candidate rather than failing. A separate directory keeps the
+        // executables from the case above out of PATH.
+        let tail_dir = tmp_dir("fallback-tail");
+        let tail = path_with_executables(&tail_dir, &["vi", "nano"]);
+        assert_eq!(
+            resolve_editor(None, None, None, Some(&tail)),
+            Some(vec![tail_dir.join("vi").to_string_lossy().into_owned()])
+        );
+
+        // An empty PATH leaves nothing to find.
+        assert_eq!(resolve_editor(None, None, None, None), None);
+        assert_eq!(resolve_editor(None, None, None, Some("")), None);
+        let empty_dir = tmp_dir("fallback-empty");
+        let no_editors = empty_dir.to_string_lossy().into_owned();
+        assert_eq!(
+            resolve_editor(None, None, None, Some(&no_editors)),
+            None,
+            "a directory with no editor binaries must not resolve"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&tail_dir);
+        let _ = fs::remove_dir_all(&empty_dir);
+    }
+
+    #[test]
+    fn resolve_editor_honours_an_environment_editor_that_is_missing() {
+        // The user asked for this editor; substituting another one would edit
+        // the file behind their back, so the missing binary must survive
+        // resolution and fail at spawn time instead.
+        assert_eq!(
+            resolve_editor(None, None, Some("definitely-not-installed"), Some("")),
+            Some(vec!["definitely-not-installed".to_string()])
+        );
+    }
+
+    #[test]
+    fn edit_target_prefers_an_explicit_path() {
+        let target = edit_target_path(Some("/tmp/explicit.jsonc"), false).unwrap();
+        assert_eq!(target, PathBuf::from("/tmp/explicit.jsonc"));
+    }
+
+    #[test]
+    fn edit_subcommand_parses_and_rejects_conflicting_targets() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["codegg", "edit", "--editor", "hx"]).expect("edit parses");
+        match cli.command {
+            Some(Commands::Edit {
+                config,
+                project,
+                editor,
+            }) => {
+                assert!(config.is_none());
+                assert!(!project);
+                assert_eq!(editor.as_deref(), Some("hx"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // `--project` and `--config` name different files; accepting both
+        // would make the target ambiguous.
+        assert!(
+            Cli::try_parse_from(["codegg", "edit", "--project", "--config", "/tmp/a.jsonc"])
+                .is_err(),
+            "--project must conflict with --config"
+        );
+    }
+
+    #[test]
+    fn new_config_template_parses_as_valid_config() {
+        // The file `edit` creates must not hand the user a parse error.
+        let parsed = paths::parse_config(NEW_CONFIG_TEMPLATE, Path::new("codegg.jsonc"));
+        assert!(parsed.is_ok(), "template must parse: {parsed:?}");
     }
 }
 
@@ -1206,6 +1419,13 @@ async fn main() -> Result<(), AppError> {
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;
+            }
+            Commands::Edit {
+                config,
+                project,
+                editor,
+            } => {
+                cmd_edit(config.as_deref(), *project, editor.as_deref())?;
             }
             Commands::Exec {
                 json,
@@ -1929,6 +2149,281 @@ async fn cmd_tool_advisor(command: &ToolAdvisorCommand) -> Result<(), AppError> 
             }
         }
     }
+    Ok(())
+}
+
+/// Editors probed on `PATH`, in preference order, when neither `$VISUAL` nor
+/// `$EDITOR` is set. This mirrors eggpool's `edit` command so the two tools
+/// resolve the same way on the same machine. `hx` leads because it is the
+/// editor CodeGG's own docs name first; `vi` stays ahead of `nano` because it
+/// is present on effectively every POSIX system, which makes it a more
+/// reliable default than the optional `nano`.
+const EDITOR_FALLBACKS: [&str; 4] = ["hx", "vim", "vi", "nano"];
+
+/// Header written into a freshly created config file so `edit` never hands an
+/// editor an empty buffer that parses as a valid but useless `{}`.
+const NEW_CONFIG_TEMPLATE: &str = "\
+// codegg configuration.
+//
+// JSONC: `//` and `/* */` comments are allowed. `${VAR}` is interpolated from
+// the environment. Validate after editing with `codegg validate`.
+{}
+";
+
+/// Split an `$EDITOR`-style value into argv.
+///
+/// `$EDITOR` is routinely multi-word (`code --wait`) and sometimes quoted
+/// (`"/opt/My Editor/hx"`), so a plain `split_whitespace` would look for a
+/// binary literally named `code --wait` and fail. This honours single and
+/// double quotes and treats an unquoted run of whitespace as an argument
+/// separator. Returns `None` when the value contains no usable command.
+fn split_editor_command(raw: &str) -> Option<Vec<String>> {
+    let mut argv: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut has_current = false;
+    let mut chars = raw.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => {
+                quote = None;
+            }
+            Some(_) => current.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                has_current = true;
+            }
+            None if c.is_whitespace() => {
+                if has_current {
+                    argv.push(std::mem::take(&mut current));
+                    has_current = false;
+                }
+            }
+            None => {
+                current.push(c);
+                has_current = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        // Unbalanced quote: fall back to the whole value as one command so a
+        // typo surfaces as "no such file" instead of a silently mangled argv.
+        // The stray delimiter is dropped first — leaving it in would put a
+        // literal `"` in the program name and never resolve.
+        let unquoted = raw
+            .trim()
+            .trim_start_matches(['\'', '"'])
+            .trim_end_matches(['\'', '"'])
+            .trim();
+        return (!unquoted.is_empty()).then(|| vec![unquoted.to_string()]);
+    }
+    if has_current {
+        argv.push(current);
+    }
+    (!argv.is_empty()).then_some(argv)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Resolve `name` against an explicit `PATH` string.
+///
+/// `path_var` is a parameter rather than a direct `env::var("PATH")` read so
+/// the resolution logic stays testable without mutating process-global
+/// environment state.
+fn find_on_path(name: &str, path_var: Option<&str>) -> Option<PathBuf> {
+    let path_var = path_var?;
+    // A bare absolute or relative path is used as-is; only a bare command
+    // name is resolved through PATH.
+    let candidate = Path::new(name);
+    if candidate.components().count() > 1 || name.starts_with('/') {
+        return is_executable_file(candidate).then(|| candidate.to_path_buf());
+    }
+    path_var
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .find_map(|dir| {
+            let candidate = Path::new(dir).join(name);
+            is_executable_file(&candidate).then_some(candidate)
+        })
+}
+
+/// Decide which editor to launch.
+///
+/// Precedence: explicit `--editor`, then `$VISUAL`, then `$EDITOR`, then the
+/// first available binary in [`EDITOR_FALLBACKS`]. `$VISUAL` outranks
+/// `$EDITOR` per the usual Unix convention (git, sudo, crontab) because
+/// `$VISUAL` marks the full-screen editor the user prefers for interactive
+/// editing, while `$EDITOR` is often set to a line-oriented default.
+///
+/// A value taken from the environment is returned even when no such binary
+/// exists: silently substituting a different editor than the one the user
+/// asked for would edit the file behind their back. The caller surfaces the
+/// spawn failure instead.
+fn resolve_editor(
+    explicit: Option<&str>,
+    visual: Option<&str>,
+    editor_env: Option<&str>,
+    path_var: Option<&str>,
+) -> Option<Vec<String>> {
+    for candidate in [explicit, visual, editor_env].into_iter().flatten() {
+        if let Some(argv) = split_editor_command(candidate) {
+            return Some(argv);
+        }
+    }
+    EDITOR_FALLBACKS.iter().find_map(|name| {
+        find_on_path(name, path_var).map(|p| vec![p.to_string_lossy().into_owned()])
+    })
+}
+
+/// Decide which config file `edit` should open.
+///
+/// An explicit `--config` wins outright. Otherwise the project-local file is
+/// used when `--project` is passed or when one is discoverable from the
+/// working directory; the global config is the default target.
+fn edit_target_path(config: Option<&str>, project: bool) -> Result<PathBuf, AppError> {
+    if let Some(path) = config {
+        return Ok(PathBuf::from(path));
+    }
+    if project {
+        return Ok(paths::find_project_config()
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|dir| dir.join(".codegg").join("codegg.jsonc"))
+            })
+            .ok_or_else(|| {
+                AppError::Config(ConfigError::NotFound(
+                    "no project config found and the working directory is unavailable".to_string(),
+                ))
+            })?);
+    }
+    // A project config already present is the file the user's current work is
+    // actually driven by, so it is the more useful default than the global
+    // one. `edit` still creates whatever it opens.
+    if let Some(found) = paths::find_project_config() {
+        return Ok(found);
+    }
+    paths::global_config_path().ok_or_else(|| {
+        AppError::Config(ConfigError::NotFound(
+            "could not determine the config directory".to_string(),
+        ))
+    })
+}
+
+fn cmd_edit(config: Option<&str>, project: bool, editor: Option<&str>) -> Result<(), AppError> {
+    let target = edit_target_path(config, project)?;
+
+    // Create the file (and its directory) before launching so the editor gets
+    // a real path to write, rather than failing on a missing file.
+    let created = !target.exists();
+    if created {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AppError::Config(ConfigError::NotFound(format!(
+                    "{}: {}",
+                    parent.display(),
+                    e
+                )))
+            })?;
+        }
+        std::fs::write(&target, NEW_CONFIG_TEMPLATE).map_err(|e| {
+            AppError::Config(ConfigError::NotFound(format!(
+                "{}: {}",
+                target.display(),
+                e
+            )))
+        })?;
+    }
+
+    let argv = resolve_editor(
+        editor,
+        std::env::var("VISUAL").ok().as_deref(),
+        std::env::var("EDITOR").ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+    )
+    .ok_or_else(|| {
+        AppError::Other(anyhow::anyhow!(
+            "no editor found. Set $VISUAL or $EDITOR, pass --editor, or install one of: {}",
+            EDITOR_FALLBACKS.join(", ")
+        ))
+    })?;
+
+    let (program, args) = argv
+        .split_first()
+        .expect("resolve_editor yields a non-empty argv");
+    let status = std::process::Command::new(program)
+        .args(args)
+        .arg(&target)
+        .status();
+
+    match status {
+        Ok(status) => {
+            if !status.success() {
+                let detail = status
+                    .code()
+                    .map(|c| format!("exit code {}", c))
+                    .unwrap_or_else(|| "a signal".to_string());
+                eprintln!("warning: editor '{}' terminated with {}", program, detail);
+            }
+        }
+        Err(e) => {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "failed to launch editor '{}': {}. Fix $VISUAL/$EDITOR or pass --editor.",
+                program,
+                e
+            )));
+        }
+    }
+
+    println!(
+        "{} {}",
+        if created { "Created" } else { "Edited" },
+        target.display()
+    );
+
+    // Re-read after the editor exits. A broken config is reported loudly but
+    // does not fail the command: the edit itself succeeded, and the user may
+    // well be mid-way through fixing it.
+    let content = std::fs::read_to_string(&target).map_err(|e| {
+        AppError::Config(ConfigError::NotFound(format!(
+            "{}: {}",
+            target.display(),
+            e
+        )))
+    })?;
+    let interpolated = paths::interpolate_env_vars(&content);
+    match paths::parse_config(&interpolated, &target) {
+        Ok(config) => {
+            if let Err(errors) = config.validate() {
+                eprintln!(
+                    "Configuration parsed, but validation failed for {}:",
+                    target.display()
+                );
+                for error in &errors {
+                    eprintln!("  - {}", error);
+                }
+            } else {
+                println!("Configuration is valid.");
+            }
+        }
+        Err(e) => {
+            eprintln!("Configuration no longer parses: {}", e);
+            eprintln!("  fix it and re-run `codegg validate` to confirm.");
+        }
+    }
+
     Ok(())
 }
 
@@ -2962,6 +3457,17 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         }
     }
 
+    // The frontend command channel must exist before anything is enqueued
+    // on it. `run_event_loop` only installed one once it was already
+    // running, so the catalog refresh, manifest restore, and the git sidebar
+    // probe used to find a `None` sender and drop their work without a
+    // diagnostic. It has to be installed *before* session loading too:
+    // `set_session` ends with `start_refresh_git_sidebar`, which spawns
+    // through this channel. Binding the session first meant the startup
+    // probe was silently discarded, leaving `GitSidebarState::branch` at
+    // `None` forever and the sidebar permanently reading "not a git repo".
+    app.ensure_tui_cmd_channel();
+
     if cli.no_session {
         tui::run_event_loop(&mut app).await?;
         return Ok(());
@@ -3031,12 +3537,6 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // event loop. The completion lands as a `ProjectCatalogRefreshed`
     // TuiCommand and is ignored on older daemons (capability not
     // advertised).
-    // The frontend command channel has to exist before anything is enqueued on
-    // it. `run_event_loop` only installed one once it was already running, so
-    // the catalog refresh and manifest restore below used to find a `None`
-    // sender and drop their work without a diagnostic.
-    app.ensure_tui_cmd_channel();
-
     if let (Some(_), true) = (app.core_client.as_ref(), !cli.no_session) {
         app.refresh_project_catalog();
     }

@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 153 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 154 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 153 hardcoded commands (highest priority)
+1. **Built-in commands**: 154 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -161,7 +161,7 @@ pub enum CommandAction {
 ```
 
 `BuiltinSlashAction` is an exhaustive enum with one variant per
-built-in executable operation (146 variants, `src/tui/command.rs:112`).
+built-in executable operation (147 variants, `src/tui/command.rs:112`).
 Adding a new built-in command requires touching this one typed
 registry/action authority;
 the compiler (exhaustive match in `dispatch_builtin_command`) and the
@@ -248,7 +248,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (153 total)
+### Built-in Commands (154 total)
 
 Representative built-ins:
 
@@ -306,6 +306,7 @@ Representative built-ins:
 | `/edit-reapply` | | Reapply the latest undone edit checkpoint |
 | `/edit-checkpoints` | `/checkpoints`, `/history` | List durable edit checkpoints |
 | `/tool-contracts` | | Show tool contract diagnostics |
+| `/logs` | | Show recent daemon log lines and past toast notifications |
 | `/worktree` | | List worktrees for the active workspace |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
@@ -374,7 +375,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 153**: Guarded by
+- **Built-in count is 154**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -395,7 +396,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-153 count stays in sync with this documentation.
+154 count stays in sync with this documentation.
 
 ## Related Docs
 
@@ -406,11 +407,11 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 Verified 2026-10-06 against `src/tui/command.rs` and `src/command/mod.rs`:
 both count-guard tests pass by inspection — `built_in_command_count_matches_release_docs`
-(`command.rs:1104`) asserts 153, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 153 (the three
+(`command.rs:1104`) asserts 154, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 154 (the three
 former's matches are on lines 15, 22, and 250; the latter's on line 375).
-Also verified the 153 built-in registry length, `BuiltinSlashAction`
-(146 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+Also verified the 154 built-in registry length, `BuiltinSlashAction`
+(147 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:272`), the TUI `Command` struct fields
 (`command.rs:281`), `CommandRegistry` (`command.rs:458`), core `Command`

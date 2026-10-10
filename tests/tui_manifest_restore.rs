@@ -212,6 +212,7 @@ fn restore_coordinator_validates_workspace_membership() {
             workspaces: vec!["ws-known".into()],
             workspace_roots: HashMap::new(),
             sessions: vec![],
+            sessions_known: true,
         },
     );
     snap.project_details = details;
@@ -252,6 +253,7 @@ fn restore_coordinator_drops_rebound_session() {
                 session_id: "s1".into(),
                 canonical_project_id: "p-other".into(),
             }],
+            sessions_known: true,
         },
     );
     snap.project_details = details;
@@ -556,6 +558,7 @@ fn restore_coordinator_returns_no_heavy_load_when_session_missing() {
             workspaces: vec![],
             workspace_roots: HashMap::new(),
             sessions: vec![],
+            sessions_known: true,
         },
     );
     snap.project_details = details;
@@ -646,6 +649,7 @@ fn restore_apply_restore_plan_with_pending_heavy_load() {
                 session_id: "s1".into(),
                 canonical_project_id: "p1".into(),
             }],
+            sessions_known: true,
         },
     );
     snap.project_details = details;

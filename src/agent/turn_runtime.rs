@@ -271,16 +271,19 @@ impl TurnRuntime for DefaultTurnRuntime {
         } else {
             model.clone()
         };
-        let provider_name = execution_model
-            .split('/')
-            .next()
-            .unwrap_or("openai")
-            .to_string();
-        let model_name = execution_model
-            .split('/')
-            .next_back()
-            .unwrap_or(&execution_model)
-            .to_string();
+        // Provider identity is read through the one helper that knows the
+        // runtime `<provider>/<model>` grammar. A durable model id carries
+        // the connection-scoped provider kind, which may arrive in its
+        // storage-key form (`other:opencode_go`) — neither that key nor a
+        // bare string split is a registry id, so there is no "default to
+        // openai" fallback to fall into: an empty segment is simply unknown.
+        let provider_name =
+            crate::core::session_selection::runtime_model_provider_segment(&execution_model)
+                .to_string();
+        let model_name = match execution_model.split_once('/') {
+            Some((_, model_id)) => model_id.to_string(),
+            None => execution_model.clone(),
+        };
 
         let base_provider = registry.get(&provider_name).ok_or_else(|| {
             AppError::Provider(crate::error::ProviderError::NotFound(format!(

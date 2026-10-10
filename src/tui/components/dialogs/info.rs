@@ -27,6 +27,8 @@ pub enum InfoType {
     Team,
     Control,
     ProjectChat,
+    /// `/logs`: recent daemon log tail plus the in-memory toast history.
+    Logs,
 }
 
 #[derive(Clone)]
@@ -77,6 +79,7 @@ impl InfoDialog {
             InfoType::Team => " Team ",
             InfoType::Control => " Control ",
             InfoType::ProjectChat => " Project Chat ",
+            InfoType::Logs => " Logs ",
         }
     }
 
@@ -101,7 +104,14 @@ impl InfoDialog {
             // carries secrets, so sharing the slot is safe.
             InfoType::Control => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
+            InfoType::Logs => DialogType::Logs,
         }
+    }
+
+    /// Scroll to the last content line. Used by append-only windows
+    /// (`/logs`) whose newest entry is at the bottom.
+    pub fn scroll_to_end(&mut self) {
+        self.scroll = self.lines.len().saturating_sub(1);
     }
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {

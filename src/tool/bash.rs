@@ -39,6 +39,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Shell timeout used when neither the broker nor the caller supplies one.
+pub(crate) const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 120;
+
+/// Ceiling the model may not exceed by asking for a longer `timeout`.
+///
+/// One hour, matching the bound the config validator already enforces on
+/// `server.tool_timeout_seconds`. Stated in the tool schema so the model can
+/// see the limit instead of discovering it by having its call killed.
+pub(crate) const MAX_SHELL_TIMEOUT_SECS: u64 = 3600;
+
 use crate::command_intent::pipeline::prepare_command;
 use crate::command_intent::CommandIntentContext;
 use crate::command_outcome::{ActualExecutor, ExecutionOutcome};
@@ -301,7 +311,15 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Timeout in seconds (default: 120)"
+                    "description": format!(
+                        "Timeout in seconds (default: {DEFAULT_SHELL_TIMEOUT_SECS}, \
+                         max: {MAX_SHELL_TIMEOUT_SECS}). A command that exceeds it is \
+                         terminated and its partial output is returned as the tool result. \
+                         Raise this for work that legitimately takes a long time -- a full \
+                         build or test suite -- rather than polling in a loop; do not raise \
+                         it to wait on something that should be fast, because a hung command \
+                         will hold the turn until it expires."
+                    )
                 }
             },
             "required": ["command"]
@@ -383,8 +401,17 @@ impl BashTool {
             policy::validate_child_workspace_command(command, &[], root)?;
         }
 
-        let timeout_secs = input["timeout"].as_u64().unwrap_or(120);
-        let execution_timeout = Duration::from_secs(timeout_secs.max(1));
+        // The broker resolves one effective timeout per call and threads it
+        // through the execution context, so the batch wrapper and this
+        // child process can never disagree. Falling back to the argument
+        // (then the historical 120s default) keeps a direct, unbrokered
+        // invocation working.
+        let timeout_secs = audit_ctx
+            .and_then(|ctx| ctx.timeout_ms)
+            .map(|ms| ms.div_ceil(1000))
+            .or_else(|| input["timeout"].as_u64())
+            .unwrap_or(DEFAULT_SHELL_TIMEOUT_SECS);
+        let execution_timeout = Duration::from_secs(timeout_secs.clamp(1, MAX_SHELL_TIMEOUT_SECS));
 
         let workdir = input["workdir"].as_str().map(str::to_string).or_else(|| {
             self.workspace_root
@@ -1254,5 +1281,67 @@ mod tests {
     #[test]
     fn unused_intent_import_stays_available_for_future_routing() {
         let _ = CommandIntentKind::RawShell;
+    }
+}
+
+#[cfg(test)]
+mod timeout_execution_tests {
+    use super::*;
+    use crate::tool::backend::ToolExecutionContext;
+
+    /// End-to-end proof against a real child: a timed-out command reports
+    /// what it managed to print. Before this change the tool returned only
+    /// the command name and the drained pipes were discarded.
+    #[tokio::test]
+    async fn a_timed_out_command_still_reports_what_it_printed() {
+        let tool = BashTool::new();
+        let input = serde_json::json!({
+            "command": "echo BUILD-STEP-42-OK; sleep 30",
+            "timeout": 2
+        });
+        let err = tool
+            .execute(input)
+            .await
+            .expect_err("sleep 30 must time out");
+        let text = err.to_string();
+        assert!(
+            text.contains("BUILD-STEP-42-OK"),
+            "partial output must reach the model: {text}"
+        );
+        assert!(text.contains("timed out"), "{text}");
+    }
+
+    /// The context the broker threads in wins over the argument default, so
+    /// the wrapper and the child cannot end up on different durations.
+    #[tokio::test]
+    async fn the_brokered_timeout_governs_the_child_process() {
+        let tool = BashTool::new();
+        let mut ctx =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        ctx.timeout_ms = Some(2_000);
+        let err = tool
+            .execute_inner(serde_json::json!({ "command": "sleep 30" }), Some(&ctx))
+            .await
+            .expect_err("brokered 2s timeout must fire");
+        assert!(err.to_string().contains("timed out"), "{err}");
+    }
+
+    /// A command that finishes inside a model-granted long budget is not
+    /// cut off: the whole point of the model-visible timeout is that a
+    /// legitimate slow run survives.
+    #[tokio::test]
+    async fn a_model_requested_long_timeout_is_not_cut_short() {
+        let tool = BashTool::new();
+        let mut ctx =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        ctx.timeout_ms = Some(30_000);
+        let out = tool
+            .execute_inner(
+                serde_json::json!({ "command": "sleep 2; echo LONG-RUN-SURVIVED" }),
+                Some(&ctx),
+            )
+            .await
+            .expect("a 2s command inside a 30s budget must succeed");
+        assert!(out.contains("LONG-RUN-SURVIVED"), "{out}");
     }
 }

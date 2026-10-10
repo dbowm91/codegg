@@ -128,14 +128,25 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **69**, defined by
+The current layout version is **70**, defined by
 `storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:41`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
 `scripts/check_project_catalog_invariants.py` and the
 `tests/storage_migrations.rs` equality assertion). It is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
-tooling that imports legacy project databases. Migration 37 adds canonical
+tooling that imports legacy project databases.
+
+Migration 70 rebuilds `cached_models` with the composite primary key
+`(id, provider)`. The table is a **cross-provider** discovery cache, so the
+same model id is legitimately advertised by several providers at once
+(`gpt-*` on OpenAI/Azure/OpenRouter, `claude-*` on Anthropic/Bedrock,
+`gemini-*` on Google/Vertex). Under the original single-column `id` key a
+whole-batch insert aborted with `UNIQUE constraint failed:
+cached_models.id`; because the writer clears the table before inserting,
+the cache was left permanently empty and every discovery refresh re-hit
+the network. Covered by
+`crates/codegg-core/tests/cached_models_composite_key.rs`. Migration 37 adds canonical
 `agent_task` and `agent_run` tables with typed string IDs, session/root/parent/
 workspace/status indexes, unique delegation identity, scheduler job/attempt
 links, bounded terminal references, and versioned budget JSON. Migration 46

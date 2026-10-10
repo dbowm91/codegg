@@ -27,38 +27,9 @@ impl VertexProvider {
                     auth_header: "Bearer".to_string(),
                     extra_headers: Vec::new(),
                     tool_choice: crate::openai_compatible::ToolChoice::None,
-                    models: vec![
-                        ModelInfo {
-                            id: "vertex/gemini-2.5-pro".to_string(),
-                            name: "Gemini 2.5 Pro".to_string(),
-                            provider: "google".to_string(),
-                            context_window: 1_048_576,
-                            max_output_tokens: Some(65_536),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                        ModelInfo {
-                            id: "vertex/gemini-2.5-flash".to_string(),
-                            name: "Gemini 2.5 Flash".to_string(),
-                            provider: "google".to_string(),
-                            context_window: 1_048_576,
-                            max_output_tokens: Some(65_536),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                        ModelInfo {
-                            id: "vertex/gemini-2.0-flash".to_string(),
-                            name: "Gemini 2.0 Flash".to_string(),
-                            provider: "google".to_string(),
-                            context_window: 1_048_576,
-                            max_output_tokens: Some(8_192),
-                            supports_tools: true,
-                            supports_vision: true,
-                            variants: Vec::new(),
-                        },
-                    ],
+                    // No compiled-in seed list: this provider's models come from
+                    // discovery, or from an operator-declared additive config block.
+                    models: Vec::new(),
                 },
             ),
         }

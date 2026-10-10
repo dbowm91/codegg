@@ -100,6 +100,17 @@ impl App {
                     tab.model = model.clone();
                 }
                 self.persist_model_selection(&model);
+                // `persist_model_selection` only writes the last-used
+                // *preference*, which the next launch restores. The daemon
+                // resolves every turn from its durable `SessionSelection`,
+                // so without this the status line, the tab and the
+                // preference all showed the newly chosen model while the
+                // next turn still ran whatever the daemon had stored — the
+                // divergence behind "I selected mimo 2.6 flash and it ran
+                // muse-spark 1.3". A refusal is reported and the display
+                // re-synchronized rather than left showing a model that
+                // will not run.
+                self.persist_durable_model_selection(model.clone());
                 self.close_dialog();
             }
             TuiMsg::SelectAgent { agent_name } => {

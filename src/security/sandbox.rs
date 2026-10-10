@@ -1,11 +1,35 @@
 #![allow(clippy::type_complexity)]
 
+//! Filesystem containment: policy, backends, and the private helper protocol.
+//!
+//! The module is deliberately split in three:
+//!
+//! * [`policy`] — a **backend-neutral** statement of what may be read,
+//!   written, and denied. Owns the tool-compatible allowance sets.
+//! * [`backend`] — the pluggable registry of OS containment mechanisms.
+//!   Registering a new backend is one const entry.
+//! * [`landlock`] / [`seatbelt`] — the two shipped backends.
+//!
+//! Everything else here — profiles, config, capability, enforcement, the
+//! execution path, and the helper status protocol — is backend-neutral and
+//! reads backend identity out of the registry rather than naming one. That
+//! is what allows macOS and Linux to be served by the same containment
+//! policy, and a third platform to join without another rewrite.
+
 use crate::error::ToolError;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+pub mod backend;
+pub mod landlock;
+pub mod policy;
+pub mod seatbelt;
+
+pub use backend::{BackendEnforcement, BackendId, BACKENDS, UNCONTAINED};
+pub use policy::BackendPolicy;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum SandboxMode {
@@ -133,14 +157,160 @@ pub fn sandbox_config_for_profile_with_roots(
     }
 }
 
+/// What OS filesystem containment this host can actually provide.
+///
+/// This replaces the historical implicit "availability is just a `false`"
+/// with an inspectable value. A degraded (uncontained) run is a named,
+/// reportable state instead of a silent lie: hosts without any backend get a
+/// working tool path that says so out loud, and never a `FullHost` claim.
+///
+/// Which backend is available is *data*, resolved from the [`BACKENDS`]
+/// registry in preference order — not a hard-coded platform branch. Adding a
+/// backend therefore changes this type's payload without changing any of the
+/// code that reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxCapability {
+    /// A backend is present and a child process can enforce it.
+    Available { backend: BackendId },
+    /// No OS filesystem containment is obtainable on this host. `reason`
+    /// is the operator-facing platform explanation.
+    Unavailable { reason: String },
+}
+
+impl SandboxCapability {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available { .. })
+    }
+
+    /// The platform reason, or `None` when containment is available.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Available { .. } => None,
+            Self::Unavailable { reason } => Some(reason.as_str()),
+        }
+    }
+
+    /// The backend that will be used, or [`UNCONTAINED`] when none is.
+    pub fn backend_id(&self) -> BackendId {
+        match self {
+            Self::Available { backend } => *backend,
+            Self::Unavailable { .. } => UNCONTAINED,
+        }
+    }
+
+    /// Short backend token used in enforcement descriptors and audit text.
+    pub fn backend(&self) -> &'static str {
+        self.backend_id().as_str()
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Available { backend } => {
+                let name = backend::backend(*backend)
+                    .map(|entry| entry.name)
+                    .unwrap_or("unknown backend");
+                format!("{name} available (OS filesystem containment)")
+            }
+            Self::Unavailable { reason } => {
+                format!("no OS filesystem containment available ({reason})")
+            }
+        }
+    }
+}
+
+/// The host's real containment capability, probed once per call.
+///
+/// Probing is cheap and side-effect free, so this stays a function rather
+/// than a cached global — a cached capability would go stale the moment the
+/// helper binary or the kernel ABI changes.
+pub fn platform_sandbox_capability() -> SandboxCapability {
+    match backend::select() {
+        Ok(entry) => SandboxCapability::Available { backend: entry.id },
+        // Every registered backend refused; report what each one said so the
+        // operator can tell "wrong kernel" from "wrong platform".
+        Err(reasons) => SandboxCapability::Unavailable {
+            reason: reasons
+                .into_iter()
+                .map(|(id, reason)| format!("{id}: {reason}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        },
+    }
+}
+
+/// How one bash dispatch will actually execute on this host.
+///
+/// `Unconstrained` is only ever reached when no containment was requested
+/// (an explicit `FullHost` profile, or no policy at all). A constrained
+/// request on a host without containment takes the explicitly named
+/// [`SandboxExecutionPath::DegradedUncontained`] path — it never degrades
+/// into `Unconstrained`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxExecutionPath {
+    /// No CodeGG filesystem containment was requested (explicit FullHost).
+    Unconstrained,
+    /// The child helper will enforce the policy before exec.
+    Contained { backend: BackendId },
+    /// Containment was requested but this host cannot provide it. The
+    /// command still runs, uncontained, and must be reported to the
+    /// operator and recorded distinctly in the audit/authorization trail.
+    DegradedUncontained { reason: String },
+}
+
+impl SandboxExecutionPath {
+    pub fn is_degraded(&self) -> bool {
+        matches!(self, Self::DegradedUncontained { .. })
+    }
+
+    pub fn is_contained(&self) -> bool {
+        matches!(self, Self::Contained { .. })
+    }
+
+    /// Operator-facing one-liner naming what actually happened.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Unconstrained => {
+                "no CodeGG filesystem containment (explicit FullHost)".to_string()
+            }
+            Self::Contained { backend } => {
+                format!("filesystem contained ({backend} helper)")
+            }
+            Self::DegradedUncontained { reason } => {
+                format!("filesystem UNCONTAINED (degraded: {reason})")
+            }
+        }
+    }
+}
+
+/// Decide the execution path for a configured (or absent) sandbox policy.
+///
+/// This is the single place that turns "containment was requested" plus the
+/// host capability into a named path, so the bash tool cannot silently pick
+/// containment on a host that has none.
+pub fn sandbox_execution_path(config: Option<&SandboxConfig>) -> SandboxExecutionPath {
+    if !config.is_some_and(|config| config.enabled) {
+        return SandboxExecutionPath::Unconstrained;
+    }
+    match platform_sandbox_capability() {
+        SandboxCapability::Available { backend } => SandboxExecutionPath::Contained { backend },
+        SandboxCapability::Unavailable { reason } => {
+            SandboxExecutionPath::DegradedUncontained { reason }
+        }
+    }
+}
+
 /// Resolve the truthful host enforcement for a requested profile (M005).
 ///
 /// - `FullHost` → [`codegg_core::approval::SandboxEnforcement::for_full_host`].
-/// - Constrained + [`SandboxConfig::is_available`] → enforced (`landlock`,
-///   ABI unknown until launch; network always `Unrestricted` — Landlock is
-///   filesystem containment only).
+/// - Constrained + an available backend → enforced, naming that backend.
+///   ABI is unknown until launch; network is always `Unrestricted` — no
+///   shipped backend isolates the network.
 /// - Constrained + unavailable host → constrained-unavailable (fail-closed
 ///   signal; never `FullHost`).
+///
+/// Unchanged in substance: this reports the fact, it does not grant
+/// containment. Operator policy decides deny-vs-escalate on the
+/// constrained-unavailable signal.
 pub fn resolve_sandbox_enforcement(
     profile: codegg_core::approval::SandboxProfile,
 ) -> codegg_core::approval::SandboxEnforcement {
@@ -148,11 +318,13 @@ pub fn resolve_sandbox_enforcement(
     if !profile.requires_filesystem_containment() {
         return SandboxEnforcement::for_full_host();
     }
-    if SandboxConfig::is_available() {
-        SandboxEnforcement::for_constrained_enforced(profile, "landlock", None)
-    } else {
-        let reason = probe_landlock().unwrap_err();
-        SandboxEnforcement::for_constrained_unavailable(profile, reason)
+    match platform_sandbox_capability() {
+        SandboxCapability::Available { backend } => {
+            SandboxEnforcement::for_constrained_enforced(profile, backend.as_str(), None)
+        }
+        SandboxCapability::Unavailable { reason } => {
+            SandboxEnforcement::for_constrained_unavailable(profile, reason)
+        }
     }
 }
 
@@ -209,15 +381,10 @@ impl SandboxConfig {
         self
     }
 
+    /// Whether this host can enforce filesystem containment at all.
+    /// Prefer [`platform_sandbox_capability`] when the reason matters.
     pub fn is_available() -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            probe_landlock().is_ok()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        platform_sandbox_capability().is_available()
     }
 
     pub fn enforce(&self) -> Result<(), ToolError> {
@@ -233,6 +400,10 @@ impl SandboxConfig {
     /// Construct the bounded child-launch description used by the private
     /// helper. All paths are resolved before the child starts; missing rules
     /// are policy errors, never silently skipped.
+    ///
+    /// The result is **backend-neutral**: it names paths, not a mechanism.
+    /// [`policy`] builds the tool-compatible allowance sets and [`backend`]
+    /// decides which OS facility renders them.
     pub fn launch_spec(
         &self,
         target: impl AsRef<Path>,
@@ -269,34 +440,60 @@ impl SandboxConfig {
         let write_roots = roots.clone();
         let mut read_paths = roots;
         read_paths.push(target.clone());
-        for raw in ["/usr/lib", "/usr/lib64", "/lib", "/lib64"] {
-            let path = Path::new(raw);
-            if path.exists() {
-                read_paths.push(path.to_path_buf());
-            }
-        }
+        // Tool-compatible read allowances: without these a sandboxed command
+        // cannot resolve a hostname, read its own toolchain, or find its
+        // package cache, and every invocation fails. See `policy`.
+        read_paths.extend(policy::tool_read_allowances());
         let write_paths = if self.mode.is_writable() {
-            write_roots
+            let mut writes = write_roots;
+            writes.extend(policy::tool_write_allowances());
+            writes
         } else {
             Vec::new()
         };
+        // Device nodes are writable under every profile, including
+        // ReadOnly: they hold no persistent state, and without them every
+        // `> /dev/null` and `2>&1` fails. See `policy::device_write_allowances`.
+        let mut write_paths = write_paths;
+        write_paths.extend(policy::device_write_allowances());
+        // Operator-declared denies are config strings; the backend's own
+        // sensitive-path set is paths. Both land in one list.
+        //
+        // Canonicalized like the allow sets, and deliberately best-effort: a
+        // deny path that does not exist denies nothing, so dropping it is
+        // correct, whereas an uncanonicalized deny is a rule the backend
+        // cannot match (`/etc/sudoers` vs the resolved `/private/etc/...`).
+        let mut deny_paths: Vec<PathBuf> = self
+            .deny_paths
+            .iter()
+            .filter_map(|raw| std::fs::canonicalize(raw).ok())
+            .collect();
+        deny_paths.extend(policy::sensitive_deny_paths());
         Ok(SandboxLaunchSpec {
             target,
             args: args.to_vec(),
             read_paths,
             write_paths,
+            deny_paths,
         })
     }
 }
 
 /// Private, bounded launch description consumed by `codegg-sandbox-helper`.
 /// It is local process plumbing, not a daemon or public wire protocol.
+///
+/// Paths only — which OS facility enforces them is chosen by [`backend`]
+/// at apply time, so the same spec serves Landlock and Seatbelt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxLaunchSpec {
     pub target: PathBuf,
     pub args: Vec<String>,
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
+    /// Roots never readable or writable, regardless of profile. Redundant
+    /// under a deny-first backend, load-bearing under an allow-default one.
+    #[serde(default)]
+    pub deny_paths: Vec<PathBuf>,
 }
 
 /// One-shot helper status. `Enforced` is a setup event; the other variants
@@ -305,10 +502,45 @@ pub struct SandboxLaunchSpec {
 /// returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxLaunchOutcome {
-    Enforced { abi: u32 },
-    Unavailable { reason: String },
-    SetupError { reason: String },
-    ExecError { reason: String },
+    /// Containment is in force. `abi` is the backend's reported version and
+    /// is `None` for mechanisms without one (Seatbelt). `guarantees` and
+    /// `limits` are the obtained facts, so a backend can never be read as
+    /// stronger than it is.
+    Enforced {
+        backend: BackendId,
+        abi: Option<u32>,
+        guarantees: Vec<String>,
+        limits: Vec<String>,
+    },
+    Unavailable {
+        reason: String,
+    },
+    SetupError {
+        reason: String,
+    },
+    ExecError {
+        reason: String,
+    },
+}
+
+impl SandboxLaunchOutcome {
+    /// Construct the success outcome from a backend's own report.
+    pub fn enforced(backend: BackendId, enforcement: BackendEnforcement) -> Self {
+        Self::Enforced {
+            backend,
+            abi: enforcement.abi,
+            guarantees: enforcement.guarantees,
+            limits: enforcement.limits,
+        }
+    }
+
+    /// The backend that produced containment, when it was produced.
+    pub fn backend(&self) -> Option<BackendId> {
+        match self {
+            Self::Enforced { backend, .. } => Some(*backend),
+            _ => None,
+        }
+    }
 }
 
 /// Version for the private helper status frame. This is local process
@@ -359,7 +591,10 @@ pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, Strin
     }
 
     let mut cursor = 0usize;
-    let mut setup_abi = None;
+    // The setup frame is remembered whole (not just its ABI) so the backend
+    // identity, guarantees, and limits survive to the caller.
+    let mut setup: Option<SandboxLaunchOutcome> = None;
+    let mut setup_seen: Option<()> = None;
     let mut terminal = None;
     while cursor < bytes.len() {
         let length_end = cursor
@@ -393,11 +628,12 @@ pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, Strin
         }
         cursor = payload_end;
 
-        match frame.outcome {
-            SandboxLaunchOutcome::Enforced { abi } => {
-                if setup_abi.replace(abi).is_some() || terminal.is_some() {
+        match &frame.outcome {
+            SandboxLaunchOutcome::Enforced { .. } => {
+                if setup_seen.replace(()).is_some() || terminal.is_some() {
                     return Err("sandbox helper produced a duplicate setup status".to_string());
                 }
+                setup = Some(frame.outcome.clone());
             }
             terminal_outcome @ (SandboxLaunchOutcome::Unavailable { .. }
             | SandboxLaunchOutcome::SetupError { .. }
@@ -405,30 +641,28 @@ pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, Strin
                 if terminal.is_some() {
                     return Err("sandbox helper produced duplicate terminal status".to_string());
                 }
-                if setup_abi.is_some()
-                    && !matches!(&terminal_outcome, SandboxLaunchOutcome::ExecError { .. })
+                if setup_seen.is_some()
+                    && !matches!(terminal_outcome, SandboxLaunchOutcome::ExecError { .. })
                 {
                     return Err("sandbox helper produced a terminal status after setup".to_string());
                 }
-                if matches!(&terminal_outcome, SandboxLaunchOutcome::ExecError { .. })
-                    && setup_abi.is_none()
+                if matches!(terminal_outcome, SandboxLaunchOutcome::ExecError { .. })
+                    && setup_seen.is_none()
                 {
                     return Err("sandbox exec failure was reported before setup".to_string());
                 }
-                terminal = Some(terminal_outcome);
+                terminal = Some(frame.outcome.clone());
             }
         }
     }
 
     if let Some(outcome) = terminal {
-        if setup_abi.is_none() && matches!(outcome, SandboxLaunchOutcome::ExecError { .. }) {
+        if setup_seen.is_none() && matches!(outcome, SandboxLaunchOutcome::ExecError { .. }) {
             return Err("sandbox exec failure had no enforced setup".to_string());
         }
         return Ok(outcome);
     }
-    setup_abi
-        .map(|abi| SandboxLaunchOutcome::Enforced { abi })
-        .ok_or_else(|| "sandbox helper produced no terminal status".to_string())
+    setup.ok_or_else(|| "sandbox helper produced no terminal status".to_string())
 }
 
 /// Return the private helper executable from the installation-owned sibling
@@ -461,103 +695,40 @@ fn resolve_executable(path: &Path) -> Option<PathBuf> {
     })
 }
 
-#[cfg(target_os = "linux")]
+/// Probe the Landlock backend specifically.
+///
+/// Retained for callers that report on one named mechanism (the install
+/// doctor) rather than asking "can this host contain anything?". Host-wide
+/// capability must use [`platform_sandbox_capability`], which consults every
+/// registered backend.
 pub fn probe_landlock() -> Result<(), String> {
-    use landlock::{AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
-    Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessFs::from_read(ABI::V1))
-        .map_err(|e| format!("Landlock access selection failed: {e}"))?
-        .create()
-        .map(|_| ())
-        .map_err(|e| format!("Landlock unavailable: {e}"))
+    landlock::probe()
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn probe_landlock() -> Result<(), String> {
-    Err("Landlock is only available on Linux".to_string())
-}
-
-#[cfg(target_os = "linux")]
+/// Apply the Landlock backend. Prefer [`apply_backend`], which picks the
+/// host's backend for you.
 pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
-    use landlock::{
-        Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-        RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
-    };
-
-    // ABI 1 is the minimum Landlock filesystem contract and is available on
-    // every Landlock-capable kernel. Newer rights are intentionally not
-    // requested dynamically: a partial ruleset must never be reported as
-    // enforced, and the helper's outcome still records the kernel's
-    // effective ABI for observability.
-    let abi = ABI::V1;
-    let read_access = AccessFs::from_read(abi);
-    let write_access = AccessFs::from_all(abi);
-    let handled = AccessFs::from_all(abi);
-    let mut ruleset = Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(handled)
-        .map_err(|e| format!("Landlock ruleset access selection failed: {e}"))?
-        .create()
-        .map_err(|e| format!("Landlock ruleset creation failed: {e}"))?;
-
-    let add_path = |ruleset: RulesetCreated, path: &Path, access: BitFlags<AccessFs>| {
-        if !path.exists() {
-            return Err(format!(
-                "required sandbox path does not exist: {}",
-                path.display()
-            ));
-        }
-        let fd =
-            PathFd::new(path).map_err(|e| format!("open sandbox path {}: {e}", path.display()))?;
-        let access = landlock_access_for_path(path, access, abi)?;
-        ruleset
-            .add_rule(PathBeneath::new(fd, access))
-            .map_err(|e| format!("add sandbox rule {}: {e}", path.display()))
-    };
-
-    for path in &spec.read_paths {
-        ruleset = add_path(ruleset, path, read_access)?;
-    }
-    for path in &spec.write_paths {
-        ruleset = add_path(ruleset, path, write_access)?;
-    }
-
-    let status = ruleset
-        .restrict_self()
-        .map_err(|e| format!("Landlock restriction failed: {e}"))?;
-    if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
-        return Err(format!(
-            "Landlock restriction was not fully enforced (ruleset={:?}, no_new_privs={})",
-            status.ruleset, status.no_new_privs
-        ));
-    }
-    match status.landlock {
-        landlock::LandlockStatus::Available { effective_abi, .. } => Ok(effective_abi as u32),
-        other => Err(format!(
-            "Landlock became unavailable during setup: {other:?}"
-        )),
-    }
+    landlock::apply(spec)?
+        .abi
+        .ok_or_else(|| "Landlock reported no effective ABI".to_string())
 }
 
-#[cfg(target_os = "linux")]
-fn landlock_access_for_path(
-    path: &Path,
-    access: landlock::BitFlags<landlock::AccessFs>,
-    abi: landlock::ABI,
-) -> Result<landlock::BitFlags<landlock::AccessFs>, String> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("classify sandbox path {}: {error}", path.display()))?;
-    if metadata.is_dir() {
-        Ok(access)
-    } else {
-        Ok(access & landlock::AccessFs::from_file(abi))
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn apply_landlock(_spec: &SandboxLaunchSpec) -> Result<u32, String> {
-    Err("Landlock is only available on Linux".to_string())
+/// Apply `spec` with the host's selected backend.
+///
+/// Runs only inside the one-shot helper. Fails closed: an unavailable host
+/// or a setup error is an error, never a silent downgrade to an uncontained
+/// exec.
+pub fn apply_backend(spec: &SandboxLaunchSpec) -> Result<SandboxLaunchOutcome, String> {
+    let selected = backend::select().map_err(|reasons| {
+        reasons
+            .into_iter()
+            .map(|(id, reason)| format!("{id}: {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    let enforcement = (selected.apply)(spec)
+        .map_err(|reason| format!("{} setup failed: {reason}", selected.id))?;
+    Ok(SandboxLaunchOutcome::enforced(selected.id, enforcement))
 }
 
 struct CachedPaths {
@@ -676,17 +847,20 @@ pub fn get_default_allowed_paths() -> Vec<String> {
     paths
 }
 
+/// Paths the sandbox treats as sensitive, as strings.
+///
+/// Compatibility wrapper over [`policy::sensitive_deny_paths`], which is the
+/// real owner. The previous hard-coded list (`/etc`, `/var`, `/dev`, `/home`)
+/// was Linux-shaped and far too coarse: now that `deny_paths` is genuinely
+/// enforced rather than merely recorded, denying all of `/etc` would block
+/// `/etc/hosts` and `/etc/resolv.conf`, and denying all of `/var` would block
+/// the per-user temporary directory on both platforms. The curated set names
+/// credential material instead of whole subtrees.
 pub fn get_sensitive_paths() -> Vec<String> {
-    vec![
-        "/etc".to_string(),
-        "/home".to_string(),
-        "/root".to_string(),
-        "/var".to_string(),
-        "/ssh".to_string(),
-        "/proc".to_string(),
-        "/sys".to_string(),
-        "/dev".to_string(),
-    ]
+    policy::sensitive_deny_paths()
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[cfg(test)]
@@ -897,6 +1071,85 @@ mod tests {
     }
 
     #[test]
+    fn platform_capability_matches_is_available_and_carries_a_reason() {
+        let capability = platform_sandbox_capability();
+        assert_eq!(
+            capability.is_available(),
+            SandboxConfig::is_available(),
+            "capability and legacy boolean must never disagree"
+        );
+        match &capability {
+            SandboxCapability::Available { backend } => {
+                assert!(capability.reason().is_none());
+                assert_eq!(capability.backend_id(), *backend);
+                // An available backend must be one the registry actually
+                // ships; otherwise capability is naming something real only
+                // by accident.
+                assert!(
+                    backend::backend(*backend).is_some(),
+                    "an available backend must be registered"
+                );
+            }
+            SandboxCapability::Unavailable { reason } => {
+                // An unsupported host must be able to say *why*, out loud.
+                assert!(!reason.is_empty(), "unavailable must carry a reason");
+                assert_eq!(capability.reason(), Some(reason.as_str()));
+                assert_eq!(capability.backend(), "uncontained");
+            }
+        }
+        assert!(capability
+            .describe()
+            .contains(if capability.is_available() {
+                "available (OS filesystem containment)"
+            } else {
+                "no OS filesystem containment available"
+            }));
+    }
+
+    #[test]
+    fn no_policy_never_takes_the_degraded_path() {
+        // Absent or disabled config means containment was never requested;
+        // that is explicit FullHost semantics, not a degraded run.
+        assert_eq!(
+            sandbox_execution_path(None),
+            SandboxExecutionPath::Unconstrained
+        );
+        let disabled = SandboxConfig::new().with_enabled(false);
+        assert_eq!(
+            sandbox_execution_path(Some(&disabled)),
+            SandboxExecutionPath::Unconstrained
+        );
+    }
+
+    #[test]
+    fn enabled_policy_selects_path_from_real_host_capability() {
+        let enabled = SandboxConfig::new().with_enabled(true);
+        let path = sandbox_execution_path(Some(&enabled));
+        match platform_sandbox_capability() {
+            SandboxCapability::Available { backend } => {
+                assert_eq!(path, SandboxExecutionPath::Contained { backend });
+                assert!(path.is_contained());
+                assert!(!path.is_degraded());
+            }
+            SandboxCapability::Unavailable { reason } => {
+                assert_eq!(
+                    path,
+                    SandboxExecutionPath::DegradedUncontained {
+                        reason: reason.clone()
+                    }
+                );
+                assert!(path.is_degraded());
+                assert!(!path.is_contained());
+                // The degraded path must name itself and its reason.
+                assert!(path.describe().contains("UNCONTAINED"));
+                assert!(path.describe().contains(&reason));
+                // It must never masquerade as the explicit FullHost path.
+                assert_ne!(path, SandboxExecutionPath::Unconstrained);
+            }
+        }
+    }
+
+    #[test]
     fn m005_enforcement_resolution_is_truthful_per_host() {
         use codegg_core::approval::SandboxProfile;
         let full = resolve_sandbox_enforcement(SandboxProfile::FullHost);
@@ -917,8 +1170,11 @@ mod tests {
 
     #[test]
     fn status_decoder_rejects_malformed_duplicate_and_oversized_frames() {
-        let enforced = encode_sandbox_status(SandboxLaunchOutcome::Enforced { abi: 9 })
-            .expect("enforced frame");
+        let enforced = encode_sandbox_status(SandboxLaunchOutcome::enforced(
+            BackendId::LANDLOCK,
+            BackendEnforcement::new(Some(9), &["guarantee"], &["limit"]),
+        ))
+        .expect("enforced frame");
         let setup = encode_sandbox_status(SandboxLaunchOutcome::SetupError {
             reason: "bad rule".to_string(),
         })

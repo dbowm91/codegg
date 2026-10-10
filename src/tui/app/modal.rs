@@ -11,7 +11,48 @@ use crate::tui::components::dialogs::confirm::ConfirmDialog;
 use crate::tui::components::dialogs::import::ImportDialog;
 use crate::tui::components::dialogs::keybind::KeybindDialog;
 use crate::tui::components::dialogs::theme::ThemePickerDialog;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 use std::sync::Arc;
+
+/// Upper bound on bytes read from the tail of the daemon log. The daemon
+/// rotates that file at 10 MB; this read is one bounded `seek` + `take`
+/// regardless of how large the file grows, so no unbounded read is
+/// reachable from the TUI event loop.
+const LOG_TAIL_MAX_BYTES: u64 = 256 * 1024;
+/// Upper bound on log lines rendered in the `/logs` window.
+const LOG_TAIL_MAX_LINES: usize = 400;
+/// Upper bound on bytes kept per rendered log line, so one pathological
+/// line cannot dominate the window.
+const LOG_LINE_MAX_BYTES: usize = 512;
+
+/// Read at most [`LOG_TAIL_MAX_BYTES`] from the end of `path` and return
+/// the lines it contains, oldest first.
+///
+/// A read that starts mid-file can cut the first record in half, so that
+/// fragment is dropped. Undecodable bytes are replaced rather than
+/// rejecting the whole tail.
+fn read_log_tail(path: &Path) -> std::io::Result<Vec<String>> {
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(LOG_TAIL_MAX_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    file.take(len - start).read_to_end(&mut buf)?;
+
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text.lines().collect();
+    let body: &[&str] = if start > 0 {
+        lines.get(1..).unwrap_or(&[])
+    } else {
+        &lines[..]
+    };
+    Ok(body
+        .iter()
+        .take(LOG_TAIL_MAX_LINES)
+        .map(|line| crate::util::truncate_prefix(line, LOG_LINE_MAX_BYTES).to_string())
+        .collect())
+}
 
 impl App {
     #[allow(dead_code)]
@@ -58,6 +99,69 @@ impl App {
         } else {
             self.open_info_dialog(info_type, lines);
         }
+    }
+
+    /// Open the `/logs` window: a bounded tail of the user-scoped daemon
+    /// log plus every toast notification this session has shown.
+    ///
+    /// The TUI process has no in-memory tracing capture and writes no log
+    /// of its own by default, so the daemon log file is the only durable
+    /// source. When it is missing or unreadable the window still opens
+    /// with the notification history and says plainly what is missing —
+    /// it never substitutes a fabricated source.
+    pub(crate) fn open_logs_window(&mut self) {
+        use crate::tui::components::dialogs::info::InfoDialog;
+        let lines = self.logs_window_lines();
+        self.open_info_dialog(crate::tui::components::dialogs::info::InfoType::Logs, lines);
+        // The window is append-only; land on its newest entry so the
+        // most recent log line is visible without scrolling.
+        self.focus_manager
+            .with_component_mut::<InfoDialog, _>(|dialog| dialog.scroll_to_end());
+    }
+
+    /// Build the `/logs` body: log source header, bounded daemon log
+    /// tail, then the retained notification history oldest-first.
+    fn logs_window_lines(&self) -> Vec<String> {
+        use crate::tui::components::toast::MAX_TOAST_HISTORY;
+
+        let log_path = codegg_client::LocalDaemonPaths::resolve().log_path;
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(format!("== Daemon log: {} ==", log_path.display()));
+        match read_log_tail(&log_path) {
+            Ok(tail) if tail.is_empty() => {
+                lines.push("(log file is empty)".to_string());
+            }
+            Ok(tail) => {
+                lines.push(format!(
+                    "(last {} line{} of at most {} KiB)",
+                    tail.len(),
+                    if tail.len() == 1 { "" } else { "s" },
+                    LOG_TAIL_MAX_BYTES / 1024
+                ));
+                lines.extend(tail);
+            }
+            Err(err) => {
+                lines.push(format!("(daemon log unavailable: {err})"));
+            }
+        }
+
+        lines.push(String::new());
+        lines.push(format!(
+            "== Notifications (newest last, at most {MAX_TOAST_HISTORY} retained) =="
+        ));
+        let history: Vec<_> = self.messages_state.toasts.history().collect();
+        if history.is_empty() {
+            lines.push("(no notifications yet this session)".to_string());
+        }
+        for record in history.into_iter().rev() {
+            let age = record.created_at.elapsed().as_secs();
+            lines.push(format!(
+                "[{} · {age}s ago] {}",
+                record.level.label(),
+                crate::util::truncate_prefix(&record.message, LOG_LINE_MAX_BYTES)
+            ));
+        }
+        lines
     }
 
     pub(crate) fn open_ui_node_dialog(&mut self, title: String, body: codegg_protocol::ui::UiNode) {

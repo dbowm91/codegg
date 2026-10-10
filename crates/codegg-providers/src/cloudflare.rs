@@ -25,38 +25,9 @@ impl CloudflareProvider {
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
                     tool_choice: crate::openai_compatible::ToolChoice::None,
-                    models: vec![
-                        ModelInfo {
-                            id: "cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast".to_string(),
-                            name: "Llama 3.3 70B".to_string(),
-                            provider: "meta".to_string(),
-                            context_window: 128_000,
-                            max_output_tokens: Some(8_192),
-                            supports_tools: true,
-                            supports_vision: false,
-                            variants: Vec::new(),
-                        },
-                        ModelInfo {
-                            id: "cloudflare/@cf/meta/llama-3.1-8b-instruct".to_string(),
-                            name: "Llama 3.1 8B".to_string(),
-                            provider: "meta".to_string(),
-                            context_window: 128_000,
-                            max_output_tokens: Some(8_192),
-                            supports_tools: true,
-                            supports_vision: false,
-                            variants: Vec::new(),
-                        },
-                        ModelInfo {
-                            id: "cloudflare/@cf/qwen/qwen1.5-14b-chat-awq".to_string(),
-                            name: "Qwen 1.5 14B".to_string(),
-                            provider: "qwen".to_string(),
-                            context_window: 32_000,
-                            max_output_tokens: Some(4_096),
-                            supports_tools: true,
-                            supports_vision: false,
-                            variants: Vec::new(),
-                        },
-                    ],
+                    // No compiled-in seed list: this provider's models come from
+                    // discovery, or from an operator-declared additive config block.
+                    models: Vec::new(),
                 },
             ),
         }

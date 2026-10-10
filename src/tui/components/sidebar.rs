@@ -121,6 +121,12 @@ pub struct SidebarWidget {
     pub mcp_servers: Vec<(String, String)>,
     pub file_changes: Vec<SidebarFileChange>,
     pub git_branch: Option<String>,
+    /// Whether a git probe is currently in flight. Distinguishes "we have
+    /// not looked yet" from "we looked and there is no repository".
+    pub git_loading: bool,
+    /// Last probe failure, surfaced instead of being collapsed into
+    /// "not a git repo".
+    pub git_error: Option<String>,
     pub git_dirty: bool,
     pub git_staged_count: usize,
     pub git_unstaged_count: usize,
@@ -175,6 +181,8 @@ impl SidebarWidget {
             mcp_servers: Vec::new(),
             file_changes: Vec::new(),
             git_branch: None,
+            git_loading: false,
+            git_error: None,
             git_dirty: false,
             git_staged_count: 0,
             git_unstaged_count: 0,
@@ -236,6 +244,14 @@ impl SidebarWidget {
 
     pub fn set_file_changes(&mut self, changes: Vec<SidebarFileChange>) {
         self.file_changes = changes;
+    }
+
+    /// Record the probe's in-flight/failed state. Kept out of
+    /// [`GitSidebarInfo`] because it describes the *cache* rather than the
+    /// repository snapshot.
+    pub fn set_git_status(&mut self, loading: bool, error: Option<String>) {
+        self.git_loading = loading;
+        self.git_error = error;
     }
 
     pub fn set_git_info(&mut self, info: GitSidebarInfo) {
@@ -994,6 +1010,23 @@ impl SidebarWidget {
                 sync_spans.push(Span::raw(sync_parts.join(" ")));
                 lines.push(Line::from(sync_spans));
             }
+        } else if self.git_loading {
+            // A probe is in flight. "not a git repo" would be a lie here,
+            // and it was what made a dropped or slow probe look like a
+            // repository detection failure.
+            lines.push(Line::from(Span::styled(
+                "checking git…",
+                Style::default().fg(self.theme.muted),
+            )));
+        } else if let Some(ref err) = self.git_error {
+            // Report the actual failure. Collapsing every error into "not a
+            // git repo" hid probe timeouts and spawn failures behind a
+            // wrong answer.
+            let detail: String = err.chars().take(width as usize).collect();
+            lines.push(Line::from(Span::styled(
+                format!("git: {}", detail.trim()),
+                Style::default().fg(self.theme.warning),
+            )));
         } else {
             lines.push(Line::from(Span::styled(
                 "not a git repo",

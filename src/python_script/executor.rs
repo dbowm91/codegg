@@ -250,7 +250,7 @@ pub async fn execute_python_script_with_cancellation(
 
     // Execute with timeout and minimal environment isolation.
     let mut sandbox_spec = None;
-    if policy.enforcement_backend == SandboxBackend::Landlock {
+    if matches!(policy.enforcement_backend, SandboxBackend::Os { .. }) {
         let target = resolve_executable_path(&interpreter).ok_or_else(|| {
             format!("python interpreter could not be resolved for sandbox: {interpreter}")
         });
@@ -266,6 +266,9 @@ pub async fn execute_python_script_with_cancellation(
                 args: vec![script_file.to_string_lossy().to_string()],
                 read_paths,
                 write_paths,
+                // The python path builds its own path set; it carries the
+                // same backend-neutral deny intent as the bash path.
+                deny_paths: crate::security::sandbox::policy::sensitive_deny_paths(),
             };
             spec
         });
@@ -382,15 +385,25 @@ pub async fn execute_python_script_with_cancellation(
     let (status, stdout, stderr) = run_result;
 
     let mut policy = policy;
-    if let crate::managed_process::SandboxExecutionOutcome::Enforced { abi } = managed.sandbox {
+    if let crate::managed_process::SandboxExecutionOutcome::Enforced { backend, abi, .. } =
+        managed.sandbox
+    {
         policy.outcome = Some(SandboxOutcome::Enforced {
-            backend: SandboxBackend::Landlock,
+            backend: SandboxBackend::Os { backend },
             abi,
         });
     } else if policy.enforcement_backend == SandboxBackend::PortableFallback {
+        // Use the platform capability's own reason rather than a
+        // CodeGG-local string, so the python fallback reports exactly
+        // why this host cannot contain, matching the bash tool's
+        // degraded path.
+        let reason = crate::security::sandbox::platform_sandbox_capability()
+            .reason()
+            .unwrap_or("OS-level sandboxing unavailable")
+            .to_string();
         policy.outcome = Some(SandboxOutcome::Fallback {
             backend: SandboxBackend::PortableFallback,
-            reason: "Landlock is unavailable on this host".to_string(),
+            reason,
         });
     } else {
         policy.outcome = Some(SandboxOutcome::Disabled);
@@ -1084,11 +1097,14 @@ mod tests {
 
     #[test]
     fn helper_status_becomes_typed_outcome() {
-        let frame =
-            encode_sandbox_status(SandboxLaunchOutcome::Enforced { abi: 4 }).expect("status frame");
+        let enforced = SandboxLaunchOutcome::enforced(
+            crate::security::sandbox::BackendId::LANDLOCK,
+            crate::security::sandbox::BackendEnforcement::new(Some(4), &["guarantee"], &[]),
+        );
+        let frame = encode_sandbox_status(enforced.clone()).expect("status frame");
         assert_eq!(
             decode_sandbox_status(&frame).expect("typed status"),
-            SandboxLaunchOutcome::Enforced { abi: 4 }
+            enforced
         );
     }
 

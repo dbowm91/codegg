@@ -145,7 +145,7 @@ reason = "Migrates legacy background tasks to ScheduleStore at startup"
 [[site]]
 path = "src/main.rs"
 owner = "standalone_compat"
-reason = "SubAgentPool wiring for --standalone, --stdio, daemon bootstrap, deprecated --core-transport inproc"
+reason = "SubAgentPool wiring for --standalone, --stdio, daemon bootstrap, deprecated --core-transport inproc; `edit` spawns $VISUAL/$EDITOR on the resolved config path, an interactive user-controlled terminal session like the TUI open_external_editor site"
 
 [[site]]
 path = "src/core/daemon.rs"
@@ -259,7 +259,7 @@ reason = "Repository lineage uses a bounded local git probe; pending typed Git s
 [[site]]
 path = "src/bin/codegg-sandbox-helper.rs"
 owner = "definition_or_adapter"
-reason = "ManagedProcessService-owned sandbox helper applies Landlock and execs the already-validated target"
+reason = "ManagedProcessService-owned sandbox helper applies the host containment backend (Landlock on Linux, Seatbelt on macOS) and execs the already-validated target"
 
 [[site]]
 path = "src/mcp/local.rs"

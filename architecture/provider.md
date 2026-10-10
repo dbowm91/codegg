@@ -32,9 +32,7 @@ in `src/lib.rs`.
 | `crates/codegg-providers/src/wire.rs` | Canonical bridge, shared family codecs, stream decoding, and completed tool-call accumulation |
 | `crates/codegg-providers/src/fallback.rs` | FallbackProvider with circuit breaker |
 | `crates/codegg-providers/src/circuit.rs` | CircuitBreaker implementation |
-| `crates/codegg-providers/src/catalog.rs` | ModelCatalog with live fetch |
 | `crates/codegg-providers/src/discovery.rs` | ModelDiscoveryService with SQLite cache |
-| `crates/codegg-providers/src/models.rs` | Embedded free-tier model definitions |
 | `crates/codegg-providers/src/text_tool_parser.rs` | Bounded textual tool-call repair |
 | `crates/codegg-providers/src/cache.rs` | Provider response cache |
 | `crates/codegg-providers/src/responses_api.rs` | OpenAI Responses API adapter |
@@ -147,6 +145,21 @@ Rotation stages a new credential binding, validates the endpoint, runs
 the bounded compatible model probe, and commits metadata in one SQLite
 transaction. Connection refresh is explicit, single-flight, and bounded
 by provider probe limits.
+
+**`provider_connection_lifecycle` wins on read, and that is deliberate.**
+`ProviderConnectionStore::apply_lifecycle_state` overwrites
+`provider_connections.state` with the lifecycle row whenever one exists, so
+`state` in the legacy table is a compatibility projection rather than the
+source of truth. `transition()` keeps both in step inside a single
+transaction (upsert for extended states, `DELETE` for `active`/`disabled`),
+so the store's own write path is consistent and needs no change.
+
+The sharp edge is *out-of-band* repair: a hand-run `UPDATE ... SET state` on
+`provider_connections` alone is silently a no-op on read. Anything repairing
+state directly against SQLite must write both tables — or, better, go through
+the store's transition path. The `provider_connections.state` CHECK only
+admits `active`/`disabled`/`credential_missing`, which is also why tombstoned
+and superseded rows are recorded in the lifecycle table instead.
 
 ### Provider-Neutral Provisioning (M002)
 
@@ -862,9 +875,63 @@ Anthropic-compatible and uses a different auth header.
 ### OpenCode Zen (`opencode_zen.rs`)
 
 - Base URL: `https://opencode.ai/zen/v1`
-- Implements `discover_models()` to fetch from `/models`
-- Embedded models: big-pickle, minimax-m2.5-free,
-  nemotron-3-super-free, qwen3.6-plus-free
+- Discovery: the shared bounded `/models` discovery path, always attempted
+- Embedded models: **none** — see "Model discovery authority" below
+
+## Model discovery authority
+
+CodeGG ships **no per-provider model catalog**. There is no compiled-in
+model list anywhere in the providers crate or the frontend, and
+`scripts/check_no_hardcoded_models.py` fails the build if one reappears.
+
+Three rules govern the model list:
+
+1. **Discovery is canonical and is always attempted.** A provider's
+   models come from its discovery endpoint. The endpoint's method,
+   path, query, and whether it is `required` come from the reviewed
+   shared profile (`ProviderProfile::resolved_models_endpoint()`), not
+   from a CodeGG-local constant.
+2. **Config-declared models are additive only.** A provider's `models`
+   block augments what discovery returned; it never replaces it and
+   never suppresses the discovery attempt. This is the escape hatch for
+   a provider whose endpoint does not serve a catalog.
+3. **A failed discovery is reported, never backfilled.** For a profile
+   whose models endpoint is `required: true`, a failed discovery
+   returns an error and the provider is not considered ready. For an
+   optional endpoint it returns an empty catalog, which the callers
+   then present truthfully as "this provider has no models available".
+   Neither case ever falls back to a built-in list.
+
+Rule 3 is the reason rule 1 exists. When discovery was allowed to fall
+back to a compiled-in catalog, a failed or empty discovery presented
+fiction as the operator's available models, and `set_models` adopted
+`models[0]` from it — which is how a stale `opencode_zen/big-pickle`
+placeholder ended up persisted into a tab manifest as the session's
+model. A shipped list is also a standing maintenance liability: it goes
+stale against the upstream catalog without any signal in the product.
+
+Models that discovery returns are still gated on wire resolution before
+being advertised as selectable (`qualify_models` /
+`provider_profile::is_wire_resolved`); a model with no reviewed wire
+mapping must not be offered, because selecting it fails at request time
+with `has no reviewed wire mapping`.
+
+### Discovery caching
+
+`ModelDiscoveryService` persists results to the `cached_models` table
+(see [storage.md](storage.md) for the `(id, provider)` identity) and is
+used with the same discipline on both sides of the daemon boundary:
+
+1. `initialize()` seeds the in-memory list from the persisted cache.
+2. `needs_refresh()` gates the network pass (1-hour TTL).
+3. `refresh()` re-queries every registered provider and rewrites the
+   cache.
+
+The daemon's `CoreRequest::SnapshotModels` handler follows this sequence
+rather than calling `refresh()` unconditionally on a fresh service, which
+re-queried every provider on every request and returned `[]` whenever any
+of them was slow — leaving the TUI model picker permanently empty.
+Standalone mode uses the same sequence in `src/main.rs`.
 
 ## Shared Wire Bridge (`wire.rs`)
 

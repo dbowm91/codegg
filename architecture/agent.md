@@ -242,6 +242,101 @@ Non-restorable tools (bash, plugins/MCP, git) never produce a
 checkpoint. Daemon restart rehydrates checkpoints from SQLite;
 no broadcast receiver state is required.
 
+### Every tool-path await is bounded
+
+The per-tool `tokio::time::timeout` wraps only `exec_fut`, which is
+constructed *after* a tool has acquired its execution permit. Any await that
+happens before that — the semaphore acquire, the workspace repository
+checkpoint lease — therefore runs outside every timeout. Because the batch
+joins all futures with `join_all`, a single unbounded await stalls the entire
+batch: no tool is reported as failing, no error is returned, and the TUI spins
+on one tool call indefinitely. Two guards close that class:
+
+- `effective_max` is clamped to at least 1 before `Semaphore::new`. Config
+  validation rejects `server.max_parallel_tools == 0`, but a profile-supplied
+  value reaches `effective_max` through `ExecutionPolicy::from_profile`
+  without that guard, and a zero-permit semaphore is permanently unsatisfiable.
+- The permit acquire and the repository lease acquire are both wrapped in
+  `tokio::time::timeout` using the same `tool_timeout()` (default 120s). A
+  permit that never arrives becomes `ToolError::Timeout` with a `tracing::warn!`;
+  a lease that never arrives drops checkpoint authority, which the surrounding
+  code already treats as the recoverable "batch non-restorable" degradation.
+
+`tool_timeout()` was previously bound to `_timeout_secs` and discarded, so the
+intended telemetry never fired; it now drives both bounds.
+
+### Tool-call timeouts
+
+One effective duration is resolved per call, in `AgentLoop::effective_tool_timeout`
+(`src/agent/tool_batch.rs`), and threaded through
+`ToolExecutionContext::timeout_ms` so the batch wrapper and the tool itself
+cannot disagree:
+
+```text
+model "timeout" / "timeout_ms" argument  (clamped to [1s, 3600s])
+        |
+        +-- absent --> per-tool ToolTimeoutConfig default
+        |               (server.tool_timeout_seconds overrides)
+```
+
+Precedence and bounds live in `resolve_tool_timeout`. A malformed, zero, or
+negative value falls back to the default instead of inventing a duration. The
+ceiling matches the bound config validation already enforces on
+`server.tool_timeout_seconds`, and is restated in the `bash` tool schema so the
+model can see it rather than discover it by having its call killed.
+
+Two properties this exists to protect:
+
+- **A legitimate long run is not cut off.** The model-requested timeout used to
+  be honoured only by the child process (`bash.rs` read `input["timeout"]`)
+  while the batch wrapper applied `get_tool_timeout(name)` unconditionally, so
+  a build asking for 1800s was still killed at the 120s default. The agent had
+  no way to run a full build.
+- **A timeout does not discard what it collected.** `bash` returned only the
+  command line on `TimedOut`, throwing away the drained pipes. Those bytes are
+  the only evidence of *where* a run went long, and are now returned as the
+  tool result via `partial_timeout_report` (tail-bounded, so the tail shows
+  where the command stopped).
+
+Three deadlines wrap one tool call and **must stay strictly ordered**:
+
+| Deadline | Bound | Role |
+|---|---|---|
+| `T` | the tool itself | primary bound; produces the detailed `ToolError::Timeout` with partial output |
+| `T + 5s` | broker watchdog (`BROKER_WATCHDOG_GRACE_MS`) | backstop for a tool whose own teardown wedges |
+| `T + 10s` | batch wrapper (`2 × TOOL_TIMEOUT_GRACE`) | last-resort backstop |
+
+The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
+around the whole invocation, so that field must be strictly greater than the
+tool's own deadline. It previously carried `exec_ctx.timeout_ms` unchanged, and
+with no `deadline` the broker resolved it to exactly `T` — arming a timer
+microseconds before the tool's own. The watchdog therefore *always* fired
+first, converting `partial_timeout_report()` into a bare "broker invocation
+timed out". That silently disabled `TOOL_TIMEOUT_GRACE`, `timeout_notice()`,
+`tail_bounded()` and `TIMEOUT_OUTPUT_BYTES` on the bash path: a simple
+`bash ls … | grep …` reported as an opaque timeout carrying no output and no
+indication of where it stopped. `broker_watchdog_timeout_ms` owns the ordering
+and is covered by `broker_watchdog_ordering_tests`.
+
+`AppEvent::ToolResult` is published per *batch*, not per tool, so a slow call
+freezes every sibling row in the chat area on "waiting for command/tool
+output..." until the slowest tool in the batch returns. The live activity line
+(`architecture/tui.md`) is what signals the agent is still working.
+
+The model-facing timeout message names the ceiling when a request was clamped,
+and otherwise says how to recover — re-run with a larger `timeout` if the work
+is legitimately slow, or diagnose the cause if it should have been fast. This
+follows OpenCode's model-visible per-call timeout; like OpenCode and Codex,
+CodeGG has no total turn deadline (see below).
+
+Note there is still no *total turn deadline*: `ExecutionLimits.timeout`
+(default 600s) is only consulted after a turn completes, and the batch itself
+is awaited without an outer wrapper. Neither OpenCode nor Codex CLI imposes one
+either — Codex instead yields a `session_id` at `yield_time_ms` and lets the
+model poll. A hard turn deadline is deliberately not added: it kills exactly the
+long builds this section exists to protect. Closing that gap, if wanted, should
+adopt yield-and-resume rather than a wall-clock cut-off.
+
 ### Durable run control
 
 `codegg_core::agent_run_control` owns the ordered, bounded mailbox and the

@@ -2,17 +2,28 @@
 //!
 //! This binary intentionally has no daemon or public protocol. The parent
 //! supplies one bounded JSON launch description and one private status-pipe
-//! descriptor. This process applies the complete Landlock policy in a normal
-//! process context, reports setup state through the private pipe, and then
-//! replaces itself with the target executable.
+//! descriptor. This process applies the complete containment policy in a
+//! normal process context, reports setup state through the private pipe, and
+//! then replaces itself with the target executable.
+//!
+//! Containment is **backend-neutral**: the policy is a list of paths, and
+//! the registry in [`codegg::security::sandbox::backend`] decides which OS
+//! facility enforces it (Landlock on Linux, Seatbelt on macOS). Adding a
+//! backend changes this file not at all.
+//!
+//! This is the only place in the sandbox that uses `unsafe`, and only for
+//! two reasons: the status-pipe descriptor plumbing, and the `sandbox_init`
+//! FFI that the root library cannot make itself (`#![deny(unsafe_code)]`).
 
 #[cfg(unix)]
 use codegg::security::sandbox::{
-    apply_landlock, encode_sandbox_status, probe_landlock, SandboxLaunchOutcome, SandboxLaunchSpec,
-    MAX_SANDBOX_SPEC_BYTES,
+    apply_backend, encode_sandbox_status, platform_sandbox_capability, SandboxCapability,
+    SandboxLaunchOutcome, SandboxLaunchSpec, MAX_SANDBOX_SPEC_BYTES,
 };
 #[cfg(unix)]
 use std::env;
+#[cfg(unix)]
+use std::ffi::CString;
 #[cfg(unix)]
 use std::fs::{self, File};
 #[cfg(unix)]
@@ -102,8 +113,60 @@ fn parse_args() -> Result<(PathBuf, RawFd), String> {
     ))
 }
 
+/// Apply the Seatbelt policy in this process.
+///
+/// The one `unsafe` block outside the status-pipe plumbing: `sandbox_init`
+/// takes a raw `*const c_char` and returns an allocated error string.
+///
+/// `sandbox_init` is **one-shot per process** — a second call fails — which
+/// is why availability is probed in `seatbelt::probe` rather than by calling
+/// this speculatively. `SANDBOX_NAMED` is passed as `0` deliberately: with
+/// flags set, `profile` names a built-in Apple constant rather than being
+/// parsed as SBPL.
+///
+/// The profile is generated in the library (pure, testable) and applied
+/// here, so this function does no policy work of its own.
+#[cfg(target_os = "macos")]
+fn apply_seatbelt(
+    spec: &SandboxLaunchSpec,
+) -> Result<codegg::security::sandbox::BackendEnforcement, String> {
+    extern "C" {
+        fn sandbox_init(
+            profile: *const std::os::raw::c_char,
+            flags: u64,
+            error: *mut *mut std::os::raw::c_char,
+        ) -> std::os::raw::c_int;
+        fn sandbox_free_error(error: *mut std::os::raw::c_char);
+    }
+
+    let profile = codegg::security::sandbox::seatbelt::profile_for(spec);
+    let c_profile = CString::new(profile.clone())
+        .map_err(|_| "generated SBPL profile contains an interior NUL".to_string())?;
+
+    let mut error: *mut std::os::raw::c_char = std::ptr::null_mut();
+    let rc = unsafe { sandbox_init(c_profile.as_ptr(), 0, &mut error) };
+    if rc != 0 {
+        let reason = if error.is_null() {
+            format!("sandbox_init rejected the generated SBPL profile: {profile}")
+        } else {
+            let message = unsafe { std::ffi::CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { sandbox_free_error(error) };
+            message
+        };
+        return Err(reason);
+    }
+    Ok(codegg::security::sandbox::seatbelt::enforcement())
+}
+
 #[cfg(unix)]
 fn main() {
+    // Install the Seatbelt applier before any backend is resolved. On
+    // non-macOS hosts this is a no-op the backend registry never reaches.
+    #[cfg(target_os = "macos")]
+    codegg::security::sandbox::seatbelt::install_apply_hook(apply_seatbelt);
+
     let (spec_path, status_fd) = parse_args().unwrap_or_else(|reason| {
         // There is no trustworthy channel until the fd argument itself has
         // been parsed. The parent treats this as a missing status frame.
@@ -165,7 +228,11 @@ fn main() {
         )
     });
 
-    if let Err(reason) = probe_landlock() {
+    // A host with no OS containment reports the canonical capability reason.
+    // This stays a hard failure: the helper is only ever launched from a
+    // `Required` request, and losing containment between decision and launch
+    // must fail closed rather than degrade silently.
+    if let SandboxCapability::Unavailable { reason } = platform_sandbox_capability() {
         fail(
             status_fd,
             SandboxLaunchOutcome::Unavailable {
@@ -174,7 +241,7 @@ fn main() {
             reason,
         );
     }
-    let abi = apply_landlock(&spec).unwrap_or_else(|reason| {
+    let outcome = apply_backend(&spec).unwrap_or_else(|reason| {
         fail(
             status_fd,
             SandboxLaunchOutcome::SetupError {
@@ -183,7 +250,7 @@ fn main() {
             reason,
         )
     });
-    if let Err(reason) = write_status(status_fd, SandboxLaunchOutcome::Enforced { abi }) {
+    if let Err(reason) = write_status(status_fd, outcome) {
         eprintln!("sandbox helper status failure: {reason}");
         std::process::exit(125);
     }

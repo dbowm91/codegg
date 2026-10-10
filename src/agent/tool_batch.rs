@@ -30,6 +30,136 @@ struct CheckpointContext {
     batch_seq: i64,
 }
 
+/// Longest tool call the model may request for itself.
+///
+/// Matches the ceiling the config validator already enforces on
+/// `server.tool_timeout_seconds` (see `schema.rs`), so an operator-set
+/// default and a model-requested maximum express the same policy: a turn
+/// never occupies a slot for longer than an hour.
+pub(super) const MAX_MODEL_TOOL_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// Head start the batch wrapper gives a tool's own timeout.
+///
+/// The tool kills its child, drains the pipes, and returns the collected
+/// output; the wrapper must not expire first and throw that away. This
+/// window covers that teardown, and still bounds a tool that never
+/// finishes tearing down.
+pub(super) const TOOL_TIMEOUT_GRACE: Duration = Duration::from_secs(5);
+
+/// Head start the broker's watchdog gets over the tool's own deadline.
+///
+/// The broker re-arms a `tokio::time::timeout` from `BrokerContext::timeout_ms`
+/// around the tool invocation, so it must expire strictly after the tool's
+/// internal deadline or it preempts the tool before it can return the output it
+/// collected while being killed. Expressed in milliseconds because that is the
+/// unit `BrokerContext::timeout_ms` uses.
+const BROKER_WATCHDOG_GRACE_MS: u64 = 5_000;
+
+/// Deadline handed to the broker watchdog for a tool whose own deadline is
+/// `tool_timeout_ms`.
+///
+/// Must be strictly greater than `tool_timeout_ms`. The broker arms
+/// `tokio::time::timeout` around the whole invocation, so a watchdog sharing
+/// the tool's deadline always fires first (its clock starts microseconds
+/// earlier) and replaces the tool's detailed timeout error — which carries the
+/// partial output collected during teardown — with a bare generic one.
+///
+/// Returning `None` for a `None` input leaves the broker on its own configured
+/// `default_timeout_ms`, which is an independent value.
+fn broker_watchdog_timeout_ms(tool_timeout_ms: Option<u64>) -> Option<u64> {
+    tool_timeout_ms.map(|ms| ms.saturating_add(BROKER_WATCHDOG_GRACE_MS))
+}
+
+/// Resolved timeout for one tool call plus how it was arrived at.
+///
+/// [`clamped`](Self::clamped) lets the timeout message tell the model its
+/// request was reduced rather than silently running for a different time
+/// than it asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EffectiveToolTimeout {
+    /// The duration both the batch wrapper and the tool will use.
+    pub(super) effective: Duration,
+    /// What the model asked for, if it asked at all.
+    pub(super) requested: Option<Duration>,
+    /// Whether `requested` was reduced to fit the ceiling.
+    pub(super) clamped: bool,
+}
+
+/// Apply the model's request, if any, on top of the per-tool default.
+///
+/// A model may shorten a call or raise it up to
+/// [`MAX_MODEL_TOOL_TIMEOUT`]; it may not exceed the ceiling. A malformed
+/// or zero value falls back to the default rather than inventing a
+/// duration.
+pub(super) fn resolve_tool_timeout(
+    default: Duration,
+    arguments: &serde_json::Value,
+) -> EffectiveToolTimeout {
+    let Some(requested) = requested_timeout(arguments) else {
+        return EffectiveToolTimeout {
+            effective: default,
+            requested: None,
+            clamped: false,
+        };
+    };
+    let effective = requested.clamp(Duration::from_secs(1), MAX_MODEL_TOOL_TIMEOUT);
+    EffectiveToolTimeout {
+        effective,
+        requested: Some(requested),
+        clamped: effective != requested,
+    }
+}
+
+/// Read a model-supplied per-call timeout from tool-call arguments.
+///
+/// Two spellings are accepted because the codebase already uses both:
+/// `timeout` in seconds (bash, test, terminal, git, verify) and
+/// `timeout_ms` in milliseconds (tool_program). `timeout_ms` wins when both
+/// are present, matching the more precise unit.
+///
+/// A non-numeric, zero, or negative value yields `None` so the per-tool
+/// default applies; those tools already report a format error for a
+/// malformed value on their own path, and the wrapper must not silently
+/// invent a duration here.
+fn requested_timeout(arguments: &serde_json::Value) -> Option<Duration> {
+    if let Some(ms) = arguments
+        .get("timeout_ms")
+        .and_then(serde_json::Value::as_u64)
+    {
+        return (ms > 0).then(|| Duration::from_millis(ms));
+    }
+    let secs = arguments.get("timeout")?;
+    let secs = secs.as_u64().or_else(|| {
+        secs.as_f64()
+            .filter(|f| f.is_finite() && *f >= 0.0)
+            .map(|f| f as u64)
+    })?;
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+/// Render the model-facing message for a tool call that hit its timeout.
+///
+/// Names the ceiling when the request was clamped, so a model that asked
+/// for more learns both what it got and what the maximum is instead of
+/// retrying the same over-large value.
+fn timeout_notice(tool: &str, timeout: Duration, resolved: EffectiveToolTimeout) -> String {
+    let max = MAX_MODEL_TOOL_TIMEOUT.as_secs();
+    let mut msg = format!("Tool '{tool}' was terminated after {timeout:?}.");
+    if resolved.clamped {
+        msg.push_str(&format!(
+            " The requested timeout of {:?} exceeded the {max}s maximum and was clamped.",
+            resolved.requested.unwrap_or(timeout),
+        ));
+    }
+    msg.push_str(&format!(
+        " If this command legitimately needs longer -- a full build or test \
+         suite -- re-run it with a larger \"timeout\" in seconds (max {max}). \
+         If it should have been fast, it is probably hung: diagnose the cause \
+         rather than retrying it unchanged."
+    ));
+    msg
+}
+
 fn is_affirmatively_read_only_tool(tc: &ToolCall) -> bool {
     is_affirmatively_read_only_name(&tc.name, &tc.arguments)
 }
@@ -93,6 +223,34 @@ impl AgentLoop {
             .and_then(|s| s.tool_timeout_seconds)
             .map(Duration::from_secs)
             .unwrap_or(default)
+    }
+
+    /// The single effective timeout for one tool call, and whether the
+    /// model's request had to be clamped.
+    ///
+    /// The batch wrapper and the tool implementation must agree: two
+    /// independent sources of truth means the inner process runs for one
+    /// duration while the outer `tokio::time::timeout` kills the future at
+    /// another. This resolves one value and threads it through
+    /// [`ToolExecutionContext::timeout_ms`](crate::tool::backend::ToolExecutionContext::timeout_ms),
+    /// so both sides read the same number.
+    ///
+    /// Precedence:
+    /// 1. the model's own `timeout` / `timeout_ms` argument, clamped into
+    ///    `[1s, MAX_MODEL_TOOL_TIMEOUT]` — this is the escape hatch that lets
+    ///    an agent legitimately run a long build instead of watching the
+    ///    default kill it;
+    /// 2. otherwise the per-tool default from [`ToolTimeoutConfig`],
+    ///    overridable by `server.tool_timeout_seconds`.
+    ///
+    /// A model may shorten a call but never exceed the ceiling, so a
+    /// hallucinated or hostile value cannot pin a slot open indefinitely.
+    pub(super) fn effective_tool_timeout(
+        &self,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> EffectiveToolTimeout {
+        resolve_tool_timeout(self.get_tool_timeout(tool_name), arguments)
     }
 
     pub(super) fn build_tool_execution_context(
@@ -965,11 +1123,30 @@ impl AgentLoop {
                                 // workspace service lease keeps this lock table from
                                 // being evicted and replaced while the detached loop
                                 // runs.
-                                checkpoint_guard = Some(
-                                    workspace_locks
-                                        .acquire_repository(&self.workspace_root)
-                                        .await,
-                                );
+                                // The per-repository checkpoint lease is a plain
+                                // `lock_owned().await` with no timeout of its own, and it
+                                // is taken here — before the per-tool `timeout` wrapper
+                                // further down, which therefore cannot cover it. If a
+                                // prior batch took the lease and died without releasing
+                                // it, every later batch waits here forever with no tool
+                                // ever reported as running. Bound the wait and continue
+                                // without checkpoint authority, which is the same
+                                // degradation the surrounding code already treats as
+                                // recoverable ("batch non-restorable") rather than fatal.
+                                let lease_timeout = Duration::from_secs(self.tool_timeout());
+                                match tokio::time::timeout(
+                                    lease_timeout,
+                                    workspace_locks.acquire_repository(&self.workspace_root),
+                                )
+                                .await
+                                {
+                                    Ok(lease) => checkpoint_guard = Some(lease),
+                                    Err(_) => tracing::warn!(
+                                        timeout_secs = lease_timeout.as_secs(),
+                                        "workspace repository lease wait exceeded the tool timeout; \
+                                         proceeding without checkpoint authority"
+                                    ),
+                                }
                                 match mgr.capture_states(&normalized).await {
                                     Ok(pre_states) => {
                                         let ws_id = workspace_id.to_string();
@@ -1024,7 +1201,7 @@ impl AgentLoop {
             tracing::debug!("drained {} stale file-change events", drained.len());
         }
 
-        let _timeout_secs = self.tool_timeout();
+        let tool_timeout_secs = self.tool_timeout();
         let max_parallel = self.max_parallel_tools();
         const MAX_PARALLEL_DEFAULT: usize = 100;
         let mut effective_max = if max_parallel == usize::MAX {
@@ -1035,6 +1212,23 @@ impl AgentLoop {
         if checkpoint_serialize {
             effective_max = 1;
         }
+        // A zero-permit semaphore can never be satisfied, and the permit
+        // wait below is not covered by the per-tool `timeout` (the timeout
+        // wraps `exec_fut`, which is only *constructed* after a permit is
+        // held). A zero here therefore stalls every tool in the batch
+        // forever, with no timeout, no error, and no TUI signal. Config
+        // validation rejects `server.max_parallel_tools == 0`, but a
+        // profile-supplied value reaches `effective_max` through
+        // `ExecutionPolicy::from_profile` without that guard, so clamp here
+        // as the last point before the semaphore exists.
+        if effective_max == 0 {
+            tracing::warn!(
+                max_parallel,
+                "max_parallel_tools resolved to 0; clamping to 1 so tool permits can be acquired"
+            );
+            effective_max = 1;
+        }
+        let permit_timeout = Duration::from_secs(tool_timeout_secs);
         let regular_tool_count = allowed_tools.len();
         let registry = &self.services.tool_registry;
 
@@ -1178,7 +1372,16 @@ impl AgentLoop {
             // `&self`, can read live state without forcing the
             // `async move` closure to capture `self` by move.
             let tool_name_for_ctx = tc.name.clone();
-            let timeout = self.get_tool_timeout(&tool_name_for_ctx);
+            let resolved = self.effective_tool_timeout(&tool_name_for_ctx, &tc.arguments);
+            let timeout = resolved.effective;
+            if resolved.clamped {
+                tracing::warn!(
+                    tool = %tc.name,
+                    requested_ms = ?resolved.requested.map(|d| d.as_millis() as u64),
+                    effective_ms = timeout.as_millis() as u64,
+                    "model-requested tool timeout exceeded the ceiling and was clamped"
+                );
+            }
             let exec_ctx = self.build_tool_execution_context(
                 &tc,
                 orig_idx,
@@ -1200,9 +1403,15 @@ impl AgentLoop {
             let event_store = event_store.clone();
             let tool_broker = Arc::clone(&tool_broker);
             futures.push(async move {
-                let permit = match sem.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => {
+                // Bound the permit wait. This await sits outside the
+                // per-tool `timeout` (which wraps `exec_fut`, constructed
+                // only after a permit is held), so an unbounded acquire
+                // turns permit starvation into a permanent, silent stall of
+                // the whole batch — `join_all` below then never returns.
+                // Surface it as a typed timeout instead.
+                let permit = match tokio::time::timeout(permit_timeout, sem.acquire()).await {
+                    Ok(Ok(p)) => p,
+                    Ok(Err(_)) => {
                         return (
                             idx_for_results,
                             id,
@@ -1210,6 +1419,18 @@ impl AgentLoop {
                                 "semaphore closed during tool execution".into(),
                             )),
                         );
+                    }
+                    Err(_) => {
+                        let waited = permit_timeout.as_secs();
+                        tracing::warn!(
+                            tool = %id,
+                            timeout_secs = waited,
+                            "tool permit wait exceeded the tool timeout; treating as stalled"
+                        );
+                        let message = format!(
+                            "tool '{id}' did not acquire an execution permit within {waited}s"
+                        );
+                        return (idx_for_results, id, Err(ToolError::Timeout(message)));
                     }
                 };
 
@@ -1449,7 +1670,26 @@ impl AgentLoop {
                                     job_id: None,
                                     attempt_id: None,
                                     permission_mode: exec_ctx.permission_mode.clone(),
-                                    timeout_ms: exec_ctx.timeout_ms,
+                                    // The broker watchdog must NOT share the
+                                    // tool's own deadline. `BrokerContext`
+                                    // resolved `effective_timeout_ms` from this
+                                    // field and, with no `deadline`, returned it
+                                    // unmodified — so the broker armed a
+                                    // `tokio::time::timeout` for exactly the
+                                    // same instant the tool arms its own, a few
+                                    // microseconds later. The broker always won,
+                                    // converting the tool's detailed
+                                    // `ToolError::Timeout` carrying
+                                    // `partial_timeout_report()` output into a
+                                    // bare "broker invocation timed out", which
+                                    // made `TOOL_TIMEOUT_GRACE`,
+                                    // `timeout_notice()`, `tail_bounded()` and
+                                    // `TIMEOUT_OUTPUT_BYTES` unreachable on the
+                                    // bash path. Give the broker the grace window
+                                    // so it acts as the backstop it was meant to
+                                    // be: the tool still times out first and its
+                                    // collected output survives.
+                                    timeout_ms: broker_watchdog_timeout_ms(exec_ctx.timeout_ms),
                                     // Preserve the accepted model tool-call
                                     // identity through the broker into
                                     // structured tools such as TaskTool.
@@ -1528,7 +1768,27 @@ impl AgentLoop {
                                 }
                                 Ok::<String, ToolError>(broker_result.value.display)
                             };
-                            match tokio::time::timeout(timeout, exec_fut).await {
+                            // The tool enforces its own deadline and returns a result carrying the
+                            // output it collected before being killed, so this wrapper must
+                            // not fire first and discard it. Two grace layers sit above the
+                            // tool's deadline and must stay strictly ordered:
+                            //
+                            //   T        tool's own timeout -> detailed `ToolError::Timeout`
+                            //   T + 5s   broker watchdog   -> "broker invocation timed out"
+                            //   T + 10s  this wrapper      -> last-resort backstop
+                            //
+                            // The broker watchdog was previously armed at exactly T (see
+                            // `BROKER_WATCHDOG_GRACE_MS`), so it always preempted the tool
+                            // and every timeout surfaced as a bare generic error with no
+                            // partial output. This wrapper therefore has to clear the broker
+                            // layer too, or it would reintroduce the same inversion one
+                            // level out.
+                            match tokio::time::timeout(
+                                timeout + TOOL_TIMEOUT_GRACE + TOOL_TIMEOUT_GRACE,
+                                exec_fut,
+                            )
+                            .await
+                            {
                                 Ok(r) => match &r {
                                     Ok(_) => {
                                         last_result = r;
@@ -1553,9 +1813,16 @@ impl AgentLoop {
                                     }
                                 },
                                 Err(_) => {
-                                    last_result = Err(ToolError::Timeout(format!(
-                                        "Tool '{}' timed out after {:?}",
-                                        tc_inner.name, timeout
+                                    // Tell the model what happened and
+                                    // what to do about it. A bare
+                                    // "timed out" leaves it to guess
+                                    // between retrying a hung
+                                    // command and re-issuing a long
+                                    // one with the same budget.
+                                    last_result = Err(ToolError::Timeout(timeout_notice(
+                                        &tc_inner.name,
+                                        timeout,
+                                        resolved,
                                     )));
                                     break;
                                 }
@@ -2002,5 +2269,181 @@ mod invocation_tests {
             "plugin_mutation",
             &json!({"path": "a.txt"})
         ));
+    }
+}
+
+#[cfg(test)]
+mod timeout_resolution_tests {
+    use super::*;
+    use serde_json::json;
+
+    const DEFAULT: Duration = Duration::from_secs(120);
+
+    /// The regression this whole change exists for: a model asking for a
+    /// long build must not be cut back to the per-tool default, which is
+    /// what the outer batch timeout used to impose unconditionally.
+    #[test]
+    fn a_model_can_raise_the_timeout_for_a_long_build() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 1800}));
+        assert_eq!(r.effective, Duration::from_secs(1800));
+        assert_eq!(r.requested, Some(Duration::from_secs(1800)));
+        assert!(!r.clamped);
+    }
+
+    #[test]
+    fn no_request_keeps_the_per_tool_default() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"command": "cargo build"}));
+        assert_eq!(r.effective, DEFAULT);
+        assert_eq!(r.requested, None);
+        assert!(!r.clamped);
+    }
+
+    #[test]
+    fn a_model_may_shorten_a_call() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 5}));
+        assert_eq!(r.effective, Duration::from_secs(5));
+        assert!(!r.clamped);
+    }
+
+    #[test]
+    fn an_over_the_ceiling_request_is_clamped_and_reported_as_such() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 99_999}));
+        assert_eq!(r.effective, MAX_MODEL_TOOL_TIMEOUT);
+        assert_eq!(r.requested, Some(Duration::from_secs(99_999)));
+        assert!(r.clamped, "the model must be told it was clamped");
+    }
+
+    #[test]
+    fn a_sub_second_request_is_raised_to_one_second_not_zero() {
+        // A zero timeout must never resolve to an immediately-expired
+        // call: the outer `tokio::time::timeout` would fire before the
+        // tool is even dispatched.
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout_ms": 0}));
+        assert_eq!(r.effective, DEFAULT, "zero means 'unset', not 'expire now'");
+        assert_eq!(r.requested, None);
+    }
+
+    #[test]
+    fn timeout_ms_is_read_and_wins_over_seconds() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 30, "timeout_ms": 900_000}));
+        assert_eq!(r.effective, Duration::from_secs(900));
+        assert_eq!(r.requested, Some(Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn a_float_seconds_value_is_accepted() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 45.0}));
+        assert_eq!(r.effective, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn a_malformed_timeout_falls_back_to_the_default() {
+        for bad in [
+            json!({"timeout": "soon"}),
+            json!({"timeout": null}),
+            json!({"timeout": -5}),
+        ] {
+            let r = resolve_tool_timeout(DEFAULT, &bad);
+            assert_eq!(r.effective, DEFAULT, "{bad} should not invent a duration");
+            assert_eq!(r.requested, None);
+        }
+    }
+
+    #[test]
+    fn the_notice_names_the_ceiling_when_the_request_was_clamped() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 99_999}));
+        let msg = timeout_notice("bash", r.effective, r);
+        assert!(msg.contains("clamped"), "{msg}");
+        assert!(msg.contains("3600"), "model needs the ceiling value: {msg}");
+    }
+
+    #[test]
+    fn the_notice_tells_the_model_how_to_recover() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 1800}));
+        let msg = timeout_notice("bash", r.effective, r);
+        assert!(msg.contains("3600"), "{msg}");
+        assert!(!msg.contains("clamped"), "nothing was clamped here: {msg}");
+    }
+
+    /// The wrapper must not be the thing that fires first: the tool's own
+    /// timeout is what preserves the output it collected, so the wrapper
+    /// needs a grace window to let that result through.
+    #[test]
+    fn the_outer_wrapper_outlasts_the_tool_it_wraps() {
+        let r = resolve_tool_timeout(DEFAULT, &json!({"timeout": 1800}));
+        let outer = r.effective + TOOL_TIMEOUT_GRACE;
+        assert!(
+            outer > r.effective,
+            "wrapper must not preempt the tool timeout"
+        );
+    }
+}
+
+/// Regression coverage for the broker/tool timeout precedence inversion.
+///
+/// `ToolBatchExecutor` arms three deadlines around one tool call. If the
+/// broker watchdog is not strictly later than the tool's own deadline, the
+/// watchdog preempts the tool mid-teardown and the collected partial output
+/// (`partial_timeout_report`, `tail_bounded`, `TIMEOUT_OUTPUT_BYTES`) is lost
+/// behind a generic "broker invocation timed out". That is what made a trivial
+/// `bash ls … | grep …` report as an opaque timeout.
+#[cfg(test)]
+mod broker_watchdog_ordering_tests {
+    use super::*;
+
+    #[test]
+    fn broker_watchdog_is_strictly_later_than_the_tool_deadline() {
+        for tool_ms in [
+            1_000u64,
+            120_000,
+            600_000,
+            MAX_MODEL_TOOL_TIMEOUT.as_millis() as u64,
+        ] {
+            let broker = broker_watchdog_timeout_ms(Some(tool_ms))
+                .expect("a tool deadline must produce a broker deadline");
+            assert!(
+                broker > tool_ms,
+                "broker watchdog ({broker}ms) must expire after the tool's own \
+                 deadline ({tool_ms}ms) or it preempts the tool before it can \
+                 return the output it collected while being killed"
+            );
+            assert_eq!(
+                broker - tool_ms,
+                BROKER_WATCHDOG_GRACE_MS,
+                "the broker must get exactly the grace window, not an unrelated value"
+            );
+        }
+    }
+
+    #[test]
+    fn broker_watchdog_does_not_wrap_at_the_top() {
+        let tool_ms = u64::MAX;
+        assert_eq!(
+            broker_watchdog_timeout_ms(Some(tool_ms)),
+            Some(u64::MAX),
+            "a saturated tool deadline must not wrap into a deadline that fires immediately"
+        );
+    }
+
+    #[test]
+    fn absent_tool_deadline_defers_to_the_broker_default() {
+        assert_eq!(broker_watchdog_timeout_ms(None), None);
+    }
+
+    #[test]
+    fn batch_wrapper_outlives_the_broker_watchdog() {
+        // Ordering must be tool < broker < wrapper, or the wrapper reintroduces
+        // the same inversion one level out.
+        let tool_ms = 120_000u64;
+        let broker = broker_watchdog_timeout_ms(Some(tool_ms)).unwrap();
+        let wrapper_ms = tool_ms + 2 * TOOL_TIMEOUT_GRACE.as_millis() as u64;
+        assert!(
+            broker < wrapper_ms,
+            "batch wrapper ({wrapper_ms}ms) must outlive the broker watchdog ({broker}ms)"
+        );
+        assert!(
+            tool_ms < broker,
+            "tool deadline ({tool_ms}ms) must come first"
+        );
     }
 }

@@ -8,7 +8,12 @@ Fails when:
 - the old runtime-only pattern `*selected = Some(model.clone())` remains
   in the ModelSelect arm, or
 - `SessionSelectionUpdate` success path does not project into the runtime
-  cache and remember the last-used preference.
+  cache and remember the last-used preference, or
+- the TUI `/model` commit path does not persist the choice to the daemon.
+  The daemon resolves every turn from its durable `SessionSelection`, so a
+  dialog that only mutated local state left the status line advertising a
+  model the next turn would never run. That divergence is silent, so it is
+  pinned here.
 """
 from __future__ import annotations
 
@@ -18,6 +23,8 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TURNS = ROOT / "src" / "core" / "daemon_turns.rs"
 SESSIONS = ROOT / "src" / "core" / "daemon_sessions.rs"
+TUI_INPUT = ROOT / "src" / "tui" / "app" / "input.rs"
+TUI_COMMANDS = ROOT / "src" / "tui" / "app" / "commands.rs"
 
 
 def extract_arm(path: pathlib.Path, marker: str, length: int = 220) -> str:
@@ -30,6 +37,25 @@ def extract_arm(path: pathlib.Path, marker: str, length: int = 220) -> str:
         print(f"FAIL: {path.name} missing {marker!r}")
         sys.exit(1)
     return "\n".join(lines[start : start + length])
+
+
+def extract_fn_body(path: pathlib.Path, signature: str) -> str:
+    """Text of one function, bounded by the next sibling method.
+
+    A fixed line window is unsafe here: it can reach past the closing
+    brace and pick up the *definition* of a helper it was meant to check
+    for a *call* of, which would make the check vacuous.
+    """
+    lines = path.read_text().splitlines()
+    start = next((i for i, l in enumerate(lines) if signature in l), None)
+    if start is None:
+        print(f"FAIL: {path.name} missing {signature!r}")
+        sys.exit(1)
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if line.startswith("    pub fn ") or line.startswith("    pub(crate) fn ") or line.startswith("    fn "):
+            return "\n".join(lines[start:i])
+    return "\n".join(lines[start:])
 
 
 def main() -> int:
@@ -82,6 +108,39 @@ def main() -> int:
     ).read_text()
     if "PreferenceApplicationOutcome" not in approval_rs:
         failures.append("approval.rs missing PreferenceApplicationOutcome")
+
+    # The TUI half of the contract: `/model` must reach the durable
+    # selection, and the refusal must be reportable.
+    select_arm = extract_arm(TUI_INPUT, "TuiMsg::SelectModel", 40)
+    if "persist_durable_model_selection" not in select_arm:
+        failures.append(
+            "tui SelectModel arm must persist the choice via "
+            "persist_durable_model_selection"
+        )
+    commands_rs = TUI_COMMANDS.read_text()
+    for variant in ("ModelSelectPersist", "ModelSelectPersisted"):
+        if variant not in commands_rs:
+            failures.append(f"TuiCommand missing {variant}")
+
+    # A tab restored from the manifest, or a brand-new one, starts with
+    # `session_id: null`. A `/model` choice made then has no durable row
+    # to write, so the session created afterwards must adopt it — otherwise
+    # the same divergence reappears one step later, at session creation.
+    set_session = extract_fn_body(
+        ROOT / "src" / "tui" / "app" / "mod.rs", "pub fn set_session("
+    )
+    if "persist_durable_model_selection" not in set_session:
+        failures.append(
+            "App::set_session must adopt a model chosen before the session existed"
+        )
+    elif "if !session_has_own_selection" not in set_session:
+        # The gate matters as much as the call: an unconditional adopt
+        # would overwrite a restored session's own durable selection.
+        failures.append(
+            "App::set_session must adopt the pending model only when the "
+            "session has no selection of its own (gate on "
+            "`if !session_has_own_selection`)"
+        )
 
     if failures:
         for failure in failures:

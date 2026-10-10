@@ -234,7 +234,23 @@ holds `root`, `branch`, `dirty`, `staged_count`, `unstaged_count`,
 4. `apply_git_sidebar_refresh` calls `git_sidebar.apply_refresh(...)` or
    `apply_refresh_error(...)`. Both return `false` for stale generations.
 
-**Triggers**: `SelectSession`, `App::set_session`, session reload.
+**Triggers**: `SelectSession`, `App::set_session`, session reload, and
+`ensure_tui_cmd_channel` when a session was already bound.
+
+**The channel must exist before the first trigger.** `set_session` ends with
+`start_refresh_git_sidebar`, and `spawn_registered_tui_task` returns `None`
+when `tui_cmd_tx` is `None` — the probe is dropped with no diagnostic. `main`
+used to call `set_session` first and `ensure_tui_cmd_channel` afterwards, so
+the startup probe never ran, `branch` stayed `None` for the life of the
+process, and the sidebar read "not a git repo" inside a real repository.
+`ensure_tui_cmd_channel` now re-issues the probe when it finds a session
+already bound, making the ordering mistake self-correcting.
+
+**Three distinct sidebar states, not two.** The widget renders
+`checking git…` while `loading`, the actual probe failure when `error` is
+`Some`, and `not a git repo` only after a clean probe that found no
+repository. Collapsing every failure into "not a git repo" made a dropped,
+slow, or timed-out probe indistinguishable from a genuine detection failure.
 
 **Remote TUI**: `RemoteTuiStateSnapshot.git: Option<RemoteGitInfo>`
 carries cached sidebar state to remote clients.
@@ -784,6 +800,11 @@ operation-ID stale protection and refreshes the existing
 connections/model projections. `/connections`
 (`components/dialogs/connection_selection.rs`) only inspects, manages,
 and selects already-durable connections; it never collects secrets.
+While `loading` is true the dialog renders only the
+"Loading connections and models…" placeholder, so `handle_key` accepts
+dismissal alone — `d` (delete) and `p` (purge) are single-key destructive
+actions with no confirmation, and a blind press during the load window must
+not be able to act on rows the user cannot see.
 
 `TaskView` is the project Task view
 (`components/dialogs/task_view.rs`): renders the `TaskViewSnapshot`
@@ -887,7 +908,36 @@ dialogs.
 
 ### TuiCommand (`src/tui/app/commands.rs:15`)
 
-Async commands sent via channel — 203 variants covering: session CRUD,
+### Model selection is durable
+
+The daemon resolves every turn from its durable `SessionSelection`, not
+from what the TUI displays. Committing a choice in the `/model` dialog
+therefore performs two distinct writes:
+
+1. `App::persist_model_selection` — the last-used **preference**
+   (`KEY_MODEL_LAST_USED`), which the next launch restores.
+2. `App::persist_durable_model_selection` — `CoreRequest::ModelSelect`,
+   the compatibility adapter over the durable `SelectionService` that maps
+   a `provider/model` catalog id onto the explicit connection + model the
+   daemon stores. It carries the same authorization, audit and CAS
+   revision checks as a `SessionSelectionUpdate`.
+
+Only (2) makes the choice take effect on the next turn. When it existed
+before (1) alone, the status line, the tab and the preference all showed
+the newly chosen model while the turn still ran the previously durable
+one — a silent divergence with no error anywhere. A refusal is reported
+through `TuiCommand::ModelSelectPersisted`, which re-synchronizes the
+display with the authoritative durable value instead of leaving a model
+on screen that will not run.
+
+`App::adopt_persisted_tab_model` and
+`App::reconcile_durable_selection_model` remain the inbound direction:
+the daemon's durable selection converging on the display.
+
+Pinned by `scripts/check_model_select_convergence.py` and
+`tests/tui_model_selection_persist.rs`.
+
+Async commands sent via channel — 205 variants covering: session CRUD,
 archive, fork, bulk ops, share, export, rename, undo delete, import,
 template creation, session message loading, subagent spawn, task/worktree
 operations, memory operations, goal lifecycle, research browser, doctor,
@@ -1255,7 +1305,8 @@ tui/
 │   │   └── context.rs      # AppContext for overlay dialogs
 │   ├── dialogs/            # 34 modal dialogs + mod.rs (all implement Component)
 │   │   ├── agent.rs        # AgentDialog
-│   │   ├── command.rs      # CommandPalette
+│   │   ├── command.rs      # CommandPalette (query/selection model only —
+│   │   │                     # it no longer renders; see "One popup" below)
 │   │   ├── confirm.rs      # ConfirmDialog
 │   │   ├── connect.rs      # ConnectDialog (provider-neutral /connect:
 │   │   │                     # setup-catalog selection + typed per-provider
@@ -1313,6 +1364,7 @@ tui/
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session, Workspace, Editor)
+├── selection.rs            # Terminal text selection over the rendered frame buffer
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
 ├── editor.rs               # M006-A editor presentation record/state
@@ -1426,6 +1478,58 @@ action.
   the domain model expanded across multiple milestones.
 - **Async command stale-completion tests**: Each guarded handler has a
   stale-completion test in `src/tui/mod.rs::async_cmd_tests`.
+- **The focus manager owns the painted dialog, not `dialog_state`**: 
+  `open_dialog` pushes a `clone()` of the dialog onto `FocusManager`, and
+  `render_dialog` draws whatever the focus manager holds. Filling only the
+  App-owned `dialog_state` field therefore leaves the *painted* instance on
+  the empty snapshot captured at open time. Any async path that populates
+  a dialog must write through `focus_manager.with_dialog_mut::<D, _>(..)`
+  (or `dialog_mut`) as well. `/sessions` shipped broken for exactly this
+  reason — see `reload_fills_the_painted_focus_manager_instance` in
+  `src/tui/commands/sessions.rs`.
+- **The terminal's own text selection is unavailable**: `EnableMouseCapture`
+  (`src/tui/terminal.rs`) makes the terminal stop offering drag-select, so
+  the TUI implements its own over the rendered frame buffer
+  (`src/tui/selection.rs`). `App::finish_render` retains the frame buffer
+  each pass; drag inside `ClickTarget::Viewport` sets
+  `selection_anchor`/`selection_focus`, mouse-up copies via `arboard`, and
+  `Ctrl+C` copies a live selection (falling through when none exists).
+  Selection is deliberately scoped to the viewport so the sidebar,
+  scrollbar, dialogs, completion popup, and prompt keep their click
+  behaviour.
+- **`bottom_border_area` gets its own row, carved off before layout**:
+  `render` splits the last row of the main pane out of `main_area_inner`
+  *before* `session_layout` runs and records it as `bottom_border_area`;
+  `finish_render` paints a `Borders::BOTTOM` block into it. Anchoring the
+  edge on the footer's last row instead — as `render_outer_borders`
+  originally did — painted over the only row the status bar ever had,
+  because `footer_height` is 1 and `StatusBar` takes a border-less early
+  path at that height. The status line disappeared entirely.
+- **One completion popup, not two**: `CommandPalette::render` used to paint
+  a second, narrower slash popup over the prompt whenever `command_mode`
+  was set, while `update_completions` deliberately left `show_completions`
+  false in that mode. Typing `/logs` cold showed the old box; backspacing
+  to a bare `/` cleared command mode and showed `render_completions`
+  instead — one interaction, two visually different boxes with two
+  independently fuzzy-scored orderings. `render_completions` is now the
+  only popup and `handle_command_key` navigates `completion_rows()`, so the
+  highlighted row is always the row Enter executes. The popup also scrolls
+  (`completion_scroll_offset`) so a selection past the 8-row window stays
+  on screen and click hit-testing matches the drawn window.
+- **The chat tail carries a live activity line**: `MessagesWidget::activity`
+  renders `⠋ thinking 3s` / `⠹ running bash 12s` while the agent works, and
+  a finished reasoning block's collapsed header reads `Thought for 3.2s`
+  (`reasoning_durations`, click to expand via `message_has_reasoning` ->
+  `toggle_reasoning`). Spinner frames are derived from elapsed whole
+  seconds, not a per-frame counter, so the animation is frame-rate
+  independent and reproducible under a `TestBackend`.
+- **Completion popups resolve foreground against the selection fill**:
+  `render_completions` picks label/description foregrounds via
+  `readable_on`, not by trusting the theme palette. Themes set
+  `ui.selection` from a widget slot rather than deriving it from the
+  background, so an accent and the selection fill can share a luminance —
+  resolving against the popup background renders the highlighted row as an
+  unreadable block.
 
 ## Testing
 

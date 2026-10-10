@@ -113,6 +113,7 @@ pub mod interactive_terminal;
 pub mod layout;
 pub mod route;
 pub(crate) mod runtime;
+pub mod selection;
 pub mod task_lifecycle;
 pub mod terminal;
 pub mod theme;
@@ -1840,6 +1841,50 @@ mod async_cmd_tests {
             app.agent_state.current_model, "generalcompute/deepseek-v3.1",
             "with no selection at all the first catalog entry is the only choice"
         );
+    }
+
+    /// The daemon resolves a turn's model from the durable session
+    /// selection, so the displayed model must converge on it.
+    ///
+    /// The TUI previously showed a manifest-sourced model while the
+    /// provider received a different one; the only symptom was an
+    /// upstream error naming a model the operator never picked.
+    #[test]
+    fn the_durable_selection_overrides_a_diverging_displayed_model() {
+        let mut app = make_test_app();
+        app.set_models(vec![
+            "opencode_go/mimo-v2.6-flash".to_string(),
+            "opencode_go/muse-spark-1.3-contributor".to_string(),
+        ]);
+        // The tab manifest restored a model that is NOT what the daemon runs.
+        app.agent_state.current_model = "opencode_go/mimo-v2.6-flash".to_string();
+
+        // provider_kind is connection-scoped ("other:opencode_go").
+        let applied =
+            app.reconcile_durable_selection_model("other:opencode_go/muse-spark-1.3-contributor");
+
+        assert!(applied, "the durable selection must be applied");
+        assert_eq!(
+            app.agent_state.current_model, "opencode_go/muse-spark-1.3-contributor",
+            "the displayed model must match the model the daemon runs"
+        );
+        assert_eq!(app.agent_state.model_idx, 1);
+    }
+
+    #[test]
+    fn a_durable_selection_absent_from_the_catalog_leaves_the_display_alone() {
+        let mut app = make_test_app();
+        app.set_models(vec!["opencode_go/mimo-v2.6-flash".to_string()]);
+        app.agent_state.current_model = "opencode_go/mimo-v2.6-flash".to_string();
+
+        let applied =
+            app.reconcile_durable_selection_model("other:opencode_go/model-not-in-catalog");
+
+        assert!(
+            !applied,
+            "an uncatalogued durable selection cannot be applied"
+        );
+        assert_eq!(app.agent_state.current_model, "opencode_go/mimo-v2.6-flash");
     }
 
     #[test]

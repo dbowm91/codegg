@@ -8,20 +8,6 @@ use crate::setup_catalog::{
 };
 use crate::{ModelInfo, Provider};
 
-/// xAI models exposed by the OpenAI-compatible endpoint.
-fn xai_models() -> Vec<ModelInfo> {
-    vec![ModelInfo {
-        id: "grok-build-0.1".to_string(),
-        name: "Grok Build 0.1".to_string(),
-        provider: "xai".to_string(),
-        context_window: 256_000,
-        max_output_tokens: None,
-        supports_tools: true,
-        supports_vision: false,
-        variants: vec![],
-    }]
-}
-
 pub fn create_xai(credential: Credential) -> impl Provider {
     OpenAiCompatibleProvider::new(
         "xai",
@@ -31,7 +17,9 @@ pub fn create_xai(credential: Credential) -> impl Provider {
             base_url: XAI_BASE_URL.to_string(),
             auth_header: "Authorization".to_string(),
             extra_headers: Vec::new(),
-            models: xai_models(),
+            // No compiled-in seed list. xAI is OpenAI-compatible, so the
+            // shared bounded discovery populates this from `{base}/models`.
+            models: Vec::new(),
             tool_choice: ToolChoice::Auto,
         },
     )
@@ -117,68 +105,10 @@ pub fn create_minimax(api_key: String) -> impl Provider {
     debug_log!(
         "create_minimax: using Anthropic-compatible endpoint at https://api.minimax.io/anthropic"
     );
-    let models = vec![
-        ModelInfo {
-            id: "minimax/minimax-2.7".to_string(),
-            name: "minimax/minimax-2.7".to_string(),
-            provider: "minimax".to_string(),
-            context_window: 204800,
-            max_output_tokens: Some(32000),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        },
-        ModelInfo {
-            id: "minimax/minimax-2.7-highspeed".to_string(),
-            name: "minimax/minimax-2.7-highspeed".to_string(),
-            provider: "minimax".to_string(),
-            context_window: 204800,
-            max_output_tokens: Some(32000),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        },
-        ModelInfo {
-            id: "minimax/minimax-2.5".to_string(),
-            name: "minimax/minimax-2.5".to_string(),
-            provider: "minimax".to_string(),
-            context_window: 204800,
-            max_output_tokens: Some(32000),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        },
-        ModelInfo {
-            id: "minimax/minimax-2.5-highspeed".to_string(),
-            name: "minimax/minimax-2.5-highspeed".to_string(),
-            provider: "minimax".to_string(),
-            context_window: 204800,
-            max_output_tokens: Some(32000),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        },
-        ModelInfo {
-            id: "minimax/minimax-2.1".to_string(),
-            name: "minimax/minimax-2.1".to_string(),
-            provider: "minimax".to_string(),
-            context_window: 204800,
-            max_output_tokens: Some(32000),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        },
-        ModelInfo {
-            id: "minimax/minimax-2.1-highspeed".to_string(),
-            name: "minimax/minimax-2.1-highspeed".to_string(),
-            provider: "minimax".to_string(),
-            context_window: 204800,
-            max_output_tokens: Some(32000),
-            supports_tools: true,
-            supports_vision: false,
-            variants: vec![],
-        },
-    ];
+    // No compiled-in seed list. MiniMax is Anthropic-compatible; its
+    // model set comes from the provider's discovery endpoint, or from
+    // an operator-declared additive `models` block in config.
+    let models: Vec<ModelInfo> = Vec::new();
     AnthropicProvider::new(api_key)
         .with_base_url(MINIMAX_BASE_URL.to_string())
         .with_id("minimax".to_string())

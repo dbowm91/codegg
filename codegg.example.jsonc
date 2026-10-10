@@ -108,14 +108,19 @@
     },
     "opencode_zen": {
       "auth": { "type": "api_key", "env": "OPENCODE_ZEN_API_KEY" },
-      "base_url": "https://opencode.ai/zen/v1",
-      "models": {
-        "minimax-m2.5-free": {
-          "context_window": 200000,
-          "max_output_tokens": 64000,
-          "supports_tools": true
-        }
-      }
+      "base_url": "https://opencode.ai/zen/v1"
+      // Optional. Models are discovered from the provider's /models
+      // endpoint, and discovery is always attempted. This block is
+      // ADDITIVE: it augments the discovered catalog, never replaces
+      // it and never suppresses discovery. Declare a model here only
+      // when the provider's endpoint does not serve one.
+      // "models": {
+      //   "minimax-m2.5-free": {
+      //     "context_window": 200000,
+      //     "max_output_tokens": 64000,
+      //     "supports_tools": true
+      //   }
+      // }
     },
     "xai": {
       "auth": { "type": "api_key", "env": "XAI_API_KEY" }

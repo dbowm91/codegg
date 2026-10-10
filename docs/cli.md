@@ -115,9 +115,42 @@ master key automatically — no key environment variable is required. See
 ```bash
 codegg validate                     # validate the auto-detected config
 codegg validate --config ./my.jsonc # validate a specific file
+codegg edit                         # open the config in $EDITOR
+codegg edit --config ./my.jsonc     # open a specific file
+codegg edit --project               # open the project-local config
+codegg edit --editor hx             # override $VISUAL/$EDITOR
 codegg doctor                       # run every diagnostic subsystem
 codegg doctor providers             # one subsystem
 ```
+
+### `edit`
+
+`edit` opens a config file in your editor, creating it (and its directory)
+first if it does not exist so the editor always gets a real path to write.
+
+The editor is resolved in this order:
+
+1. `--editor <cmd>`
+2. `$VISUAL`
+3. `$EDITOR`
+4. the first of `hx`, `vim`, `vi`, `nano` found on `PATH`
+
+`$VISUAL` outranks `$EDITOR` per the usual Unix convention, because `$VISUAL`
+marks the full-screen editor you prefer for interactive editing while
+`$EDITOR` is often left as a line-oriented default. Both may be multi-word or
+quoted (`EDITOR="code --wait"`, `EDITOR="/opt/My Editor/hx"`). An editor named
+by `$VISUAL`/`$EDITOR` is used even if it is missing — CodeGG reports the spawn
+failure rather than silently editing the file in a different program.
+
+Which file gets opened, highest precedence first: `--config <path>`, then a
+project config discovered from the working directory (`.codegg/codegg.jsonc`),
+then the global config. `--project` forces the project-local file, creating it
+if no project config exists yet.
+
+After the editor exits, `edit` re-reads the file and reports whether it still
+parses. A parse or validation failure is printed to stderr but does not change
+the exit status — the edit itself succeeded, and you may still be fixing it.
+Run `codegg validate` to confirm.
 
 `doctor` takes an optional positional subsystem:
 

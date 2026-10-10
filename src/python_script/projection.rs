@@ -101,9 +101,17 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
     }
     if let Some(ref decision) = result.policy_decision {
         let sandbox_label = match decision.enforcement_backend {
-            super::types::SandboxBackend::Landlock => "Landlock (OS-level)",
-            super::types::SandboxBackend::PortableFallback => "Portable fallback",
-            super::types::SandboxBackend::None => "None",
+            super::types::SandboxBackend::Os { backend } => {
+                // Operator-facing name from the registry ("Landlock",
+                // "Seatbelt"), not the wire id, so the projected text reads
+                // like prose and stays correct for a backend added later.
+                let name = crate::security::sandbox::backend::backend(backend)
+                    .map(|entry| entry.name)
+                    .unwrap_or_else(|| backend.as_str());
+                format!("{name} (OS-level)")
+            }
+            super::types::SandboxBackend::PortableFallback => "Portable fallback".to_string(),
+            super::types::SandboxBackend::None => "None".to_string(),
         };
         lines.push(format!("**Sandbox:** {sandbox_label}"));
         if let Some(ref outcome) = decision.outcome {
@@ -510,7 +518,9 @@ mod tests {
             ),
             denied: vec![],
             warnings: vec![],
-            enforcement_backend: super::super::types::SandboxBackend::Landlock,
+            enforcement_backend: super::super::types::SandboxBackend::Os {
+                backend: crate::security::sandbox::BackendId::LANDLOCK,
+            },
             os_filesystem_isolation: true,
             os_network_isolation: false,
             outcome: None,

@@ -660,6 +660,21 @@ impl SelectionService {
         )
         .await
     }
+
+    /// Classify the session's durable model selection against the live
+    /// connection catalog. The turn path uses this to reject a stale model
+    /// before it reaches a provider.
+    pub async fn classify_model(
+        &self,
+        session_id: &str,
+    ) -> Result<DurableModelSelection, SelectionError> {
+        classify_durable_model_selection(
+            self.session_store.as_ref(),
+            self.connection_store.as_ref(),
+            session_id,
+        )
+        .await
+    }
 }
 
 /// M004: `true` when the session row already carries an explicit
@@ -829,6 +844,184 @@ pub async fn resolve_model_select_target(
             })
         }
     }
+}
+
+/// Storage-key prefix [`codegg_core::provider_connections::ProviderKind`]
+/// writes for `ProviderKind::Other(id)`. A durable row keeps the exact
+/// catalog implementation identity (`other:opencode_go`), while
+/// [`ProviderKind::as_str`] — the registry provider id, and the value the
+/// legacy resolver matches on — is the bare `opencode_go`.
+const PROVIDER_KIND_OTHER_PREFIX: &str = "other:";
+
+/// Provider implementation id for a canonical `<provider>/<model>` runtime
+/// model string.
+///
+/// This is the *string* half of provider identity and is only correct when
+/// no durable connection speaks for the session: a durable model id is
+/// built by [`canonical_runtime_model`] from the connection-scoped
+/// [`codegg_core::provider_connections::ProviderKind`], so the connection
+/// row — not this string — is the authority. Callers holding a live durable
+/// selection must resolve through [`resolve_turn_provider`] instead.
+///
+/// A storage-key segment (`other:opencode_go`) is normalised to the bare
+/// registry id, matching [`ProviderKind::from_storage_key`] in reverse.
+pub fn runtime_model_provider_segment(model: &str) -> &str {
+    let segment = match model.trim().split_once('/') {
+        Some((provider, _)) => provider,
+        None => model.trim(),
+    };
+    segment
+        .strip_prefix(PROVIDER_KIND_OTHER_PREFIX)
+        .unwrap_or(segment)
+}
+
+/// Resolve the registry provider id for one concrete turn model.
+///
+/// The typed legacy resolver owns the `provider/model` grammar, so a
+/// caller cannot "resolve" a provider by splitting a string: every
+/// [`ModelSelectResolveError`] variant carries its own wire code
+/// ([`ModelSelectResolveError::code`]) because *provider not installed*,
+/// *provider name ambiguous across connections* and *no model given* are
+/// three different user-facing failures. An unresolvable provider must
+/// never be reported as a generic `provider_not_found`, and never silently
+/// substituted with another provider.
+pub async fn resolve_turn_provider(
+    connection_store: &ProviderConnectionStore,
+    model: &str,
+) -> Result<String, ModelSelectResolveError> {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return Err(ModelSelectResolveError::EmptyModel);
+    }
+    let normalized = match trimmed.split_once('/') {
+        Some((_, model_id)) => format!("{}/{}", runtime_model_provider_segment(trimmed), model_id),
+        None => trimmed.to_string(),
+    };
+    let (connection_id, _) = resolve_model_select_target(connection_store, &normalized).await?;
+    let connection = connection_store
+        .get(&connection_id)
+        .await
+        .map_err(|error| ModelSelectResolveError::Store(error.to_string()))?
+        .ok_or_else(|| {
+            ModelSelectResolveError::Store(format!(
+                "resolved connection {} is no longer present",
+                connection_id.as_str()
+            ))
+        })?;
+    Ok(connection.provider_kind.as_str().to_string())
+}
+
+/// Turn-path classification of a session's durable model selection.
+///
+/// [`get_selection`] reports a persisted `selected_model_id` that is absent
+/// from the connection's bounded catalog as a fully populated
+/// [`SessionSelectionDto::Selected`] whose model row is *synthesised*
+/// (`context_window: 0`, no tool or vision support). That projection is
+/// correct for display and fatal for execution: the turn path would send a
+/// model the connection cannot serve and the user would only ever see the
+/// provider's upstream 404. This classification keeps the two failure modes
+/// apart so a gone model is never reported as a gone connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableModelSelection {
+    /// The session carries no durable connection/model selection. The
+    /// client-supplied model string is the only identity available.
+    Unselected,
+    /// The connection is active at the revision the selection pinned and
+    /// the selected model is present in its bounded catalog.
+    Live {
+        connection_id: String,
+        model_id: String,
+    },
+    /// The selected connection row is gone. No claim is made about the
+    /// model: there is no catalog left to check it against.
+    ConnectionMissing { connection_id: String },
+    /// The connection exists but is not selectable (disabled, credential
+    /// missing, tombstoned, …).
+    ConnectionNotSelectable {
+        connection_id: String,
+        state: String,
+    },
+    /// The connection revision moved past the revision the selection
+    /// pinned, so this read cannot speak for the catalog the selection was
+    /// written against.
+    RevisionMoved {
+        connection_id: String,
+        current_revision: u64,
+    },
+    /// The connection is live and the persisted model is not in its
+    /// bounded catalog. Surfaces as the existing `unknown_model` wire
+    /// error; never replaced by a different model.
+    UnknownModel {
+        connection_id: String,
+        model_id: String,
+    },
+}
+
+/// Classify a session's durable model selection against the live
+/// connection catalog. Read-only: it never mutates the session row or
+/// substitutes another model.
+pub async fn classify_durable_model_selection(
+    session_store: &SessionStore,
+    connection_store: &ProviderConnectionStore,
+    session_id: &str,
+) -> Result<DurableModelSelection, SelectionError> {
+    let session = session_store
+        .get(session_id)
+        .await
+        .map_err(|e| SelectionError::SessionStore(e.to_string()))?
+        .ok_or_else(|| SelectionError::SessionNotFound(session_id.to_string()))?;
+
+    let persisted = |value: Option<&String>| -> Option<String> {
+        value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let (Some(connection_id), Some(model_id)) = (
+        persisted(session.provider_connection_id.as_ref()),
+        persisted(session.selected_model_id.as_ref()),
+    ) else {
+        return Ok(DurableModelSelection::Unselected);
+    };
+    let connection_id = ProviderConnectionId::parse(&connection_id)
+        .map_err(|_| SelectionError::InvalidConnectionId(connection_id.clone()))?;
+    let connection = match connection_store
+        .get(&connection_id)
+        .await
+        .map_err(|e| SelectionError::ConnectionStore(e.to_string()))?
+    {
+        Some(connection) => connection,
+        None => {
+            return Ok(DurableModelSelection::ConnectionMissing {
+                connection_id: connection_id.as_str().to_string(),
+            })
+        }
+    };
+    if connection.state != ProviderConnectionState::Active {
+        return Ok(DurableModelSelection::ConnectionNotSelectable {
+            connection_id: connection_id.as_str().to_string(),
+            state: connection.state.storage_key().to_string(),
+        });
+    }
+    if session.provider_connection_revision != Some(connection.revision) {
+        return Ok(DurableModelSelection::RevisionMoved {
+            connection_id: connection_id.as_str().to_string(),
+            current_revision: connection.revision,
+        });
+    }
+    if !list_models(connection_store, &connection_id)
+        .await?
+        .iter()
+        .any(|row| row.0 == model_id)
+    {
+        return Ok(DurableModelSelection::UnknownModel {
+            connection_id: connection_id.as_str().to_string(),
+            model_id,
+        });
+    }
+    Ok(DurableModelSelection::Live {
+        connection_id: connection_id.as_str().to_string(),
+        model_id,
+    })
 }
 
 /// M004: error applying a last-used preference. Preference-store
@@ -1033,5 +1226,97 @@ pub fn selection_outcome_message(outcome: &SelectionUpdateOutcome) -> String {
         } => format!(
             "Model '{model_id}' is not in the bounded catalog of connection '{connection_id}'."
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Pure-resolution seams the turn path depends on. The database-backed
+    //! behaviour of `resolve_turn_provider` and
+    //! `classify_durable_model_selection` is covered end to end through the
+    //! turn path in `crate::core::daemon_turns::tests`.
+
+    use super::{runtime_model_provider_segment, ModelSelectResolveError};
+
+    /// A durable model id carries the connection-scoped provider kind, whose
+    /// storage-key form (`other:{id}`) is not a registry id. Both spellings
+    /// must read as the same provider.
+    #[test]
+    fn provider_segment_is_the_registry_id_not_the_storage_key() {
+        assert_eq!(
+            runtime_model_provider_segment("opencode_go/minimax-m3"),
+            "opencode_go",
+        );
+        assert_eq!(
+            runtime_model_provider_segment("other:opencode_go/minimax-m3"),
+            "opencode_go",
+        );
+        assert_eq!(runtime_model_provider_segment("openai/gpt-4o"), "openai",);
+    }
+
+    /// There is no "fall back to openai" default: a model with no provider
+    /// segment names no provider, and must not silently borrow one.
+    #[test]
+    fn provider_segment_never_invents_a_default() {
+        assert_eq!(runtime_model_provider_segment("gpt-4o"), "gpt-4o");
+        assert_eq!(runtime_model_provider_segment(""), "");
+        assert_eq!(runtime_model_provider_segment("   "), "");
+    }
+
+    /// "Provider not installed", "provider name ambiguous across
+    /// connections" and "no model given" are three different failures, so
+    /// each keeps its own wire code and none collapses into the
+    /// registry-miss `provider_not_found`.
+    #[test]
+    fn resolve_failures_keep_distinct_codes() {
+        let cases = [
+            (ModelSelectResolveError::EmptyModel, "model_not_specified"),
+            (
+                ModelSelectResolveError::UnknownProvider {
+                    provider_kind: "nope".to_string(),
+                },
+                "unknown_provider",
+            ),
+            (
+                ModelSelectResolveError::AmbiguousProvider {
+                    provider_kind: "openai".to_string(),
+                    count: 2,
+                },
+                "ambiguous_provider",
+            ),
+            (
+                ModelSelectResolveError::ModelRequired {
+                    provider_kind: "openai".to_string(),
+                },
+                "model_required",
+            ),
+            (
+                ModelSelectResolveError::ConnectionNotSelectable {
+                    connection_id: "conn-a".to_string(),
+                    state: "disabled".to_string(),
+                },
+                "connection_not_selectable",
+            ),
+        ];
+        let mut codes: Vec<&str> = cases.iter().map(|(error, _)| error.code()).collect();
+        for (error, expected) in &cases {
+            assert_eq!(error.code(), *expected, "unexpected code for {error:?}");
+            assert!(
+                !error.message().is_empty(),
+                "every resolve failure must carry a diagnostic: {error:?}",
+            );
+        }
+        codes.sort_unstable();
+        let unique = codes.len();
+        codes.dedup();
+        assert_eq!(
+            codes.len(),
+            unique,
+            "resolve failure codes must be distinct"
+        );
+        assert!(
+            !codes.contains(&"provider_not_found"),
+            "a resolver failure is never a registry-miss report",
+        );
     }
 }

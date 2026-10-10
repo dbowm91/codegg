@@ -237,6 +237,27 @@ API-key-only — `anthropic`, `openai`, `google`, `openrouter`, `opencode_zen`,
 and `minimax` — reject a stored bearer token outright, and expired stored
 records fail before any network call.
 
+## Where the model list comes from
+
+CodeGG ships **no built-in model list**. Every model you can select comes
+from your provider's `/models` endpoint, and discovery is always attempted.
+
+That has two consequences worth knowing:
+
+- **A failed discovery leaves the model list empty** rather than falling
+  back to a bundled catalog. If the list is empty, the provider is not
+  offering models right now — check the credential and connectivity rather
+  than expecting a default to appear. Run `/doctor` for a diagnosis.
+- **Config models are additive.** A `models` block for a provider in
+  `codegg.jsonc` augments the discovered catalog; it never replaces it and
+  never disables discovery. Declare models there only for a provider whose
+  endpoint does not serve a catalog, so you can drive it manually.
+
+A model is only offered as selectable once the shared provider profile has a
+reviewed wire mapping for it. Selecting a model without one fails the request
+with `has no reviewed wire mapping`; if you hit that, the provider needs a
+profile update rather than a different setting on your side.
+
 ## Connecting from the TUI
 
 `/connect` is the onboarding surface inside the TUI. It loads a secret-free

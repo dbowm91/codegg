@@ -2,6 +2,10 @@ use crate::error::ProviderError;
 use crate::{create_http_client, ChatRequest, EventStream, ModelInfo, Provider};
 use async_trait::async_trait;
 
+/// Azure OpenAI data-plane API version, shared by chat and discovery so the
+/// two can never drift onto different revisions.
+const AZURE_API_VERSION: &str = "2024-10-21";
+
 #[derive(Clone)]
 pub struct AzureProvider {
     api_key: String,
@@ -49,7 +53,7 @@ impl Provider for AzureProvider {
         let client = self.client.clone();
 
         let url = format!(
-            "{}/openai/deployments/{}/chat/completions?api-version=2024-10-21",
+            "{}/openai/deployments/{}/chat/completions?api-version={AZURE_API_VERSION}",
             endpoint, model
         );
 
@@ -88,29 +92,87 @@ impl Provider for AzureProvider {
         ))
     }
 
+    /// Best-effort discovery against the Azure OpenAI data-plane models
+    /// endpoint.
+    ///
+    /// Azure scopes access to *deployments* the operator created rather than
+    /// exposing a stable catalog, so this frequently yields nothing. That is
+    /// the truthful result and is returned as an empty catalog; there is no
+    /// compiled-in list to fall back to.
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
-        Ok(vec![
-            ModelInfo {
-                id: "gpt-4.1".to_string(),
-                name: "GPT-4.1".to_string(),
-                provider: "azure".to_string(),
-                context_window: 1_047_576,
-                max_output_tokens: Some(32_768),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-            ModelInfo {
-                id: "gpt-4o".to_string(),
-                name: "GPT-4o".to_string(),
-                provider: "azure".to_string(),
-                context_window: 128_000,
-                max_output_tokens: Some(16_384),
-                supports_tools: true,
-                supports_vision: true,
-                variants: vec![],
-            },
-        ])
+        let options = crate::eggpool::EggpoolProbeOptions::default();
+        let url = format!(
+            "{}/openai/models?api-version={}",
+            self.endpoint, AZURE_API_VERSION
+        );
+
+        let mut response = match self
+            .client
+            .get(&url)
+            .map_err(ProviderError::from)?
+            .timeout(crate::provider_core::non_streaming_timeout())
+            .max_decoded_body_size(options.response_byte_limit)
+            .header("api-key", &self.api_key)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!("azure discovery failed: {}", error);
+                return Ok(Vec::new());
+            }
+        };
+
+        if !response.status().is_success() {
+            tracing::warn!("azure discovery returned HTTP {}", response.status());
+            return Ok(Vec::new());
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > options.response_byte_limit as u64)
+        {
+            return Ok(Vec::new());
+        }
+
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            return Ok(Vec::new());
+        };
+        let Some(entries) = value.get("data").and_then(|m| m.as_array()) else {
+            return Ok(Vec::new());
+        };
+        if entries.len() > options.model_count_limit {
+            return Ok(Vec::new());
+        }
+
+        let mut models = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if id.is_empty() || id.chars().count() > options.model_string_limit {
+                continue;
+            }
+            let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            // Azure does not advertise context or capability facts here, so
+            // they mean "unknown", never an invented limit.
+            models.push(ModelInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                provider: self.id().to_string(),
+                context_window: 0,
+                max_output_tokens: None,
+                supports_tools: false,
+                supports_vision: false,
+                variants: Vec::new(),
+            });
+        }
+
+        Ok(models)
     }
 
     fn clone_box(&self) -> Box<dyn Provider> {

@@ -123,6 +123,29 @@ pub struct PendingSelectionUpdate {
 
 impl Component for ConnectionSelectionDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<crate::tui::app::TuiMsg> {
+        // While the catalog is loading the dialog renders only the
+        // "Loading connections and models…" placeholder, so there is nothing
+        // on screen for a keypress to refer to. Accepting lifecycle keys in
+        // that window is how a connection gets disabled or purged without the
+        // user ever seeing the row they acted on — `d` and `p` are
+        // single-key destructive actions with no confirmation step.
+        //
+        // `selected()` would return `None` while `connections` is still
+        // empty, which makes this inert today, but that is an accident of
+        // initialization order rather than a contract: `set_connections`
+        // does not clear `loading`, and the refresh response is delivered to
+        // the *live* focus-manager clone, so any ordering that lands rows
+        // before `finish_loading()` would make the destructive keys live
+        // against an invisible list. Gate on `loading` so the placeholder
+        // window is inert regardless of arrival order — dismissal is the
+        // only action it accepts.
+        if self.loading {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => Some(crate::tui::app::TuiMsg::CloseDialog),
+                _ => None,
+            };
+        }
+
         let selected = || {
             self.connections
                 .get(self.connection_idx)
