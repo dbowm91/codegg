@@ -311,26 +311,40 @@ mod tests {
 
     #[test]
     fn write_allowances_include_scratch_space() {
-        let roots = BackendPolicy::normalized(tool_write_allowances());
+        // The curated set names scratch space for both platforms; normalization
+        // drops whatever does not exist here, so assert the curated intent on
+        // the raw set and platform-appropriate presence on the normalized one.
+        let raw = tool_write_allowances();
         assert!(
-            roots
-                .iter()
-                .any(|root| root == &PathBuf::from("/private/tmp")),
-            "temporary space must be writable or test runners cannot work"
+            raw.iter().any(|root| root == &PathBuf::from("/tmp"))
+                && raw
+                    .iter()
+                    .any(|root| root == &PathBuf::from("/private/tmp")),
+            "temporary space must be writable or test runners cannot work: {raw:?}"
+        );
+        let roots = BackendPolicy::normalized(raw);
+        assert!(
+            roots.iter().any(|root| {
+                root == &PathBuf::from("/tmp")
+                    || root == &PathBuf::from("/private/tmp")
+                    || root.ends_with("tmp")
+            }),
+            "normalized scratch space must exist on this host: {roots:?}"
         );
     }
 
     #[test]
     fn sensitive_paths_are_denied() {
-        let roots = BackendPolicy::normalized(sensitive_deny_paths());
+        // The deny intent is platform-independent; normalization drops entries
+        // that do not exist on this host (e.g. `~/.ssh` on a fresh CI runner),
+        // so assert intent on the raw curated set.
+        let raw = sensitive_deny_paths();
         assert!(
-            roots
-                .iter()
-                .any(|root| root.ends_with(".ssh") && root.is_dir()),
+            raw.iter().any(|root| root.ends_with(".ssh")),
             "ssh keys must be on the deny list"
         );
         assert!(
-            roots.iter().any(|root| root.ends_with("codegg")),
+            raw.iter().any(|root| root.ends_with("codegg")),
             "CodeGG's own credential store must be on the deny list"
         );
     }
