@@ -172,6 +172,7 @@ your whole file. The gotchas that matter, and the full key reference, are in
 | Guide | Covers |
 |---|---|
 | [docs/agents-skills.md](docs/agents-skills.md) | Writing agents and `SKILL.md` skills. |
+| [docs/repository-init.md](docs/repository-init.md) | Read-only repository evidence and `AGENTS.md` draft semantics. |
 | [docs/tools.md](docs/tools.md) | Tool families, Git, deterministic tools, LSP. |
 | [docs/LSP.md](docs/LSP.md) | Language-server configuration. |
 | [docs/MCP.md](docs/MCP.md) | MCP servers, clients, transports. |
