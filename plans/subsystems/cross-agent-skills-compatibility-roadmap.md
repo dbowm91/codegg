@@ -1,8 +1,9 @@
 # Cross-Agent Skill Compatibility Roadmap
 
-Status: active; M001 ready, later milestones dependency-gated
+Status: closed; M001–M005 accepted
 
 Repository research baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09)
+Implementation baseline reviewed: `11e18b0797b2290f7e1d7c0f12c301466e98c03f`
 
 Long-term references:
 - `plans/000-long-term-specification.md#12-repository-asset-and-harness-interoperability`
@@ -61,22 +62,24 @@ A portable core parses standard frontmatter; vendor adapters may provide narrowl
 closed Runtime Assets M001–M004 + Plugin Ecosystem passive contributions
         |
         v
-M001 truthful activation + parser/contract baseline (ready)
+M001 truthful activation + parser/contract baseline (closed)
         |
         v
-M002 cross-agent paths + canonical deduplication (blocked on M001)
+M002 cross-agent paths + canonical deduplication (closed)
         |
         v
-M003 metadata, missing-name and nested resource compatibility (blocked on M002)
+M003 metadata, missing-name and nested resource compatibility (closed)
         |
         v
-M004 scoped discovery + /skills diagnostics (blocked on M003)
+M004 scoped discovery + /skills diagnostics (closed)
         |
         v
-M005 maintenance skills + lightweight conformance guard (blocked on M004)
+M005 maintenance skills + lightweight conformance guard (closed)
 ~~~
 
-Dependencies are **hard** within this sequence for handoff/closure discipline; repository initialization M001 can research/draft independently, while its M002 publication qualification consumes the stabilized effective-asset refresh interface.
+The sequence's hard dependencies have all been discharged. Repository
+initialization remains an independent roadmap; its publication qualification
+consumes the stabilized effective-asset refresh interface.
 
 ## 7. Milestones
 
@@ -110,8 +113,13 @@ All five milestone closure records accepted; source roots and behavior documente
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/cross-agent-skills-compatibility/001-activation-parser-contract.md` | future `plans/closure/cross-agent-skills-compatibility/001-status.md` | closed Runtime Assets only |
-| M002 | blocked | `plans/implementation/cross-agent-skills-compatibility/002-source-roots-and-deduplication.md` | future 002 | hard M001 |
-| M003 | blocked | `plans/implementation/cross-agent-skills-compatibility/003-package-metadata-and-resources.md` | future 003 | hard M002 |
-| M004 | blocked | `plans/implementation/cross-agent-skills-compatibility/004-scoped-discovery-and-inspection.md` | future 004 | hard M003 |
-| M005 | blocked | `plans/implementation/cross-agent-skills-compatibility/005-maintenance-skills-and-validation.md` | future 005 | hard M004 |
+| M001 | closed | `plans/implementation/cross-agent-skills-compatibility/001-activation-parser-contract.md` | `plans/closure/cross-agent-skills-compatibility/001-status.md` | none |
+| M002 | closed | `plans/implementation/cross-agent-skills-compatibility/002-source-roots-and-deduplication.md` | `plans/closure/cross-agent-skills-compatibility/002-status.md` | none |
+| M003 | closed | `plans/implementation/cross-agent-skills-compatibility/003-package-metadata-and-resources.md` | `plans/closure/cross-agent-skills-compatibility/003-status.md` | none |
+| M004 | closed | `plans/implementation/cross-agent-skills-compatibility/004-scoped-discovery-and-inspection.md` | `plans/closure/cross-agent-skills-compatibility/004-status.md` | none |
+| M005 | closed | `plans/implementation/cross-agent-skills-compatibility/005-maintenance-skills-and-validation.md` | `plans/closure/cross-agent-skills-compatibility/005-status.md` | none |
+
+All five milestones are implemented and accepted. Local Linux evidence includes
+the focused parser/registry, snapshot, and TUI suites; workspace Clippy; and
+`scripts/verify.sh quick`. Native Windows/macOS runs and hosted CI were not
+available for this branch. No downstream milestone remains gated on this line.

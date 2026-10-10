@@ -1,6 +1,6 @@
 # Cross-Agent Skill Compatibility Milestone 001 — Truthful activation and portable validation contract
 
-Status: ready for handoff
+Status: implemented; closed (`plans/closure/cross-agent-skills-compatibility/001-status.md`)
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09; rebase/re-audit at execution)
 
 Source roadmap: `plans/subsystems/cross-agent-skills-compatibility-roadmap.md` — M001.

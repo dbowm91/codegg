@@ -1,6 +1,6 @@
 # Cross-Agent Skill Compatibility Milestone 005 — Codegg maintenance skills and conformance validation
 
-Status: blocked (hard prerequisite: prior milestone closure)
+Status: implemented; closed (`plans/closure/cross-agent-skills-compatibility/005-status.md`)
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09; re-audit before execution)
 Source roadmap: `plans/subsystems/cross-agent-skills-compatibility-roadmap.md`, M005
 Long-term references: `plans/000-long-term-specification.md#12-repository-asset-and-harness-interoperability`, `plans/001-terminology-and-domain-model.md`, `plans/003-planning-process.md`
