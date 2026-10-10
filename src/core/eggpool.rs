@@ -3381,7 +3381,7 @@ mod tests {
         server.join().expect("fake server joins");
 
         assert_eq!(result.connection.provider_kind, "openai");
-        assert_eq!(result.connection.endpoint, format!("{host}/v1"));
+        assert_eq!(result.connection.endpoint, format!("{host}/"));
         assert_eq!(result.models.len(), 3);
         assert_eq!(result.connection.model_count, 3);
         assert!(!result.catalog_revision.is_empty());
