@@ -44,6 +44,7 @@ pub mod semantic_router;
 mod snapshot_capture;
 pub mod specialized_runtime;
 pub mod task_tool_runtime;
+pub mod title;
 mod tool_batch;
 mod tool_inspect;
 pub mod tool_program_recovery;

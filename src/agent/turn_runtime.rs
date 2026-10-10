@@ -712,6 +712,15 @@ impl TurnRuntime for DefaultTurnRuntime {
         let system = compiled_prompt.text.clone();
 
         // ── Agent loop construction ──────────────────────────────────
+        // Title-agent auto-naming handles: clone the one-shot inputs
+        // before they move into the loop. The background title task
+        // reuses the turn's own provider/model with the title prompt;
+        // no sub-agent dispatch, no scheduler work.
+        let title_provider = provider.clone_box();
+        let title_pool = pool.clone();
+        let title_user_excerpt = latest_user_question(&messages_dto).unwrap_or_default();
+        let title_is_specialized = selected_agent.name == crate::agent::title::TITLE_AGENT_NAME
+            || selected_agent.runtime_kind == Some(crate::agent::AgentRuntimeKind::Title);
         let agent_loop_input = AgentLoopBuildInput {
             agents,
             provider,
@@ -801,6 +810,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         let event_log_for_spawn = event_log;
         let specialized_prepared_for_spawn = specialized_prepared;
         let run_control_for_spawn = run_control;
+        let title_model = request.model.clone();
         tokio::spawn(async move {
             // A panic inside the agent-loop task must not vanish with the
             // detached JoinHandle: catch it, log it, and surface TurnFailed.
@@ -828,34 +838,70 @@ impl TurnRuntime for DefaultTurnRuntime {
             run_control_for_spawn
                 .unregister_live_turn(&turn_owner, &turn_follow_up_tx)
                 .await;
-            if let Err(e) = result {
-                tracing::error!("Agent loop error: {}", e);
-                event_log_for_spawn
-                    .publish(
-                        Some(session_id_for_spawn.clone()),
-                        Some(turn_id_for_spawn.clone()),
-                        crate::protocol::core::CoreEvent::TurnFailed {
-                            session_id: session_id_for_spawn.clone(),
-                            turn_id: Some(turn_id_for_spawn.clone()),
+            match result {
+                Err(e) => {
+                    tracing::error!("Agent loop error: {}", e);
+                    event_log_for_spawn
+                        .publish(
+                            Some(session_id_for_spawn.clone()),
+                            Some(turn_id_for_spawn.clone()),
+                            crate::protocol::core::CoreEvent::TurnFailed {
+                                session_id: session_id_for_spawn.clone(),
+                                turn_id: Some(turn_id_for_spawn.clone()),
+                                message: format!("Agent error: {}", e),
+                            },
+                        )
+                        .await;
+                    crate::bus::global::GlobalEventBus::publish(
+                        crate::bus::events::AppEvent::Error {
                             message: format!("Agent error: {}", e),
                         },
-                    )
-                    .await;
-                crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::Error {
-                    message: format!("Agent error: {}", e),
-                });
-            } else {
-                event_log_for_spawn
-                    .publish(
-                        Some(session_id_for_spawn.clone()),
-                        Some(turn_id_for_spawn.clone()),
-                        crate::protocol::core::CoreEvent::TurnCompleted {
-                            session_id: session_id_for_spawn.clone(),
-                            turn_id: turn_id_for_spawn.clone(),
-                            stop_reason: "completed".to_string(),
-                        },
-                    )
-                    .await;
+                    );
+                }
+                Ok(events) => {
+                    event_log_for_spawn
+                        .publish(
+                            Some(session_id_for_spawn.clone()),
+                            Some(turn_id_for_spawn.clone()),
+                            crate::protocol::core::CoreEvent::TurnCompleted {
+                                session_id: session_id_for_spawn.clone(),
+                                turn_id: turn_id_for_spawn.clone(),
+                                stop_reason: "completed".to_string(),
+                            },
+                        )
+                        .await;
+                    // Title-agent auto-naming: best-effort background
+                    // title when the session still carries the creation
+                    // default. Never blocks or fails the turn; the
+                    // title helper re-checks the stored title before
+                    // writing so a raced manual rename wins.
+                    if !title_is_specialized {
+                        if let Some(pool) = title_pool {
+                            let terminal =
+                                crate::agent::r#loop::AgentLoop::terminal_output(&events);
+                            let assistant_excerpt: String =
+                                terminal.public_text.chars().take(1000).collect();
+                            if !title_user_excerpt.trim().is_empty()
+                                || !assistant_excerpt.trim().is_empty()
+                            {
+                                let session_id = session_id_for_spawn.clone();
+                                let event_log = event_log_for_spawn.clone();
+                                tokio::spawn(async move {
+                                    crate::agent::title::maybe_auto_title_session(
+                                        pool,
+                                        session_id,
+                                        title_provider,
+                                        title_model,
+                                        title_user_excerpt,
+                                        assistant_excerpt,
+                                        Some(event_log),
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
+                    }
+                }
             }
         });
 
