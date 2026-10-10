@@ -111,6 +111,7 @@ impl fmt::Display for CommandCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinSlashAction {
     Reload,
+    Skills,
     Exit,
     Help,
     Tree,
@@ -539,6 +540,8 @@ impl CommandRegistry {
             Command::new("/reload", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Reload))
                 .with_aliases(&["reload", "/skills-refresh", "/agents-refresh"])
                 .with_description("Refresh project runtime assets (/reload skills|agents)"),
+            Command::new("/skills", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Skills))
+                .with_description("Inspect effective skills and shadowed alternatives (/skills [name])"),
             Command::new("/variants", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Variants))
                 .with_description("Switch model variant"),
             Command::new("/agents", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Agents))
@@ -1122,7 +1125,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 153);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 154);
     }
 
     #[test]

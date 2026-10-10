@@ -124,6 +124,6 @@ that adds guidance.
 
 - `architecture/overview.md` — module map and the `## Verified counts` table
 - `architecture/testing.md` — the test taxonomy referenced by the guard commands
-- `.skills/architecture-review/SKILL.md` — the batch process for auditing
+- `.opencode/skills/architecture-review/SKILL.md` — the batch process for auditing
   `architecture/` against source
 - `AGENTS.md` — the agent-facing index this skill helps keep honest

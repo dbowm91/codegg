@@ -11,6 +11,62 @@ fn test_config() -> AssetDiscoveryConfig {
 }
 
 #[test]
+fn supported_foreign_project_roots_are_discovered() {
+    let dir = TempDir::new().unwrap();
+    for (root, name) in [
+        (".pi/skills", "pi-skill"),
+        (".cursor/skills", "cursor-skill"),
+        (".gemini/skills", "gemini-skill"),
+        (".github/skills", "copilot-skill"),
+        (".cline/skills", "cline-skill"),
+        (".roo/skills", "roo-skill"),
+        (".factory/skills", "factory-skill"),
+    ] {
+        let package = dir.path().join(root).join(name);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test package\n---\nBody"),
+        )
+        .unwrap();
+    }
+    let registry = AssetRegistry::build(&test_config(), dir.path(), &[]);
+    assert!(registry.get("cursor-skill").is_some());
+    assert!(registry.get("gemini-skill").is_some());
+    assert!(registry.get("copilot-skill").is_some());
+    assert!(registry.get("pi-skill").is_some());
+    assert!(registry.get("cline-skill").is_some());
+    assert!(registry.get("roo-skill").is_some());
+    assert!(registry.get("factory-skill").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_source_aliases_are_scanned_once_with_stable_precedence() {
+    let dir = TempDir::new().unwrap();
+    let opencode = dir.path().join(".opencode/skills");
+    fs::create_dir_all(opencode.join("shared")).unwrap();
+    fs::write(
+        opencode.join("shared/SKILL.md"),
+        "---\nname: shared\ndescription: shared alias\n---\nBody",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&opencode, dir.path().join(".agents/skills")).unwrap();
+
+    let registry = AssetRegistry::build(&test_config(), dir.path(), &[]);
+    let skill = registry.get("shared").unwrap();
+    assert_eq!(skill.source_kind, SourceKind::AgentsProject);
+    let matching = registry
+        .sources
+        .iter()
+        .filter(|source| source.canonical_path == opencode.canonicalize().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(matching[0].kind, SourceKind::AgentsProject);
+    assert_eq!(matching[0].alias_paths.len(), 1);
+}
+
+#[test]
 fn discovery_all_project_locations() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
@@ -443,13 +499,9 @@ fn resource_handle_rejects_symlink_escape() {
 
     let registry = AssetRegistry::build(&test_config(), root, &[]);
     let skill = registry.get("link-skill").unwrap();
-    assert!(skill
-        .resources
-        .iter()
-        .any(|resource| resource.name == "escape.txt"));
     assert!(matches!(
         skill.resource_handle("escape.txt", ResourceReadLimits::new(64, 64)),
-        Err(ResourceError::SymlinkEscape { .. })
+        Err(ResourceError::NotFound { .. })
     ));
 }
 
@@ -496,6 +548,71 @@ fn discovery_does_not_read_resource_bodies_and_text_rejects_malformed_utf8() {
         handle.read_text(),
         Err(ResourceError::InvalidUtf8 { .. })
     ));
+}
+
+#[test]
+fn nested_package_resources_are_inventoried_and_read_lazily() {
+    let dir = TempDir::new().unwrap();
+    let skill_dir = dir.path().join(".agents/skills/nested");
+    fs::create_dir_all(skill_dir.join("references/api")).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: nested\ndescription: nested resources\n---\nBody",
+    )
+    .unwrap();
+    fs::write(skill_dir.join("references/api/guide.md"), "API reference").unwrap();
+
+    let registry = AssetRegistry::build(&test_config(), dir.path(), &[]);
+    let skill = registry.get("nested").unwrap();
+    assert!(skill
+        .resources
+        .iter()
+        .any(|resource| { resource.relative_path == "references/api/guide.md" }));
+    let body = skill
+        .resource_handle("references/api/guide.md", ResourceReadLimits::default())
+        .unwrap()
+        .read_text()
+        .unwrap();
+    assert_eq!(body, "API reference");
+}
+
+#[test]
+fn portable_unknown_metadata_is_preserved_as_inert_data() {
+    let dir = TempDir::new().unwrap();
+    let package = dir.path().join(".agents/skills/metadata-skill");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("SKILL.md"),
+        "---\nname: metadata-skill\ndescription: metadata fixture\nlicense: MIT\ncustom-field: inert-value\nmetadata:\n  source: portable\n---\nBody",
+    )
+    .unwrap();
+    let registry = AssetRegistry::build(&test_config(), dir.path(), &[]);
+    let skill = registry.get("metadata-skill").unwrap();
+    assert_eq!(
+        skill.metadata.get("custom-field").and_then(|v| v.as_str()),
+        Some("inert-value")
+    );
+    assert_eq!(
+        skill.metadata.get("source").and_then(|v| v.as_str()),
+        Some("portable")
+    );
+}
+
+#[test]
+fn claude_package_name_can_be_derived_from_its_directory() {
+    let dir = TempDir::new().unwrap();
+    let package = dir.path().join(".claude/skills/claude-derived");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("SKILL.md"),
+        "---\ndescription: directory-derived name\n---\nBody",
+    )
+    .unwrap();
+    let registry = AssetRegistry::build(&test_config(), dir.path(), &[]);
+    assert_eq!(
+        registry.get("claude-derived").unwrap().name,
+        "claude-derived"
+    );
 }
 
 #[test]

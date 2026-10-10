@@ -3740,6 +3740,84 @@ impl App {
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
             }
+            B::Skills => {
+                let query = raw_input
+                    .unwrap_or_default()
+                    .trim()
+                    .strip_prefix("/skills")
+                    .unwrap_or_default()
+                    .trim()
+                    .chars()
+                    .take(128)
+                    .collect::<String>();
+                let report = self.agent_state.snapshot.as_deref().map(|snapshot| {
+                    let registry = &snapshot.skills;
+                    let skipped = registry
+                        .diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity == crate::skills::Severity::Error)
+                        .count();
+                    let result = if query.is_empty() {
+                        if registry.effective.is_empty() {
+                            "No effective skills".to_string()
+                        } else {
+                            let mut entries = registry
+                                .effective
+                                .iter()
+                                .take(12)
+                                .map(|skill| {
+                                    format!(
+                                        "{} [{}:{} depth {}] ({} shadowed)",
+                                        skill.name,
+                                        skill.source_kind.directory_name(),
+                                        skill.precedence_rank,
+                                        skill.workspace_depth,
+                                        skill.shadowed_alternatives.len()
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            let remaining = registry.effective.len().saturating_sub(12);
+                            if remaining > 0 {
+                                entries.push_str(&format!(
+                                    "; {remaining} more (inspect with /skills <name>)"
+                                ));
+                            }
+                            entries
+                        }
+                    } else if let Some(skill) = registry.get(&query) {
+                        format!(
+                            "{} — {}; source: {} (rank {}, depth {}); {} resources; shadowed: {}",
+                            skill.name,
+                            skill.description,
+                            skill.source_kind.directory_name(),
+                            skill.precedence_rank,
+                            skill.workspace_depth,
+                            skill.resources.len(),
+                            skill
+                                .shadowed_alternatives
+                                .iter()
+                                .map(|alternative| alternative.source_kind.directory_name())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )
+                    } else {
+                        format!("No effective skill named '{query}'")
+                    };
+                    format!("{result}; {skipped} invalid candidates. Use /reload to refresh.")
+                });
+                if let Some(report) = report {
+                    let bounded: String = report.chars().take(2048).collect();
+                    self.messages_state.toasts.info(&bounded);
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active asset snapshot is available");
+                }
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
             B::Exit => {
                 self.ui_state.running = false;
                 let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
@@ -14793,6 +14871,27 @@ mod enqueue_tui_command_tests {
             .expect("first command fits");
         assert!(!send_tui(&tx, TuiCommand::OpenTreeDialog));
         assert!(rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod skills_command_tests {
+    use super::*;
+
+    #[test]
+    fn skills_command_uses_snapshot_path_and_reports_unavailable_snapshot() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.prompt_state.prompt.set_text("/skills".into());
+        app.dispatch_builtin_command(
+            crate::tui::command::BuiltinSlashAction::Skills,
+            Some("/skills"),
+        );
+        assert!(app
+            .messages_state
+            .toasts
+            .iter()
+            .any(|toast| toast.message.contains("No active asset snapshot")));
+        assert!(app.prompt_state.prompt.get_text().is_empty());
     }
 }
 

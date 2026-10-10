@@ -112,6 +112,9 @@ run_quick() {
     echo "==> python3 scripts/check_eggwork_target_routing.py"
     (cd "$REPO_ROOT" && python3 scripts/check_eggwork_target_routing.py)
 
+    echo "==> python3 scripts/check_first_party_skills.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_first_party_skills.py)
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 

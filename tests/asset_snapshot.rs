@@ -241,7 +241,7 @@ async fn pinned_skill_activation_records_the_captured_digest() {
         3, &snapshot,
     )));
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
-        asset_snapshot: Some(snapshot),
+        asset_snapshot: Some(snapshot.clone()),
         asset_pin: Some(Arc::clone(&pin)),
         ..ToolRegistryOptions::default()
     });
@@ -253,6 +253,10 @@ async fn pinned_skill_activation_records_the_captured_digest() {
         .await
         .unwrap();
     assert!(output.contains("Review body"));
+    let prompt = snapshot.skills.build_system_prompt();
+    assert!(prompt.contains("`skill` tool"));
+    assert!(!prompt.contains("/skill:"));
+    assert!(!prompt.contains("Review body"));
     assert!(pin
         .lock()
         .unwrap()

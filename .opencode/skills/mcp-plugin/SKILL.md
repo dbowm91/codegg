@@ -74,8 +74,8 @@ Docs: `docs/MCP.md` and `docs/PLUGINS.md` are user integration notes;
 ## See Also
 
 - `architecture/mcp.md`, `architecture/plugin.md`, `architecture/search_backend.md`
-- `.skills/provider-auth/SKILL.md` — credential store vs MCP TokenSet
-- `.skills/agent/SKILL.md` — MCP/tool batch boundary in the loop
+- `.opencode/skills/provider-auth/SKILL.md` — credential store vs MCP TokenSet
+- `.opencode/skills/agent/SKILL.md` — MCP/tool batch boundary in the loop
 
 ## Source verification
 

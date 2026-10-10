@@ -99,9 +99,9 @@ cargo test --test tool_program_scenarios  # programmatic tool path through the l
 ## See Also
 
 - `architecture/agent.md` — authoritative contract
-- `.skills/context/SKILL.md` — packer observation, tool-palette policy, volatile-tail
-- `.skills/jobs/SKILL.md` + `.skills/scheduler/SKILL.md` — durable runs and admission
-- `.skills/core/SKILL.md` — turn submission transport
+- `.opencode/skills/context/SKILL.md` — packer observation, tool-palette policy, volatile-tail
+- `.opencode/skills/jobs/SKILL.md` + `.opencode/skills/scheduler/SKILL.md` — durable runs and admission
+- `.opencode/skills/core/SKILL.md` — turn submission transport
 
 ## Source verification
 

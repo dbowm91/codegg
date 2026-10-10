@@ -1323,7 +1323,7 @@ tui/
 ├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (153 built-in)
+├── command.rs              # Slash command registry (154 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats

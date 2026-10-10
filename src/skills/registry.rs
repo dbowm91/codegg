@@ -7,6 +7,8 @@ use super::parser;
 use super::resource::{ResourceError, ResourceHandle, ResourceReadLimits};
 use super::source::{AssetDiscoveryConfig, SourceKind, SourceRoot, SourceSummary};
 
+const MAX_GLOBAL_DISCOVERY_ROOTS: usize = 16;
+
 #[derive(Debug)]
 pub struct AssetRegistry {
     pub effective: Vec<EffectiveSkill>,
@@ -53,6 +55,7 @@ impl AssetRegistry {
                     kind: SourceKind::Plugin,
                     canonical_path: root_path,
                     display_path: path,
+                    workspace_depth: 0,
                     plugin_id: Some(source.plugin_id.clone()),
                 },
                 single_file,
@@ -65,6 +68,16 @@ impl AssetRegistry {
         });
 
         for source_root in &source_roots {
+            if let Some(summary) =
+                source_summaries
+                    .iter_mut()
+                    .find(|summary: &&mut SourceSummary| {
+                        summary.canonical_path == source_root.canonical_path
+                    })
+            {
+                summary.alias_paths.push(source_root.display_path.clone());
+                continue;
+            }
             let (candidates, diagnostics) = discover_in_root(source_root, config, None);
             let discovered = candidates.len()
                 + diagnostics
@@ -79,6 +92,8 @@ impl AssetRegistry {
             source_summaries.push(SourceSummary {
                 kind: source_root.kind,
                 canonical_path: source_root.canonical_path.clone(),
+                alias_paths: Vec::new(),
+                workspace_depth: source_root.workspace_depth,
                 discovered_count: discovered,
                 valid_count: valid,
                 invalid_count: invalid,
@@ -98,6 +113,8 @@ impl AssetRegistry {
             source_summaries.push(SourceSummary {
                 kind: source_root.kind,
                 canonical_path: source_root.canonical_path.clone(),
+                alias_paths: Vec::new(),
+                workspace_depth: source_root.workspace_depth,
                 discovered_count: discovered,
                 valid_count: candidates.len(),
                 invalid_count: diagnostics
@@ -109,6 +126,25 @@ impl AssetRegistry {
             all_diagnostics.extend(diagnostics);
         }
 
+        all_candidates.sort_by(|left, right| {
+            source_precedence_class(left.source_kind)
+                .cmp(&source_precedence_class(right.source_kind))
+                .then_with(|| left.workspace_depth.cmp(&right.workspace_depth))
+                .then_with(|| {
+                    left.source_kind
+                        .precedence_rank()
+                        .cmp(&right.source_kind.precedence_rank())
+                })
+                .then_with(|| left.source_path.cmp(&right.source_path))
+        });
+        let mut physical_packages = std::collections::HashSet::new();
+        all_candidates.retain(|candidate| {
+            candidate
+                .source_path
+                .canonicalize()
+                .map(|path| physical_packages.insert(path))
+                .unwrap_or(true)
+        });
         let resolved = resolve(all_candidates, config);
         all_diagnostics.extend(resolved.diagnostics);
 
@@ -152,7 +188,7 @@ impl AssetRegistry {
         }
         let mut prompt = String::from("## Available Skills\n\n");
         prompt.push_str(
-            "The following skills are available. Use /skill:<name> to activate a specific skill.\n\n",
+            "The following skills are available. Activate one with the `skill` tool using its `name` argument.\n\n",
         );
         for skill in &self.effective {
             prompt.push_str(&format!("- **{}**: {}\n", skill.name, skill.description));
@@ -186,68 +222,52 @@ fn resolve_source_roots(
     project_root: &Path,
     global_roots: &[PathBuf],
 ) -> Vec<SourceRoot> {
+    resolve_source_roots_with_home(config, project_root, global_roots, dirs::home_dir())
+}
+
+fn resolve_source_roots_with_home(
+    config: &AssetDiscoveryConfig,
+    project_root: &Path,
+    global_roots: &[PathBuf],
+    home_dir: Option<PathBuf>,
+) -> Vec<SourceRoot> {
     let mut roots = Vec::new();
 
-    if config.enabled_sources.contains(&SourceKind::CodeGGProject) {
-        let path = project_root.join(".codegg").join("skills");
-        if path.is_dir() {
-            if let Ok(canonical) = path.canonicalize() {
-                roots.push(SourceRoot {
-                    kind: SourceKind::CodeGGProject,
-                    display_path: path,
-                    canonical_path: canonical,
-                    plugin_id: None,
-                });
+    let project_sources = [
+        (SourceKind::CodeGGProject, ".codegg/skills"),
+        (SourceKind::AgentsProject, ".agents/skills"),
+        (SourceKind::OpenCodeProject, ".opencode/skills"),
+        (SourceKind::PiProject, ".pi/skills"),
+        (SourceKind::CursorProject, ".cursor/skills"),
+        (SourceKind::GeminiProject, ".gemini/skills"),
+        (SourceKind::CopilotProject, ".github/skills"),
+        (SourceKind::ClineProject, ".cline/skills"),
+        (SourceKind::ClineProject, ".clinerules/skills"),
+        (SourceKind::RooProject, ".roo/skills"),
+        (SourceKind::FactoryProject, ".factory/skills"),
+        (SourceKind::ClaudeProject, ".claude/skills"),
+    ];
+    for (scope, depth) in project_scope_roots(project_root) {
+        for (kind, relative) in project_sources {
+            if !config.enabled_sources.contains(&kind) {
+                continue;
+            }
+            let path = scope.join(relative);
+            if path.is_dir() {
+                if let Ok(canonical) = path.canonicalize() {
+                    roots.push(SourceRoot {
+                        kind,
+                        display_path: path,
+                        canonical_path: canonical,
+                        workspace_depth: depth,
+                        plugin_id: None,
+                    });
+                }
             }
         }
     }
 
-    if config.enabled_sources.contains(&SourceKind::AgentsProject) {
-        let path = project_root.join(".agents").join("skills");
-        if path.is_dir() {
-            if let Ok(canonical) = path.canonicalize() {
-                roots.push(SourceRoot {
-                    kind: SourceKind::AgentsProject,
-                    display_path: path,
-                    canonical_path: canonical,
-                    plugin_id: None,
-                });
-            }
-        }
-    }
-
-    if config
-        .enabled_sources
-        .contains(&SourceKind::OpenCodeProject)
-    {
-        let path = project_root.join(".opencode").join("skills");
-        if path.is_dir() {
-            if let Ok(canonical) = path.canonicalize() {
-                roots.push(SourceRoot {
-                    kind: SourceKind::OpenCodeProject,
-                    display_path: path,
-                    canonical_path: canonical,
-                    plugin_id: None,
-                });
-            }
-        }
-    }
-
-    if config.enabled_sources.contains(&SourceKind::ClaudeProject) {
-        let path = project_root.join(".claude").join("skills");
-        if path.is_dir() {
-            if let Ok(canonical) = path.canonicalize() {
-                roots.push(SourceRoot {
-                    kind: SourceKind::ClaudeProject,
-                    display_path: path,
-                    canonical_path: canonical,
-                    plugin_id: None,
-                });
-            }
-        }
-    }
-
-    for global_root in global_roots {
+    for global_root in global_roots.iter().take(MAX_GLOBAL_DISCOVERY_ROOTS) {
         if config.enabled_sources.contains(&SourceKind::CodeGGGlobal) {
             let path = global_root.join("codegg").join("skills");
             if path.is_dir() {
@@ -256,6 +276,7 @@ fn resolve_source_roots(
                         kind: SourceKind::CodeGGGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        workspace_depth: 0,
                         plugin_id: None,
                     });
                 }
@@ -269,6 +290,7 @@ fn resolve_source_roots(
                         kind: SourceKind::AgentsGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        workspace_depth: 0,
                         plugin_id: None,
                     });
                 }
@@ -282,6 +304,7 @@ fn resolve_source_roots(
                         kind: SourceKind::OpenCodeGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        workspace_depth: 0,
                         plugin_id: None,
                     });
                 }
@@ -295,6 +318,60 @@ fn resolve_source_roots(
                         kind: SourceKind::ClaudeGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        workspace_depth: 0,
+                        plugin_id: None,
+                    });
+                }
+            }
+        }
+        for (kind, vendor) in [
+            (SourceKind::ClineGlobal, "cline"),
+            (SourceKind::PiGlobal, "pi"),
+            (SourceKind::RooGlobal, "roo"),
+            (SourceKind::CopilotGlobal, "copilot"),
+            (SourceKind::FactoryGlobal, "factory"),
+        ] {
+            if config.enabled_sources.contains(&kind) {
+                let path = global_root.join(vendor).join("skills");
+                if path.is_dir() {
+                    if let Ok(canonical) = path.canonicalize() {
+                        roots.push(SourceRoot {
+                            kind,
+                            display_path: path,
+                            canonical_path: canonical,
+                            workspace_depth: 0,
+                            plugin_id: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Common user-home locations are explicit candidates, never recursive
+    // scans. Existing config-directory roots above remain compatibility paths.
+    if let Some(home) = home_dir {
+        let portable = [
+            (SourceKind::AgentsGlobal, home.join(".agents/skills")),
+            (SourceKind::ClaudeGlobal, home.join(".claude/skills")),
+            (
+                SourceKind::OpenCodeGlobal,
+                home.join(".config/opencode/skills"),
+            ),
+            (SourceKind::ClineGlobal, home.join(".cline/skills")),
+            (SourceKind::PiGlobal, home.join(".pi/agent/skills")),
+            (SourceKind::RooGlobal, home.join(".roo/skills")),
+            (SourceKind::CopilotGlobal, home.join(".copilot/skills")),
+            (SourceKind::FactoryGlobal, home.join(".factory/skills")),
+        ];
+        for (kind, path) in portable {
+            if config.enabled_sources.contains(&kind) && path.is_dir() {
+                if let Ok(canonical) = path.canonicalize() {
+                    roots.push(SourceRoot {
+                        kind,
+                        display_path: path,
+                        canonical_path: canonical,
+                        workspace_depth: 0,
                         plugin_id: None,
                     });
                 }
@@ -314,6 +391,7 @@ fn resolve_source_roots(
                         kind: SourceKind::Configured,
                         display_path: root.clone(),
                         canonical_path: canonical,
+                        workspace_depth: 0,
                         plugin_id: None,
                     });
                 }
@@ -321,7 +399,51 @@ fn resolve_source_roots(
         }
     }
 
+    roots.sort_by(|left, right| {
+        source_precedence_class(left.kind)
+            .cmp(&source_precedence_class(right.kind))
+            .then_with(|| left.workspace_depth.cmp(&right.workspace_depth))
+            .then_with(|| {
+                left.kind
+                    .precedence_rank()
+                    .cmp(&right.kind.precedence_rank())
+            })
+            .then_with(|| left.canonical_path.cmp(&right.canonical_path))
+    });
     roots
+}
+
+fn project_scope_roots(project_root: &Path) -> Vec<(PathBuf, u8)> {
+    const MAX_ANCESTOR_DEPTH: usize = 8;
+    let mut scopes = vec![(project_root.to_path_buf(), 0)];
+    let mut current = project_root.to_path_buf();
+    for depth in 1..=MAX_ANCESTOR_DEPTH {
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
+        scopes.push((current.clone(), depth as u8));
+        if current.join(".git").exists() {
+            break;
+        }
+    }
+    if !scopes.iter().any(|(path, _)| path.join(".git").exists()) {
+        scopes.truncate(1);
+    }
+    scopes
+}
+
+fn source_precedence_class(kind: SourceKind) -> u8 {
+    if kind.is_project_local() {
+        0
+    } else if kind.is_global() {
+        1
+    } else {
+        2
+    }
 }
 
 fn discover_in_root(
@@ -332,6 +454,7 @@ fn discover_in_root(
     let mut candidates = Vec::new();
     let mut diagnostics = Vec::new();
     let mut skill_count = 0;
+    let mut parsed_targets = std::collections::HashSet::new();
 
     let entries = match std::fs::read_dir(&source_root.canonical_path) {
         Ok(e) => e,
@@ -377,8 +500,16 @@ fn discover_in_root(
                         continue;
                     }
                 }
+                let target = match skill_file.canonicalize() {
+                    Ok(target) => target,
+                    Err(_) => continue,
+                };
+                if !parsed_targets.insert(target) {
+                    continue;
+                }
                 match parser::parse_candidate(&skill_file, source_kind, config) {
                     Ok(mut candidate) => {
+                        candidate.workspace_depth = source_root.workspace_depth;
                         namespace_plugin_candidate(&mut candidate, source_root);
                         candidates.push(candidate);
                         skill_count += 1;
@@ -400,6 +531,13 @@ fn discover_in_root(
                     continue;
                 }
             }
+            let target = match path.canonicalize() {
+                Ok(target) => target,
+                Err(_) => continue,
+            };
+            if !parsed_targets.insert(target) {
+                continue;
+            }
             let compat_kind = if source_kind == SourceKind::CodeGGProject {
                 SourceKind::CodeGGNativeCompat
             } else {
@@ -407,6 +545,7 @@ fn discover_in_root(
             };
             match parser::parse_candidate(&path, compat_kind, config) {
                 Ok(mut candidate) => {
+                    candidate.workspace_depth = source_root.workspace_depth;
                     namespace_plugin_candidate(&mut candidate, source_root);
                     candidates.push(candidate);
                     skill_count += 1;
@@ -481,7 +620,17 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
     let mut effective = Vec::new();
 
     for (_name, mut group) in by_name {
-        group.sort_by_key(|c| c.source_kind.precedence_rank());
+        group.sort_by(|left, right| {
+            source_precedence_class(left.source_kind)
+                .cmp(&source_precedence_class(right.source_kind))
+                .then_with(|| left.workspace_depth.cmp(&right.workspace_depth))
+                .then_with(|| {
+                    left.source_kind
+                        .precedence_rank()
+                        .cmp(&right.source_kind.precedence_rank())
+                })
+                .then_with(|| left.source_path.cmp(&right.source_path))
+        });
 
         let valid_candidates: Vec<_> = group
             .iter()
@@ -516,6 +665,7 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
             })
             .map(|c| ShadowedAlternative {
                 source_kind: c.source_kind,
+                workspace_depth: c.workspace_depth,
                 source_path: c.source_path.clone(),
                 content_digest: c.content_digest.clone(),
                 diagnostics: c.diagnostics.clone(),
@@ -538,6 +688,7 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
             normalized_name: winner.normalized_name.clone(),
             description: winner.description.clone(),
             source_kind: winner.source_kind,
+            workspace_depth: winner.workspace_depth,
             source_path: winner.source_path.clone(),
             package_root: winner.package_root.clone(),
             content_digest: winner.content_digest.clone(),
@@ -566,6 +717,36 @@ mod tests {
 
     fn test_config() -> AssetDiscoveryConfig {
         AssetDiscoveryConfig::default()
+    }
+
+    #[test]
+    fn explicit_home_candidates_are_discovered_without_process_home_mutation() {
+        let project = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let candidates = [
+            (".agents/skills", SourceKind::AgentsGlobal),
+            (".claude/skills", SourceKind::ClaudeGlobal),
+            (".config/opencode/skills", SourceKind::OpenCodeGlobal),
+            (".cline/skills", SourceKind::ClineGlobal),
+            (".pi/agent/skills", SourceKind::PiGlobal),
+            (".roo/skills", SourceKind::RooGlobal),
+            (".copilot/skills", SourceKind::CopilotGlobal),
+            (".factory/skills", SourceKind::FactoryGlobal),
+        ];
+        for (path, _) in candidates {
+            fs::create_dir_all(home.path().join(path)).unwrap();
+        }
+        let roots = resolve_source_roots_with_home(
+            &test_config(),
+            project.path(),
+            &[],
+            Some(home.path().to_path_buf()),
+        );
+        for (path, kind) in candidates {
+            assert!(roots.iter().any(|root| {
+                root.kind == kind && root.canonical_path == home.path().join(path)
+            }));
+        }
     }
 
     /// `skills.paths` entries are skills directories themselves, so the
@@ -930,5 +1111,82 @@ mod tests {
         let registry = AssetRegistry::build(&config, dir.path(), &[]);
         let body = registry.activate("act").unwrap();
         assert!(body.contains("Body content here"));
+    }
+
+    #[test]
+    fn ancestor_scopes_are_bounded_and_nearer_scopes_win() {
+        let dir = TempDir::new().unwrap();
+        let outside = dir.path().join("outside");
+        let repo = outside.join("repo");
+        let project = repo.join("packages/app");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let write_skill = |root: &Path, name: &str, description: &str| {
+            let skill = root.join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nBody"),
+            )
+            .unwrap();
+        };
+        let parent_root = repo.join(".codegg/skills");
+        write_skill(&parent_root, "winner", "Parent version");
+        write_skill(&parent_root, "parent-only", "Inherited from repo");
+        write_skill(
+            &outside.join(".codegg/skills"),
+            "outside",
+            "Outside git root",
+        );
+        write_skill(
+            &repo.join("packages/sibling/.agents/skills"),
+            "sibling",
+            "Sibling",
+        );
+        let child_root = project.join(".agents/skills");
+        write_skill(&child_root, "winner", "Nearest version");
+
+        let registry = AssetRegistry::build(&test_config(), &project, &[]);
+        let winner = registry.get("winner").unwrap();
+        assert_eq!(winner.description, "Nearest version");
+        assert_eq!(winner.workspace_depth, 0);
+        assert_eq!(registry.get("parent-only").unwrap().workspace_depth, 2);
+        assert!(registry.get("sibling").is_none());
+        assert!(registry.get("outside").is_none());
+    }
+
+    #[test]
+    fn ancestor_discovery_is_disabled_without_git_root() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("parent");
+        let project = parent.join("child");
+        fs::create_dir_all(&project).unwrap();
+        let skill = parent.join(".codegg/skills/inherited");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: inherited\ndescription: Parent skill\n---\nBody",
+        )
+        .unwrap();
+        let registry = AssetRegistry::build(&test_config(), &project, &[]);
+        assert!(registry.get("inherited").is_none());
+    }
+
+    #[test]
+    fn worktree_gitfile_marks_the_ancestor_boundary() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path().join("worktree");
+        let project = repo.join("nested/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(repo.join(".git"), "gitdir: /unused/worktree-metadata").unwrap();
+        let skill = repo.join(".agents/skills/from-worktree");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: from-worktree\ndescription: Worktree ancestor\n---\nBody",
+        )
+        .unwrap();
+        let registry = AssetRegistry::build(&test_config(), &project, &[]);
+        assert_eq!(registry.get("from-worktree").unwrap().workspace_depth, 2);
     }
 }
