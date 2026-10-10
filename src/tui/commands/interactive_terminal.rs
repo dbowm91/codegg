@@ -146,14 +146,14 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
 pub(crate) fn terminal_viewport_size() -> (u16, u16) {
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     (
-        width
-            .saturating_sub(4)
-            .max(1)
-            .min(crate::tui::interactive_terminal::MAX_TERMINAL_SCREEN_COLS),
-        height
-            .saturating_sub(12)
-            .max(1)
-            .min(crate::tui::interactive_terminal::MAX_TERMINAL_SCREEN_ROWS),
+        width.saturating_sub(4).clamp(
+            1,
+            crate::tui::interactive_terminal::MAX_TERMINAL_SCREEN_COLS,
+        ),
+        height.saturating_sub(12).clamp(
+            1,
+            crate::tui::interactive_terminal::MAX_TERMINAL_SCREEN_ROWS,
+        ),
     )
 }
 

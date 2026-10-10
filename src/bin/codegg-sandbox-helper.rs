@@ -22,7 +22,7 @@ use codegg::security::sandbox::{
 };
 #[cfg(unix)]
 use std::env;
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(unix)]
 use std::fs::{self, File};

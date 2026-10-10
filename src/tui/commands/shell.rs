@@ -752,40 +752,6 @@ fn stage_remote_shell_projection(app: &mut app::App, text: String) -> bool {
     true
 }
 
-#[cfg(test)]
-mod promotion_tests {
-    use super::project_for_model;
-
-    #[test]
-    fn human_promotion_redacts_credentials_before_context_insertion() {
-        let projected = project_for_model(
-            "command output: Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
-        )
-        .unwrap();
-        assert!(projected.contains("[REDACTED:bearer-token]"));
-        assert!(!projected.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
-    }
-
-    #[test]
-    fn human_promotion_is_bounded() {
-        let projected = project_for_model(&"x".repeat(64 * 1024)).unwrap();
-        assert!(projected.len() <= 32 * 1024);
-        assert!(projected.ends_with("[human-shell promotion truncated]"));
-    }
-
-    #[test]
-    fn human_promotion_redacts_secret_straddling_model_limit() {
-        let secret = "abcdefghijklmnopqrstuvwxyz0123456789";
-        let text = format!(
-            "{} Authorization: Bearer {} trailing",
-            "x".repeat(32 * 1024 - 40),
-            secret
-        );
-        let projected = project_for_model(&text).unwrap();
-        assert!(!projected.contains(secret));
-    }
-}
-
 pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {
     use crate::shell::types::ShellCommandId;
 
@@ -1207,5 +1173,39 @@ pub(crate) fn handle_shell_expand(
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod promotion_tests {
+    use super::project_for_model;
+
+    #[test]
+    fn human_promotion_redacts_credentials_before_context_insertion() {
+        let projected = project_for_model(
+            "command output: Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+        )
+        .unwrap();
+        assert!(projected.contains("[REDACTED:bearer-token]"));
+        assert!(!projected.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
+    }
+
+    #[test]
+    fn human_promotion_is_bounded() {
+        let projected = project_for_model(&"x".repeat(64 * 1024)).unwrap();
+        assert!(projected.len() <= 32 * 1024);
+        assert!(projected.ends_with("[human-shell promotion truncated]"));
+    }
+
+    #[test]
+    fn human_promotion_redacts_secret_straddling_model_limit() {
+        let secret = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let text = format!(
+            "{} Authorization: Bearer {} trailing",
+            "x".repeat(32 * 1024 - 40),
+            secret
+        );
+        let projected = project_for_model(&text).unwrap();
+        assert!(!projected.contains(secret));
     }
 }
