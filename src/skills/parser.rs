@@ -134,7 +134,14 @@ pub fn parse_candidate(
             } else {
                 raw_content.clone()
             };
-            let parsed = validate_portable_document(&portable_input, config)?;
+            let parsed = validate_portable_document_inner(
+                &portable_input,
+                config,
+                matches!(
+                    source_kind,
+                    SourceKind::CodeGGProject | SourceKind::CodeGGNativeCompat
+                ),
+            )?;
             diagnostics.extend(parsed.diagnostics.clone());
             (parsed.name, parsed.description, parsed.metadata)
         }
@@ -208,6 +215,14 @@ pub fn validate_portable_document(
     source: &str,
     config: &AssetDiscoveryConfig,
 ) -> Result<ValidatedSkillDocument, Diagnostic> {
+    validate_portable_document_inner(source, config, false)
+}
+
+fn validate_portable_document_inner(
+    source: &str,
+    config: &AssetDiscoveryConfig,
+    allow_empty_description: bool,
+) -> Result<ValidatedSkillDocument, Diagnostic> {
     let location = "skill proposal".to_string();
     if source.len() as u64 > config.max_skill_file_size {
         return Err(Diagnostic::error(
@@ -247,6 +262,12 @@ pub fn validate_portable_document(
     let description = fm.description.ok_or_else(|| {
         Diagnostic::error("missing required field: description", location.clone())
     })?;
+    if !allow_empty_description && description.trim().is_empty() {
+        return Err(Diagnostic::error(
+            "portable skill description must not be empty",
+            location.clone(),
+        ));
+    }
     let normalized_name = normalize_name(&name, config)?;
     let mut metadata = fm.metadata;
     let mut diagnostics = Vec::new();
@@ -636,6 +657,28 @@ mod tests {
         let path = dir.path().join("SKILL.md");
         fs::write(&path, source).unwrap();
         assert!(parse_candidate(&path, SourceKind::CodeGGNativeCompat, &config).is_ok());
+    }
+
+    #[test]
+    fn portable_description_must_not_be_empty_but_codegg_remains_compatible() {
+        let config = test_config();
+        assert!(validate_portable_document(
+            "---\nname: example\ndescription: '  '\n---\nBody",
+            &config
+        )
+        .is_err());
+
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("legacy");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_file,
+            "---\nname: legacy\ndescription: ''\nversion: 1\n---\nBody",
+        )
+        .unwrap();
+        let candidate = parse_candidate(&skill_file, SourceKind::CodeGGProject, &config).unwrap();
+        assert!(candidate.description.is_empty());
     }
 
     #[test]
