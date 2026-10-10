@@ -308,7 +308,20 @@ fn read_only_denies_even_the_workspace() {
 fn explicitly_denied_paths_are_unreachable() {
     require_backend!();
     let workspace = tempfile::tempdir().expect("workspace");
-    let secret_dir = tempfile::tempdir().expect("secret dir");
+    // The secret must live outside every tool allowance: `/tmp` (where
+    // `tempdir()` lands by default) is a writable allowance, and under a
+    // deny-first backend like Landlock anything under an allowed root stays
+    // reachable no matter what the deny list says. `$HOME` itself is never
+    // allowed (only named caches/config subdirs are), so a fresh dir there is
+    // unreachable on Landlock and explicitly denied on Seatbelt alike.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .expect("HOME must exist for deny test");
+    let secret_dir = tempfile::Builder::new()
+        .prefix("codegg-deny-test")
+        .tempdir_in(&home)
+        .expect("secret dir");
     let secret = secret_dir.path().join("token");
     std::fs::write(&secret, "s3cret").expect("secret fixture");
 
