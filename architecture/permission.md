@@ -48,7 +48,7 @@ the store. This covers `read`, `glob`, `grep`, `list`, `webfetch`,
 `websearch`, `codesearch`, `repo_search`, `repo_fetch`, `repo_map`,
 `research`, `research_search`, `batch_fetch`, `security_search`,
 `evidence_bundle`, `lsp`, `diff`, `security`, `skill`,
-`tool_search`, `plan_enter`, `plan_exit`, `todowrite`, `todoread`,
+`tool_search`, `context_read`, `plan_enter`, `plan_exit`, `todowrite`, `todoread`,
 `question`.
 
 ### Check Flow
