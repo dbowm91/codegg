@@ -44,11 +44,9 @@ copied into evidence or generated Markdown.
 - `rtk bash scripts/verify.sh quick` — passed, including workspace all-target check and repository guards.
 - `rtk cargo clippy --workspace --all-targets --locked -- -D warnings` — passed after a minor nested-condition cleanup.
 
-The focused test process compiled against the final analyzer source and ran
-locally. The quick pass preceded the lint-only nested-condition cleanup; the
-final source then passed workspace Clippy and is being rerun through the
-focused analyzer test. No hosted or native non-Linux qualification is claimed
-here.
+The final analyzer source passed the focused test suite (9 passed) after the
+containment derivation cleanup and workspace Clippy. `verify.sh quick` also
+passed. No hosted or native non-Linux qualification is claimed here.
 
 ## 5. Invariant review
 

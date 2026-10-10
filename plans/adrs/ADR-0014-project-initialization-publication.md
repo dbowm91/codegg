@@ -1,6 +1,6 @@
 # ADR-0014: Project Initialization Publication Contract
 
-Status: accepted
+Status: superseded
 
 Date: 2026-10-10
 
@@ -139,4 +139,6 @@ refresh with in-flight snapshot pinning.
 
 ## Supersession
 
-None.
+Superseded by `plans/adrs/ADR-0015-project-init-direct-scope-publish.md`, which
+clarifies that the publish request carries the project/workspace IDs required
+for direct-project authorization, in addition to its one-use draft token.

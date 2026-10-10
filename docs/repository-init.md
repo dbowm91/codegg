@@ -19,7 +19,11 @@ is appended; unchanged evidence produces an idempotent no-op. The candidate
 includes the digest of the exact existing file, or records that the file was
 absent, so a later publishing surface can reject stale previews.
 
-The proposal is not active project guidance until it is published by a
-separate explicitly reviewed and authorized operation. See
+Run `/init` in the TUI to inspect the complete candidate and diff. Press `a`
+to publish the root `AGENTS.md`; Esc cancels without writing. Publication is
+bound to the selected project/workspace, requires a fresh one-use daemon token,
+and fails if the original target changed or has unsaved editor changes. A
+successful write refreshes project instructions for future turns; active turns
+keep their existing snapshot. No provider connection is required. See
 [`architecture/agent.md`](../architecture/agent.md#repository-initialization-drafts)
 for the implementation contract.

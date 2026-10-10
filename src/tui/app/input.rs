@@ -131,7 +131,47 @@ impl App {
                 self.handle_connect_send();
             }
             TuiMsg::CloseDialog => {
+                if self.dialog_state.project_init_draft.take().is_some() {
+                    self.messages_state
+                        .toasts
+                        .info("Initialization preview cancelled; no file was written");
+                }
                 self.close_dialog();
+            }
+            TuiMsg::ProjectInitApprove => {
+                let Some(draft) = self.dialog_state.project_init_draft.take() else {
+                    return;
+                };
+                let context = self.project_execution_context();
+                if let Ok(context) = context {
+                    if context.project_id.as_deref() == Some(draft.project_id.as_str())
+                        && context.workspace_id.as_deref() == Some(draft.workspace_id.as_str())
+                    {
+                        if let Some(token) = draft.draft_token {
+                            self.close_dialog();
+                            self.enqueue_tui_command(TuiCommand::ProjectInitPublish {
+                                project_id: draft.project_id,
+                                workspace_id: draft.workspace_id,
+                                draft_token: token,
+                            });
+                        } else {
+                            self.messages_state
+                                .toasts
+                                .info("AGENTS.md already matches the generated proposal");
+                            self.close_dialog();
+                        }
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .error("Active project changed; preview cancelled without writing");
+                        self.close_dialog();
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error("Active project unavailable; preview cancelled without writing");
+                    self.close_dialog();
+                }
             }
             TuiMsg::ConfirmResult(confirmed) => {
                 self.close_dialog();

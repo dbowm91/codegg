@@ -20,6 +20,7 @@ pub(super) mod plugins;
 pub mod policy;
 pub(super) mod presence;
 pub(super) mod project_catalog;
+pub(super) mod project_init;
 pub(super) mod project_picker;
 pub(super) mod prompt;
 pub(super) mod provider_connections;

@@ -27,6 +27,7 @@ pub enum InfoType {
     Team,
     Control,
     ProjectChat,
+    ProjectInit,
 }
 
 #[derive(Clone)]
@@ -77,6 +78,7 @@ impl InfoDialog {
             InfoType::Team => " Team ",
             InfoType::Control => " Control ",
             InfoType::ProjectChat => " Project Chat ",
+            InfoType::ProjectInit => " Initialize Project ",
         }
     }
 
@@ -101,6 +103,7 @@ impl InfoDialog {
             // carries secrets, so sharing the slot is safe.
             InfoType::Control => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
+            InfoType::ProjectInit => DialogType::Team,
         }
     }
 
@@ -135,6 +138,9 @@ impl Component for InfoDialog {
                     self.scroll += 1;
                 }
                 None
+            }
+            crossterm::event::KeyCode::Char('a') if self.info_type == InfoType::ProjectInit => {
+                Some(TuiMsg::ProjectInitApprove)
             }
             crossterm::event::KeyCode::Enter => Some(TuiMsg::CloseDialog),
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
@@ -223,5 +229,21 @@ impl Component for InfoDialog {
 
     fn dialog_type(&self) -> DialogType {
         self.dialog_type_for_info_type()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn project_init_dialog_requires_explicit_approval_and_escape_cancels() {
+        let theme = Arc::new(Theme::default());
+        let mut dialog = InfoDialog::new(theme, InfoType::ProjectInit, vec!["candidate".into()]);
+        let approve = dialog.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(approve, Some(TuiMsg::ProjectInitApprove));
+        let cancel = dialog.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(cancel, Some(TuiMsg::CloseDialog));
     }
 }

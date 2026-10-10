@@ -383,9 +383,7 @@ fn collect_candidates(
                 || nested_allowlisted(&name)
                 || is_workflow_manifest(relative))
         {
-            if path.strip_prefix(root).is_ok() {
-                out.push(path);
-            }
+            out.push(path);
         }
     }
 }

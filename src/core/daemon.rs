@@ -84,6 +84,8 @@ pub struct CoreDaemon {
     pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
     /// Process-local canonical editor document buffers and connection leases.
     pub documents: Arc<crate::document_service::DocumentService>,
+    /// Ephemeral one-use previews for guarded root `AGENTS.md` publication.
+    pub project_init_drafts: Arc<super::project_init::ProjectInitDraftRegistry>,
     /// Project Work Orders M001: daemon-owned project work-order
     /// service. Durable work orders/occurrences/lanes live in the
     /// catalog pool (when present); pool-less daemons fail durable
@@ -531,6 +533,8 @@ impl CoreDaemon {
                 | CoreRequest::DocumentSave { .. }
                 | CoreRequest::DocumentReload { .. }
                 | CoreRequest::DocumentClose { .. }
+                | CoreRequest::ProjectInitDraftGet { .. }
+                | CoreRequest::ProjectInitPublish { .. }
         );
         // Collaboration M001: single-project chat reads/writes deny as
         // not-found so unauthorized callers cannot infer project
@@ -931,7 +935,9 @@ impl CoreDaemon {
             | CoreRequest::DocumentChange { project_id, .. }
             | CoreRequest::DocumentSave { project_id, .. }
             | CoreRequest::DocumentReload { project_id, .. }
-            | CoreRequest::DocumentClose { project_id, .. } => Some(project_id),
+            | CoreRequest::DocumentClose { project_id, .. }
+            | CoreRequest::ProjectInitDraftGet { project_id, .. }
+            | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
             CoreRequest::SessionCreate {
@@ -3467,7 +3473,9 @@ impl CoreDaemon {
             CoreRequest::SessionList { project_id, .. }
             | CoreRequest::ProjectGet { project_id }
             | CoreRequest::ProjectArchive { project_id }
-            | CoreRequest::ProjectRestore { project_id } => {
+            | CoreRequest::ProjectRestore { project_id }
+            | CoreRequest::ProjectInitDraftGet { project_id, .. }
+            | CoreRequest::ProjectInitPublish { project_id, .. } => {
                 codegg_core::identity::ProjectId::parse(project_id).ok()
             }
             CoreRequest::SessionCreate {
@@ -3719,6 +3727,9 @@ impl CoreDaemon {
             }
             super::daemon_family::DaemonRequestFamily::Documents => {
                 Box::pin(self.handle_document_request(payload, trusted_client_id)).await
+            }
+            super::daemon_family::DaemonRequestFamily::ProjectInitialization => {
+                Box::pin(self.handle_project_init_request(payload, trusted_client_id)).await
             }
             // M006-B: LSP read authority only. `LspPreviewApply` is routed to
             // `Goals` above and is not reachable here.
@@ -4277,6 +4288,102 @@ mod tests {
             project.project_id.as_str().to_string(),
             workspace.id.as_str().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn project_init_daemon_draft_requires_publish_and_rejects_stale_target() {
+        let daemon = test_daemon().await;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("README.md"), "# Evidence\n").unwrap();
+        let (project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
+        let draft_response = daemon
+            .handle_request(crate::core::new_request(
+                "project-init-draft-create".into(),
+                CoreRequest::ProjectInitDraftGet {
+                    project_id: project_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::ProjectInitDraft { draft } = draft_response else {
+            panic!("expected project-init draft");
+        };
+        assert!(matches!(
+            draft.operation,
+            crate::protocol::core::ProjectInitOperationDto::Create
+        ));
+        assert!(
+            !root.path().join("AGENTS.md").exists(),
+            "draft generation must not write"
+        );
+        let token = draft.draft_token.expect("create draft is publishable");
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "project-init-publish-create".into(),
+                CoreRequest::ProjectInitPublish {
+                    project_id: project_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    draft_token: token,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            CoreResponse::ProjectInitPublished { .. }
+        ));
+        let published = std::fs::read_to_string(root.path().join("AGENTS.md")).unwrap();
+        assert!(published.contains("codegg:init:start"));
+
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("AGENTS.md"),
+            format!("{published}\nHuman note\n"),
+        )
+        .unwrap();
+        let update_response = daemon
+            .handle_request(crate::core::new_request(
+                "project-init-draft-update".into(),
+                CoreRequest::ProjectInitDraftGet {
+                    project_id: project_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::ProjectInitDraft { draft: update } = update_response else {
+            panic!("expected update draft");
+        };
+        assert!(matches!(
+            update.operation,
+            crate::protocol::core::ProjectInitOperationDto::Update
+        ));
+        assert!(update.candidate_markdown.contains("Human note"));
+        let token = update.draft_token.expect("update draft is publishable");
+        std::fs::write(root.path().join("AGENTS.md"), "competing edit\n").unwrap();
+        let rejected = daemon
+            .handle_request(crate::core::new_request(
+                "project-init-publish-stale".into(),
+                CoreRequest::ProjectInitPublish {
+                    project_id,
+                    workspace_id,
+                    draft_token: token,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(rejected, CoreResponse::Error { code, .. } if code == "project_init_publish_failed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("AGENTS.md")).unwrap(),
+            "competing edit\n"
+        );
     }
 
     #[tokio::test]

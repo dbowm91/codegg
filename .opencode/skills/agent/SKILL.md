@@ -25,10 +25,16 @@ invariants that are easy to violate.
 | Tool dispatch | `src/agent/tool_batch.rs`, `tool_inspect.rs` | Typed permission/MCP/broker batch boundary; pure tool-call inspection (paths, bash/test/git/MCP, timeouts, model-flag gating) |
 | Compaction | `src/context/compaction.rs` (owner), `src/agent/compaction.rs` (compat re-export), `context_runtime.rs`, `context_frame.rs` | Canonical `ContextTracker`/budget engine; turn-lifecycle `compact_if_needed`; post-compaction `ContextFrame` snapshot |
 | Delegated runs | `src/agent/worker.rs`, `run_control.rs`, `run_integration.rs`, `convergence.rs` | `SubAgentPool`/`SubAgentSpawner`, run control (owner/ancestor lineage, `wait` bounded long-poll), convergence tracking |
-| Assets | `src/agent/asset_snapshot*.rs`, `asset_context.rs`, `asset_refresh.rs`, `instructions.rs`, `definition.rs`, `registry.rs`, `file_agents.rs` | Immutable `ProjectAssetSnapshot`, explicit `AssetContext`, single-flight `AssetRefreshCoordinator`, instruction fragments, agent resolution |
+| Assets | `src/agent/asset_snapshot*.rs`, `asset_context.rs`, `asset_refresh.rs`, `instructions.rs`, `bootstrap.rs`, `definition.rs`, `registry.rs`, `file_agents.rs` | Immutable `ProjectAssetSnapshot`, explicit `AssetContext`, single-flight `AssetRefreshCoordinator`, bounded repository-init drafts, instruction fragments, agent resolution |
 | Built-ins | `assets/agents/*.toml` + `assets/prompts/` → `src/agent/builtins/generated.rs` | Generated built-in agents; never edit `generated.rs` directly. Derive the current set from the assets/generator rather than pinning a count here. |
 
 ## Hard Rules
+
+Repository initialization drafts are deterministic, read-only project evidence.
+The `/init` TUI owns preview and explicit approval, while the daemon owns the
+fixed-path AGENTS.md publication and subsequent project-scoped refresh. Never
+make the analyzer write files, run discovered commands, or read global personal
+instructions into the candidate. See `architecture/agent.md`.
 
 1. **`ToolBroker` is the only production tool-call boundary.** Never call
    executors directly from the loop; heavy work goes

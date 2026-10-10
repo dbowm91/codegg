@@ -1,10 +1,10 @@
 # Repository Initialization Milestone 002 — /init Command, Preview, Guarded Publish and Refresh
 
-Status: ready for handoff
-Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09 research; re-audit at execution)
+Status: implemented
+Repository baseline: `a449460` (M001 closed; 2026-10-10)
 Source roadmap: `plans/subsystems/repository-initialization-roadmap.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#12-repository-asset-and-harness-interoperability`; `#27-security-requirements`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`.
-Applicable ADRs: `plans/adrs/ADR-0014-project-initialization-publication.md`; existing typed command/project mutation/asset-refresh architecture.
+Applicable ADRs: `plans/adrs/ADR-0014-project-initialization-publication.md` (superseded); `plans/adrs/ADR-0015-project-init-direct-scope-publish.md`; existing typed command/project mutation/asset-refresh architecture.
 Primary class: capability
 
 ## 1. Objective
@@ -13,7 +13,7 @@ Ship a **real TUI /init** for the selected project that creates or improves its 
 
 ## 2. Why ready
 
-M001 must close with a tested inert proposal and exact original-target digest. Existing TUI typed command registry, project context, daemon authorization and refresh are stable; cross-agent Skills M002 is a soft interface dependency only for optional skill inventory prose, not a hard gate. ADR-0014 selects an ephemeral daemon-owned token contract for this fixed-path mutation.
+M001 closed with a tested inert proposal and exact original-target digest. Existing TUI typed command registry, project context, daemon authorization and refresh are stable; cross-agent Skills M002 is a soft interface dependency only for optional skill inventory prose, not a hard gate. ADR-0014 selected an ephemeral daemon-owned token contract; ADR-0015 records the direct-project locator required by the existing authorization preamble.
 
 ## 3. Current implementation evidence
 
@@ -84,7 +84,7 @@ cargo test --lib tui::commands
 cargo test --lib agent::instructions
 cargo fmt --all -- --check
 scripts/verify.sh quick
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ~~~
 
 Add actual /init TUI/core integration targets at implementation; if core DTO/dispatched matches are modified compile relevant server feature (`cargo check --features server`) and test transport compatibility. Record executed commands/results in closure, not assumed green.

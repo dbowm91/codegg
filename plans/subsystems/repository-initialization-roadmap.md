@@ -1,6 +1,6 @@
 # Repository Initialization (/init) Roadmap
 
-Status: active; M001 closed, M002 ready
+Status: closing; M001 closed, M002 closing
 
 Research baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09)
 
@@ -11,10 +11,10 @@ Long-term references:
 - `plans/001-terminology-and-domain-model.md` (project/workspace identity)
 - `plans/003-planning-process.md`
 
-Related lines: Runtime Assets M002–M004 (explicit project instructions/snapshot/refresh); TUI Command Registry M010 (`plans/closure/tui-project-sessions/010-status.md`); typed CoreClient, authorization, file mutation, and scheduler domains. ADR-0014 defines the initialization-specific daemon draft/publish seam because the existing document editor cannot create an absent target safely.
+Related lines: Runtime Assets M002–M004 (explicit project instructions/snapshot/refresh); TUI Command Registry M010 (`plans/closure/tui-project-sessions/010-status.md`); typed CoreClient, authorization, file mutation, and scheduler domains. ADR-0014 defines the draft/publish seam; ADR-0015 supersedes its token-only publish request detail because direct-project authorization requires explicit scope locators.
 
 Related ADRs:
-- `plans/adrs/ADR-0014-project-initialization-publication.md`
+- `plans/adrs/ADR-0015-project-init-direct-scope-publish.md` (supersedes ADR-0014's token-only request detail)
 
 External reference behaviors:
 - OpenCode `/init` analyzes the repository and generates/updates `AGENTS.md`: https://docs.opencode.ai/docs/rules/
@@ -87,4 +87,4 @@ An actual user can invoke `/init` on the selected project, inspect accurate boun
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/repository-initialization/001-bounded-evidence-and-draft.md` | `plans/closure/repository-initialization/001-status.md` | None |
-| M002 | ready | `plans/implementation/repository-initialization/002-init-command-preview-publish-refresh.md` | future `plans/closure/repository-initialization/002-status.md` | M001 closed; ADR-0014 accepted |
+| M002 | closing | `plans/implementation/repository-initialization/002-init-command-preview-publish-refresh.md` | `plans/closure/repository-initialization/002-status.md` | M001 closed; ADR-0015 accepted |

@@ -7,6 +7,7 @@
 //! of presentation-independent state needed by dialog workflows.
 
 pub struct DialogState {
+    pub project_init_draft: Option<crate::protocol::core::ProjectInitDraftDto>,
     // Transitional seeds for stateful dialogs whose async reducers are being
     // moved to FocusManager-owned instances. They are not render/input
     // authorities; all mounted components live in FocusManager.

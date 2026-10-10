@@ -738,6 +738,7 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
                 session_dialog: SessionDialog::new(Arc::clone(&theme)),
@@ -1255,6 +1256,7 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
                 session_dialog: SessionDialog::new(Arc::clone(&theme)),
@@ -3734,6 +3736,13 @@ impl App {
     ) {
         use crate::tui::command::BuiltinSlashAction as B;
         match action {
+            B::ProjectInit => {
+                self.dialog_state.project_init_draft = None;
+                self.enqueue_tui_command(TuiCommand::ProjectInitDraft);
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
             B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
                 self.ui_state.command_mode = false;

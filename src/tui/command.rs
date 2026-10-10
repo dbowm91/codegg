@@ -110,6 +110,7 @@ impl fmt::Display for CommandCategory {
 /// behavior by comparing a raw command name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinSlashAction {
+    ProjectInit,
     Reload,
     Skills,
     Exit,
@@ -478,6 +479,8 @@ impl CommandRegistry {
 
     fn built_in_commands() -> Vec<Command> {
         vec![
+            Command::new("/init", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ProjectInit))
+                .with_description("Preview and initialize root AGENTS.md for this project"),
             Command::new("/connect", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Connect))
                 .with_description("Connect provider"),
             Command::new("/connections", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Connections))
@@ -1125,7 +1128,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 154);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 155);
     }
 
     #[test]
@@ -1277,7 +1280,9 @@ mod tests {
     fn all_builtin_variants() -> Vec<BuiltinSlashAction> {
         use BuiltinSlashAction as B;
         vec![
+            B::ProjectInit,
             B::Reload,
+            B::Skills,
             B::Exit,
             B::Help,
             B::Tree,

@@ -234,6 +234,14 @@ outside that section is preserved. The draft carries the observed target
 digest, or an absent marker, for a later guarded publication step. Analysis
 itself has no filesystem write, provider, or network behavior.
 
+The TUI `/init` command requests that proposal through the authenticated core
+client and shows the full candidate, diff, and evidence in a review dialog.
+The user must press `a` to publish. `core::daemon_project_init` accepts only a
+one-use, client/project/workspace-bound draft token and writes the fixed root
+`AGENTS.md` target after digest, file-type, workspace, and editor-dirty checks.
+The successful publication is audited as a file mutation and triggers a
+project-scoped asset refresh; existing turn snapshots remain pinned.
+
 ### Durable Edit Checkpoints
 
 `ToolBatchExecutor` (`src/agent/tool_batch.rs`) is the canonical
