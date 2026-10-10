@@ -14,7 +14,7 @@ Repository baseline reviewed: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
 Implementation commits or pull requests:
 
-- Pending in this working tree; commit SHA will be added after commit.
+- `7e1892a13755b6f6a04e9c7012cf5db1dcaddf4f` — terminal keyboard/VT implementation and closure evidence.
 
 ## 1. Executive finding
 
