@@ -865,12 +865,14 @@ pub fn get_sensitive_paths() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::landlock::landlock_access_for_path;
     use super::*;
 
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_keeps_directory_rights_for_directories() {
-        use landlock::{AccessFs, ABI};
+        use ::landlock::{AccessFs, ABI};
 
         let directory = tempfile::tempdir().expect("directory fixture");
         let access =
@@ -884,7 +886,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_removes_directory_rights_for_regular_files() {
-        use landlock::{AccessFs, ABI};
+        use ::landlock::{AccessFs, ABI};
 
         let file = tempfile::NamedTempFile::new().expect("file fixture");
         let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V1), ABI::V1)
@@ -897,7 +899,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_removes_directory_rights_for_special_files() {
-        use landlock::{Access, AccessFs, ABI};
+        use ::landlock::{Access, AccessFs, ABI};
 
         let path = Path::new("/dev/null");
         if !path.exists() {
@@ -914,7 +916,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_fails_closed_when_path_cannot_be_classified() {
-        use landlock::{AccessFs, ABI};
+        use ::landlock::{AccessFs, ABI};
 
         let path = Path::new("/definitely/missing/codegg-sandbox-path");
         let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V1), ABI::V1)
