@@ -29,6 +29,7 @@ pub enum InfoType {
     ProjectChat,
     /// `/logs`: recent daemon log tail plus the in-memory toast history.
     Logs,
+    ProjectInit,
 }
 
 #[derive(Clone)]
@@ -80,6 +81,7 @@ impl InfoDialog {
             InfoType::Control => " Control ",
             InfoType::ProjectChat => " Project Chat ",
             InfoType::Logs => " Logs ",
+            InfoType::ProjectInit => " Initialize Project ",
         }
     }
 
@@ -105,6 +107,7 @@ impl InfoDialog {
             InfoType::Control => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
             InfoType::Logs => DialogType::Logs,
+            InfoType::ProjectInit => DialogType::Team,
         }
     }
 
@@ -155,6 +158,9 @@ impl Component for InfoDialog {
                 // the `usize::MAX` sentinel from wrapping on repeat.
                 self.scroll = self.scroll.saturating_add(1);
                 None
+            }
+            crossterm::event::KeyCode::Char('a') if self.info_type == InfoType::ProjectInit => {
+                Some(TuiMsg::ProjectInitApprove)
             }
             crossterm::event::KeyCode::Enter => Some(TuiMsg::CloseDialog),
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
@@ -255,6 +261,7 @@ impl Component for InfoDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -329,5 +336,15 @@ mod tests {
             rows.concat().contains("last"),
             "scrolled view must end at the last logical line"
         );
+    }
+
+    #[test]
+    fn project_init_dialog_requires_explicit_approval_and_escape_cancels() {
+        let theme = Arc::new(Theme::default());
+        let mut dialog = InfoDialog::new(theme, InfoType::ProjectInit, vec!["candidate".into()]);
+        let approve = dialog.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(approve, Some(TuiMsg::ProjectInitApprove));
+        let cancel = dialog.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(cancel, Some(TuiMsg::CloseDialog));
     }
 }

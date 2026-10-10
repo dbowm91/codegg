@@ -273,13 +273,13 @@ Counts below were re-measured against the current tree on **2026-10-06**.
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 46 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 58 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 232 (209 struct + 23 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 147 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 234 (211 struct + 23 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 149 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 87 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 226 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 228 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 17 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 153 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 155 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 27 (28 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |

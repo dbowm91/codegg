@@ -100,12 +100,16 @@ pub struct EventEnvelope<T> {
 }
 ```
 
-### CoreRequest (`core.rs:1806`)
+### CoreRequest (`core.rs:1857`)
 
-Tagged enum with 232 variants. Major groups:
+Tagged enum with 234 variants. Major groups:
 
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
+
+**Project Initialization (2)**: `ProjectInitDraftGet` and
+`ProjectInitPublish`, a bounded preview and one-use-token publication of the
+selected project's root `AGENTS.md`.
 
 **Connection Lifecycle (21)**: `EggpoolConnectionCreate` (temporary
 compatibility adapter), `ProviderConnectionCreate` (canonical
@@ -210,9 +214,9 @@ approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
 `SandboxProfileSet`, `RuntimePolicySet`, `TaskModelPreferenceSet`,
 `ExecutionPolicyGet`), and `WorkOrder*` (22).
 
-### CoreResponse (`core.rs:998`)
+### CoreResponse (`core.rs:1041`)
 
-Tagged enum with 147 variants. Major groups:
+Tagged enum with 149 variants. Major groups:
 
 **Connection Responses**: `EggpoolConnectionCreated` (shared result shape,
 also aliased as `CreateProviderConnectionResult`),
@@ -240,6 +244,10 @@ not a separate protocol.
 **Project Responses**: `ProjectList`, `ProjectGet`, `ProjectRegistered`,
 `ProjectArchived`, `ProjectRestored`, `ProjectHealth`,
 `ProjectCatalogCapabilities`
+
+**Project Initialization Responses**: `ProjectInitDraft` carries the
+bounded candidate, diff, evidence, and diagnostics; `ProjectInitPublished`
+confirms the resulting digest.
 
 **Run Responses**: `RunList`, `RunGet`, `RunArtifactChunk`, `RunRerunAccepted`
 
@@ -558,16 +566,16 @@ status revision changes require an explicit authoritative snapshot request.
 
 ## Source verification
 
-Verified 2026-10-06 against `crates/codegg-protocol/src/lib.rs`,
+Verified 2026-10-10 against `crates/codegg-protocol/src/lib.rs`,
 `core.rs`, `frames.rs`, `tui.rs`, `document.rs`, and `projection/`, plus
 `crates/codegg-core/src/authorization/policy.rs` for the capability split.
 - Confirmed the three wire totals by counting variant declarations, not by
-  estimation: **CoreRequest 232** (209 struct-bodied + 23 unit, `core.rs:1806`
-  through `core.rs:3106`), **CoreResponse 147** (146 struct-bodied plus the
-  unit `Ack`, `core.rs:998` through `core.rs:1767`), **CoreEvent 87**
-  (`core.rs:3135` through `core.rs:3735`), and `TuiMessage` 40 (`tui.rs:19`).
+  estimation: **CoreRequest 234** (211 struct-bodied + 23 unit, `core.rs:1857`
+  through `core.rs:3196`), **CoreResponse 149** (148 struct-bodied plus the
+  unit `Ack`, `core.rs:1041` through `core.rs:1822`), **CoreEvent 87**
+  (`core.rs:3199` onward), and `TuiMessage` 40 (`tui.rs:19`).
   An earlier review pass reported 110 / 76 for `CoreResponse` / `CoreEvent`;
-  those numbers were wrong and the doc's 147 / 87 are correct.
+  those earlier estimates were wrong; the current verified totals are 149 / 87.
 - Corrected the CoreRequest group headers against their own listed names:
   Connection Lifecycle 20 → 21, Session Lifecycle 20 → 19, and the second
   `Session Lifecycle (2)` group, which lists only `SessionLifecycleGet`,

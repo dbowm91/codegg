@@ -220,10 +220,11 @@ transport from the underlying agent and session logic.
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
 | `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router that delegates each envelope to exactly one family handler. ~6,000 lines (was ~12,000 before M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
-| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 232 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
+| `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 234 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_control` | `handle_control_request` | Active-turn control requests (cancel/steer/permission-question response routing) owned outside the turn handler. |
 | `core::daemon_documents` | `handle_document_request` | Open/close/reload document operations over daemon-owned document state. |
+| `core::daemon_project_init` | `handle_project_init_request` | Bounded `/init` evidence preview and one-use, project-scoped guarded publication of root `AGENTS.md`. |
 | `core::daemon_lsp` | `handle_lsp_request` | LSP status/operations plus diagnostics-store reads. |
 | `core::daemon_team` | `handle_team_request` | Team membership, principal, and device-token administration (team-collaboration M003). |
 | `core::daemon_work_orders` | `handle_work_order_request` | Project work orders, occurrences, sequence lanes, and trigger management. |

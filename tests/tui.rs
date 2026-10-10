@@ -1311,6 +1311,20 @@ fn test_command_palette_visible_count() {
 }
 
 #[test]
+fn skills_inspection_command_is_registered_as_a_read_only_builtin() {
+    use codegg::tui::command::{BuiltinSlashAction, CommandAction};
+    let registry = CommandRegistry::new();
+    let command = registry.find_by_name_or_alias("/skills").unwrap();
+    assert!(matches!(
+        &command.action,
+        CommandAction::Builtin(BuiltinSlashAction::Skills)
+    ));
+    let mut palette = CommandPalette::new_with_registry(&registry);
+    palette.set_query("/skills");
+    assert!(palette.filtered.iter().any(|item| item.name == "/skills"));
+}
+
+#[test]
 fn test_command_palette_switches_active_project_catalog() {
     let root = tempfile::tempdir().unwrap();
     let project_a = root.path().join("a");

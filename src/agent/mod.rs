@@ -15,6 +15,7 @@ pub mod asset_context;
 pub mod asset_refresh;
 pub mod asset_snapshot;
 pub mod asset_snapshot_builder;
+pub mod bootstrap;
 pub mod builtins;
 pub mod compaction;
 pub mod context_frame;

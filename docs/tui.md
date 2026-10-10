@@ -103,6 +103,7 @@ A few commonly used entries:
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
 | `/reload` | Refresh project runtime assets — `/reload skills`, `/reload agents` |
+| `/init` | Review a bounded root `AGENTS.md` proposal; press `a` in the preview to publish |
 | `/exit` | Quit (`quit` and `q` are aliases) |
 
 Registry metadata — domain, scope, source, keywords — exists for palette and

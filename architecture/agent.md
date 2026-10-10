@@ -44,6 +44,7 @@ asset management.
 | `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder` |
 | `src/agent/asset_refresh.rs` | `AssetRefreshCoordinator` — single-flight publication per scope |
 | `src/agent/instructions.rs` | `ProjectInstructionResolver` — bounded instruction fragments |
+| `src/agent/bootstrap.rs` | Read-only bounded repository evidence and deterministic `AGENTS.md` draft proposals; never writes or executes discovered commands |
 | `src/agent/prompt.rs` | `PromptCompiler` — sole production system-prompt assembly |
 | `src/agent/turn_runtime.rs` | `TurnRunInput`, `DefaultTurnRuntime` — daemon turn submission |
 | `src/agent/specialized_runtime.rs` | Host-owned finalization for security-review and research runtimes |
@@ -215,6 +216,31 @@ builds a candidate outside the publication lock, and assigns a generation
 on publish. Failures retain the previous valid snapshot.
 `TurnRunInput::asset_snapshot` pins the published `Arc` for the whole
 turn. Refresh swaps affect subsequent turns only.
+
+### Repository initialization drafts
+
+`agent::bootstrap::analyze_project` accepts an explicit project root and
+returns an ephemeral `InstructionDraft` for that root's `AGENTS.md`. It scans
+a small allowlist of README, manifest, task, workflow, and local instruction
+files under entry, depth, count, byte, and elapsed-time limits. Symlinks and common
+build, vendor, cache, and dependency directories are skipped. Observations
+contain source paths and short facts only; file contents, README prose,
+environment data, and private global instructions are never copied into the
+draft. Discovered commands are described as unverified and never run.
+
+The candidate is deterministic and source-attributed. On an existing root
+`AGENTS.md`, only the delimited CodeGG-managed section is replaced; text
+outside that section is preserved. The draft carries the observed target
+digest, or an absent marker, for a later guarded publication step. Analysis
+itself has no filesystem write, provider, or network behavior.
+
+The TUI `/init` command requests that proposal through the authenticated core
+client and shows the full candidate, diff, and evidence in a review dialog.
+The user must press `a` to publish. `core::daemon_project_init` accepts only a
+one-use, client/project/workspace-bound draft token and writes the fixed root
+`AGENTS.md` target after digest, file-type, workspace, and editor-dirty checks.
+The successful publication is audited as a file mutation and triggers a
+project-scoped asset refresh; existing turn snapshots remain pinned.
 
 ### Durable Edit Checkpoints
 

@@ -10,6 +10,71 @@ fn test_config() -> AssetDiscoveryConfig {
     AssetDiscoveryConfig::default()
 }
 
+fn build_isolated(
+    config: &AssetDiscoveryConfig,
+    project_root: &Path,
+    global_roots: &[std::path::PathBuf],
+) -> AssetRegistry {
+    AssetRegistry::build_with_home(config, project_root, global_roots, None)
+}
+
+#[test]
+fn supported_foreign_project_roots_are_discovered() {
+    let dir = TempDir::new().unwrap();
+    for (root, name) in [
+        (".pi/skills", "pi-skill"),
+        (".cursor/skills", "cursor-skill"),
+        (".gemini/skills", "gemini-skill"),
+        (".github/skills", "copilot-skill"),
+        (".cline/skills", "cline-skill"),
+        (".roo/skills", "roo-skill"),
+        (".factory/skills", "factory-skill"),
+    ] {
+        let package = dir.path().join(root).join(name);
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test package\n---\nBody"),
+        )
+        .unwrap();
+    }
+    let registry = build_isolated(&test_config(), dir.path(), &[]);
+    assert!(registry.get("cursor-skill").is_some());
+    assert!(registry.get("gemini-skill").is_some());
+    assert!(registry.get("copilot-skill").is_some());
+    assert!(registry.get("pi-skill").is_some());
+    assert!(registry.get("cline-skill").is_some());
+    assert!(registry.get("roo-skill").is_some());
+    assert!(registry.get("factory-skill").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_source_aliases_are_scanned_once_with_stable_precedence() {
+    let dir = TempDir::new().unwrap();
+    let opencode = dir.path().join(".opencode/skills");
+    fs::create_dir_all(opencode.join("shared")).unwrap();
+    fs::write(
+        opencode.join("shared/SKILL.md"),
+        "---\nname: shared\ndescription: shared alias\n---\nBody",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join(".agents")).unwrap();
+    std::os::unix::fs::symlink(&opencode, dir.path().join(".agents/skills")).unwrap();
+
+    let registry = build_isolated(&test_config(), dir.path(), &[]);
+    let skill = registry.get("shared").unwrap();
+    assert_eq!(skill.source_kind, SourceKind::AgentsProject);
+    let matching = registry
+        .sources
+        .iter()
+        .filter(|source| source.canonical_path == opencode.canonicalize().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(matching[0].kind, SourceKind::AgentsProject);
+    assert_eq!(matching[0].alias_paths.len(), 1);
+}
+
 #[test]
 fn discovery_all_project_locations() {
     let dir = TempDir::new().unwrap();
@@ -49,7 +114,7 @@ fn discovery_all_project_locations() {
     }
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 4);
     for skill in &registry.effective {
         assert!(!skill.body.is_empty());
@@ -96,7 +161,7 @@ fn discovery_all_global_locations() {
     }
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[global_root]);
+    let registry = build_isolated(&config, root, &[global_root]);
     assert_eq!(registry.effective.len(), 4);
 }
 
@@ -137,7 +202,7 @@ fn several_sources_one_repository() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 4);
     let names: Vec<&str> = registry
         .effective
@@ -167,7 +232,7 @@ fn symlink_escape_rejected() {
     std::os::unix::fs::symlink(outside.join("SKILL.md"), skills_dir.join("SKILL.md")).unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert!(
         registry.effective.is_empty(),
         "symlink escaping root should be rejected"
@@ -188,7 +253,7 @@ fn native_compat_direct_md_loads() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     assert_eq!(
         registry.effective[0].source_kind,
@@ -212,7 +277,7 @@ fn native_compat_package_layout_loads() {
     fs::write(skill_dir.join("data.txt"), "some data").unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     let skill = &registry.effective[0];
     assert_eq!(skill.resources.len(), 2);
@@ -226,7 +291,7 @@ fn absent_foreign_directories_harmless() {
     let root = dir.path();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert!(registry.effective.is_empty());
     assert!(registry.diagnostics.is_empty());
 }
@@ -255,8 +320,8 @@ fn duplicate_behavior_stable() {
 
     let config = test_config();
 
-    let r1 = AssetRegistry::build(&config, root, std::slice::from_ref(&global_root));
-    let r2 = AssetRegistry::build(&config, root, &[global_root]);
+    let r1 = build_isolated(&config, root, std::slice::from_ref(&global_root));
+    let r2 = build_isolated(&config, root, &[global_root]);
 
     assert_eq!(r1.effective.len(), r2.effective.len());
     assert_eq!(
@@ -280,8 +345,8 @@ fn digest_stability_across_rebuilds() {
     .unwrap();
 
     let config = test_config();
-    let r1 = AssetRegistry::build(&config, root, &[]);
-    let r2 = AssetRegistry::build(&config, root, &[]);
+    let r1 = build_isolated(&config, root, &[]);
+    let r2 = build_isolated(&config, root, &[]);
 
     assert_eq!(
         r1.effective[0].content_digest,
@@ -303,7 +368,7 @@ fn oversized_frontmatter_surfaces_diagnostic() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert!(registry.effective.is_empty() || !registry.diagnostics.is_empty());
 }
 
@@ -320,7 +385,7 @@ fn malformed_yaml_surfaces_diagnostic() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert!(!registry.diagnostics.is_empty());
     assert!(registry.effective.is_empty());
 }
@@ -344,7 +409,7 @@ fn script_files_inventoried_not_executed() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     let skill = &registry.effective[0];
     assert_eq!(skill.resources.len(), 2);
@@ -366,7 +431,7 @@ fn allowed_tools_cannot_grant_permissions() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     let skill = &registry.effective[0];
     assert!(
@@ -397,7 +462,7 @@ fn resource_path_traversal_rejected() {
 
     let mut config = test_config();
     config.max_resources_per_skill = 100;
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     for res in &registry.effective[0].resources {
         assert!(
@@ -441,15 +506,11 @@ fn resource_handle_rejects_symlink_escape() {
     fs::write(&outside, "outside").unwrap();
     std::os::unix::fs::symlink(&outside, skill_dir.join("escape.txt")).unwrap();
 
-    let registry = AssetRegistry::build(&test_config(), root, &[]);
+    let registry = build_isolated(&test_config(), root, &[]);
     let skill = registry.get("link-skill").unwrap();
-    assert!(skill
-        .resources
-        .iter()
-        .any(|resource| resource.name == "escape.txt"));
     assert!(matches!(
         skill.resource_handle("escape.txt", ResourceReadLimits::new(64, 64)),
-        Err(ResourceError::SymlinkEscape { .. })
+        Err(ResourceError::NotFound { .. })
     ));
 }
 
@@ -486,7 +547,7 @@ fn discovery_does_not_read_resource_bodies_and_text_rejects_malformed_utf8() {
     .unwrap();
     fs::write(skill_dir.join("binary.dat"), [0xff, 0xfe, 0xfd]).unwrap();
 
-    let registry = AssetRegistry::build(&test_config(), root, &[]);
+    let registry = build_isolated(&test_config(), root, &[]);
     let skill = registry.get("binary").unwrap();
     assert_eq!(skill.resources.len(), 1);
     let handle = registry
@@ -496,6 +557,71 @@ fn discovery_does_not_read_resource_bodies_and_text_rejects_malformed_utf8() {
         handle.read_text(),
         Err(ResourceError::InvalidUtf8 { .. })
     ));
+}
+
+#[test]
+fn nested_package_resources_are_inventoried_and_read_lazily() {
+    let dir = TempDir::new().unwrap();
+    let skill_dir = dir.path().join(".agents/skills/nested");
+    fs::create_dir_all(skill_dir.join("references/api")).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: nested\ndescription: nested resources\n---\nBody",
+    )
+    .unwrap();
+    fs::write(skill_dir.join("references/api/guide.md"), "API reference").unwrap();
+
+    let registry = build_isolated(&test_config(), dir.path(), &[]);
+    let skill = registry.get("nested").unwrap();
+    assert!(skill
+        .resources
+        .iter()
+        .any(|resource| { resource.relative_path == "references/api/guide.md" }));
+    let body = skill
+        .resource_handle("references/api/guide.md", ResourceReadLimits::default())
+        .unwrap()
+        .read_text()
+        .unwrap();
+    assert_eq!(body, "API reference");
+}
+
+#[test]
+fn portable_unknown_metadata_is_preserved_as_inert_data() {
+    let dir = TempDir::new().unwrap();
+    let package = dir.path().join(".agents/skills/metadata-skill");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("SKILL.md"),
+        "---\nname: metadata-skill\ndescription: metadata fixture\nlicense: MIT\ncustom-field: inert-value\nmetadata:\n  source: portable\n---\nBody",
+    )
+    .unwrap();
+    let registry = build_isolated(&test_config(), dir.path(), &[]);
+    let skill = registry.get("metadata-skill").unwrap();
+    assert_eq!(
+        skill.metadata.get("custom-field").and_then(|v| v.as_str()),
+        Some("inert-value")
+    );
+    assert_eq!(
+        skill.metadata.get("source").and_then(|v| v.as_str()),
+        Some("portable")
+    );
+}
+
+#[test]
+fn claude_package_name_can_be_derived_from_its_directory() {
+    let dir = TempDir::new().unwrap();
+    let package = dir.path().join(".claude/skills/claude-derived");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("SKILL.md"),
+        "---\ndescription: directory-derived name\n---\nBody",
+    )
+    .unwrap();
+    let registry = build_isolated(&test_config(), dir.path(), &[]);
+    assert_eq!(
+        registry.get("claude-derived").unwrap().name,
+        "claude-derived"
+    );
 }
 
 #[test]
@@ -513,7 +639,10 @@ fn skill_index_compat_adapter() {
     let mut index = SkillIndexCompat::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        index.load(root.to_str().unwrap()).await.unwrap();
+        index
+            .load_with_discovery_roots(root.to_str().unwrap(), None, &[])
+            .await
+            .unwrap();
     });
     assert!(index.get("compat").is_some());
     assert_eq!(index.list().len(), 1);
@@ -536,7 +665,7 @@ fn naming_rejects_empty() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert!(registry.effective.is_empty());
     assert!(!registry.diagnostics.is_empty());
 }
@@ -554,7 +683,7 @@ fn naming_rejects_path_separators() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert!(registry.effective.is_empty());
 }
 
@@ -580,8 +709,8 @@ fn concurrent_scans_no_cross_contamination() {
     .unwrap();
 
     let config = test_config();
-    let r1 = AssetRegistry::build(&config, dir1.path(), &[]);
-    let r2 = AssetRegistry::build(&config, dir2.path(), &[]);
+    let r1 = build_isolated(&config, dir1.path(), &[]);
+    let r2 = build_isolated(&config, dir2.path(), &[]);
 
     assert_eq!(r1.effective.len(), 1);
     assert_eq!(r2.effective.len(), 1);
@@ -602,7 +731,7 @@ fn builtin_agents_skills_boundary() {
     .unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     assert_eq!(registry.effective[0].source_kind, SourceKind::CodeGGProject);
 }
@@ -625,7 +754,7 @@ fn source_summary_counts() {
     fs::write(s2.join("SKILL.md"), "---\nname: [{bad\n---\nBody").unwrap();
 
     let config = test_config();
-    let registry = AssetRegistry::build(&config, root, &[]);
+    let registry = build_isolated(&config, root, &[]);
     assert_eq!(registry.effective.len(), 1);
     let summary = registry
         .sources

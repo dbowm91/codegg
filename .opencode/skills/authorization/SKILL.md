@@ -82,6 +82,11 @@ matrix gap will reach CI unnoticed.
 operation, update that table in the same change or `check_authorization_matrix.py`
 will fail.
 
+Repository initialization uses `project_init_draft` (`direct_project`,
+`file.read`) and `project_init_publish` (`direct_project`, `file.modify`). The
+draft token is single-use and bound to the authenticated client and canonical
+project/workspace scope; the publish request contains no path or file content.
+
 ## Testing
 
 The `authorization/` modules carry no inline `#[test]`s — authority behavior is

@@ -52,6 +52,21 @@ pub enum TuiCommand {
     /// Refresh all project runtime assets through the daemon-owned
     /// coordinator. Focused `/reload` aliases use this same variant.
     RefreshAssets,
+    ProjectInitDraft,
+    ProjectInitDraftFinished {
+        draft: Option<crate::protocol::core::ProjectInitDraftDto>,
+        error: Option<String>,
+    },
+    ProjectInitPublish {
+        project_id: String,
+        workspace_id: String,
+        draft_token: String,
+    },
+    ProjectInitPublishFinished {
+        project_id: String,
+        workspace_id: String,
+        error: Option<String>,
+    },
     AssetRefreshFinished {
         report: Option<crate::protocol::core::AssetRefreshReportDto>,
         error: Option<String>,

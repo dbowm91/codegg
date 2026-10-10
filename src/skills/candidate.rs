@@ -19,6 +19,8 @@ pub struct SkillCandidate {
     pub normalized_name: String,
     pub description: String,
     pub source_kind: SourceKind,
+    #[serde(default)]
+    pub workspace_depth: u8,
     pub source_path: PathBuf,
     pub package_root: PathBuf,
     pub content_digest: String,
@@ -35,6 +37,8 @@ pub struct EffectiveSkill {
     pub normalized_name: String,
     pub description: String,
     pub source_kind: SourceKind,
+    #[serde(default)]
+    pub workspace_depth: u8,
     pub source_path: PathBuf,
     pub package_root: PathBuf,
     pub content_digest: String,
@@ -73,6 +77,8 @@ impl EffectiveSkill {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShadowedAlternative {
     pub source_kind: SourceKind,
+    #[serde(default)]
+    pub workspace_depth: u8,
     pub source_path: PathBuf,
     pub content_digest: String,
     pub diagnostics: Vec<Diagnostic>,

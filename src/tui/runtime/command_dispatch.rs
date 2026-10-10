@@ -41,6 +41,9 @@ use super::super::commands::plugins::{
 use super::super::commands::project_catalog::{
     apply_project_catalog_refreshed, start_refresh_project_catalog,
 };
+use super::super::commands::project_init::{
+    start_project_init_draft, start_project_init_publish, start_project_init_refresh,
+};
 #[allow(unused_imports)]
 use super::super::commands::provider_connections::start_connection_lifecycle;
 #[allow(unused_imports)]
@@ -83,6 +86,70 @@ use crate::tui::components::toast::Toast;
 
 pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
     match cmd {
+        TuiCommand::ProjectInitDraft => {
+            start_project_init_draft(app);
+        }
+        TuiCommand::ProjectInitDraftFinished { draft, error } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&error);
+            } else if let Some(draft) = draft {
+                let mut lines = vec![
+                    format!(
+                        "Operation: {:?} {}",
+                        draft.operation, draft.target_relative_path
+                    ),
+                    String::new(),
+                    "Proposed AGENTS.md:".into(),
+                ];
+                lines.extend(draft.candidate_markdown.lines().map(str::to_owned));
+                lines.push(String::new());
+                lines.push("Diff:".into());
+                lines.extend(draft.unified_diff.lines().map(str::to_owned));
+                if !draft.evidence.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Evidence:".into());
+                    lines.extend(draft.evidence.iter().map(|item| {
+                        format!("- [{}] {} — {}", item.confidence, item.source, item.fact)
+                    }));
+                }
+                lines.extend(
+                    draft
+                        .diagnostics
+                        .iter()
+                        .map(|item| format!("Diagnostic: {} — {}", item.source, item.message)),
+                );
+                app.dialog_state.project_init_draft = Some(draft);
+                app.open_info_dialog(
+                    crate::tui::components::dialogs::info::InfoType::ProjectInit,
+                    lines,
+                );
+                if let Some(dialog) =
+                    app.focus_manager
+                        .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
+                {
+                    dialog.set_custom_footer("a: publish   Esc: cancel".into());
+                }
+            }
+        }
+        TuiCommand::ProjectInitPublish {
+            project_id,
+            workspace_id,
+            draft_token,
+        } => {
+            start_project_init_publish(app, project_id, workspace_id, draft_token);
+        }
+        TuiCommand::ProjectInitPublishFinished {
+            project_id,
+            workspace_id,
+            error,
+        } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&error);
+            } else {
+                app.messages_state.toasts.success("AGENTS.md published; refreshing project instructions for future turns (active turns remain pinned)");
+                start_project_init_refresh(app, project_id, workspace_id);
+            }
+        }
         TuiCommand::RefreshAssets => {
             start_refresh_assets(app);
         }

@@ -21,6 +21,12 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 
 **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
 
+This is one-shot command execution through `$SHELL -lc` with managed stdout and
+stderr capture, timeout, and cancellation. The request uses the managed
+processes' default null stdin policy; this feature does not provide a
+persistent interactive shell or PTY. Do not describe those terminal-session
+capabilities as available unless a separate implementation lands.
+
 ## Syntax
 
 | Input | Meaning |

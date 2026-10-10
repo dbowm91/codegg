@@ -133,8 +133,8 @@ env-reachable endpoint override to make a test pass.
 ## See Also
 
 - `architecture/provider.md`, `architecture/auth.md`, `architecture/crypto.md`
-- `.skills/agent/SKILL.md` — per-turn provider object + semantic router bounds
-- `.skills/core/SKILL.md` — provider/model selection helpers on the core facade
+- `.opencode/skills/agent/SKILL.md` — per-turn provider object + semantic router bounds
+- `.opencode/skills/core/SKILL.md` — provider/model selection helpers on the core facade
 
 ## Source verification
 

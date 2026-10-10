@@ -325,7 +325,9 @@ Docs/roadmap reconciliation plus test hardening for the Phase 13-17 surface. No 
   `/revert`, `/research`, `/research-runs`, `/research-open`,
   `/research-show`, `/search`, `/doctor`, `/tool-backends`,
   `/security-review`, `/security-review-show`, `/security-review-cancel`,
-  `/commit`, `/init`, `/skill:*`, `/skills`, plus `/exit` aliases.
+  `/commit`, `/init`, `/skills`, plus `/exit` aliases.
+  Correction (2026-10-10): skills activate through the model-facing `skill`
+  tool; there is no `/skill:<name>` TUI command.
 - Phase 9 LSP lifecycle commands: `/lsp-servers` (list active servers
   with root, state, generation, capabilities, and supported features),
   `/lsp-capabilities <key>` (effective capability snapshot for a server),

@@ -214,6 +214,10 @@ changing; each names its authoritative `architecture/` doc in its intro and
 | `session-storage` | `architecture/session.md`, `architecture/storage.md` |
 | `skills` | `architecture/skills.md` |
 | `tool-program-harness` | `architecture/tool_programs.md` |
+| `testing-ci` | `scripts/verify.sh`, `architecture/testing.md` |
+| `tool-execution` | `architecture/agent.md`, `architecture/jobs.md`, `architecture/scheduler.md` |
+| `security-hardening` | `architecture/security.md`, `architecture/permission.md`, `architecture/approval_reviewer.md` |
+| `lsp-ide` | `architecture/lsp.md`, `architecture/tui.md`, `architecture/client.md` |
 | `tui` | `architecture/tui.md` |
 | `upgrade` | `architecture/upgrade.md` |
 | `util` | `architecture/util.md` |

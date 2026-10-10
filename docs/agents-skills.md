@@ -227,6 +227,10 @@ envelope, and a `allowed-tools` entry produces a diagnostic telling you so.
 Permissions come from the permission configuration and the active agent's
 permission table — see `docs/tools.md`.
 
+CodeGG retains native `version` and `tags` fields as descriptive metadata.
+Unknown fields such as `process` remain inert data; CodeGG does not run vendor
+hooks, commands, or skill scripts.
+
 ### Where skills live
 
 Project roots, all optional and all relative to the project:
@@ -236,6 +240,14 @@ Project roots, all optional and all relative to the project:
 <project>/.agents/skills
 <project>/.opencode/skills
 <project>/.claude/skills
+<project>/.cursor/skills
+<project>/.gemini/skills
+<project>/.github/skills
+<project>/.pi/skills
+<project>/.cline/skills
+<project>/.clinerules/skills
+<project>/.roo/skills
+<project>/.factory/skills
 ```
 
 Global roots:
@@ -244,12 +256,36 @@ Global roots:
 <config dir>/<vendor>/skills
 ```
 
-for vendors `codegg`, `agents`, `opencode`, and `claude` — so on Linux the
+for vendors `codegg`, `agents`, `opencode`, `claude`, `cline`, `pi`, `roo`,
+`copilot`, and `factory` — so on Linux the
 CodeGG one is `~/.config/codegg/skills`, and on macOS it is
 `~/Library/Application Support/codegg/skills`. (The global root is the config
 directory itself and `<vendor>/skills` is appended once; the doubled form
 `~/.config/codegg/codegg/skills` is the silent double-join failure described in
 `architecture/skills.md`.)
+
+Home discovery also checks `~/.agents/skills`, `~/.claude/skills`,
+`~/.config/opencode/skills`, `~/.cline/skills`, `~/.pi/agent/skills`,
+`~/.roo/skills`, `~/.copilot/skills`, and `~/.factory/skills`. These
+directories are read-only inputs. Symlink aliases to the same physical root
+are scanned once with deterministic source priority. Mode-specific Roo skill
+roots and arbitrary nested project roots are excluded.
+
+Project discovery also checks eligible ancestors of the selected project
+directory through its nearest `.git` file or directory, up to eight levels.
+The nearest project scope wins same-name conflicts; sibling directories and
+paths above the Git boundary are not scanned. `/skills [name]` inspects the
+active snapshot, and `/reload` affects later turns while running turns keep
+their captured snapshot.
+
+These layouts were checked against the vendors' current official skill
+documentation: [Cursor](https://cursor.com/docs/skills),
+[Cline](https://github.com/cline/cline/blob/main/docs/customization/skills.mdx),
+[Pi](https://pi.dev/docs/latest/skills),
+[Roo Code](https://roocodeinc.github.io/Roo-Code/advanced-usage/available-tools/skill/),
+[Factory Droid](https://docs.factory.com/harness/skills),
+[Gemini CLI](https://geminicli.com/docs/cli/using-agent-skills/), and
+[GitHub Copilot](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills).
 
 You can add your own directories with the `skills.paths` config key. Each entry
 is used as a skills directory **directly**, so `"paths": ["/opt/skills"]`
@@ -303,6 +339,10 @@ takes a skill `name` and returns the skill body plus a list of its resource
 files. Point the agent at a skill by name — "load the `release-checklist`
 skill" — and it will call the tool when the skill is relevant. Each activation
 is recorded, which is what feeds `/skill-promote` below.
+
+Use the read-only TUI `/skills [name]` command to inspect effective skill
+source and shadow counts from the active asset snapshot; `/reload` refreshes
+assets for subsequent turns.
 
 The slash commands in this area are about authoring:
 

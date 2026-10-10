@@ -1,6 +1,6 @@
 ---
 name: skills
-description: Skills module for specialized capabilities activated via /skill: commands
+description: Skills module for specialized capabilities loaded through the skill tool
 version: 2.2.0
 tags:
   - skills
@@ -21,7 +21,7 @@ The `skills` module (`src/skills/`) provides:
 - Deterministic precedence and duplicate/shadow resolution
 - Content digests for change detection
 - Security-bounded discovery (symlink escape, path traversal, bounded sizes)
-- Skill activation via `/skill:<name>` commands and the `skill` model tool
+- Skill activation through the model-facing `skill` tool using `{"name":"..."}`
 - System prompt augmentation with skill content
 
 This repository also keeps agent-facing maintenance copies of its own skill docs in `.opencode/skills/` (`.skills` and `.agents/skills` are symlinks to it). Keep those aligned with runtime behavior documented here.
@@ -33,7 +33,7 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | `mod.rs` | Legacy `Skill`, `SkillIndex` facade + re-exports |
 | `registry.rs` | `AssetRegistry` — primary public type; builds an immutable source-aware snapshot (`effective`, `diagnostics`, `sources`) |
 | `candidate.rs` | `SkillCandidate`, `EffectiveSkill`, `ResourceDescriptor`, `ShadowedAlternative` |
-| `source.rs` | `SourceKind` (10 variants), `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
+| `source.rs` | `SourceKind` (23 variants), `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
 | `parser.rs` | Frontmatter/package parsing, SHA-256 digests, `validate_portable_document` shared proposal seam |
 | `resource.rs` | `ResourceHandle`, `ResourceReadLimits`, bounded resource reads |
 | `compat.rs` | `SkillIndexCompat` — backward-compatible bridge to the legacy `SkillIndex` API |
@@ -43,19 +43,31 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 
 ## Discovery Sources and Precedence
 
-`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). There are 10 variants. The four global kinds resolve under the single config-directory root the daemon registers (`<config>/…`), not under `$HOME`:
+`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). There are 23 variants. Config-directory roots remain supported and explicit home-layout candidates are checked for Agents, OpenCode, Claude, Cline, Pi, Roo, Copilot, and Factory:
 
 | Rank | Source |
 |------|--------|
 | 0 | `.codegg/skills/` (project) |
 | 10 | `.agents/skills/` (project) |
 | 20 | `.opencode/skills/` (project) |
+| 21 | `.pi/skills/` (project) |
+| 22 | `.cursor/skills/` (project) |
+| 24 | `.gemini/skills/` (project) |
+| 26 | `.github/skills/` (project) |
+| 27 | `.cline/skills/`, `.clinerules/skills/` (project) |
+| 28 | `.roo/skills/` (project; mode-specific roots excluded) |
+| 29 | `.factory/skills/` (project) |
 | 30 | `.claude/skills/` (project) |
 | 35 | `Plugin` contributions (project-native sources outrank) |
 | 40 | CodeGG global (`<config>/codegg/skills/`) |
-| 50 | Agents global (`<config>/agents/skills/`) |
-| 60 | OpenCode global (`<config>/opencode/skills/`) |
-| 70 | Claude global (`<config>/claude/skills/`) |
+| 50 | Agents global (`<config>/agents/skills/` or `~/.agents/skills/`) |
+| 52 | Cline global (`<config>/cline/skills/` or `~/.cline/skills/`) |
+| 54 | Pi global (`<config>/pi/skills/` or `~/.pi/agent/skills/`) |
+| 56 | Roo global (`<config>/roo/skills/` or `~/.roo/skills/`) |
+| 57 | Copilot global (`<config>/copilot/skills/` or `~/.copilot/skills/`) |
+| 58 | Factory global (`<config>/factory/skills/` or `~/.factory/skills/`) |
+| 60 | OpenCode global (`<config>/opencode/skills/`, `~/.config/opencode/skills/`) |
+| 70 | Claude global (`<config>/claude/skills/` or `~/.claude/skills/`) |
 | 80 | CodeGG native compat (direct `.md` files in `.codegg/skills/`) |
 | 90 | `Configured` — each `skills.paths` entry, used as a skills directory directly |
 
@@ -74,6 +86,11 @@ Passing an already-joined path silently discovers nothing: the root resolves to
 emitting a diagnostic. There is no user-visible symptom other than global
 skills simply never appearing. `already_joined_global_root_discovers_nothing`
 in `registry.rs` pins this failure mode.
+
+The registry checks explicit home roots for supported vendors; it does not
+recursively scan home directories. At most 16 injected global parent
+directories are considered. Canonical aliases are sorted by source rank and
+scanned once.
 
 ## Configured roots (`skills.paths`)
 
@@ -222,7 +239,7 @@ honor the parent-directory contract above.
 
 ## Skills vs System Prompts
 
-- **Skills**: Loaded on-demand via `/skill:` command or `skill` tool; contain specialized instructions
+- **Skills**: Loaded on demand through the `skill` tool; contain specialized instructions
 - **System Prompts**: Agent-level instructions baked into `Agent.system_prompt`
 - **Instructions**: Global instructions from `config.instructions` applied to all agents
 
