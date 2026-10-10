@@ -446,6 +446,25 @@ fn inventory_resources(
                 Err(_) => continue,
             };
             if file_type.is_symlink() {
+                let Some(relative_path) = path
+                    .strip_prefix(package_root)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .map(|path| path.replace('\\', "/"))
+                else {
+                    continue;
+                };
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                resources.push(ResourceDescriptor {
+                    name,
+                    relative_path,
+                    size: 0,
+                    modified_unix_nanos: 0,
+                });
                 continue;
             }
             if file_type.is_dir() {
@@ -462,10 +481,19 @@ fn inventory_resources(
             if !file_type.is_file() || path.file_name().is_some_and(|name| name == "SKILL.md") {
                 continue;
             }
-            let name = match path.strip_prefix(package_root).ok().and_then(Path::to_str) {
-                Some(n) => n.replace('\\', "/"),
-                None => continue,
+            let Some(relative_path) = path
+                .strip_prefix(package_root)
+                .ok()
+                .and_then(Path::to_str)
+                .map(|path| path.replace('\\', "/"))
+            else {
+                continue;
             };
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string();
             let metadata = entry.metadata().ok();
             let size = metadata.as_ref().map(|meta| meta.len()).unwrap_or(0);
             let modified_unix_nanos = metadata
@@ -475,11 +503,7 @@ fn inventory_resources(
                 .unwrap_or(0);
             resources.push(ResourceDescriptor {
                 name,
-                relative_path: path
-                    .strip_prefix(package_root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/"),
+                relative_path,
                 size,
                 modified_unix_nanos,
             });

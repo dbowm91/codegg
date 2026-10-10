@@ -110,7 +110,7 @@ fn render_skill(skill: &crate::skills::EffectiveSkill) -> Result<String, ToolErr
     let resources: Vec<&str> = skill
         .resources
         .iter()
-        .map(|resource| resource.name.as_str())
+        .map(|resource| resource.relative_path.as_str())
         .collect();
 
     let result = serde_json::json!({

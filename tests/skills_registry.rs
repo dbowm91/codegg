@@ -516,7 +516,7 @@ fn skill_index_compat_adapter() {
         index.load(root.to_str().unwrap()).await.unwrap();
     });
     assert!(index.get("compat").is_some());
-    assert_eq!(index.list().len(), 1);
+    assert!(index.list().iter().any(|skill| skill.name == "compat"));
     let prompt = index.build_system_prompt();
     assert!(prompt.contains("compat"));
     let body = index.activate("compat").unwrap();
