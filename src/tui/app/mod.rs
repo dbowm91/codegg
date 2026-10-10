@@ -117,6 +117,11 @@ pub const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// event loop is running; `run_event_loop` reuses the same channel.
 pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
 
+/// Maximum task rows drawn when the above-input todo list is expanded.
+/// Bounds the strip so a long list cannot crowd out the chat viewport; the
+/// header always reports the true total.
+pub const MAX_TODO_STRIP_TASKS: usize = 9;
+
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
 /// default. Bodies that exceed this limit are omitted so the snapshot
@@ -278,6 +283,16 @@ pub struct App {
     /// shows at most 8 rows and scrolls so `completion_sel` stays visible;
     /// click hit-testing must add this offset or it selects the wrong row.
     pub completion_scroll_offset: usize,
+    /// The session's current todo list, mirroring `sidebar.todos`.
+    ///
+    /// Held on `App` as well because the strip drawn directly above the input
+    /// is rendered by the app, not by the sidebar widget.
+    pub todos: Vec<TodoEntry>,
+    /// Whether the above-input todo strip shows the full list or only the
+    /// one-line `n/m completed` summary. Toggled with Ctrl+T.
+    pub todo_expanded: bool,
+    /// Rows the todo strip occupies on the last render pass.
+    pub todo_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
     /// 1-column strip reserved for the TUI's outer left border.
     pub left_border_area: Option<Rect>,
@@ -868,6 +883,9 @@ impl App {
             completion_area: None,
             completion_visible_rows: 0,
             completion_scroll_offset: 0,
+            todos: Vec::new(),
+            todo_expanded: false,
+            todo_area: None,
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
@@ -1389,6 +1407,9 @@ impl App {
             completion_area: None,
             completion_visible_rows: 0,
             completion_scroll_offset: 0,
+            todos: Vec::new(),
+            todo_expanded: false,
+            todo_area: None,
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
@@ -1640,6 +1661,32 @@ impl App {
                 self.messages_state
                     .toasts
                     .error(&format!("{code}: {message}"));
+                true
+            }
+            E::TodoListUpdated { items, .. } => {
+                // Items cross the wire as opaque JSON, so decode defensively:
+                // a malformed entry is skipped rather than discarding the
+                // whole list.
+                let entries: Vec<TodoEntry> = items
+                    .iter()
+                    .filter_map(|item| {
+                        let content = item.get("content")?.as_str()?.to_string();
+                        Some(TodoEntry {
+                            content,
+                            status: item
+                                .get("status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("pending")
+                                .to_string(),
+                            priority: item
+                                .get("priority")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("medium")
+                                .to_string(),
+                        })
+                    })
+                    .collect();
+                self.set_todos(entries);
                 true
             }
             E::PermissionPending { id, tool, path, .. } => {
@@ -2678,6 +2725,9 @@ impl App {
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            Some(InputAction::ToggleTodoList) => {
+                self.toggle_todo_list();
+            }
             Some(InputAction::FocusSidebar) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
@@ -7315,8 +7365,19 @@ impl App {
                     if *track_height > 0 {
                         let max_scroll = self.messages_state.messages.max_scroll();
                         let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
-                        self.messages_state.messages.scroll = new_scroll;
-                        self.messages_state.messages.auto_scroll = false;
+                        // Landing on the last track row (or anywhere already at
+                        // the bottom) must resume following the stream. This
+                        // handler used to clear `auto_scroll` unconditionally,
+                        // so dragging the thumb to the bottom left the view
+                        // visibly pinned there while new output was produced
+                        // off-screen — the turn looked frozen and then
+                        // appeared all at once.
+                        if rel_y + 1 >= *track_height || new_scroll >= max_scroll {
+                            self.messages_state.messages.scroll_to_bottom();
+                        } else {
+                            self.messages_state.messages.scroll = new_scroll.min(max_scroll);
+                            self.messages_state.messages.auto_scroll = false;
+                        }
                     }
                 }
             }
@@ -11402,12 +11463,33 @@ impl App {
         self.session_state.live_output_text.clear();
     }
 
+    /// Accumulate a streamed output delta into the live context meter.
+    ///
+    /// The running count is maintained *incrementally*: only the new delta is
+    /// tokenized and added to the total. Re-tokenizing the whole accumulated
+    /// buffer on every delta made the cost of a turn quadratic
+    /// (`estimate_tokens` performs a real `cl100k_base` BPE encode), and it ran
+    /// on the single event-loop thread — so the loop could not keep up with the
+    /// delta stream. Deltas therefore queued in `core_event_rx` and only became
+    /// visible in an implausible burst, and queued permission prompts arrived
+    /// too late to be answered.
+    ///
+    /// Summing per-chunk counts is not bit-identical to encoding the joined
+    /// text, because BPE can merge across a chunk boundary. That is acceptable
+    /// here: the value drives only the live output/context meters, never
+    /// accounting or persistence, and `reset_live_token_estimate` recomputes
+    /// from zero at each turn boundary.
     pub fn add_live_output_delta(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
         self.session_state.live_output_text.push_str(delta);
-        self.session_state.live_output_tokens =
-            crate::context::compaction::ContextTracker::estimate_tokens(
-                &self.session_state.live_output_text,
-            ) as u64;
+        let delta_tokens =
+            crate::context::compaction::ContextTracker::estimate_tokens(delta) as u64;
+        self.session_state.live_output_tokens = self
+            .session_state
+            .live_output_tokens
+            .saturating_add(delta_tokens);
     }
 
     pub fn set_context_info(&mut self, tokens: usize, limit: usize, compactions: usize) {
@@ -11676,7 +11758,63 @@ impl App {
     }
 
     pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
+        // Mirror onto the app: the sidebar owns its own copy for its section
+        // rendering, while the above-input strip is driven from the app.
+        self.todos = todos.clone();
         self.sidebar.set_todos(todos);
+    }
+
+    /// Toggle the expanded/compact form of the above-input todo strip.
+    fn toggle_todo_list(&mut self) {
+        if self.todos.is_empty() {
+            // Nothing to expand; still give feedback so the key is not
+            // silently dead.
+            self.messages_state
+                .toasts
+                .info("No todo list for this session yet.");
+            return;
+        }
+        self.todo_expanded = !self.todo_expanded;
+    }
+
+    /// Completed todo count. `TodoStatus::Completed` is the only status that
+    /// counts toward the `n/m` progress readout; cancelled items are not
+    /// "done work" and must not inflate the numerator.
+    pub fn todos_completed(&self) -> usize {
+        self.todos
+            .iter()
+            .filter(|t| t.status.eq_ignore_ascii_case("completed"))
+            .count()
+    }
+
+    /// Rows the above-input todo strip needs, including its header row.
+    /// Returns 0 when there is no todo list, so the input keeps the space.
+    pub fn todo_strip_height(&self) -> u16 {
+        if self.todos.is_empty() {
+            return 0;
+        }
+        if !self.todo_expanded {
+            return 1;
+        }
+        // Header + as many tasks as fit, bounded so a long list cannot eat
+        // the viewport. `Ctrl+T` still reports the true totals in the header.
+        let tasks = self.todos.len().min(MAX_TODO_STRIP_TASKS) as u16;
+        tasks.saturating_add(1)
+    }
+
+    /// The single-character status bubble for a todo entry.
+    pub fn todo_bubble(status: &str) -> &'static str {
+        if status.eq_ignore_ascii_case("completed") {
+            "\u{2714}"
+        } else if status.eq_ignore_ascii_case("in_progress") {
+            "\u{25cf}"
+        } else if status.eq_ignore_ascii_case("blocked") {
+            "\u{25c8}"
+        } else if status.eq_ignore_ascii_case("cancelled") {
+            "\u{2716}"
+        } else {
+            "\u{25cb}"
+        }
     }
 
     /// Update the active goal snapshot. The sidebar's `goal` field

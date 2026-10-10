@@ -2184,7 +2184,7 @@ fn split_editor_command(raw: &str) -> Option<Vec<String>> {
     let mut chars = raw.chars().peekable();
     let mut quote: Option<char> = None;
 
-    while let Some(c) = chars.next() {
+    for c in chars.by_ref() {
         match quote {
             Some(q) if c == q => {
                 quote = None;
@@ -2297,7 +2297,7 @@ fn edit_target_path(config: Option<&str>, project: bool) -> Result<PathBuf, AppE
         return Ok(PathBuf::from(path));
     }
     if project {
-        return Ok(paths::find_project_config()
+        return paths::find_project_config()
             .or_else(|| {
                 std::env::current_dir()
                     .ok()
@@ -2307,7 +2307,7 @@ fn edit_target_path(config: Option<&str>, project: bool) -> Result<PathBuf, AppE
                 AppError::Config(ConfigError::NotFound(
                     "no project config found and the working directory is unavailable".to_string(),
                 ))
-            })?);
+            });
     }
     // A project config already present is the file the user's current work is
     // actually driven by, so it is the more useful default than the global

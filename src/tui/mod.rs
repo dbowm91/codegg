@@ -118,6 +118,7 @@ pub mod task_lifecycle;
 pub mod terminal;
 pub mod theme;
 pub mod ui_builders;
+pub mod wrap;
 
 pub use app::{App, Dialog, SessionMutationOp, TuiCommand};
 pub use input::InputAction;

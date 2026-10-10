@@ -7,6 +7,9 @@
 use super::*;
 use ratatui::style::Color;
 
+/// Maximum display width of the agent name shown beside the input-mode badge.
+const MAX_AGENT_BADGE_WIDTH: usize = 20;
+
 /// Pick a foreground that stays legible on `background`.
 ///
 /// Theme palettes are authored independently, so a slot that reads well
@@ -55,7 +58,10 @@ fn readable_on(
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let main_chunks = self.ui_state.layout.split(area);
+        let main_chunks = self
+            .ui_state
+            .layout
+            .split(area, self.ui_state.sidebar_visible);
         let main_area = main_chunks[0];
 
         // Reserve a 1-column strip on the left of the main area for the
@@ -90,15 +96,37 @@ impl App {
         };
         self.bottom_border_area = border_area;
 
+        let todo_rows = self.todo_strip_height();
         let max_prompt_height = (area.height * 40 / 100).max(3);
-        let prompt_height = self.prompt_state.prompt.needed_height(max_prompt_height);
+        // Reserve the strip's rows *inside* the prompt allocation so the
+        // input box keeps the height it asked for and the chat viewport
+        // absorbs the difference. Carving them back out of the prompt chunk
+        // instead would silently shrink the input by up to
+        // `MAX_TODO_STRIP_TASKS` rows every time the list was expanded.
+        let prompt_height = self
+            .prompt_state
+            .prompt
+            .needed_height(max_prompt_height)
+            .saturating_add(todo_rows);
         let session_chunks = self
             .ui_state
             .layout
             .session_layout(pane_area, Some(prompt_height));
 
+        // Carve the todo strip off the top of the prompt chunk so it sits
+        // directly above the input.
+        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && session_chunks[2].height > todo_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
+                .split(session_chunks[2]);
+            (split[1], Some(split[0]))
+        } else {
+            (session_chunks[2], None)
+        };
+        self.todo_area = todo_chunk;
         self.viewport_area = Some(session_chunks[1]);
-        self.prompt_area = Some(session_chunks[2]);
+        self.prompt_area = Some(prompt_chunk);
 
         // Outer TUI frame: paint the left border on the reserved strip
         // and the four corner cells that connect it with the header's
@@ -134,7 +162,8 @@ impl App {
             self.render_component_fallback(frame, session_chunks[1], "Messages render error");
         }
 
-        self.render_prompt(frame, session_chunks[2]);
+        self.render_todo_strip(frame, todo_chunk);
+        self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
 
         // Sidebar — dynamic content can trigger panics
@@ -979,19 +1008,83 @@ impl App {
         }
     }
 
+    /// Draw the todo strip directly above the input box.
+    ///
+    /// Compact form is a single `n/m completed` progress line. Expanded form
+    /// adds one status-bubbled row per task, bounded by
+    /// `MAX_TODO_STRIP_TASKS`; task titles are ellipsized to the available
+    /// width rather than wrapped, so a long title can never push the input
+    /// off screen or change the layout height.
+    fn render_todo_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if area.width == 0 || area.height == 0 || self.todos.is_empty() {
+            return;
+        }
+
+        let total = self.todos.len();
+        let done = self.todos_completed();
+        let remaining = total.saturating_sub(done);
+        let theme = self.ui_state.theme.clone();
+
+        let mut lines: Vec<Line> = Vec::new();
+        if self.todo_expanded {
+            lines.push(Line::from(Span::styled(
+                format!(" Todo list {done}/{total} · {remaining} remaining · Ctrl+T compact "),
+                Style::default().fg(theme.muted),
+            )));
+            for todo in self
+                .todos
+                .iter()
+                .take(crate::tui::app::MAX_TODO_STRIP_TASKS)
+            {
+                let bubble = format!(" {} ", Self::todo_bubble(&todo.status));
+                // 3 columns of leading indent, minus the bubble and its spaces.
+                let budget = (area.width as usize)
+                    .saturating_sub(3 + unicode_width::UnicodeWidthStr::width(bubble.as_str()));
+                let title = crate::tui::wrap::ellipsize_to_width(&todo.content, budget);
+                lines.push(Line::from(vec![
+                    Span::styled("   ", Style::default()),
+                    Span::styled(bubble, Style::default().fg(theme.primary)),
+                    Span::styled(title, Style::default().fg(theme.foreground)),
+                ]));
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!(" Todo list: {done}/{total} completed · Ctrl+T expand "),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
         frame.render_widget(bg_block, area);
 
+        // The active agent rides alongside the input-mode badge (`[INS]
+        // [build]`) so the mode a prompt will actually run under is visible
+        // without opening the agent picker. Bounded so a long agent name
+        // cannot crowd out the prompt's own prefix row.
+        let agent_badge = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|agent| {
+                let name = crate::tui::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
+                format!(" [{name}]")
+            })
+            .unwrap_or_default();
         let mode_indicator = match self.ui_state.input_mode {
             InputMode::Insert => Span::styled(
-                "[INS] ",
+                format!("[INS]{agent_badge} "),
                 Style::default()
                     .fg(self.ui_state.theme.secondary)
                     .add_modifier(Modifier::BOLD),
             ),
             InputMode::Normal => Span::styled(
-                "[NOR]",
+                format!("[NOR]{agent_badge}"),
                 Style::default()
                     .fg(self.ui_state.theme.primary)
                     .add_modifier(Modifier::BOLD),
@@ -1602,6 +1695,11 @@ impl App {
         // it against the prompt area instead, capped so it still reads as a
         // popup anchored to the composer rather than a full-screen overlay.
         const MAX_COMPLETION_WIDTH: u16 = 110;
+        // Rendered on the popup's top border row, so it costs no content
+        // height. The retired command palette advertised its keys this way and
+        // the single popup now needs to stand on its own.
+        const COMPLETION_HINT: &str =
+            " \u{2191}\u{2193} navigate \u{b7} Enter run \u{b7} Esc cancel ";
         let compl_w = MAX_COMPLETION_WIDTH.min(prompt_area.width.saturating_sub(2));
         let inner_w = (compl_w as usize).saturating_sub(2);
         // The selected row is painted with an explicit background, so its
@@ -1736,6 +1834,8 @@ impl App {
             frame.render_widget(Clear, empty_area);
             let block = Block::default()
                 .borders(Borders::ALL)
+                .title(COMPLETION_HINT)
+                .title_style(Style::default().fg(self.ui_state.theme.muted))
                 .border_style(Style::default().fg(self.ui_state.theme.border))
                 .style(Style::default().bg(self.ui_state.theme.background));
             frame.render_widget(
@@ -1772,6 +1872,8 @@ impl App {
         frame.render_widget(Clear, compl_area);
         let block = Block::default()
             .borders(Borders::ALL)
+            .title(COMPLETION_HINT)
+            .title_style(Style::default().fg(self.ui_state.theme.muted))
             .border_style(Style::default().fg(self.ui_state.theme.border))
             .style(Style::default().bg(self.ui_state.theme.background));
         let list = List::new(items[start..(start + visible).min(total)].to_vec()).block(block);

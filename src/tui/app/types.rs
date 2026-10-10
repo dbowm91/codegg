@@ -155,6 +155,7 @@ pub enum TuiMsg {
     SubmitConnect,
     CloseDialog,
     ToggleSidebar,
+    ToggleTodoList,
     ToggleFullscreen,
     ToggleReasoning,
     ToggleTts,
