@@ -14,7 +14,7 @@ Repository baseline reviewed: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
 Implementation commits:
 
-- `7e1892a13755b6f6a04e9c7012cf5db1dcaddf4f` — provider-facing bounded/redacted shell promotion, PTY/VT fidelity, closure evidence, and C004 corrective plan.
+- `77f5ba44bb7f2da49de18ffa4c44758c631a9484` — provider-facing bounded/redacted shell promotion, PTY/VT fidelity, closure evidence, and C004 corrective plan.
 
 ## 1. Executive finding
 

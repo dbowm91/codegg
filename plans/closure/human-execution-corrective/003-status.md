@@ -14,7 +14,7 @@ Repository baseline reviewed: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
 Implementation commits or pull requests:
 
-- `7e1892a13755b6f6a04e9c7012cf5db1dcaddf4f` — terminal keyboard/VT implementation and closure evidence.
+- `77f5ba44bb7f2da49de18ffa4c44758c631a9484` — terminal keyboard/VT implementation and closure evidence.
 
 ## 1. Executive finding
 
