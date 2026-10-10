@@ -3362,21 +3362,26 @@ mod tests {
                 .expect("credential store"),
         );
         let pool = migrated_pool().await;
+        // The openai definition requires live `/models` discovery, so a bare
+        // default-endpoint provision would dial the real upstream. Point the
+        // request at a local fake instead: no outside network, same probe path.
+        let body = r#"{"data":[{"id":"model-a","name":"Model A"},{"id":"model-b","name":"Model B"},{"id":"model-c","name":"Model C"}]}"#.to_string();
+        let (host, server) = fake_status_server(200, body, Duration::ZERO);
         let provisioner =
             EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
 
-        let request = generic_request("openai");
+        let mut request = generic_request("openai");
+        request.endpoint = Some(host.clone());
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
         assert!(!format!("{request:?}").contains("generic-test-key"));
         let result = provisioner
             .create_connection(request)
             .await
             .expect("ordinary direct provision succeeds");
+        server.join().expect("fake server joins");
 
         assert_eq!(result.connection.provider_kind, "openai");
-        assert_eq!(
-            result.connection.endpoint,
-            codegg_providers::setup_catalog::OPENAI_BASE_URL
-        );
+        assert_eq!(result.connection.endpoint, format!("{host}/v1"));
         assert_eq!(result.models.len(), 3);
         assert_eq!(result.connection.model_count, 3);
         assert!(!result.catalog_revision.is_empty());
@@ -3667,13 +3672,21 @@ mod tests {
 
         // A fresh provisioner (restart equivalent) reconciles before its own
         // create: the staged row fails closed and its credential is removed,
-        // while the new ordinary provision succeeds.
+        // while the new ordinary provision succeeds. The new provision uses a
+        // local fake for `/models` discovery so it never dials the real
+        // upstream.
+        let body = r#"{"data":[{"id":"model-a","name":"Model A"}]}"#.to_string();
+        let (host, server) = fake_status_server(200, body, Duration::ZERO);
         let provisioner =
             EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let mut request = generic_request("openai");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
         let result = provisioner
-            .create_connection(generic_request("openai"))
+            .create_connection(request)
             .await
             .expect("post-restart provision succeeds");
+        server.join().expect("fake server joins");
         assert_eq!(result.connection.provider_kind, "openai");
 
         let (state, code): (String, Option<String>) = sqlx::query_as(
