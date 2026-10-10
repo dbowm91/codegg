@@ -18,7 +18,7 @@ Hard dependency: M002 accepted closure. The expanded source descriptors supply v
 
 ## 3. Current implementation evidence
 
-`src/skills/parser.rs::PortableFrontmatter` requires name/description (non-Codegg sources); some Claude Code skills legitimately omit `name` and use directory identity. Serde ignores nonportable top-level extension fields. `inventory_resources()` currently enumerates immediate regular files, skipping `references/`, `assets/`, `scripts/`. `src/skills/resource.rs::ResourceHandle` already validates relative nested paths on read, rejects `..\`, disallows external symlinks, and enforces byte bounds.
+`src/skills/parser.rs::PortableFrontmatter` requires name/description (non-Codegg sources); some Claude Code skills legitimately omit `name` and use directory identity. Serde ignores nonportable top-level extension fields. `inventory_resources()` currently enumerates immediate regular files, skipping `references/`, `assets/`, `scripts/`. `src/skills/resource.rs::ResourceHandle` already validates relative nested paths on read, rejects `..` and backslash separators, disallows external symlinks, and enforces byte bounds.
 
 ## 4. Invariants that must not regress
 
@@ -84,7 +84,9 @@ Use focused integration test targets where applicable. Run broader tests if the 
 
 ## 13. Acceptance criteria
 
-- Realistic portable skills with nested reference assets load and expose their intended bounded data.\n- Every file read is subject to canonical containment and byte limits.\n- Vendor-specific unsupported instructions are diagnosed as inert rather than silently honored; no skill content triggers a command.
+- Realistic portable skills with nested reference assets load and expose their intended bounded data.
+- Every file read is subject to canonical containment and byte limits.
+- Vendor-specific unsupported instructions are diagnosed as inert rather than silently honored; no skill content triggers a command.
 
 ## 14. Stop conditions
 
