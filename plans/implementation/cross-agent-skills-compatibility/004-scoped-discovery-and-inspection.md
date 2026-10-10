@@ -72,7 +72,9 @@ Select exact focused integration test binaries after inspecting current Cargo ta
 
 ## 13. Acceptance criteria
 
-- Selecting nested project resolves eligible own+ancestor skills without importing sibling workspaces.\n- `/skills` reports meaningful effective/duplicate/skip provenance and references a real asset snapshot.\n- Source changes are visible after refresh to subsequent turns, never to already running turns.
+- Selecting nested project resolves eligible own+ancestor skills without importing sibling workspaces.
+- `/skills` reports meaningful effective/duplicate/skip provenance and references a real asset snapshot.
+- Source changes are visible after refresh to subsequent turns, never to already running turns.
 
 ## 14. Stop conditions
 
