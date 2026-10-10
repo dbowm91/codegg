@@ -83,6 +83,7 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
     };
     let request_id = app.dialog_state.terminal_request.begin();
     let command_label = argv.join(" ");
+    let (cols, rows) = terminal_viewport_size();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -98,8 +99,8 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
                         argv,
                         cwd: None,
                         env_overrides: Vec::new(),
-                        cols: Some(80),
-                        rows: Some(24),
+                        cols: Some(cols),
+                        rows: Some(rows),
                         scrollback_bytes: None,
                     },
                 },
@@ -139,6 +140,32 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
             Some(result)
         },
     );
+}
+
+/// Match the PTY to the usable dialog area, with a minimum useful viewport.
+pub(crate) fn terminal_viewport_size() -> (u16, u16) {
+    let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
+    (
+        width
+            .saturating_sub(4)
+            .max(1)
+            .min(crate::tui::interactive_terminal::MAX_TERMINAL_SCREEN_COLS),
+        height
+            .saturating_sub(12)
+            .max(1)
+            .min(crate::tui::interactive_terminal::MAX_TERMINAL_SCREEN_ROWS),
+    )
+}
+
+/// Resize the active PTY after the outer terminal has settled to a new size.
+pub(crate) fn resize_terminal_to_viewport(app: &mut App) {
+    let Some(handle) = app.dialog_state.terminal_detail_handle.clone() else {
+        return;
+    };
+    let (cols, rows) = terminal_viewport_size();
+    if app.interactive_terminals.dimensions(&handle) != Some((cols, rows)) {
+        start_terminal_resize(app, handle, cols, rows);
+    }
 }
 
 /// Apply a terminal-create completion on the event loop.
@@ -1145,21 +1172,32 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
     let mut lines = headers;
     lines.push(String::new());
     lines.push("── output (newest, bounded) ──".to_string());
-    match app.interactive_terminals.render_lines(handle, 200) {
-        Some(output) if output.is_empty() => {
-            lines.push("(no output yet)".to_string());
-        }
-        Some(output) => lines.extend(output),
-        None => lines.push("(no output yet)".to_string()),
+    let mut styled_content: Vec<ratatui::text::Line<'static>> = lines
+        .iter()
+        .map(|line| {
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                line.clone(),
+                ratatui::style::Style::default().fg(app.ui_state.theme.foreground),
+            ))
+        })
+        .collect();
+    let output = app
+        .interactive_terminals
+        .render_styled_lines(handle, 200)
+        .unwrap_or_default();
+    if output.is_empty() {
+        styled_content.push(ratatui::text::Line::from("(no output yet)"));
+    } else {
+        styled_content.extend(output);
     }
     let footer =
-        "i focus  |  Esc unfocus/close  |  j/k scroll  |  /terminal-resume refresh".to_string();
+        "i focus  |  Ctrl-] unfocus  |  Esc to process  |  Esc closes when viewing  |  /terminal-resume refresh".to_string();
     if let Some(dialog) = app
         .focus_manager
         .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
     {
         dialog.set_info_type(crate::tui::components::dialogs::info::InfoType::TerminalShow);
-        dialog.set_content(lines);
+        dialog.set_styled_content(styled_content);
         dialog.set_theme(&app.ui_state.theme);
         dialog.set_custom_footer(footer);
     } else {
@@ -1168,6 +1206,7 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
             crate::tui::components::dialogs::info::InfoType::TerminalShow,
             lines,
         );
+        dialog.set_styled_content(styled_content);
         dialog.set_custom_footer(footer);
         app.focus_manager.push(Box::new(dialog));
     }
@@ -1183,7 +1222,7 @@ pub(crate) fn focus_terminal(app: &mut App, handle: Option<String>) {
     };
     if app.interactive_terminals.focus(&handle) {
         app.messages_state.toasts.info(&format!(
-            "Terminal {handle} focused: keystrokes go to the process; Esc leaves focus"
+            "Terminal {handle} focused: keystrokes go to the process; Ctrl-] leaves focus"
         ));
         refresh_terminal_dialog(app, &handle);
     } else {
@@ -1213,7 +1252,7 @@ pub(crate) fn close_terminal_view(app: &mut App, terminate: bool) {
 ///
 /// Returns `true` when the key was consumed by terminal handling (the
 /// caller must not route it to the prompt or the dialog scroller).
-/// Escape while focused only leaves focus; it never submits anything.
+/// Ctrl-] while focused only leaves focus; literal Esc is sent to the PTY.
 /// Escape while viewing closes the view (detach); the prompt is never
 /// submitted from the terminal dialog.
 pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
@@ -1245,8 +1284,8 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
         return false;
     }
 
-    // Focused: every key goes through the focus gate. Esc leaves focus
-    // (never forwards, never submits); other keys forward or are ignored.
+    // Focused: every key goes through the focus gate. Ctrl-] leaves focus;
+    // literal Esc and other supported input forward to the PTY.
     let terminal_key = map_key(key);
     match classify_key(true, terminal_key) {
         TerminalKeyAction::EscapeFocus => {
@@ -1270,6 +1309,9 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
 fn map_key(key: crossterm::event::KeyEvent) -> TerminalKey {
     use crossterm::event::{KeyCode, KeyModifiers};
     match key.code {
+        KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            TerminalKey::ExitFocus
+        }
         KeyCode::Esc => TerminalKey::Esc,
         KeyCode::Enter => TerminalKey::Enter,
         KeyCode::Backspace => TerminalKey::Backspace,
@@ -1327,6 +1369,26 @@ mod tests {
 
     fn test_app() -> App {
         App::new_for_testing("terminal-test".to_string())
+    }
+
+    #[test]
+    fn key_mapping_reserves_ctrl_right_bracket_and_forwards_escape() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            TerminalKey::Esc
+        );
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL)),
+            TerminalKey::ExitFocus
+        );
+        assert_eq!(
+            classify_key(
+                true,
+                map_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            ),
+            TerminalKeyAction::Forward(vec![0x1b])
+        );
     }
 
     #[test]

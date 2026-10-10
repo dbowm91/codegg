@@ -1,6 +1,6 @@
 # Human Execution Corrective C001 — Human-Shell Promotion and Redaction
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b`
 

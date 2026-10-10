@@ -113,6 +113,7 @@ name = "codegg-sandbox-helper"
 path = "src/bin/codegg-sandbox-helper.rs"
 
 [dependencies]
+vt100 = "=0.16.2"
 eggup-core = { git = "https://github.com/eggstack/eggup.git", rev = "66813b3b94de3a9b2f270e0000dc339ef6f0b478" }
 eggup-acquisition = { git = "https://github.com/eggstack/eggup.git", rev = "66813b3b94de3a9b2f270e0000dc339ef6f0b478" }
 # Core (workspace-owned versions; member adds only its features)

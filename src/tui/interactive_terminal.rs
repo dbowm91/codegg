@@ -13,7 +13,7 @@
 //!        (PTY/process owner)                    |
 //!                                               v
 //!                              InteractiveTerminalController
-//!                              (bounded scrollback + focus + link state)
+//!                              (bounded VT screen + scrollback + focus + link state)
 //!                                               |
 //!                                               v
 //!                                   TUI dialog rendering (lines only)
@@ -25,9 +25,8 @@
 //!   `CoreRequest::InteractiveProcess*` operation and every state change is
 //!   applied from a `CoreResponse` (or a typed transport notice).
 //! - Keyboard bytes reach a terminal only when that terminal has explicit
-//!   focus ([`TerminalFocus::Focused`]). [`classify_key`] maps `Esc` to
-//!   [`TerminalKeyAction::EscapeFocus`] unconditionally: escape/focus can
-//!   never submit a prompt and the raw `Esc` byte is never forwarded.
+//!   focus ([`TerminalFocus::Focused`]). Esc is forwarded; Ctrl-] leaves
+//!   focus without sending bytes to the child.
 //! - Client disconnect drops attachments only (M002 `handle_disconnect`
 //!   semantics): scrollback is retained locally and the link moves to
 //!   [`TerminalLinkState::Reconnecting`]. A daemon restart invalidates the
@@ -39,7 +38,7 @@
 //! # Bounds
 //!
 //! Size/input/chunk bounds mirror the canonical M001/M002 constants
-//! (`MAX_PTY_DIMENSION`, `MAX_INPUT_WRITE_BYTES`,
+//! (`MAX_INPUT_WRITE_BYTES`,
 //! `MAX_INTERACTIVE_CHUNK_BYTES`) rather than re-declaring them. The
 //! per-view scrollback window ([`TERMINAL_VIEW_BYTES`]) matches the M002
 //! default read size so one attach chunk always fits. The per-controller
@@ -49,7 +48,6 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::interactive_process::MAX_PTY_DIMENSION;
 use crate::protocol::interactive_process::{
     InteractiveOutputChunk, InteractiveResync, InteractiveResyncReason, MAX_ATTACHMENTS_PER_CLIENT,
     MAX_INTERACTIVE_CHUNK_BYTES, MAX_INTERACTIVE_INPUT_BYTES,
@@ -82,6 +80,8 @@ pub const MAX_TERMINAL_INPUT_BYTES: usize = MAX_INTERACTIVE_INPUT_BYTES;
 /// Maximum bytes rendered from one terminal in a single dialog refresh.
 /// Bounded by the M002 per-read chunk cap.
 pub const MAX_TERMINAL_RENDER_BYTES: usize = MAX_INTERACTIVE_CHUNK_BYTES;
+pub const MAX_TERMINAL_SCREEN_COLS: u16 = 300;
+pub const MAX_TERMINAL_SCREEN_ROWS: u16 = 120;
 
 /// Explicit keyboard-focus state for one terminal view.
 ///
@@ -95,7 +95,7 @@ pub enum TerminalFocus {
     Hidden,
     /// Terminal is visible but keys still belong to the prompt/dialog.
     Viewing,
-    /// Terminal owns the keyboard (except `Esc`, which always escapes).
+    /// Terminal owns the keyboard; Ctrl-] is reserved to leave focus.
     Focused,
 }
 
@@ -196,8 +196,9 @@ impl std::fmt::Display for TerminalResizeError {
             TerminalResizeError::InvalidSize { cols, rows } => {
                 write!(
                     f,
-                    "invalid terminal size {cols}x{rows}: dimensions must be 1..={}",
-                    MAX_PTY_DIMENSION
+                    "invalid terminal size {cols}x{rows}: TUI dimensions must be 1..={} columns by 1..={} rows",
+                    MAX_TERMINAL_SCREEN_COLS,
+                    MAX_TERMINAL_SCREEN_ROWS,
                 )
             }
         }
@@ -221,6 +222,7 @@ pub enum TerminalKey {
     CtrlC,
     CtrlD,
     Esc,
+    ExitFocus,
     Other,
 }
 
@@ -237,9 +239,8 @@ pub enum TerminalKeyAction {
 
 /// Route one key through the terminal focus gate.
 ///
-/// - `Esc` while focused always yields [`TerminalKeyAction::EscapeFocus`]:
-///   the raw escape byte is never forwarded and a prompt is never
-///   submitted from terminal focus.
+/// - `Ctrl-]` while focused yields [`TerminalKeyAction::EscapeFocus`].
+///   Literal `Esc` is forwarded for full-screen applications.
 /// - Any key while unfocused yields [`TerminalKeyAction::Ignored`]: the
 ///   prompt owns the keyboard until focus is explicit.
 /// - While focused, printable input and the explicit control bytes
@@ -251,7 +252,8 @@ pub fn classify_key(focused: bool, key: TerminalKey) -> TerminalKeyAction {
         return TerminalKeyAction::Ignored;
     }
     match key {
-        TerminalKey::Esc => TerminalKeyAction::EscapeFocus,
+        TerminalKey::ExitFocus => TerminalKeyAction::EscapeFocus,
+        TerminalKey::Esc => TerminalKeyAction::Forward(vec![0x1b]),
         TerminalKey::Other => TerminalKeyAction::Ignored,
         TerminalKey::Enter => TerminalKeyAction::Forward(vec![b'\r']),
         TerminalKey::Backspace => TerminalKeyAction::Forward(vec![0x7f]),
@@ -297,8 +299,9 @@ impl BoundedScrollback {
     }
 
     /// Apply one M002 output chunk to the window.
-    fn apply_chunk(&mut self, chunk: &InteractiveOutputChunk, raw: &[u8]) {
-        if chunk.gap || chunk.from_seq != self.next_seq {
+    fn apply_chunk(&mut self, chunk: &InteractiveOutputChunk, raw: &[u8]) -> bool {
+        let reset = chunk.gap || chunk.from_seq != self.next_seq;
+        if reset {
             self.bytes.clear();
             self.base_seq = chunk.from_seq;
             if chunk.gap {
@@ -324,6 +327,7 @@ impl BoundedScrollback {
             self.bytes.drain(..overflow);
             self.truncated = true;
         }
+        reset
     }
 
     fn take_notice(&mut self) -> Option<String> {
@@ -337,7 +341,7 @@ impl BoundedScrollback {
 /// caller-owned M002 attachment (resolved server-side by the daemon),
 /// `workspace_id` routes the view to its multi-project owner, and
 /// `scrollback` holds the newest bounded output window.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InteractiveTerminalView {
     handle: String,
     workspace_id: String,
@@ -346,6 +350,8 @@ pub struct InteractiveTerminalView {
     link: TerminalLinkState,
     focus: TerminalFocus,
     scrollback: BoundedScrollback,
+    screen: TerminalScreen,
+    screen_degraded: bool,
     pending_input: Vec<u8>,
     pending_resize: Option<(u16, u16)>,
     cols: u16,
@@ -362,6 +368,8 @@ impl InteractiveTerminalView {
             link: TerminalLinkState::Live,
             focus: TerminalFocus::Viewing,
             scrollback: BoundedScrollback::new(),
+            screen: TerminalScreen::new(rows, cols),
+            screen_degraded: false,
             pending_input: Vec::new(),
             pending_resize: None,
             cols,
@@ -397,6 +405,144 @@ impl InteractiveTerminalView {
             self.scrollback.next_seq,
             self.command,
         )
+    }
+}
+
+/// Incremental terminal emulator state. `vt100` keeps escape interpretation
+/// and screen memory separate from the host TUI, so untrusted terminal bytes
+/// are never written to the real terminal device.
+struct TerminalScreen(vt100::Parser);
+
+impl std::fmt::Debug for TerminalScreen {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TerminalScreen(<bounded VT state>)")
+    }
+}
+
+impl TerminalScreen {
+    fn new(rows: u16, cols: u16) -> Self {
+        Self(vt100::Parser::new(
+            rows.clamp(1, MAX_TERMINAL_SCREEN_ROWS),
+            cols.clamp(1, MAX_TERMINAL_SCREEN_COLS),
+            0,
+        ))
+    }
+
+    fn resize(&mut self, rows: u16, cols: u16) {
+        self.0.screen_mut().set_size(
+            rows.clamp(1, MAX_TERMINAL_SCREEN_ROWS),
+            cols.clamp(1, MAX_TERMINAL_SCREEN_COLS),
+        );
+    }
+
+    fn reset(&mut self, rows: u16, cols: u16) {
+        *self = Self::new(rows, cols);
+    }
+
+    fn process(&mut self, bytes: &[u8]) {
+        self.0.process(bytes);
+    }
+
+    fn lines(&self, max_lines: usize) -> Vec<String> {
+        let contents = self.0.screen().contents();
+        let mut lines: Vec<_> = contents.lines().collect();
+        if lines.len() > max_lines {
+            lines.drain(..lines.len() - max_lines);
+        }
+        lines
+            .into_iter()
+            .map(|line| {
+                let mut end = line.len().min(MAX_TERMINAL_LINE_BYTES);
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end < line.len() {
+                    format!("{}... [line truncated]", &line[..end])
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect()
+    }
+
+    fn styled_lines(&self, max_lines: usize) -> Vec<ratatui::text::Line<'static>> {
+        use ratatui::style::{Modifier, Style};
+        use ratatui::text::{Line, Span};
+
+        let (rows, cols) = self.0.screen().size();
+        let start = rows.saturating_sub(max_lines.min(usize::from(rows)) as u16);
+        let mut lines = Vec::with_capacity(usize::from(rows.saturating_sub(start)));
+        for row in start..rows {
+            let mut last_visible = 0;
+            for col in 0..cols {
+                if let Some(cell) = self.0.screen().cell(row, col) {
+                    if cell.has_contents()
+                        || cell.bgcolor() != vt100::Color::Default
+                        || cell.is_wide_continuation()
+                    {
+                        last_visible = col.saturating_add(1);
+                    }
+                }
+            }
+
+            let mut spans = Vec::new();
+            let mut active_style = Style::default();
+            let mut active_text = String::new();
+            for col in 0..last_visible {
+                let Some(cell) = self.0.screen().cell(row, col) else {
+                    continue;
+                };
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let mut style = Style::default();
+                if cell.fgcolor() != vt100::Color::Default {
+                    style = style.fg(vt_color(cell.fgcolor()));
+                }
+                if cell.bgcolor() != vt100::Color::Default {
+                    style = style.bg(vt_color(cell.bgcolor()));
+                }
+                let mut modifiers = Modifier::empty();
+                if cell.bold() {
+                    modifiers |= Modifier::BOLD;
+                }
+                if cell.dim() {
+                    modifiers |= Modifier::DIM;
+                }
+                if cell.italic() {
+                    modifiers |= Modifier::ITALIC;
+                }
+                if cell.underline() {
+                    modifiers |= Modifier::UNDERLINED;
+                }
+                if cell.inverse() {
+                    modifiers |= Modifier::REVERSED;
+                }
+                style = style.add_modifier(modifiers);
+                if !active_text.is_empty() && style != active_style {
+                    spans.push(Span::styled(std::mem::take(&mut active_text), active_style));
+                }
+                active_style = style;
+                if cell.has_contents() {
+                    active_text.push_str(cell.contents());
+                } else {
+                    active_text.push(' ');
+                }
+            }
+            if !active_text.is_empty() {
+                spans.push(Span::styled(active_text, active_style));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
+    }
+}
+
+fn vt_color(color: vt100::Color) -> ratatui::style::Color {
+    match color {
+        vt100::Color::Default => ratatui::style::Color::Reset,
+        vt100::Color::Idx(index) => ratatui::style::Color::Indexed(index),
+        vt100::Color::Rgb(red, green, blue) => ratatui::style::Color::Rgb(red, green, blue),
     }
 }
 
@@ -440,6 +586,11 @@ impl InteractiveTerminalController {
     /// Read one view by handle.
     pub fn view(&self, handle: &str) -> Option<&InteractiveTerminalView> {
         self.views.get(handle)
+    }
+
+    /// Current daemon viewport associated with one view.
+    pub fn dimensions(&self, handle: &str) -> Option<(u16, u16)> {
+        self.views.get(handle).map(|view| (view.cols, view.rows))
     }
 
     /// Handles routed to one workspace, sorted. This is the
@@ -553,7 +704,11 @@ impl InteractiveTerminalController {
             .get_mut(handle)
             .ok_or_else(|| format!("unknown terminal handle: {handle}"))?;
         view.attachment_id = Some(attachment_id);
-        view.scrollback.apply_chunk(chunk, &raw);
+        if view.scrollback.apply_chunk(chunk, &raw) {
+            view.screen.reset(view.rows, view.cols);
+            view.screen_degraded = true;
+        }
+        view.screen.process(&raw);
         let scroll_notice = view.scrollback.take_notice();
         if let Some(resync) = resync {
             view.link = TerminalLinkState::ResyncRequired(resync.clone());
@@ -583,7 +738,11 @@ impl InteractiveTerminalController {
             .views
             .get_mut(handle)
             .ok_or_else(|| format!("unknown terminal handle: {handle}"))?;
-        view.scrollback.apply_chunk(chunk, &raw);
+        if view.scrollback.apply_chunk(chunk, &raw) {
+            view.screen.reset(view.rows, view.cols);
+            view.screen_degraded = true;
+        }
+        view.screen.process(&raw);
         let notice = view.scrollback.take_notice();
         if matches!(view.link, TerminalLinkState::ResyncRequired(_)) {
             view.link = TerminalLinkState::Live;
@@ -601,6 +760,8 @@ impl InteractiveTerminalController {
                 };
                 view.attachment_id = None;
             } else {
+                view.screen.reset(view.rows, view.cols);
+                view.screen_degraded = true;
                 view.link = TerminalLinkState::ResyncRequired(resync);
             }
         }
@@ -801,7 +962,11 @@ impl InteractiveTerminalController {
         cols: u16,
         rows: u16,
     ) -> Result<(), TerminalResizeError> {
-        if cols == 0 || rows == 0 || cols > MAX_PTY_DIMENSION || rows > MAX_PTY_DIMENSION {
+        if cols == 0
+            || rows == 0
+            || cols > MAX_TERMINAL_SCREEN_COLS
+            || rows > MAX_TERMINAL_SCREEN_ROWS
+        {
             return Err(TerminalResizeError::InvalidSize { cols, rows });
         }
         let view = self
@@ -825,40 +990,27 @@ impl InteractiveTerminalController {
         if let Some(view) = self.views.get_mut(handle) {
             view.cols = cols;
             view.rows = rows;
+            view.screen.resize(rows, cols);
         }
     }
 
-    /// Render the newest bounded lines for one terminal view.
-    ///
-    /// Decodes scrollback lossily (terminal bytes are arbitrary), keeps
-    /// the newest [`TERMINAL_VIEW_LINES`] lines, and truncates overlong
-    /// lines. Returns `None` for unknown handles.
+    /// Render the newest lines from the bounded VT screen for one view.
+    /// Escape sequences have already been interpreted and are never returned
+    /// to the host TUI. Returns `None` for unknown handles.
     pub fn render_lines(&self, handle: &str, max_lines: usize) -> Option<Vec<String>> {
         let view = self.views.get(handle)?;
         let max_lines = max_lines.min(TERMINAL_VIEW_LINES);
-        // Reassemble from the deque without extra allocation surprises.
-        let bytes: Vec<u8> = view.scrollback.bytes.iter().copied().collect();
-        let take_bytes = bytes.len().min(MAX_TERMINAL_RENDER_BYTES);
-        let window = &bytes[bytes.len().saturating_sub(take_bytes)..];
-        let text = String::from_utf8_lossy(window);
-        let mut lines: Vec<String> = text
-            .split('\n')
-            .map(|line| {
-                let stripped = line.strip_suffix('\r').unwrap_or(line);
-                if stripped.len() > MAX_TERMINAL_LINE_BYTES {
-                    format!(
-                        "{}... [line truncated]",
-                        &stripped[..MAX_TERMINAL_LINE_BYTES]
-                    )
-                } else {
-                    stripped.to_string()
-                }
-            })
-            .collect();
-        if lines.len() > max_lines {
-            lines.drain(..lines.len() - max_lines);
-        }
-        Some(lines)
+        Some(view.screen.lines(max_lines))
+    }
+
+    /// Render interpreted screen cells with their safe SGR styles applied.
+    pub fn render_styled_lines(
+        &self,
+        handle: &str,
+        max_lines: usize,
+    ) -> Option<Vec<ratatui::text::Line<'static>>> {
+        let view = self.views.get(handle)?;
+        Some(view.screen.styled_lines(max_lines.min(TERMINAL_VIEW_LINES)))
     }
 
     /// Header lines describing one terminal for the dialog view,
@@ -883,7 +1035,7 @@ impl InteractiveTerminalController {
                 }
             ),
             format!(
-                "focus:       {} (Esc leaves focus; input needs explicit focus)",
+                "focus:       {} (Ctrl-] leaves focus; input needs explicit focus)",
                 match view.focus {
                     TerminalFocus::Hidden => "hidden",
                     TerminalFocus::Viewing => "viewing",
@@ -903,6 +1055,12 @@ impl InteractiveTerminalController {
                 }
             ),
         ];
+        if view.screen_degraded {
+            lines.push(
+                "VT display reset after an output gap; current screen may be incomplete"
+                    .to_string(),
+            );
+        }
         match &view.link {
             TerminalLinkState::ResyncRequired(resync) => {
                 lines.push(format!(
@@ -1078,12 +1236,20 @@ mod tests {
     #[test]
     fn escape_leaves_focus_and_never_forwards_or_submits() {
         assert_eq!(
-            classify_key(true, TerminalKey::Esc),
+            classify_key(true, TerminalKey::ExitFocus),
             TerminalKeyAction::EscapeFocus
         );
-        // No key that escapes focus also forwards bytes.
-        let action = classify_key(true, TerminalKey::Esc);
+        // The focus chord escapes without forwarding bytes.
+        let action = classify_key(true, TerminalKey::ExitFocus);
         assert!(!matches!(action, TerminalKeyAction::Forward(_)));
+    }
+
+    #[test]
+    fn literal_escape_is_forwarded_to_focused_terminal() {
+        assert_eq!(
+            classify_key(true, TerminalKey::Esc),
+            TerminalKeyAction::Forward(vec![0x1b])
+        );
     }
 
     #[test]
@@ -1120,6 +1286,56 @@ mod tests {
             classify_key(true, TerminalKey::Other),
             TerminalKeyAction::Ignored
         );
+    }
+
+    #[test]
+    fn vt_screen_handles_split_cursor_clear_sgr_and_alternate_screen() {
+        let mut screen = TerminalScreen::new(3, 12);
+        let transcript = b"old\rnew\x1b[2J\x1b[H\x1b[31mred";
+        for byte in transcript {
+            screen.process(std::slice::from_ref(byte));
+        }
+        let cell = screen.0.screen().cell(0, 0).expect("red cell");
+        assert_eq!(cell.fgcolor(), vt100::Color::Idx(1));
+        screen.process(b"\x1b[?1049halt");
+        let lines = screen.lines(3);
+        assert!(lines[0].starts_with("alt"), "screen: {lines:?}");
+        screen.process(b"\x1b[?1049l");
+        assert!(screen.lines(3)[0].starts_with("red"));
+    }
+
+    #[test]
+    fn vt_screen_discards_osc_payload_and_clamps_dimensions() {
+        let mut screen = TerminalScreen::new(u16::MAX, u16::MAX);
+        assert_eq!(
+            screen.0.screen().size(),
+            (MAX_TERMINAL_SCREEN_ROWS, MAX_TERMINAL_SCREEN_COLS)
+        );
+        screen.process(b"\x1b]52;c;clipboard-secret\x07safe");
+        let rendered = screen.lines(2).join("\n");
+        assert!(rendered.contains("safe"));
+        assert!(!rendered.contains("clipboard-secret"));
+        assert!(!rendered.contains('\x1b'));
+    }
+
+    #[test]
+    fn history_gap_resets_vt_state_and_labels_degraded_screen() {
+        let mut controller = InteractiveTerminalController::new();
+        controller.apply_created("h".into(), "ws".into(), "sh".into(), 20, 3);
+        controller
+            .apply_attached("h", "a".into(), &chunk(0, 3, false, "old"), None)
+            .unwrap();
+        controller
+            .apply_resumed("h", &chunk(20, 23, true, "new"))
+            .unwrap();
+        let rendered = controller.render_lines("h", 3).unwrap().join("\n");
+        assert!(rendered.contains("new"));
+        assert!(!rendered.contains("old"));
+        assert!(controller
+            .header_lines("h")
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("may be incomplete")));
     }
 
     #[test]
@@ -1193,7 +1409,7 @@ mod tests {
         let mut controller = live_attached();
         assert!(controller.queue_resize("h", 0, 24).is_err());
         assert!(controller
-            .queue_resize("h", MAX_PTY_DIMENSION + 1, 24)
+            .queue_resize("h", MAX_TERMINAL_SCREEN_COLS + 1, 24)
             .is_err());
         controller.queue_resize("h", 80, 24).expect("first");
         controller.queue_resize("h", 120, 40).expect("second");

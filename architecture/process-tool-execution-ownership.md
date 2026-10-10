@@ -126,9 +126,11 @@ are daemon `CoreRequest::InteractiveProcess*` operations issued through
 the TUI `CoreClient`, with stale completions dropped by the terminal
 async-request generation. The controller keeps a bounded scrollback
 window per viewed handle (64 KiB, matching the M002 default read), a
-coalesced pending-input/resize queue under the M001/M002 bounds, an
-explicit focus gate (keys reach the process only while focused; `Esc`
-always leaves focus and never submits), typed link states
+bounded incremental VT screen (at most 300 columns by 120 rows) separate
+from raw scrollback, a coalesced pending-input/resize queue under the
+M001/M002 bounds, an explicit focus gate (keys reach the process only
+while focused; literal `Esc` is forwarded and `Ctrl-]` leaves focus),
+typed link states
 (live/reconnecting/resync-required/exited/gone), and per-workspace
 routing from the active session's canonical binding (never ambient cwd).
 TUI close detaches (releases the caller-owned attachment; the process
@@ -138,11 +140,19 @@ daemon restart marks non-exited views gone. Raw terminal bytes never
 become session observation: the controller has no session/projection/
 observer dependency, headers describe without carrying output, and
 `/terminal-*` commands are human-shell-family commands, not model tools.
+VT escape handling updates only local bounded screen state and never writes
+child control bytes to the host terminal; a sequence gap resets the screen
+and marks the view degraded until subsequent output arrives. Resizing the
+visible dialog issues a bounded daemon PTY resize.
 
 ## Source Verification
 
 Verified 2026-10-06 against `docs/execution-ownership.toml`,
 `scripts/check_execution_ownership.py`, and the named source files.
+Re-verified 2026-10-10 against `src/tui/interactive_terminal.rs` and
+`src/tui/commands/interactive_terminal.rs` for C003: VT screen state is
+presentation-only, Esc/Ctrl-] behavior is updated, dimensions are bounded,
+and the `Terminal` dialog forwards styled cells rather than raw escape bytes.
 - Confirmed the manifest declares **54** entries and recorded its owner
   distribution in the section above (14 `scheduler`, 12
   `definition_or_adapter`, 10 `standalone_compat`, 9 `interactive`,

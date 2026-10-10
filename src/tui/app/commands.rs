@@ -511,6 +511,17 @@ pub enum TuiCommand {
         id: u64,
         question: String,
     },
+    /// A session owner accepted or rejected one explicit shell evidence ask.
+    ShellAskSubmitted {
+        id: u64,
+        text: String,
+        error: Option<String>,
+    },
+    /// A normal next turn accepted or rejected staged shell evidence.
+    ShellPromotionsSubmitted {
+        promotions: Vec<(uuid::Uuid, u64)>,
+        error: Option<String>,
+    },
     ShellExpand {
         id: u64,
         stream: String,
