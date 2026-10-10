@@ -1,19 +1,19 @@
 # Repository Initialization Milestone 002 — /init Command, Preview, Guarded Publish and Refresh
 
-Status: blocked (hard dependency: Repository Initialization M001 closure)
+Status: ready for handoff
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09 research; re-audit at execution)
 Source roadmap: `plans/subsystems/repository-initialization-roadmap.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#12-repository-asset-and-harness-interoperability`; `#27-security-requirements`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`.
-Applicable ADRs: existing typed command/project mutation/asset-refresh architecture. **Require an accepted new ADR first** if the existing daemon/client writer cannot safely publish AGENTS.md without a new write protocol or authority.
+Applicable ADRs: `plans/adrs/ADR-0014-project-initialization-publication.md`; existing typed command/project mutation/asset-refresh architecture.
 Primary class: capability
 
 ## 1. Objective
 
 Ship a **real TUI /init** for the selected project that creates or improves its AGENTS.md like common coding-agent bootstrappers: gather bounded evidence using M001, show preview/diff, require explicit human confirmation, publish safely under daemon authority, and refresh runtime instructions for subsequent turns. No implicit Git repository initialization.
 
-## 2. Why not yet ready
+## 2. Why ready
 
-M001 must close with a tested inert proposal and exact original-target digest. Existing TUI typed command registry, project context, daemon authorization and refresh are stable; cross-agent Skills M002 is a soft interface dependency only for optional skill inventory prose, not a hard gate.
+M001 must close with a tested inert proposal and exact original-target digest. Existing TUI typed command registry, project context, daemon authorization and refresh are stable; cross-agent Skills M002 is a soft interface dependency only for optional skill inventory prose, not a hard gate. ADR-0014 selects an ephemeral daemon-owned token contract for this fixed-path mutation.
 
 ## 3. Current implementation evidence
 

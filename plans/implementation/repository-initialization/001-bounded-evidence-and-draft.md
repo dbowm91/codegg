@@ -1,6 +1,6 @@
 # Repository Initialization Milestone 001 — Bounded Evidence and AGENTS.md Candidate Draft
 
-Status: ready for handoff
+Status: implemented
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09; re-audit at execution)
 Source roadmap: `plans/subsystems/repository-initialization-roadmap.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md#12-repository-asset-and-harness-interoperability`; `#27-security-requirements`; `#29-system-invariants`; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`.
