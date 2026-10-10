@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 155);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 156);
     }
 
     #[test]
