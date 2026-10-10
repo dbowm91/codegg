@@ -245,6 +245,26 @@ mod tests {
             !root.path().join("AGENTS.md").exists(),
             "preview has no write side effect"
         );
+        app.project_tabs.active_mut().unwrap().project_id = Some("different-project".into());
+        app.process_msg(crate::tui::app::TuiMsg::ProjectInitApprove);
+        assert!(
+            !root.path().join("AGENTS.md").exists(),
+            "a switched project cannot receive the draft"
+        );
+        assert!(
+            app.tui_cmd_rx.as_mut().unwrap().try_recv().is_err(),
+            "stale approval queues no publish request"
+        );
+        app.project_tabs.active_mut().unwrap().project_id = Some(project.project_id.clone());
+        start_project_init_draft(&mut app);
+        let preview = tokio::time::timeout(
+            Duration::from_secs(5),
+            app.tui_cmd_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(&mut app, preview).await;
         app.process_msg(crate::tui::app::TuiMsg::CloseDialog);
         assert!(
             !root.path().join("AGENTS.md").exists(),
