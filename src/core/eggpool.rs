@@ -3841,9 +3841,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn static_catalog_connection_is_never_reported_as_verified() {
-        // `openai` enumerates a local/static model array: no network I/O at
-        // all. Provisioning therefore proves only that the catalog is usable.
+        // `openai` catalog discovery proves only that the catalog is usable.
         // The M010 defect was that this also claimed the credential was valid.
+        // Discovery requires a live `/models` endpoint, so serve it from a
+        // local fake: no outside network, same `ProviderCatalog` probe path.
         let _master = MasterKeyGuard::new("m010-static-catalog-master");
         let directory = tempdir().expect("credential tempdir");
         let credential_store = Arc::new(
@@ -3851,13 +3852,19 @@ mod tests {
                 .expect("credential store"),
         );
         let pool = migrated_pool().await;
+        let body = r#"{"data":[{"id":"model-a","name":"Model A"}]}"#.to_string();
+        let (host, server) = fake_status_server(200, body, Duration::ZERO);
         let provisioner =
             EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
 
+        let mut request = generic_request("openai");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
         let result = provisioner
-            .create_connection(generic_request("openai"))
+            .create_connection(request)
             .await
             .expect("static-catalog provision succeeds");
+        server.join().expect("fake server joins");
         let health = result
             .connection
             .health
