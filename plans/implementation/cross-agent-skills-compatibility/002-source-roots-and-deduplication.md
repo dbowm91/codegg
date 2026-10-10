@@ -84,7 +84,9 @@ Use focused integration test targets where applicable. Run broader tests if the 
 
 ## 13. Acceptance criteria
 
-- Ordinary valid skills in the core supported vendor locations appear automatically with source provenance.\n- One physical skill visible via multiple symlink aliases is parsed once, yet genuinely different same-name skills show deterministic shadow reports.\n- No foreign source is written or executed; current Codegg installations and explicitly configured roots retain behavior.
+- Ordinary valid skills in the core supported vendor locations appear automatically with source provenance.
+- One physical skill visible via multiple symlink aliases is parsed once, yet genuinely different same-name skills show deterministic shadow reports.
+- No foreign source is written or executed; current Codegg installations and explicitly configured roots retain behavior.
 
 ## 14. Stop conditions
 
