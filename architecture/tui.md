@@ -430,6 +430,45 @@ contract in `architecture/authorization.md` (ADR-0007).
   exactly as before. Controller identity remains visible through
   the session projection.
 
+### Chat activity indicator and todo strip
+
+Two strips bracket the chat viewport and are owned by `App`, not by the
+sidebar widget.
+
+**Activity indicator** (`MessagesWidget::activity`). A one-line
+`⠋ thinking 12s` / `⠋ running bash 3s` row appended after the message loop, so
+it always trails the newest output. Its glyph and second count derive from
+`Instant::elapsed().as_secs()` rather than a per-frame counter, which keeps it
+frame-rate independent and reproducible under `TestBackend`. Completed
+reasoning blocks are recorded in `reasoning_durations` keyed by message index
+and render as `Thought for 3.2s`; clicking a message checks reasoning before
+tool output so that header is the expand affordance.
+
+**Todo strip** (`render_todo_strip`). Compact form is a single
+`Todo list: 2/8 completed · Ctrl+T expand` row; `Ctrl+T` expands to a header
+plus one status-bubbled row per task, bounded by `MAX_TODO_STRIP_TASKS`. Task
+titles are ellipsized (display-width aware) rather than wrapped, so the strip
+height is predictable. The strip's rows are added to the prompt allocation in
+`session_layout` and then carved back off, so the input box keeps the height it
+requested and the viewport absorbs the difference.
+
+Todo updates reach the frontend as `CoreEvent::TodoListUpdated`. The bus event
+that originates them (`AppEvent::TodoUpdated`) is published on the
+process-local `GlobalEventBus`, which does not cross the daemon process
+boundary — a connected TUI only ever saw whatever it happened to poll at
+startup until this variant was added.
+
+### Text wrapping
+
+`ratatui::widgets::Paragraph::line_count` is behind the unstable
+`rendered-line-info` feature, so wrapped scrolling cannot be delegated to the
+widget. `src/tui/wrap.rs` owns the shared implementation: `wrap_to_strings` /
+`wrap_count` for word-wrapping with hard-break for overlong tokens, and
+`ellipsize_to_width` for single-row truncation. The chat viewport pre-wraps
+message lines with it (the widget paints no `Paragraph::wrap`, so a line wider
+than the viewport is clipped at the edge); the `/logs` dialog scrolls in
+wrapped rows rather than logical lines.
+
 ### Long Output → Info Dialog
 
 `App::show_short_or_info(info_type, lines)` routes output to short toast
@@ -595,12 +634,16 @@ hit testing resolve the same target even when scrolling or collapse changes
 rendered line positions. Selection is presentation-only and is cleared when
 the active project scope changes.
 
-Normal-mode `Space` (and `a` in Vim normal mode) enters sidebar focus; `j/k` or
-the arrow keys move, PageUp/PageDown move by a bounded viewport step, `h/l`
-collapse/expand or move to an agent parent, Space toggles a collapsible row,
-Enter inspects, and Esc returns focus to the prompt. Ctrl+T toggles the sidebar
-and focuses it when opened. Modal dialogs remain above this surface under the
-canonical `FocusManager`.
+Normal-mode `Space` opens help (the `/help` surface) and `Ctrl+Shift+S` enters
+sidebar focus; `j/k` or the arrow keys move, PageUp/PageDown move by a bounded
+viewport step, `h/l` collapse/expand or move to an agent parent, Space toggles
+a collapsible row, Enter inspects, and Esc returns focus to the prompt.
+`Ctrl+B` toggles the sidebar and focuses it when opened; `Ctrl+T` is reserved
+for the todo strip above the input. `Ctrl+Shift+S` is used for sidebar focus
+rather than a bare `Ctrl+<letter>` because every free bare Ctrl letter is a
+terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J newline,
+Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend). Modal dialogs remain above
+this surface under the canonical `FocusManager`.
 
 The Agent Runs section renders the active projection turn's bounded
 `agent_tree` in deterministic parent-first order with indentation, status,
@@ -899,7 +942,7 @@ dialogs.
 | Dialog selection | `SelectModel`, `SelectAgent`, `SelectSession`, `SelectTheme`, `ThemePreviewChanged`, `ThemeCommit`, `ThemeRevert`, `KeybindChanged`, `SelectTemplate`, `GotoMessage`, `CopyShareUrl`, `McpAction`, `ConnectionLifecycle`, `ProviderConnectionsUpdated`, `ProviderConnectionModelsUpdated`, `OpenConnectionRotation` |
 | Dialog submit/confirm | `SubmitConnect`, `SubmitPermission`, `SubmitQuestionAnswers`, `SubmitImportPreview`, `ConfirmImport`, `ConfirmResult`, `ConfirmDeleteSession`, `ConfirmArchiveSession`, `ConfirmBulkDelete`, `ConfirmBulkArchive`, `SubmitSelectionUpdate`, `SessionSelectionUpdated` |
 | Session lifecycle | `NewSession`, `CloseSession`, `ClearSession`, `CycleAgent`, `CycleModelForward`, `CycleModelBackward`, `ForkSession`, `ForkTreeSession`, `SelectTreeSession`, `UndoDelete`, `Quit` |
-| Toggles | `ToggleSidebar`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
+| Toggles | `ToggleSidebar`, `ToggleTodoList`, `ToggleFullscreen`, `ToggleReasoning`, `ToggleTts`, `ToggleComposerMode` |
 | Project tabs | `NextProjectTab`, `PreviousProjectTab`, `CloseProjectTab`, `SelectProjectTabByIndex` |
 | Research/shell/git | `ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`, `SecurityReviewJump`, `ReviewOpenDiff`, `ExternalEditor`, `CopyMessage`, `ShellInclude`, `ShellAsk`, `ShellRerun`, `ShellKill`, `RunRerun`, `RunPromote`, `RunCopyId` |
 | Workspace dashboard | `WorkspaceDashboardMove`, `WorkspaceDashboardOpen`, `WorkspaceDashboardRefresh`, `WorkspaceDashboardToggleExpand` |
@@ -1182,9 +1225,9 @@ root routing.
 
 ### InputAction
 
-50 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
+51 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
-`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleSection`,
+`NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTodoList`, `ToggleSection`,
 `CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
 `CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
 `Quit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`, `Left`, `Right`,

@@ -1022,7 +1022,7 @@ impl SidebarWidget {
             // Report the actual failure. Collapsing every error into "not a
             // git repo" hid probe timeouts and spawn failures behind a
             // wrong answer.
-            let detail: String = err.chars().take(width as usize).collect();
+            let detail: String = err.chars().take(width).collect();
             lines.push(Line::from(Span::styled(
                 format!("git: {}", detail.trim()),
                 Style::default().fg(self.theme.warning),

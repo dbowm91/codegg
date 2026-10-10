@@ -3207,6 +3207,19 @@ pub enum CoreEvent {
         output: String,
         success: bool,
     },
+    /// The session's todo list changed.
+    ///
+    /// Carries the complete current list plus the monotonic `revision`, never
+    /// a delta, so a subscriber that missed an earlier envelope still renders
+    /// a consistent snapshot. Exists because `AppEvent::TodoUpdated` is
+    /// published on the in-process bus, which does not cross the daemon
+    /// process boundary -- without this variant a connected TUI only ever saw
+    /// the todo list it happened to poll at startup.
+    TodoListUpdated {
+        session_id: String,
+        revision: u64,
+        items: Vec<serde_json::Value>,
+    },
     PermissionPending {
         id: String,
         session_id: String,

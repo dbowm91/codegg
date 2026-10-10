@@ -1390,7 +1390,7 @@ fn test_tui_layout_with_config() {
 fn test_tui_layout_split_wide_enough() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 100, 50);
-    let result = layout.split(area);
+    let result = layout.split(area, true);
     assert_eq!(result.len(), 2);
 }
 
@@ -1398,7 +1398,7 @@ fn test_tui_layout_split_wide_enough() {
 fn test_tui_layout_split_narrow() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 50, 50);
-    let result = layout.split(area);
+    let result = layout.split(area, true);
     assert_eq!(result.len(), 1);
 }
 
@@ -1406,7 +1406,7 @@ fn test_tui_layout_split_narrow() {
 fn test_tui_layout_split_boundary() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 71, 50);
-    let result = layout.split(area);
+    let result = layout.split(area, true);
     assert_eq!(result.len(), 2);
 }
 
@@ -1414,7 +1414,7 @@ fn test_tui_layout_split_boundary() {
 fn test_tui_layout_split_boundary_narrow() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 70, 50);
-    let result = layout.split(area);
+    let result = layout.split(area, true);
     assert_eq!(result.len(), 1);
 }
 

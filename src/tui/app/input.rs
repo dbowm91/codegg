@@ -552,6 +552,7 @@ impl App {
                 self.close_dialog();
             }
             TuiMsg::ToggleSidebar => self.toggle_sidebar(),
+            TuiMsg::ToggleTodoList => self.toggle_todo_list(),
             TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
             TuiMsg::ToggleReasoning => self.toggle_reasoning(),
             TuiMsg::ToggleTts => self.toggle_tts(),

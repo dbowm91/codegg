@@ -23,7 +23,8 @@
 //! | Ctrl+L | SelectModel |
 //! | Ctrl+K | ClearSession |
 //! | Ctrl+N | NewSession |
-//! | Ctrl+T | ToggleSidebar |
+//! | Ctrl+T | ToggleTodoList |
+//! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
 //! | Ctrl+S | StashPrompt |
 //! | Ctrl+R | RestorePrompt |
@@ -111,6 +112,7 @@ pub enum InputAction {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
+    ToggleTodoList,
     ToggleSection,
     CloseSession,
     Help,
@@ -177,6 +179,7 @@ pub enum ActionKey {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
+    ToggleTodoList,
     ToggleSection,
     CloseSession,
     Help,
@@ -280,6 +283,7 @@ impl ActionKey {
             Self::CloseProjectTab,
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
+            Self::ToggleTodoList,
         ]
     }
 
@@ -334,6 +338,7 @@ impl ActionKey {
             Self::CloseProjectTab => InputAction::CloseProjectTab,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
+            Self::ToggleTodoList => InputAction::ToggleTodoList,
         }
     }
 
@@ -388,6 +393,7 @@ impl ActionKey {
             Self::CloseProjectTab => "Close project tab",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
+            Self::ToggleTodoList => "Toggle todo list (expand above input)",
         }
     }
 
@@ -461,14 +467,30 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('n')),
         InputAction::NewSession,
     );
+    // Ctrl+T expands the todo list above the input; the sidebar moved to
+    // Ctrl+B so both panels stay independently reachable.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
+        InputAction::ToggleTodoList,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('b')),
         InputAction::ToggleSidebar,
     );
-    // In normal mode this focuses the sidebar; insert mode deliberately
-    // treats bare printable keys as prompt text.
+    // Normal-mode space opens help (the `/help` affordance). Insert mode is
+    // unaffected: bare printable keys remain prompt text there.
+    map.insert((KeyModifiers::NONE, KeyCode::Char(' ')), InputAction::Help);
+    // Sidebar focus keeps a reachable chord now that space is help.
+    // Sidebar focus keeps a reachable chord now that space is help. A bare
+    // `Ctrl+<letter>` is deliberately avoided: every free bare Ctrl letter is
+    // a terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J
+    // newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend), so binding
+    // one would steal the terminal's own job.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char(' ')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('S'),
+        ),
         InputAction::FocusSidebar,
     );
     map.insert(
@@ -543,8 +565,14 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('q')),
         InputAction::Quit,
     );
+    // Ctrl+T expands the todo list above the input; the sidebar moved to
+    // Ctrl+B so both panels stay independently reachable.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
+        InputAction::ToggleTodoList,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('b')),
         InputAction::ToggleSidebar,
     );
     map.insert(
@@ -673,8 +701,17 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     // Sidebar focus in Normal mode. The Insert map already binds `Space`, but
     // the vim map did not, so sidebar focus was unreachable whenever
     // `vim_mode=true` even though the help advertised it unconditionally.
+    map.insert((KeyModifiers::NONE, KeyCode::Char(' ')), InputAction::Help);
+    // Sidebar focus keeps a reachable chord now that space is help. A bare
+    // `Ctrl+<letter>` is deliberately avoided: every free bare Ctrl letter is
+    // a terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J
+    // newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend), so binding
+    // one would steal the terminal's own job.
     map.insert(
-        (KeyModifiers::NONE, KeyCode::Char(' ')),
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('S'),
+        ),
         InputAction::FocusSidebar,
     );
     map.insert(
@@ -697,8 +734,14 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
     map.insert((KeyModifiers::NONE, KeyCode::Char('?')), InputAction::Help);
 
+    // Ctrl+T expands the todo list above the input; the sidebar moved to
+    // Ctrl+B so both panels stay independently reachable.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('t')),
+        InputAction::ToggleTodoList,
+    );
+    map.insert(
+        (KeyModifiers::CONTROL, KeyCode::Char('b')),
         InputAction::ToggleSidebar,
     );
     map.insert(
@@ -879,7 +922,25 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Insert,
             key: "Ctrl+T",
+            action: "Toggle todo list",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+B",
             action: "Toggle sidebar",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Space",
+            action: "Help",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+Shift+S",
+            action: "Focus sidebar",
             condition: None,
         },
         HelpEntry {
@@ -1854,15 +1915,29 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_focus_binding_is_normal_only_and_insert_space_remains_text() {
+    fn normal_space_opens_help_and_insert_space_remains_text() {
         let key = make_key(KeyCode::Char(' '), KeyModifiers::NONE);
         assert_eq!(
             handle_key_with_bindings(key, None, InputMode::Normal),
-            Some(InputAction::FocusSidebar)
+            Some(InputAction::Help)
         );
         assert_eq!(
             handle_key_with_bindings(key, None, InputMode::Insert),
             Some(InputAction::Char(' '))
+        );
+    }
+
+    #[test]
+    fn sidebar_focus_keeps_a_reachable_chord() {
+        // Space moved to help, so focus must stay reachable on a chord that
+        // does not collide with a terminal control character.
+        let key = make_key(
+            KeyCode::Char('S'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Normal),
+            Some(InputAction::FocusSidebar)
         );
     }
 
@@ -1924,10 +1999,46 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_t_returns_toggle_sidebar_in_insert_mode() {
+    fn test_ctrl_t_returns_toggle_todo_list_in_insert_mode() {
         let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
         let result = handle_key_with_bindings(key, None, InputMode::Insert);
-        assert_eq!(result, Some(InputAction::ToggleSidebar));
+        assert_eq!(result, Some(InputAction::ToggleTodoList));
+    }
+
+    #[test]
+    fn ctrl_b_toggles_sidebar_in_both_maps_and_modes() {
+        for insert in [false, true] {
+            let key = make_key(KeyCode::Char('b'), KeyModifiers::CONTROL);
+            let mode = if insert {
+                InputMode::Insert
+            } else {
+                InputMode::Normal
+            };
+            assert_eq!(
+                handle_key_with_bindings(key, None, mode),
+                Some(InputAction::ToggleSidebar),
+                "Ctrl+B must toggle the sidebar (insert={insert})"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_t_is_not_still_bound_to_the_sidebar() {
+        // The sidebar moved to Ctrl+B so Ctrl+T could own the todo list; a
+        // stale duplicate mapping would silently undo that.
+        for insert in [false, true] {
+            let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
+            let mode = if insert {
+                InputMode::Insert
+            } else {
+                InputMode::Normal
+            };
+            assert_ne!(
+                handle_key_with_bindings(key, None, mode),
+                Some(InputAction::ToggleSidebar),
+                "Ctrl+T must not still reach ToggleSidebar (insert={insert})"
+            );
+        }
     }
 
     #[test]

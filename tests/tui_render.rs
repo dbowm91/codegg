@@ -2271,15 +2271,24 @@ fn command_palette_shows_single_exact_match() {
     );
 }
 
+/// The completion popup is the single slash-command surface now: it is driven
+/// by real typing, not by poking `CommandPalette` state directly. Poking that
+/// state no longer renders anything, because `CommandPalette` was retired as
+/// the popup renderer.
 #[test]
 fn command_palette_renders_navigation_hint() {
     let mut app = test_app();
-    app.ui_state.command_mode = true;
-    app.dialog_state.command_palette.set_query("/connect");
+    for ch in "/connect".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    assert!(
+        app.prompt_state.show_completions,
+        "typing a slash query must open the completion popup"
+    );
     let buf = assert_render_ok(&mut app, 100, 32);
     assert!(
         buffer_contains(&buf, "navigate"),
-        "the palette hint bar must render; got {:?}",
+        "the popup hint must render; got {:?}",
         text_in_buffer(&buf)
     );
 }

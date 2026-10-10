@@ -75,7 +75,33 @@ fn handle_routed_event(app: &mut App, event: AppEvent) -> bool {
                 reason,
                 "dropped event: ownership could not be resolved"
             );
-            false
+            // A dropped approval request is not a harmless no-op. Nothing
+            // renders, so the approval times out server-side after 300s and
+            // the tool is denied with no user-visible cause — which reads as
+            // "the tool was denied for no reason". Surface it instead.
+            let mut surfaced = false;
+            match &event {
+                AppEvent::PermissionPending { tool, path, .. } => {
+                    let target = path
+                        .as_deref()
+                        .filter(|p| !p.is_empty())
+                        .map(|p| format!("{tool} ({p})"))
+                        .unwrap_or_else(|| tool.clone());
+                    app.messages_state.toasts.warning(&format!(
+                        "Approval request for {target} could not be routed to an open \
+                         tab; answering it requires reopening that session."
+                    ));
+                    surfaced = true;
+                }
+                AppEvent::QuestionPending { .. } => {
+                    app.messages_state
+                        .toasts
+                        .warning("A question is waiting on a session that is not open in any tab.");
+                    surfaced = true;
+                }
+                _ => {}
+            }
+            surfaced
         }
         RouteDecision::RefreshRequired { reason } => {
             for tab in app.project_tabs.ordered() {
