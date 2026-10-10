@@ -84,7 +84,9 @@ Use focused integration test targets where applicable. Run broader tests if the 
 
 ## 13. Acceptance criteria
 
-- Both model prompt paths document the actual available `skill` tool; runtime tests prove activation and pinned body digest.\n- No unsupported slash-command capability is advertised, and existing native packages still load.\n- Conformance boundary is documented and backed by fixtures.
+- Both model prompt paths document the actual available `skill` tool; runtime tests prove activation and pinned body digest.
+- No unsupported slash-command capability is advertised, and existing native packages still load.
+- Conformance boundary is documented and backed by fixtures.
 
 ## 14. Stop conditions
 
