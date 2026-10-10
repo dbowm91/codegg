@@ -1012,8 +1012,8 @@ mod tests {
         );
         for (relative, name, _kind) in [
             (
-                ".agents/skills/codex/SKILL.md",
-                "codex",
+                ".agents/skills/agents-user/SKILL.md",
+                "agents-user",
                 SourceKind::AgentsGlobal,
             ),
             (
@@ -1053,7 +1053,7 @@ mod tests {
         let registry =
             AssetRegistry::build(&test_config(), project.path(), &[home.path().to_path_buf()]);
         assert_eq!(
-            registry.get("codex").unwrap().source_kind,
+            registry.get("agents-user").unwrap().source_kind,
             SourceKind::AgentsGlobal
         );
         assert_eq!(
