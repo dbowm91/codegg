@@ -31,11 +31,40 @@ impl AssetRegistry {
         global_roots: &[PathBuf],
         plugin_sources: &[crate::plugin::PluginAssetPath],
     ) -> Self {
+        Self::build_with_home_and_plugin_sources(
+            config,
+            project_root,
+            global_roots,
+            dirs::home_dir(),
+            plugin_sources,
+        )
+    }
+
+    /// Build with an explicit home directory. Supplying `None` disables
+    /// home-relative vendor roots, which keeps isolated callers and fixtures
+    /// independent of the process user's private skill installation.
+    pub fn build_with_home(
+        config: &AssetDiscoveryConfig,
+        project_root: &Path,
+        global_roots: &[PathBuf],
+        home_dir: Option<PathBuf>,
+    ) -> Self {
+        Self::build_with_home_and_plugin_sources(config, project_root, global_roots, home_dir, &[])
+    }
+
+    fn build_with_home_and_plugin_sources(
+        config: &AssetDiscoveryConfig,
+        project_root: &Path,
+        global_roots: &[PathBuf],
+        home_dir: Option<PathBuf>,
+        plugin_sources: &[crate::plugin::PluginAssetPath],
+    ) -> Self {
         let mut all_candidates: Vec<SkillCandidate> = Vec::new();
         let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
         let mut source_summaries: Vec<SourceSummary> = Vec::new();
 
-        let source_roots = resolve_source_roots(config, project_root, global_roots);
+        let source_roots =
+            resolve_source_roots_with_home(config, project_root, global_roots, home_dir);
         let mut plugin_roots = Vec::new();
         for source in plugin_sources {
             let path = source
@@ -215,14 +244,6 @@ impl AssetRegistry {
             })?;
         skill.resource_handle(relative_path, limits)
     }
-}
-
-fn resolve_source_roots(
-    config: &AssetDiscoveryConfig,
-    project_root: &Path,
-    global_roots: &[PathBuf],
-) -> Vec<SourceRoot> {
-    resolve_source_roots_with_home(config, project_root, global_roots, dirs::home_dir())
 }
 
 fn resolve_source_roots_with_home(
@@ -719,6 +740,14 @@ mod tests {
         AssetDiscoveryConfig::default()
     }
 
+    fn build_isolated(
+        config: &AssetDiscoveryConfig,
+        project_root: &Path,
+        global_roots: &[PathBuf],
+    ) -> AssetRegistry {
+        AssetRegistry::build_with_home(config, project_root, global_roots, None)
+    }
+
     #[test]
     fn explicit_home_candidates_are_discovered_without_process_home_mutation() {
         let project = TempDir::new().unwrap();
@@ -766,7 +795,7 @@ mod tests {
         let mut config = test_config();
         config.configured_roots = vec![extra.path().to_path_buf()];
 
-        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        let registry = build_isolated(&config, project.path(), &[]);
         let names: Vec<_> = registry.effective.iter().map(|s| s.name.clone()).collect();
         assert!(
             names.contains(&"from-config".to_string()),
@@ -800,7 +829,7 @@ mod tests {
         let mut config = test_config();
         config.configured_roots = vec![extra.path().to_path_buf()];
 
-        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        let registry = build_isolated(&config, project.path(), &[]);
         let names: Vec<_> = registry.effective.iter().map(|s| s.name.clone()).collect();
         assert!(
             !names.contains(&"nested".to_string()),
@@ -823,7 +852,7 @@ mod tests {
         let mut config = test_config();
         config.enabled_sources.clear();
 
-        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        let registry = build_isolated(&config, project.path(), &[]);
         assert!(registry.effective.is_empty());
     }
 
@@ -833,7 +862,7 @@ mod tests {
         let project = TempDir::new().unwrap();
         let mut config = test_config();
         config.configured_roots = vec![project.path().join("does-not-exist")];
-        let registry = AssetRegistry::build(&config, project.path(), &[]);
+        let registry = build_isolated(&config, project.path(), &[]);
         assert!(registry.effective.is_empty());
         assert!(
             !registry
@@ -848,7 +877,7 @@ mod tests {
     fn empty_project_builds_empty_registry() {
         let dir = TempDir::new().unwrap();
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert!(registry.effective.is_empty());
         assert!(registry.diagnostics.is_empty());
     }
@@ -865,7 +894,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(registry.effective[0].name, "project-skill");
     }
@@ -882,7 +911,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(registry.effective[0].source_kind, SourceKind::AgentsProject);
     }
@@ -899,7 +928,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(
             registry.effective[0].source_kind,
@@ -919,7 +948,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(registry.effective[0].source_kind, SourceKind::ClaudeProject);
     }
@@ -937,7 +966,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[global_root]);
+        let registry = build_isolated(&config, dir.path(), &[global_root]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(registry.effective[0].source_kind, SourceKind::CodeGGGlobal);
     }
@@ -961,7 +990,7 @@ mod tests {
 
         let config = test_config();
         let joined = global_root.join("codegg").join("skills");
-        let registry = AssetRegistry::build(&config, dir.path(), &[joined]);
+        let registry = build_isolated(&config, dir.path(), &[joined]);
         assert!(
             registry.effective.is_empty(),
             "already-joined root must not be treated as a parent dir"
@@ -990,7 +1019,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[global_root]);
+        let registry = build_isolated(&config, dir.path(), &[global_root]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(registry.effective[0].description, "Project version");
         assert_eq!(registry.effective[0].source_kind, SourceKind::CodeGGProject);
@@ -1009,7 +1038,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(
             registry.effective[0].source_kind,
@@ -1039,7 +1068,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[global_root]);
+        let registry = build_isolated(&config, dir.path(), &[global_root]);
         assert_eq!(registry.effective.len(), 1);
         assert_eq!(registry.effective[0].description, "Valid global");
         assert_eq!(registry.effective[0].source_kind, SourceKind::CodeGGGlobal);
@@ -1058,7 +1087,7 @@ mod tests {
 
         let mut config = test_config();
         config.enabled_sources.remove(&SourceKind::AgentsProject);
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert!(registry.effective.is_empty());
     }
 
@@ -1074,7 +1103,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         assert!(registry.get("lookup").is_some());
         assert!(registry.get("nonexistent").is_none());
     }
@@ -1091,7 +1120,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         let prompt = registry.build_system_prompt();
         assert!(prompt.contains("prompt"));
     }
@@ -1108,7 +1137,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        let registry = AssetRegistry::build(&config, dir.path(), &[]);
+        let registry = build_isolated(&config, dir.path(), &[]);
         let body = registry.activate("act").unwrap();
         assert!(body.contains("Body content here"));
     }
@@ -1146,7 +1175,7 @@ mod tests {
         let child_root = project.join(".agents/skills");
         write_skill(&child_root, "winner", "Nearest version");
 
-        let registry = AssetRegistry::build(&test_config(), &project, &[]);
+        let registry = build_isolated(&test_config(), &project, &[]);
         let winner = registry.get("winner").unwrap();
         assert_eq!(winner.description, "Nearest version");
         assert_eq!(winner.workspace_depth, 0);
@@ -1168,7 +1197,7 @@ mod tests {
             "---\nname: inherited\ndescription: Parent skill\n---\nBody",
         )
         .unwrap();
-        let registry = AssetRegistry::build(&test_config(), &project, &[]);
+        let registry = build_isolated(&test_config(), &project, &[]);
         assert!(registry.get("inherited").is_none());
     }
 
@@ -1186,7 +1215,7 @@ mod tests {
             "---\nname: from-worktree\ndescription: Worktree ancestor\n---\nBody",
         )
         .unwrap();
-        let registry = AssetRegistry::build(&test_config(), &project, &[]);
+        let registry = build_isolated(&test_config(), &project, &[]);
         assert_eq!(registry.get("from-worktree").unwrap().workspace_depth, 2);
     }
 }
