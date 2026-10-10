@@ -656,7 +656,9 @@ mod tests {
     #[test]
     fn parse_candidate_portable() {
         let dir = TempDir::new().unwrap();
-        let skill_file = dir.path().join("SKILL.md");
+        let package = dir.path().join("portable-skill");
+        fs::create_dir_all(&package).unwrap();
+        let skill_file = package.join("SKILL.md");
         fs::write(
             &skill_file,
             "---\nname: portable-skill\ndescription: A portable skill\nlicense: MIT\n---\nBody",
@@ -720,7 +722,7 @@ mod tests {
     #[test]
     fn parse_candidate_resources_inventoried() {
         let dir = TempDir::new().unwrap();
-        let skill_dir = dir.path().join("myskill");
+        let skill_dir = dir.path().join("rsrc");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -745,7 +747,9 @@ mod tests {
     #[test]
     fn parse_candidate_allowed_tools_preserved_as_metadata() {
         let dir = TempDir::new().unwrap();
-        let skill_file = dir.path().join("SKILL.md");
+        let package = dir.path().join("tool-user");
+        fs::create_dir_all(&package).unwrap();
+        let skill_file = package.join("SKILL.md");
         fs::write(
             &skill_file,
             "---\nname: tool-user\ndescription: uses tools\nallowed-tools:\n  - bash\n  - read\n---\nBody",

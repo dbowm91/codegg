@@ -778,6 +778,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn home_skill_is_loaded_from_the_injected_user_root() {
+        let project = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        let skill = home.path().join(".agents/skills/from-home");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: from-home\ndescription: Home skill fixture\n---\nBody",
+        )
+        .unwrap();
+        let registry = AssetRegistry::build_with_home(
+            &test_config(),
+            project.path(),
+            &[],
+            Some(home.path().to_path_buf()),
+        );
+        assert_eq!(
+            registry.get("from-home").unwrap().source_kind,
+            SourceKind::AgentsGlobal
+        );
+    }
+
     /// `skills.paths` entries are skills directories themselves, so the
     /// skill is discovered without any `<vendor>/skills` join.
     #[test]

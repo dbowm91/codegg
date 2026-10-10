@@ -639,7 +639,10 @@ fn skill_index_compat_adapter() {
     let mut index = SkillIndexCompat::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        index.load(root.to_str().unwrap()).await.unwrap();
+        index
+            .load_with_discovery_roots(root.to_str().unwrap(), None, &[])
+            .await
+            .unwrap();
     });
     assert!(index.get("compat").is_some());
     assert_eq!(index.list().len(), 1);
