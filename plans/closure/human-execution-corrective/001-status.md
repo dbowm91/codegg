@@ -14,7 +14,7 @@ Repository baseline reviewed: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
 Implementation commits:
 
-- Pending in this working tree; implementation and follow-up plan will be committed together.
+- `7e1892a13755b6f6a04e9c7012cf5db1dcaddf4f` — provider-facing bounded/redacted shell promotion, PTY/VT fidelity, closure evidence, and C004 corrective plan.
 
 ## 1. Executive finding
 
