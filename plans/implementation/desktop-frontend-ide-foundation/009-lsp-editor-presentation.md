@@ -1,6 +1,8 @@
 # CodeGG Desktop Frontend and IDE Foundation M006-C — LSP Editor Presentation
 
-Status: active
+Status: closed
+
+Closure record: `plans/closure/desktop-frontend-ide-foundation/010-status.md`
 
 Repository baseline: `41eb955e`
 
