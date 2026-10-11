@@ -187,12 +187,7 @@ pub(crate) fn shell_argv(
                 ),
                 crate::config::schema::WindowsShellKind::Cmd => (
                     system_root.join("System32/cmd.exe"),
-                    vec![
-                        "/D".to_string(),
-                        "/S".to_string(),
-                        "/C".to_string(),
-                        command.to_string(),
-                    ],
+                    vec!["/D".to_string(), "/C".to_string(), command.to_string()],
                 ),
                 crate::config::schema::WindowsShellKind::GitBash => {
                     let executable = ["ProgramFiles", "ProgramFiles(x86)"]
@@ -1446,6 +1441,7 @@ mod tests {
                 );
             } else {
                 assert_eq!(Path::new(&argv[0]), system_root.join("System32/cmd.exe"));
+                assert_eq!(&argv[1..3], &["/D", "/C"]);
             }
         }
         match shell_argv(
