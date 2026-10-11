@@ -1131,14 +1131,30 @@ mod tests {
         };
         let result = execute_python_script(&request).await;
         assert!(result.is_success(), "stderr: {}", result.stderr);
-        // On Linux: true if landlock available, false otherwise.
-        // On other platforms: always false.
+        // Linux can run without Landlock in a restricted CI container. The
+        // required macOS Python path must use the real Seatbelt helper.
         #[cfg(target_os = "linux")]
         {
             // Landlock may not be available in CI containers
             let _ = result.os_filesystem_isolation;
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            assert!(result.os_filesystem_isolation);
+            assert!(matches!(
+                result
+                    .policy_decision
+                    .as_ref()
+                    .and_then(|decision| decision.outcome.as_ref()),
+                Some(SandboxOutcome::Enforced {
+                    backend: SandboxBackend::Os {
+                        backend: crate::security::sandbox::BackendId::SEATBELT,
+                    },
+                    abi: None,
+                })
+            ));
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         assert!(!result.os_filesystem_isolation);
     }
 
