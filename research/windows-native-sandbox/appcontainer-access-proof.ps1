@@ -12,6 +12,18 @@ using System.Text;
 public static class AppContainerProofNative {
     public static string ObservedAppContainerSid = "";
     public static bool ObservedInJob = false;
+    public static bool ObservedDescendantInJob = false;
+    public static bool ObservedDescendantTerminated = false;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct ProcessEntry32 {
+        public uint dwSize, cntUsage, th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID, cntThreads, th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct StartupInfo {
@@ -87,6 +99,14 @@ public static class AppContainerProofNative {
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool Process32First(IntPtr snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("kernel32.dll")]
     public static extern bool CloseHandle(IntPtr handle);
@@ -119,6 +139,11 @@ public static class AppContainerProofNative {
     }
 
     public static uint Run(string executable, string arguments, IntPtr appContainerSid) {
+        return Run(executable, arguments, appContainerSid, false);
+    }
+
+    public static uint Run(string executable, string arguments, IntPtr appContainerSid,
+            bool probeDescendant) {
         IntPtr SecurityCapabilitiesAttribute = (IntPtr)0x00020009;
         const uint ExtendedStartupInfoPresent = 0x00080000;
         const uint CreateSuspended = 0x00000004;
@@ -183,6 +208,38 @@ public static class AppContainerProofNative {
             uint exitCode;
             if (!GetExitCodeProcess(process.hProcess, out exitCode))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (probeDescendant) {
+                IntPtr descendant = IntPtr.Zero;
+                uint descendantPid = 0;
+                DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                while (DateTime.UtcNow < deadline && descendant == IntPtr.Zero) {
+                    descendantPid = FindChildProcess(process.dwProcessId);
+                    if (descendantPid != 0)
+                        descendant = OpenProcess(0x00100001 | 0x1000, false, descendantPid);
+                    if (descendant == IntPtr.Zero) System.Threading.Thread.Sleep(50);
+                }
+                if (descendant == IntPtr.Zero)
+                    throw new InvalidOperationException("AppContainer target did not leave a live child process to inspect.");
+                try {
+                    bool descendantInJob;
+                    if (!IsProcessInJob(descendant, job, out descendantInJob))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    ObservedDescendantInJob = descendantInJob;
+                    if (!descendantInJob)
+                        throw new InvalidOperationException("AppContainer descendant escaped its owner Job.");
+                    if (!TerminateJobObject(job, 0xdead))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    ObservedDescendantTerminated = WaitForSingleObject(descendant, 5000) == 0;
+                    if (!ObservedDescendantTerminated)
+                        throw new InvalidOperationException("Owner Job termination did not stop the AppContainer descendant.");
+                } finally {
+                    if (WaitForSingleObject(descendant, 0) != 0) {
+                        TerminateProcess(descendant, 0xdead);
+                        WaitForSingleObject(descendant, 5000);
+                    }
+                    CloseHandle(descendant);
+                }
+            }
             return exitCode;
         } finally {
             if (process.hProcess != IntPtr.Zero && WaitForSingleObject(process.hProcess, 0) != 0 &&
@@ -194,6 +251,23 @@ public static class AppContainerProofNative {
             if (attributesInitialized) DeleteProcThreadAttributeList(attributes);
             Marshal.FreeHGlobal(attributes);
         }
+    }
+
+    private static uint FindChildProcess(uint parentPid) {
+        const uint TH32CS_SNAPPROCESS = 0x00000002;
+        IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == new IntPtr(-1))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            ProcessEntry32 entry = new ProcessEntry32();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(ProcessEntry32));
+            if (!Process32First(snapshot, ref entry))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            do {
+                if (entry.th32ParentProcessID == parentPid) return entry.th32ProcessID;
+            } while (Process32Next(snapshot, ref entry));
+            return 0;
+        } finally { CloseHandle(snapshot); }
     }
 }
 '@
@@ -302,6 +376,16 @@ try {
     }
     'suspended AppContainer target assigned to Job before resume: passed'
     'allowed workspace read: passed'
+
+    $timeout = Join-Path $env:SystemRoot 'System32\timeout.exe'
+    $descendantCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C start `"`" /B `"$timeout`" /T 20 /NOBREAK", $sid, $true)
+    if ($descendantCode -ne 0 -or -not [AppContainerProofNative]::ObservedDescendantInJob -or
+        -not [AppContainerProofNative]::ObservedDescendantTerminated) {
+        throw 'AppContainer descendant Job inheritance and cleanup proof failed.'
+    }
+    'AppContainer descendant inherited the owner Job: passed'
+    'owner Job termination stopped the descendant: passed'
 
     $writeCode = [AppContainerProofNative]::Run($cmd,
         "/D /C echo allowed-write-marker `> `"$(Join-Path $writeRoot 'allowed.txt')`"", $sid)
