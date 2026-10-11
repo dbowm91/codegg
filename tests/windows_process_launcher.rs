@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Foundation::{GetLastError, WAIT_OBJECT_0};
-use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, SYNCHRONIZE};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+};
 
 fn powershell() -> PathBuf {
     std::env::var_os("SystemRoot")
@@ -42,7 +44,7 @@ fn powershell_quote(path: &Path) -> String {
 }
 
 fn process_signaled(pid: u32) -> bool {
-    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle.is_null() {
         let error = unsafe { GetLastError() };
         assert_eq!(
