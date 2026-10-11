@@ -38,9 +38,8 @@ No sandbox daemon, replacement process supervisor, containers, VMs, namespace/se
 
 - C001 is conditionally closed at `plans/closure/sandbox-containment-post-closure-corrective/001-status.md`: Python selection is platform-neutral and required constrained launches fail closed. Native Darwin helper qualification remains outstanding.
 - C002 is closed at `plans/closure/sandbox-containment-post-closure-corrective/002-status.md`: Linux kernel `6.8.0-146-generic`, effective Landlock ABI 4, real-helper mutation probes passed.
-- `policy::tool_read_allowances` allows the entirety of `~/.config`/other tool state; `sensitive_deny_paths` names children like `~/.config/gh/hosts.yml`. Landlock ignores explicit denies, so a read-granted ancestor defeats the credential-exclusion intent.
-- `policy::tool_write_allowances` grants global persistent toolchain/cache state and shared `/tmp`. Seatbelt emits sensitive write denials **before** generic write allow rules; overlapping write roots can override exclusions.
-- `tests/sandbox_containment.rs` now includes real-helper truncation and cross-boundary rename/link probes. C003 credential exclusion and scoped tool-state probes and C004 native macOS qualification remain outstanding.
+- C003 is conditionally closed at `plans/closure/sandbox-containment-post-closure-corrective/003-status.md`: overlapping Linux Landlock grants are carved around credential denials, Seatbelt emits final denials after re-allowances, broad persistent write roots are removed, and private 0700 per-launch scratch is reaped after the process tree exits.
+- Real-helper Linux probes now cover nested and future-created credentials, aliases, workspace writes, truncation, rename/link, scoped scratch, and offline Cargo metadata. Native Darwin C001/C003 qualification remains outstanding and gates C004.
 
 Source references:
 - `src/security/sandbox.rs`, `src/security/sandbox/policy.rs`, `src/security/sandbox/landlock.rs`, `src/security/sandbox/seatbelt.rs`
@@ -71,8 +70,8 @@ C002 (Landlock ABI/truncate correction; independent) ──> C003  |
 
 - C001: conditionally closed; backend-neutral selection and required-failure contract are stable. Native macOS evidence remains a C004 qualification gate.
 - C002: closed; ABI >=3 is the required guarantee tier for preventing truncation; older kernels are rejected for strict requests.
-- C003: active; C002 hard dependency is closed and C001's shared launch interface is stable.
-- C004: blocked by C003 and native C001 qualification. Limited macOS read/IPC hardening and honest cross-platform qualification; no claim of complete parity.
+- C003: conditionally closed; Linux ABI 4 evidence and quick verification passed. Native Darwin qualification remains outstanding.
+- C004: blocked by native Darwin qualification from C001/C003. Limited macOS read/IPC hardening and honest cross-platform qualification; no claim of complete parity.
 
 All four plan documents may be read in parallel, but hand off only dependency-ready ones for production changes.
 
@@ -82,8 +81,8 @@ All four plan documents may be read in parallel, but hand off only dependency-re
 |---|---|---|---|---|
 | C001 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/001-macos-python-and-strict-launch-contract.md` | conditionally closed | strict constrained launch; native Darwin qualification remains outstanding |
 | C002 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/002-landlock-abi-and-mutation-rights.md` | closed | Linux ABI>=3 protects truncation; older kernels receive truthful and safe disposition |
-| C003 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md` | active | overlapping credential exclusions hold, persistent tool state not globally mutable |
-| C004 | capability/invariant | `plans/implementation/sandbox-containment-post-closure-corrective/004-macos-confidentiality-and-cross-platform-qualification.md` | blocked on C003 + native C001 evidence | actual macOS leakage boundary measured; safe profile selected, tests and documentation qualified |
+| C003 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md` | conditionally closed | Linux overlapping credential exclusions hold and persistent tool state is not globally mutable; native Darwin qualification remains outstanding |
+| C004 | capability/invariant | `plans/implementation/sandbox-containment-post-closure-corrective/004-macos-confidentiality-and-cross-platform-qualification.md` | blocked on native Darwin qualification from C001/C003 | actual macOS leakage boundary measured; safe profile selected, tests and documentation qualified |
 
 Closure record for each: `plans/closure/sandbox-containment-post-closure-corrective/00N-status.md`.
 
