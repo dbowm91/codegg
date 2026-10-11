@@ -14,6 +14,7 @@ pub mod selection_catalog;
 pub mod state;
 pub mod status;
 
+pub mod human_shell;
 pub mod import;
 pub mod models;
 pub mod row;
@@ -88,6 +89,12 @@ pub(crate) fn parse_json_field(raw: &str) -> serde_json::Value {
     }
 }
 
+pub use human_shell::{
+    HumanShellPromotion, HumanShellPromotionError, HumanShellPromotionIdempotency,
+    HumanShellPromotionInput, HumanShellPromotionState, HumanShellPromotionStore,
+    HUMAN_SHELL_PROMOTION_MAX_BYTES, HUMAN_SHELL_PROMOTION_MAX_PENDING,
+    HUMAN_SHELL_PROMOTION_RETENTION_MS, HUMAN_SHELL_PROMOTION_TTL_MS,
+};
 pub use import::redact_for_export;
 
 #[cfg(test)]

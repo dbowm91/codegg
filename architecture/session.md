@@ -34,6 +34,8 @@ session/
 ├── continuation.rs      # Durable continuation checkpoints (M001+M004):
 │                        # typed payload/envelope, lineage, digest,
 │                        # ContinuationCheckpointStore + prepare_with_id
+├── human_shell.rs       # Bounded redacted shell promotion lifecycle,
+│                        # idempotency, reservation, expiry, recovery
 ├── events.rs            # 20 typed SessionEvent variants, EventMeta,
 │                        # ToolRisk, ToolCallStatus, PlanItemStatus,
 │                        # ContextCompacted lineage fields
@@ -54,8 +56,7 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **73 CREATE TABLE statements** across
-these table groups:
+Migrations create and evolve the following table groups:
 
 **Core session tables (v1):**
 `project`, `session`, `message`, `part`, `todo`, `permission`,
@@ -74,6 +75,12 @@ these table groups:
 `workspace` (v22), `logical_project`, `repository`,
 `project_repository`, `workspace_project_binding`,
 `session_project_binding`, `identity_diagnostic` (v25)
+
+**Human-shell promotion state (v71):**
+`human_shell_promotion` stores only bounded redacted projections, authenticated
+principal and exact session/project/workspace bindings, expiry, and the
+pending/reserved/consumed/expired lifecycle. It has a finite per-session
+pending and retention cap; consumed and expired rows clear their payload.
 
 **Provider connections (v24, v26, v27, v31):**
 `provider_connections` (v24), `provider_provisioning`,

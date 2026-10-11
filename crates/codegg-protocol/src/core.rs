@@ -1040,6 +1040,25 @@ pub struct EventEnvelope<T> {
 #[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
+    ShellPromotionCapabilities {
+        capabilities: crate::human_shell::HumanShellPromotionCapabilitiesDto,
+    },
+    ShellPromotionStaged {
+        outcome: crate::human_shell::HumanShellPromotionStageOutcomeDto,
+        promotion: crate::human_shell::HumanShellPromotionDto,
+    },
+    ShellPromptSubmitResult {
+        accepted: bool,
+        stage_outcome: crate::human_shell::HumanShellPromotionStageOutcomeDto,
+        promotion: crate::human_shell::HumanShellPromotionDto,
+        #[serde(default)]
+        error_code: Option<String>,
+        #[serde(default)]
+        error_message: Option<String>,
+    },
+    ShellPromotionList {
+        promotions: Vec<crate::human_shell::HumanShellPromotionDto>,
+    },
     DocumentCapabilities {
         capability: String,
         supported: bool,
@@ -2089,6 +2108,10 @@ pub enum CoreRequest {
         /// the agent/model-profile default" — the pre-existing behavior.
         #[serde(default)]
         reasoning: Option<ReasoningOverride>,
+        /// Opaque session-owned human-shell promotion identities to include
+        /// in this accepted turn. Content is loaded and bound by the daemon.
+        #[serde(default)]
+        shell_promotion_ids: Vec<String>,
     },
     /// M004 desktop session slice: minimal prompt submission. The
     /// daemon resolves model/agents/messages from durable session
@@ -2101,6 +2124,24 @@ pub enum CoreRequest {
         session_id: String,
         text: String,
         plan_mode: bool,
+        /// Existing acknowledged promotions to include in the turn.
+        #[serde(default)]
+        shell_promotion_ids: Vec<String>,
+        /// Optional idempotent stage input for atomic `/shell-ask` submission.
+        /// If admission is busy, the stage remains durable and pending.
+        #[serde(default)]
+        shell_promotion: Option<crate::human_shell::HumanShellPromotionStageDto>,
+    },
+    /// Query the daemon's authoritative human-shell promotion contract.
+    ShellPromotionCapabilities,
+    /// Stage a bounded/redacted projection for one authenticated session.
+    ShellPromotionStage {
+        session_id: String,
+        promotion: crate::human_shell::HumanShellPromotionStageDto,
+    },
+    /// Recover bounded durable promotion states for the authenticated session.
+    ShellPromotionList {
+        session_id: String,
     },
     TurnCancel {
         session_id: String,

@@ -2845,6 +2845,8 @@ impl CoreDaemon {
             | CoreRequest::SessionExport { session_id }
             | CoreRequest::TurnSubmit { session_id, .. }
             | CoreRequest::SessionPromptSubmit { session_id, .. }
+            | CoreRequest::ShellPromotionStage { session_id, .. }
+            | CoreRequest::ShellPromotionList { session_id }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
             | CoreRequest::SessionControlGet { session_id }
@@ -3186,6 +3188,10 @@ impl CoreDaemon {
                     CoreRequest::SessionPromptSubmit {
                         session_id, text, ..
                     } => (session_id.clone(), text.clone()),
+                    CoreRequest::ShellPromotionStage {
+                        session_id,
+                        promotion,
+                    } => (session_id.clone(), promotion.projection.clone()),
                     CoreRequest::TurnSteer {
                         session_id, text, ..
                     } => (session_id.clone(), text.clone()),
@@ -5383,6 +5389,7 @@ mod tests {
                 current_agent_idx: 0,
                 messages: vec![],
                 reasoning: None,
+                shell_promotion_ids: Vec::new(),
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
@@ -5445,6 +5452,73 @@ mod tests {
             other => panic!("expected Session, got {:?}", other),
         };
         (workspace_dir, session_id)
+    }
+
+    #[tokio::test]
+    async fn human_shell_promotion_stage_is_idempotent_and_recovers_after_daemon_rebuild() {
+        let daemon = test_daemon().await;
+        let (_workspace, session_id) = prompt_submit_session(&daemon).await;
+        let stage = crate::protocol::human_shell::HumanShellPromotionStageDto {
+            promotion_id: "shell-promotion-recovery-1".into(),
+            source_command_id: "42".into(),
+            projection: "safe evidence Authorization: Bearer shell-stage-secret-1234567890".into(),
+            source_exit_code: Some(1),
+            source_truncated: false,
+        };
+        let request = || {
+            crate::core::new_request(
+                "shell-stage-retry".into(),
+                CoreRequest::ShellPromotionStage {
+                    session_id: session_id.clone(),
+                    promotion: stage.clone(),
+                },
+            )
+        };
+        let first = daemon.handle_request(request()).await.unwrap();
+        assert!(matches!(
+            first,
+            CoreResponse::ShellPromotionStaged {
+                outcome: crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Staged,
+                ..
+            }
+        ));
+        let duplicate = daemon.handle_request(request()).await.unwrap();
+        assert!(matches!(
+            duplicate,
+            CoreResponse::ShellPromotionStaged {
+                outcome:
+                    crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Duplicate,
+                ..
+            }
+        ));
+
+        // A fresh daemon facade over the same authoritative database models a
+        // TUI/daemon reconnect; the pending projection remains recoverable.
+        let reconnected = CoreDaemon::new(daemon.pool.clone(), None, None);
+        let recovered = reconnected
+            .handle_request(crate::core::new_request(
+                "shell-stage-list".into(),
+                CoreRequest::ShellPromotionList {
+                    session_id: session_id.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::ShellPromotionList { promotions } = recovered else {
+            panic!("expected promotion list after reconnect, got {recovered:?}");
+        };
+        assert_eq!(promotions.len(), 1);
+        assert_eq!(promotions[0].promotion_id, stage.promotion_id);
+        let projection = promotions[0]
+            .projection
+            .as_deref()
+            .expect("pending payload");
+        assert!(projection.contains("[REDACTED:bearer-token]"));
+        assert!(!projection.contains("shell-stage-secret-1234567890"));
+        assert_eq!(
+            promotions[0].state,
+            crate::protocol::human_shell::HumanShellPromotionStateDto::Pending
+        );
     }
 
     /// M004: seed one healthy `openai` connection plus a `gpt-4o`
@@ -5538,6 +5612,8 @@ mod tests {
                         session_id: session_id.clone(),
                         text,
                         plan_mode: false,
+                        shell_promotion_ids: Vec::new(),
+                        shell_promotion: None,
                     },
                 ))
                 .await
@@ -5560,6 +5636,8 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5586,6 +5664,8 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5626,6 +5706,8 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5672,6 +5754,8 @@ mod tests {
                     session_id: session.id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5699,6 +5783,8 @@ mod tests {
                     session_id: session_id.clone(),
                     text: "hello from prompt submit".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5758,6 +5844,8 @@ mod tests {
                     session_id,
                     text: "duplicate".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -6140,6 +6228,7 @@ mod tests {
                 current_agent_idx: 0,
                 messages: vec![],
                 reasoning: None,
+                shell_promotion_ids: Vec::new(),
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();

@@ -21,6 +21,13 @@ The TUI routes session, history, task, memory, and worktree actions through
 `CoreClient` so the same logic can run in-process, over stdio, or over a
 socket transport.
 
+Human-shell promotions use the daemon-owned session lifecycle described in
+`architecture/human_shell.md`: stage and list requests are typed, reconnect
+restores pending projection IDs, and a submitted turn carries only those IDs.
+TUI state changes to staged only after daemon acknowledgement. WebSocket prompt
+insertion remains an unsubmitted draft because that transport has no canonical
+staging request.
+
 ### Daemon event stream (socket mode)
 
 `CoreClient::subscribe()` is the TUI's only view of daemon-pushed state. In

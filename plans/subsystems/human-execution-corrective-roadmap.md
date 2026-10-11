@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C003 closed; C001 corrective pass required; C002 blocked on C001; C004 active)
+Status: active (C001, C003 and C004 closed; C002 eligible)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -38,17 +38,17 @@ No agent tool rerouting through human shell, model-driven PTY, new process super
 
 `src/tui/app/prompt_turn.rs::send_prompt` intercepts bangs before agent turn submission. `src/tui/commands/shell.rs` creates `ShellRuntime::new()` in the TUI and `src/shell/runtime.rs` runs `$SHELL -lc` via `ManagedProcessService::run_streaming`. The process runs on the frontend's host and cannot retain shell state across separate commands.
 
-Shell-cell projection metadata comes from `config_command_projection(..., ModelContext)`, but `!!`/`/shell-include`/`/shell-ask` separately format `ShellOutputStore` bytes and insert `UIMessage` through `add_user_message`, without demonstrated daemon/session acceptance or model-facing dispatch. That can bypass projection redaction/bounds. Config knobs (`enabled`, `default_timeout_secs`, `auto_promote_bangbang`) require a real production-use audit.
+Historical baseline note: this paragraph described the frontend-only state that C004 corrected. C004 now requires the shared model redactor at both the TUI preparation step and authenticated session owner, persists only the bounded projection, and injects staged IDs into an accepted turn. The remaining execution-locality gap is C002, not context ownership.
 
 `src/interactive_process.rs` supplies Linux/macOS PTYs and `tests/interactive_terminal_tui.rs` demonstrates input through `cat`. But `src/tui/interactive_terminal.rs::classify_key` always consumes Esc as focus exit, and `render_lines` simply newline-splits lossy text; cursor control, erase and alternate screen are not faithfully rendered. That is a terminal presentation gap, not absence of a PTY.
 
 ## 5. Target architecture
 
-The TUI remains a view and human-intent adapter. Human finite execution receives explicit authenticated workspace/node context, bounded process lifecycle and output/provenance. Promoted output is redacted once by the canonical model-target projector and acknowledged/staged by the authoritative session/context owner, never just a local chat bubble. PTY sessions remain daemon-owned and separate; frontend renders a bounded VT screen and uses a dedicated exit-focus chord without suppressing literal Esc input.
+The TUI remains a view and human-intent adapter. Human finite execution receives explicit authenticated workspace/node context, bounded process lifecycle and output/provenance. Promoted output is redacted by the canonical model-target projector before transmission and again at the authenticated session owner, which durably stages it; TUI state never rests on a local chat bubble. PTY sessions remain daemon-owned and separate; frontend renders a bounded VT screen and uses a dedicated exit-focus chord without suppressing literal Esc input.
 
 ## 6. Dependency graph
 
-`C001` (promotion and redaction) requires its registered C004 authoritative-staging corrective. `C002` (workspace-owned human shell dispatch) hard-depends on C001's accepted context/output ownership and is blocked until C001 closes. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
+`C001` (promotion and redaction) required its registered C004 authoritative-staging corrective; C004 is now closed and C001's acceptance contract is satisfied. `C002` (workspace-owned human shell dispatch) is now eligible because the accepted context/output owner is established. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
 
 ## 7. Milestones
 
@@ -81,7 +81,7 @@ C001–C003 each need an independent closure record including user-visible end-t
 
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
-| C001 | corrective pass required | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | `plans/closure/human-execution-corrective/001-status.md`; follow-up C004 |
-| C002 | blocked (C001) | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | pending; C001 authoritative staging contract is incomplete |
+| C001 | closed | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | Original closure plus authoritative-staging completion `plans/closure/human-execution-corrective/004-status.md` |
+| C002 | eligible | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001's accepted context/provenance dependency is satisfied by C004; execution dispatch remains in scope |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
-| C004 | active | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Corrective follow-up for C001; C002 remains blocked until C004 closes and C001 is accepted |
+| C004 | closed | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; C002 is eligible |

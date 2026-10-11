@@ -1081,6 +1081,7 @@ mod tests {
                 session_id,
                 text,
                 plan_mode,
+                ..
             } = payload
             else {
                 panic!("expected SessionPromptSubmit, got {payload:?}");

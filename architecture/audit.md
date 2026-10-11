@@ -221,6 +221,9 @@ Coverage has four distinct categories (M004):
   interactive `command_execute` hook below rather than a daemon mapping.
   Document capability/read calls are also bounded content reads; document
   change/save/reload use the `file_mutate` daemon mapping and exclude text.
+  Human-shell capability negotiation and session-scoped promotion recovery
+  are likewise bounded reads; the stage operation uses `prompt_submit` and
+  records only projection digest/byte length, never shell content.
 
 Live daemon seam (`src/core/daemon.rs`):
 

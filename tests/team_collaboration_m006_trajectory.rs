@@ -708,6 +708,7 @@ async fn chat_policy_matrix_end_to_end() {
             agents: Vec::new(),
             current_agent_idx: 0,
             messages: Vec::new(),
+            shell_promotion_ids: Vec::new(),
         },
     )
     .await;

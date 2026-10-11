@@ -152,8 +152,52 @@ mod shell_dispatch_tests {
             &self,
             request: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
         ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
+            let response = match &request.payload {
+                crate::protocol::core::CoreRequest::SessionPromptSubmit {
+                    shell_promotion: Some(promotion),
+                    ..
+                } => crate::protocol::core::CoreResponse::ShellPromptSubmitResult {
+                    accepted: true,
+                    stage_outcome:
+                        crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Staged,
+                    promotion: crate::protocol::human_shell::HumanShellPromotionDto {
+                        promotion_id: promotion.promotion_id.clone(),
+                        source_command_id: promotion.source_command_id.clone(),
+                        projection: None,
+                        projection_bytes: promotion.projection.len(),
+                        source_exit_code: promotion.source_exit_code,
+                        source_truncated: promotion.source_truncated,
+                        created_at_ms: 0,
+                        expires_at_ms: 0,
+                        state: crate::protocol::human_shell::HumanShellPromotionStateDto::Consumed,
+                        consumed_turn_id: Some("turn-test".into()),
+                    },
+                    error_code: None,
+                    error_message: None,
+                },
+                crate::protocol::core::CoreRequest::ShellPromotionStage { promotion, .. } => {
+                    crate::protocol::core::CoreResponse::ShellPromotionStaged {
+                        outcome:
+                            crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Staged,
+                        promotion: crate::protocol::human_shell::HumanShellPromotionDto {
+                            promotion_id: promotion.promotion_id.clone(),
+                            source_command_id: promotion.source_command_id.clone(),
+                            projection: Some(promotion.projection.clone()),
+                            projection_bytes: promotion.projection.len(),
+                            source_exit_code: promotion.source_exit_code,
+                            source_truncated: promotion.source_truncated,
+                            created_at_ms: 0,
+                            expires_at_ms: 1,
+                            state:
+                                crate::protocol::human_shell::HumanShellPromotionStateDto::Pending,
+                            consumed_turn_id: None,
+                        },
+                    }
+                }
+                _ => crate::protocol::core::CoreResponse::Ack,
+            };
             let _ = self.0.send(request.payload);
-            Ok(crate::protocol::core::CoreResponse::Ack)
+            Ok(response)
         }
 
         fn subscribe(
@@ -327,55 +371,19 @@ mod shell_dispatch_tests {
     }
 
     #[test]
-    fn shell_include_full_mode_promotes_output() {
+    fn shell_include_without_core_ack_does_not_claim_staging() {
         let mut app = make_test_app();
         insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
         handle_shell_include(&mut app, 1, "all".to_string(), None);
-        let msgs = get_user_messages(&app);
-        assert!(
-            msgs.iter().any(|m| m.contains("echo hello")),
-            "should include command in promoted message, got: {msgs:?}"
-        );
-        assert!(
-            msgs.iter().any(|m| m.contains("hello")),
-            "should include stdout in promoted message, got: {msgs:?}"
-        );
-        let provider_context = app.build_provider_context();
-        let staged_user_text: Vec<&str> = provider_context
-            .iter()
-            .flat_map(|message| match message {
-                crate::provider::Message::User { content } => content
-                    .iter()
-                    .filter_map(|part| match part {
-                        crate::provider::ContentPart::Text { text } if text.contains("hello") => {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            })
-            .collect();
-        assert_eq!(
-            staged_user_text.len(),
-            1,
-            "the staged output appears exactly once in provider-facing context"
-        );
+        assert!(get_user_messages(&app).is_empty());
+        assert!(app.build_provider_context().is_empty());
         let toasts = get_toasts(&app);
         assert!(
-            toasts.iter().any(|t| t.contains("staged")),
-            "should show staging toast, got: {toasts:?}"
+            toasts.iter().any(|t| t.contains("cannot durably stage")),
+            "unsupported staging must be explicit, got: {toasts:?}"
         );
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
         assert!(!entry.promoted, "staging is not daemon acceptance");
-        assert_eq!(app.pending_shell_promotions.len(), 1);
-        assert_eq!(app.pending_shell_promotions[0].0, 1);
-        let receipt = (app.pending_shell_promotions[0].2, 1);
-        app.apply_shell_promotions_submitted(&[receipt], Some("busy".into()));
-        assert!(!app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
-        assert_eq!(app.pending_shell_promotions.len(), 1);
-        app.apply_shell_promotions_submitted(&[receipt], None);
-        assert!(app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
         assert!(app.pending_shell_promotions.is_empty());
     }
 
@@ -390,11 +398,54 @@ mod shell_dispatch_tests {
             b"",
             Some(0),
         );
-        handle_shell_include(&mut app, 1, "all".to_string(), None);
         let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
         app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
         let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
         app.tui_cmd_tx = Some(tui_tx);
+
+        handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let staged_request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("stage request arrives")
+            .expect("captured stage request");
+        let (promotion_id, staged_projection) = match staged_request {
+            crate::protocol::core::CoreRequest::ShellPromotionStage { promotion, .. } => {
+                assert_eq!(
+                    promotion
+                        .projection
+                        .matches("provider-shell-marker")
+                        .count(),
+                    1
+                );
+                assert!(promotion.projection.contains("[REDACTED:bearer-token]"));
+                assert!(!promotion.projection.contains("secret-value-1234567890"));
+                (
+                    promotion.promotion_id.parse::<uuid::Uuid>().unwrap(),
+                    promotion.projection,
+                )
+            }
+            other => panic!("expected stage request, got {other:?}"),
+        };
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("stage acknowledgement arrives")
+            .expect("stage completion command")
+        {
+            TuiCommand::ShellPromotionStageSubmitted {
+                session_id,
+                command_id,
+                promotion_id: id,
+                projection,
+                error,
+            } => {
+                assert_eq!(id, promotion_id);
+                crate::tui::commands::shell::apply_shell_promotion_stage(
+                    &mut app, session_id, command_id, id, projection, error,
+                );
+            }
+            other => panic!("unexpected stage completion: {other:?}"),
+        }
+        assert_eq!(app.pending_shell_promotions[0].1, staged_projection);
 
         app.dispatch_turn_submit_request("next user turn".into());
 
@@ -403,13 +454,19 @@ mod shell_dispatch_tests {
             .expect("turn request arrives")
             .expect("captured request");
         let wire = serde_json::to_string(&request).expect("serialize provider-facing request");
-        assert_eq!(wire.matches("provider-shell-marker").count(), 1);
-        assert!(wire.contains("[REDACTED:bearer-token]"));
+        assert!(
+            !wire.contains("provider-shell-marker"),
+            "TUI sends only opaque promotion IDs"
+        );
         assert!(!wire.contains("secret-value-1234567890"));
-        assert!(matches!(
-            request,
-            crate::protocol::core::CoreRequest::TurnSubmit { .. }
-        ));
+        let crate::protocol::core::CoreRequest::TurnSubmit {
+            shell_promotion_ids,
+            ..
+        } = request
+        else {
+            panic!("expected turn submit request");
+        };
+        assert_eq!(shell_promotion_ids, vec![promotion_id.to_string()]);
         match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
             .await
             .expect("acceptance completion arrives")
@@ -446,22 +503,40 @@ mod shell_dispatch_tests {
             .await
             .expect("ask request arrives")
             .expect("captured request");
-        let text = match request {
-            crate::protocol::core::CoreRequest::SessionPromptSubmit { text, .. } => text,
+        let (text, evidence) = match request {
+            crate::protocol::core::CoreRequest::SessionPromptSubmit {
+                text,
+                shell_promotion: Some(promotion),
+                ..
+            } => (text, promotion.projection),
             other => panic!("expected one session prompt submit, got {other:?}"),
         };
-        assert_eq!(text.matches("ask-shell-marker").count(), 1);
         assert!(text.contains("explain this result"));
-        assert!(text.contains("[REDACTED:bearer-token]"));
         assert!(!text.contains("ask-secret-value-1234567890"));
+        assert_eq!(evidence.matches("ask-shell-marker").count(), 1);
+        assert!(evidence.contains("[REDACTED:bearer-token]"));
+        assert!(!evidence.contains("ask-secret-value-1234567890"));
         match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
             .await
             .expect("acceptance completion arrives")
             .expect("completion command")
         {
-            TuiCommand::ShellAskSubmitted { id: 2, text, error } => {
+            TuiCommand::ShellAskSubmitted {
+                id: 2,
+                text,
+                projection,
+                promotion_id,
+                error,
+            } => {
                 assert!(error.is_none());
-                crate::tui::commands::shell::apply_shell_ask_submitted(&mut app, 2, text, error);
+                crate::tui::commands::shell::apply_shell_ask_submitted(
+                    &mut app,
+                    2,
+                    text,
+                    projection,
+                    promotion_id,
+                    error,
+                );
             }
             other => panic!("unexpected completion command: {other:?}"),
         }
@@ -502,10 +577,7 @@ mod shell_dispatch_tests {
         );
         handle_shell_include(&mut app, 1, "stdout".to_string(), None);
         let msgs = get_user_messages(&app);
-        assert!(
-            msgs.iter().any(|m| m.contains("checking...")),
-            "should include stdout, got: {msgs:?}"
-        );
+        assert!(msgs.iter().all(|m| !m.contains("checking...")));
     }
 
     #[test]
@@ -521,10 +593,7 @@ mod shell_dispatch_tests {
         );
         handle_shell_include(&mut app, 1, "stderr".to_string(), None);
         let msgs = get_user_messages(&app);
-        assert!(
-            msgs.iter().any(|m| m.contains("error[E0308]")),
-            "should include stderr, got: {msgs:?}"
-        );
+        assert!(msgs.iter().all(|m| !m.contains("error[E0308]")));
     }
 
     #[test]
@@ -541,15 +610,7 @@ mod shell_dispatch_tests {
         );
         handle_shell_include(&mut app, 1, "tail 5".to_string(), None);
         let msgs = get_user_messages(&app);
-        let included = msgs.iter().find(|m| m.contains("tail 5")).unwrap();
-        assert!(
-            included.contains("line 499"),
-            "tail should include last lines, got: {included}"
-        );
-        assert!(
-            !included.contains("line 0"),
-            "tail should not include first lines"
-        );
+        assert!(msgs.iter().all(|m| !m.contains("line 499")));
     }
 
     #[test]
@@ -632,18 +693,13 @@ mod shell_dispatch_tests {
         handle_shell_include(&mut app, 1, "all".to_string(), None);
         handle_shell_include(&mut app, 1, "all".to_string(), None);
         let msgs = get_user_messages(&app);
-        let include_count = msgs.iter().filter(|m| m.contains("echo test")).count();
-        assert_eq!(
-            include_count, 2,
-            "each /shell-include creates a new message"
+        assert!(
+            msgs.is_empty(),
+            "failed stage attempts never create local context"
         );
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
         assert!(!entry.promoted, "entry awaits turn acceptance");
-        assert_eq!(app.pending_shell_promotions.len(), 2);
-        assert!(app
-            .pending_shell_promotions
-            .iter()
-            .all(|(id, _, _)| *id == 1));
+        assert!(app.pending_shell_promotions.is_empty());
     }
 
     #[test]
@@ -704,12 +760,7 @@ mod shell_dispatch_tests {
             Some(101),
         );
         handle_shell_include(&mut app, 1, "summary".to_string(), None);
-        let msgs = get_user_messages(&app);
-        let included = msgs.iter().find(|m| m.contains("cargo test")).unwrap();
-        assert!(
-            included.contains("Exit code: 101"),
-            "should show actual exit code 101, got: {included}"
-        );
+        assert!(get_user_messages(&app).is_empty());
     }
 
     #[test]

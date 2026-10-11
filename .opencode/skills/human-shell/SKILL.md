@@ -211,17 +211,16 @@ stands: `BoundedOutput` retains 512 KiB of head+tail, not the full 1 MB
 budget; the middle is dropped and counted in `omitted_bytes`, and eviction
 is oldest-first via `VecDeque::pop_front` (`src/shell/store.rs:253-255`).
 
-Re-verified 2026-10-10 against the human execution corrective work: the TUI
-now reads `enabled`, `default_timeout_secs`, `auto_promote_bangbang`, and
-`ansi` during construction and config reload. `!!` stages only after a
-successful, redacted projection; an accepted turn submit marks it promoted.
-Promotion requires a bound non-observer session; shell-cell command and output
-previews are excluded from provider context.
-`/shell-ask` uses `SessionPromptSubmit` only when a session is bound. Remote
-queue acceptance is explicitly not represented as session acceptance.
-Human-shell promotion always applies the shared redactor and a 32 KiB bound;
-the general projection `redact_model_visible_output = "off"` setting cannot
-disable it. A pending staged message currently lives in the active TUI until
-the next accepted turn. WebSocket TUI transport places approved evidence in
-an empty composer because it has no separate staged-context request; it
-preserves existing draft text and does not treat queue delivery as acceptance.
+Re-verified 2026-10-11 against human-shell corrective C004: the TUI reads
+`enabled`, `default_timeout_secs`, `auto_promote_bangbang`, and `ansi` during
+construction and config reload. A typed daemon acknowledgement establishes
+staged state. The daemon stores only the bounded redacted projection, bound to
+the authenticated principal, session, project, and workspace. It expires after
+one hour, recovers after reconnect, and is consumed once by an accepted turn;
+rejected admission leaves it pending. Promotion requires a bound non-observer
+session; shell-cell command and output previews are excluded from provider
+context. `/shell-ask` stages and submits through one idempotent
+`SessionPromptSubmit` operation. Human-shell promotion always applies the
+shared redactor and a 32 KiB bound; the general projection
+`redact_model_visible_output = "off"` setting cannot disable it. WebSocket
+composer insertion is an unsubmitted draft and carries no staged status.

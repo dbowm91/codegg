@@ -159,11 +159,16 @@ view the same way; `/shell-ask` submits one question with the selected evidence
 to the bound session. Promotion requires a bound, non-observer session; failed
 submissions do not mark an output as promoted.
 Human-shell output always passes the shared secret redactor and a 32 KiB limit,
-even when general shell projection redaction is configured `off`. Staged output
-remains in the active TUI until the next turn is accepted.
+even when general shell projection redaction is configured `off`. The daemon
+stores only the redacted projection, bound to the authenticated principal,
+session, project, and workspace. It expires after one hour; rejected or busy
+turns leave it staged, and accepted turns consume it once. Staged projections
+recover after reconnect. Raw shell output is never written to session storage.
+
 The WebSocket TUI transport does not support a separate staged-context
-request, so approved output is placed in an empty composer for explicit
-submission; an existing draft is preserved.
+request. Approved output is therefore an unsubmitted composer draft on remote
+sessions; it is not reported as staged until a daemon acknowledges canonical
+staging.
 
 Classification happens before dispatch: `!!` is matched first. The effective
 `human_shell.auto_promote_bangbang` setting controls whether its output is

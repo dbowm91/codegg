@@ -1789,11 +1789,52 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellAsk { id, question } => {
             handle_shell_ask(app, id, question);
         }
-        TuiCommand::ShellAskSubmitted { id, text, error } => {
-            crate::tui::commands::shell::apply_shell_ask_submitted(app, id, text, error);
+        TuiCommand::ShellAskSubmitted {
+            id,
+            text,
+            projection,
+            promotion_id,
+            error,
+        } => {
+            crate::tui::commands::shell::apply_shell_ask_submitted(
+                app,
+                id,
+                text,
+                projection,
+                promotion_id,
+                error,
+            );
         }
         TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
             app.apply_shell_promotions_submitted(&promotions, error);
+        }
+        TuiCommand::ShellPromotionStageSubmitted {
+            session_id,
+            command_id,
+            promotion_id,
+            projection,
+            error,
+        } => {
+            crate::tui::commands::shell::apply_shell_promotion_stage(
+                app,
+                session_id,
+                command_id,
+                promotion_id,
+                projection,
+                error,
+            );
+        }
+        TuiCommand::ShellPromotionListLoad { session_id } => {
+            crate::tui::commands::shell::load_shell_promotions(app, session_id);
+        }
+        TuiCommand::ShellPromotionListSubmitted {
+            session_id,
+            promotions,
+            error,
+        } => {
+            crate::tui::commands::shell::apply_shell_promotion_list(
+                app, session_id, promotions, error,
+            );
         }
         TuiCommand::ShellExpand { id, stream, range } => {
             handle_shell_expand(app, id, stream, range);

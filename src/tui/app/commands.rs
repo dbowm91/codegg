@@ -527,11 +527,28 @@ pub enum TuiCommand {
     ShellAskSubmitted {
         id: u64,
         text: String,
+        projection: String,
+        promotion_id: uuid::Uuid,
         error: Option<String>,
     },
     /// A normal next turn accepted or rejected staged shell evidence.
     ShellPromotionsSubmitted {
         promotions: Vec<(uuid::Uuid, u64)>,
+        error: Option<String>,
+    },
+    ShellPromotionStageSubmitted {
+        session_id: String,
+        command_id: u64,
+        promotion_id: uuid::Uuid,
+        projection: String,
+        error: Option<String>,
+    },
+    ShellPromotionListLoad {
+        session_id: String,
+    },
+    ShellPromotionListSubmitted {
+        session_id: String,
+        promotions: Vec<crate::protocol::human_shell::HumanShellPromotionDto>,
         error: Option<String>,
     },
     ShellExpand {

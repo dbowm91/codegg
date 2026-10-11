@@ -32,8 +32,10 @@ A human `!` command is not model context unless the user explicitly
 promotes it. `!command` runs ephemerally (command and output hidden from model).
 `!!command` runs and stages bounded/redacted output for the next submitted
 turn when `human_shell.auto_promote_bangbang` is enabled. `/shell-include`
-stages a selected output view in the same way. `/shell-ask` submits one
-question and its redacted evidence through the session-scoped prompt API.
+stages a selected output view in the same way. The session owner durably stores
+only the redacted projection, keyed by an idempotent promotion ID and bound to
+the authenticated principal, session, project, and workspace. `/shell-ask`
+stages evidence and submits one question through a single owner request.
 Promotions require a bound non-observer session.
 Neither staging command starts inference. `\!command` escapes to a literal
 `!` chat message.
@@ -42,13 +44,18 @@ Human-shell promotion always runs the shared secret redactor and fails closed
 if redaction does not report an applied state, regardless of
 `redact_model_visible_output`; the general shell projection `off` setting does
 not disable this human-consent boundary. Projection text is ANSI-stripped and
-limited to 32 KiB before it is inserted into provider-facing user context.
-The TUI marks an entry promoted only after the session turn API acknowledges
-acceptance. A staged message remains local to its current TUI session until
-that turn is accepted. The WebSocket TUI transport accepts prompt strings
-only, so it places approved evidence in an empty composer for explicit
-submission; it preserves a non-empty draft and does not claim remote acceptance
-from queue delivery.
+limited to 32 KiB before it is staged. Pending records expire after one hour,
+are retained for at most 24 hours after terminal state, and are limited to 16
+pending / 64 retained rows per session. A reconnect queries the owner and
+restores only pending projections. Rejected or busy turns leave them pending;
+an accepted turn includes each requested projection once and clears its stored
+payload. Raw stdout/stderr remain in the governed shell-output store.
+
+The TUI marks evidence staged only after a typed daemon acknowledgement and
+marks it promoted after turn acceptance. Unsupported daemons report staging as
+unavailable. The WebSocket TUI transport accepts prompt strings only, so it
+places approved evidence in an empty composer as an unsubmitted draft, keeps a
+non-empty draft unchanged, and does not claim staged or accepted state.
 
 ### Execution Flow
 
@@ -68,11 +75,11 @@ from queue delivery.
 
 Human model-context promotions pass through one redaction hook regardless of
 the general shell-output redaction setting and are capped at 32 KiB. `!`
-output remains private. Local `!!`/include entries are marked promoted only
-after the next submitted turn receives a daemon `Ack`; `/shell-ask` waits for
-the session-scoped submission `Ack`. Remote TUI queue acceptance is not
-session acceptance, so the current remote path does not claim promotion
-success. Finite command execution still runs in the frontend and is being
+output remains private. Local `!!`/include entries are durably staged before
+the next submitted turn; a turn rejection preserves them for retry. `/shell-ask`
+stages and submits in one idempotent owner operation. Remote composer content
+is an unsubmitted draft because the WebSocket protocol has no canonical stage
+request. Finite command execution still runs in the frontend and is being
 corrected separately by C002 at
 `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`.
 

@@ -36,6 +36,138 @@ impl PromptCompositionError {
     }
 }
 
+#[derive(Debug, Clone)]
+struct StagedHumanShellPromotion {
+    outcome: crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto,
+    promotion: crate::protocol::human_shell::HumanShellPromotionDto,
+}
+
+fn human_shell_store_error(error: codegg_core::session::HumanShellPromotionError) -> CoreResponse {
+    let code = match error {
+        codegg_core::session::HumanShellPromotionError::InvalidInput => {
+            "human_shell_promotion_invalid"
+        }
+        codegg_core::session::HumanShellPromotionError::IdentityConflict => {
+            "human_shell_promotion_identity_conflict"
+        }
+        codegg_core::session::HumanShellPromotionError::Capacity => {
+            "human_shell_promotion_capacity"
+        }
+        codegg_core::session::HumanShellPromotionError::Unavailable => {
+            "human_shell_promotion_unavailable"
+        }
+        codegg_core::session::HumanShellPromotionError::StaleBinding => {
+            "human_shell_promotion_stale_binding"
+        }
+        codegg_core::session::HumanShellPromotionError::CorruptState
+        | codegg_core::session::HumanShellPromotionError::Storage(_) => {
+            "human_shell_promotion_storage_error"
+        }
+    };
+    CoreResponse::Error {
+        code: code.to_owned(),
+        message: error.to_string(),
+    }
+}
+
+fn redact_human_shell_projection(text: String) -> Result<String, CoreResponse> {
+    use crate::shell::projection::RedactionState;
+    use crate::shell::projector::{
+        apply_redaction_hook, ProjectionKind, ProjectionResult, ProjectionTarget,
+    };
+
+    if text.is_empty() || text.len() > codegg_protocol::human_shell::HUMAN_SHELL_PROMOTION_MAX_BYTES
+    {
+        return Err(CoreResponse::Error {
+            code: "human_shell_promotion_invalid".into(),
+            message: "Shell projection is empty or exceeds the 32 KiB limit".into(),
+        });
+    }
+    let mut projection = ProjectionResult::empty("human-shell-promotion", ProjectionKind::Raw);
+    projection.text = crate::shell::sanitize_ansi(&text, crate::config::schema::AnsiMode::Strip);
+    projection.output_bytes = projection.text.len();
+    apply_redaction_hook(&mut projection, ProjectionTarget::ModelContext);
+    if !matches!(
+        projection.redaction,
+        RedactionState::Applied { .. } | RedactionState::AppliedNoMatches
+    ) {
+        return Err(CoreResponse::Error {
+            code: "human_shell_redaction_unavailable".into(),
+            message: "Shell projection could not be safely redacted".into(),
+        });
+    }
+    if projection.text.is_empty()
+        || projection.text.len() > codegg_protocol::human_shell::HUMAN_SHELL_PROMOTION_MAX_BYTES
+    {
+        return Err(CoreResponse::Error {
+            code: "human_shell_promotion_invalid".into(),
+            message: "Redacted shell projection is empty or exceeds the 32 KiB limit".into(),
+        });
+    }
+    Ok(projection.text)
+}
+
+fn promotion_to_dto(
+    promotion: codegg_core::session::HumanShellPromotion,
+) -> crate::protocol::human_shell::HumanShellPromotionDto {
+    use crate::protocol::human_shell::HumanShellPromotionStateDto as State;
+    crate::protocol::human_shell::HumanShellPromotionDto {
+        promotion_id: promotion.promotion_id,
+        source_command_id: promotion.source_command_id,
+        projection: promotion.projection,
+        projection_bytes: promotion.projection_bytes,
+        source_exit_code: promotion.source_exit_code,
+        source_truncated: promotion.source_truncated,
+        created_at_ms: promotion.created_at_ms,
+        expires_at_ms: promotion.expires_at_ms,
+        state: match promotion.state {
+            codegg_core::session::HumanShellPromotionState::Pending => State::Pending,
+            codegg_core::session::HumanShellPromotionState::Reserved => State::Reserved,
+            codegg_core::session::HumanShellPromotionState::Consumed => State::Consumed,
+            codegg_core::session::HumanShellPromotionState::Expired => State::Expired,
+        },
+        consumed_turn_id: promotion.consumed_turn_id,
+    }
+}
+
+fn shell_prompt_submit_response(
+    accepted: bool,
+    staged: StagedHumanShellPromotion,
+    error_code: Option<String>,
+    error_message: Option<String>,
+) -> CoreResponse {
+    CoreResponse::ShellPromptSubmitResult {
+        accepted,
+        stage_outcome: staged.outcome,
+        promotion: staged.promotion,
+        error_code,
+        error_message,
+    }
+}
+
+fn append_shell_promotions(
+    messages: &mut Vec<crate::protocol::dto::ProviderMessage>,
+    promotions: &[codegg_core::session::HumanShellPromotion],
+) {
+    use crate::protocol::dto::{ContentPart, ProviderMessage};
+    for promotion in promotions {
+        let Some(projection) = promotion.projection.as_ref() else {
+            continue;
+        };
+        let text = format!(
+            "[User-approved human-shell output from command {}]\n{}",
+            promotion.source_command_id, projection
+        );
+        if let Some(ProviderMessage::User { content }) = messages.last_mut() {
+            content.push(ContentPart::Text { text });
+        } else {
+            messages.push(ProviderMessage::User {
+                content: vec![ContentPart::Text { text }],
+            });
+        }
+    }
+}
+
 impl CoreDaemon {
     pub(crate) async fn handle_turns_request(
         &self,
@@ -74,9 +206,10 @@ impl CoreDaemon {
                 model,
                 agents,
                 current_agent_idx,
-                messages,
+                mut messages,
                 plan_mode,
                 reasoning,
+                shell_promotion_ids,
                 ..
             } => {
                 if current_agent_idx >= agents.len() {
@@ -341,6 +474,60 @@ impl CoreDaemon {
                     turn_id
                 };
 
+                let promotion_records = if shell_promotion_ids.is_empty() {
+                    None
+                } else {
+                    let principal = authority.principal();
+                    if !matches!(
+                        principal.kind(),
+                        codegg_core::team::PrincipalKind::Human
+                            | codegg_core::team::PrincipalKind::LocalOwner
+                    ) {
+                        self.rollback_unstarted_turn(&session_id, &turn_id).await;
+                        return Ok(CoreResponse::Error {
+                            code: "human_shell_promotion_unauthorized".into(),
+                            message: "Only a human session owner can submit staged shell output"
+                                .into(),
+                        });
+                    }
+                    let Some(pool) = self.pool.clone() else {
+                        self.rollback_unstarted_turn(&session_id, &turn_id).await;
+                        return Ok(CoreResponse::Error {
+                            code: "human_shell_promotion_unavailable".into(),
+                            message: "Durable session storage is unavailable".into(),
+                        });
+                    };
+                    let store = codegg_core::session::HumanShellPromotionStore::new(pool);
+                    let recovered = store
+                        .recover_orphaned_for_session(&session_id, Some(&turn_id))
+                        .await;
+                    if let Err(error) = recovered {
+                        self.rollback_unstarted_turn(&session_id, &turn_id).await;
+                        return Ok(human_shell_store_error(error));
+                    }
+                    match store
+                        .reserve_for_turn(
+                            &session_id,
+                            &runtime.project_id,
+                            &runtime.workspace_id.to_string(),
+                            principal.principal_id().as_str(),
+                            &shell_promotion_ids,
+                            &turn_id,
+                            chrono::Utc::now().timestamp_millis(),
+                        )
+                        .await
+                    {
+                        Ok(records) => {
+                            append_shell_promotions(&mut messages, &records);
+                            Some(store)
+                        }
+                        Err(error) => {
+                            self.rollback_unstarted_turn(&session_id, &turn_id).await;
+                            return Ok(human_shell_store_error(error));
+                        }
+                    }
+                };
+
                 // M004 (ADR-0007): atomic controller acquisition with
                 // accepting the turn. The durable row is written before
                 // any execution starts; a store conflict rolls back the
@@ -372,6 +559,13 @@ impl CoreDaemon {
                         .await;
                     }
                     Err(error) => {
+                        if let Some(store) = promotion_records.as_ref() {
+                            if let Err(release_error) =
+                                store.release_for_turn(&shell_promotion_ids, &turn_id).await
+                            {
+                                tracing::error!(%release_error, "failed to release shell promotions after controller rejection");
+                            }
+                        }
                         // Roll back: failed submissions must not leave a
                         // controller lease or a stuck active turn behind.
                         if let Some(runtime) = self.sessions.get(&session_id) {
@@ -559,7 +753,32 @@ impl CoreDaemon {
                     sandbox_profile,
                     credential_observer,
                 };
-                let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
+                let turn_output = match self.deps.turn_runtime.run_turn(turn_input).await {
+                    Ok(output) => {
+                        if let Some(store) = promotion_records.as_ref() {
+                            if let Err(error) =
+                                store.consume_for_turn(&shell_promotion_ids, &turn_id).await
+                            {
+                                tracing::error!(%error, %session_id, %turn_id, "accepted turn could not finalize staged shell promotions");
+                                // The runtime already accepted the turn. Do not report
+                                // rejection to the client or invite a duplicate submit;
+                                // the durable reservation is recovered if this process
+                                // later loses the active turn.
+                            }
+                        }
+                        output
+                    }
+                    Err(error) => {
+                        if let Some(store) = promotion_records.as_ref() {
+                            if let Err(release_error) =
+                                store.release_for_turn(&shell_promotion_ids, &turn_id).await
+                            {
+                                tracing::error!(%release_error, "failed to release shell promotions after turn startup failure");
+                            }
+                        }
+                        return Err(error);
+                    }
+                };
 
                 // Update the TurnHandle with the runtime's cancel/steer channels.
                 {
@@ -576,7 +795,25 @@ impl CoreDaemon {
                 session_id,
                 text,
                 plan_mode,
+                mut shell_promotion_ids,
+                shell_promotion,
             } => {
+                let staged = if let Some(promotion) = shell_promotion {
+                    match self
+                        .stage_human_shell_promotion(&session_id, promotion, &authority, request_id)
+                        .await
+                    {
+                        Ok(staged) => {
+                            if !shell_promotion_ids.contains(&staged.promotion.promotion_id) {
+                                shell_promotion_ids.push(staged.promotion.promotion_id.clone());
+                            }
+                            Some(staged)
+                        }
+                        Err(error) => return Ok(error),
+                    }
+                } else {
+                    None
+                };
                 // M004 desktop session slice: resolve the composed
                 // turn daemon-side, then submit through the identical
                 // `TurnSubmit` path above (single recursion, no new
@@ -586,9 +823,19 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(composed) => composed,
-                    Err(error) => return Ok(error.into_core_response()),
+                    Err(error) => {
+                        if let Some(staged) = staged {
+                            return Ok(shell_prompt_submit_response(
+                                false,
+                                staged,
+                                Some(error.code.to_owned()),
+                                Some(error.message),
+                            ));
+                        }
+                        return Ok(error.into_core_response());
+                    }
                 };
-                return Box::pin(self.handle_turns_request(
+                let response = Box::pin(self.handle_turns_request(
                     CoreRequest::TurnSubmit {
                         session_id,
                         text,
@@ -598,13 +845,51 @@ impl CoreDaemon {
                         current_agent_idx: 0,
                         messages,
                         reasoning: None,
+                        shell_promotion_ids,
                     },
                     request_id,
                     trusted_client_id,
                     authority,
                     authz_decision,
                 ))
-                .await;
+                .await?;
+                if let Some(staged) = staged {
+                    let accepted = matches!(response, CoreResponse::Ack);
+                    let (code, message) = match response {
+                        CoreResponse::Error { code, message } => (Some(code), Some(message)),
+                        _ => (None, None),
+                    };
+                    return Ok(shell_prompt_submit_response(
+                        accepted, staged, code, message,
+                    ));
+                }
+                return Ok(response);
+            }
+            CoreRequest::ShellPromotionCapabilities => {
+                return Ok(CoreResponse::ShellPromotionCapabilities {
+                    capabilities:
+                        crate::protocol::human_shell::HumanShellPromotionCapabilitiesDto::current(),
+                });
+            }
+            CoreRequest::ShellPromotionStage {
+                session_id,
+                promotion,
+            } => {
+                return match self
+                    .stage_human_shell_promotion(&session_id, promotion, &authority, request_id)
+                    .await
+                {
+                    Ok(staged) => Ok(CoreResponse::ShellPromotionStaged {
+                        outcome: staged.outcome,
+                        promotion: staged.promotion,
+                    }),
+                    Err(response) => Ok(response),
+                };
+            }
+            CoreRequest::ShellPromotionList { session_id } => {
+                return self
+                    .list_human_shell_promotions(&session_id, &authority)
+                    .await;
             }
             CoreRequest::PermissionRespond { id, choice } => {
                 let parsed = match choice.as_str() {
@@ -1294,6 +1579,138 @@ impl CoreDaemon {
         }
     }
 
+    async fn rollback_unstarted_turn(&self, session_id: &str, turn_id: &str) {
+        if let Some(runtime) = self.sessions.get(session_id) {
+            let mut active = runtime.active_turn.write().await;
+            if active
+                .as_ref()
+                .is_some_and(|handle| handle.turn_id == turn_id)
+            {
+                *active = None;
+            }
+            drop(active);
+            let mut status = runtime.status.write().await;
+            *status = crate::core::session_runtime::RuntimeSessionStatus::Idle;
+        }
+    }
+
+    async fn stage_human_shell_promotion(
+        &self,
+        session_id: &str,
+        mut stage: crate::protocol::human_shell::HumanShellPromotionStageDto,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        _request_id: &str,
+    ) -> Result<StagedHumanShellPromotion, CoreResponse> {
+        stage.projection = redact_human_shell_projection(stage.projection)?;
+        let principal = authority.principal();
+        if !matches!(
+            principal.kind(),
+            codegg_core::team::PrincipalKind::Human | codegg_core::team::PrincipalKind::LocalOwner
+        ) {
+            return Err(CoreResponse::Error {
+                code: "human_shell_promotion_unauthorized".into(),
+                message: "Only a human session owner can stage shell output".into(),
+            });
+        }
+        let runtime = self
+            .bind_runtime_for_session(session_id)
+            .await
+            .map_err(|error| CoreResponse::Error {
+                code: "session_unbound".into(),
+                message: format!("session has no resolvable workspace: {error}"),
+            })?;
+        let Some(pool) = self.pool.clone() else {
+            return Err(CoreResponse::Error {
+                code: "human_shell_promotion_unavailable".into(),
+                message: "Durable session storage is unavailable".into(),
+            });
+        };
+        let input = codegg_core::session::HumanShellPromotionInput {
+            promotion_id: stage.promotion_id,
+            session_id: session_id.to_owned(),
+            project_id: runtime.project_id.clone(),
+            workspace_id: runtime.workspace_id.to_string(),
+            principal_id: principal.principal_id().as_str().to_owned(),
+            source_command_id: stage.source_command_id,
+            projection: stage.projection,
+            source_exit_code: stage.source_exit_code,
+            source_truncated: stage.source_truncated,
+        };
+        let store = codegg_core::session::HumanShellPromotionStore::new(pool);
+        let (outcome, record) = store
+            .stage(input, chrono::Utc::now().timestamp_millis())
+            .await
+            .map_err(human_shell_store_error)?;
+        Ok(StagedHumanShellPromotion {
+            outcome: match outcome {
+                codegg_core::session::HumanShellPromotionIdempotency::Staged => {
+                    crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Staged
+                }
+                codegg_core::session::HumanShellPromotionIdempotency::Duplicate => {
+                    crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Duplicate
+                }
+            },
+            promotion: promotion_to_dto(record),
+        })
+    }
+
+    async fn list_human_shell_promotions(
+        &self,
+        session_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+    ) -> Result<CoreResponse, AppError> {
+        let principal = authority.principal();
+        if !matches!(
+            principal.kind(),
+            codegg_core::team::PrincipalKind::Human | codegg_core::team::PrincipalKind::LocalOwner
+        ) {
+            return Ok(CoreResponse::Error {
+                code: "human_shell_promotion_unauthorized".into(),
+                message: "Only a human session owner can query staged shell output".into(),
+            });
+        }
+        let runtime = match self.bind_runtime_for_session(session_id).await {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return Ok(CoreResponse::Error {
+                    code: "session_unbound".into(),
+                    message: format!("session has no resolvable workspace: {error}"),
+                });
+            }
+        };
+        let Some(pool) = self.pool.clone() else {
+            return Ok(CoreResponse::Error {
+                code: "human_shell_promotion_unavailable".into(),
+                message: "Durable session storage is unavailable".into(),
+            });
+        };
+        let active_turn = runtime
+            .active_turn
+            .read()
+            .await
+            .as_ref()
+            .map(|handle| handle.turn_id.clone());
+        let store = codegg_core::session::HumanShellPromotionStore::new(pool);
+        store
+            .recover_orphaned_for_session(session_id, active_turn.as_deref())
+            .await
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+        let promotions = store
+            .list(
+                session_id,
+                &runtime.project_id,
+                runtime.workspace_id.as_str(),
+                principal.principal_id().as_str(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+            .into_iter()
+            .map(promotion_to_dto)
+            .collect();
+        Ok(CoreResponse::ShellPromotionList { promotions })
+    }
+
     /// M004 desktop session slice: daemon-side composition for
     /// `SessionPromptSubmit`.
     ///
@@ -1433,6 +1850,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
+    use super::append_shell_promotions;
     use codegg_core::identity::{PrincipalId, ProviderConnectionId};
     use codegg_core::provider_connections::{
         Endpoint, NewProviderConnection, ProviderConnectionStore, ProviderKind, ProviderScope,
@@ -1447,20 +1865,50 @@ mod tests {
         classify_durable_model_selection, resolve_turn_provider, DurableModelSelection,
     };
 
+    #[test]
+    fn accepted_turn_context_includes_each_staged_projection_once() {
+        let record = codegg_core::session::HumanShellPromotion {
+            promotion_id: "p1".into(),
+            session_id: "s1".into(),
+            project_id: "project1".into(),
+            workspace_id: "workspace1".into(),
+            principal_id: "human1".into(),
+            source_command_id: "9".into(),
+            projection: Some("redacted evidence marker".into()),
+            projection_bytes: 23,
+            source_exit_code: Some(0),
+            source_truncated: false,
+            created_at_ms: 1,
+            expires_at_ms: 100,
+            state: codegg_core::session::HumanShellPromotionState::Pending,
+            consumed_turn_id: None,
+        };
+        let mut messages = Vec::new();
+        append_shell_promotions(&mut messages, &[record]);
+        let rendered = serde_json::to_string(&messages).expect("provider DTO serialization");
+        assert_eq!(rendered.matches("redacted evidence marker").count(), 1);
+        assert_eq!(
+            rendered.matches("User-approved human-shell output").count(),
+            1
+        );
+    }
+
     /// Records that the turn actually reached the injected runtime, so a
     /// test can tell "accepted" from "rejected early" without a provider
     /// call ever leaving the process.
     struct RecordingTurnRuntime {
         called: AtomicBool,
+        messages: std::sync::Mutex<Option<Vec<codegg_protocol::dto::ProviderMessage>>>,
     }
 
     #[async_trait::async_trait]
     impl crate::agent::turn_runtime::TurnRuntime for RecordingTurnRuntime {
         async fn run_turn(
             &self,
-            _input: crate::agent::turn_runtime::TurnRunInput,
+            input: crate::agent::turn_runtime::TurnRunInput,
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
             self.called.store(true, Ordering::SeqCst);
+            *self.messages.lock().expect("runner messages lock") = Some(input.messages_dto);
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
@@ -1496,6 +1944,7 @@ mod tests {
     async fn daemon(pool: sqlx::SqlitePool) -> (CoreDaemon, Arc<RecordingTurnRuntime>) {
         let runtime = Arc::new(RecordingTurnRuntime {
             called: AtomicBool::new(false),
+            messages: std::sync::Mutex::new(None),
         });
         let deps = CoreRuntimeDeps::new(Some(pool), None, None)
             .with_turn_runtime(
@@ -1640,6 +2089,7 @@ mod tests {
                 current_agent_idx: 0,
                 messages: vec![],
                 reasoning: None,
+                shell_promotion_ids: Vec::new(),
             },
         )
     }
@@ -1681,6 +2131,101 @@ mod tests {
             .await
             .expect("turn submit");
         (response, runtime.called.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn accepted_turn_injects_staged_shell_projection_once_and_consumes_it() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous = std::env::var("OPENCODE_GO_API_KEY").ok();
+        std::env::set_var("OPENCODE_GO_API_KEY", "test-key-not-used");
+
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let session_id = create_session(&daemon).await;
+        let connection_id =
+            seed_connection(&pool, ProviderKind::Other("opencode_go".to_string())).await;
+        seed_catalog(&pool, &connection_id, &["minimax-m3"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "minimax-m3",
+        )
+        .await;
+
+        let promotion_id = "accepted-shell-promotion";
+        let staged = daemon
+            .handle_request(crate::core::new_request(
+                "stage-before-turn".into(),
+                CoreRequest::ShellPromotionStage {
+                    session_id: session_id.clone(),
+                    promotion: codegg_protocol::human_shell::HumanShellPromotionStageDto {
+                        promotion_id: promotion_id.into(),
+                        source_command_id: "17".into(),
+                        projection:
+                            "captured evidence Authorization: Bearer staged-secret-1234567890"
+                                .into(),
+                        source_exit_code: Some(1),
+                        source_truncated: false,
+                    },
+                },
+            ))
+            .await
+            .expect("stage projection");
+        assert!(matches!(staged, CoreResponse::ShellPromotionStaged { .. }));
+
+        let mut request = turn_request(&session_id, "other:opencode_go/minimax-m3");
+        if let CoreRequest::TurnSubmit {
+            shell_promotion_ids,
+            ..
+        } = &mut request.payload
+        {
+            shell_promotion_ids.push(promotion_id.into());
+        } else {
+            unreachable!("turn_request returns TurnSubmit");
+        }
+        let response = daemon.handle_request(request).await.expect("accepted turn");
+        assert!(matches!(response, CoreResponse::Ack), "{response:?}");
+        assert!(runtime.called.load(Ordering::SeqCst));
+        let messages = runtime
+            .messages
+            .lock()
+            .expect("runner messages lock")
+            .clone()
+            .expect("captured provider-facing context");
+        let rendered = serde_json::to_string(&messages).expect("provider DTO serialization");
+        assert_eq!(rendered.matches("captured evidence").count(), 1);
+        assert_eq!(
+            rendered
+                .matches("[User-approved human-shell output")
+                .count(),
+            1
+        );
+        assert!(rendered.contains("[REDACTED:bearer-token]"));
+        assert!(!rendered.contains("staged-secret-1234567890"));
+
+        let (state, projection_bytes): (String, i64) = sqlx::query_as(
+            "SELECT state, projection_bytes FROM human_shell_promotion WHERE promotion_id = ?",
+        )
+        .bind(promotion_id)
+        .fetch_one(&pool)
+        .await
+        .expect("promotion lifecycle row");
+        assert_eq!(state, "consumed");
+        assert_eq!(projection_bytes, 0);
+
+        if let Some(value) = previous {
+            std::env::set_var("OPENCODE_GO_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENCODE_GO_API_KEY");
+        }
     }
 
     /// `opencode_go` is stored as `other:opencode_go`, the storage-key form

@@ -1,6 +1,6 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: active
+Status: closed
 
 Repository baseline: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
@@ -106,7 +106,7 @@ Trace authoritative context persistence, request authentication, admission trans
 | Redacted projection | `src/tui/commands/shell.rs::project_for_model` | The canonical redactor runs before insertion, but the returned text and its promotion identity currently stay in `App::pending_shell_promotions`. Persist only this bounded projection, never the raw stores. |
 | Session identity | `CoreDaemon::bind_runtime_for_session` plus authenticated `RequestAuthorityContext` | Session is a locator; project/workspace are derived from the bound runtime. Principal and client identity come from transport authentication, never the request body. |
 | Authorization | `TurnSubmit` and `SessionPromptSubmit` in `codegg-core::authorization::policy` | Both are session-scoped and require `AgentInvoke`; use the same capability for stage/query and explicitly reject observer/non-human authority. |
-| Durable storage | Core SQLite `session` row and `message` history; schema currently has migrations through v70 | `message` stores accepted chat history and has no pending/expiry/idempotency lifecycle. A narrow session-owned table is required; it must FK to `session`, bind project/workspace/principal, and store only the redacted projection. |
+| Durable storage | Core SQLite `session` row and `message` history; schema baseline had migrations through v70 | `message` stores accepted chat history and has no pending/expiry/idempotency lifecycle. A narrow session-owned table is required; it must FK to `session`, bind project/workspace/principal, and store only the redacted projection. |
 | Turn acceptance | `src/core/daemon_turns.rs::handle_turns_request` | Runtime busy check and controller acquisition happen before `TurnRuntime::run_turn`; rejected/busy requests must leave promotion rows pending. Inclusion and consumption must be tied to this accepted boundary. |
 | Local include | `App::pending_shell_promotions` then `TurnSubmit` | Stage acknowledgement must precede a visible staged state; accepted turn consumes exactly the submitted opaque IDs. Error/busy keeps them pending. |
 | Shell ask | `SessionPromptSubmit` | Use one idempotent session-owner operation carrying a stable promotion ID; preserve the staged row on busy/rejected admission and submit question plus projection in the same provider-facing turn. |
@@ -131,7 +131,7 @@ Use deterministic fake provider and daemon/client fixtures to prove exactly-once
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
-Define transaction boundaries for stage and turn admission; test concurrent duplicate stage and consume attempts; rejected/busy/cancelled turn must not lose pending payload; restart recovers unexpired records; expired records return explicit gone; stale session/workspace and unauthorized requests cannot observe or consume another session's promotion. Keep queue count, payload bytes, TTL and response sizes bounded.
+Define transaction boundaries for stage and turn admission; test concurrent duplicate stage and consume attempts; requests rejected before turn acceptance (including busy admission) must not lose pending payload. Once the accepted turn runtime receives the evidence, cancellation does not restore it because it may already have reached the provider. Restart recovers unexpired reservations; expired records return explicit gone; stale session/workspace and unauthorized requests cannot observe or consume another session's promotion. Keep queue count, payload bytes, TTL and response sizes bounded.
 
 ## 9. Compatibility and migration
 
@@ -165,3 +165,7 @@ Stop for an ADR if current storage ownership cannot safely guarantee authenticat
 ## 14. Closure evidence
 
 Migration/restart evidence if a schema change is used; request identity and auth trace; state transition matrix; fake-provider exactly-once capture; busy/rejected/duplicate/reconnect/restart/expiry tests; local and remote UX acknowledgement; compatibility result against an old daemon; full quick verification; documentation and registry diffs.
+
+## 15. Completion record (2026-10-11)
+
+Closed with the owner-side redaction pass, schema/protocol lifecycle, local TUI acknowledgements, and request-level runner capture. The additive migration is v71. See `plans/closure/human-execution-corrective/004-status.md` for command results and limits. C001's corrective dependency is satisfied; C002 is now eligible and remains unimplemented.

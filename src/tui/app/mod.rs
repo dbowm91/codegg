@@ -2133,6 +2133,12 @@ impl App {
                     return;
                 }
             };
+        let promotions: Vec<(uuid::Uuid, u64)> = self
+            .pending_shell_promotions
+            .iter()
+            .map(|(id, _, token)| (*token, *id))
+            .collect();
+        let promotion_ids = promotions.iter().map(|(id, _)| id.to_string()).collect();
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
             CoreRequest::TurnSubmit {
@@ -2161,19 +2167,9 @@ impl App {
                         Some(crate::protocol::core::ReasoningOverride::Off)
                     }
                 },
+                shell_promotion_ids: promotion_ids,
             },
         );
-        let promotions: Vec<(uuid::Uuid, u64)> = self
-            .pending_shell_promotions
-            .iter()
-            .filter(|(_, text, _)| {
-                self.messages_state.messages.messages.iter().any(|message| {
-                    message.role == crate::tui::components::messages::MessageRole::User
-                        && message.text_content() == text.as_str()
-                })
-            })
-            .map(|(id, _, token)| (*token, *id))
-            .collect();
         let tui_tx = self.tui_cmd_tx.clone();
         tokio::spawn(async move {
             let error = match client.request(request).await {
@@ -10493,6 +10489,7 @@ impl App {
             self.invalidate_pending_session_submit(false);
         }
         let sess_id = sess.id.clone();
+        self.pending_shell_promotions.clear();
         let session_directory = sess.directory.clone();
         let project_id = if sess.project_id.is_empty() {
             None
@@ -10570,6 +10567,12 @@ impl App {
             let _ = send_tui(
                 tx,
                 TuiCommand::SessionSelectionLoad {
+                    session_id: sess_id.clone(),
+                },
+            );
+            let _ = send_tui(
+                tx,
+                TuiCommand::ShellPromotionListLoad {
                     session_id: sess_id.clone(),
                 },
             );
