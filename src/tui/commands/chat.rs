@@ -1440,6 +1440,12 @@ pub(crate) fn open_chat_window(app: &mut App, project_id: &str) {
 /// closed.
 pub(crate) fn refresh_chat_panel(app: &mut App) {
     use crate::tui::components::dialogs::chat::ChatDialog;
+    // The side panel reads `ChatState` live at render time, so it needs no
+    // push — but only once it is bound to the project whose events just
+    // landed. Without this the panel kept showing a projection for a project
+    // the daemon was no longer updating, which read as "it doesn't refresh".
+    crate::tui::commands::panels::sync_chat_panel_project(app);
+
     if !app.focus_manager.has_component::<ChatDialog>() {
         return;
     }

@@ -53,7 +53,7 @@ pub(crate) fn sync_chat_panel_project(app: &mut App) {
     panel.set_bound(app.chat_panel_project.is_some());
 }
 
-/// Open the `Ctrl+Shift+W` panel switcher.
+/// Open the `Ctrl+Alt+W` panel switcher.
 ///
 /// Refused when the side column is hidden: the switcher describes the
 /// region it is switching, and with no region there is nothing to select

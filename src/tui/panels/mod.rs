@@ -12,7 +12,7 @@
 //!   panel is one enum variant plus one [`SidePanel`] impl; there is no
 //!   per-panel `if` left in the render path.
 //! * [`SidePanelHost`] — which panel is active, whether it holds keyboard
-//!   focus, and the [`PanelSelector`] overlay opened by `Ctrl+Shift+W`.
+//!   focus, and the [`PanelSelector`] overlay opened by `Ctrl+Alt+W`.
 //!
 //! ## Authority
 //!
@@ -112,7 +112,7 @@ impl SidePanelId {
 /// `h`/`l` a real meaning (move by column) distinct from `j`/`k`.
 pub const PANEL_SELECTOR_COLUMNS: usize = 2;
 
-/// The `Ctrl+Shift+W` overlay that picks which panel the side column shows.
+/// The `Ctrl+Alt+W` overlay that picks which panel the side column shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelSelector {
     /// Index into [`SidePanelId::ALL`].
@@ -267,7 +267,7 @@ pub trait SidePanel {
 }
 
 /// Which panel the side column shows, whether it holds focus, and the
-/// `Ctrl+Shift+W` selector.
+/// `Ctrl+Alt+W` selector.
 pub struct SidePanelHost {
     active: SidePanelId,
     focused: bool,
@@ -375,7 +375,7 @@ impl SidePanelHost {
     }
 
     /// Step `delta` panels, wrapping. Selecting from an unfocused host
-    /// leaves it unfocused; `Ctrl+Shift+W` or a focus action drives focus
+    /// leaves it unfocused; `Ctrl+Alt+W` or a focus action drives focus
     /// explicitly.
     pub fn step(&mut self, delta: i8, ctx: &mut PanelCtx<'_>) {
         let len = SidePanelId::ALL.len();

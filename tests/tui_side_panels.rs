@@ -2,7 +2,7 @@
 //!
 //! Covers the contract that the panel *host* owns: which panel is active,
 //! when it may take keyboard focus, that a focused panel never leaks a key
-//! to the composer, and that the `Ctrl+Shift+W` selector switches panels
+//! to the composer, and that the `Ctrl+Alt+W` selector switches panels
 //! without a second owner of the side column's focus state.
 //!
 //! These tests use only the public `App` surface (`on_key`, `process_msg`,
@@ -89,11 +89,11 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     }
 }
 
-fn ctrl_shift(ch: char) -> KeyEvent {
-    key(
-        KeyCode::Char(ch),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    )
+/// The legacy-safe chord form. `Ctrl+Shift+X` is byte-identical to `Ctrl+X`
+/// in legacy xterm encoding and can never arrive as written; see
+/// `tests/modifier_chords.rs`.
+fn ctrl_alt(ch: char) -> KeyEvent {
+    key(KeyCode::Char(ch), KeyModifiers::CONTROL | KeyModifiers::ALT)
 }
 
 fn plain(ch: char) -> KeyEvent {
@@ -164,9 +164,9 @@ fn session_panel_is_the_default_and_starts_unfocused() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ctrl_shift_w_opens_the_selector_over_the_active_panel() {
+async fn ctrl_alt_w_opens_the_selector_over_the_active_panel() {
     let mut app = test_app();
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     assert!(app.panel_host.selector_open());
     assert!(
         !app.panel_host.is_focused(),
@@ -179,7 +179,7 @@ async fn ctrl_shift_w_opens_the_selector_over_the_active_panel() {
 #[tokio::test(flavor = "current_thread")]
 async fn selector_commits_the_highlighted_panel_on_enter() {
     let mut app = test_app();
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     // `l` moves one column right in the two-column grid.
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
@@ -194,13 +194,13 @@ async fn selector_commits_the_highlighted_panel_on_enter() {
 #[tokio::test(flavor = "current_thread")]
 async fn selector_arrow_keys_match_the_vim_keys() {
     let mut app = test_app();
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     let before = app.panel_host.selector_cursor();
     app.on_key(plain('l'));
     let after_vim = app.panel_host.selector_cursor();
 
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     assert_eq!(app.panel_host.selector_cursor(), before);
     app.on_key(key(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.panel_host.selector_cursor(), after_vim);
@@ -209,7 +209,7 @@ async fn selector_arrow_keys_match_the_vim_keys() {
 #[tokio::test(flavor = "current_thread")]
 async fn escape_cancels_the_selector_and_keeps_the_current_panel() {
     let mut app = test_app();
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!app.panel_host.selector_open());
@@ -223,7 +223,7 @@ async fn escape_cancels_the_selector_and_keeps_the_current_panel() {
 #[tokio::test(flavor = "current_thread")]
 async fn selector_keys_never_reach_the_composer() {
     let mut app = test_app();
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     for ch in ['/', ':', 'j', 'k', 'h', 'l', 'x'] {
         app.on_key(plain(ch));
     }
@@ -238,7 +238,7 @@ async fn selector_keys_never_reach_the_composer() {
 async fn a_focused_chat_panel_owns_printable_keys() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
@@ -264,7 +264,7 @@ async fn a_focused_chat_panel_owns_printable_keys() {
 async fn escape_returns_from_the_panel_to_the_composer() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     app.on_key(plain('i'));
@@ -294,13 +294,13 @@ async fn escape_returns_from_the_panel_to_the_composer() {
 async fn switching_back_to_session_restores_prompt_input_immediately() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
 
     // Re-open the selector, step left to Session, commit.
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('h'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
@@ -314,7 +314,7 @@ async fn switching_back_to_session_restores_prompt_input_immediately() {
 async fn q_also_drops_panel_focus() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
@@ -327,7 +327,7 @@ async fn q_also_drops_panel_focus() {
 async fn q_types_while_the_chat_composer_is_open() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     app.on_key(plain('i'));
@@ -344,7 +344,7 @@ async fn q_types_while_the_chat_composer_is_open() {
 async fn ctrl_b_is_refused_while_the_side_column_is_hidden() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = false;
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     assert!(
         !app.panel_host.selector_open(),
         "the switcher describes the region it switches; with no region there is nothing to select into"
@@ -373,7 +373,7 @@ async fn workspace_focus_mirrors_which_side_owns_the_keyboard() {
         WorkspaceFocus::Composer,
         "selecting a panel is not the same as focusing it"
     );
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
         app.workspace_focus,
@@ -389,7 +389,7 @@ async fn workspace_focus_mirrors_which_side_owns_the_keyboard() {
 async fn modal_dialogs_still_take_precedence_over_the_panel() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_shift('W'));
+    app.on_key(ctrl_alt('w'));
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.panel_host.is_focused());

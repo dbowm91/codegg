@@ -113,7 +113,7 @@ root and lifecycle modules.
 
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
   owns which `SidePanelId` is active, whether it holds focus, and the
-  `Ctrl+Shift+W` selector. To add a panel: an enum variant, an entry in
+  `Ctrl+Alt+W` selector. To add a panel: an enum variant, an entry in
   `SidePanelId::ALL`, and one `SidePanel` impl. Do not add a per-panel `if`
   to the render path. A focused panel consumes *every* key — an unbound key
   that fell through to the prompt would submit an agent turn — so
@@ -124,6 +124,24 @@ root and lifecycle modules.
   the panel. Key precedence in `App::on_key`: modals → timeline → command
   mode → completions → change review → **side panel** → Workspace → Editor →
   composer.
+- **Multi-modifier chords are `{CONTROL, ALT}` only.** The TUI never pushes
+  keyboard-enhancement flags (`tui/terminal.rs` does raw mode, bracketed
+  paste, mouse capture only), so the terminal is in legacy xterm encoding where
+  `Ctrl+Shift+X` and `Ctrl+X` are the same byte. A `(CONTROL|SHIFT, …)` binding
+  is unreachable and the key silently fires whatever owns the bare-Ctrl twin —
+  that is how `Ctrl+Shift+W` ran `CloseSession` instead of opening the panel
+  switcher. `Ctrl+Alt+<letter>` arrives as `ESC` + one control byte and is
+  unambiguous. `tests/modifier_chords.rs` asserts no map holds a
+  CONTROL|SHIFT entry and that each chord stays disjoint from its twins.
+- **A panel must make its mode observable.** The chat panel renders its
+  composer row in both modes with a `NOR`/`INS` badge. Collapsing the row in
+  Normal mode made the modes pixel-identical on an empty buffer, so a user
+  pressing `i` and typing watched characters vanish into navigation and
+  concluded the input box was broken. The chat panel has no manual refresh key
+  — it renders `ChatState` live and daemon chat events push into the reducer.
+- **`HelpDialog` is searchable.** Printable keys filter the keybinding rows,
+  `Esc` clears the filter before it closes the dialog, and scrolling is on
+  arrows/PageUp/PageDown rather than `j`/`k` so letters stay typeable.
 - **Sidebar focus is projection-only**: `SidebarFocusTarget` identities are
   shared by keyboard navigation and mouse hit testing. Selection is cleared on
   project-scope changes, and the bounded `agent_tree` is joined to durable

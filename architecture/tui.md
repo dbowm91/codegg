@@ -732,7 +732,7 @@ inspection and cleanup continue through the existing authorized commands.
 The right-hand column is a **panel host**, not a widget chosen by an `if` in
 `render_sidebar`. `SidePanelHost` (`src/tui/panels/mod.rs`) owns three pieces
 of state: which `SidePanelId` is active, whether it holds keyboard focus, and
-the `Ctrl+Shift+W` selector overlay. Two panels ship: `Session` (the
+the `Ctrl+Alt+W` selector overlay. Two panels ship: `Session` (the
 `SidebarWidget` projection) and `Chat` (interactive project chat).
 
 Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, and one
@@ -770,7 +770,7 @@ it so `SidePanelHost::focus` (which has no app access) can refuse focus to an
 unbound chat panel. Changing the binding drops the panel's per-view state, so
 a composer buffer cannot survive into a different project's channel list.
 
-**Selector overlay** (`Ctrl+Shift+W`): a two-column grid drawn *inside* the
+**Selector overlay** (`Ctrl+Alt+W`): a two-column grid drawn *inside* the
 side column, not centred over the viewport — it describes the region it is
 switching, and staying in-column means the panel it will reveal is never
 covered. `h`/`l` move by column, `j`/`k` by row, both clamped rather than
@@ -782,7 +782,7 @@ Opening is refused while the column is hidden.
 Two ordering rules the host owns, both load-bearing:
 
 - **The switcher hotkey is answered by the host, not by the panel.** If a
-  focused panel got first refusal it would swallow `Ctrl+Shift+W` — the only
+  focused panel got first refusal it would swallow `Ctrl+Alt+W` — the only
   way back to the switcher — and the user would be stuck inside the panel
   they opened it to leave. The host matches the resolved
   `InputAction::TogglePanelSelector` before delegating.
@@ -797,14 +797,35 @@ Committing to Chat also re-resolves the project binding first: the host has
 no app access, so it would otherwise find the panel unbound and refuse to
 focus it, leaving the selection looking inert.
 
-`Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Shift+S`
-enters sidebar focus; `Ctrl+Shift+W` opens the selector. Both chords use
-`Ctrl+Shift+<letter>` rather than a bare `Ctrl+<letter>` because every free
-bare Ctrl letter is a terminal control character (Ctrl+H backspace, Ctrl+I
-tab, Ctrl+J newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend).
+`Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Alt+S`
+enters sidebar focus; `Ctrl+Alt+W` opens the selector.
+
+**Chord contract.** Multi-modifier chords are `{CONTROL, ALT}` only. A bare
+`Ctrl+<letter>` is unusable because every free bare Ctrl letter is a terminal
+control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J newline, Ctrl+M enter,
+Ctrl+V literal-next, Ctrl+Z suspend). `Ctrl+Shift+<letter>` is **also**
+unusable, for a subtler reason: the app never pushes keyboard-enhancement
+flags (`src/tui/terminal.rs` enables raw mode, bracketed paste, and mouse
+capture only), so the terminal is in legacy xterm encoding where
+`Ctrl+Shift+W` and `Ctrl+W` are the same byte `0x17`. crossterm reports
+`Char('w')` with CONTROL only, the `(CONTROL|SHIFT, Char('W'))` binding is
+unreachable, and the key silently falls through to whichever action owns the
+bare-Ctrl twin — the panel switcher fired `CloseSession`. `Ctrl+Alt+<letter>`
+has no such collision: legacy encoding sends `ESC` plus one control byte, so
+crossterm reports CONTROL|ALT and the pair is unambiguous against both bare
+`Ctrl+W` and bare `Alt+W`. `tests/modifier_chords.rs` asserts the whole set
+stays disjoint from their unshifted twins.
+
+This affects every multi-modifier chord, not just the panel switcher: sidebar
+focus (`Ctrl+Alt+S`), model cycling (`Ctrl+P` / `Ctrl+Alt+P`), TTS stop
+(`Ctrl+Alt+Y`), fullscreen (`Ctrl+Alt+F`), and project-tab navigation
+(`Ctrl+Alt+N` / `Ctrl+Alt+B`). Function keys and `Ctrl+]` were rejected as
+fallbacks: F1–F12 are intercepted by macOS for brightness/volume unless
+"Use F1, F2 as standard function keys" is enabled, and `Ctrl+]` is already
+the leave-terminal-focus chord.
 
 Entering `Route::Workspace` still auto-selects the Chat panel, preserving the
-M005 behaviour, but the choice is the user's afterwards: `Ctrl+Shift+W` can
+M005 behaviour, but the choice is the user's afterwards: `Ctrl+Alt+W` can
 switch away and back without re-entering the view.
 
 ### Chat side panel (`src/tui/panels/chat.rs`)
@@ -832,7 +853,7 @@ Two invariants carried over from the window:
   message can span more rows than the body has, so anchoring on its first
   line would scroll the selection off-screen entirely.
 
-Two deliberate divergences from the `/chat` window:
+Three deliberate divergences from the `/chat` window:
 
 - **Enter on an empty composer emits nothing.** `start_chat_send` rejects an
   empty body with a warning toast, so forwarding it would make a stray Enter
@@ -840,6 +861,61 @@ Two deliberate divergences from the `/chat` window:
 - **The status row leads with `✗` and no "send failed:" label.** At 28 inner
   columns the label would push the reason — the part the user needs — off the
   end of the row.
+- **There is no manual refresh key.** The `/chat` window keeps `R`; the panel
+  does not.
+
+**The composer row is unconditional and carries a mode badge.** The row renders
+in both modes: `NOR` while navigating, `INS` while capturing text, in inverse
+video so it reads as a state lamp at 28 columns. Normal mode shows a muted
+placeholder (`i to type`, prefixed by `editing a message ·` or `replying ·` when
+a target is set); input mode shows the buffer and caret.
+
+This is load-bearing, not decoration. Collapsing the row in Normal mode made the
+two modes pixel-identical when the buffer was empty, so a user pressing `i` and
+typing saw the characters silently become navigation and reasonably concluded
+the input box was broken. The badge is what makes the mode observable, and it is
+rendered whether or not the panel holds focus — mode is panel state, not focus
+state.
+
+**Refresh is event-driven.** The panel renders `ChatState` live rather than
+holding a snapshot, and `refresh_chat_panel` re-binds the panel to the current
+project before returning. Daemon events (`on_chat_message_committed` /
+`_edited` / `_redacted`) already push into the reducer, so a message committed by
+another client appears without a keystroke. `R` was removed because a visible
+refresh command implies a staleness the projection does not have — a manual sync
+is still available as `/chat-history`.
+
+#### Help dialog search
+
+`HelpDialog` is a **searchable** keybinding list, not a scrolling wall of text.
+Finding one binding used to require scrolling an undifferentiated list, which is
+the wrong shape for a list whose length is set by the build.
+
+Layout is four rows: title, filter, content, footer. The filter row is always
+visible and reads `type to filter keybindings…` when idle, so the affordance is
+discoverable without pressing anything first. While filtering it shows the query,
+a caret, and an `n/total` match count.
+
+- **Printable keys filter.** Whitespace-separated terms are ANDed against the
+  key, action, section, and condition fields, case-insensitively, so `ctrl alt`
+  narrows rather than widens. `j`/`k` are typeable rather than navigational —
+  they have to be searchable to find "jump" — so scrolling is on arrows,
+  PageUp/PageDown, Home, and End.
+- **Esc is two-stage.** The first Esc clears the filter; the second closes. A
+  single Esc never discards a query the user is midway through typing.
+- **The query is bounded** at 64 characters so a held-down key cannot grow
+  dialog state without limit.
+- **New query resets scroll to the top.** A narrowed list is otherwise left
+  scrolled past its own end.
+
+Rows come from `help_entries_for_mode`, with the vim-mode gating rule applied
+identically to `build_help_lines` so filtering cannot surface an entry the
+unfiltered view hides. When the query is empty the dialog renders
+`build_help_lines` output unchanged, so the idle view is byte-identical to the
+pre-filter dialog.
+
+`HelpDialog::new` accepts pre-rendered `Vec<String>` lines and therefore has no
+structured rows; filtering is inert there and scrolling still works.
 
 ### Keyboard sidebar and agent-tree inspection (M009)
 
@@ -850,16 +926,15 @@ hit testing resolve the same target even when scrolling or collapse changes
 rendered line positions. Selection is presentation-only and is cleared when
 the active project scope changes.
 
-Normal-mode `Space` opens help (the `/help` surface) and `Ctrl+Shift+S` enters
+Normal-mode `Space` opens help — a **searchable** keybinding list (see
+[Help dialog search](#help-dialog-search)) — and `Ctrl+Alt+S` enters
 sidebar focus; `j/k` or the arrow keys move, PageUp/PageDown move by a bounded
 viewport step, `h/l` collapse/expand or move to an agent parent, Space toggles
 a collapsible row, Enter inspects, and Esc returns focus to the prompt.
 `Ctrl+B` toggles the sidebar and focuses it when opened; `Ctrl+T` is reserved
-for the todo strip above the input. `Ctrl+Shift+S` is used for sidebar focus
-rather than a bare `Ctrl+<letter>` because every free bare Ctrl letter is a
-terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J newline,
-Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend). Modal dialogs remain above
-this surface under the canonical `FocusManager`.
+for the todo strip above the input. `Ctrl+Alt+S` is used for sidebar focus
+under the chord contract above. Modal dialogs remain above this surface under
+the canonical `FocusManager`.
 
 The Agent Runs section renders the active projection turn's bounded
 `agent_tree` in deterministic parent-first order with indentation, status,
@@ -1610,7 +1685,7 @@ tui/
 │   │   ├── device_secret.rs # DeviceSecretDialog (LocalOwner credential render-once)
 │   │   ├── diff.rs         # DiffDialog
 │   │   ├── goto.rs         # GotoDialog
-│   │   ├── help.rs         # HelpDialog
+│   │   ├── help.rs         # HelpDialog (searchable keybinding list)
 │   │   ├── import.rs       # ImportDialog
 │   │   ├── info.rs         # InfoDialog (Context/Cost/Usage/Stats/etc.)
 │   │   ├── keybind.rs      # KeybindDialog
@@ -1658,7 +1733,7 @@ tui/
 │   └── tool_output.rs      # ToolOutput
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
-├── panels/                 # Swappable side-panel host (Ctrl+Shift+W switcher)
+├── panels/                 # Swappable side-panel host (Ctrl+Alt+W switcher)
 │   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost, selector
 │   ├── chat.rs             # Interactive project-chat panel
 │   └── session.rs          # Session panel (delegates to SidebarWidget)

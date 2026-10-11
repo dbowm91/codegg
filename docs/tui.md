@@ -85,8 +85,19 @@ Discover commands in-app instead:
 
 - Type `/` into the prompt to open the command palette, which filters
   live as you type.
-- `/help` opens the help dialog for the full, current list.
+- `/help` opens the help dialog — the full, current list of keybindings. **Type
+  to filter it**: terms are matched against the key, action, section, and
+  condition, so `ctrl alt` or `sidebar` narrows to what you want. Scroll with
+  the arrow keys, PageUp/PageDown, Home, and End. `Esc` clears the filter, and a
+  second `Esc` closes the dialog.
 - Unknown names simply are not dispatched; the palette is the reliable view.
+
+Keybindings with two modifiers use `Ctrl+Alt`, never `Ctrl+Shift`. CodeGG does
+not ask the terminal for enhanced key reporting, so a `Ctrl+Shift+<letter>`
+keystroke arrives indistinguishable from `Ctrl+<letter>` and fires that key's
+plain-`Ctrl` action instead. `Ctrl+Alt+W` opens the side-panel switcher,
+`Ctrl+Alt+S` focuses the sidebar, and `Ctrl+Alt+N` / `Ctrl+Alt+B` move between
+project tabs.
 
 A few commonly used entries:
 

@@ -252,7 +252,7 @@ pub struct App {
     pub command_registry: crate::tui::command::CommandRegistry,
     pub sidebar: SidebarWidget,
     /// Which panel occupies the side column, whether it holds keyboard
-    /// focus, and the `Ctrl+Shift+W` switcher.
+    /// focus, and the `Ctrl+Alt+W` switcher.
     ///
     /// The host is the single focus authority for the side column: both
     /// panels it owns route every key through it, so a focused panel can

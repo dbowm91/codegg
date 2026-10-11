@@ -475,7 +475,10 @@ impl ChatPanel {
                 // than letting the key look broken.
                 TuiMsg::ChatPagingUnsupported
             }),
-            KeyCode::Char('R') => PanelKey::Intent(TuiMsg::ChatRefresh),
+            // No manual refresh key. The panel is pushed by the daemon chat-event
+            // intake (`on_chat_message_committed` / `_edited` / `_redacted`),
+            // which calls `refresh_chat_panel`; a user-facing `R` implied the
+            // view went stale, which it does not.
             KeyCode::Char('[') => self.step_channel(ctx, -1),
             KeyCode::Char(']') => self.step_channel(ctx, 1),
             // Normal mode deliberately swallows everything else. A leaked
@@ -660,24 +663,79 @@ impl ChatPanel {
         Line::default()
     }
 
-    /// Single-row composer with a visible caret.
+    /// Mode badge: `INS` while capturing text, `NOR` while navigating.
+    ///
+    /// This row is the reason typing "does nothing" is not a support question.
+    /// Without it, Normal mode and Compose mode look identical when the buffer
+    /// is empty, so a user pressing `i` and typing sees the characters vanish
+    /// into navigation with nothing on screen saying why.
+    fn mode_badge(&self, theme: &Theme) -> Span<'static> {
+        let label = if self.mode.is_input() { "INS" } else { "NOR" };
+        let colour = if self.mode.is_input() {
+            theme.primary
+        } else {
+            theme.muted
+        };
+        // Inverse video so the badge reads as a state lamp rather than as part
+        // of the surrounding text, and so it is still obvious at 28 columns.
+        Span::styled(
+            format!(" {label} "),
+            Style::default()
+                .fg(theme.background)
+                .bg(colour)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+
+    /// Composer row, rendered in **both** modes.
+    ///
+    /// Normal mode shows the badge plus a muted placeholder; input mode shows
+    /// the badge plus the buffer and a caret. The row is never absent, because
+    /// its absence was what made the mode unobservable.
     fn composer_line(&self, theme: &Theme, width: u16) -> Line<'static> {
-        let width = usize::from(width).max(4);
-        let body: String = self.buffer.chars().take(width.saturating_sub(3)).collect();
-        let caret_offset = self.caret.min(char_len(&body));
-        let before: String = body.chars().take(caret_offset).collect();
-        let after: String = body.chars().skip(caret_offset).collect();
-        Line::from(vec![
-            Span::styled("▸ ", Style::default().fg(theme.primary)),
-            Span::styled(before, Style::default().fg(theme.foreground)),
-            Span::styled(
+        let badge = self.mode_badge(theme);
+        let width = usize::from(width).max(8);
+        // Badge occupies 5 cells; leave a gutter and at least one text cell.
+        let budget = width.saturating_sub(badge.width() + 3).max(1);
+        let mut spans = vec![badge, Span::raw(" ")];
+        if self.mode.is_input() {
+            let body: String = self.buffer.chars().take(budget).collect();
+            let caret_offset = self.caret.min(char_len(&body));
+            let before: String = body.chars().take(caret_offset).collect();
+            let after: String = body.chars().skip(caret_offset).collect();
+            spans.push(Span::styled(before, Style::default().fg(theme.foreground)));
+            spans.push(Span::styled(
                 "▌",
                 Style::default()
                     .fg(theme.primary)
                     .add_modifier(Modifier::UNDERLINED),
-            ),
-            Span::styled(after, Style::default().fg(theme.foreground)),
-        ])
+            ));
+            spans.push(Span::styled(after, Style::default().fg(theme.foreground)));
+        } else {
+            let prefix = self.edit_or_reply_hint();
+            let hint = if self.buffer.is_empty() {
+                format!("{prefix}i to type")
+            } else {
+                prefix
+            };
+            spans.push(Span::styled(
+                ellipsize_to_width(&hint, budget),
+                Style::default().fg(theme.muted),
+            ));
+        }
+        Line::from(spans)
+    }
+
+    /// Short description of what submitting in the current mode would do, so
+    /// Normal mode explains itself without hiding the mode badge.
+    fn edit_or_reply_hint(&self) -> String {
+        if self.edit_target.is_some() {
+            "editing a message · ".to_string()
+        } else if self.reply_target.is_some() {
+            "replying · ".to_string()
+        } else {
+            String::new()
+        }
     }
 
     /// One-line keybar, shown only while the panel holds focus so an
@@ -687,9 +745,9 @@ impl ChatPanel {
             return Line::default();
         }
         let hint = if self.mode.is_input() {
-            "↵ send · Esc cancel"
+            "↵ send · Esc back to NOR"
         } else {
-            "jk move · i type · X del · ^⇧W panel"
+            "jk move · i type · X del · ^⌥W panel · auto-updates"
         };
         Line::from(Span::styled(
             ellipsize_to_width(hint, usize::from(ctx.area.width).saturating_sub(2)),
@@ -744,13 +802,15 @@ impl SidePanel for ChatPanel {
             return;
         }
 
-        let composer_rows = u16::from(self.mode.is_input());
+        // The composer row is unconditional. Collapsing it in Normal mode made the
+        // mode invisible, which is what made "my typing does nothing" look like
+        // a broken input box rather than an unadvertised mode switch.
         let rows = Layout::vertical([
-            Constraint::Length(1),             // header
-            Constraint::Min(1),                // body
-            Constraint::Length(composer_rows), // composer
-            Constraint::Length(1),             // status
-            Constraint::Length(1),             // keybar
+            Constraint::Length(1), // header
+            Constraint::Min(1),    // body
+            Constraint::Length(1), // composer (badge in every mode)
+            Constraint::Length(1), // status
+            Constraint::Length(1), // keybar
         ])
         .split(inner);
 
@@ -797,9 +857,7 @@ impl SidePanel for ChatPanel {
             Paragraph::new(window).render(rows[1], buf);
         }
 
-        if composer_rows > 0 {
-            Paragraph::new(self.composer_line(&theme, rows[2].width)).render(rows[2], buf);
-        }
+        Paragraph::new(self.composer_line(&theme, rows[2].width)).render(rows[2], buf);
         Paragraph::new(self.status_line(ctx, &theme)).render(rows[3], buf);
         Paragraph::new(self.keybar(ctx, &theme)).render(rows[4], buf);
     }
@@ -1303,17 +1361,24 @@ mod tests {
     }
 
     #[test]
-    fn mark_read_and_refresh_emit_their_intents() {
+    fn mark_read_emits_its_intent() {
         let mut world = World::seeded(&["one"]);
         let mut panel = bound_panel();
         assert_eq!(
             press(&mut panel, &mut world, 'm'),
             PanelKey::Intent(TuiMsg::ChatMarkRead)
         );
-        assert_eq!(
-            press(&mut panel, &mut world, 'R'),
-            PanelKey::Intent(TuiMsg::ChatRefresh)
-        );
+    }
+
+    #[test]
+    fn there_is_no_manual_refresh_key() {
+        // The panel is pushed by the daemon chat-event intake, so a user-facing
+        // refresh key would imply a staleness the projection does not have.
+        // `R` must be inert (consumed, no intent) rather than removed from the
+        // key set so the fall-through stays swallowed.
+        let mut world = World::seeded(&["one"]);
+        let mut panel = bound_panel();
+        assert_eq!(press(&mut panel, &mut world, 'R'), PanelKey::Consumed);
     }
 
     #[test]
@@ -1441,6 +1506,94 @@ mod tests {
     }
 
     #[test]
+    fn the_composer_row_shows_the_mode_badge_in_both_modes() {
+        // The badge is the fix for "my typing does nothing": Normal and input
+        // mode must be distinguishable on screen at all times.
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+
+        let normal = paint_default(&mut panel, &mut world, true);
+        assert!(
+            normal.contains("NOR"),
+            "Normal mode must be labelled:\n{normal}"
+        );
+        assert!(
+            !normal.contains("INS"),
+            "Normal mode must not claim to be capturing text:\n{normal}"
+        );
+
+        assert_eq!(press(&mut panel, &mut world, 'i'), PanelKey::Consumed);
+        assert_eq!(panel.mode(), ChatMode::Compose);
+        let composing = paint_default(&mut panel, &mut world, true);
+        assert!(
+            composing.contains("INS"),
+            "input mode must be labelled INS:\n{composing}"
+        );
+        // Assert on the badge itself, not the whole paint: the keybar mentions
+        // "NOR" as the mode `Esc` returns to, so a whole-screen `NOR` check
+        // would pass for the wrong reason.
+        assert!(
+            panel
+                .composer_line(&Theme::dark(), 28)
+                .to_string()
+                .contains("INS"),
+            "the composer badge must read INS while composing"
+        );
+        assert!(
+            !panel
+                .composer_line(&Theme::dark(), 28)
+                .to_string()
+                .contains("NOR"),
+            "the composer badge must not read NOR while composing"
+        );
+    }
+
+    #[test]
+    fn the_badge_is_visible_even_when_the_panel_is_not_focused() {
+        // Mode is panel state, not focus state; blurring must not hide it.
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+        press(&mut panel, &mut world, 'i');
+        let blurred = paint_default(&mut panel, &mut world, false);
+        assert!(blurred.contains("INS"), "{blurred}");
+    }
+
+    #[test]
+    fn typed_text_appears_in_the_composer_row() {
+        // End-to-end on the reported symptom: press `i`, type, and the
+        // characters must be visible on screen, not just held in the buffer.
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+        press(&mut panel, &mut world, 'i');
+        for ch in "typing works".chars() {
+            assert_eq!(
+                press(&mut panel, &mut world, ch),
+                PanelKey::Consumed,
+                "character {ch:?} was not consumed by the composer"
+            );
+        }
+        let text = paint_default(&mut panel, &mut world, true);
+        assert!(
+            text.contains("typing works"),
+            "typed text is not visible:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_badge_fits_at_the_narrowest_rendered_width() {
+        // The side column is ~28-30 cells; the badge must not be ellipsized
+        // out of existence at that size. Width-only, so no world state is needed.
+        let panel = bound_panel();
+        let theme = Theme::dark();
+        let line = panel.composer_line(&theme, 12);
+        let rendered: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
+        assert!(
+            rendered.contains("NOR"),
+            "badge clipped at 12 cols: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn render_reports_an_unavailable_panel_instead_of_an_empty_box() {
         let mut world = World::new();
         let mut panel = bound_panel();
@@ -1494,11 +1647,14 @@ mod tests {
     fn composing_shows_the_caret_only_while_composing() {
         let mut world = World::seeded(&["hello"]);
         let mut panel = bound_panel();
-        assert!(!paint_default(&mut panel, &mut world, true).contains('▸'));
+        // The composer row is always present, so the marker that distinguishes
+        // "capturing text" from "navigating" is the caret — not the row's
+        // existence, which no longer says anything about the mode.
+        assert!(!paint_default(&mut panel, &mut world, true).contains('▌'));
         press(&mut panel, &mut world, 'i');
         let text = paint_default(&mut panel, &mut world, true);
-        assert!(text.contains('▸'), "{text}");
         assert!(text.contains('▌'), "composer must show a caret:\n{text}");
+        assert!(text.contains("INS"), "{text}");
     }
 
     #[test]
