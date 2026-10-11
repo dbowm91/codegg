@@ -10,6 +10,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 public static class AppContainerProofNative {
+    public static string ObservedAppContainerSid = "";
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct StartupInfo {
         public int cb;
@@ -49,6 +51,13 @@ public static class AppContainerProofNative {
     public static extern int DeleteAppContainerProfile(string name);
     [DllImport("advapi32.dll")]
     public static extern IntPtr FreeSid(IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass,
+        IntPtr tokenInformation, uint tokenInformationLength, out uint returnLength);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr stringSid);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool InitializeProcThreadAttributeList(IntPtr list, int count,
         int flags, ref IntPtr size);
@@ -70,6 +79,33 @@ public static class AppContainerProofNative {
     public static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("kernel32.dll")]
     public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr LocalFree(IntPtr memory);
+
+    public static string GetAppContainerSid(IntPtr process) {
+        IntPtr token;
+        if (!OpenProcessToken(process, 0x0008, out token))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            uint required;
+            GetTokenInformation(token, 31, IntPtr.Zero, 0, out required);
+            if (required == 0)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            IntPtr information = Marshal.AllocHGlobal((int)required);
+            try {
+                if (!GetTokenInformation(token, 31, information, required, out required))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                IntPtr packageSid = Marshal.ReadIntPtr(information);
+                if (packageSid == IntPtr.Zero)
+                    return "";
+                IntPtr sidText;
+                if (!ConvertSidToStringSid(packageSid, out sidText))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                try { return Marshal.PtrToStringUni(sidText); }
+                finally { LocalFree(sidText); }
+            } finally { Marshal.FreeHGlobal(information); }
+        } finally { CloseHandle(token); }
+    }
 
     public static uint Run(string executable, string arguments, IntPtr appContainerSid) {
         IntPtr SecurityCapabilitiesAttribute = (IntPtr)0x00020009;
@@ -104,6 +140,7 @@ public static class AppContainerProofNative {
                         ExtendedStartupInfoPresent | CreateNoWindow, IntPtr.Zero,
                         System.IO.Path.GetDirectoryName(executable), ref startup, out process))
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                ObservedAppContainerSid = GetAppContainerSid(process.hProcess);
             } finally {
                 Marshal.FreeHGlobal(capabilitiesPtr);
             }
@@ -156,17 +193,6 @@ try {
     $package = [System.Security.Principal.SecurityIdentifier]::new($sidText)
 
     $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
-    $tokenCode = [AppContainerProofNative]::Run($cmd,
-        "/D /C whoami /groups `> `"$result`"", $sid)
-    if ($tokenCode -ne 0) {
-        throw "Could not inspect the AppContainer token groups (exit $tokenCode)."
-    }
-    $tokenGroups = [IO.File]::ReadAllText($result)
-    if (-not $tokenGroups.Contains($sidText)) {
-        throw "AppContainer package SID $sidText was absent from the child token groups."
-    }
-    'package SID present in child token groups: passed'
-
     $readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
         $package, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
         [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
@@ -192,6 +218,10 @@ try {
     if ($readCode -ne 0 -or [IO.File]::ReadAllText($result) -ne 'allowed-read-marker') {
         throw "AppContainer could not read an explicitly allowed workspace fixture (exit $readCode)."
     }
+    if ([AppContainerProofNative]::ObservedAppContainerSid -ne $sidText) {
+        throw "Child token package SID mismatch: expected $sidText, observed $([AppContainerProofNative]::ObservedAppContainerSid)."
+    }
+    'package SID present in child token: passed'
     'allowed workspace read: passed'
 
     $writeCode = [AppContainerProofNative]::Run($cmd,
