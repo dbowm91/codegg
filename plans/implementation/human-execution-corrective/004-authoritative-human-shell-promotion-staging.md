@@ -1,8 +1,8 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `2f026f05220f60c62bfc381af3d7479172dfdb50`
+Repository baseline: `d32e1ff28ead2527fd88220a3954dee0d9590bb0` (active work began after M004's hosted-only blocker record)
 
 Source roadmap:
 
@@ -33,7 +33,9 @@ C001 established a real provider-facing turn path and redaction tests, but its p
 
 ## 3. Current implementation evidence
 
-`src/tui/app/mod.rs` holds pending promotion tokens and `src/tui/app/prompt_turn.rs` attaches them to a submitted turn. `src/tui/commands/shell.rs` builds the redacted projection and fences originating session/workspace. The canonical turn and ask submissions accept model-facing messages, but there is no durable stage-before-turn request, authoritative pending record, reconnect query, expiry state, or dedupe identity at the session owner.
+`src/tui/app/mod.rs` holds pending promotion tokens and `src/tui/app/prompt_turn.rs` attaches projected text to the submitted `TurnSubmit.messages`; a successful `CoreResponse::Ack` then marks the local shell entry promoted and drops the local token. `src/tui/commands/shell.rs` builds the bounded redacted projection and fences the captured session/workspace, but `add_user_message` is the staging operation for the local path. The remote include path only inserts an unsubmitted composer draft. `SessionPromptSubmit` composes a daemon-side turn from the session selection but has no promotion input.
+
+The daemon's authorization decision already carries the authenticated `principal_id`, and `TurnSubmit` is scoped through the session with `AgentInvoke`; request DTOs do not establish identity. Turn admission generates a daemon `turn_id`, acquires the existing durable session-controller lease, and only then calls `run_turn`; the handler returns `Ack` after `run_turn` accepts. That lease has its own SQLite transaction, while there is no durable turn message/admission record coupling it to promotion state. Session schema is additive through migration v70, and the authoritative `CoreDaemon` owns its SQLite pool. This establishes a possible narrow session-owned persistence surface, but work package A still needs to prove how a promotion claim can be recovered without loss or duplicate provider delivery across the gap between runtime acceptance and durable completion state.
 
 ## 4. Invariants that must not regress
 
