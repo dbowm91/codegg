@@ -165,23 +165,28 @@ public static class AppContainerProofNative {
 
 Add-Type -TypeDefinition $source -Language CSharp
 
-function Restore-DisposableAclLease([string]$path, [string]$beforeSddl, [string]$packageSid) {
-    $acl = Get-Acl -LiteralPath $path
-    $ownedRules = @($acl.Access | Where-Object {
+function Restore-DisposableAclLease {
+    param(
+        [string]$path,
+        [System.Security.AccessControl.DirectorySecurity]$beforeAcl,
+        [string]$beforeSddl,
+        [string]$packageSid
+    )
+    # These directories were created by this fixture, so restoring their
+    # complete before-image cannot overwrite unrelated host ACL changes.
+    Set-Acl -LiteralPath $path -AclObject $beforeAcl
+    $afterAcl = Get-Acl -LiteralPath $path
+    $remainingOwnedRules = @($afterAcl.Access | Where-Object {
         $_.IdentityReference.Value -eq $packageSid
     })
-    if ($ownedRules.Count -eq 0) {
-        throw "No package-SID ACE was found to roll back on $path (current SDDL: $($acl.Sddl))."
+    if ($remainingOwnedRules.Count -ne 0) {
+        throw "Package-SID ACE remained after disposable ACL rollback on $path (current SDDL: $($afterAcl.Sddl))."
     }
-    foreach ($rule in $ownedRules) {
-        $acl.RemoveAccessRuleSpecific($rule)
-    }
-    Set-Acl -LiteralPath $path -AclObject $acl
-    $afterSddl = (Get-Acl -LiteralPath $path).Sddl
+    $afterSddl = $afterAcl.Sddl
     if ($afterSddl -ne $beforeSddl) {
         throw "ACL rollback did not restore the exact before-image for $path. Expected SDDL: $beforeSddl; actual SDDL: $afterSddl."
     }
-    "ACL lease restored: $path ($($ownedRules.Count) exact package-SID ACE(s) removed)"
+    "ACL lease restored to exact before-image: $path"
 }
 
 $name = 'CodeggM004-' + [Guid]::NewGuid().ToString('N')
@@ -224,8 +229,10 @@ try {
             [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
         [System.Security.AccessControl.PropagationFlags]::None,
         [System.Security.AccessControl.AccessControlType]::Allow)
-    $readAclBefore = (Get-Acl -LiteralPath $readRoot).Sddl
-    $writeAclBefore = (Get-Acl -LiteralPath $writeRoot).Sddl
+    $readAclBefore = Get-Acl -LiteralPath $readRoot
+    $readAclBeforeSddl = $readAclBefore.Sddl
+    $writeAclBefore = Get-Acl -LiteralPath $writeRoot
+    $writeAclBeforeSddl = $writeAclBefore.Sddl
     $readAcl = Get-Acl -LiteralPath $readRoot
     $readAcl.AddAccessRule($readRule)
     Set-Acl -LiteralPath $readRoot -AclObject $readAcl
@@ -266,8 +273,8 @@ try {
     }
     'outside write denied: passed'
 
-    Restore-DisposableAclLease $readRoot $readAclBefore $sidText
-    Restore-DisposableAclLease $writeRoot $writeAclBefore $sidText
+    Restore-DisposableAclLease $readRoot $readAclBefore $readAclBeforeSddl $sidText
+    Restore-DisposableAclLease $writeRoot $writeAclBefore $writeAclBeforeSddl $sidText
     'temporary ACL leases restored to exact before-images: passed'
 } finally {
     if ($profileCreated) {
