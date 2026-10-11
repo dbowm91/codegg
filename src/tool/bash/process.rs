@@ -186,7 +186,7 @@ pub(crate) fn shell_argv(
                     ],
                 ),
                 crate::config::schema::WindowsShellKind::Cmd => (
-                    system_root.join("System32/cmd.exe"),
+                    system_root.join("System32").join("cmd.exe"),
                     vec![
                         "/D".to_string(),
                         "/S".to_string(),
@@ -1498,7 +1498,10 @@ mod tests {
                     system_root.join("System32/WindowsPowerShell/v1.0/powershell.exe")
                 );
             } else {
-                assert_eq!(Path::new(&argv[0]), system_root.join("System32/cmd.exe"));
+                assert_eq!(
+                    Path::new(&argv[0]),
+                    system_root.join("System32").join("cmd.exe")
+                );
                 assert_eq!(&argv[1..4], &["/D", "/S", "/C"]);
             }
         }
