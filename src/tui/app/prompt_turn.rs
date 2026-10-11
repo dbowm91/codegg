@@ -85,6 +85,12 @@ impl App {
                 tracing::debug!(target: "codegg::tui::app", "send_prompt: intercepted human shell command: {}", command);
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
+                if !self.shell_enabled {
+                    self.messages_state
+                        .toasts
+                        .error("Human shell is disabled by configuration");
+                    return;
+                }
                 // M005: Workspace selection drives the execution root;
                 // fail visibly instead of falling back to cwd/active tab.
                 let cwd =

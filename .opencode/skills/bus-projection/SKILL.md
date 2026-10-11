@@ -83,9 +83,9 @@ cargo test --test collaboration_m003_chat_actions
 ## See Also
 
 - `architecture/bus.md`, `architecture/projection.md`
-- `.skills/core/SKILL.md` — projection request family on the daemon
-- `.skills/server/SKILL.md` — `/tui` WS event/state protocol (no `RenderFrame`)
-- `.skills/tui/SKILL.md` — sidebar/run-tree joins by exact canonical task IDs
+- `.opencode/skills/core/SKILL.md` — projection request family on the daemon
+- `.opencode/skills/server/SKILL.md` — `/tui` WS event/state protocol (no `RenderFrame`)
+- `.opencode/skills/tui/SKILL.md` — sidebar/run-tree joins by exact canonical task IDs
 
 ## Source verification
 

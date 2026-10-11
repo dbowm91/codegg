@@ -399,6 +399,12 @@ pub struct App {
     /// once such a mechanism exists. No schema migration in this pass.
     pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
     pub shell_store: crate::shell::ShellOutputStore,
+    /// Shell outputs inserted into the local conversation projection but not
+    /// yet acknowledged by the daemon as part of an accepted turn.
+    pub pending_shell_promotions: Vec<(u64, String, uuid::Uuid)>,
+    /// Session/workspace authority captured when each human shell process
+    /// starts, used to reject late output after navigation changes context.
+    pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
     /// Durable command-run store for the projection pipeline
     /// (Phase 1 of `plans/shell_output_projection_phase_01_command_event_model.md`).
     /// Populated alongside `shell_store` so the projection seam has raw
@@ -417,6 +423,12 @@ pub struct App {
     /// Loaded at construction (or config reload) so the UI thread never
     /// performs synchronous disk I/O per shell event.
     pub shell_confirm_dangerous: bool,
+    /// Effective human-shell execution and promotion controls. These are
+    /// refreshed with config so every execution entry point observes them.
+    pub shell_enabled: bool,
+    pub shell_default_timeout_secs: u64,
+    pub shell_auto_promote_bangbang: bool,
+    pub shell_ansi: crate::config::schema::AnsiMode,
     /// Cached shell output projection configuration from
     /// `[shell.output]`. Refreshed on config reload.
     pub shell_output_config: crate::config::schema::ShellOutputConfig,
@@ -792,6 +804,7 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
                 session_dialog: SessionDialog::new(Arc::clone(&theme)),
@@ -939,11 +952,33 @@ impl App {
                 .and_then(|c| c.human_shell.as_ref())
                 .map(crate::shell::ShellOutputStore::from_config)
                 .unwrap_or_default(),
+            pending_shell_promotions: Vec::new(),
+            shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: loaded_shell_cfg
                 .as_ref()
                 .and_then(|c| c.human_shell.as_ref())
                 .map(|h| h.confirm_dangerous())
                 .unwrap_or(true),
+            shell_enabled: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.enabled())
+                .unwrap_or(true),
+            shell_default_timeout_secs: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.default_timeout_secs())
+                .unwrap_or(crate::shell::DEFAULT_TIMEOUT_SECS),
+            shell_auto_promote_bangbang: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.auto_promote_bangbang())
+                .unwrap_or(true),
+            shell_ansi: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.ansi())
+                .unwrap_or_default(),
             shell_output_config: loaded_shell_cfg
                 .as_ref()
                 .and_then(|c| c.shell.as_ref())
@@ -1317,6 +1352,7 @@ impl App {
                 toasts: ToastManager::new(),
             },
             dialog_state: DialogState {
+                project_init_draft: None,
                 model_dialog: ModelDialog::new(Arc::clone(&theme)),
                 agent_dialog: AgentDialog::new(Arc::clone(&theme)),
                 session_dialog: SessionDialog::new(Arc::clone(&theme)),
@@ -1458,7 +1494,13 @@ impl App {
             security_review_running: None,
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
+            pending_shell_promotions: Vec::new(),
+            shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: true,
+            shell_enabled: true,
+            shell_default_timeout_secs: crate::shell::DEFAULT_TIMEOUT_SECS,
+            shell_auto_promote_bangbang: true,
+            shell_ansi: crate::config::schema::AnsiMode::default(),
             shell_output_config: crate::config::schema::ShellOutputConfig::default(),
             command_run_store: crate::shell::CommandOutputStore::new(),
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
@@ -2052,14 +2094,60 @@ impl App {
                     }),
             },
         );
+        let promotions: Vec<(uuid::Uuid, u64)> = self
+            .pending_shell_promotions
+            .iter()
+            .filter(|(_, text, _)| {
+                self.messages_state.messages.messages.iter().any(|message| {
+                    message.role == crate::tui::components::messages::MessageRole::User
+                        && message.text_content() == text.as_str()
+                })
+            })
+            .map(|(id, _, token)| (*token, *id))
+            .collect();
+        let tui_tx = self.tui_cmd_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = client.request(request).await {
-                tracing::debug!("core facade turn.submit failed: {}", e);
+            let error = match client.request(request).await {
+                Ok(crate::protocol::core::CoreResponse::Ack) => None,
+                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                    Some(format!("{code}: {message}"))
+                }
+                Ok(_) => Some("unexpected response to turn.submit".to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            if !promotions.is_empty() {
+                if let Some(tx) = tui_tx {
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::ShellPromotionsSubmitted { promotions, error },
+                    );
+                }
+            } else if let Some(error) = error {
+                tracing::debug!("core facade turn.submit failed: {}", error);
             }
         });
     }
 
-    fn build_provider_context(&self) -> Vec<crate::provider::Message> {
+    pub(crate) fn apply_shell_promotions_submitted(
+        &mut self,
+        promotions: &[(uuid::Uuid, u64)],
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            self.messages_state.toasts.error(&format!(
+                "Shell output remains staged because the turn was not accepted: {error}"
+            ));
+            return;
+        }
+        for (_, id) in promotions {
+            self.shell_store
+                .mark_promoted(crate::shell::types::ShellCommandId(*id));
+        }
+        self.pending_shell_promotions
+            .retain(|(_, _, token)| !promotions.iter().any(|(submitted, _)| submitted == token));
+    }
+
+    pub(crate) fn build_provider_context(&self) -> Vec<crate::provider::Message> {
         let mut out = Vec::new();
         for m in &self.messages_state.messages.messages {
             let mut content: Vec<crate::provider::ContentPart> = Vec::new();
@@ -2104,21 +2192,10 @@ impl App {
                             },
                         });
                     }
-                    MsgPart::ShellCell {
-                        command,
-                        stdout_preview,
-                        stderr_preview,
-                        status,
-                        ..
-                    } => {
-                        content.push(crate::provider::ContentPart::Text {
-                            text: format!(
-                                "$ {} [{}]\nstdout: {}\nstderr: {}",
-                                command, status, stdout_preview, stderr_preview
-                            )
-                            .into(),
-                        });
-                    }
+                    // Shell cells are a human-only display surface. Their
+                    // command and output previews never enter model context;
+                    // explicit promotion adds a separate redacted user message.
+                    MsgPart::ShellCell { .. } => {}
                     MsgPart::RunCell {
                         title,
                         status,
@@ -3942,8 +4019,93 @@ impl App {
     ) {
         use crate::tui::command::BuiltinSlashAction as B;
         match action {
+            B::ProjectInit => {
+                self.dialog_state.project_init_draft = None;
+                self.enqueue_tui_command(TuiCommand::ProjectInitDraft);
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
             B::Reload => {
                 self.enqueue_tui_command(TuiCommand::RefreshAssets);
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
+            B::Skills => {
+                let query = raw_input
+                    .unwrap_or_default()
+                    .trim()
+                    .strip_prefix("/skills")
+                    .unwrap_or_default()
+                    .trim()
+                    .chars()
+                    .take(128)
+                    .collect::<String>();
+                let report = self.agent_state.snapshot.as_deref().map(|snapshot| {
+                    let registry = &snapshot.skills;
+                    let skipped = registry
+                        .diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity == crate::skills::Severity::Error)
+                        .count();
+                    let result = if query.is_empty() {
+                        if registry.effective.is_empty() {
+                            "No effective skills".to_string()
+                        } else {
+                            let mut entries = registry
+                                .effective
+                                .iter()
+                                .take(12)
+                                .map(|skill| {
+                                    format!(
+                                        "{} [{}:{} depth {}] ({} shadowed)",
+                                        skill.name,
+                                        skill.source_kind.directory_name(),
+                                        skill.precedence_rank,
+                                        skill.workspace_depth,
+                                        skill.shadowed_alternatives.len()
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            let remaining = registry.effective.len().saturating_sub(12);
+                            if remaining > 0 {
+                                entries.push_str(&format!(
+                                    "; {remaining} more (inspect with /skills <name>)"
+                                ));
+                            }
+                            entries
+                        }
+                    } else if let Some(skill) = registry.get(&query) {
+                        format!(
+                            "{} — {}; source: {} (rank {}, depth {}); {} resources; shadowed: {}",
+                            skill.name,
+                            skill.description,
+                            skill.source_kind.directory_name(),
+                            skill.precedence_rank,
+                            skill.workspace_depth,
+                            skill.resources.len(),
+                            skill
+                                .shadowed_alternatives
+                                .iter()
+                                .map(|alternative| alternative.source_kind.directory_name())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )
+                    } else {
+                        format!("No effective skill named '{query}'")
+                    };
+                    format!("{result}; {skipped} invalid candidates. Use /reload to refresh.")
+                });
+                if let Some(report) = report {
+                    let bounded: String = report.chars().take(2048).collect();
+                    self.messages_state.toasts.info(&bounded);
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active asset snapshot is available");
+                }
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
@@ -15365,6 +15527,27 @@ mod enqueue_tui_command_tests {
             .expect("first command fits");
         assert!(!send_tui(&tx, TuiCommand::OpenTreeDialog));
         assert!(rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod skills_command_tests {
+    use super::*;
+
+    #[test]
+    fn skills_command_uses_snapshot_path_and_reports_unavailable_snapshot() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.prompt_state.prompt.set_text("/skills".into());
+        app.dispatch_builtin_command(
+            crate::tui::command::BuiltinSlashAction::Skills,
+            Some("/skills"),
+        );
+        assert!(app
+            .messages_state
+            .toasts
+            .iter()
+            .any(|toast| toast.message.contains("No active asset snapshot")));
+        assert!(app.prompt_state.prompt.get_text().is_empty());
     }
 }
 

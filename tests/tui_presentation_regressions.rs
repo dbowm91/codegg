@@ -162,7 +162,6 @@ fn todo_updates_are_session_scoped_and_revision_monotonic() {
     // With no active session, an update is accepted (nothing to conflict with).
     let mut app = App::new_for_testing("/tmp/codegg-regression-todo-scope".to_string());
     assert!(app.apply_core_event(event("s-1", 5, "first")));
-    assert_eq!(app.todos[0].content, "first");
     assert_eq!(app.todos.len(), 1);
     assert_eq!(app.todos[0].content, "first");
     assert_eq!(app.todo_revision, 5);

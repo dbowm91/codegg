@@ -576,6 +576,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     // Editor document changes/save/reload share the existing file-mutation
     // structural action; document bodies and text edits are never metadata.
     ("document_modify", "file_mutate"),
+    ("project_init_publish", "file_mutate"),
     ("managed_worktree_cleanup", "worktree_lifecycle"),
     ("managed_worktree_archive", "worktree_lifecycle"),
     ("job_submit", "job_submit"),
@@ -683,6 +684,9 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "audit_capabilities",
     "document_capabilities",
     "document_read",
+    // `/init` is a bounded, explicitly authorized project-file preview;
+    // the publication operation below is structurally audited.
+    "project_init_draft",
     "connection_list_detail",
     "eggpool_connection_cancel",
     "eggpool_connection_status",

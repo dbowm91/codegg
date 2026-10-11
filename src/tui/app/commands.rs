@@ -52,6 +52,21 @@ pub enum TuiCommand {
     /// Refresh all project runtime assets through the daemon-owned
     /// coordinator. Focused `/reload` aliases use this same variant.
     RefreshAssets,
+    ProjectInitDraft,
+    ProjectInitDraftFinished {
+        draft: Option<crate::protocol::core::ProjectInitDraftDto>,
+        error: Option<String>,
+    },
+    ProjectInitPublish {
+        project_id: String,
+        workspace_id: String,
+        draft_token: String,
+    },
+    ProjectInitPublishFinished {
+        project_id: String,
+        workspace_id: String,
+        error: Option<String>,
+    },
     AssetRefreshFinished {
         report: Option<crate::protocol::core::AssetRefreshReportDto>,
         error: Option<String>,
@@ -495,6 +510,17 @@ pub enum TuiCommand {
     ShellAsk {
         id: u64,
         question: String,
+    },
+    /// A session owner accepted or rejected one explicit shell evidence ask.
+    ShellAskSubmitted {
+        id: u64,
+        text: String,
+        error: Option<String>,
+    },
+    /// A normal next turn accepted or rejected staged shell evidence.
+    ShellPromotionsSubmitted {
+        promotions: Vec<(uuid::Uuid, u64)>,
+        error: Option<String>,
     },
     ShellExpand {
         id: u64,

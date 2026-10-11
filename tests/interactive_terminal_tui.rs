@@ -121,10 +121,26 @@ async fn create_and_attach(
     client: &str,
     controller: &mut InteractiveTerminalController,
 ) -> (String, String) {
-    let handle = match protocol
-        .create(client, ctx, &create_cat(workspace_id), None)
-        .await
-    {
+    create_and_attach_with_request(
+        protocol,
+        ctx,
+        &create_cat(workspace_id),
+        workspace_id,
+        client,
+        controller,
+    )
+    .await
+}
+
+async fn create_and_attach_with_request(
+    protocol: &InteractiveProcessProtocol,
+    ctx: &Arc<ExecutionContext>,
+    request: &InteractiveProcessCreateRequest,
+    workspace_id: &str,
+    client: &str,
+    controller: &mut InteractiveTerminalController,
+) -> (String, String) {
+    let handle = match protocol.create(client, ctx, request, None).await {
         CoreResponse::InteractiveProcessCreated { handle, metadata } => {
             assert_eq!(metadata.workspace_id, workspace_id);
             assert!(controller.apply_created(
@@ -166,8 +182,33 @@ async fn tui_terminal_full_lifecycle_over_cat() {
     let mut controller = InteractiveTerminalController::new();
 
     // Create + attach project through the TUI controller.
-    let (handle, attachment) =
-        create_and_attach(&protocol, &ctx, &workspace_id, "client-a", &mut controller).await;
+    let mut raw_cat = create_cat(&workspace_id);
+    raw_cat.argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "stty raw -echo; printf READY; exec cat".to_string(),
+    ];
+    let (handle, attachment) = create_and_attach_with_request(
+        &protocol,
+        &ctx,
+        &raw_cat,
+        &workspace_id,
+        "client-a",
+        &mut controller,
+    )
+    .await;
+
+    let from = controller
+        .resume_cursor(&handle)
+        .expect("cursor after attach");
+    let (chunk, ready) = poll_resume_text(&protocol, "client-a", &attachment, from, |text| {
+        text.contains("READY")
+    })
+    .await;
+    controller
+        .apply_resumed(&handle, &chunk)
+        .expect("raw PTY readiness applies");
+    assert!(ready.contains("READY"));
 
     // Focus is explicit: keys are ignored until the user focuses.
     assert_eq!(
@@ -206,6 +247,35 @@ async fn tui_terminal_full_lifecycle_over_cat() {
         "scrollback renders input"
     );
     assert!(!text.is_empty());
+
+    let esc = match classify_key(true, TerminalKey::Esc) {
+        TerminalKeyAction::Forward(bytes) => bytes,
+        action => panic!("literal Esc must reach the focused PTY, got {action:?}"),
+    };
+    assert_eq!(esc, [0x1b]);
+    match protocol
+        .input("client-a", &attachment, &B64.encode(&esc))
+        .await
+    {
+        CoreResponse::InteractiveProcessInputAccepted { bytes_accepted, .. } => {
+            assert_eq!(bytes_accepted, 1);
+        }
+        other => panic!("expected literal Esc accepted, got {other:?}"),
+    }
+    let from = controller.resume_cursor(&handle).expect("cursor");
+    let (chunk, text) = poll_resume_text(&protocol, "client-a", &attachment, from, |text| {
+        text.contains('\x1b')
+    })
+    .await;
+    controller
+        .apply_resumed(&handle, &chunk)
+        .expect("Esc resume applies");
+    assert!(text.contains('\x1b'), "PTY should receive literal Esc");
+    assert!(!controller
+        .render_lines(&handle, 50)
+        .expect("render")
+        .join("\n")
+        .contains('\x1b'));
 
     // Resize forwards through the attachment; the daemon echoes the size.
     match protocol.resize("client-a", &attachment, 120, 40).await {
@@ -545,10 +615,13 @@ fn terminal_tool_surface_is_truthful_after_disposition() {
 }
 
 #[test]
-fn terminal_focus_gate_never_submits_from_escape() {
-    // Escape while focused leaves focus and never forwards bytes.
+fn terminal_focus_gate_forwards_escape_and_reserves_ctrl_right_bracket() {
     assert_eq!(
         classify_key(true, TerminalKey::Esc),
+        TerminalKeyAction::Forward(vec![0x1b])
+    );
+    assert_eq!(
+        classify_key(true, TerminalKey::ExitFocus),
         TerminalKeyAction::EscapeFocus
     );
     // Focusing a second terminal hides the first: exactly one owner.

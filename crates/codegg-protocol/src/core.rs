@@ -28,6 +28,49 @@ use crate::provider::{
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const ASSET_REFRESH_CAPABILITY: &str = "runtime_assets.refresh.v1";
 pub const PROJECT_CATALOG_CAPABILITY: &str = "project_catalog.v1";
+pub const PROJECT_INIT_CAPABILITY: &str = "project_init.publish.v1";
+pub const MAX_PROJECT_INIT_DRAFT_BYTES: usize = 128 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectInitOperationDto {
+    Create,
+    Update,
+    Noop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectInitEvidenceDto {
+    pub source: String,
+    pub fact: String,
+    pub confidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectInitDiagnosticDto {
+    pub source: String,
+    pub message: String,
+}
+
+/// Bounded proposal returned by daemon-side repository analysis. The opaque
+/// token is absent for a no-op and never contains filesystem authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectInitDraftDto {
+    pub project_id: String,
+    pub workspace_id: String,
+    pub operation: ProjectInitOperationDto,
+    #[serde(default)]
+    pub draft_token: Option<String>,
+    pub target_relative_path: String,
+    #[serde(default)]
+    pub observed_target_digest: Option<String>,
+    pub candidate_markdown: String,
+    pub unified_diff: String,
+    #[serde(default)]
+    pub evidence: Vec<ProjectInitEvidenceDto>,
+    #[serde(default)]
+    pub diagnostics: Vec<ProjectInitDiagnosticDto>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
@@ -1043,6 +1086,14 @@ pub enum CoreResponse {
         supported: bool,
         max_report_entries: usize,
     },
+    ProjectInitDraft {
+        draft: ProjectInitDraftDto,
+    },
+    ProjectInitPublished {
+        project_id: String,
+        workspace_id: String,
+        target_digest: String,
+    },
     EggpoolConnectionCreated {
         result: CreateEggpoolConnectionResult,
     },
@@ -1854,6 +1905,19 @@ pub enum CoreRequest {
         scope: AssetRefreshScopeDto,
     },
     AssetRefreshCapabilities,
+    /// Analyze the selected workspace and issue an ephemeral, daemon-bound
+    /// token for publishing a reviewed root `AGENTS.md` candidate.
+    ProjectInitDraftGet {
+        project_id: String,
+        workspace_id: String,
+    },
+    /// Publish a daemon-issued draft token. Target and content are not client
+    /// supplied; project/workspace IDs exist for direct-project authorization.
+    ProjectInitPublish {
+        project_id: String,
+        workspace_id: String,
+        draft_token: String,
+    },
     EggpoolConnectionCreate {
         request: CreateEggpoolConnectionRequest,
     },

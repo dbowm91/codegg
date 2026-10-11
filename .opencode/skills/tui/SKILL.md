@@ -126,6 +126,10 @@ root and lifecycle modules.
   messages.
 - **Human shell cells** render via `MsgPart::ShellCell`; `/shell-*` commands
   live in `commands/shell.rs` (see the `human-shell` skill).
+- **Interactive terminal keys** are modal input: focused Esc is forwarded to
+  the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
+  output is interpreted by bounded VT screen state before Ratatui rendering;
+  never write raw child escape sequences to the host terminal.
 - **Project scope**: resolve `App::project_execution_context()` before
   spawning project-scoped work. The active tab supplies project/workspace/
   session identities and the workspace root. Never use process cwd or the
@@ -196,3 +200,7 @@ Added: a `## Static Guards` section naming
 `scripts/check_tui_editor_text_authority.py` with the surfaces and patterns
 each one actually rejects (both scripts confirmed present and wired into
 `verify.sh quick`).
+
+Re-verified 2026-10-10 for C003: focused Esc is forwarded to the PTY, Ctrl-]
+leaves focus, and the screen renderer uses bounded VT state with resize and
+degraded-history handling. Terminal output remains outside model context.

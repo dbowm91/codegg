@@ -99,6 +99,7 @@ fn base_spec(root: &Path, script: &str, writable: bool) -> SandboxLaunchSpec {
         } else {
             Vec::new()
         },
+        deny_paths: Vec::new(),
     }
 }
 

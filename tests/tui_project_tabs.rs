@@ -160,8 +160,9 @@ fn active_accessors_reflect_compat_state() {
     assert_eq!(app.active_session_id(), None);
     assert_eq!(app.active_project_id(), None);
     assert_eq!(app.active_workspace_id(), None);
-    // Compat tab inherits the default model + agent.
-    assert!(!app.active_model().is_empty());
+    // Compat tab inherits the default agent; models are never seeded
+    // (no hardcoded catalog — tests opt in explicitly via `set_models`).
+    assert!(app.active_model().is_empty());
     assert!(!app.active_agent().is_empty());
 }
 

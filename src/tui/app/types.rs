@@ -154,6 +154,7 @@ pub enum TuiMsg {
     SelectSession(Box<Session>),
     SubmitConnect,
     CloseDialog,
+    ProjectInitApprove,
     ToggleSidebar,
     ToggleTodoList,
     ToggleFullscreen,

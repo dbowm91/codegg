@@ -554,6 +554,7 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
         "security" | "security_reviewer" => "Output contract: Return findings with: severity, confidence, title, file path, line, evidence (code locations + risk markers + call paths), reasoning, recommendation, and suggested tests. Return review prompts (marker-only) separately from evidence-based findings. Do not inflate severity without exploitability evidence.",
         "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
         "researcher" => "Output contract: Return a synthesized answer with: question, evidence, conclusion, and citations. Distinguish confirmed claims from speculative ones. Prefer concrete, citable sources.",
+        "title" => "Output contract: Return ONLY the title as plain text: 3-8 words, max 60 characters, no quotes, no markdown, no trailing period, no prefix like \"Title:\".",
         "executor" => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
         _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
     }

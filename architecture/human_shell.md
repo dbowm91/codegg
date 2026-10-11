@@ -29,9 +29,26 @@ and a promotion model that keeps ephemeral commands out of model context.
 ### Central Invariant
 
 A human `!` command is not model context unless the user explicitly
-promotes it. `!command` runs ephemerally (hidden from model).
-`!!command` runs and auto-promotes output. `\!command` escapes to a
-literal `!` chat message.
+promotes it. `!command` runs ephemerally (command and output hidden from model).
+`!!command` runs and stages bounded/redacted output for the next submitted
+turn when `human_shell.auto_promote_bangbang` is enabled. `/shell-include`
+stages a selected output view in the same way. `/shell-ask` submits one
+question and its redacted evidence through the session-scoped prompt API.
+Promotions require a bound non-observer session.
+Neither staging command starts inference. `\!command` escapes to a literal
+`!` chat message.
+
+Human-shell promotion always runs the shared secret redactor and fails closed
+if redaction does not report an applied state, regardless of
+`redact_model_visible_output`; the general shell projection `off` setting does
+not disable this human-consent boundary. Projection text is ANSI-stripped and
+limited to 32 KiB before it is inserted into provider-facing user context.
+The TUI marks an entry promoted only after the session turn API acknowledges
+acceptance. A staged message remains local to its current TUI session until
+that turn is accepted. The WebSocket TUI transport accepts prompt strings
+only, so it places approved evidence in an empty composer for explicit
+submission; it preserves a non-empty draft and does not claim remote acceptance
+from queue delivery.
 
 ### Execution Flow
 
@@ -48,6 +65,16 @@ literal `!` chat message.
    projection/expansion.
 6. Policy gate (`evaluate_command()`) blocks destructive commands,
    warns on risky ones, before execution.
+
+Human model-context promotions pass through one redaction hook regardless of
+the general shell-output redaction setting and are capped at 32 KiB. `!`
+output remains private. Local `!!`/include entries are marked promoted only
+after the next submitted turn receives a daemon `Ack`; `/shell-ask` waits for
+the session-scoped submission `Ack`. Remote TUI queue acceptance is not
+session acceptance, so the current remote path does not claim promotion
+success. Finite command execution still runs in the frontend and is being
+corrected separately by C002 at
+`plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`.
 
 ### Projection Pipeline (Phases 1–10)
 
@@ -280,3 +307,16 @@ document was affected by that commit.
 | 8 | Landed | Redaction pipeline with seven `RedactRule` implementations |
 | 9 | Landed | `ProjectionId`, `ArtifactSpanRef`, `RedactionRecord`, promotion policy |
 | 10 | Landed | `ProjectionContextMetadata`, `ModelTier`, `ContextAwareBudget` |
+
+## Source verification
+
+Re-verified 2026-10-10 against `src/tui/app/mod.rs`,
+`src/tui/commands/shell.rs`, `src/tui/app/prompt_turn.rs`,
+`src/tui/runtime/event_loop.rs`, and `crates/codegg-config/src/schema.rs`:
+shell cells are omitted from provider context; explicit shell evidence is
+ANSI-stripped, redacted, bounded, and included only after user promotion;
+submission acknowledgement controls the promoted marker; config enablement,
+timeout, ANSI, and automatic `!!` behavior are read at startup and reload.
+The WebSocket adapter has no staged-context request, so evidence is placed in
+an empty composer for explicit remote submission and queue delivery is not
+treated as acknowledgement.

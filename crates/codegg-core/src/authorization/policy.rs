@@ -121,6 +121,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileModify),
         ),
+        R::ProjectInitDraftGet { .. } => OperationDescriptor::new(
+            "project_init_draft",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
+        R::ProjectInitPublish { .. } => OperationDescriptor::new(
+            "project_init_publish",
+            ScopeKind::DirectProject,
+            Some(Capability::FileModify),
+        ),
         R::AssetRefresh { .. } => OperationDescriptor::new(
             "asset_refresh",
             ScopeKind::DirectProject,

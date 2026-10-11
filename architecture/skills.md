@@ -2,7 +2,15 @@
 
 Source-aware skill discovery, portable SKILL.md package parsing,
 precedence resolution, and bounded resource access for on-demand
-skill activation via `/skill:<name>` commands.
+skill activation through the model-facing `skill` tool using its `name`
+argument.
+
+Portable package names use lowercase ASCII letters and digits separated by
+single hyphens, begin with a letter, end with a letter or digit, and match the
+package directory. This strict form applies to foreign portable packages and
+proposal validation. CodeGG-owned packages and direct Markdown compatibility
+retain native name behavior. Unknown portable frontmatter is preserved as
+inert metadata; tool hints never change authorization.
 
 ## Purpose
 
@@ -36,23 +44,41 @@ provides lazy, security-bounded resource access for skill assets.
 2. For each root, `discover_in_root` (registry.rs:308) reads directory
    entries, validates symlink boundaries, and calls `parser::parse_candidate`
    (parser.rs:51) for each `SKILL.md` (or direct `.md` for CodeGG-native compat).
-3. `resolve` (registry.rs:450) groups candidates by normalized name, sorts by
-   precedence rank, selects the winner (first valid), records shadowed alternatives.
+3. `resolve` groups candidates by normalized name, orders project before global
+   before configured sources, then uses nearest workspace depth before vendor
+   rank, selects the first valid candidate, and records shadowed alternatives.
 4. Returns `AssetRegistry { effective, diagnostics, sources }`.
 
 ### Precedence
 
-Lower rank wins. Project-local always beats global.
+Within one workspace depth, lower rank wins. Project-local always beats global;
+the selected project directory is depth 0 and eligible ancestors increase by
+one. Ancestors are considered only through the nearest `.git` file or directory,
+with a maximum walk of eight levels. Without a Git boundary, only the selected
+directory is scanned. A nearer project skill therefore wins over a parent
+CodeGG skill, while CodeGG's rank leads within the same scope.
 
 | Rank | SourceKind | Location Pattern |
 |------|-----------|-----------------|
 | 0 | `CodeGGProject` | `<project>/.codegg/skills/<name>/SKILL.md` |
 | 10 | `AgentsProject` | `<project>/.agents/skills/<name>/SKILL.md` |
 | 20 | `OpenCodeProject` | `<project>/.opencode/skills/<name>/SKILL.md` |
+| 21 | `PiProject` | `<project>/.pi/skills/<name>/SKILL.md` |
+| 22 | `CursorProject` | `<project>/.cursor/skills/<name>/SKILL.md` |
+| 24 | `GeminiProject` | `<project>/.gemini/skills/<name>/SKILL.md` |
+| 26 | `CopilotProject` | `<project>/.github/skills/<name>/SKILL.md` |
+| 27 | `ClineProject` | `<project>/.cline/skills/` or `.clinerules/skills/` |
+| 28 | `RooProject` | `<project>/.roo/skills/<name>/SKILL.md` |
+| 29 | `FactoryProject` | `<project>/.factory/skills/<name>/SKILL.md` |
 | 30 | `ClaudeProject` | `<project>/.claude/skills/<name>/SKILL.md` |
 | 35 | `Plugin` | Plugin contribution (project-native sources outrank) |
 | 40 | `CodeGGGlobal` | `<config>/codegg/skills/<name>/SKILL.md` |
 | 50 | `AgentsGlobal` | `<config>/agents/skills/<name>/SKILL.md` |
+| 52 | `ClineGlobal` | `<config>/cline/skills/` or `~/.cline/skills/` |
+| 54 | `PiGlobal` | `<config>/pi/skills/` or `~/.pi/agent/skills/` |
+| 56 | `RooGlobal` | `<config>/roo/skills/` or `~/.roo/skills/` |
+| 57 | `CopilotGlobal` | `<config>/copilot/skills/` or `~/.copilot/skills/` |
+| 58 | `FactoryGlobal` | `<config>/factory/skills/` or `~/.factory/skills/` |
 | 60 | `OpenCodeGlobal` | `<config>/opencode/skills/<name>/SKILL.md` |
 | 70 | `ClaudeGlobal` | `<config>/claude/skills/<name>/SKILL.md` |
 | 80 | `CodeGGNativeCompat` | `<project>/.codegg/skills/*.md` (direct markdown) |
@@ -152,6 +178,9 @@ normalization. Format-stable across platforms.
 `ResourceHandle` provides lazy, bounded reads of files inside a
 skill package:
 
+- Inventory traverses nested package directories in deterministic order,
+  bounded by the resource count and depth; symlink entries are not followed
+
 - Accepts relative paths only (no `..`, no absolute, no backslash)
 - Canonicalizes at construction AND read time
 - Rejects symlink escape (canonical must stay under package root)
@@ -195,7 +224,7 @@ pub struct EffectiveSkill {
 
 ### SourceKind (source.rs:6)
 
-Enum with 10 variants. Methods: `precedence_rank`, `is_project_local`,
+Enum with 23 variants. Methods: `precedence_rank`, `is_project_local`,
 `is_global`, `directory_name`, `is_foreign`.
 
 ### AssetDiscoveryConfig (source.rs:91)
@@ -331,7 +360,7 @@ warning, digest stability, digest CRLF normalization, name validation.
 
 ## Related Docs
 
-- [tool.md](tool.md) — `/skill:` tool
+- [tool.md](tool.md) — model-facing skill tool details
 - `src/skills/` — Runtime implementation
 - `.opencode/skills/*/SKILL.md` — Canonical developer skill-guide location;
   `.skills` and `.agents/skills` are repository symlinks to it (harness

@@ -15,6 +15,8 @@ pub(crate) struct PortableFrontmatter {
     pub compatibility: Option<String>,
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub additional: HashMap<String, serde_json::Value>,
     #[serde(rename = "allowed-tools")]
     pub allowed_tools: Option<serde_json::Value>,
 }
@@ -89,6 +91,7 @@ pub fn parse_candidate(
 
     let mut diagnostics = Vec::new();
 
+    let portable = has_portable_fields(&frontmatter_str);
     let (name, description, metadata) = match source_kind {
         SourceKind::CodeGGNativeCompat | SourceKind::CodeGGProject
             if !has_portable_fields(&frontmatter_str) =>
@@ -124,11 +127,38 @@ pub fn parse_candidate(
             (name, description, meta)
         }
         _ => {
-            let parsed = validate_portable_document(&raw_content, config)?;
+            let parsed = parse_portable_document(
+                &raw_content,
+                config,
+                source_kind != SourceKind::CodeGGProject
+                    && source_kind != SourceKind::CodeGGNativeCompat,
+                matches!(
+                    source_kind,
+                    SourceKind::ClaudeProject | SourceKind::ClaudeGlobal
+                )
+                .then(|| skill_file.parent().and_then(Path::file_name))
+                .flatten()
+                .and_then(|name| name.to_str()),
+            )?;
             diagnostics.extend(parsed.diagnostics.clone());
             (parsed.name, parsed.description, parsed.metadata)
         }
     };
+
+    if portable
+        && source_kind != SourceKind::CodeGGNativeCompat
+        && source_kind != SourceKind::CodeGGProject
+        && skill_file
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|value| value.to_str())
+            .is_some_and(|directory| directory != name)
+    {
+        return Err(Diagnostic::error(
+            "portable skill directory name must match its frontmatter name",
+            location.clone(),
+        ));
+    }
 
     let normalized_name = normalize_name(&name, config)?;
 
@@ -152,6 +182,7 @@ pub fn parse_candidate(
         normalized_name,
         description,
         source_kind,
+        workspace_depth: 0,
         source_path: skill_file.to_path_buf(),
         package_root,
         content_digest,
@@ -171,6 +202,15 @@ pub fn parse_candidate(
 pub fn validate_portable_document(
     source: &str,
     config: &AssetDiscoveryConfig,
+) -> Result<ValidatedSkillDocument, Diagnostic> {
+    parse_portable_document(source, config, true, None)
+}
+
+fn parse_portable_document(
+    source: &str,
+    config: &AssetDiscoveryConfig,
+    enforce_portable_name: bool,
+    fallback_name: Option<&str>,
 ) -> Result<ValidatedSkillDocument, Diagnostic> {
     let location = "skill proposal".to_string();
     if source.len() as u64 > config.max_skill_file_size {
@@ -206,12 +246,19 @@ pub fn validate_portable_document(
         })?;
     let name = fm
         .name
+        .or_else(|| fallback_name.map(str::to_string))
         .ok_or_else(|| Diagnostic::error("missing required field: name", location.clone()))?;
     let description = fm.description.ok_or_else(|| {
         Diagnostic::error("missing required field: description", location.clone())
     })?;
+    if enforce_portable_name {
+        validate_portable_name(&name)?;
+    }
     let normalized_name = normalize_name(&name, config)?;
     let mut metadata = fm.metadata;
+    for (key, value) in fm.additional {
+        metadata.entry(key).or_insert(value);
+    }
     let mut diagnostics = Vec::new();
     if let Some(license) = fm.license {
         metadata.insert("license".to_string(), serde_json::Value::String(license));
@@ -313,7 +360,30 @@ fn normalize_name(name: &str, config: &AssetDiscoveryConfig) -> Result<String, D
             "frontmatter".to_string(),
         ));
     }
+    // The portable Agent Skills name subset is intentionally narrower than
+    // CodeGG's historical native names. Apply it only to portable documents;
+    // native compatibility packages retain their established syntax.
     Ok(trimmed.to_lowercase())
+}
+
+fn validate_portable_name(name: &str) -> Result<(), Diagnostic> {
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && (name.as_bytes()[name.len() - 1].is_ascii_lowercase()
+            || name.as_bytes()[name.len() - 1].is_ascii_digit())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !name.contains("--");
+    if valid {
+        Ok(())
+    } else {
+        Err(Diagnostic::error(
+            "portable skill name must be lowercase letters/digits with single hyphens, start with a letter, end with a letter or digit, and be at most 64 characters",
+            "frontmatter",
+        ))
+    }
 }
 
 fn inventory_resources(
@@ -327,50 +397,101 @@ fn inventory_resources(
         return Ok(resources);
     }
 
-    let entries = std::fs::read_dir(package_root).map_err(|e| {
-        Diagnostic::error(
-            format!("failed to read package directory: {e}"),
-            location.to_string(),
-        )
-    })?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if name == "SKILL.md" {
-            continue;
-        }
-        if resources.len() >= config.max_resources_per_skill {
+    let root = match package_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
             diagnostics.push(Diagnostic::warning(
-                format!(
-                    "resource inventory truncated at {} items",
-                    config.max_resources_per_skill
-                ),
+                format!("resource inventory unavailable: {error}"),
                 location.to_string(),
             ));
+            return Ok(resources);
+        }
+    };
+    let mut pending = vec![(root.clone(), 0usize)];
+    let mut truncated = false;
+    let mut depth_limited = false;
+    while let Some((directory, depth)) = pending.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                diagnostics.push(Diagnostic::warning(
+                    format!("resource directory could not be read: {error}"),
+                    location.to_string(),
+                ));
+                continue;
+            }
+        };
+        let mut paths = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => paths.push(entry.path()),
+                Err(error) => diagnostics.push(Diagnostic::warning(
+                    format!("resource entry could not be read: {error}"),
+                    location.to_string(),
+                )),
+            }
+        }
+        paths.sort();
+        for path in paths {
+            let file_type = match std::fs::symlink_metadata(&path) {
+                Ok(meta) => meta.file_type(),
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if depth < 7 {
+                    pending.push((path, depth + 1));
+                } else {
+                    depth_limited = true;
+                }
+                continue;
+            }
+            if !file_type.is_file() || path.file_name().is_some_and(|n| n == "SKILL.md") {
+                continue;
+            }
+            if resources.len() >= config.max_resources_per_skill {
+                truncated = true;
+                break;
+            }
+            let canonical = match path.canonicalize() {
+                Ok(path) if path.starts_with(&root) => path,
+                _ => continue,
+            };
+            let size = std::fs::metadata(&canonical).map(|m| m.len()).unwrap_or(0);
+            let relative_path = canonical
+                .strip_prefix(&root)
+                .unwrap_or(&canonical)
+                .to_string_lossy()
+                .to_string();
+            let name = relative_path.clone();
+            resources.push(ResourceDescriptor {
+                name,
+                relative_path,
+                size,
+            });
+        }
+        if truncated {
             break;
         }
-        let meta = std::fs::metadata(&path).ok();
-        let size = meta.map(|m| m.len()).unwrap_or(0);
-        let relative = path
-            .strip_prefix(package_root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .to_string();
-        resources.push(ResourceDescriptor {
-            name,
-            relative_path: relative,
-            size,
-        });
     }
-
-    resources.sort_by(|a, b| a.name.cmp(&b.name));
+    if truncated {
+        diagnostics.push(Diagnostic::warning(
+            format!(
+                "resource inventory truncated at {} items",
+                config.max_resources_per_skill
+            ),
+            location.to_string(),
+        ));
+    }
+    if depth_limited {
+        diagnostics.push(Diagnostic::warning(
+            "resource inventory skipped directories beyond depth 8",
+            location.to_string(),
+        ));
+    }
+    resources.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     Ok(resources)
 }
 
@@ -455,6 +576,65 @@ mod tests {
     }
 
     #[test]
+    fn portable_names_follow_portable_syntax_without_changing_native_names() {
+        for invalid in [
+            "Upper",
+            "-leading",
+            "trailing-",
+            "two--hyphens",
+            "has space",
+        ] {
+            assert!(validate_portable_name(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_portable_name("valid-123").is_ok());
+        assert!(normalize_name("Native_Name", &test_config()).is_ok());
+    }
+
+    #[test]
+    fn native_codegg_package_keeps_legacy_name_compatibility() {
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("native-folder");
+        fs::create_dir_all(&package).unwrap();
+        let skill_file = package.join("SKILL.md");
+        fs::write(
+            &skill_file,
+            "---\nname: Native_Name\ndescription: native compatibility\n---\nBody",
+        )
+        .unwrap();
+        let candidate =
+            parse_candidate(&skill_file, SourceKind::CodeGGProject, &test_config()).unwrap();
+        assert_eq!(candidate.name, "Native_Name");
+    }
+
+    #[test]
+    fn direct_markdown_compat_keeps_legacy_portable_shaped_names() {
+        let dir = TempDir::new().unwrap();
+        let skill_file = dir.path().join("Native_Name.md");
+        fs::write(
+            &skill_file,
+            "---\nname: Native_Name\ndescription: native markdown compatibility\n---\nBody",
+        )
+        .unwrap();
+        let candidate =
+            parse_candidate(&skill_file, SourceKind::CodeGGNativeCompat, &test_config()).unwrap();
+        assert_eq!(candidate.name, "Native_Name");
+    }
+
+    #[test]
+    fn portable_package_directory_must_match_its_name() {
+        let dir = TempDir::new().unwrap();
+        let package = dir.path().join("wrong-folder");
+        fs::create_dir_all(&package).unwrap();
+        let skill_file = package.join("SKILL.md");
+        fs::write(
+            &skill_file,
+            "---\nname: correct-name\ndescription: portable fixture\n---\nBody",
+        )
+        .unwrap();
+        assert!(parse_candidate(&skill_file, SourceKind::AgentsProject, &test_config()).is_err());
+    }
+
+    #[test]
     fn parse_candidate_native_compat() {
         let dir = TempDir::new().unwrap();
         let skill_file = dir.path().join("test.md");
@@ -476,7 +656,9 @@ mod tests {
     #[test]
     fn parse_candidate_portable() {
         let dir = TempDir::new().unwrap();
-        let skill_file = dir.path().join("SKILL.md");
+        let package = dir.path().join("portable-skill");
+        fs::create_dir_all(&package).unwrap();
+        let skill_file = package.join("SKILL.md");
         fs::write(
             &skill_file,
             "---\nname: portable-skill\ndescription: A portable skill\nlicense: MIT\n---\nBody",
@@ -540,7 +722,7 @@ mod tests {
     #[test]
     fn parse_candidate_resources_inventoried() {
         let dir = TempDir::new().unwrap();
-        let skill_dir = dir.path().join("myskill");
+        let skill_dir = dir.path().join("rsrc");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
@@ -565,7 +747,9 @@ mod tests {
     #[test]
     fn parse_candidate_allowed_tools_preserved_as_metadata() {
         let dir = TempDir::new().unwrap();
-        let skill_file = dir.path().join("SKILL.md");
+        let package = dir.path().join("tool-user");
+        fs::create_dir_all(&package).unwrap();
+        let skill_file = package.join("SKILL.md");
         fs::write(
             &skill_file,
             "---\nname: tool-user\ndescription: uses tools\nallowed-tools:\n  - bash\n  - read\n---\nBody",

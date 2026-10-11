@@ -245,7 +245,11 @@ fn proposal_parser_reuses_portable_discovery_rules() {
     let dir = tempdir().unwrap();
     let source = "---\nname: portable\ndescription: shared parser\nlicense: MIT\n---\nbody";
     let parsed = validate_portable_document(source, &AssetDiscoveryConfig::default()).unwrap();
-    let file = dir.path().join("SKILL.md");
+    // Portable discovery requires the skill directory name to match the
+    // frontmatter name, so nest SKILL.md under `portable/`.
+    let skill_dir = dir.path().join("portable");
+    fs::create_dir_all(&skill_dir).unwrap();
+    let file = skill_dir.join("SKILL.md");
     fs::write(&file, source).unwrap();
     let discovered = codegg::skills::parser::parse_candidate(
         &file,

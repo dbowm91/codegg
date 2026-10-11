@@ -40,7 +40,7 @@ implement local affinity caching. See `architecture/agent.md` and
 handling is physically decomposed by family; do not add a new generic
 coordinator, service bus, or DI framework:
 
-`DaemonRequestFamily` has 15 variants; 11 are dispatched by the family
+`DaemonRequestFamily` has 16 variants; 12 are dispatched by the family
 router in `handle_request_with_client`, and 4 (chat, team, interactive,
 work orders) return earlier through their own pre-router arms.
 
@@ -56,6 +56,7 @@ work orders) return earlier through their own pre-router arms.
 | projection | `handle_projection_request` | `src/core/daemon_projection.rs` |
 | ops | `handle_ops_request` | `src/core/daemon_ops.rs` |
 | documents | `handle_document_request` | `src/core/daemon_documents.rs` |
+| project initialization | `handle_project_init_request` | `src/core/daemon_project_init.rs` |
 | lsp | `handle_lsp_request` | `src/core/daemon_lsp.rs` |
 | chat | `handle_chat_request` | `src/core/daemon.rs` |
 | team | `handle_team_request` | `src/core/daemon_team.rs` |

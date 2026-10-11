@@ -442,11 +442,22 @@ impl SandboxConfig {
         read_paths.push(target.clone());
         // Tool-compatible read allowances: without these a sandboxed command
         // cannot resolve a hostname, read its own toolchain, or find its
-        // package cache, and every invocation fails. See `policy`.
-        read_paths.extend(policy::tool_read_allowances());
+        // package cache, and every invocation fails. See `policy`. Only
+        // existing paths are kept: the curated sets name locations for both
+        // platforms (`/private/etc` on macOS, `/proc` on Linux), and a rule
+        // naming a missing path is a hard Landlock setup error.
+        read_paths.extend(
+            policy::tool_read_allowances()
+                .into_iter()
+                .filter(|path| path.exists()),
+        );
         let write_paths = if self.mode.is_writable() {
             let mut writes = write_roots;
-            writes.extend(policy::tool_write_allowances());
+            writes.extend(
+                policy::tool_write_allowances()
+                    .into_iter()
+                    .filter(|path| path.exists()),
+            );
             writes
         } else {
             Vec::new()
@@ -454,8 +465,13 @@ impl SandboxConfig {
         // Device nodes are writable under every profile, including
         // ReadOnly: they hold no persistent state, and without them every
         // `> /dev/null` and `2>&1` fails. See `policy::device_write_allowances`.
+        // Same existence filter: e.g. `/dev/console` may not exist on Linux.
         let mut write_paths = write_paths;
-        write_paths.extend(policy::device_write_allowances());
+        write_paths.extend(
+            policy::device_write_allowances()
+                .into_iter()
+                .filter(|path| path.exists()),
+        );
         // Operator-declared denies are config strings; the backend's own
         // sensitive-path set is paths. Both land in one list.
         //
@@ -865,12 +881,14 @@ pub fn get_sensitive_paths() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::landlock::landlock_access_for_path;
     use super::*;
 
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_keeps_directory_rights_for_directories() {
-        use landlock::{AccessFs, ABI};
+        use ::landlock::{AccessFs, ABI};
 
         let directory = tempfile::tempdir().expect("directory fixture");
         let access =
@@ -884,7 +902,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_removes_directory_rights_for_regular_files() {
-        use landlock::{AccessFs, ABI};
+        use ::landlock::{AccessFs, ABI};
 
         let file = tempfile::NamedTempFile::new().expect("file fixture");
         let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V1), ABI::V1)
@@ -897,7 +915,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_removes_directory_rights_for_special_files() {
-        use landlock::{Access, AccessFs, ABI};
+        use ::landlock::{Access, AccessFs, ABI};
 
         let path = Path::new("/dev/null");
         if !path.exists() {
@@ -914,7 +932,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_fails_closed_when_path_cannot_be_classified() {
-        use landlock::{AccessFs, ABI};
+        use ::landlock::{AccessFs, ABI};
 
         let path = Path::new("/definitely/missing/codegg-sandbox-path");
         let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V1), ABI::V1)

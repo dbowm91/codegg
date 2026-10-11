@@ -103,6 +103,7 @@ A few commonly used entries:
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
 | `/reload` | Refresh project runtime assets — `/reload skills`, `/reload agents` |
+| `/init` | Review a bounded root `AGENTS.md` proposal; press `a` in the preview to publish |
 | `/exit` | Quit (`quit` and `q` are aliases) |
 
 To leave CodeGG: `q` in Normal mode, `/exit`, or `Ctrl+C`. **`Esc` never
@@ -150,13 +151,23 @@ Prefix a prompt with `!` to run a command locally:
 !!cargo test
 ```
 
-The single bang runs the command and keeps its output out of the model's
-context — the model sees that you ran it, not what it printed. The double bang
-does the same work but deliberately promotes the bounded, redacted result into
-context, which is what you want when the output is the point.
+The single bang runs the command and keeps its command and output out of the
+model's context. The double bang
+stages one bounded, redacted result in the conversation for the next submitted
+turn. It does not start inference on its own. `/shell-include` stages a selected
+view the same way; `/shell-ask` submits one question with the selected evidence
+to the bound session. Promotion requires a bound, non-observer session; failed
+submissions do not mark an output as promoted.
+Human-shell output always passes the shared secret redactor and a 32 KiB limit,
+even when general shell projection redaction is configured `off`. Staged output
+remains in the active TUI until the next turn is accepted.
+The WebSocket TUI transport does not support a separate staged-context
+request, so approved output is placed in an empty composer for explicit
+submission; an existing draft is preserved.
 
-Classification happens before dispatch: `!!` is matched first, so a double bang
-always promotes.
+Classification happens before dispatch: `!!` is matched first. The effective
+`human_shell.auto_promote_bangbang` setting controls whether its output is
+staged; set it to `false` to run privately like `!`.
 
 Output storage is bounded. Each command gets a 1 MB per-command budget out of
 an 8 MB total, and at most 100 commands are retained in history. Within one
@@ -171,6 +182,21 @@ a reason, and one classified as dangerous opens a confirmation dialog first
 `/shell-list`, `/shell-show`, `/shell-include`, `/shell-ask`, `/shell-rerun`,
 and `/shell-kill` manage the history and the promote/include actions.
 `architecture/human_shell.md` is the authoritative contract.
+
+The `[human_shell]` settings `enabled`, `default_timeout_secs`,
+`auto_promote_bangbang`, `confirm_dangerous`, and `ansi` are read by the TUI.
+Human output sent to model context is ANSI-stripped, redacted, and capped at
+32 KiB even when shell-output redaction is configured off.
+
+## Interactive terminal
+
+`/terminal-create <command> [args...]` opens a daemon-owned Unix PTY. The
+terminal starts in viewing mode; press `i` to focus it. While focused, literal
+`Esc` is sent to the program (for example, Vim), and `Ctrl-]` returns keyboard
+focus to the TUI. Press `Esc` while viewing to close and detach. The screen
+interprets VT cursor movement, erase, SGR colors, and alternate-screen control
+in bounded local state; child escape sequences are not written to the outer
+terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
 
 ## Approval and sandbox
 

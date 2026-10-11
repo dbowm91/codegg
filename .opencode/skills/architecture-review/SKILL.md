@@ -27,7 +27,7 @@ code moved on, then align every other document to it.
 Snapshot re-measured 2026-10-06 (re-verify; do not trust blindly): 63 tool
 registration call sites in `src/tool/mod.rs::with_options()`, 39 LSP server
 definitions (`crates/egglsp/src/server.rs::server_definitions()`), 58
-`AppEvent` variants, 153 built-in slash commands, 10 built-in agents, 73
+`AppEvent` variants, 154 built-in slash commands, 10 built-in agents, 73
 `CREATE TABLE` tables / storage layout 68, 215 integration test files, 85
 architecture docs, 41 `check_*` guards.
 
@@ -170,7 +170,7 @@ batch table, and direct measurement (`src/tool/mod.rs`,
 `crates/codegg-core/src/storage/mod.rs:39`, `tests/*.rs`,
 `scripts/check_*`). Corrected: the count snapshot (53 tool registrations /
 53 `AppEvent` variants / 139 slash commands / 71 tables / layout 56 / 189
-integration tests / 77 docs / 21 guards → 63 / 58 / 153 / 73 / 68 / 215 /
+integration tests / 77 docs / 21 guards → 63 / 58 / 154 / 73 / 68 / 215 /
 85 / 40), the batch coverage claim ("all 77 docs as of 2026-09-13" → all 85
 as of 2026-10-06) with the eight uncovered documents added to the batches
 `overview.md`'s Module Map assigns them to, and the section name

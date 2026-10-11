@@ -5,7 +5,8 @@ version: 1.3.0
 tags: [upgrade, releases, versioning, eggup]
 ---
 
-Use the `/skill:upgrade` command to load context about the CodeGG managed
+Activate this guide with the model-facing `skill` tool using
+`{"name":"upgrade"}` to load context about the CodeGG managed
 runfile upgrade system.
 
 ## Overview

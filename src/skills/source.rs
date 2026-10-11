@@ -22,6 +22,18 @@ pub enum SourceKind {
     /// well-known root's skill name; shadowed alternatives are still
     /// recorded for diagnostics.
     Configured = 90,
+    PiProject = 21,
+    CursorProject = 22,
+    GeminiProject = 24,
+    CopilotProject = 26,
+    ClineProject = 27,
+    RooProject = 28,
+    FactoryProject = 29,
+    ClineGlobal = 52,
+    PiGlobal = 54,
+    RooGlobal = 56,
+    CopilotGlobal = 57,
+    FactoryGlobal = 58,
 }
 
 impl SourceKind {
@@ -36,6 +48,13 @@ impl SourceKind {
                 | SourceKind::AgentsProject
                 | SourceKind::OpenCodeProject
                 | SourceKind::ClaudeProject
+                | SourceKind::CursorProject
+                | SourceKind::GeminiProject
+                | SourceKind::CopilotProject
+                | SourceKind::PiProject
+                | SourceKind::ClineProject
+                | SourceKind::RooProject
+                | SourceKind::FactoryProject
                 | SourceKind::Plugin
                 | SourceKind::CodeGGNativeCompat
         )
@@ -48,6 +67,11 @@ impl SourceKind {
                 | SourceKind::AgentsGlobal
                 | SourceKind::OpenCodeGlobal
                 | SourceKind::ClaudeGlobal
+                | SourceKind::ClineGlobal
+                | SourceKind::PiGlobal
+                | SourceKind::RooGlobal
+                | SourceKind::CopilotGlobal
+                | SourceKind::FactoryGlobal
         )
     }
 
@@ -59,6 +83,14 @@ impl SourceKind {
             SourceKind::AgentsProject | SourceKind::AgentsGlobal => "agents",
             SourceKind::OpenCodeProject | SourceKind::OpenCodeGlobal => "opencode",
             SourceKind::ClaudeProject | SourceKind::ClaudeGlobal => "claude",
+            SourceKind::CursorProject => "cursor",
+            SourceKind::GeminiProject => "gemini",
+            SourceKind::CopilotProject => "github-copilot",
+            SourceKind::PiProject | SourceKind::PiGlobal => "pi",
+            SourceKind::ClineProject | SourceKind::ClineGlobal => "cline",
+            SourceKind::RooProject | SourceKind::RooGlobal => "roo",
+            SourceKind::FactoryProject | SourceKind::FactoryGlobal => "factory",
+            SourceKind::CopilotGlobal => "github-copilot",
             SourceKind::Plugin => "plugin",
             // A configured root has no vendor directory name; it is used as-is.
             SourceKind::Configured => "configured",
@@ -74,6 +106,18 @@ impl SourceKind {
                 | SourceKind::OpenCodeGlobal
                 | SourceKind::ClaudeProject
                 | SourceKind::ClaudeGlobal
+                | SourceKind::CursorProject
+                | SourceKind::GeminiProject
+                | SourceKind::CopilotProject
+                | SourceKind::PiProject
+                | SourceKind::ClineProject
+                | SourceKind::RooProject
+                | SourceKind::FactoryProject
+                | SourceKind::ClineGlobal
+                | SourceKind::PiGlobal
+                | SourceKind::RooGlobal
+                | SourceKind::CopilotGlobal
+                | SourceKind::FactoryGlobal
         )
     }
 }
@@ -84,6 +128,8 @@ pub struct SourceRoot {
     pub canonical_path: PathBuf,
     pub display_path: PathBuf,
     #[serde(default)]
+    pub workspace_depth: u8,
+    #[serde(default)]
     pub plugin_id: Option<String>,
 }
 
@@ -91,6 +137,10 @@ pub struct SourceRoot {
 pub struct SourceSummary {
     pub kind: SourceKind,
     pub canonical_path: PathBuf,
+    #[serde(default)]
+    pub alias_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub workspace_depth: u8,
     pub discovered_count: usize,
     pub valid_count: usize,
     pub invalid_count: usize,
@@ -117,10 +167,22 @@ impl Default for AssetDiscoveryConfig {
         enabled_sources.insert(SourceKind::AgentsProject);
         enabled_sources.insert(SourceKind::OpenCodeProject);
         enabled_sources.insert(SourceKind::ClaudeProject);
+        enabled_sources.insert(SourceKind::CursorProject);
+        enabled_sources.insert(SourceKind::GeminiProject);
+        enabled_sources.insert(SourceKind::CopilotProject);
+        enabled_sources.insert(SourceKind::PiProject);
+        enabled_sources.insert(SourceKind::ClineProject);
+        enabled_sources.insert(SourceKind::RooProject);
+        enabled_sources.insert(SourceKind::FactoryProject);
         enabled_sources.insert(SourceKind::CodeGGGlobal);
         enabled_sources.insert(SourceKind::AgentsGlobal);
         enabled_sources.insert(SourceKind::OpenCodeGlobal);
         enabled_sources.insert(SourceKind::ClaudeGlobal);
+        enabled_sources.insert(SourceKind::ClineGlobal);
+        enabled_sources.insert(SourceKind::PiGlobal);
+        enabled_sources.insert(SourceKind::RooGlobal);
+        enabled_sources.insert(SourceKind::CopilotGlobal);
+        enabled_sources.insert(SourceKind::FactoryGlobal);
         enabled_sources.insert(SourceKind::CodeGGNativeCompat);
         enabled_sources.insert(SourceKind::Configured);
 
@@ -147,12 +209,26 @@ mod tests {
             SourceKind::CodeGGProject,
             SourceKind::AgentsProject,
             SourceKind::OpenCodeProject,
+            SourceKind::PiProject,
+            SourceKind::CursorProject,
+            SourceKind::GeminiProject,
+            SourceKind::CopilotProject,
+            SourceKind::ClineProject,
+            SourceKind::RooProject,
+            SourceKind::FactoryProject,
             SourceKind::ClaudeProject,
+            SourceKind::Plugin,
             SourceKind::CodeGGGlobal,
             SourceKind::AgentsGlobal,
+            SourceKind::ClineGlobal,
+            SourceKind::PiGlobal,
+            SourceKind::RooGlobal,
+            SourceKind::CopilotGlobal,
+            SourceKind::FactoryGlobal,
             SourceKind::OpenCodeGlobal,
             SourceKind::ClaudeGlobal,
             SourceKind::CodeGGNativeCompat,
+            SourceKind::Configured,
         ];
         for window in kinds.windows(2) {
             assert!(
@@ -163,6 +239,40 @@ mod tests {
                 window[1],
                 window[1].precedence_rank()
             );
+        }
+    }
+
+    #[test]
+    fn historical_source_kind_serde_names_remain_stable_and_new_roots_are_classified() {
+        assert_eq!(
+            serde_json::to_string(&SourceKind::CodeGGProject).unwrap(),
+            "\"CodeGGProject\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SourceKind>("\"ClaudeGlobal\"").unwrap(),
+            SourceKind::ClaudeGlobal
+        );
+        for kind in [
+            SourceKind::PiProject,
+            SourceKind::CursorProject,
+            SourceKind::GeminiProject,
+            SourceKind::CopilotProject,
+            SourceKind::ClineProject,
+            SourceKind::RooProject,
+            SourceKind::FactoryProject,
+        ] {
+            assert!(kind.is_project_local());
+            assert!(kind.is_foreign());
+        }
+        for kind in [
+            SourceKind::ClineGlobal,
+            SourceKind::PiGlobal,
+            SourceKind::RooGlobal,
+            SourceKind::CopilotGlobal,
+            SourceKind::FactoryGlobal,
+        ] {
+            assert!(kind.is_global());
+            assert!(kind.is_foreign());
         }
     }
 

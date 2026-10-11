@@ -29,12 +29,14 @@ pub enum InfoType {
     ProjectChat,
     /// `/logs`: recent daemon log tail plus the in-memory toast history.
     Logs,
+    ProjectInit,
 }
 
 #[derive(Clone)]
 pub struct InfoDialog {
     info_type: InfoType,
     lines: Vec<String>,
+    styled_lines: Option<Vec<Line<'static>>>,
     theme: Arc<Theme>,
     scroll: usize,
     custom_footer: Option<String>,
@@ -45,6 +47,7 @@ impl InfoDialog {
         Self {
             info_type,
             lines,
+            styled_lines: None,
             theme,
             scroll: 0,
             custom_footer: None,
@@ -53,6 +56,15 @@ impl InfoDialog {
 
     pub fn set_content(&mut self, lines: Vec<String>) {
         self.lines = lines;
+        self.styled_lines = None;
+        self.scroll = 0;
+    }
+
+    /// Set trusted, already interpreted presentation lines such as the local
+    /// VT screen. This accepts ratatui styles, never raw terminal escapes.
+    pub fn set_styled_content(&mut self, lines: Vec<Line<'static>>) {
+        self.lines.clear();
+        self.styled_lines = Some(lines);
         self.scroll = 0;
     }
 
@@ -80,6 +92,7 @@ impl InfoDialog {
             InfoType::Control => " Control ",
             InfoType::ProjectChat => " Project Chat ",
             InfoType::Logs => " Logs ",
+            InfoType::ProjectInit => " Initialize Project ",
         }
     }
 
@@ -105,6 +118,7 @@ impl InfoDialog {
             InfoType::Control => DialogType::Team,
             InfoType::ProjectChat => DialogType::ProjectChat,
             InfoType::Logs => DialogType::Logs,
+            InfoType::ProjectInit => DialogType::Team,
         }
     }
 
@@ -156,6 +170,9 @@ impl Component for InfoDialog {
                 self.scroll = self.scroll.saturating_add(1);
                 None
             }
+            crossterm::event::KeyCode::Char('a') if self.info_type == InfoType::ProjectInit => {
+                Some(TuiMsg::ProjectInitApprove)
+            }
             crossterm::event::KeyCode::Enter => Some(TuiMsg::CloseDialog),
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
             _ => None,
@@ -193,13 +210,15 @@ impl Component for InfoDialog {
         // wrapping this code performs — otherwise a wrapped line occupies
         // several rows while the offset advances by one.
         let inner_width = chunks[1].width.saturating_sub(2);
-        let display_lines: Vec<Line> = self
-            .lines
-            .iter()
-            .flat_map(|s| crate::tui::wrap::wrap_to_strings(s, inner_width))
-            .map(|row| Line::from(Span::styled(row, Style::default().fg(theme.foreground))))
-            .collect();
-
+        let display_lines: Vec<Line<'static>> = if let Some(styled_lines) = &self.styled_lines {
+            styled_lines.clone()
+        } else {
+            self.lines
+                .iter()
+                .flat_map(|s| crate::tui::wrap::wrap_to_strings(s, inner_width))
+                .map(|row| Line::from(Span::styled(row, Style::default().fg(theme.foreground))))
+                .collect()
+        };
         let total_lines = display_lines.len();
         let max_scroll = total_lines.saturating_sub(visible_lines);
 
@@ -207,12 +226,13 @@ impl Component for InfoDialog {
         let end_idx = (start_idx + visible_lines).min(total_lines);
 
         let visible: Vec<Line> = display_lines[start_idx..end_idx].to_vec();
-
-        let content_para = Paragraph::new(visible).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
-        );
+        let content_para = Paragraph::new(visible)
+            .style(Style::default().fg(theme.foreground))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border)),
+            );
 
         let scroll_indicator = if total_lines > visible_lines {
             format!("Showing {}-{} of {}", start_idx + 1, end_idx, total_lines)
@@ -255,6 +275,7 @@ impl Component for InfoDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -329,5 +350,15 @@ mod tests {
             rows.concat().contains("last"),
             "scrolled view must end at the last logical line"
         );
+    }
+
+    #[test]
+    fn project_init_dialog_requires_explicit_approval_and_escape_cancels() {
+        let theme = Arc::new(Theme::default());
+        let mut dialog = InfoDialog::new(theme, InfoType::ProjectInit, vec!["candidate".into()]);
+        let approve = dialog.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(approve, Some(TuiMsg::ProjectInitApprove));
+        let cancel = dialog.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(cancel, Some(TuiMsg::CloseDialog));
     }
 }

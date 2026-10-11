@@ -324,7 +324,8 @@ Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization/policy.rs`, re-exported by the
 canonical `codegg_core::authorization` facade
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (226 native operations; M004 adds `audit_capabilities`,
+rendering (228 native operations; repository initialization adds
+`project_init_draft` and `project_init_publish`; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
 audit store contract; collaboration M001 adds twelve `chat_*`
 operations below (all `project.chat` except the global
@@ -385,6 +386,8 @@ not a Core operation):
 | `document_capabilities` | global | `none` |
 | `document_modify` | direct_project | `file.modify` |
 | `document_read` | direct_project | `file.read` |
+| `project_init_draft` | direct_project | `file.read` |
+| `project_init_publish` | direct_project | `file.modify` |
 | `edit_checkpoint_get` | opaque | `file.read` |
 | `edit_checkpoint_list` | via_session | `file.read` |
 | `edit_checkpoint_reapply` | via_session | `file.modify` |
