@@ -430,6 +430,9 @@ impl WindowsSuspendedAppContainerProcess {
             startup_info.StartupInfo.hStdError = stderr;
         }
         let has_startup = startup.is_some();
+        let environment_description = startup
+            .as_ref()
+            .map(|(_, environment)| describe_environment_block(environment));
         let (cwd, environment) = if let Some((cwd, environment)) = startup {
             if !cwd.is_absolute()
                 || cwd.as_os_str().encode_wide().any(|unit| unit == 0)
@@ -472,7 +475,14 @@ impl WindowsSuspendedAppContainerProcess {
             )
         };
         if created == 0 {
-            return Err(with_operation(last_error(), "CreateProcessW"));
+            let error = with_operation(last_error(), "CreateProcessW");
+            return Err(match environment_description {
+                Some(description) => io::Error::new(
+                    error.kind(),
+                    format!("{error}; environment block names: {description}"),
+                ),
+                None => error,
+            });
         }
         Ok(Self {
             process: unsafe { OwnedHandle::from_raw_handle(process_info.hProcess as RawHandle) },
@@ -873,6 +883,22 @@ fn last_error() -> io::Error {
 
 fn with_operation(error: io::Error, operation: &str) -> io::Error {
     io::Error::new(error.kind(), format!("{operation}: {error}"))
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+fn describe_environment_block(block: &[u16]) -> String {
+    block
+        .split(|unit| *unit == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let name_end = entry
+                .iter()
+                .position(|unit| *unit == b'=' as u16)
+                .unwrap_or(entry.len());
+            String::from_utf16_lossy(&entry[..name_end])
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(test)]
