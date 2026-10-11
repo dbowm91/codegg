@@ -1,8 +1,8 @@
 # Windows Native Sandbox Milestone 001 — Launch Contract and Fail-Closed Authority
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
+Repository baseline: `a02cd9ade7ffca775efc1567669aae728ad9ff72`
 
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#7-milestones`
 
@@ -28,7 +28,7 @@ ADR-0004's immutable profile/approval separation and ADR-0016's platform-owned l
 ## 3. Current implementation evidence
 
 - `backend.rs` takes `fn apply(&SandboxLaunchSpec)` and expects Unix helper `exec`.
-- `managed_process.rs` rejects `SandboxRequest::Required` for `cfg(not(unix))`; `DegradedUncontained` dispatches direct.
+- `managed_process.rs` rejects `SandboxRequest::Required` for `cfg(not(unix))`; the compatibility `DegradedUncontained` request must be rejected before spawn.
 - `sandbox.rs` reports `resolve_sandbox_enforcement` before launch and has filesystem/network dimensions, but the advertised backend selected by probe alone is not necessarily a real launch guarantee.
 
 ## 4. Invariants that must not regress

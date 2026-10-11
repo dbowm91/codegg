@@ -294,11 +294,9 @@ pub enum SandboxRequest {
     #[default]
     Disabled,
     Required(SandboxLaunchSpec),
-    /// Containment was requested but this host cannot provide any. The child
-    /// runs *without* OS filesystem containment instead of failing, and the
-    /// run is recorded as [`SandboxExecutionOutcome::Uncontained`] so a
-    /// reviewer can tell it apart from both a contained run and an explicit
-    /// `FullHost` request. Never use this variant to mean `Disabled`.
+    /// Compatibility representation for a constrained request whose host
+    /// cannot provide containment. This variant is rejected before spawn;
+    /// it must never be used to run the child without containment.
     DegradedUncontained {
         reason: String,
     },
@@ -702,11 +700,13 @@ fn prepare_launch_argv(
         .collect::<Vec<_>>();
     match sandbox {
         SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
-        // Named degraded path: the caller already reported that this host has
-        // no OS containment. Run the target directly (no helper, no status
-        // pipe) and let `interpret_sandbox_status` record the fact as
-        // `Uncontained`. Nothing here is allowed to look enforced.
-        SandboxRequest::DegradedUncontained { .. } => Ok((full_argv, None, None, None)),
+        // A constrained request cannot turn into a direct child launch just
+        // because the host lacks a backend. Callers may offer an explicit
+        // approval escalation, but this low-level process owner has no
+        // authority to grant one.
+        SandboxRequest::DegradedUncontained { reason } => Err(ManagedProcessError::SandboxFailed(
+            format!("requested filesystem containment is unavailable: {reason}"),
+        )),
         SandboxRequest::Required(spec) => {
             #[cfg(not(unix))]
             {
@@ -1030,13 +1030,12 @@ fn interpret_sandbox_status(
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
     }
-    // The degraded path runs without a helper, so there is no status frame.
-    // Record the uncontained fact explicitly rather than reporting the run
-    // as unconstrained.
+    // Compatibility-only requests fail closed; they are never a valid
+    // outcome for a constrained launch.
     if let SandboxRequest::DegradedUncontained { reason } = sandbox {
-        return Ok(SandboxExecutionOutcome::Uncontained {
-            reason: reason.clone(),
-        });
+        return Err(ManagedProcessError::SandboxFailed(format!(
+            "requested filesystem containment is unavailable: {reason}"
+        )));
     }
     let status = status_bytes.ok_or_else(|| {
         ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
@@ -1156,60 +1155,40 @@ mod tests {
     }
 
     #[test]
-    fn degraded_request_runs_uncontained_but_records_the_fact() {
+    fn degraded_request_is_rejected_before_spawn() {
         let reason = "Landlock is only available on Linux".to_string();
-        let outcome =
-            interpret_sandbox_status(None, &SandboxRequest::DegradedUncontained { reason })
-                .expect("degraded path must not fail closed");
-        assert_eq!(
-            outcome,
-            SandboxExecutionOutcome::Uncontained {
-                reason: "Landlock is only available on Linux".to_string()
-            }
+        let result = prepare_launch_argv(
+            &OsString::from("must-not-run"),
+            &[],
+            Path::new("."),
+            &SandboxRequest::DegradedUncontained { reason },
+            None,
         );
-        assert!(outcome.is_degraded_uncontained());
-        assert!(!outcome.is_contained());
-        // Never confusable with an unconstrained run or a contained one.
-        assert_ne!(outcome, SandboxExecutionOutcome::Disabled);
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Disabled.audit_token()
-        );
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Enforced {
-                backend: crate::security::sandbox::BackendId::LANDLOCK,
-                abi: Some(1),
-                guarantees: vec![],
-                limits: vec![],
-            }
-            .audit_token()
-        );
+        assert!(matches!(
+            result,
+            Err(ManagedProcessError::SandboxFailed(reason))
+                if reason.contains("containment is unavailable")
+        ));
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn degraded_request_executes_the_target_without_a_helper() {
+    #[test]
+    fn unavailable_sandbox_status_cannot_be_recorded_as_uncontained_success() {
         let mut request = request("printf uncontained-ok");
         request.sandbox = SandboxRequest::DegradedUncontained {
             reason: "no OS containment on this host".to_string(),
         };
-
-        let result = run_inner(request, None, None)
-            .await
-            .expect("degraded path must still execute the command");
-
-        assert_eq!(result.stdout.to_string_lossy(), "uncontained-ok");
-        assert!(result.exit_status.success());
-        assert!(result.sandbox.is_degraded_uncontained());
-        assert!(!result.sandbox.is_contained());
+        let outcome = interpret_sandbox_status(None, &request.sandbox);
+        assert!(matches!(
+            outcome,
+            Err(ManagedProcessError::SandboxFailed(reason))
+                if reason.contains("containment is unavailable")
+        ));
     }
 
     #[test]
     fn required_request_with_helper_unavailable_still_fails_closed() {
-        // The degraded path is chosen by the caller *before* launch. A
-        // `Required` request that loses containment mid-flight must NOT fall
-        // through to it.
+        // A `Required` request that loses containment mid-flight must fail
+        // closed rather than falling through to any uncontained path.
         let outcome = interpret_sandbox_status(
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {

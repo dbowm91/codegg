@@ -156,10 +156,11 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 **Platform outcomes:**
 - Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
 - macOS: `Enforced { backend: seatbelt, abi: None, .. }`
-- Any host with no registered backend: constrained requests report
-  `FilesystemEnforcement::Unavailable` (fail closed, never `FullHost`);
-  Python portable fallback with sanitized environment,
-  workspace-contained cwd, snapshot-based post-exec checks
+- Any host with no registered backend: constrained Bash requests report
+  `FilesystemEnforcement::Unavailable` and fail before process creation
+  (never `FullHost` or an uncontained fallback). Python's separately
+  declared `Preferred` capability profile may still use its policy-based
+  portable mode; it does not claim OS filesystem enforcement.
 
 `SandboxLaunchOutcome::Enforced` carries `guarantees` and `limits` alongside
 the backend id. Those lists are the honest boundary of each mechanism and
