@@ -226,7 +226,7 @@ async fn cancellation_terminates_root_and_job_owned_descendants() {
     let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
         .join("System32")
         .join("PING.EXE");
-    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-n 60 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString()); Start-Sleep -Seconds 60";
+    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-t 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString()); Start-Sleep -Seconds 60";
     let cancellation = CancellationToken::new();
     let mut process = request_script(
         &directory.path().join("spawn-child.ps1"),
@@ -257,7 +257,7 @@ async fn root_exit_closes_the_job_before_waiting_for_inherited_pipe_eof() {
     let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
         .join("System32")
         .join("PING.EXE");
-    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-n 60 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString())";
+    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-t 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString())";
     let result = ManagedProcessService::run(request_script(
         &directory.path().join("root-exits.ps1"),
         script,
