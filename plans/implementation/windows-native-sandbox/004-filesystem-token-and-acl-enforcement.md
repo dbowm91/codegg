@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 004 — Filesystem Token and ACL Enforcement
 
-Status: blocked (M003 closure required)
+Status: active
 
 Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
 

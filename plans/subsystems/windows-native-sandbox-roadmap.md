@@ -140,8 +140,8 @@ Codegg on a documented Windows version supports constrained local tool execution
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | `plans/closure/windows-native-sandbox/001-status.md` | none |
 | M002 | closed | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | `plans/closure/windows-native-sandbox/002-status.md` | none |
-| M003 | active | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | — | M002 strict closure satisfied |
-| M004 | blocked | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 |
+| M003 | closed | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | `plans/closure/windows-native-sandbox/003-status.md` | M002 strict closure satisfied; native Windows workflow `38118934632` and Unix quick verification passed |
+| M004 | active | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 strict closure satisfied; behavioral enforcement and privileged isolated-VM evidence remain required |
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |
 | M007 | ready/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | — | non-release-critical |

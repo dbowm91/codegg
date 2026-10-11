@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 003 — Native Shell and Windows Policy Inputs
 
-Status: active
+Status: closed
 
 Repository baseline: `56e34c435b9d1b07f1bfb6f8343e530ae273cbd7`
 
