@@ -744,9 +744,11 @@ fn rejected_seatbelt_profile_does_not_execute_the_target() {
     let marker = workspace.path().join("seatbelt-target-ran");
     let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
     spec.args = vec!["-c".to_string(), format!("touch {}", sh_quote(&marker))];
-    // A NUL cannot cross sandbox_init's C-string API. The helper must report
-    // setup failure before exec and must not fall back to the unsandboxed shell.
-    spec.deny_paths.push(PathBuf::from("\0"));
+    // Preserve a NUL-bearing descendant beneath an existing policy root so it
+    // reaches the generated profile. sandbox_init's C-string API must reject
+    // it before exec, with no fallback to the unsandboxed shell.
+    spec.deny_paths
+        .push(workspace.path().join("invalid\0profile-path"));
     let run = run_helper(&spec);
     assert!(!marker.exists(), "target ran after invalid Seatbelt setup");
     assert!(matches!(
