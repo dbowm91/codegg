@@ -1,8 +1,8 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: blocked (handoff after C001 accepted context/provenance contract)
+Status: active
 
-Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b`
+Repository baseline: `eb960763da34e6992682d4173381c272939619d2`
 
 Source roadmap: `plans/subsystems/human-execution-corrective-roadmap.md#c002--workspace-owned-finite-shell-dispatch`.
 
@@ -16,13 +16,27 @@ Primary class: infrastructure/capability.
 
 Run finite human `!` commands on the authoritative execution node of the selected workspace, never accidentally on the machine hosting a remote TUI, while retaining no-agent semantics, explicit human authorization, finite process cancellation and bounded output. Integrate C001's trusted session/context-promotion contract unchanged.
 
-## 2. Why this milestone is blocked but implementable after C001
+## 2. Dependency disposition
 
-Process management, daemon `CoreClient`, workspace execution context, scheduler admission and bounded interactive process wire patterns are available. However, moving raw command execution must not create a competing model-context store/projection identity before C001 settles that ownership. C001 is a strict hard dependency; once closed, no outside code is required for daemon-local execution. New remote-execution fabric is not part of the milestone.
+C001 is closed at `plans/closure/human-execution-corrective/001-status.md`, with its accepted staging/reconnect contract completed by C004 at `plans/closure/human-execution-corrective/004-status.md`. The hard dependency is satisfied. Process management, daemon `CoreClient`, workspace execution context, scheduler admission and bounded interactive process wire patterns are present. New remote-execution fabric is not part of this milestone.
 
 ## 3. Current implementation evidence and earlier test gap
 
 `src/tui/app/prompt_turn.rs` resolves a composer workspace root then emits `TuiCommand::RunHumanShell`. `src/tui/commands/shell.rs::spawn_human_shell` instantiates `ShellRuntime::new()` in the frontend, and `src/shell/runtime.rs` uses `ManagedProcessService::run_streaming` there for `$SHELL -lc`. On remote frontend/daemon topologies, the selected path can refer to a different machine and the inherited `SHELL`/environment comes from the client. By contrast, `/terminal-*` calls `CoreRequest::InteractiveProcess*` on the daemon. Prior human shell tests exercised a local process and checked cwd/output, not an independent daemon/client identity.
+
+### Work package A — topology and support matrix
+
+The accepted operation remains daemon-local. `InteractiveProcessCreate` resolves a registered `WorkspaceId` through the daemon `WorkspaceRegistry` and builds `ExecutionContext` from the registered record; the frontend supplies only the workspace locator. PTY create then enters the daemon-owned interactive protocol and shared admission controller. The TUI's `CoreClient` can target the in-process standalone core or the user-scoped daemon; a remote-attached TUI still sends requests to that daemon. There is no execution-node federation or remote-workspace forwarding contract in the current protocol.
+
+| Topology | C002 support | Authority and disposition |
+|---|---|---|
+| Local TUI attached to its user-scoped daemon | supported | Daemon resolves registered workspace, host shell and environment; TUI supplies command intent and workspace ID only. |
+| `--standalone` TUI/core | supported | In-process CoreClient routes through the same CoreDaemon handler and process service. |
+| Remote-attached TUI selecting a workspace registered on the connected daemon | supported | Connected daemon is execution owner; client cwd, shell and environment are ignored. |
+| Remote-attached TUI naming a workspace unknown to the connected daemon | refused | No registry record means no execution context; no frontend-local fallback. |
+| Workspace whose execution target is another node | unsupported/refused | No cross-node transport or target ownership contract exists; this plan does not add one. |
+
+Transport identity is already bound to CoreDaemon dispatch (`client_id`); C002 must add an explicit human/local-owner authorization check for finite shell operations rather than treating the PTY protocol's transport attachment ownership as equivalent. Existing `ManagedProcessService` owns finite spawn, process-tree cancellation, timeout and bounded output. `InteractiveProcessService` owns PTY processes and holds the shared scheduler admission permit before PTY creation. C002 must acquire the same shared `AdmissionController` before finite spawn, and must not route one-shot shell runs through the PTY service.
 
 ## 4. Invariants
 

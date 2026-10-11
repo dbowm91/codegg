@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C001, C003 and C004 closed; C002 eligible)
+Status: active (C001, C003 and C004 closed; C002 active)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -48,7 +48,7 @@ The TUI remains a view and human-intent adapter. Human finite execution receives
 
 ## 6. Dependency graph
 
-`C001` (promotion and redaction) required its registered C004 authoritative-staging corrective; C004 is now closed and C001's acceptance contract is satisfied. `C002` (workspace-owned human shell dispatch) is now eligible because the accepted context/output owner is established. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
+`C001` (promotion and redaction) required its registered C004 authoritative-staging corrective; C004 is now closed and C001's acceptance contract is satisfied. `C002` (workspace-owned human shell dispatch) is active because the accepted context/output owner is established. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
 
 ## 7. Milestones
 
@@ -82,6 +82,6 @@ C001–C003 each need an independent closure record including user-visible end-t
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
 | C001 | closed | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | Original closure plus authoritative-staging completion `plans/closure/human-execution-corrective/004-status.md` |
-| C002 | eligible | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001's accepted context/provenance dependency is satisfied by C004; execution dispatch remains in scope |
+| C002 | active | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001's accepted context/provenance dependency is satisfied by C004; topology audit recorded in the plan; daemon-owned execution dispatch is in progress |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
-| C004 | closed | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; C002 is eligible |
+| C004 | closed | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; C002 is active |
