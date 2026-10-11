@@ -101,11 +101,14 @@ lease, and requires another hosted run for confirmation.
 
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
-sandbox request on non-Unix, and the Windows `tokio::process::Command` spawn
-path has no CodeGG-owned `STARTUPINFOEX` attribute-list setup. Production work
-must introduce and own that Windows creation path while preserving the
-existing suspend-before-Job-assignment ordering. Because approved roots may be
-existing directories, ACE cleanup also needs a crash-recoverable ownership
+sandbox request on non-Unix, and `ManagedProcessService` still launches through
+`tokio::process::Command`. `src/managed_process/windows.rs` now owns reusable
+AppContainer profile, `STARTUPINFOEXW` attribute-list, and suspended
+`CreateProcessW` helpers; the Rust token/Job proof exercises those helpers.
+This is launch groundwork only. Production work must connect the helpers to the
+process-service path, preserve inherited output handling, and establish ACLs
+before resume while verifying token and Job facts. Because approved roots may
+be existing directories, ACE cleanup also needs a crash-recoverable ownership
 record; an in-memory guard alone cannot satisfy WP-C after daemon/helper loss.
 
 ## 4. Invariants that must not regress
