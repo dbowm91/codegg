@@ -23,6 +23,13 @@ target to its Job before resume. The full Windows workflow completed successfull
 in 12m 56s: all 8 process launcher tests passed, suspended-target failure
 injection passed, and all selected shell/policy tests passed.
 
+Descendant Job proof: `https://github.com/dbowm91/codegg/actions/runs/38158022356`
+The AppContainer proof step passed in 5s. An AppContainer `cmd.exe` started a
+long-lived child; the child was observed in the same owner Job after the root
+exited, then observed terminated after `TerminateJobObject`. The full Windows
+workflow completed successfully in 14m 22s: all 8 process launcher tests,
+suspended-target failure injection, and selected shell/policy tests passed.
+
 The first token-inspection attempt invoked `whoami` inside the AppContainer and
 failed with exit 1 (`38152089849`). That method did not provide token evidence;
 it was replaced with a direct `OpenProcessToken` /
@@ -78,10 +85,11 @@ version `10.0.26100`, build `26100`:
 | Delete unique AppContainer profile and temporary fixture | completed without reported error |
 | Restore exact disposable-root ACL before-images | passed in runs `38155073513` and `38156232045` after freezing the fixture ACL bases |
 | Assign the suspended AppContainer target to its Job before resume | passed in run `38156232045`; `IsProcessInJob` confirmed membership before `ResumeThread` |
+| Preserve Job membership through a spawned AppContainer descendant | passed in run `38158022356`; the child remained in the owner Job after root exit and was terminated by `TerminateJobObject` |
 
 The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy
-suite (all selected tests passed) in run `38156232045`.
+suite (all selected tests passed) in run `38158022356`.
 
 Microsoft documents AppContainer access as the intersection of traditional
 user/group grants and AppContainer package/capability SID grants, with the
@@ -91,20 +99,20 @@ production feasibility pass; it does not establish CodeGG sandbox enforcement.
 
 ## Limits and next work
 
-This harness does not exercise the CodeGG `ManagedProcessService`, inherited
-Job membership, suspended-target setup, the exact requested policy compiler,
-existing directory ACL leases, token/query evidence, credential store or
-daemon IPC, hardlinks, ADS, junction races, cancellation, forced termination,
-profile/ACL recovery, or non-admin/privileged VM adversarial cases. It uses
+This harness does not exercise the CodeGG `ManagedProcessService`, its
+production suspended-target setup or inherited Job membership, the exact
+requested policy compiler, existing directory ACL leases, crash recovery,
+credential store, daemon IPC, hardlinks, ADS, junction races, cancellation,
+forced termination,
+profile recovery, or non-admin/privileged VM adversarial cases. It uses
 synthetic files only. Windows constrained launches remain fail-closed.
 
-Next M004 work should implement an isolated launcher experiment behind the
-canonical process owner, first proving token identity, inherited Job
-membership, child/grandchild behavior and the policy read/write matrix. Only
-after that should temporary ACE ownership/recovery, real sensitive-path
-fixtures, and the full adversarial VM matrix be evaluated. If those steps
-cannot preserve preexisting security descriptors and fail closed on cleanup,
-stop before backend registration.
+Next M004 work should connect the proven suspended AppContainer + Job sequence
+to CodeGG's canonical process owner without weakening its fail-closed behavior.
+Then implement crash-recoverable owned ACE leases and test the actual requested
+policy against real sensitive-path fixtures. The full adversarial VM matrix is
+still required. If these steps cannot preserve preexisting security
+descriptors and fail closed on cleanup, stop before backend registration.
 
 References:
 

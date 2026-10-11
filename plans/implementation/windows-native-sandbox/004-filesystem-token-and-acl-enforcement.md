@@ -36,16 +36,21 @@ intersection on new runner-temp directories: an explicitly granted read and
 scratch write succeeded, while a synthetic secret read and outside write were
 denied. This validates AppContainer as a candidate mechanism only. It does not
 implement or exercise CodeGG's production launcher, existing-path ACL leases,
-child/grandchild ownership, credential/named-pipe denial, crash recovery, or
-the required adversarial ACL VM matrix. Follow-up run
-`38155073513` also passed exact before-image restoration for disposable ACL
+credential/named-pipe denial, crash recovery, or the required adversarial ACL
+VM matrix. Follow-up run `38155073513` also passed exact before-image
+restoration for disposable ACL
 fixtures after protecting their inherited ACL bases. This proves restoration
 for those isolated test roots only; it does not establish crash recovery for
 production ACL leases. Run `38156232045`'s AppContainer proof step additionally
 passed suspended creation, Job assignment, `IsProcessInJob` verification, and
-resume ordering. It does not prove production launcher integration or Job
-inheritance by descendants. No Windows sandbox backend is registered and
-constrained launches remain unavailable.
+resume ordering. Run `38158022356` additionally passed a fixture in which an
+AppContainer root started a long-lived child, the child remained in the owner
+Job after root exit, and `TerminateJobObject` stopped it. The full Windows
+workflow passed in 14m 22s, including the existing launcher suite (8 passed),
+suspended-target failure injection, and selected shell/policy tests. These
+fixtures still do not prove production launcher integration or production
+descendant behavior. No Windows sandbox backend is registered and constrained
+launches remain unavailable.
 
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
