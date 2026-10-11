@@ -1327,6 +1327,61 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn constrained_launch_gets_private_tmpdir_removed_after_reap_on_macos() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let command =
+            "printf '%s|%s' \"$TMPDIR\" \"$(stat -f %Lp \"$TMPDIR\")\"; test -w \"$TMPDIR\"";
+        let config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().to_string()]);
+        let mut spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".to_string(), command.to_string()],
+                Some(workspace.path()),
+            )
+            .expect("launch spec");
+        // The helper sandbox tests cover credential denials. This lifecycle
+        // probe isolates the managed scratch contract from host-home access.
+        spec.deny_paths.clear();
+        let mut request = ManagedProcessRequest::new(
+            vec!["/bin/sh".into(), "-c".into(), command.into()],
+            workspace.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("target debug directory")
+            .join("codegg-sandbox-helper");
+
+        let result = run_inner(request, None, Some(&helper))
+            .await
+            .expect("contained process succeeds");
+        assert!(
+            result.exit_status.success(),
+            "{}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { .. }
+        ));
+        let stdout = result.stdout.to_string_lossy();
+        let (scratch, mode) = stdout.split_once('|').expect("TMPDIR and mode");
+        assert!(scratch.starts_with(std::env::temp_dir().to_string_lossy().as_ref()));
+        assert_eq!(mode, "700", "scratch permissions must be private: {stdout}");
+        assert!(
+            !Path::new(scratch).exists(),
+            "private scratch should be removed after the target is reaped"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn timeout_and_cancellation_kill_the_process_group() {
