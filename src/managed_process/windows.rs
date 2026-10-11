@@ -446,7 +446,7 @@ mod tests {
     use super::FAIL_NEXT_JOB_ASSIGNMENT;
     use super::{
         last_error, wide, WindowsAppContainerProfile, WindowsJob, WindowsProcessAttributes,
-        WindowsSuspendedAppContainerProcess,
+        WindowsSuspendedAppContainerProcess, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     };
     use crate::managed_process::{
         ManagedProcessError, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
