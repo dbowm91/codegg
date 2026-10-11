@@ -903,6 +903,42 @@ fn scratch_space_is_writable_so_tooling_still_works() {
     );
 }
 
+/// Seatbelt currently keeps broad read access for developer-tool compatibility.
+/// Exercise representative installed tools through the real helper without
+/// allowing any persistent writes or contacting external services.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_keeps_read_only_developer_tool_probes_operational() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let tools: [(&str, &[&str]); 6] = [
+        ("git", &["--version"]),
+        ("cargo", &["--version"]),
+        ("rustc", &["--version"]),
+        ("python3", &["--version"]),
+        ("brew", &["--version"]),
+        ("gh", &["--version"]),
+    ];
+
+    for (program, args) in tools {
+        let mut spec = spec_for(workspace.path(), SandboxMode::ReadOnly, &[]);
+        spec.target = PathBuf::from(program);
+        spec.args = args.iter().map(|arg| (*arg).to_string()).collect();
+        let run = run_helper(&spec);
+        assert!(
+            run.success,
+            "read-only {program} probe failed: {}\n{}",
+            run.stdout, run.stderr
+        );
+        assert!(
+            run.outcome()
+                .is_some_and(|outcome| outcome.backend() == Some(BackendId::SEATBELT)),
+            "{program} probe did not report Seatbelt: {:?}",
+            run.outcome()
+        );
+    }
+}
+
 #[test]
 fn read_only_still_permits_shell_redirection() {
     require_backend!();
