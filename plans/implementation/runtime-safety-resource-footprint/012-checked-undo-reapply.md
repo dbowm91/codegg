@@ -1,6 +1,6 @@
 # Runtime Safety Milestone 012 — Checked Undo and Reapply
 
-Status: ready (unblocked by M011 closure `plans/closure/runtime-safety-resource-footprint/011-status.md`)
+Status: implemented (closed at `plans/closure/runtime-safety-resource-footprint/012-status.md`; strict corrective closure at `plans/closure/runtime-safety-resource-footprint/013-status.md`)
 
 Repository baseline: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 
@@ -28,7 +28,7 @@ Hard dependency:
 
 Expose safe Undo/Reapply for supported CodeGG-native edit checkpoints using all-path precondition verification and existing snapshot/path authority, with no silent overwrite of later human, external, or concurrent changes.
 
-## 2. Why this milestone is blocked
+## 2. Readiness gate (satisfied)
 
 The user-facing capability is only correct after M011 establishes:
 
@@ -38,7 +38,7 @@ The user-facing capability is only correct after M011 establishes:
 - deterministic ordering for overlapping mutations;
 - durable restart-safe checkpoint persistence.
 
-Implementing UI/commands before those invariants close would recreate an unsafe partial-history layer.
+Those prerequisites were established by M011, then M012 implemented the checked restore and user-facing command path. M013 subsequently corrected cross-session checkpoint atomicity and mixed unknown-side-effect handling; its closure records the accepted strict disposition. This section preserves the original readiness rationale, not a current blocker.
 
 ## 3. Current implementation evidence
 
