@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C001, C003 and C004 closed; C002 active)
+Status: closed (C001–C004 closed)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -18,7 +18,7 @@ Applicable ADRs: none for the corrective contracts; remote-node execution federa
 
 ## 1. Purpose and ownership boundary
 
-Correct human-initiated command execution without conflating it with the agent's `bash` tool. `!`/`!!` currently run genuine, finite, non-PTY shell processes through the frontend's `ShellRuntime`. `/terminal-*` uses a separate, real Unix PTY owned by the daemon and execution-node service. These are distinct capabilities, not model echoes. This roadmap covers actual context promotion, workspace locality/authorization for finite human commands, and faithful terminal keyboard/display handling. Prior PTY M001–M003 closure remains historical fact, not rewritten.
+Correct human-initiated command execution without conflating it with the agent's `bash` tool. `!`/`!!` run finite, non-PTY shell processes through the connected daemon that owns the selected registered workspace. `/terminal-*` uses a separate, real Unix PTY owned by the daemon and execution-node service. These are distinct capabilities, not model echoes. This roadmap covers actual context promotion, workspace locality/authorization for finite human commands, and faithful terminal keyboard/display handling. Prior PTY M001–M003 closure remains historical fact, not rewritten.
 
 ## 2. Work classification
 
@@ -38,7 +38,7 @@ No agent tool rerouting through human shell, model-driven PTY, new process super
 
 `src/tui/app/prompt_turn.rs::send_prompt` intercepts bangs before agent turn submission. `src/tui/commands/shell.rs` creates `ShellRuntime::new()` in the TUI and `src/shell/runtime.rs` runs `$SHELL -lc` via `ManagedProcessService::run_streaming`. The process runs on the frontend's host and cannot retain shell state across separate commands.
 
-Historical baseline note: this paragraph described the frontend-only state that C004 corrected. C004 now requires the shared model redactor at both the TUI preparation step and authenticated session owner, persists only the bounded projection, and injects staged IDs into an accepted turn. The remaining execution-locality gap is C002, not context ownership.
+Historical baseline note: this paragraph described the frontend-only state that C002 corrected. C002 now routes finite human commands through the workspace-owning daemon; C004 separately requires the shared model redactor at both the TUI preparation step and authenticated session owner, persists only the bounded projection, and injects staged IDs into an accepted turn. Neither path changes the PTY owner.
 
 `src/interactive_process.rs` supplies Linux/macOS PTYs and `tests/interactive_terminal_tui.rs` demonstrates input through `cat`. But `src/tui/interactive_terminal.rs::classify_key` always consumes Esc as focus exit, and `render_lines` simply newline-splits lossy text; cursor control, erase and alternate screen are not faithfully rendered. That is a terminal presentation gap, not absence of a PTY.
 
@@ -48,7 +48,7 @@ The TUI remains a view and human-intent adapter. Human finite execution receives
 
 ## 6. Dependency graph
 
-`C001` (promotion and redaction) required its registered C004 authoritative-staging corrective; C004 is now closed and C001's acceptance contract is satisfied. `C002` (workspace-owned human shell dispatch) is active because the accepted context/output owner is established. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
+`C001` (promotion and redaction) required its registered C004 authoritative-staging corrective; C004 is closed and C001's acceptance contract is satisfied. `C002` (workspace-owned human shell dispatch) is closed at `plans/closure/human-execution-corrective/002-status.md`. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed. All roadmap milestones are complete.
 
 ## 7. Milestones
 
@@ -82,6 +82,6 @@ C001–C003 each need an independent closure record including user-visible end-t
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
 | C001 | closed | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | Original closure plus authoritative-staging completion `plans/closure/human-execution-corrective/004-status.md` |
-| C002 | active | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001's accepted context/provenance dependency is satisfied by C004; topology audit recorded in the plan; daemon-owned execution dispatch is in progress |
+| C002 | closed | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | `plans/closure/human-execution-corrective/002-status.md`; daemon-owned workspace execution, bounded protocol, focused tests and quick verification passed |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
-| C004 | closed | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; C002 is active |
+| C004 | closed | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; C002 has since closed |
