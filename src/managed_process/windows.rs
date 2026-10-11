@@ -466,15 +466,10 @@ impl WindowsSuspendedAppContainerProcess {
                 "AppContainer executable cannot contain NULs",
             ));
         }
-        if application.as_os_str().encode_wide().any(|unit| unit == 0)
-            || current_directory
-                .as_os_str()
-                .encode_wide()
-                .any(|unit| unit == 0)
-        {
+        if application.as_os_str().encode_wide().any(|unit| unit == 0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "AppContainer executable and working directory cannot contain NULs",
+                "AppContainer executable cannot contain NULs",
             ));
         }
         if command_line.len() < 2
@@ -1229,9 +1224,6 @@ mod tests {
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
         let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
-        let working_directory = cmd
-            .parent()
-            .ok_or_else(|| io::Error::other("cmd.exe path has no parent directory"))?;
         let mut command_line = wide(&format!("\"{}\" /D /C exit 0", cmd.display()));
         let mut process =
             WindowsSuspendedAppContainerProcess::create(&cmd, &mut command_line, &attributes)
@@ -1330,9 +1322,6 @@ mod tests {
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
         let executable = PathBuf::from(system_root).join("System32").join("cmd.exe");
-        let working_directory = executable
-            .parent()
-            .ok_or_else(|| io::Error::other("cmd.exe path has no parent directory"))?;
         let mut command_line = wide(&format!("\"{}\" /D /C exit 0", executable.display()));
         let mut process = WindowsSuspendedAppContainerProcess::create(
             &executable,
