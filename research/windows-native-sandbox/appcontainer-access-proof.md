@@ -30,6 +30,17 @@ exited, then observed terminated after `TerminateJobObject`. The full Windows
 workflow completed successfully in 14m 22s: all 8 process launcher tests,
 suspended-target failure injection, and selected shell/policy tests passed.
 
+Rust AppContainer token-query proof:
+`https://github.com/dbowm91/codegg/actions/runs/38162151380`
+The proof initially passed an undersized buffer to `GetTokenInformation`.
+The corrected test queried the required size, allocated aligned storage, and
+verified that the suspended child token contained the exact profile SID before
+Job assignment and resume. The full workflow succeeded in 14m 14s: all 8
+process launcher tests, suspended-target failure injection, the Rust
+AppContainer token/Job proof, the disposable filesystem/ACL fixture, and the
+selected shell/policy tests passed. The run used Windows Server 2025
+Datacenter, version `10.0.26100`, build `26100`.
+
 The first token-inspection attempt invoked `whoami` inside the AppContainer and
 failed with exit 1 (`38152089849`). That method did not provide token evidence;
 it was replaced with a direct `OpenProcessToken` /
@@ -86,6 +97,8 @@ version `10.0.26100`, build `26100`:
 | Restore exact disposable-root ACL before-images | passed in runs `38155073513` and `38156232045` after freezing the fixture ACL bases |
 | Assign the suspended AppContainer target to its Job before resume | passed in run `38156232045`; `IsProcessInJob` confirmed membership before `ResumeThread` |
 | Preserve Job membership through a spawned AppContainer descendant | passed in run `38158022356`; the child remained in the owner Job after root exit and was terminated by `TerminateJobObject` |
+| Rust `ManagedProcessService` suspended-target failure injection remains fail-closed | passed in run `38162151380`; injected Job assignment failure prevented the marker-writing target from running |
+| Rust test-only AppContainer token has the exact package SID before resume | passed in run `38162151380`; the test queried the required token-information buffer size, compared `TokenAppContainerSid`, assigned the process to a Job, confirmed membership, and only then resumed it |
 
 The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy

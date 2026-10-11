@@ -52,6 +52,15 @@ fixtures still do not prove production launcher integration or production
 descendant behavior. No Windows sandbox backend is registered and constrained
 launches remain unavailable.
 
+Run `38162151380` also passed a Rust-side, test-only AppContainer creation
+proof. It queried the token-information buffer size before reading
+`TokenAppContainerSid`, matched the child token to the disposable profile SID,
+assigned the suspended target to its Job, verified `IsProcessInJob`, and only
+then resumed the target. The full Windows workflow passed in 14m 14s, including
+all 8 managed-process launcher tests, failure injection, filesystem/ACL
+fixtures, and selected shell/policy tests. This still does not connect
+AppContainer creation or ACL leases to production `ManagedProcessService`.
+
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
 sandbox request on non-Unix, and the Windows `tokio::process::Command` spawn
