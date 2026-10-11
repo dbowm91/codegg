@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 004 — Filesystem Token and ACL Enforcement
 
-Status: active
+Status: blocked
 
 Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
 
@@ -194,10 +194,16 @@ STOP if Windows token/ACL mechanism cannot enforce denied reads and workspace re
 
 Observed child filesystem probe matrix with Windows build, token SID/access check and ACL evidence, cleanup/repair traces, credential/named-pipe denial, failure-injection results, supported host matrix, Unix regressions, named gaps and exact unblocking decision for M006.
 
-The available qualification environment currently provides only a hosted
-Windows runner. The privileged isolated-VM ACL recovery and adversarial matrix
-has not been run, so M004 remains active and dependent milestones remain
-blocked.
+Hosted Windows run `38169853082` (commit `7f3d49f`) confirmed that a null current
+directory still fails at `CreateProcessW` with error 87. Run `38173319891`
+(commit `606f7a4`) added `CREATE_NO_WINDOW`, matching the earlier PowerShell
+fixture's creation flags, but the Rust proof again failed at `CreateProcessW`
+with error 87. The existing process-launcher suite and suspended-target failure
+injection passed; the run stopped before the later native shell/policy checks.
+Do not treat the Rust launch helper as verified. M004 is blocked pending a
+diagnosable hosted launch proof and access to the privileged isolated VM needed
+for the required ACL recovery and adversarial matrix. The user confirmed that
+only the hosted runner is available; no privileged VM is available.
 
 ## 16. Handoff notes
 
