@@ -102,6 +102,15 @@ jobs:
             throw
           }
 
+      - name: Record Windows runner metadata
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          rustc --version --verbose
+
       - name: Windows managed process launcher tests
         run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1
 
@@ -150,4 +159,7 @@ jobs:
           cargo test --locked -p codegg --lib configured_cmd_shell_executes_raw_text -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib configured_git_bash_executes_raw_text -- --nocapture
+
+      - name: Windows suspended-target failure injection
+        run: cargo test --locked -p codegg --lib managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target -- --nocapture
 
