@@ -155,6 +155,18 @@ try {
     $sidText = [System.Security.Principal.SecurityIdentifier]::new($sid).Value
     $package = [System.Security.Principal.SecurityIdentifier]::new($sidText)
 
+    $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $tokenCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C whoami /groups `> `"$result`"", $sid)
+    if ($tokenCode -ne 0) {
+        throw "Could not inspect the AppContainer token groups (exit $tokenCode)."
+    }
+    $tokenGroups = [IO.File]::ReadAllText($result)
+    if (-not $tokenGroups.Contains($sidText)) {
+        throw "AppContainer package SID $sidText was absent from the child token groups."
+    }
+    'package SID present in child token groups: passed'
+
     $readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
         $package, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
         [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
@@ -175,7 +187,6 @@ try {
     Set-Acl -LiteralPath $writeRoot -AclObject $writeAcl
     [IO.File]::WriteAllText((Join-Path $readRoot 'allowed.txt'), 'allowed-read-marker')
 
-    $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
     $readCode = [AppContainerProofNative]::Run($cmd,
         "/D /C type `"$(Join-Path $readRoot 'allowed.txt')`" `> `"$result`"", $sid)
     if ($readCode -ne 0 -or [IO.File]::ReadAllText($result) -ne 'allowed-read-marker') {

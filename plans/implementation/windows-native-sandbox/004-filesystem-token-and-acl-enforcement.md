@@ -29,6 +29,17 @@ Hard: M001–M003 strict closures. The Win32 launcher exists with suspended proc
 
 `src/security/sandbox/backend.rs` ships no Windows backend; `SandboxConfig::launch_spec` carries requested read/write/denied paths; `SandboxLaunchOutcome::Enforced` conveys backend guarantees/limits. Microsoft `CreateRestrictedToken(WRITE_RESTRICTED)` only applies restricting SIDs to write access, so that mechanism by itself cannot satisfy Codegg's sensitive read restrictions. Windows root user-profile ACLs are not necessarily deny-first.
 
+M004 WP-A feasibility evidence is now available in
+`research/windows-native-sandbox/appcontainer-access-proof.md`. A disposable
+Windows Server 2025 AppContainer fixture demonstrated the package-SID DACL
+intersection on new runner-temp directories: an explicitly granted read and
+scratch write succeeded, while a synthetic secret read and outside write were
+denied. This validates AppContainer as a candidate mechanism only. It does not
+implement or exercise CodeGG's production launcher, existing-path ACL leases,
+child/grandchild ownership, credential/named-pipe denial, crash recovery, or
+the required adversarial ACL VM matrix. No Windows sandbox backend is
+registered and constrained launches remain unavailable.
+
 ## 4. Invariants that must not regress
 
 - No backend registered available until read AND write requirements can be demonstrated on target Windows version.
