@@ -472,7 +472,7 @@ impl WindowsSuspendedAppContainerProcess {
             )
         };
         if created == 0 {
-            return Err(last_error());
+            return Err(with_operation(last_error(), "CreateProcessW"));
         }
         Ok(Self {
             process: unsafe { OwnedHandle::from_raw_handle(process_info.hProcess as RawHandle) },
@@ -515,14 +515,20 @@ impl WindowsTestRestrictedProcess {
     ) -> io::Result<Self> {
         use std::os::windows::io::IntoRawHandle;
 
-        let pipes = WindowsStdioPipes::create()?;
-        let mut attributes = WindowsProcessAttributes::new(2)?;
-        attributes.set_appcontainer(profile)?;
-        attributes.set_handle_list(&[
-            pipes.child_stdin.as_raw_handle() as HANDLE,
-            pipes.child_stdout.as_raw_handle() as HANDLE,
-            pipes.child_stderr.as_raw_handle() as HANDLE,
-        ])?;
+        let pipes = WindowsStdioPipes::create()
+            .map_err(|error| with_operation(error, "create restricted stdio pipes"))?;
+        let mut attributes = WindowsProcessAttributes::new(2)
+            .map_err(|error| with_operation(error, "create restricted process attributes"))?;
+        attributes
+            .set_appcontainer(profile)
+            .map_err(|error| with_operation(error, "set AppContainer process attribute"))?;
+        attributes
+            .set_handle_list(&[
+                pipes.child_stdin.as_raw_handle() as HANDLE,
+                pipes.child_stdout.as_raw_handle() as HANDLE,
+                pipes.child_stderr.as_raw_handle() as HANDLE,
+            ])
+            .map_err(|error| with_operation(error, "set restricted stdio handle list"))?;
         let mut command_line = windows_command_line(application, argv)?;
         let mut child = WindowsSuspendedAppContainerProcess::create_with_stdio(
             application,
@@ -537,9 +543,11 @@ impl WindowsTestRestrictedProcess {
         drop(attributes);
         drop((pipes.child_stdin, pipes.child_stdout, pipes.child_stderr));
 
-        let mut job = WindowsJob::create()?;
+        let mut job = WindowsJob::create()
+            .map_err(|error| with_operation(error, "create restricted Job Object"))?;
         job.assign_appcontainer_and_resume(&mut child, |process| {
-            verify_appcontainer_token(process, profile.sid())?;
+            verify_appcontainer_token(process, profile.sid())
+                .map_err(|error| with_operation(error, "verify AppContainer process token"))?;
             if cancellation.is_cancelled() {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
@@ -547,7 +555,8 @@ impl WindowsTestRestrictedProcess {
                 ));
             }
             Ok(())
-        })?;
+        })
+        .map_err(|error| with_operation(error, "assign and resume restricted process"))?;
 
         let stdin = unsafe {
             std::fs::File::from_raw_handle(
@@ -860,6 +869,10 @@ fn find_suspended_primary_thread(pid: u32) -> io::Result<u32> {
 fn last_error() -> io::Error {
     let error = unsafe { GetLastError() };
     io::Error::from_raw_os_error(error as i32)
+}
+
+fn with_operation(error: io::Error, operation: &str) -> io::Error {
+    io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
 
 #[cfg(test)]
