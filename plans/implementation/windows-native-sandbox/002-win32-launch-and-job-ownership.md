@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 002 — Win32 Launch and Job Ownership
 
-Status: active
+Status: closed
 
 Repository baseline: `739c524d791c9d8d4e81a827fa77e8651e5d1550`
 
