@@ -1,8 +1,8 @@
 # Windows Native Sandbox Milestone 003 — Native Shell and Windows Policy Inputs
 
-Status: blocked (M002 closure required)
+Status: active
 
-Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
+Repository baseline: `56e34c435b9d1b07f1bfb6f8343e530ae273cbd7`
 
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#7-milestones`
 
@@ -57,7 +57,7 @@ Route executable invocation and shell interpretation separately; `pwsh`, Windows
 Windows-specific toolchain read roots, per-run scratch/temporary and profile-specific write roots; standard OS DLL dependencies; provenance. Do not blanket-allow `%USERPROFILE%`, `%LOCALAPPDATA%` or `C:\` to satisfy a tool. Identify deny-sensitive Codegg config/token/SSH/AWS locations using Windows known-folder APIs and real user profile paths.
 
 ### Path security
-Validate Windows drive roots, case and separators, `\?` forms, UNC/device paths, junctions/reparse points, ADS and hardlink alias hazards. Produce safely normalized handle-bound roots for M004 and explicitly reject unknown/missing denied-path state where read guarantees depend on them.
+Validate Windows drive roots, case and separators, `\?` forms, UNC/device paths, junctions/reparse points, and ADS. Path strings cannot prove hardlink identity or prevent replacement after validation; record those as M004 handle/ACL enforcement requirements, not as a passed M003 check. Produce normalized roots for M004 and explicitly reject unknown/missing denied-path state where read guarantees depend on them.
 
 ### Storage/protocol/docs
 No migration. Document shell selection and unsupported runtime incompatibilities.
@@ -88,7 +88,7 @@ Invalid PATH entries, ambiguous shell discovery or unresolved roots fail predict
 
 - Unit: shell quoting, direct argv, PATH spoofing, Unicode and case-insensitive path equivalence.
 - Native Windows integration: cmd and PowerShell smoke + representative Rust/Git/Python invocation.
-- Security negative: malicious junction/reparse changes, credential path deny, UNC/device prefixes, alternate data stream, two worktrees.
+- Security negative: junction/reparse components, credential path deny, UNC/device prefixes, alternate data streams, and distinct sibling worktree roots. Hardlink aliasing and path replacement remain M004/M006 enforcement tests.
 - Regression: unmanaged shell bypass not added, authorization receipts stable.
 
 ## 11. Required verification commands
@@ -98,7 +98,11 @@ Invalid PATH entries, ambiguous shell discovery or unresolved roots fail predict
 `python3 scripts/check_sandbox_contract.py`
 `python3 scripts/check_execution_ownership.py`
 `cargo fmt --all -- --check`
-On Windows: `cargo test -p codegg --test windows_shell_policy -- --nocapture` (new target)
+On Windows: run `.github/workflows/windows-process-launcher.yml`, including
+`windows_policy_tests`, the shell argv/configured-shell tests, PowerShell/cmd/Git
+Bash smoke commands, and native toolchain smoke. WSL is path/argv-tested only;
+live WSL execution depends on a provisioned distribution and is not required on
+the hosted Windows runner.
 `bash scripts/verify.sh quick` on compatible Unix host.
 
 ## 12. Documentation updates

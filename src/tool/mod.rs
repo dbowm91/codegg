@@ -341,6 +341,9 @@ pub struct ToolRegistryOptions {
     /// When `Some`, the Bash tool annotates commands and can actively route
     /// enabled families to their canonical backends.
     pub command_intent: Option<crate::config::schema::CommandIntentConfig>,
+    /// Explicit Windows shell selection for raw shell commands. `None`
+    /// selects the platform default; structured argv bypasses shell parsing.
+    pub windows_shell: Option<crate::config::schema::WindowsShellKind>,
     /// Phase 2: canonical workspace root for filesystem tools. When
     /// `Some`, tools that previously inferred their `allowed_root` from
     /// `std::env::current_dir()` should prefer this value. New code
@@ -447,6 +450,7 @@ impl ToolRegistry {
         } else {
             crate::tool::bash::BashTool::default()
         };
+        let bash_tool = bash_tool.with_windows_shell(options.windows_shell);
         let bash_tool = if let Some(root) = workspace_root.as_ref() {
             bash_tool.with_allowed_paths(vec![root.to_string_lossy().into_owned()])
         } else {
@@ -1029,6 +1033,7 @@ impl ToolRegistry {
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
             command_intent: config.command_intent.clone(),
+            windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
             search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
                 &config.search.clone().unwrap_or_default(),
             )),
@@ -1059,6 +1064,7 @@ impl ToolRegistry {
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
             command_intent: config.command_intent.clone(),
+            windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
             search_runtime: Some(search_runtime),
             ..ToolRegistryOptions::default()
         })
@@ -1174,6 +1180,7 @@ impl ToolRegistry {
             run_store: None,
             submission: None,
             command_intent: config.command_intent.clone(),
+            windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
             workspace_root: None,
             child_git_policy: None,
             asset_snapshot: None,
@@ -1225,6 +1232,7 @@ impl ToolRegistry {
             run_store: None,
             submission: None,
             command_intent: None,
+            windows_shell: None,
             workspace_root: None,
             child_git_policy: None,
             asset_snapshot: None,

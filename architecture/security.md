@@ -159,6 +159,18 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 - Windows: managed finite processes receive Job Object lifecycle
   supervision, but no filesystem or network enforcement backend is registered;
   constrained requests fail before launch.
+
+Windows policy inputs enumerate system/toolchain reads, user tool caches,
+temporary/cache writes, and sensitive user-profile credential roots for future
+backend compilation. Raw Windows shell invocations receive a unique per-run
+TEMP/TMP directory and remove it after process completion; this is cleanup and
+environment isolation, not an OS access-control boundary. Existing policy
+paths reject UNC/device/extended-length
+namespaces, alternate data stream syntax, parent traversal, and reparse-point
+components before canonicalization. These checks are pre-launch diagnostics;
+they do not bind a later filesystem operation to the checked identity, prevent
+hardlink aliases, or close a replacement race. Windows constrained execution
+remains unavailable until M004 supplies and qualifies enforcement.
 - Any host with no registered backend: constrained Bash requests report
   `FilesystemEnforcement::Unavailable` and fail before process creation
   (never `FullHost` or an uncontained fallback). Python's separately

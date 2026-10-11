@@ -141,12 +141,110 @@ pub(crate) fn bash_environment_policy() -> crate::managed_process::EnvironmentPo
         "JAVA_HOME",
         "GOPATH",
         "GOBIN",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PATHEXT",
+        "COMSPEC",
+        "PSModulePath",
     ];
     let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
     for name in preserved {
         policy = policy.allow_inherited_var(OsString::from(name));
     }
     policy
+}
+
+/// Build a shell invocation without flattening argv into a command line.
+/// Shell parsing is intentionally limited to raw shell routes; structured
+/// `NativeCommand` and managed argv routes continue to spawn their executable
+/// directly.
+pub(crate) fn shell_argv(
+    command: &str,
+    configured: Option<crate::config::schema::WindowsShellKind>,
+) -> Result<Vec<String>, ToolError> {
+    #[cfg(windows)]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .or_else(|| std::env::var_os("WINDIR"))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| ToolError::Execution("Windows SystemRoot is unavailable".into()))?;
+        let (executable, args) =
+            match configured.unwrap_or(crate::config::schema::WindowsShellKind::PowerShell) {
+                crate::config::schema::WindowsShellKind::PowerShell => (
+                    system_root.join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+                    vec![
+                        "-NoLogo".to_string(),
+                        "-NoProfile".to_string(),
+                        "-NonInteractive".to_string(),
+                        "-Command".to_string(),
+                        command.to_string(),
+                    ],
+                ),
+                crate::config::schema::WindowsShellKind::Cmd => (
+                    system_root.join("System32/cmd.exe"),
+                    vec![
+                        "/D".to_string(),
+                        "/S".to_string(),
+                        "/C".to_string(),
+                        command.to_string(),
+                    ],
+                ),
+                crate::config::schema::WindowsShellKind::GitBash => {
+                    let executable = ["ProgramFiles", "ProgramFiles(x86)"]
+                        .into_iter()
+                        .filter_map(std::env::var_os)
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                        .map(|root| root.join("Git/bin/bash.exe"))
+                        .find(|candidate| candidate.is_file())
+                        .ok_or_else(|| {
+                            ToolError::Execution("Git Bash was not found in ProgramFiles".into())
+                        })?;
+                    (executable, vec!["-c".to_string(), command.to_string()])
+                }
+                crate::config::schema::WindowsShellKind::Wsl => (
+                    system_root.join("System32/wsl.exe"),
+                    vec![
+                        "--exec".to_string(),
+                        "sh".to_string(),
+                        "-c".to_string(),
+                        command.to_string(),
+                    ],
+                ),
+            };
+        if !executable.is_file() {
+            return Err(ToolError::Execution(format!(
+                "configured Windows shell is unavailable: {}",
+                executable.display()
+            )));
+        }
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(executable.to_string_lossy().into_owned());
+        argv.extend(args);
+        Ok(argv)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = configured;
+        Ok(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            command.to_string(),
+        ])
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn create_shell_temp_dir() -> Result<tempfile::TempDir, ToolError> {
+    tempfile::Builder::new()
+        .prefix("codegg-shell-")
+        .tempdir()
+        .map_err(|error| ToolError::Execution(format!("create isolated shell temp dir: {error}")))
 }
 
 /// Extract a `-C <path>` argument from a git argv. Returns the path if
@@ -229,9 +327,10 @@ impl BashTool {
                     .landlock_sandbox
                     .as_ref()
                     .expect("contained path requires an enabled config");
-                let args = vec!["-c".to_string(), command.to_string()];
+                let shell_argv = shell_argv(command, self.windows_shell)?;
+                let args = shell_argv[1..].to_vec();
                 crate::managed_process::SandboxRequest::Required(config.launch_spec(
-                    "sh",
+                    &shell_argv[0],
                     &args,
                     Some(&cwd),
                 )?)
@@ -243,11 +342,25 @@ impl BashTool {
             }
         };
         let mut request = crate::managed_process::ManagedProcessRequest::new(
-            vec!["sh".into(), "-c".into(), command.into()],
+            shell_argv(command, self.windows_shell)?
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
             cwd,
             crate::managed_process::ProcessProvenance::default(),
         );
         request.environment_policy = bash_environment_policy();
+        #[cfg(windows)]
+        let _shell_temp = {
+            let directory = create_shell_temp_dir()?;
+            let path = directory.path().as_os_str().to_owned();
+            request.environment_policy = request
+                .environment_policy
+                .clone()
+                .with_var(OsString::from("TEMP"), path.clone())
+                .with_var(OsString::from("TMP"), path);
+            directory
+        };
         request.timeout = Some(timeout);
         request.output_policy = crate::managed_process::OutputPolicy::with_limits(
             self.max_output_bytes,
@@ -1055,7 +1168,7 @@ impl BashTool {
             .workspace_id_for_root(&cwd)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
+        let argv = shell_argv(command, self.windows_shell)?;
         let submitted = submission
             .submit(
                 None,
@@ -1203,6 +1316,134 @@ mod tests {
         let policy = bash_environment_policy();
         let debug = format!("{policy:?}");
         assert!(debug.contains("PATH"));
+        assert!(debug.contains("USERPROFILE"));
+        assert!(debug.contains("LOCALAPPDATA"));
+    }
+
+    #[test]
+    fn raw_shell_keeps_command_text_in_one_argument() {
+        let command = r#"echo "space & unicode λ"; $x = 'literal'"#;
+        let argv = shell_argv(command, None).expect("shell argv");
+        assert!(argv.len() >= 3);
+        assert_eq!(argv.last().map(String::as_str), Some(command));
+        #[cfg(unix)]
+        assert_eq!(&argv[..2], &["sh", "-c"]);
+        #[cfg(windows)]
+        assert!(Path::new(&argv[0]).is_absolute());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_shell_receives_a_private_per_run_temp_directory() {
+        let tool = BashTool::new();
+        let command = r#"Write-Output "$env:TEMP|$env:TMP""#;
+        let (result, _) = tool
+            .execute_via_raw_shell(command, Some(Path::new(".")), Duration::from_secs(10))
+            .await
+            .expect("Windows PowerShell launch");
+        let line = result.lines().next().expect("temp output").trim();
+        let (temp, tmp) = line.split_once('|').expect("both temp variables");
+        assert_eq!(temp, tmp);
+        assert!(temp.to_ascii_lowercase().contains("codegg-shell-"));
+        assert!(
+            !Path::new(temp).exists(),
+            "per-run temp directory is cleaned"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_shell_can_run_common_toolchain_smoke_commands() {
+        let tool = BashTool::new();
+        let command = "rustc --version; cargo --version; git --version; python --version";
+        let (result, _) = tool
+            .execute_via_raw_shell(command, Some(Path::new(".")), Duration::from_secs(20))
+            .await
+            .expect("toolchain smoke command");
+        assert!(result.contains("rustc 1.89.0"), "{result}");
+        assert!(result.contains("cargo 1.89.0"), "{result}");
+        assert!(
+            result.to_ascii_lowercase().contains("git version"),
+            "{result}"
+        );
+        assert!(result.to_ascii_lowercase().contains("python"), "{result}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_cmd_shell_executes_raw_text() {
+        let tool =
+            BashTool::new().with_windows_shell(Some(crate::config::schema::WindowsShellKind::Cmd));
+        let (version, _) = tool
+            .execute_via_raw_shell("ver", Some(Path::new(".")), Duration::from_secs(10))
+            .await
+            .expect("cmd version invocation");
+        assert!(
+            version.to_ascii_lowercase().contains("windows"),
+            "{version}"
+        );
+        let (result, _) = tool
+            .execute_via_raw_shell(
+                r#"echo "space & unicode λ""#,
+                Some(Path::new(".")),
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("cmd quoted argument invocation");
+        assert!(result.contains("space"), "{result}");
+        assert!(result.contains('λ'), "{result}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_git_bash_executes_raw_text() {
+        let tool = BashTool::new()
+            .with_windows_shell(Some(crate::config::schema::WindowsShellKind::GitBash));
+        let (result, _) = tool
+            .execute_via_raw_shell(
+                "printf '%s' 'git-bash-ready'",
+                Some(Path::new(".")),
+                Duration::from_secs(10),
+            )
+            .await
+            .expect("Git Bash invocation");
+        assert!(result.contains("git-bash-ready"), "{result}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configured_windows_shells_resolve_outside_path() {
+        for shell in [
+            crate::config::schema::WindowsShellKind::PowerShell,
+            crate::config::schema::WindowsShellKind::Cmd,
+            crate::config::schema::WindowsShellKind::GitBash,
+        ] {
+            let argv = shell_argv("echo test", Some(shell)).expect("system shell");
+            assert!(Path::new(&argv[0]).is_absolute());
+            if matches!(shell, crate::config::schema::WindowsShellKind::GitBash) {
+                assert!(argv[0]
+                    .to_ascii_lowercase()
+                    .contains("\\git\\bin\\bash.exe"));
+            } else {
+                assert!(argv[0].to_ascii_lowercase().contains("\\system32\\"));
+            }
+        }
+        match shell_argv(
+            "echo test",
+            Some(crate::config::schema::WindowsShellKind::Wsl),
+        ) {
+            Ok(argv) => {
+                assert!(Path::new(&argv[0]).is_absolute());
+                assert!(argv[0].to_ascii_lowercase().contains("\\system32\\wsl.exe"));
+                assert_eq!(&argv[1..4], &["--exec", "sh", "-c"]);
+            }
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .contains("configured Windows shell is unavailable"),
+                "WSL absence should be reported explicitly: {error}"
+            ),
+        }
     }
 
     #[test]

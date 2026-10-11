@@ -221,6 +221,16 @@ cargo test --locked -p codegg --test windows_process_launcher -- --nocapture
 dispatch. These tests qualify process ownership only; they do not qualify
 filesystem ACL or network enforcement.
 
+The same workflow exercises the native shell argv builder and Windows policy
+input fixtures for system roots, profile credential denies, PATH-independent
+shell resolution, case normalization, alternate data streams, UNC/device
+namespaces, traversal, junction components, and distinct sibling worktree
+roots. It runs PowerShell and cmd
+smokes plus Git Bash when installed; WSL selection is argv-checked because a
+hosted runner may not have a provisioned Linux distribution. These checks are
+policy-input coverage only; M004/M006 own effective ACL and filesystem
+enforcement tests.
+
 ## Test Execution with Nextest
 
 Routine broad execution uses nextest profile `ci`, configured in

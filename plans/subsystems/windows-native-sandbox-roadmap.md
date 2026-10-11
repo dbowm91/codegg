@@ -49,9 +49,9 @@ Do not port the entire IDE, force WSL or Docker, replace `ManagedProcessService`
 
 - `src/security/sandbox/backend.rs`: registry exposes Landlock/Seatbelt only and `apply(spec)` assumes mutate-helper + `exec`.
 - `src/bin/codegg-sandbox-helper.rs`: `cfg(not(unix))` exits unavailable; Unix private FD status.
-- `src/managed_process.rs`: required sandbox launch rejected under `cfg(not(unix))`; `terminate_child` on Windows kills the immediate child only; explicit `DegradedUncontained` can run directly.
-- `src/tool/bash/process.rs`: `sh -c` and `src/security/sandbox/policy.rs`: Unix allowances/HOME assumptions.
-- `tests/sandbox_containment.rs` and `tests/sandbox_landlock.rs`: Unix-only fixture behavior; no native Windows security matrix. `.github/workflows/ci.yml` uses Ubuntu.
+- `src/managed_process.rs`: constrained launch is rejected on Windows; unconstrained launch uses suspended child + Job Object ownership, with hosted process-tree tests.
+- `src/tool/bash/process.rs`: raw Windows shell argv selects PowerShell by default and supports explicit cmd/Git Bash/WSL; `src/security/sandbox/policy.rs` now supplies Windows runtime/cache/credential inputs and rejects common unsafe path forms before canonicalization.
+- These policy checks are preparation only. There is still no Windows filesystem enforcement backend or native Windows security matrix; `.github/workflows/ci.yml` uses Ubuntu, with process and policy-input coverage in the focused Windows workflow.
 - `crates/codegg-client/src/windows_process.rs` has a narrow existing liveness probe; Windows named-pipe ACL implementation is client IPC, not sandbox authority.
 
 ## 5. Target architecture
@@ -140,7 +140,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | `plans/closure/windows-native-sandbox/001-status.md` | none |
 | M002 | closed | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | `plans/closure/windows-native-sandbox/002-status.md` | none |
-| M003 | ready | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | — | M002 strict closure |
+| M003 | active | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | — | M002 strict closure satisfied |
 | M004 | blocked | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 |
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |

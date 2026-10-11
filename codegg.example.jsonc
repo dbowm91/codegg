@@ -222,6 +222,12 @@
     "paths": ["./docs/skills"]
   },
 
+  // Raw model shell selection is only used on Windows. PowerShell is the
+  // default; choose cmd explicitly when the command needs cmd syntax.
+  "shell": {
+    "windows_shell": "powershell"
+  },
+
   // Custom slash commands. `template` is REQUIRED (a natural-language
   // instruction); `command`/`args` are the executable and are only used when
   // `runtime` is "process".

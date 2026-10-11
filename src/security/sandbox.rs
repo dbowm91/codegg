@@ -414,6 +414,13 @@ impl SandboxConfig {
                 "cannot build a sandbox launch spec for a disabled sandbox".to_string(),
             ));
         }
+        #[cfg(windows)]
+        if policy::windows_profile_root().is_none() {
+            return Err(ToolError::Permission(
+                "Windows USERPROFILE is unavailable; sensitive credential roots cannot be resolved"
+                    .to_string(),
+            ));
+        }
         let target = resolve_executable(target.as_ref()).ok_or_else(|| {
             ToolError::Permission(format!(
                 "sandbox target could not be resolved: {}",
@@ -428,10 +435,8 @@ impl SandboxConfig {
             self.allowed_paths
                 .iter()
                 .map(|raw| {
-                    std::fs::canonicalize(raw).map_err(|e| {
-                        ToolError::Permission(format!(
-                            "sandbox path '{raw}' could not resolve: {e}"
-                        ))
+                    policy::resolve_policy_path(Path::new(raw)).map_err(|e| {
+                        ToolError::Permission(format!("sandbox path '{raw}' is invalid: {e}"))
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?
@@ -445,18 +450,30 @@ impl SandboxConfig {
         // existing paths are kept: the curated sets name locations for both
         // platforms (`/private/etc` on macOS, `/proc` on Linux), and a rule
         // naming a missing path is a hard Landlock setup error.
-        read_paths.extend(
-            policy::tool_read_allowances()
-                .into_iter()
-                .filter(|path| path.exists()),
-        );
+        for path in policy::tool_read_allowances()
+            .into_iter()
+            .filter(|path| path.exists())
+        {
+            read_paths.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                ToolError::Permission(format!(
+                    "sandbox runtime read root '{}' is invalid: {reason}",
+                    path.display()
+                ))
+            })?);
+        }
         let write_paths = if self.mode.is_writable() {
             let mut writes = write_roots;
-            writes.extend(
-                policy::tool_write_allowances()
-                    .into_iter()
-                    .filter(|path| path.exists()),
-            );
+            for path in policy::tool_write_allowances()
+                .into_iter()
+                .filter(|path| path.exists())
+            {
+                writes.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                    ToolError::Permission(format!(
+                        "sandbox runtime write root '{}' is invalid: {reason}",
+                        path.display()
+                    ))
+                })?);
+            }
             writes
         } else {
             Vec::new()
@@ -466,11 +483,17 @@ impl SandboxConfig {
         // `> /dev/null` and `2>&1` fails. See `policy::device_write_allowances`.
         // Same existence filter: e.g. `/dev/console` may not exist on Linux.
         let mut write_paths = write_paths;
-        write_paths.extend(
-            policy::device_write_allowances()
-                .into_iter()
-                .filter(|path| path.exists()),
-        );
+        for path in policy::device_write_allowances()
+            .into_iter()
+            .filter(|path| path.exists())
+        {
+            write_paths.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                ToolError::Permission(format!(
+                    "sandbox device write root '{}' is invalid: {reason}",
+                    path.display()
+                ))
+            })?);
+        }
         // Operator-declared denies are config strings; the backend's own
         // sensitive-path set is paths. Both land in one list.
         //
@@ -478,12 +501,26 @@ impl SandboxConfig {
         // deny path that does not exist denies nothing, so dropping it is
         // correct, whereas an uncanonicalized deny is a rule the backend
         // cannot match (`/etc/sudoers` vs the resolved `/private/etc/...`).
-        let mut deny_paths: Vec<PathBuf> = self
-            .deny_paths
-            .iter()
-            .filter_map(|raw| std::fs::canonicalize(raw).ok())
-            .collect();
-        deny_paths.extend(policy::sensitive_deny_paths());
+        let mut deny_paths = Vec::new();
+        for raw in &self.deny_paths {
+            let path = Path::new(raw);
+            if path.exists() {
+                deny_paths.push(policy::resolve_policy_path(path).map_err(|reason| {
+                    ToolError::Permission(format!("sandbox deny root '{raw}' is invalid: {reason}"))
+                })?);
+            }
+        }
+        for path in policy::sensitive_deny_paths()
+            .into_iter()
+            .filter(|path| path.exists())
+        {
+            deny_paths.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                ToolError::Permission(format!(
+                    "sandbox sensitive deny root '{}' is invalid: {reason}",
+                    path.display()
+                ))
+            })?);
+        }
         Ok(SandboxLaunchSpec {
             target,
             args: args.to_vec(),
@@ -698,6 +735,7 @@ pub(crate) fn resolve_trusted_helper(current: &Path) -> Result<PathBuf, String> 
         .map_err(|e| e.replace("installation-owned", "trusted sandbox helper"))
 }
 
+#[cfg(unix)]
 fn resolve_executable(path: &Path) -> Option<PathBuf> {
     if path.is_absolute() {
         return path.canonicalize().ok();
@@ -708,6 +746,16 @@ fn resolve_executable(path: &Path) -> Option<PathBuf> {
             .find(|candidate| candidate.is_file())
             .and_then(|candidate| candidate.canonicalize().ok())
     })
+}
+
+#[cfg(windows)]
+fn resolve_executable(path: &Path) -> Option<PathBuf> {
+    // Relative executable names would let PATH select a caller-controlled
+    // binary. Windows policy launch descriptions require an absolute path.
+    path.is_absolute()
+        .then(|| policy::resolve_policy_path(path).ok())
+        .flatten()
+        .filter(|resolved| resolved.is_file())
 }
 
 /// Probe the Landlock backend specifically.

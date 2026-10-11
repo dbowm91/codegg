@@ -3409,7 +3409,24 @@ impl ShellOutputConfig {
 #[serde(default)]
 pub struct ShellConfig {
     pub output: Option<ShellOutputConfig>,
+    /// Explicit native Windows shell for model shell commands. `None` uses
+    /// the platform default; shell selection never changes structured argv.
+    pub windows_shell: Option<WindowsShellKind>,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsShellKind {
+    #[serde(rename = "powershell")]
+    PowerShell,
+    #[serde(rename = "cmd")]
+    Cmd,
+    #[serde(rename = "git-bash")]
+    GitBash,
+    #[serde(rename = "wsl")]
+    Wsl,
+}
+
 impl ShellConfig {
     /// Merge a later config layer into this one: every top-level field
     /// that is set in `other` wins. Nested blocks are replaced wholesale
@@ -3418,6 +3435,9 @@ impl ShellConfig {
     pub fn merge(&mut self, other: &Self) {
         if other.output.is_some() {
             self.output.clone_from(&other.output);
+        }
+        if other.windows_shell.is_some() {
+            self.windows_shell = other.windows_shell;
         }
     }
 }
@@ -4380,6 +4400,27 @@ mod tests {
         assert_eq!(cfg.max_tui_output_bytes(), 200_000);
         assert!(cfg.show_projection_metadata());
         assert!(cfg.prefer_native_projectors());
+    }
+
+    #[test]
+    fn windows_shell_kind_accepts_only_documented_names() {
+        assert_eq!(
+            serde_json::from_str::<WindowsShellKind>("\"powershell\"").unwrap(),
+            WindowsShellKind::PowerShell
+        );
+        assert_eq!(
+            serde_json::from_str::<WindowsShellKind>("\"cmd\"").unwrap(),
+            WindowsShellKind::Cmd
+        );
+        assert_eq!(
+            serde_json::from_str::<WindowsShellKind>("\"git-bash\"").unwrap(),
+            WindowsShellKind::GitBash
+        );
+        assert_eq!(
+            serde_json::from_str::<WindowsShellKind>("\"wsl\"").unwrap(),
+            WindowsShellKind::Wsl
+        );
+        assert!(serde_json::from_str::<WindowsShellKind>("\"bash\"").is_err());
     }
 
     #[test]

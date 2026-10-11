@@ -91,6 +91,18 @@ filesystem-constrained requests still fail before launch, and Job Objects do
 not provide filesystem or network containment. Native behavior is exercised
 by `tests/windows_process_launcher.rs` and the focused Windows workflow.
 
+Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
+while Windows defaults to the inbox Windows PowerShell executable and can opt
+into `cmd.exe`, Git Bash, or WSL with `shell.windows_shell`. PowerShell, cmd,
+and WSL resolve from the absolute Windows system directory; Git Bash resolves
+from `ProgramFiles`. None is searched through `PATH`; command text is passed as
+one argument to the selected interpreter. Structured `NativeCommand` and
+managed argv dispatch never enter shell parsing. This selects command syntax,
+not a Windows sandbox backend.
+Raw Windows shell dispatch also supplies one unique TEMP/TMP directory per
+invocation and removes it after the managed child finishes; M004 must restrict
+write access to that exact directory before treating it as containment.
+
 Protocol children remain direct owners only where framing, persistence, or
 crate dependency direction makes finite-process capture the wrong abstraction.
 Their ownership is explicit rather than hidden behind a generic shell helper.

@@ -171,6 +171,7 @@ pub fn build_session_tool_registry(
         run_store,
         submission: submission.clone(),
         command_intent: config.command_intent.clone(),
+        windows_shell: config.shell.as_ref().and_then(|shell| shell.windows_shell),
         workspace_root: Some(execution.workspace_root.clone()),
         child_git_policy: None,
         asset_snapshot: asset_context.snapshot,
