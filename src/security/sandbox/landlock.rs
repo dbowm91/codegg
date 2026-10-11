@@ -18,6 +18,9 @@ use std::path::Path;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const LANDLOCK_GUARANTEES: &[&str] = &[
     "deny-first path allowlist",
+    "write and truncate rights limited to granted writable paths (Landlock ABI 3+)",
+    "cross-directory refer rights handled (Landlock ABI 2+)",
+    "additional filesystem rights supported by this crate and host are handled",
     "no_new_privs privilege drop",
     "inherited by exec'd target",
 ];
@@ -28,17 +31,21 @@ const LANDLOCK_LIMITS: &[&str] = &[
     "no network isolation",
     "open file descriptors inherited before restriction remain usable",
     "filesystem permissions still apply on top of the ruleset",
+    "rights newer than the crate's supported effective ABI are not handled",
 ];
 
 /// Availability probe. Cheap and side-effect free: it creates a ruleset with
 /// no rules and throws it away.
 #[cfg(target_os = "linux")]
 pub fn probe() -> Result<(), String> {
-    use landlock::{AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
+    use landlock::{Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
     Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessFs::from_read(ABI::V1))
+        .handle_access(AccessFs::from_all(ABI::V3))
         .map_err(|e| format!("Landlock access selection failed: {e}"))?
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(AccessFs::from_all(ABI::V9))
+        .map_err(|e| format!("Landlock optional access selection failed: {e}"))?
         .create()
         .map(|_| ())
         .map_err(|e| format!("Landlock unavailable: {e}"))
@@ -51,9 +58,9 @@ pub fn probe() -> Result<(), String> {
 
 /// Apply the policy to the current process.
 ///
-/// Returns the effective kernel ABI for observability. A partially-enforced
-/// ruleset is a hard failure: reporting a degraded ruleset as enforced is
-/// exactly the lie this module exists to prevent.
+/// Returns the effective kernel ABI for observability. The ABI 3 baseline is
+/// mandatory; `PartiallyEnforced` may describe only newer rights requested
+/// best-effort than the host supports.
 #[cfg(target_os = "linux")]
 pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
     use landlock::{
@@ -61,19 +68,19 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
-    // ABI 1 is the minimum Landlock filesystem contract and is available on
-    // every Landlock-capable kernel. Newer rights are intentionally not
-    // requested dynamically: a partial ruleset must never be reported as
-    // enforced, and the helper's outcome still records the kernel's
-    // effective ABI for observability.
-    let abi = ABI::V1;
+    // ABI 3 is the minimum contract: v2 adds REFER and v3 adds TRUNCATE.
+    // Newer filesystem rights are requested best-effort after that hard
+    // minimum, so each host enforces the strongest ABI the crate supports.
+    let abi = ABI::V9;
     let read_access = AccessFs::from_read(abi);
     let write_access = AccessFs::from_all(abi);
-    let handled = AccessFs::from_all(abi);
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(handled)
+        .handle_access(AccessFs::from_all(ABI::V3))
         .map_err(|e| format!("Landlock ruleset access selection failed: {e}"))?
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(AccessFs::from_all(ABI::V9))
+        .map_err(|e| format!("Landlock optional access selection failed: {e}"))?
         .create()
         .map_err(|e| format!("Landlock ruleset creation failed: {e}"))?;
 
@@ -102,18 +109,25 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
     let status = ruleset
         .restrict_self()
         .map_err(|e| format!("Landlock restriction failed: {e}"))?;
-    if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
+    if status.ruleset == RulesetStatus::NotEnforced || !status.no_new_privs {
         return Err(format!(
-            "Landlock restriction was not fully enforced (ruleset={:?}, no_new_privs={})",
+            "Landlock restriction was not enforced (ruleset={:?}, no_new_privs={})",
             status.ruleset, status.no_new_privs
         ));
     }
     match status.landlock {
-        landlock::LandlockStatus::Available { effective_abi, .. } => Ok(BackendEnforcement::new(
-            Some(effective_abi as u32),
-            LANDLOCK_GUARANTEES,
-            LANDLOCK_LIMITS,
-        )),
+        landlock::LandlockStatus::Available { effective_abi, .. } => {
+            if effective_abi < ABI::V3 {
+                return Err(format!(
+                    "Landlock effective ABI {effective_abi:?} is below required ABI V3"
+                ));
+            }
+            Ok(BackendEnforcement::new(
+                Some(effective_abi as u32),
+                LANDLOCK_GUARANTEES,
+                LANDLOCK_LIMITS,
+            ))
+        }
         other => Err(format!(
             "Landlock became unavailable during setup: {other:?}"
         )),
@@ -154,7 +168,7 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("directory fixture");
         let access =
-            landlock_access_for_path(directory.path(), AccessFs::from_read(ABI::V1), ABI::V1)
+            landlock_access_for_path(directory.path(), AccessFs::from_read(ABI::V3), ABI::V3)
                 .expect("directory classification");
 
         assert!(access.contains(AccessFs::ReadDir));
@@ -167,7 +181,7 @@ mod tests {
         use landlock::{AccessFs, ABI};
 
         let file = tempfile::NamedTempFile::new().expect("file fixture");
-        let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V1), ABI::V1)
+        let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V3), ABI::V3)
             .expect("regular-file classification");
 
         assert!(!access.contains(AccessFs::ReadDir));
@@ -183,7 +197,7 @@ mod tests {
         if !path.exists() {
             return;
         }
-        let access = landlock_access_for_path(path, AccessFs::from_all(ABI::V1), ABI::V1)
+        let access = landlock_access_for_path(path, AccessFs::from_all(ABI::V3), ABI::V3)
             .expect("special-file classification");
 
         assert!(!access.contains(AccessFs::ReadDir));
@@ -197,7 +211,7 @@ mod tests {
         use landlock::{AccessFs, ABI};
 
         let path = Path::new("/definitely/missing/codegg-sandbox-path");
-        let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V1), ABI::V1)
+        let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V3), ABI::V3)
             .expect_err("missing path classification must fail");
 
         assert!(error.contains("classify sandbox path"));

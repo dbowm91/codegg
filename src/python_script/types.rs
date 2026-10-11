@@ -190,6 +190,8 @@ pub enum SandboxBackend {
     },
     /// Portable fallback: cwd containment, env clearing, snapshots.
     PortableFallback,
+    /// No OS backend can satisfy this profile's required containment.
+    Unavailable,
     /// No sandboxing active.
     None,
 }
@@ -199,6 +201,7 @@ impl std::fmt::Display for SandboxBackend {
         match self {
             Self::Os { backend } => write!(f, "{backend}"),
             Self::PortableFallback => write!(f, "portable_fallback"),
+            Self::Unavailable => write!(f, "unavailable"),
             Self::None => write!(f, "none"),
         }
     }

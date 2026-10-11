@@ -111,6 +111,9 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
                 format!("{name} (OS-level)")
             }
             super::types::SandboxBackend::PortableFallback => "Portable fallback".to_string(),
+            super::types::SandboxBackend::Unavailable => {
+                "Unavailable (execution refused)".to_string()
+            }
             super::types::SandboxBackend::None => "None".to_string(),
         };
         lines.push(format!("**Sandbox:** {sandbox_label}"));

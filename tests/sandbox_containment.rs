@@ -127,7 +127,15 @@ fn probe(workspace: &Path, mode: SandboxMode, deny: &[PathBuf], script: &str) ->
     spec.args = vec!["-c".to_string(), script.to_string()];
     let run = run_helper(&spec);
     // A helper that could not establish containment never ran the target.
-    run.backend().map(|_| run)
+    if run.backend().is_none() {
+        eprintln!(
+            "sandbox qualification: helper did not enforce: {:?}",
+            run.outcome()
+        );
+        None
+    } else {
+        Some(run)
+    }
 }
 
 fn sh_quote(path: &Path) -> String {
@@ -165,6 +173,7 @@ fn helper_reports_enforcement_with_a_real_backend_identity() {
     let outcome = run
         .outcome()
         .expect("a successful helper run must produce a decodable status frame");
+    eprintln!("sandbox qualification: helper outcome {outcome:?}");
     let backend = outcome
         .backend()
         .expect("a contained run must name the backend that enforced it");
@@ -179,8 +188,24 @@ fn helper_reports_enforcement_with_a_real_backend_identity() {
     );
     match outcome {
         SandboxLaunchOutcome::Enforced {
-            guarantees, limits, ..
+            abi,
+            guarantees,
+            limits,
+            ..
         } => {
+            if backend == BackendId::LANDLOCK {
+                eprintln!("sandbox qualification: kernel Landlock ABI {abi:?}");
+                assert!(
+                    abi.is_some_and(|abi| abi >= 3),
+                    "Landlock must enforce ABI 3+: {abi:?}"
+                );
+                assert!(
+                    guarantees
+                        .iter()
+                        .any(|value| value.contains("no_new_privs")),
+                    "Landlock status must name the privilege drop: {guarantees:?}"
+                );
+            }
             assert!(
                 !guarantees.is_empty(),
                 "an enforced run must state what it actually guarantees"
@@ -193,6 +218,116 @@ fn helper_reports_enforcement_with_a_real_backend_identity() {
         }
         other => panic!("expected enforcement, got {other:?}"),
     }
+}
+
+/// Landlock ABI 3 added `TRUNCATE`; ordinary write denial is not enough to
+/// prove read-only and workspace boundaries protect existing file contents.
+#[cfg(target_os = "linux")]
+#[test]
+fn landlock_truncation_is_confined_to_workspace_write_roots() {
+    require_backend!();
+    assert!(Command::new("truncate")
+        .arg("--version")
+        .output()
+        .expect("GNU truncate is required for the truncation syscall probe")
+        .status
+        .success());
+    assert!(Command::new("python3")
+        .arg("--version")
+        .output()
+        .expect("python3 is required for the O_TRUNC probe")
+        .status
+        .success());
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = outside_dir();
+    let inside_file = workspace.path().join("inside.txt");
+    let outside_file = outside.path().join("outside.txt");
+    std::fs::write(&inside_file, "inside-seed").expect("inside fixture");
+    std::fs::write(&outside_file, "outside-seed").expect("outside fixture");
+
+    let read_only = probe(
+        workspace.path(),
+        SandboxMode::ReadOnly,
+        &[],
+        &format!(
+            "(: > {} 2>/dev/null) && echo READONLY-TRUNCATED || echo READONLY-DENIED",
+            sh_quote(&inside_file),
+        ),
+    )
+    .expect("read-only truncation probe must run contained");
+    assert!(read_only.stdout.contains("READONLY-DENIED"));
+    assert_eq!(
+        std::fs::read_to_string(&inside_file).unwrap(),
+        "inside-seed"
+    );
+
+    let workspace_write = probe(
+        workspace.path(),
+        SandboxMode::WorkspaceWrite,
+        &[],
+        &format!(
+            "(: > {} 2>/dev/null) && echo INSIDE-TRUNCATED || echo INSIDE-DENIED\n\
+             (: > {} 2>/dev/null) && echo OUTSIDE-TRUNCATED || echo OUTSIDE-DENIED\n\
+             truncate -s 0 {} 2>/dev/null && echo TRUNCATE-OUTSIDE-LEAK || echo TRUNCATE-OUTSIDE-DENIED\n\
+             python3 -c 'open(\"{}\", \"w\").close()' 2>/dev/null && echo PYTHON-OTRUNC-LEAK || echo PYTHON-OTRUNC-DENIED\n\
+             sh -c ': > {}' 2>/dev/null && echo CHILD-TRUNCATE-LEAK || echo CHILD-TRUNCATE-DENIED",
+            sh_quote(&inside_file),
+            sh_quote(&outside_file),
+            sh_quote(&outside_file),
+            outside_file.display(),
+            sh_quote(&outside_file),
+        ),
+    )
+    .expect("workspace-write truncation probe must run contained");
+    assert!(workspace_write.stdout.contains("INSIDE-TRUNCATED"));
+    assert!(workspace_write.stdout.contains("OUTSIDE-DENIED"));
+    assert!(workspace_write.stdout.contains("TRUNCATE-OUTSIDE-DENIED"));
+    assert!(workspace_write.stdout.contains("PYTHON-OTRUNC-DENIED"));
+    assert!(workspace_write.stdout.contains("CHILD-TRUNCATE-DENIED"));
+    assert_eq!(std::fs::read_to_string(&inside_file).unwrap(), "");
+    assert_eq!(
+        std::fs::read_to_string(&outside_file).unwrap(),
+        "outside-seed"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn landlock_blocks_rename_and_link_from_workspace_into_outside_roots() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = outside_dir();
+    let rename_source = workspace.path().join("rename-source.txt");
+    let rename_target = outside.path().join("rename-target.txt");
+    let link_source = workspace.path().join("link-source.txt");
+    let link_target = outside.path().join("link-target.txt");
+    std::fs::write(&rename_source, "rename-seed").expect("rename fixture");
+    std::fs::write(&link_source, "link-seed").expect("link fixture");
+
+    let run = probe(
+        workspace.path(),
+        SandboxMode::WorkspaceWrite,
+        &[],
+        &format!(
+            "mv {} {} 2>/dev/null && echo RENAME-OUTSIDE-LEAK || echo RENAME-OUTSIDE-DENIED\n\
+             ln {} {} 2>/dev/null && echo LINK-OUTSIDE-LEAK || echo LINK-OUTSIDE-DENIED",
+            sh_quote(&rename_source),
+            sh_quote(&rename_target),
+            sh_quote(&link_source),
+            sh_quote(&link_target),
+        ),
+    )
+    .expect("rename/link probe must run contained");
+
+    assert!(run.stdout.contains("RENAME-OUTSIDE-DENIED"));
+    assert!(run.stdout.contains("LINK-OUTSIDE-DENIED"));
+    assert_eq!(
+        std::fs::read_to_string(&rename_source).unwrap(),
+        "rename-seed"
+    );
+    assert_eq!(std::fs::read_to_string(&link_source).unwrap(), "link-seed");
+    assert!(!rename_target.exists());
+    assert!(!link_target.exists());
 }
 
 // ── Workspace-write contract ─────────────────────────────────────────────

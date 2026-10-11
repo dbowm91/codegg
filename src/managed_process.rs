@@ -294,14 +294,6 @@ pub enum SandboxRequest {
     #[default]
     Disabled,
     Required(SandboxLaunchSpec),
-    /// Containment was requested but this host cannot provide any. The child
-    /// runs *without* OS filesystem containment instead of failing, and the
-    /// run is recorded as [`SandboxExecutionOutcome::Uncontained`] so a
-    /// reviewer can tell it apart from both a contained run and an explicit
-    /// `FullHost` request. Never use this variant to mean `Disabled`.
-    DegradedUncontained {
-        reason: String,
-    },
 }
 
 impl ProcessProvenance {
@@ -390,12 +382,6 @@ pub enum SandboxExecutionOutcome {
         guarantees: Vec<String>,
         limits: Vec<String>,
     },
-    /// The requested containment was not applied because the host cannot
-    /// provide it. Distinct from `Disabled` (nothing was requested) so the
-    /// audit trail never reads an uncontained run as an unconstrained one.
-    Uncontained {
-        reason: String,
-    },
 }
 
 impl SandboxExecutionOutcome {
@@ -404,18 +390,11 @@ impl SandboxExecutionOutcome {
         matches!(self, Self::Enforced { .. })
     }
 
-    /// True when the caller asked for containment and the host could not
-    /// deliver it.
-    pub fn is_degraded_uncontained(&self) -> bool {
-        matches!(self, Self::Uncontained { .. })
-    }
-
-    /// Audit/authorization token distinguishing contained from uncontained.
+    /// Audit/authorization token distinguishing contained from disabled.
     pub fn audit_token(&self) -> &'static str {
         match self {
             Self::Disabled => "sandbox_disabled",
             Self::Enforced { .. } => "sandbox_enforced",
-            Self::Uncontained { .. } => "sandbox_uncontained_degraded",
         }
     }
 }
@@ -702,11 +681,6 @@ fn prepare_launch_argv(
         .collect::<Vec<_>>();
     match sandbox {
         SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
-        // Named degraded path: the caller already reported that this host has
-        // no OS containment. Run the target directly (no helper, no status
-        // pipe) and let `interpret_sandbox_status` record the fact as
-        // `Uncontained`. Nothing here is allowed to look enforced.
-        SandboxRequest::DegradedUncontained { .. } => Ok((full_argv, None, None, None)),
         SandboxRequest::Required(spec) => {
             #[cfg(not(unix))]
             {
@@ -1030,14 +1004,6 @@ fn interpret_sandbox_status(
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
     }
-    // The degraded path runs without a helper, so there is no status frame.
-    // Record the uncontained fact explicitly rather than reporting the run
-    // as unconstrained.
-    if let SandboxRequest::DegradedUncontained { reason } = sandbox {
-        return Ok(SandboxExecutionOutcome::Uncontained {
-            reason: reason.clone(),
-        });
-    }
     let status = status_bytes.ok_or_else(|| {
         ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
     })?;
@@ -1138,11 +1104,12 @@ mod tests {
         std::fs::write(&helper, b"#!/bin/sh\nexit 0\n").expect("fake helper");
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
             .expect("fake helper executable permissions");
+        let marker = directory.path().join("target-ran");
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
             deny_paths: Vec::new(),
             target: PathBuf::from("/bin/sh"),
-            args: vec!["-c".to_string(), "true".to_string()],
+            args: vec!["-c".to_string(), format!("touch {}", marker.display())],
             read_paths: Vec::new(),
             write_paths: Vec::new(),
         });
@@ -1153,63 +1120,15 @@ mod tests {
         assert!(
             matches!(error, ManagedProcessError::SandboxFailed(reason) if reason.contains("status"))
         );
-    }
-
-    #[test]
-    fn degraded_request_runs_uncontained_but_records_the_fact() {
-        let reason = "Landlock is only available on Linux".to_string();
-        let outcome =
-            interpret_sandbox_status(None, &SandboxRequest::DegradedUncontained { reason })
-                .expect("degraded path must not fail closed");
-        assert_eq!(
-            outcome,
-            SandboxExecutionOutcome::Uncontained {
-                reason: "Landlock is only available on Linux".to_string()
-            }
+        assert!(
+            !marker.exists(),
+            "target must not run without helper status"
         );
-        assert!(outcome.is_degraded_uncontained());
-        assert!(!outcome.is_contained());
-        // Never confusable with an unconstrained run or a contained one.
-        assert_ne!(outcome, SandboxExecutionOutcome::Disabled);
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Disabled.audit_token()
-        );
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Enforced {
-                backend: crate::security::sandbox::BackendId::LANDLOCK,
-                abi: Some(1),
-                guarantees: vec![],
-                limits: vec![],
-            }
-            .audit_token()
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn degraded_request_executes_the_target_without_a_helper() {
-        let mut request = request("printf uncontained-ok");
-        request.sandbox = SandboxRequest::DegradedUncontained {
-            reason: "no OS containment on this host".to_string(),
-        };
-
-        let result = run_inner(request, None, None)
-            .await
-            .expect("degraded path must still execute the command");
-
-        assert_eq!(result.stdout.to_string_lossy(), "uncontained-ok");
-        assert!(result.exit_status.success());
-        assert!(result.sandbox.is_degraded_uncontained());
-        assert!(!result.sandbox.is_contained());
     }
 
     #[test]
     fn required_request_with_helper_unavailable_still_fails_closed() {
-        // The degraded path is chosen by the caller *before* launch. A
-        // `Required` request that loses containment mid-flight must NOT fall
-        // through to it.
+        // A `Required` request that loses containment mid-flight must fail.
         let outcome = interpret_sandbox_status(
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {

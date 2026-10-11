@@ -81,12 +81,18 @@ pub fn resolve_policy(
 fn resolve_enforcement_backend(
     profile: &PythonCapabilityProfile,
 ) -> (SandboxBackend, bool, bool, Vec<String>) {
+    let capability = crate::security::sandbox::platform_sandbox_capability();
+    resolve_enforcement_backend_for_capability(profile, capability)
+}
+
+fn resolve_enforcement_backend_for_capability(
+    profile: &PythonCapabilityProfile,
+    capability: crate::security::sandbox::SandboxCapability,
+) -> (SandboxBackend, bool, bool, Vec<String>) {
     if profile.sandbox_requirement == super::types::SandboxRequirement::None {
         return (SandboxBackend::None, false, false, Vec::new());
     }
-    #[cfg(target_os = "linux")]
     {
-        let capability = crate::security::sandbox::platform_sandbox_capability();
         if let crate::security::sandbox::SandboxCapability::Available { backend } = capability {
             let mut warnings = Vec::new();
             // Every shipped backend is filesystem-only; none isolates the
@@ -102,18 +108,20 @@ fn resolve_enforcement_backend(
         }
     }
 
-    // Portable fallback
+    // This profile requires OS containment before executing untrusted code.
+    // The portable snapshot checks are useful defense in depth, but are not
+    // an execution sandbox and must not silently replace an unavailable OS
+    // backend.
     let mut warnings = Vec::new();
-    warnings.push(
-        "OS-level sandboxing not available on this platform; using portable fallback".to_string(),
-    );
+    warnings
+        .push("required OS-level sandboxing is unavailable; execution must be refused".to_string());
     if profile.allow_subprocess {
         warnings.push("subprocess supervision is policy-based only without OS sandbox".to_string());
     }
     if profile.allow_network {
         warnings.push("network isolation not available; denying network capability".to_string());
     }
-    (SandboxBackend::PortableFallback, false, false, warnings)
+    (SandboxBackend::Unavailable, false, false, warnings)
 }
 
 /// Validate that a subprocess invocation matches the profile's allowed rules.
@@ -551,18 +559,38 @@ mod tests {
     #[test]
     fn resolve_policy_produces_backend() {
         let decision = resolve_policy(PythonExecutionMode::Analyze, "x = 1", &ws());
-        // On any platform, should get a backend
+        // The registry decides per host: a real backend or an explicit
+        // unavailable disposition, never a Linux-only portable guess.
         assert!(
             matches!(decision.enforcement_backend, SandboxBackend::Os { .. })
-                || decision.enforcement_backend == SandboxBackend::PortableFallback
+                || decision.enforcement_backend == SandboxBackend::Unavailable
         );
     }
 
     #[test]
-    fn resolve_policy_portable_has_warnings() {
-        let _decision = resolve_policy(PythonExecutionMode::Analyze, "x = 1", &ws());
-        // On non-Linux, should have portable fallback warnings
-        #[cfg(not(target_os = "linux"))]
-        assert!(!_decision.warnings.is_empty());
+    fn unavailable_policy_warns_that_execution_must_be_refused() {
+        let decision = resolve_policy(PythonExecutionMode::Analyze, "x = 1", &ws());
+        if decision.enforcement_backend == SandboxBackend::Unavailable {
+            assert!(decision
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("refused")));
+            assert!(!decision.os_filesystem_isolation);
+        }
+    }
+
+    #[test]
+    fn simulated_unavailable_backend_never_selects_portable_fallback() {
+        let profile = PythonCapabilityProfile::analyze(&ws());
+        let (backend, filesystem, network, warnings) = resolve_enforcement_backend_for_capability(
+            &profile,
+            crate::security::sandbox::SandboxCapability::Unavailable {
+                reason: "injected unavailable host".to_string(),
+            },
+        );
+        assert_eq!(backend, SandboxBackend::Unavailable);
+        assert!(!filesystem);
+        assert!(!network);
+        assert!(warnings.iter().any(|warning| warning.contains("refused")));
     }
 }
