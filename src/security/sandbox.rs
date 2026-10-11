@@ -436,12 +436,8 @@ impl SandboxConfig {
         let write_roots = roots.clone();
         let mut read_paths = roots;
         read_paths.push(target.clone());
-        // Tool-compatible read allowances: without these a sandboxed command
-        // cannot resolve a hostname, read its own toolchain, or find its
-        // package cache, and every invocation fails. See `policy`. Only
-        // existing paths are kept: the curated sets name locations for both
-        // platforms (`/private/etc` on macOS, `/proc` on Linux), and a rule
-        // naming a missing path is a hard Landlock setup error.
+        // Curated system/runtime and read-only toolchain inputs. Shared user
+        // configuration and cache ancestors are deliberately excluded.
         read_paths.extend(
             policy::tool_read_allowances()
                 .into_iter()
@@ -468,17 +464,21 @@ impl SandboxConfig {
                 .into_iter()
                 .filter(|path| path.exists()),
         );
-        // Operator-declared denies are config strings; the backend's own
-        // sensitive-path set is paths. Both land in one list.
-        //
-        // Canonicalized like the allow sets, and deliberately best-effort: a
-        // deny path that does not exist denies nothing, so dropping it is
-        // correct, whereas an uncanonicalized deny is a rule the backend
-        // cannot match (`/etc/sudoers` vs the resolved `/private/etc/...`).
+        // Operator-declared denies are resolved against the launch cwd and
+        // retained even when absent. Policy normalization resolves the nearest
+        // existing parent so future-created sensitive paths stay excluded.
+        let base = cwd.unwrap_or_else(|| Path::new("."));
         let mut deny_paths: Vec<PathBuf> = self
             .deny_paths
             .iter()
-            .filter_map(|raw| std::fs::canonicalize(raw).ok())
+            .map(|raw| {
+                let path = PathBuf::from(raw);
+                if path.is_absolute() {
+                    path
+                } else {
+                    base.join(path)
+                }
+            })
             .collect();
         deny_paths.extend(policy::sensitive_deny_paths());
         Ok(SandboxLaunchSpec {

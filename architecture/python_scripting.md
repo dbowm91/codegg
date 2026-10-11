@@ -101,6 +101,12 @@ pub struct PythonScriptRequest {
 `workspace_root` provides the authoritative workspace boundary for CWD containment.
 Falls back to process cwd when `None`.
 
+The script source and runtime temp files live in a private collision-resistant
+per-run directory. Under an OS sandbox, that directory is the only generic
+writable scratch root for Analyze/Verify; Transform additionally receives the
+approved workspace write root. Shared `/tmp` and global user cache directories
+are not writable sandbox roots.
+
 ### PythonRiskAssessment (`types.rs:437`)
 
 ```rust

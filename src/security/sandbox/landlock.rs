@@ -7,6 +7,7 @@
 //! that Seatbelt cannot provide.
 
 use super::backend::BackendEnforcement;
+use super::policy::BackendPolicy;
 use super::SandboxLaunchSpec;
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -68,6 +69,8 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
         RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
+    super::policy::validate_landlock_write_exclusions(&spec.write_paths, &spec.deny_paths)?;
+
     // ABI 3 is the minimum contract: v2 adds REFER and v3 adds TRUNCATE.
     // Newer filesystem rights are requested best-effort after that hard
     // minimum, so each host enforces the strongest ABI the crate supports.
@@ -99,10 +102,14 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
             .map_err(|e| format!("add sandbox rule {}: {e}", path.display()))
     };
 
-    for path in &spec.read_paths {
+    let policy = BackendPolicy::for_spec(spec).landlock_effective();
+    for path in &policy.read_roots {
         ruleset = add_path(ruleset, path, read_access)?;
     }
-    for path in &spec.write_paths {
+    for path in &policy.read_dir_roots {
+        ruleset = add_path(ruleset, path, AccessFs::ReadDir.into())?;
+    }
+    for path in &policy.write_roots {
         ruleset = add_path(ruleset, path, write_access)?;
     }
 
