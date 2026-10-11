@@ -165,6 +165,21 @@ public static class AppContainerProofNative {
 
 Add-Type -TypeDefinition $source -Language CSharp
 
+function Restore-DisposableAclLease([string]$path, [string]$beforeSddl, [string]$packageSid) {
+    $acl = Get-Acl -LiteralPath $path
+    $ownedRules = @($acl.Access | Where-Object {
+        $_.IdentityReference.Value -eq $packageSid
+    })
+    foreach ($rule in $ownedRules) {
+        $acl.RemoveAccessRuleSpecific($rule)
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl
+    $afterSddl = (Get-Acl -LiteralPath $path).Sddl
+    if ($afterSddl -ne $beforeSddl) {
+        throw "ACL rollback did not restore the exact before-image for $path."
+    }
+}
+
 $name = 'CodeggM004-' + [Guid]::NewGuid().ToString('N')
 $root = Join-Path $env:RUNNER_TEMP ('codegg-m004-' + [Guid]::NewGuid().ToString('N'))
 $readRoot = Join-Path $root 'read-root'
@@ -205,6 +220,8 @@ try {
             [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
         [System.Security.AccessControl.PropagationFlags]::None,
         [System.Security.AccessControl.AccessControlType]::Allow)
+    $readAclBefore = (Get-Acl -LiteralPath $readRoot).Sddl
+    $writeAclBefore = (Get-Acl -LiteralPath $writeRoot).Sddl
     $readAcl = Get-Acl -LiteralPath $readRoot
     $readAcl.AddAccessRule($readRule)
     Set-Acl -LiteralPath $readRoot -AclObject $readAcl
@@ -244,6 +261,10 @@ try {
         throw "AppContainer wrote outside the approved roots (exit $outsideCode)."
     }
     'outside write denied: passed'
+
+    Restore-DisposableAclLease $readRoot $readAclBefore $sidText
+    Restore-DisposableAclLease $writeRoot $writeAclBefore $sidText
+    'temporary ACL leases restored to exact before-images: passed'
 } finally {
     if ($profileCreated) {
         $deleteStatus = [AppContainerProofNative]::DeleteAppContainerProfile($name)
