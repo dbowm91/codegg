@@ -14,6 +14,9 @@ Token-query follow-up revision: `d3ef73d`
 Token-query run: `https://github.com/dbowm91/codegg/actions/runs/38152215289`
 Token-query run result: successful; Windows workflow completed all selected steps in 12m 18s.
 
+ACL-restoration run: `https://github.com/dbowm91/codegg/actions/runs/38155073513`
+ACL-restoration run result: successful; the workflow completed in 13m 25s.
+
 The first token-inspection attempt invoked `whoami` inside the AppContainer and
 failed with exit 1 (`38152089849`). That method did not provide token evidence;
 it was replaced with a direct `OpenProcessToken` /
@@ -27,8 +30,8 @@ that all ACEs matched, but Windows added the DACL
 auto-inherited (`AI`) control flag when restoring an inherited temporary
 directory ACL. The fixture now first freezes the two disposable test-root
 ACLs, preserving their inherited ACEs as explicit entries, and only then takes
-the before-image. Exact descriptor restoration still requires a successful
-Windows runner result.
+the before-image. Run `38155073513` passed the exact descriptor restoration
+assertion after restoring the before-image.
 
 ## Question
 
@@ -67,10 +70,11 @@ version `10.0.26100`, build `26100`:
 | Read synthetic secret under root with no package-SID ACE | denied |
 | Create file under sibling outside root with no package-SID ACE | denied |
 | Delete unique AppContainer profile and temporary fixture | completed without reported error |
+| Restore exact disposable-root ACL before-images | passed in run `38155073513` after freezing the fixture ACL bases |
 
 The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy
-suite (all selected tests passed).
+suite (all selected tests passed) in run `38155073513`.
 
 Microsoft documents AppContainer access as the intersection of traditional
 user/group grants and AppContainer package/capability SID grants, with the

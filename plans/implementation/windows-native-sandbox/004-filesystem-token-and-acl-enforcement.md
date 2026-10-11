@@ -37,8 +37,12 @@ scratch write succeeded, while a synthetic secret read and outside write were
 denied. This validates AppContainer as a candidate mechanism only. It does not
 implement or exercise CodeGG's production launcher, existing-path ACL leases,
 child/grandchild ownership, credential/named-pipe denial, crash recovery, or
-the required adversarial ACL VM matrix. No Windows sandbox backend is
-registered and constrained launches remain unavailable.
+the required adversarial ACL VM matrix. Follow-up run
+`38155073513` also passed exact before-image restoration for disposable ACL
+fixtures after protecting their inherited ACL bases. This proves restoration
+for those isolated test roots only; it does not establish crash recovery for
+production ACL leases. No Windows sandbox backend is registered and
+constrained launches remain unavailable.
 
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
