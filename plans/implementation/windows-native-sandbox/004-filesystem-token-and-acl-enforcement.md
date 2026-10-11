@@ -41,7 +41,10 @@ the required adversarial ACL VM matrix. Follow-up run
 `38155073513` also passed exact before-image restoration for disposable ACL
 fixtures after protecting their inherited ACL bases. This proves restoration
 for those isolated test roots only; it does not establish crash recovery for
-production ACL leases. No Windows sandbox backend is registered and
+production ACL leases. Run `38156232045`'s AppContainer proof step additionally
+passed suspended creation, Job assignment, `IsProcessInJob` verification, and
+resume ordering. It does not prove production launcher integration or Job
+inheritance by descendants. No Windows sandbox backend is registered and
 constrained launches remain unavailable.
 
 Code inspection also confirms that the current process-service seam is not

@@ -15,7 +15,12 @@ Token-query run: `https://github.com/dbowm91/codegg/actions/runs/38152215289`
 Token-query run result: successful; Windows workflow completed all selected steps in 12m 18s.
 
 ACL-restoration run: `https://github.com/dbowm91/codegg/actions/runs/38155073513`
-ACL-restoration run result: successful; the workflow completed in 13m 25s.
+ACL-restoration run result: successful; the workflow completed in 13m 30s.
+
+Suspended-launch/Job proof: `https://github.com/dbowm91/codegg/actions/runs/38156232045`
+The AppContainer proof step passed in 4s, including assignment of the suspended
+target to its Job before resume; the remaining workflow tests were still running
+when this report was updated.
 
 The first token-inspection attempt invoked `whoami` inside the AppContainer and
 failed with exit 1 (`38152089849`). That method did not provide token evidence;
@@ -70,7 +75,8 @@ version `10.0.26100`, build `26100`:
 | Read synthetic secret under root with no package-SID ACE | denied |
 | Create file under sibling outside root with no package-SID ACE | denied |
 | Delete unique AppContainer profile and temporary fixture | completed without reported error |
-| Restore exact disposable-root ACL before-images | passed in run `38155073513` after freezing the fixture ACL bases |
+| Restore exact disposable-root ACL before-images | passed in runs `38155073513` and `38156232045` after freezing the fixture ACL bases |
+| Assign the suspended AppContainer target to its Job before resume | passed in run `38156232045`; `IsProcessInJob` confirmed membership before `ResumeThread` |
 
 The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy
