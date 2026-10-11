@@ -17,7 +17,7 @@ use codegg::security::sandbox::{
     SandboxConfig, SandboxLaunchOutcome, SandboxLaunchSpec, SandboxMode, SANDBOX_STATUS_FD,
 };
 use std::io::Read;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -95,6 +95,64 @@ fn launch_helper(helper: PathBuf, spec: &Path) -> Run {
     } = command.output().expect("sandbox helper process");
     // Drop the parent's copy of the write end so the reader sees EOF. This
     // is what lets an `Enforced`-then-EOF stream decode as a clean success.
+    drop(writer);
+    let mut status = Vec::new();
+    std::fs::File::from(reader)
+        .read_to_end(&mut status)
+        .expect("sandbox status frame");
+    Run {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        success: exit_status.success(),
+        status,
+    }
+}
+
+/// Launch a helper while deliberately preserving one already-open descriptor
+/// across the sandbox application and target exec. Seatbelt's status report
+/// calls this out as a limit; this fixture proves the behavior without
+/// touching any real user data.
+#[cfg(target_os = "macos")]
+fn launch_helper_with_inherited_fd(helper: PathBuf, spec: &Path, source_fd: RawFd) -> Run {
+    const INHERITED_FD: RawFd = 42;
+    let spec_file = tempfile::NamedTempFile::new().expect("sandbox spec file");
+    serde_json::to_writer(spec_file.as_file(), spec).expect("sandbox spec encoding");
+
+    let (reader, writer) = nix::unistd::pipe().expect("status pipe");
+    let writer_fd = writer.as_raw_fd();
+    let mut command = Command::new(helper);
+    command
+        .arg("--spec")
+        .arg(spec_file.path())
+        .arg("--status-fd")
+        .arg(SANDBOX_STATUS_FD.to_string());
+    // SAFETY: pre_exec only duplicates two already-open descriptors and
+    // changes close-on-exec flags. It allocates nothing and runs no user code.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(source_fd, INHERITED_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(INHERITED_FD, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if writer_fd != SANDBOX_STATUS_FD {
+                if libc::dup2(writer_fd, SANDBOX_STATUS_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                libc::close(writer_fd);
+            }
+            if libc::fcntl(SANDBOX_STATUS_FD, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let Output {
+        stdout,
+        stderr,
+        status: exit_status,
+    } = command.output().expect("sandbox helper process");
     drop(writer);
     let mut status = Vec::new();
     std::fs::File::from(reader)
@@ -556,6 +614,50 @@ fn explicitly_denied_paths_are_unreachable() {
         "a denied path must be unreadable: {}",
         run.stdout
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_preserves_and_reports_preopened_denied_file_descriptors() {
+    require_backend!();
+    assert_eq!(
+        platform_sandbox_capability().backend_id(),
+        Some(BackendId::SEATBELT)
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .expect("HOME must exist for descriptor fixture");
+    let outside = tempfile::Builder::new()
+        .prefix("codegg-preopened-secret-")
+        .tempdir_in(home)
+        .expect("outside fixture");
+    let secret = outside.path().join("token");
+    std::fs::write(&secret, "preopened-secret-sentinel").expect("secret fixture");
+    let opened = std::fs::File::open(&secret).expect("pre-open denied file");
+
+    let mut spec = spec_for(
+        workspace.path(),
+        SandboxMode::WorkspaceWrite,
+        &[outside.path().to_path_buf()],
+    );
+    spec.args = vec!["-c".to_string(), "cat <&42".to_string()];
+    let run = launch_helper_with_inherited_fd(helper_path(), &spec, opened.as_raw_fd());
+    assert!(run.success, "target failed: {}", run.stderr);
+    assert!(run.stdout.contains("preopened-secret-sentinel"));
+    match run.outcome().expect("helper status frame") {
+        SandboxLaunchOutcome::Enforced {
+            backend, limits, ..
+        } => {
+            assert_eq!(backend, BackendId::SEATBELT);
+            assert!(limits
+                .iter()
+                .any(|limit| limit.contains("open file descriptors")));
+        }
+        other => panic!("expected Seatbelt enforcement, got {other:?}"),
+    }
 }
 
 // ── Tool compatibility ───────────────────────────────────────────────────

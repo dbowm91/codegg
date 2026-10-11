@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   seatbelt:
-    runs-on: macos-15
+    # The first qualification run already executed the helper matrix on the
+    # default macOS 15 Apple Silicon runner. Use Intel here to avoid the
+    # documented ARM64 capacity queue while repeating the Python path.
+    runs-on: macos-15-intel
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
@@ -29,6 +32,8 @@ jobs:
         run: cargo test -p codegg --test sandbox_containment -- --test-threads=1 --nocapture
       - name: Qualify Python execution modes
         run: cargo test -p codegg --lib python_script::executor::tests -- --test-threads=1 --nocapture
+      - name: Qualify managed scratch lifecycle
+        run: cargo test -p codegg --lib managed_process::tests::constrained_launch_gets_private_tmpdir_removed_after_reap -- --test-threads=1 --nocapture
       - name: Run sandbox contract guards
         run: |
           python3 scripts/check_sandbox_contract.py

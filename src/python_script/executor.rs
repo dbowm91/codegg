@@ -1158,6 +1158,93 @@ mod tests {
         assert!(!result.os_filesystem_isolation);
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn transform_uses_seatbelt_and_cannot_write_outside_workspace() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .expect("HOME must exist for outside-write fixture");
+        let outside = tempfile::Builder::new()
+            .prefix("codegg-python-outside-")
+            .tempdir_in(home)
+            .expect("outside fixture");
+        let outside_file = outside.path().join("must-not-be-created.txt");
+        for mode in [
+            PythonExecutionMode::Analyze,
+            PythonExecutionMode::Verify,
+            PythonExecutionMode::Transform,
+        ] {
+            let inside_file = workspace
+                .path()
+                .join(format!("inside-{}.txt", mode.label()));
+            let code = format!(
+                "from pathlib import Path\n\
+                 try:\n\
+                     Path({inside:?}).write_text('inside')\n\
+                     print('INSIDE-WRITE-ALLOWED')\n\
+                 except PermissionError:\n\
+                     print('INSIDE-WRITE-DENIED')\n\
+                 try:\n\
+                     Path({outside:?}).write_text('outside')\n\
+                     print('OUTSIDE-WRITE-LEAK')\n\
+                 except PermissionError:\n\
+                     print('OUTSIDE-WRITE-DENIED')\n",
+                inside = inside_file.to_string_lossy(),
+                outside = outside_file.to_string_lossy(),
+            );
+            let request = PythonScriptRequest {
+                code,
+                mode,
+                cwd: workspace.path().to_path_buf(),
+                workspace_root: Some(workspace.path().to_path_buf()),
+                timeout_secs: Some(20),
+                session_id: None,
+                intent: None,
+            };
+
+            let result = execute_python_script(&request).await;
+            assert!(
+                result.is_success(),
+                "mode={mode:?}, stderr: {}",
+                result.stderr
+            );
+            assert!(result.os_filesystem_isolation, "mode={mode:?}");
+            assert!(
+                result.stdout.contains("OUTSIDE-WRITE-DENIED"),
+                "mode={mode:?}"
+            );
+            assert!(
+                !result.stdout.contains("OUTSIDE-WRITE-LEAK"),
+                "mode={mode:?}"
+            );
+            assert_eq!(
+                result.stdout.contains("INSIDE-WRITE-ALLOWED"),
+                mode == PythonExecutionMode::Transform,
+                "mode={mode:?}, stdout={}",
+                result.stdout
+            );
+            assert_eq!(inside_file.exists(), mode == PythonExecutionMode::Transform);
+            assert!(
+                matches!(
+                    result
+                        .policy_decision
+                        .as_ref()
+                        .and_then(|decision| decision.outcome.as_ref()),
+                    Some(SandboxOutcome::Enforced {
+                        backend: SandboxBackend::Os {
+                            backend: crate::security::sandbox::BackendId::SEATBELT,
+                        },
+                        abi: None,
+                    })
+                ),
+                "mode={mode:?}"
+            );
+        }
+        assert!(!outside_file.exists());
+    }
+
     #[test]
     fn helper_status_becomes_typed_outcome() {
         let enforced = SandboxLaunchOutcome::enforced(
