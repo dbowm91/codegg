@@ -31,7 +31,7 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, OpenThread,
     ResumeThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
-    CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
 };
 
@@ -204,7 +204,7 @@ impl WindowsSuspendedAppContainerProcess {
                 ptr::null(),
                 ptr::null(),
                 0,
-                CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
                 ptr::null(),
                 // Explicit working directories returned ERROR_INVALID_PARAMETER
                 // on the hosted Windows runner. Inherit the parent directory
