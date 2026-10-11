@@ -106,6 +106,7 @@ impl WindowsPipeListener {
         })
     }
 
+    #[allow(unsafe_code)]
     fn create_server(
         name: &str,
         first: bool,
