@@ -99,6 +99,15 @@ the earlier successful fixture. This inherits the parent process directory;
 it does not yet establish an approved workspace directory or production ACL
 lease, and requires another hosted run for confirmation.
 
+Code inspection also confirms that the current process-service seam is not
+yet an AppContainer launch path: `prepare_launch_argv` rejects every required
+sandbox request on non-Unix, and the Windows `tokio::process::Command` spawn
+path has no CodeGG-owned `STARTUPINFOEX` attribute-list setup. Production work
+must introduce and own that Windows creation path while preserving the
+existing suspend-before-Job-assignment ordering. Because approved roots may be
+existing directories, ACE cleanup also needs a crash-recoverable ownership
+record; an in-memory guard alone cannot satisfy WP-C after daemon/helper loss.
+
 ## 4. Invariants that must not regress
 
 - No backend registered available until read AND write requirements can be demonstrated on target Windows version.
