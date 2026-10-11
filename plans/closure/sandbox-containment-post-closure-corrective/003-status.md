@@ -1,18 +1,18 @@
 # Sandbox Containment Post-Closure Corrective C003 — Closure
 
-Status: conditionally closed
+Status: closed
 
 Source plan: `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md`
 
 Implementation commit: `be7537cc`
 
-Predecessors: C001 is conditionally closed at `001-status.md`; C002 is closed at `002-status.md`. Their historical records are unchanged.
+Predecessors: C001 is closed at `001-status.md`; C002 is closed at `002-status.md`. Historical runtime-safety records remain unchanged.
 
 ## 1. Executive finding
 
-The effective Linux Landlock grant now removes credential-denied descendants from broader read and write roots. A directory needed only to reach a denied descendant receives listing-only rights; the denied file itself is not granted. Future-created deny paths are retained through nearest-existing-parent normalization. Policies that Landlock cannot express, including a denied path under a recursively writable root, fail before target execution. Existing denied regular files with hardlink aliases also fail preflight.
+The effective Linux Landlock grant removes credential-denied descendants from broader read and write roots. A directory needed only to reach a denied descendant receives listing-only rights; the denied file itself is not granted. Future-created deny paths are retained through nearest-existing-parent normalization. Policies that Landlock cannot express, including a denied path under a recursively writable root, fail before target execution. Existing denied regular files with hardlink aliases also fail preflight.
 
-Seatbelt emits credential read/write denials after generic write denials and all writable-root re-allowances. Shared `/tmp`, user caches, package-manager state, and toolchain directories are no longer generic writable roots. A required managed launch receives a collision-resistant scratch directory with mode `0700`; `TMPDIR` points to it, and cleanup occurs after the supervised process tree is reaped. Python scripts and their temporary state use private run directories, while Transform persistence remains limited to the workspace.
+Seatbelt emits credential read/write denials after generic write denials and all writable-root re-allowances. Shared `/tmp`, user caches, package-manager state, and toolchain directories are no longer generic writable roots. A required managed launch receives a collision-resistant scratch directory with mode `0700`; `TMPDIR` points to it, and cleanup occurs after the supervised process tree is reaped. Python scripts and their temporary state use private run directories, while Transform persistence remains limited to the workspace. Native macOS qualification confirms these deny/write behaviors on the same Seatbelt backend used by Python.
 
 ## 2. Host and real-helper evidence
 
@@ -33,7 +33,7 @@ The real helper reported `Enforced`, backend `landlock`, effective ABI 4, and gu
 | Explicit scoped scratch write and sibling scratch write | First allowed; sibling denied |
 | Offline `cargo metadata --no-deps` from scoped scratch | Passed with a scoped empty Cargo config and read-only toolchain |
 
-The suite also checks symlink aliases, external symlink targets, denied hardlinks, future-path carving, special file classification, and the no-shared-cache-write policy.
+The Linux suite also checks symlink aliases, external symlink targets, denied hardlinks, future-path carving, special file classification, and the no-shared-cache-write policy. Hosted native macOS run `38166386985` on commit `98f96a99` ran the real helper suite: 15 passed, including nested credential read/write denial under a workspace allowance, future-created denied paths, sibling scratch denial, malformed/rejected profile no-marker behavior, and mode-specific workspace rights. A separate native lifecycle test confirmed private temp root placement, mode `0700`, and removal after reap.
 
 ## 3. Scratch lifecycle and compatibility
 
@@ -55,10 +55,10 @@ The suite also checks symlink aliases, external symlink targets, denied hardlink
 
 ## 5. Conditional evidence and residual risk
 
-This host is Linux; no native Darwin host was available. The Seatbelt rule order, denied-path behavior, temporary-directory semantics, Python modes, and command compatibility therefore remain unqualified on macOS. The plan's native-host condition is not waived, and these results do not establish Linux/macOS security parity. C001 retains its separate native Darwin condition.
+Native Seatbelt policy evidence: macOS `15.7.9` build `24G830`, Darwin `24.6.0`, ARM64 M1 hosted runner. The helper suite reported `Enforced`, backend `seatbelt`, no ABI, and the declared write-confinement and credential-path-denial guarantees. The six read-only `--version` probes for `git`, `cargo`, `rustc`, `python3`, `brew`, and `gh` passed. Python Analyze/Verify/Transform tests passed 22/22. This does not establish Linux/macOS security parity: Seatbelt broadly allows reads while Landlock is an allowlist, and C004 records that difference explicitly.
 
-Other limits remain explicit: no network isolation is claimed; inherited open descriptors remain usable; Landlock denies an unrepresentable overlap rather than weakening it; no native macOS or cross-process IPC probes ran. C004 remains blocked until native Darwin C001/C003 qualification can be performed. Earlier runtime-safety closure conditions remain separate.
+Other limits remain explicit: no network isolation is claimed; loopback reachability was confirmed on macOS; inherited open descriptors remain usable; Landlock denies an unrepresentable overlap rather than weakening it. Apple Events/Launch Services remain documented cross-process channels; no safe fixture service was used to qualify their reachability, XPC/Mach access, or setuid privilege transitions. Those residuals are tracked by C004. Earlier runtime-safety closure conditions remain separate.
 
 ## 6. Roadmap and registry disposition
 
-C003 is conditionally closed on the available Linux host. The roadmap and registry record native Darwin qualification as outstanding. C004 remains blocked by that missing native evidence; no other sandbox-line production work is dependency-ready on this host.
+C003 is closed on Linux Landlock ABI 4 and native Apple Silicon Seatbelt evidence. C004's native C001/C003 prerequisites are satisfied; its residual IPC and privilege evidence is conditionally closed and documented separately. No security parity between the backends is claimed.

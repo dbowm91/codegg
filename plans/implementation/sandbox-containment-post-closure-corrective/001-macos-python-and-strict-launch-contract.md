@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective C001 — macOS Python Seatbelt and Strict Launch Contract
 
-Status: implemented (conditionally closed; native macOS qualification outstanding)
+Status: implemented (closed; Linux and native Apple Silicon qualification complete)
 
 Repository baseline: `main` `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 

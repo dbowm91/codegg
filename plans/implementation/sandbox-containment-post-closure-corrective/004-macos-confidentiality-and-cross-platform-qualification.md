@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective C004 — macOS Confidentiality Boundaries and Cross-Platform Qualification
 
-Status: blocked (native Darwin qualification for C001 and C003 unavailable)
+Status: conditionally closed (native C001/C003 qualified; IPC and privilege probes remain unqualified)
 
 Repository baseline: `main` `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 
@@ -84,4 +84,4 @@ Stop if meaningful macOS protection requires an unsupported entitlement, breaks 
 
 ## 9. Closure
 
-Create `plans/closure/sandbox-containment-post-closure-corrective/004-status.md` including commit/PR, C001-C003 predecessor closure references, Darwin/Linux host specs and actual results, mechanism comparison, tool compatibility, status truthfulness, limitations and unresolved findings by severity, all guards/quick and any hosted run, and final roadmap/registry disposition. Historical runtime-safety conditional closures remain separately truthful until independently qualified.
+Closure record: `plans/closure/sandbox-containment-post-closure-corrective/004-status.md`. Native Darwin and Linux evidence, effective backend comparison, tool compatibility, status truthfulness, verification, limitations and unresolved findings are recorded there. The plan is conditionally closed while benign IPC/XPC/Mach and privilege-transition probes remain unqualified; no security parity or complete IPC isolation is claimed. Historical runtime-safety conditional closures remain separately truthful until independently qualified.
