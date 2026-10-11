@@ -138,7 +138,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | — | none |
+| M001 | active | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | — | none |
 | M002 | blocked | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | — | M001 |
 | M003 | blocked | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | — | M002 |
 | M004 | blocked | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 |

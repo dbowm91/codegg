@@ -242,18 +242,17 @@ pub fn platform_sandbox_capability() -> SandboxCapability {
 ///
 /// `Unconstrained` is only ever reached when no containment was requested
 /// (an explicit `FullHost` profile, or no policy at all). A constrained
-/// request on a host without containment takes the explicitly named
-/// [`SandboxExecutionPath::DegradedUncontained`] path — it never degrades
-/// into `Unconstrained`.
+/// request on a host without containment takes the unavailable path and is
+/// rejected before process creation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SandboxExecutionPath {
     /// No CodeGG filesystem containment was requested (explicit FullHost).
     Unconstrained,
     /// The child helper will enforce the policy before exec.
     Contained { backend: BackendId },
-    /// Containment was requested but this host cannot provide it. The
-    /// command still runs, uncontained, and must be reported to the
-    /// operator and recorded distinctly in the audit/authorization trail.
+    /// Compatibility name for a constrained request whose host cannot
+    /// provide containment. The process service rejects this path before
+    /// spawn; it is never an authorization to run without containment.
     DegradedUncontained { reason: String },
 }
 
@@ -285,8 +284,8 @@ impl SandboxExecutionPath {
 /// Decide the execution path for a configured (or absent) sandbox policy.
 ///
 /// This is the single place that turns "containment was requested" plus the
-/// host capability into a named path, so the bash tool cannot silently pick
-/// containment on a host that has none.
+/// host capability into a named path, so the bash tool can reject a
+/// constrained request on a host that has no backend.
 pub fn sandbox_execution_path(config: Option<&SandboxConfig>) -> SandboxExecutionPath {
     if !config.is_some_and(|config| config.enabled) {
         return SandboxExecutionPath::Unconstrained;

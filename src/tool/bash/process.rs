@@ -237,16 +237,9 @@ impl BashTool {
                 )?)
             }
             crate::security::sandbox::SandboxExecutionPath::DegradedUncontained { reason } => {
-                tracing::warn!(
-                    target: "codegg::security::sandbox",
-                    reason = %reason,
-                    command_len = command.len(),
-                    "requested sandbox containment is unavailable on this host; \
-                     running the shell command through the degraded uncontained path"
-                );
-                crate::managed_process::SandboxRequest::DegradedUncontained {
-                    reason: reason.clone(),
-                }
+                return Err(ToolError::Execution(format!(
+                    "requested filesystem containment is unavailable: {reason}"
+                )));
             }
         };
         let mut request = crate::managed_process::ManagedProcessRequest::new(

@@ -44,9 +44,20 @@ def violations(path: Path, content: str) -> list[str]:
         )
         if helper_match and re.search(r"PATH|split_paths|current_dir", helper_match.group(0)):
             found.append("sandbox helper resolution must use the installation-owned sibling")
-    if path.name == "managed_process.rs" and "SandboxRequest::Required" in content:
-        if "decode_sandbox_status" not in content or "SandboxFailed" not in content:
+    if path.name == "managed_process.rs":
+        if "SandboxRequest::Required" in content and (
+            "decode_sandbox_status" not in content or "SandboxFailed" not in content
+        ):
             found.append("required sandbox execution must fail closed without a typed status")
+        compact = re.sub(r"\s+", "", content)
+        if "SandboxRequest::DegradedUncontained{..}=>Ok((full_argv" in compact:
+            found.append("constrained sandbox-unavailable requests must not spawn uncontained")
+    if path.name == "process.rs" and "SandboxExecutionPath::DegradedUncontained" in content:
+        if not re.search(
+            r"SandboxExecutionPath::DegradedUncontained\s*\{[^}]*\}\s*=>\s*\{\s*return Err",
+            content,
+        ):
+            found.append("Bash must reject sandbox-unavailable constrained execution before managed spawn")
     return found
 
 
@@ -71,6 +82,8 @@ def self_test() -> int:
         "stderr marker": 'const X: &str = SANDBOX_HELPER_ERROR_PREFIX;',
         "cwd spec": 'tempfile::NamedTempFile::new_in(cwd)',
         "missing status bypass": 'SandboxRequest::Required(spec) /* no typed status */',
+        "degraded direct spawn": 'SandboxRequest::DegradedUncontained { .. } => Ok((full_argv, None, None, None))',
+        "bash unavailable continue": 'SandboxExecutionPath::DegradedUncontained { reason } => { tracing::warn!(reason); SandboxRequest::DegradedUncontained { reason } }',
     }
     checks = {
         "helper environment": lambda text: any(
@@ -85,6 +98,14 @@ def self_test() -> int:
         "missing status bypass": lambda text: any(
             "fail closed" in issue
             for issue in violations(ROOT / "managed_process.rs", text)
+        ),
+        "degraded direct spawn": lambda text: any(
+            "must not spawn uncontained" in issue
+            for issue in violations(ROOT / "managed_process.rs", text)
+        ),
+        "bash unavailable continue": lambda text: any(
+            "must reject sandbox-unavailable" in issue
+            for issue in violations(ROOT / "process.rs", text)
         ),
     }
     failures = [name for name, text in fixtures.items() if not checks[name](text)]
